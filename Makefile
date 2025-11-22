@@ -32,4 +32,4 @@ format:
 	find include src test examples -name '*.hpp' -o -name '*.cpp' | xargs clang-format -i
 
 lint:
-	find include src test examples -name '*.hpp' -o -name '*.cpp' | xargs clang-tidy -p build
+	find include src test examples -name '*.hpp' -o -name '*.cpp' | xargs clang-tidy -p build -fix
