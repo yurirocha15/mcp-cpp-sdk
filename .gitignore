@@ -39,3 +39,15 @@
 
 # debug information files
 *.dwo
+
+# build folder
+/build
+
+# conan cache
+/.conan2
+
+# pre-commit cache
+/.pre-commit
+
+# VSCode cache
+/.vscode

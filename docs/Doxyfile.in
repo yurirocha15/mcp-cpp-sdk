@@ -1,0 +1,7 @@
+PROJECT_NAME           = "mcp-cpp-sdk"
+OUTPUT_DIRECTORY       = docs
+GENERATE_XML           = YES
+GENERATE_HTML          = NO
+GENERATE_LATEX         = NO
+INPUT                  = include
+RECURSIVE              = YES
