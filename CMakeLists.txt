@@ -17,8 +17,13 @@ target_link_libraries(mcp-cpp-sdk INTERFACE
 )
 target_include_directories(mcp-cpp-sdk INTERFACE include)
 
-add_executable(mcp-sdk-tests test/main.cpp)
+enable_testing()
+
+add_executable(mcp-sdk-tests test/main.cpp test/core_test.cpp)
 target_link_libraries(mcp-sdk-tests PRIVATE
     mcp-cpp-sdk
     GTest::gtest_main
 )
+
+include(GoogleTest)
+gtest_discover_tests(mcp-sdk-tests)
