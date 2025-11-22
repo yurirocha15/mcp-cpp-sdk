@@ -8,13 +8,30 @@
 
 namespace mcp {
 
-// Async Model: Use boost::asio::awaitable
+/**
+ * @brief Alias for boost::asio::awaitable, representing an asynchronous task.
+ *
+ * @tparam T The return type of the task.
+ */
 template <typename T>
 using Task = boost::asio::awaitable<T>;
 
-// Logging
-enum class LogLevel : std::uint8_t { Debug, Info, Warn, Error };
+/**
+ * @brief Enumeration of log levels.
+ */
+enum class LogLevel : std::uint8_t {
+    Debug,  ///< Debug level for detailed information.
+    Info,   ///< Info level for general information.
+    Warn,   ///< Warn level for potential issues.
+    Error   ///< Error level for critical failures.
+};
 
-using LogHandler = std::function<void(LogLevel, std::string_view)>;
+/**
+ * @brief Function type for handling log messages.
+ *
+ * @param level The severity level of the log message.
+ * @param message The log message content.
+ */
+using LogHandler = std::function<void(LogLevel level, std::string_view message)>;
 
 }  // namespace mcp

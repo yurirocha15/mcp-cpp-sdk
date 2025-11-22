@@ -17,9 +17,14 @@ target_link_libraries(mcp-cpp-sdk INTERFACE
 )
 target_include_directories(mcp-cpp-sdk INTERFACE include)
 
-enable_testing()
 
-add_executable(mcp-sdk-tests test/main.cpp test/core_test.cpp test/protocol_test.cpp)
+# Build Tests
+enable_testing()
+set(TEST_SRCS
+    test/core_test.cpp
+    test/protocol_test.cpp
+)
+add_executable(mcp-sdk-tests ${TEST_SRCS})
 target_link_libraries(mcp-sdk-tests PRIVATE
     mcp-cpp-sdk
     GTest::gtest_main

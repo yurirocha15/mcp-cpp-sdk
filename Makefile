@@ -18,12 +18,12 @@ init-dev: init
 	pre-commit install
 
 build:
-	conan install . --output-folder=build --build=missing
+	conan install . --output-folder=build --build=missing -s compiler.cppstd=20
 	cmake --preset conan-release
 	cmake --build --preset conan-release -j$(NUM_CPU_2)
 
 test:
-	ctest --preset conan-release
+	ctest --preset conan-release -j$(NUM_CPU_2)
 
 clean:
 	rm -rf build
