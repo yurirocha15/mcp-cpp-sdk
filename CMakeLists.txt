@@ -27,6 +27,7 @@ set(TEST_SRCS
     test/concepts_test.cpp
     test/core_test.cpp
     test/protocol_test.cpp
+    test/transport_test.cpp
 )
 add_executable(mcp-sdk-tests ${TEST_SRCS})
 target_link_libraries(mcp-sdk-tests PRIVATE
