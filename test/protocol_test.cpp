@@ -120,7 +120,7 @@ TEST(ProtocolTest, ParseInitializeRequest_2025_06_18) {
     EXPECT_EQ(req.clientInfo.websiteUrl.value_or(""), "https://example.com");
 }
 
-TEST(ProtocolTest, ContentSerialization) {
+TEST(ProtocolTest, ContentBlockSerialization) {
     mcp::TextContent text_content;
     text_content.text = "Hello, world!";
 
@@ -138,7 +138,7 @@ TEST(ProtocolTest, ContentSerialization) {
     EXPECT_EQ(json_image["mimeType"], "image/png");
 }
 
-TEST(ProtocolTest, MixedContentSerialization) {
+TEST(ProtocolTest, MixedContentBlockSerialization) {
     mcp::CallToolResult result;
     result.content.emplace_back(mcp::TextContent{.text = "Output text"});
     result.content.emplace_back(mcp::ImageContent{.data = "imgdata", .mimeType = "image/jpeg"});
@@ -375,4 +375,80 @@ TEST(ProtocolTest, CompletionSerialization) {
     EXPECT_EQ(deserialized_result.completion.total.value_or(0), total_val);
     EXPECT_EQ(deserialized_result.completion.hasMore.value_or(false), true);
     EXPECT_EQ(deserialized_result.meta.value_or(nlohmann::json::object())["custom"], "result");
+}
+
+TEST(ProtocolTest, PromptSerialization) {
+    mcp::PromptArgument arg{"arg1", "An argument", true, "Argument 1"};
+    mcp::Prompt prompt{"test_prompt", "A test prompt", std::vector<mcp::PromptArgument>{arg}};
+
+    nlohmann::json j = prompt;
+    EXPECT_EQ(j["name"], "test_prompt");
+    EXPECT_EQ(j["description"], "A test prompt");
+    EXPECT_EQ(j["arguments"][0]["name"], "arg1");
+    EXPECT_EQ(j["arguments"][0]["required"], true);
+
+    auto deserialized = j.get<mcp::Prompt>();
+    EXPECT_EQ(deserialized.name, "test_prompt");
+    EXPECT_EQ(deserialized.description, "A test prompt");
+    EXPECT_EQ(deserialized.arguments->size(), 1);
+    EXPECT_EQ(deserialized.arguments->at(0).name, "arg1");
+}
+
+TEST(ProtocolTest, GetPromptRequestSerialization) {
+    mcp::GetPromptRequestParams params{"test_prompt",
+                                       std::map<std::string, std::string>{{"arg1", "value1"}}};
+    mcp::GetPromptRequest req{"prompts/get", params};
+
+    nlohmann::json j = req;
+    EXPECT_EQ(j["method"], "prompts/get");
+    EXPECT_EQ(j["params"]["name"], "test_prompt");
+    EXPECT_EQ(j["params"]["arguments"]["arg1"], "value1");
+
+    auto deserialized = j.get<mcp::GetPromptRequest>();
+    EXPECT_EQ(deserialized.method, "prompts/get");
+    EXPECT_EQ(deserialized.params.name, "test_prompt");
+    EXPECT_EQ(deserialized.params.arguments->at("arg1"), "value1");
+}
+
+TEST(ProtocolTest, GetPromptResultSerialization) {
+    mcp::TextContent text{"text", "Hello"};
+    mcp::PromptMessage msg{mcp::Role::Assistant, text};
+    mcp::GetPromptResult res{std::vector<mcp::PromptMessage>{msg}, "A description"};
+
+    nlohmann::json j = res;
+    EXPECT_EQ(j["description"], "A description");
+    EXPECT_EQ(j["messages"][0]["role"], "assistant");
+    EXPECT_EQ(j["messages"][0]["content"]["type"], "text");
+    EXPECT_EQ(j["messages"][0]["content"]["text"], "Hello");
+
+    auto deserialized = j.get<mcp::GetPromptResult>();
+    EXPECT_EQ(deserialized.description, "A description");
+    EXPECT_EQ(deserialized.messages.size(), 1);
+    EXPECT_EQ(deserialized.messages[0].role, mcp::Role::Assistant);
+    EXPECT_TRUE(std::holds_alternative<mcp::TextContent>(deserialized.messages[0].content));
+}
+
+TEST(ProtocolTest, ListPromptsSerialization) {
+    mcp::PaginatedRequestParams params{"cursor123"};
+    mcp::ListPromptsRequest req{"prompts/list", params};
+
+    nlohmann::json j_req = req;
+    EXPECT_EQ(j_req["method"], "prompts/list");
+    EXPECT_EQ(j_req["params"]["cursor"], "cursor123");
+
+    auto deserialized_req = j_req.get<mcp::ListPromptsRequest>();
+    EXPECT_EQ(deserialized_req.method, "prompts/list");
+    EXPECT_EQ(deserialized_req.params->cursor, "cursor123");
+
+    mcp::Prompt prompt{"test_prompt"};
+    mcp::ListPromptsResult res{std::vector<mcp::Prompt>{prompt}, "nextCursor456"};
+
+    nlohmann::json j_res = res;
+    EXPECT_EQ(j_res["nextCursor"], "nextCursor456");
+    EXPECT_EQ(j_res["prompts"][0]["name"], "test_prompt");
+
+    auto deserialized_res = j_res.get<mcp::ListPromptsResult>();
+    EXPECT_EQ(deserialized_res.nextCursor, "nextCursor456");
+    EXPECT_EQ(deserialized_res.prompts.size(), 1);
+    EXPECT_EQ(deserialized_res.prompts[0].name, "test_prompt");
 }

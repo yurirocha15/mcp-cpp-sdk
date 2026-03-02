@@ -335,6 +335,73 @@ struct ImageContent {
 };
 
 /**
+ * @brief Represents text resource contents.
+ */
+struct TextResourceContents {
+    std::string uri;                      ///< The URI of this resource.
+    std::string text;                     ///< The text of the item.
+    std::optional<std::string> mimeType;  ///< The MIME type of this resource.
+};
+
+/**
+ * @brief Represents blob resource contents.
+ */
+struct BlobResourceContents {
+    std::string uri;                      ///< The URI of this resource.
+    std::string blob;                     ///< The base64-encoded binary data.
+    std::optional<std::string> mimeType;  ///< The MIME type of this resource.
+};
+
+/**
+ * @brief Variant holding either TextResourceContents or BlobResourceContents.
+ */
+using ResourceContents = std::variant<TextResourceContents, BlobResourceContents>;
+
+inline void to_json(nlohmann::json& json_obj, const TextResourceContents& content) {
+    json_obj = nlohmann::json{{"uri", content.uri}, {"text", content.text}};
+    if (content.mimeType) {
+        json_obj["mimeType"] = *content.mimeType;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, TextResourceContents& content) {
+    json_obj.at("uri").get_to(content.uri);
+    json_obj.at("text").get_to(content.text);
+    if (json_obj.contains("mimeType")) {
+        content.mimeType = json_obj.at("mimeType").get<std::string>();
+    }
+}
+
+inline void to_json(nlohmann::json& json_obj, const BlobResourceContents& content) {
+    json_obj = nlohmann::json{{"uri", content.uri}, {"blob", content.blob}};
+    if (content.mimeType) {
+        json_obj["mimeType"] = *content.mimeType;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, BlobResourceContents& content) {
+    json_obj.at("uri").get_to(content.uri);
+    json_obj.at("blob").get_to(content.blob);
+    if (json_obj.contains("mimeType")) {
+        content.mimeType = json_obj.at("mimeType").get<std::string>();
+    }
+}
+
+inline void to_json(nlohmann::json& json_obj, const ResourceContents& content) {
+    std::visit([&json_obj](auto&& arg) { json_obj = arg; }, content);
+}
+
+inline void from_json(const nlohmann::json& json_obj, ResourceContents& content) {
+    if (json_obj.contains("text")) {
+        content = json_obj.get<TextResourceContents>();
+    } else if (json_obj.contains("blob")) {
+        content = json_obj.get<BlobResourceContents>();
+    } else {
+        throw std::invalid_argument("Unknown resource contents type");
+    }
+}
+
+/**
  * @brief Represents audio content.
  */
 struct AudioContent {
@@ -344,9 +411,109 @@ struct AudioContent {
 };
 
 /**
+ * @brief A resource that the server is capable of reading.
+ */
+struct ResourceLink {
+    std::string type = "resource_link";
+    std::string uri;
+    std::string name;
+    std::optional<std::string> description;
+    std::optional<std::string> mimeType;
+    std::optional<int64_t> size;
+    std::optional<nlohmann::json> meta;
+    std::optional<Annotations> annotations;
+    std::optional<std::string> title;
+    std::optional<std::vector<Icon>> icons;
+};
+
+inline void to_json(nlohmann::json& json_obj, const ResourceLink& link) {
+    json_obj = nlohmann::json{{"type", link.type}, {"uri", link.uri}, {"name", link.name}};
+    if (link.description) {
+        json_obj["description"] = *link.description;
+    }
+    if (link.mimeType) {
+        json_obj["mimeType"] = *link.mimeType;
+    }
+    if (link.size) {
+        json_obj["size"] = *link.size;
+    }
+    if (link.meta) {
+        json_obj["_meta"] = *link.meta;
+    }
+    if (link.annotations) {
+        json_obj["annotations"] = *link.annotations;
+    }
+    if (link.title) {
+        json_obj["title"] = *link.title;
+    }
+    if (link.icons) {
+        json_obj["icons"] = *link.icons;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, ResourceLink& link) {
+    json_obj.at("type").get_to(link.type);
+    json_obj.at("uri").get_to(link.uri);
+    json_obj.at("name").get_to(link.name);
+    if (json_obj.contains("description")) {
+        link.description = json_obj.at("description").get<std::string>();
+    }
+    if (json_obj.contains("mimeType")) {
+        link.mimeType = json_obj.at("mimeType").get<std::string>();
+    }
+    if (json_obj.contains("size")) {
+        link.size = json_obj.at("size").get<int64_t>();
+    }
+    if (json_obj.contains("_meta")) {
+        link.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+    if (json_obj.contains("annotations")) {
+        link.annotations = json_obj.at("annotations").get<Annotations>();
+    }
+    if (json_obj.contains("title")) {
+        link.title = json_obj.at("title").get<std::string>();
+    }
+    if (json_obj.contains("icons")) {
+        link.icons = json_obj.at("icons").get<std::vector<Icon>>();
+    }
+}
+
+/**
+ * @brief The contents of a resource, embedded into a prompt or tool call result.
+ */
+struct EmbeddedResource {
+    std::string type = "resource";
+    ResourceContents resource;
+    std::optional<nlohmann::json> meta;
+    std::optional<Annotations> annotations;
+};
+
+inline void to_json(nlohmann::json& json_obj, const EmbeddedResource& res) {
+    json_obj = nlohmann::json{{"type", res.type}, {"resource", res.resource}};
+    if (res.meta) {
+        json_obj["_meta"] = *res.meta;
+    }
+    if (res.annotations) {
+        json_obj["annotations"] = *res.annotations;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, EmbeddedResource& res) {
+    json_obj.at("type").get_to(res.type);
+    json_obj.at("resource").get_to(res.resource);
+    if (json_obj.contains("_meta")) {
+        res.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+    if (json_obj.contains("annotations")) {
+        res.annotations = json_obj.at("annotations").get<Annotations>();
+    }
+}
+
+/**
  * @brief Variant holding either TextContent or ImageContent.
  */
-using Content = std::variant<TextContent, ImageContent, AudioContent>;
+using ContentBlock =
+    std::variant<TextContent, ImageContent, AudioContent, ResourceLink, EmbeddedResource>;
 
 /**
  * @brief Serializes TextContent to JSON.
@@ -421,7 +588,7 @@ inline void from_json(const nlohmann::json& json_obj, AudioContent& content) {
  * @param json_obj The JSON object to populate.
  * @param content The Content variant to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const Content& content) {
+inline void to_json(nlohmann::json& json_obj, const ContentBlock& content) {
     std::visit([&json_obj](auto&& arg) { json_obj = arg; }, content);
 }
 
@@ -432,7 +599,7 @@ inline void to_json(nlohmann::json& json_obj, const Content& content) {
  * @param content The Content variant to populate.
  * @throw std::invalid_argument If the content type is unknown.
  */
-inline void from_json(const nlohmann::json& json_obj, Content& content) {
+inline void from_json(const nlohmann::json& json_obj, ContentBlock& content) {
     std::string type;
     json_obj.at("type").get_to(type);
     if (type == "text") {
@@ -442,6 +609,10 @@ inline void from_json(const nlohmann::json& json_obj, Content& content) {
 
     } else if (type == "audio") {
         content = json_obj.get<AudioContent>();
+    } else if (type == "resource_link") {
+        content = json_obj.get<ResourceLink>();
+    } else if (type == "resource") {
+        content = json_obj.get<EmbeddedResource>();
     } else {
         throw std::invalid_argument("Unknown content type: " + type);
     }
@@ -548,7 +719,7 @@ inline void from_json(const nlohmann::json& json_obj, CallToolParams& params) {
  * @brief Result of calling a tool.
  */
 struct CallToolResult {
-    std::vector<Content> content;                     ///< The content produced by the tool.
+    std::vector<ContentBlock> content;                ///< The content produced by the tool.
     std::optional<bool> isError;                      ///< Whether the tool call resulted in an error.
     std::optional<nlohmann::json> meta;               ///< Reserved for protocol use.
     std::optional<nlohmann::json> structuredContent;  ///< Optional structured content.
@@ -734,74 +905,6 @@ inline void from_json(const nlohmann::json& json_obj, ResourceTemplate& tmpl) {
 /**
  * @brief Result of reading a resource.
  */
-
-/**
- * @brief Represents text resource contents.
- */
-struct TextResourceContents {
-    std::string uri;                      ///< The URI of this resource.
-    std::string text;                     ///< The text of the item.
-    std::optional<std::string> mimeType;  ///< The MIME type of this resource.
-};
-
-/**
- * @brief Represents blob resource contents.
- */
-struct BlobResourceContents {
-    std::string uri;                      ///< The URI of this resource.
-    std::string blob;                     ///< The base64-encoded binary data.
-    std::optional<std::string> mimeType;  ///< The MIME type of this resource.
-};
-
-/**
- * @brief Variant holding either TextResourceContents or BlobResourceContents.
- */
-using ResourceContents = std::variant<TextResourceContents, BlobResourceContents>;
-
-inline void to_json(nlohmann::json& json_obj, const TextResourceContents& content) {
-    json_obj = nlohmann::json{{"uri", content.uri}, {"text", content.text}};
-    if (content.mimeType) {
-        json_obj["mimeType"] = *content.mimeType;
-    }
-}
-
-inline void from_json(const nlohmann::json& json_obj, TextResourceContents& content) {
-    json_obj.at("uri").get_to(content.uri);
-    json_obj.at("text").get_to(content.text);
-    if (json_obj.contains("mimeType")) {
-        content.mimeType = json_obj.at("mimeType").get<std::string>();
-    }
-}
-
-inline void to_json(nlohmann::json& json_obj, const BlobResourceContents& content) {
-    json_obj = nlohmann::json{{"uri", content.uri}, {"blob", content.blob}};
-    if (content.mimeType) {
-        json_obj["mimeType"] = *content.mimeType;
-    }
-}
-
-inline void from_json(const nlohmann::json& json_obj, BlobResourceContents& content) {
-    json_obj.at("uri").get_to(content.uri);
-    json_obj.at("blob").get_to(content.blob);
-    if (json_obj.contains("mimeType")) {
-        content.mimeType = json_obj.at("mimeType").get<std::string>();
-    }
-}
-
-inline void to_json(nlohmann::json& json_obj, const ResourceContents& content) {
-    std::visit([&json_obj](auto&& arg) { json_obj = arg; }, content);
-}
-
-inline void from_json(const nlohmann::json& json_obj, ResourceContents& content) {
-    if (json_obj.contains("text")) {
-        content = json_obj.get<TextResourceContents>();
-    } else if (json_obj.contains("blob")) {
-        content = json_obj.get<BlobResourceContents>();
-    } else {
-        throw std::invalid_argument("Unknown resource contents type");
-    }
-}
-
 struct ReadResourceResult {
     std::vector<ResourceContents> contents;  ///< The contents of the resource.
 };
@@ -1006,6 +1109,251 @@ inline void to_json(nlohmann::json& json_obj, const CompleteResult& result) {
  */
 inline void from_json(const nlohmann::json& json_obj, CompleteResult& result) {
     json_obj.at("completion").get_to(result.completion);
+    if (json_obj.contains("_meta")) {
+        result.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+}
+
+// Prompts Primitives
+
+/**
+ * @brief Describes an argument that a prompt can accept.
+ */
+struct PromptArgument {
+    std::string name;                        ///< The name of the argument.
+    std::optional<std::string> description;  ///< A human-readable description.
+    std::optional<bool> required;            ///< Whether this argument must be provided.
+    std::optional<std::string> title;        ///< Human-readable title.
+};
+
+inline void to_json(nlohmann::json& json_obj, const PromptArgument& arg) {
+    json_obj = nlohmann::json{{"name", arg.name}};
+    if (arg.description) {
+        json_obj["description"] = *arg.description;
+    }
+    if (arg.required) {
+        json_obj["required"] = *arg.required;
+    }
+    if (arg.title) {
+        json_obj["title"] = *arg.title;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, PromptArgument& arg) {
+    json_obj.at("name").get_to(arg.name);
+    if (json_obj.contains("description")) {
+        arg.description = json_obj.at("description").get<std::string>();
+    }
+    if (json_obj.contains("required")) {
+        arg.required = json_obj.at("required").get<bool>();
+    }
+    if (json_obj.contains("title")) {
+        arg.title = json_obj.at("title").get<std::string>();
+    }
+}
+
+/**
+ * @brief A prompt or prompt template that the server offers.
+ */
+struct Prompt {
+    std::string name;                                      ///< The name of the prompt.
+    std::optional<std::string> description;                ///< An optional description.
+    std::optional<std::vector<PromptArgument>> arguments;  ///< A list of arguments.
+    std::optional<nlohmann::json> meta;                    ///< Reserved for protocol use.
+    std::optional<std::string> title;                      ///< Human-readable title.
+    std::optional<std::vector<Icon>> icons;                ///< Icons for the prompt.
+};
+
+inline void to_json(nlohmann::json& json_obj, const Prompt& prompt) {
+    json_obj = nlohmann::json{{"name", prompt.name}};
+    if (prompt.description) {
+        json_obj["description"] = *prompt.description;
+    }
+    if (prompt.arguments) {
+        json_obj["arguments"] = *prompt.arguments;
+    }
+    if (prompt.meta) {
+        json_obj["_meta"] = *prompt.meta;
+    }
+    if (prompt.title) {
+        json_obj["title"] = *prompt.title;
+    }
+    if (prompt.icons) {
+        json_obj["icons"] = *prompt.icons;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, Prompt& prompt) {
+    json_obj.at("name").get_to(prompt.name);
+    if (json_obj.contains("description")) {
+        prompt.description = json_obj.at("description").get<std::string>();
+    }
+    if (json_obj.contains("arguments")) {
+        prompt.arguments = json_obj.at("arguments").get<std::vector<PromptArgument>>();
+    }
+    if (json_obj.contains("_meta")) {
+        prompt.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+    if (json_obj.contains("title")) {
+        prompt.title = json_obj.at("title").get<std::string>();
+    }
+    if (json_obj.contains("icons")) {
+        prompt.icons = json_obj.at("icons").get<std::vector<Icon>>();
+    }
+}
+
+/**
+ * @brief Describes a message returned as part of a prompt.
+ */
+struct PromptMessage {
+    Role role;             ///< The sender or recipient of messages.
+    ContentBlock content;  ///< The content of the message.
+};
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(PromptMessage, role, content)
+
+/**
+ * @brief Parameters for a prompts/get request.
+ */
+struct GetPromptRequestParams {
+    std::string name;                                             ///< The name of the prompt.
+    std::optional<std::map<std::string, std::string>> arguments;  ///< Arguments to use for templating.
+    std::optional<nlohmann::json> meta;                           ///< Reserved for protocol use.
+};
+
+inline void to_json(nlohmann::json& json_obj, const GetPromptRequestParams& params) {
+    json_obj = nlohmann::json{{"name", params.name}};
+    if (params.arguments) {
+        json_obj["arguments"] = *params.arguments;
+    }
+    if (params.meta) {
+        json_obj["_meta"] = *params.meta;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, GetPromptRequestParams& params) {
+    json_obj.at("name").get_to(params.name);
+    if (json_obj.contains("arguments")) {
+        params.arguments = json_obj.at("arguments").get<std::map<std::string, std::string>>();
+    }
+    if (json_obj.contains("_meta")) {
+        params.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+}
+
+/**
+ * @brief Used by the client to get a prompt provided by the server.
+ */
+struct GetPromptRequest {
+    std::string method = "prompts/get";  ///< The method name.
+    GetPromptRequestParams params;       ///< The request parameters.
+};
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetPromptRequest, method, params)
+
+/**
+ * @brief The result returned by the server for a prompts/get request.
+ */
+struct GetPromptResult {
+    std::vector<PromptMessage> messages;     ///< The messages returned by the prompt.
+    std::optional<std::string> description;  ///< An optional description.
+    std::optional<nlohmann::json> meta;      ///< Reserved for protocol use.
+};
+
+inline void to_json(nlohmann::json& json_obj, const GetPromptResult& result) {
+    json_obj = nlohmann::json{{"messages", result.messages}};
+    if (result.description) {
+        json_obj["description"] = *result.description;
+    }
+    if (result.meta) {
+        json_obj["_meta"] = *result.meta;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, GetPromptResult& result) {
+    json_obj.at("messages").get_to(result.messages);
+    if (json_obj.contains("description")) {
+        result.description = json_obj.at("description").get<std::string>();
+    }
+    if (json_obj.contains("_meta")) {
+        result.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+}
+
+/**
+ * @brief Common params for paginated requests.
+ */
+struct PaginatedRequestParams {
+    std::optional<std::string>
+        cursor;  ///< An opaque token representing the current pagination position.
+    std::optional<nlohmann::json> meta;  ///< Reserved for protocol use.
+};
+
+inline void to_json(nlohmann::json& json_obj, const PaginatedRequestParams& params) {
+    json_obj = nlohmann::json::object();
+    if (params.cursor) {
+        json_obj["cursor"] = *params.cursor;
+    }
+    if (params.meta) {
+        json_obj["_meta"] = *params.meta;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, PaginatedRequestParams& params) {
+    if (json_obj.contains("cursor")) {
+        params.cursor = json_obj.at("cursor").get<std::string>();
+    }
+    if (json_obj.contains("_meta")) {
+        params.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+}
+
+/**
+ * @brief Sent from the client to request a list of prompts.
+ */
+struct ListPromptsRequest {
+    std::string method = "prompts/list";           ///< The method name.
+    std::optional<PaginatedRequestParams> params;  ///< The request parameters.
+};
+
+inline void to_json(nlohmann::json& json_obj, const ListPromptsRequest& req) {
+    json_obj = nlohmann::json{{"method", req.method}};
+    if (req.params) {
+        json_obj["params"] = *req.params;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, ListPromptsRequest& req) {
+    json_obj.at("method").get_to(req.method);
+    if (json_obj.contains("params")) {
+        req.params = json_obj.at("params").get<PaginatedRequestParams>();
+    }
+}
+
+/**
+ * @brief The result returned by the server for a prompts/list request.
+ */
+struct ListPromptsResult {
+    std::vector<Prompt> prompts;            ///< The list of prompts.
+    std::optional<std::string> nextCursor;  ///< An opaque token representing the pagination position.
+    std::optional<nlohmann::json> meta;     ///< Reserved for protocol use.
+};
+
+inline void to_json(nlohmann::json& json_obj, const ListPromptsResult& result) {
+    json_obj = nlohmann::json{{"prompts", result.prompts}};
+    if (result.nextCursor) {
+        json_obj["nextCursor"] = *result.nextCursor;
+    }
+    if (result.meta) {
+        json_obj["_meta"] = *result.meta;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, ListPromptsResult& result) {
+    json_obj.at("prompts").get_to(result.prompts);
+    if (json_obj.contains("nextCursor")) {
+        result.nextCursor = json_obj.at("nextCursor").get<std::string>();
+    }
     if (json_obj.contains("_meta")) {
         result.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
