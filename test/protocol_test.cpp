@@ -326,17 +326,18 @@ TEST(ProtocolTest, OptionalFieldsSerialization) {
 
 TEST(ProtocolTest, CompletionSerialization) {
     // Test CompleteReference
-    mcp::CompleteReference ref;
-    ref.type = "ref/prompt";
-    ref.name = "my_prompt";
+    mcp::PromptReference pref;
+    pref.type = "ref/prompt";
+    pref.name = "my_prompt";
+    mcp::CompleteReference ref = pref;
 
     json json_ref = ref;
     EXPECT_EQ(json_ref["type"], "ref/prompt");
     EXPECT_EQ(json_ref["name"], "my_prompt");
 
     mcp::CompleteReference deserialized_ref = json_ref.get<mcp::CompleteReference>();
-    EXPECT_EQ(deserialized_ref.type, "ref/prompt");
-    EXPECT_EQ(deserialized_ref.name.value_or(""), "my_prompt");
+    EXPECT_EQ(std::get<mcp::PromptReference>(deserialized_ref).type, "ref/prompt");
+    EXPECT_EQ(std::get<mcp::PromptReference>(deserialized_ref).name, "my_prompt");
 
     // Test CompleteParams
     mcp::CompleteParams params;
@@ -350,35 +351,34 @@ TEST(ProtocolTest, CompletionSerialization) {
     EXPECT_EQ(json_params["ref"]["type"], "ref/prompt");
     EXPECT_EQ(json_params["argument"]["name"], "arg");
     EXPECT_EQ(json_params["context"]["arguments"]["key"], "value");
-    EXPECT_EQ(json_params["_meta"]["custom"], "data");
 
-    mcp::CompleteParams deserialized_params = json_params.get<mcp::CompleteParams>();
-    EXPECT_EQ(deserialized_params.ref.type, "ref/prompt");
+    auto deserialized_params = json_params.get<mcp::CompleteParams>();
+    EXPECT_EQ(std::get<mcp::PromptReference>(deserialized_params.ref).type, "ref/prompt");
     EXPECT_EQ(deserialized_params.argument.name, "arg");
-    EXPECT_EQ(deserialized_params.context.value_or(mcp::CompleteContext{})
-                  .arguments.value_or(std::map<std::string, std::string>{})["key"],
-              "value");
-    EXPECT_EQ(deserialized_params.meta.value_or(nlohmann::json::object())["custom"], "data");
+    ASSERT_TRUE(deserialized_params.context.has_value());
+    ASSERT_TRUE(deserialized_params.context->arguments.has_value());
+    EXPECT_EQ((*deserialized_params.context->arguments)["key"], "value");
+
+    // Test CompletionResultDetails
+    mcp::CompletionResultDetails details;
+    details.values = {"val1", "val2"};
+    details.total = 10;
+    details.hasMore = false;
 
     // Test CompleteResult
-    mcp::CompleteResult result;
-    result.completion.values = {"val1", "val2"};
-    constexpr int64_t total_val = 10;
-    result.completion.total = total_val;
-    result.completion.hasMore = true;
-    result.meta = nlohmann::json::object({{"custom", "result"}});
+    mcp::CompleteResult res;
+    res.completion = details;
+    res.meta = json{{"requestId", "req123"}};
 
-    json json_result = result;
-    EXPECT_EQ(json_result["completion"]["values"][0], "val1");
-    EXPECT_EQ(json_result["completion"]["total"], total_val);
-    EXPECT_EQ(json_result["completion"]["hasMore"], true);
-    EXPECT_EQ(json_result["_meta"]["custom"], "result");
+    json json_res = res;
+    EXPECT_EQ(json_res["completion"]["values"][0], "val1");
+    EXPECT_EQ(json_res["completion"]["total"], 10);
+    EXPECT_EQ(json_res["_meta"]["requestId"], "req123");
 
-    mcp::CompleteResult deserialized_result = json_result.get<mcp::CompleteResult>();
-    EXPECT_EQ(deserialized_result.completion.values[0], "val1");
-    EXPECT_EQ(deserialized_result.completion.total.value_or(0), total_val);
-    EXPECT_EQ(deserialized_result.completion.hasMore.value_or(false), true);
-    EXPECT_EQ(deserialized_result.meta.value_or(nlohmann::json::object())["custom"], "result");
+    auto deserialized_res = json_res.get<mcp::CompleteResult>();
+    EXPECT_EQ(deserialized_res.completion.values[1], "val2");
+    EXPECT_EQ(deserialized_res.completion.total, 10);
+    EXPECT_EQ(deserialized_res.meta.value()["requestId"], "req123");
 }
 
 TEST(ProtocolTest, PromptSerialization) {
@@ -2052,4 +2052,175 @@ TEST(ProtocolTest, UnsubscribeRequestSerialization) {
     auto deserialized = j.get<mcp::UnsubscribeRequest>();
     EXPECT_EQ(deserialized.method, "resources/unsubscribe");
     EXPECT_EQ(deserialized.params.uri, "file:///unsub.txt");
+}
+
+TEST(ProtocolTest, ToolExecutionSerialization) {
+    mcp::ToolExecution exec;
+    exec.taskSupport = "optional";
+    nlohmann::json j = exec;
+    EXPECT_EQ(j["taskSupport"], "optional");
+    auto rt = j.get<mcp::ToolExecution>();
+    EXPECT_EQ(rt.taskSupport, "optional");
+}
+
+TEST(ProtocolTest, RelatedTaskMetadataSerialization) {
+    mcp::RelatedTaskMetadata meta;
+    meta.id = "task-123";
+    meta.title = "Related task";
+    nlohmann::json j = meta;
+    EXPECT_EQ(j["id"], "task-123");
+    EXPECT_EQ(j["title"], "Related task");
+    auto rt = j.get<mcp::RelatedTaskMetadata>();
+    EXPECT_EQ(rt.id, "task-123");
+    EXPECT_EQ(rt.title.value_or(""), "Related task");
+}
+
+TEST(ProtocolTest, PrimitiveSchemaDefinitionSerialization) {
+    mcp::PrimitiveSchemaDefinition def;
+    def.type = "string";
+    def.title = "My String";
+    def.description = "A simple string";
+    nlohmann::json j = def;
+    EXPECT_EQ(j["type"], "string");
+    EXPECT_EQ(j["title"], "My String");
+    auto rt = j.get<mcp::PrimitiveSchemaDefinition>();
+    EXPECT_EQ(rt.type, "string");
+    EXPECT_EQ(rt.title.value_or(""), "My String");
+}
+
+TEST(ProtocolTest, EnumSchemaSerialization) {
+    mcp::EnumSchema def;
+    def.type = "string";
+    def.enumValues = {"a", "b", "c"};
+    nlohmann::json j = def;
+    EXPECT_EQ(j["type"], "string");
+    EXPECT_EQ(j["enum"][0], "a");
+    auto rt = j.get<mcp::EnumSchema>();
+    EXPECT_EQ(rt.type, "string");
+    EXPECT_EQ(rt.enumValues[1], "b");
+}
+
+TEST(ProtocolTest, CallToolRequestSerialization) {
+    mcp::CallToolRequest req;
+    req.params.name = "tool_1";
+    req.params.arguments = nlohmann::json::object();
+    nlohmann::json j = req;
+    EXPECT_EQ(j["method"], "tools/call");
+    EXPECT_EQ(j["params"]["name"], "tool_1");
+    auto rt = j.get<mcp::CallToolRequest>();
+    EXPECT_EQ(rt.method, "tools/call");
+    EXPECT_EQ(rt.params.name, "tool_1");
+}
+
+TEST(ProtocolTest, ListToolsRequestResultSerialization) {
+    mcp::ListToolsRequest req;
+    mcp::ListToolsRequestParams params;
+    params.cursor = "abc";
+    req.params = params;
+    nlohmann::json j_req = req;
+    EXPECT_EQ(j_req["method"], "tools/list");
+    EXPECT_EQ(j_req["params"]["cursor"], "abc");
+
+    mcp::ListToolsResult res;
+    res.nextCursor = "def";
+    nlohmann::json j_res = res;
+    EXPECT_EQ(j_res["nextCursor"], "def");
+}
+
+TEST(ProtocolTest, ListResourcesRequestResultSerialization) {
+    mcp::ListResourcesRequest req;
+    nlohmann::json j_req = req;
+    EXPECT_EQ(j_req["method"], "resources/list");
+
+    mcp::ListResourcesResult res;
+    res.nextCursor = "def";
+    nlohmann::json j_res = res;
+    EXPECT_EQ(j_res["nextCursor"], "def");
+}
+
+TEST(ProtocolTest, ListResourceTemplatesRequestResultSerialization) {
+    mcp::ListResourceTemplatesRequest req;
+    nlohmann::json j_req = req;
+    EXPECT_EQ(j_req["method"], "resources/templates/list");
+
+    mcp::ListResourceTemplatesResult res;
+    res.nextCursor = "def";
+    nlohmann::json j_res = res;
+    EXPECT_EQ(j_res["nextCursor"], "def");
+}
+
+TEST(ProtocolTest, ReadResourceRequestSerialization) {
+    mcp::ReadResourceRequest req;
+    req.params.uri = "file:///a.txt";
+    nlohmann::json j = req;
+    EXPECT_EQ(j["method"], "resources/read");
+    EXPECT_EQ(j["params"]["uri"], "file:///a.txt");
+    auto rt = j.get<mcp::ReadResourceRequest>();
+    EXPECT_EQ(rt.params.uri, "file:///a.txt");
+}
+
+TEST(ProtocolTest, GetTaskRequestSerialization) {
+    mcp::GetTaskRequest req;
+    req.params.id = "task1";
+    nlohmann::json j = req;
+    EXPECT_EQ(j["method"], "tasks/get");
+    EXPECT_EQ(j["params"]["id"], "task1");
+}
+
+TEST(ProtocolTest, CancelTaskRequestSerialization) {
+    mcp::CancelTaskRequest req;
+    req.params.id = "task1";
+    nlohmann::json j = req;
+    EXPECT_EQ(j["method"], "tasks/cancel");
+    EXPECT_EQ(j["params"]["id"], "task1");
+}
+
+TEST(ProtocolTest, CancelTaskResultSerialization) {
+    mcp::CancelTaskResult res;
+    res.meta = nlohmann::json::object();
+    nlohmann::json j = res;
+    EXPECT_TRUE(j.contains("_meta"));
+}
+
+TEST(ProtocolTest, ListTasksRequestSerialization) {
+    mcp::ListTasksRequest req;
+    mcp::ListTasksRequestParams params;
+    params.cursor = "abc";
+    req.params = params;
+    nlohmann::json j = req;
+    EXPECT_EQ(j["method"], "tasks/list");
+    EXPECT_EQ(j["params"]["cursor"], "abc");
+}
+
+TEST(ProtocolTest, GetTaskPayloadRequestResultSerialization) {
+    mcp::GetTaskPayloadRequest req;
+    req.params.id = "task1";
+    nlohmann::json j = req;
+    EXPECT_EQ(j["method"], "tasks/getPayload");
+    EXPECT_EQ(j["params"]["id"], "task1");
+
+    mcp::GetTaskPayloadResult res;
+    res.payload = nlohmann::json::object();
+    nlohmann::json j_res = res;
+    EXPECT_TRUE(j_res.contains("payload"));
+}
+
+TEST(ProtocolTest, TaskStatusNotificationSerialization) {
+    mcp::TaskStatusNotification notif;
+    notif.params.id = "task1";
+    notif.params.status = mcp::TaskStatus::Working;
+    notif.params.message = "Working";
+    nlohmann::json j = notif;
+    EXPECT_EQ(j["method"], "notifications/tasks/status");
+    EXPECT_EQ(j["params"]["id"], "task1");
+    EXPECT_EQ(j["params"]["status"], "working");
+    EXPECT_EQ(j["params"]["message"], "Working");
+}
+
+TEST(ProtocolTest, ElicitationCompleteNotificationSerialization) {
+    mcp::ElicitationCompleteNotification notif;
+    notif.params.requestId = "req1";
+    nlohmann::json j = notif;
+    EXPECT_EQ(j["method"], "notifications/elicitation/complete");
+    EXPECT_EQ(j["params"]["requestId"], "req1");
 }

@@ -1053,6 +1053,102 @@ inline void from_json(const nlohmann::json& json_obj, ContentBlock& content) {
 
 // Tool Primitives
 
+// MCP Protocol Constants
+inline constexpr int PARSE_ERROR = -32700;
+inline constexpr int INVALID_REQUEST = -32600;
+inline constexpr int METHOD_NOT_FOUND = -32601;
+inline constexpr int INVALID_PARAMS = -32602;
+inline constexpr int INTERNAL_ERROR = -32603;
+inline constexpr int URL_ELICITATION_REQUIRED_ERROR = -32042;
+
+/**
+ * @brief Describes the execution support of a tool.
+ */
+struct ToolExecution {
+    std::string taskSupport;  ///< "forbidden" | "optional" | "required"
+};
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ToolExecution, taskSupport)
+
+/**
+ * @brief Metadata about a related task.
+ */
+struct RelatedTaskMetadata {
+    std::string id;                    ///< The ID of the related task.
+    std::optional<std::string> title;  ///< An optional title.
+};
+
+inline void to_json(nlohmann::json& j, const RelatedTaskMetadata& t) {
+    j = nlohmann::json{{"id", t.id}};
+    if (t.title) {
+        j["title"] = *t.title;
+    }
+}
+inline void from_json(const nlohmann::json& j, RelatedTaskMetadata& t) {
+    j.at("id").get_to(t.id);
+    if (j.contains("title")) {
+        t.title = j.at("title").get<std::string>();
+    }
+}
+
+/**
+ * @brief Definition of an elicitation form schema.
+ */
+struct PrimitiveSchemaDefinition {
+    std::string type;
+    std::optional<std::string> title;
+    std::optional<std::string> description;
+};
+
+inline void to_json(nlohmann::json& j, const PrimitiveSchemaDefinition& def) {
+    j = nlohmann::json{{"type", def.type}};
+    if (def.title) {
+        j["title"] = *def.title;
+    }
+    if (def.description) {
+        j["description"] = *def.description;
+    }
+}
+inline void from_json(const nlohmann::json& j, PrimitiveSchemaDefinition& def) {
+    j.at("type").get_to(def.type);
+    if (j.contains("title")) {
+        def.title = j.at("title").get<std::string>();
+    }
+    if (j.contains("description")) {
+        def.description = j.at("description").get<std::string>();
+    }
+}
+
+// We can just use json directly for more complex schema definitions,
+// but the spec asks for schema additions. Let's provide basic types.
+using StringSchema = PrimitiveSchemaDefinition;
+using NumberSchema = PrimitiveSchemaDefinition;
+using BooleanSchema = PrimitiveSchemaDefinition;
+// Since they can be complex JSON Schema objects, we will map ElicitRequestFormParams::schema to json
+// per the plan "can be nlohmann::json initially". The plan explicitly lists:
+// PrimitiveSchemaDefinition struct (type: string, title: optional<string>, description:
+// optional<string>) but for ElicitRequestFormParams it says "use schema types instead of raw json for
+// schema field"
+
+// Let's create an EnumSchema
+struct EnumSchema : public PrimitiveSchemaDefinition {
+    std::vector<std::string> enumValues;
+};
+inline void to_json(nlohmann::json& j, const EnumSchema& e) {
+    to_json(j, static_cast<const PrimitiveSchemaDefinition&>(e));
+    j["enum"] = e.enumValues;
+}
+inline void from_json(const nlohmann::json& j, EnumSchema& e) {
+    from_json(j, static_cast<PrimitiveSchemaDefinition&>(e));
+    if (j.contains("enum")) {
+        j.at("enum").get_to(e.enumValues);
+    }
+}
+
+/**
+ * @brief Requests and Responses
+ */
+
 /**
  * @brief Represents a tool definition.
  */
@@ -1065,6 +1161,7 @@ struct Tool {
     std::optional<nlohmann::json> outputSchema;  ///< Optional JSON schema for the tool's output.
     std::optional<std::string> title;            ///< Human-readable title for the tool.
     std::optional<std::vector<Icon>> icons;      ///< Icons for the tool.
+    std::optional<ToolExecution> execution;      ///< Tool execution requirements.
 };
 
 /**
@@ -1092,6 +1189,9 @@ inline void to_json(nlohmann::json& json_obj, const Tool& tool) {
     }
     if (tool.icons) {
         json_obj["icons"] = *tool.icons;
+    }
+    if (tool.execution) {
+        json_obj["execution"] = *tool.execution;
     }
 }
 
@@ -1121,6 +1221,9 @@ inline void from_json(const nlohmann::json& json_obj, Tool& tool) {
     }
     if (json_obj.contains("icons")) {
         tool.icons = json_obj.at("icons").get<std::vector<Icon>>();
+    }
+    if (json_obj.contains("execution")) {
+        tool.execution = json_obj.at("execution").get<ToolExecution>();
     }
 }
 
@@ -1347,43 +1450,51 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ReadResourceResult, contents)
 // Completion Primitives
 
 /**
- * @brief A reference to a resource or prompt for completion.
+ * @brief A reference to a prompt.
  */
-struct CompleteReference {
-    std::string type;                 ///< The type of reference ("ref/prompt" or "ref/resource").
-    std::optional<std::string> name;  ///< The name of the prompt or resource.
-    std::optional<std::string> uri;   ///< The URI of the resource.
+struct PromptReference {
+    std::string type = "ref/prompt";  ///< The type of reference.
+    std::string name;                 ///< The name of the prompt.
 };
 
-/**
- * @brief Serializes CompleteReference to JSON.
- *
- * @param json_obj The JSON object to populate.
- * @param ref The CompleteReference object to serialize.
- */
-inline void to_json(nlohmann::json& json_obj, const CompleteReference& ref) {
-    json_obj = nlohmann::json{{"type", ref.type}};
-    if (ref.name) {
-        json_obj["name"] = *ref.name;
-    }
-    if (ref.uri) {
-        json_obj["uri"] = *ref.uri;
-    }
+inline void to_json(nlohmann::json& json_obj, const PromptReference& ref) {
+    json_obj = nlohmann::json{{"type", ref.type}, {"name", ref.name}};
+}
+inline void from_json(const nlohmann::json& json_obj, PromptReference& ref) {
+    json_obj.at("type").get_to(ref.type);
+    json_obj.at("name").get_to(ref.name);
 }
 
 /**
- * @brief Deserializes CompleteReference from JSON.
- *
- * @param json_obj The JSON object to read from.
- * @param ref The CompleteReference object to populate.
+ * @brief A reference to a resource template.
  */
-inline void from_json(const nlohmann::json& json_obj, CompleteReference& ref) {
+struct ResourceTemplateReference {
+    std::string type = "ref/resource";  ///< The type of reference.
+    std::string uri;                    ///< The URI of the resource.
+};
+
+inline void to_json(nlohmann::json& json_obj, const ResourceTemplateReference& ref) {
+    json_obj = nlohmann::json{{"type", ref.type}, {"uri", ref.uri}};
+}
+inline void from_json(const nlohmann::json& json_obj, ResourceTemplateReference& ref) {
     json_obj.at("type").get_to(ref.type);
-    if (json_obj.contains("name")) {
-        ref.name = json_obj.at("name").get<std::string>();
-    }
-    if (json_obj.contains("uri")) {
-        ref.uri = json_obj.at("uri").get<std::string>();
+    json_obj.at("uri").get_to(ref.uri);
+}
+
+/**
+ * @brief A reference to a resource or prompt for completion.
+ */
+using CompleteReference = std::variant<PromptReference, ResourceTemplateReference>;
+
+inline void to_json(nlohmann::json& json_obj, const CompleteReference& ref) {
+    std::visit([&json_obj](auto&& arg) { to_json(json_obj, arg); }, ref);
+}
+
+inline void from_json(const nlohmann::json& json_obj, CompleteReference& ref) {
+    if (json_obj.at("type") == "ref/prompt") {
+        ref = json_obj.get<PromptReference>();
+    } else {
+        ref = json_obj.get<ResourceTemplateReference>();
     }
 }
 
@@ -2387,6 +2498,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(TaskStatus, {{TaskStatus::Cancelled, "cancelled"},
  */
 struct TaskMetadata {
     std::optional<int64_t> ttl;  ///< Requested retention duration from creation in milliseconds.
+    std::optional<std::vector<RelatedTaskMetadata>> relatedTasks;  ///< Related tasks.
 };
 
 inline void to_json(nlohmann::json& json_obj, const TaskMetadata& meta) {
@@ -2394,11 +2506,17 @@ inline void to_json(nlohmann::json& json_obj, const TaskMetadata& meta) {
     if (meta.ttl) {
         json_obj["ttl"] = *meta.ttl;
     }
+    if (meta.relatedTasks) {
+        json_obj["relatedTasks"] = *meta.relatedTasks;
+    }
 }
 
 inline void from_json(const nlohmann::json& json_obj, TaskMetadata& meta) {
     if (json_obj.contains("ttl")) {
         meta.ttl = json_obj.at("ttl").get<int64_t>();
+    }
+    if (json_obj.contains("relatedTasks")) {
+        meta.relatedTasks = json_obj.at("relatedTasks").get<std::vector<RelatedTaskMetadata>>();
     }
 }
 
@@ -3112,5 +3230,340 @@ struct UnsubscribeRequest {
     ResourceUnsubscribeParams params;              ///< The request parameters.
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(UnsubscribeRequest, method, params)
+
+/**
+ * @brief A request to call a tool.
+ */
+struct CallToolRequest {
+    std::string method = "tools/call";
+    CallToolParams params;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CallToolRequest, method, params)
+
+struct ListToolsRequestParams {
+    std::optional<std::string> cursor;
+};
+inline void to_json(nlohmann::json& j, const ListToolsRequestParams& p) {
+    j = nlohmann::json::object();
+    if (p.cursor) {
+        j["cursor"] = *p.cursor;
+    }
+}
+inline void from_json(const nlohmann::json& j, ListToolsRequestParams& p) {
+    if (j.contains("cursor")) {
+        p.cursor = j.at("cursor").get<std::string>();
+    }
+}
+
+struct ListToolsRequest {
+    std::string method = "tools/list";
+    std::optional<ListToolsRequestParams> params;
+};
+inline void to_json(nlohmann::json& j, const ListToolsRequest& r) {
+    j = nlohmann::json{{"method", r.method}};
+    if (r.params) {
+        j["params"] = *r.params;
+    }
+}
+inline void from_json(const nlohmann::json& j, ListToolsRequest& r) {
+    j.at("method").get_to(r.method);
+    if (j.contains("params")) {
+        r.params = j.at("params").get<ListToolsRequestParams>();
+    }
+}
+
+struct ListToolsResult {
+    std::vector<Tool> tools;
+    std::optional<std::string> nextCursor;
+    std::optional<nlohmann::json> meta;
+};
+inline void to_json(nlohmann::json& j, const ListToolsResult& r) {
+    j = nlohmann::json{{"tools", r.tools}};
+    if (r.nextCursor) {
+        j["nextCursor"] = *r.nextCursor;
+    }
+    if (r.meta) {
+        j["_meta"] = *r.meta;
+    }
+}
+inline void from_json(const nlohmann::json& j, ListToolsResult& r) {
+    j.at("tools").get_to(r.tools);
+    if (j.contains("nextCursor")) {
+        r.nextCursor = j.at("nextCursor").get<std::string>();
+    }
+    if (j.contains("_meta")) {
+        r.meta = j.at("_meta");
+    }
+}
+
+struct ListResourcesRequestParams {
+    std::optional<std::string> cursor;
+};
+inline void to_json(nlohmann::json& j, const ListResourcesRequestParams& p) {
+    j = nlohmann::json::object();
+    if (p.cursor) {
+        j["cursor"] = *p.cursor;
+    }
+}
+inline void from_json(const nlohmann::json& j, ListResourcesRequestParams& p) {
+    if (j.contains("cursor")) {
+        p.cursor = j.at("cursor").get<std::string>();
+    }
+}
+
+struct ListResourcesRequest {
+    std::string method = "resources/list";
+    std::optional<ListResourcesRequestParams> params;
+};
+inline void to_json(nlohmann::json& j, const ListResourcesRequest& r) {
+    j = nlohmann::json{{"method", r.method}};
+    if (r.params) {
+        j["params"] = *r.params;
+    }
+}
+inline void from_json(const nlohmann::json& j, ListResourcesRequest& r) {
+    j.at("method").get_to(r.method);
+    if (j.contains("params")) {
+        r.params = j.at("params").get<ListResourcesRequestParams>();
+    }
+}
+
+struct ListResourcesResult {
+    std::vector<Resource> resources;
+    std::optional<std::string> nextCursor;
+    std::optional<nlohmann::json> meta;
+};
+inline void to_json(nlohmann::json& j, const ListResourcesResult& r) {
+    j = nlohmann::json{{"resources", r.resources}};
+    if (r.nextCursor) {
+        j["nextCursor"] = *r.nextCursor;
+    }
+    if (r.meta) {
+        j["_meta"] = *r.meta;
+    }
+}
+inline void from_json(const nlohmann::json& j, ListResourcesResult& r) {
+    j.at("resources").get_to(r.resources);
+    if (j.contains("nextCursor")) {
+        r.nextCursor = j.at("nextCursor").get<std::string>();
+    }
+    if (j.contains("_meta")) {
+        r.meta = j.at("_meta");
+    }
+}
+
+struct ListResourceTemplatesRequestParams {
+    std::optional<std::string> cursor;
+};
+inline void to_json(nlohmann::json& j, const ListResourceTemplatesRequestParams& p) {
+    j = nlohmann::json::object();
+    if (p.cursor) {
+        j["cursor"] = *p.cursor;
+    }
+}
+inline void from_json(const nlohmann::json& j, ListResourceTemplatesRequestParams& p) {
+    if (j.contains("cursor")) {
+        p.cursor = j.at("cursor").get<std::string>();
+    }
+}
+
+struct ListResourceTemplatesRequest {
+    std::string method = "resources/templates/list";
+    std::optional<ListResourceTemplatesRequestParams> params;
+};
+inline void to_json(nlohmann::json& j, const ListResourceTemplatesRequest& r) {
+    j = nlohmann::json{{"method", r.method}};
+    if (r.params) {
+        j["params"] = *r.params;
+    }
+}
+inline void from_json(const nlohmann::json& j, ListResourceTemplatesRequest& r) {
+    j.at("method").get_to(r.method);
+    if (j.contains("params")) {
+        r.params = j.at("params").get<ListResourceTemplatesRequestParams>();
+    }
+}
+
+struct ListResourceTemplatesResult {
+    std::vector<ResourceTemplate> resourceTemplates;
+    std::optional<std::string> nextCursor;
+    std::optional<nlohmann::json> meta;
+};
+inline void to_json(nlohmann::json& j, const ListResourceTemplatesResult& r) {
+    j = nlohmann::json{{"resourceTemplates", r.resourceTemplates}};
+    if (r.nextCursor) {
+        j["nextCursor"] = *r.nextCursor;
+    }
+    if (r.meta) {
+        j["_meta"] = *r.meta;
+    }
+}
+inline void from_json(const nlohmann::json& j, ListResourceTemplatesResult& r) {
+    j.at("resourceTemplates").get_to(r.resourceTemplates);
+    if (j.contains("nextCursor")) {
+        r.nextCursor = j.at("nextCursor").get<std::string>();
+    }
+    if (j.contains("_meta")) {
+        r.meta = j.at("_meta");
+    }
+}
+
+struct ReadResourceRequestParams {
+    std::string uri;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ReadResourceRequestParams, uri)
+
+struct ReadResourceRequest {
+    std::string method = "resources/read";
+    ReadResourceRequestParams params;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ReadResourceRequest, method, params)
+
+// Task Requests & Notifications
+
+struct GetTaskRequestParams {
+    std::string id;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetTaskRequestParams, id)
+
+struct GetTaskRequest {
+    std::string method = "tasks/get";
+    GetTaskRequestParams params;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetTaskRequest, method, params)
+
+struct CancelTaskRequestParams {
+    std::string id;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CancelTaskRequestParams, id)
+
+struct CancelTaskRequest {
+    std::string method = "tasks/cancel";
+    CancelTaskRequestParams params;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CancelTaskRequest, method, params)
+
+struct CancelTaskResult {
+    std::optional<nlohmann::json> meta;
+};
+inline void to_json(nlohmann::json& j, const CancelTaskResult& r) {
+    j = nlohmann::json::object();
+    if (r.meta) {
+        j["_meta"] = *r.meta;
+    }
+}
+inline void from_json(const nlohmann::json& j, CancelTaskResult& r) {
+    if (j.contains("_meta")) {
+        r.meta = j.at("_meta");
+    }
+}
+
+struct ListTasksRequestParams {
+    std::optional<std::string> cursor;
+};
+inline void to_json(nlohmann::json& j, const ListTasksRequestParams& p) {
+    j = nlohmann::json::object();
+    if (p.cursor) {
+        j["cursor"] = *p.cursor;
+    }
+}
+inline void from_json(const nlohmann::json& j, ListTasksRequestParams& p) {
+    if (j.contains("cursor")) {
+        p.cursor = j.at("cursor").get<std::string>();
+    }
+}
+
+struct ListTasksRequest {
+    std::string method = "tasks/list";
+    std::optional<ListTasksRequestParams> params;
+};
+inline void to_json(nlohmann::json& j, const ListTasksRequest& r) {
+    j = nlohmann::json{{"method", r.method}};
+    if (r.params) {
+        j["params"] = *r.params;
+    }
+}
+inline void from_json(const nlohmann::json& j, ListTasksRequest& r) {
+    j.at("method").get_to(r.method);
+    if (j.contains("params")) {
+        r.params = j.at("params").get<ListTasksRequestParams>();
+    }
+}
+
+struct GetTaskPayloadRequestParams {
+    std::string id;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetTaskPayloadRequestParams, id)
+
+struct GetTaskPayloadRequest {
+    std::string method = "tasks/getPayload";
+    GetTaskPayloadRequestParams params;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetTaskPayloadRequest, method, params)
+
+struct GetTaskPayloadResult {
+    nlohmann::json payload;
+    std::optional<nlohmann::json> meta;
+};
+inline void to_json(nlohmann::json& j, const GetTaskPayloadResult& r) {
+    j = nlohmann::json{{"payload", r.payload}};
+    if (r.meta) {
+        j["_meta"] = *r.meta;
+    }
+}
+inline void from_json(const nlohmann::json& j, GetTaskPayloadResult& r) {
+    j.at("payload").get_to(r.payload);
+    if (j.contains("_meta")) {
+        r.meta = j.at("_meta");
+    }
+}
+
+struct TaskStatusNotificationParams {
+    std::string id;
+    TaskStatus status;
+    std::optional<TaskMetadata> metadata;
+    std::optional<std::string> message;
+};
+inline void to_json(nlohmann::json& j, const TaskStatusNotificationParams& p) {
+    j = nlohmann::json{{"id", p.id}, {"status", p.status}};
+    if (p.metadata) {
+        j["metadata"] = *p.metadata;
+    }
+    if (p.message) {
+        j["message"] = *p.message;
+    }
+}
+inline void from_json(const nlohmann::json& j, TaskStatusNotificationParams& p) {
+    j.at("id").get_to(p.id);
+    j.at("status").get_to(p.status);
+    if (j.contains("metadata")) {
+        p.metadata = j.at("metadata").get<TaskMetadata>();
+    }
+    if (j.contains("message")) {
+        p.message = j.at("message").get<std::string>();
+    }
+}
+
+struct TaskStatusNotification {
+    std::string method = "notifications/tasks/status";
+    TaskStatusNotificationParams params;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TaskStatusNotification, method, params)
+
+struct ElicitationCompleteNotificationParams {
+    RequestId requestId;
+};
+inline void to_json(nlohmann::json& j, const ElicitationCompleteNotificationParams& p) {
+    j = nlohmann::json{{"requestId", p.requestId}};
+}
+inline void from_json(const nlohmann::json& j, ElicitationCompleteNotificationParams& p) {
+    j.at("requestId").get_to(p.requestId);
+}
+
+struct ElicitationCompleteNotification {
+    std::string method = "notifications/elicitation/complete";
+    ElicitationCompleteNotificationParams params;
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ElicitationCompleteNotification, method, params)
 
 }  // namespace mcp

@@ -11,6 +11,7 @@ init:
 	pipx ensurepath
 	pipx install conan
 	pipx install gcovr
+	pipx install ninja
 	conan profile detect --force
 
 init-dev: init
@@ -19,7 +20,7 @@ init-dev: init
 	pre-commit install
 
 build:
-	conan install . --output-folder=build --build=missing -s compiler.cppstd=20
+	conan install . --output-folder=build --build=missing -s compiler.cppstd=20 -c tools.cmake.cmaketoolchain:generator=Ninja
 	cmake --preset conan-release
 	cmake --build --preset conan-release -j$(NUM_CPU_2)
 
@@ -27,7 +28,7 @@ test:
 	ctest --preset conan-release -j$(NUM_CPU_2)
 
 coverage:
-	conan install . --output-folder=build/coverage --build=missing -s compiler.cppstd=20 -s build_type=Debug
+	conan install . --output-folder=build/coverage --build=missing -s compiler.cppstd=20 -s build_type=Debug -c tools.cmake.cmaketoolchain:generator=Ninja
 	cmake --preset conan-debug -DENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug -B build/coverage
 	cmake --build build/coverage -j$(NUM_CPU_2)
 	ctest --test-dir build/coverage -j$(NUM_CPU_2) --output-on-failure
