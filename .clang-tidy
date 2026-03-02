@@ -1,6 +1,7 @@
 ---
 Checks: 'bugprone-*,performance-*,readability-*,modernize-*,
-        -modernize-use-trailing-return-type'
+        -modernize-use-trailing-return-type,
+        -readability-identifier-length'
 WarningsAsErrors: ''
 CheckOptions:
   - key:             llvm-namespace-comment.ShortNamespaceLines

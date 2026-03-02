@@ -32,3 +32,11 @@ target_link_libraries(mcp-sdk-tests PRIVATE
 
 include(GoogleTest)
 gtest_discover_tests(mcp-sdk-tests)
+
+option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
+if(ENABLE_COVERAGE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(mcp-sdk-tests PRIVATE --coverage -O0 -g)
+        target_link_options(mcp-sdk-tests PRIVATE --coverage)
+    endif()
+endif()

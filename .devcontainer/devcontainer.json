@@ -1,7 +1,7 @@
 {
     "name": "C++",
     "image": "mcr.microsoft.com/devcontainers/cpp:ubuntu-22.04",
-    "postCreateCommand": "pip install conan",
+    "postCreateCommand": "pip install conan gcovr",
     "customizations": {
         "vscode": {
             "extensions": [
