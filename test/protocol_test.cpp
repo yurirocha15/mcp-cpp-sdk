@@ -452,3 +452,309 @@ TEST(ProtocolTest, ListPromptsSerialization) {
     EXPECT_EQ(deserialized_res.prompts.size(), 1);
     EXPECT_EQ(deserialized_res.prompts[0].name, "test_prompt");
 }
+
+TEST(ProtocolTest, ToolChoiceSerialization) {
+    mcp::ToolChoice choice;
+    choice.mode = "required";
+
+    nlohmann::json j = choice;
+    EXPECT_EQ(j["mode"], "required");
+
+    auto deserialized = j.get<mcp::ToolChoice>();
+    ASSERT_TRUE(deserialized.mode.has_value());
+    EXPECT_EQ(*deserialized.mode, "required");
+
+    // Empty ToolChoice
+    mcp::ToolChoice empty;
+    nlohmann::json j_empty = empty;
+    EXPECT_TRUE(j_empty.is_object());
+    EXPECT_FALSE(j_empty.contains("mode"));
+
+    auto deserialized_empty = j_empty.get<mcp::ToolChoice>();
+    EXPECT_FALSE(deserialized_empty.mode.has_value());
+}
+
+TEST(ProtocolTest, ToolUseContentSerialization) {
+    mcp::ToolUseContent content;
+    content.id = "call_123";
+    content.name = "get_weather";
+    content.input = {{"location", "San Francisco"}};
+
+    nlohmann::json j = content;
+    EXPECT_EQ(j["type"], "tool_use");
+    EXPECT_EQ(j["id"], "call_123");
+    EXPECT_EQ(j["name"], "get_weather");
+    EXPECT_EQ(j["input"]["location"], "San Francisco");
+    EXPECT_FALSE(j.contains("_meta"));
+
+    auto deserialized = j.get<mcp::ToolUseContent>();
+    EXPECT_EQ(deserialized.type, "tool_use");
+    EXPECT_EQ(deserialized.id, "call_123");
+    EXPECT_EQ(deserialized.name, "get_weather");
+    EXPECT_EQ(deserialized.input["location"], "San Francisco");
+    EXPECT_FALSE(deserialized.meta.has_value());
+
+    // With meta
+    content.meta = nlohmann::json{{"cacheId", "abc"}};
+    nlohmann::json j_meta = content;
+    EXPECT_EQ(j_meta["_meta"]["cacheId"], "abc");
+}
+
+TEST(ProtocolTest, ToolResultContentSerialization) {
+    mcp::ToolResultContent content;
+    content.toolUseId = "call_123";
+    content.content.emplace_back(mcp::TextContent{.text = "72°F, sunny"});
+    content.isError = false;
+
+    nlohmann::json j = content;
+    EXPECT_EQ(j["type"], "tool_result");
+    EXPECT_EQ(j["toolUseId"], "call_123");
+    EXPECT_EQ(j["content"][0]["type"], "text");
+    EXPECT_EQ(j["content"][0]["text"], "72°F, sunny");
+    EXPECT_EQ(j["isError"], false);
+
+    auto deserialized = j.get<mcp::ToolResultContent>();
+    EXPECT_EQ(deserialized.type, "tool_result");
+    EXPECT_EQ(deserialized.toolUseId, "call_123");
+    EXPECT_EQ(deserialized.content.size(), 1);
+    EXPECT_TRUE(std::holds_alternative<mcp::TextContent>(deserialized.content[0]));
+    EXPECT_EQ(std::get<mcp::TextContent>(deserialized.content[0]).text, "72°F, sunny");
+    EXPECT_EQ(deserialized.isError, false);
+}
+
+TEST(ProtocolTest, SamplingMessageContentBlockSerialization) {
+    // Single text block
+    mcp::SamplingMessageContentBlock text_block = mcp::TextContent{.text = "Hello"};
+    nlohmann::json j_text = text_block;
+    EXPECT_EQ(j_text["type"], "text");
+
+    auto deserialized_text = j_text.get<mcp::SamplingMessageContentBlock>();
+    EXPECT_TRUE(std::holds_alternative<mcp::TextContent>(deserialized_text));
+
+    // ToolUseContent block
+    mcp::ToolUseContent tool_use;
+    tool_use.id = "call_1";
+    tool_use.name = "calc";
+    tool_use.input = {{"x", 42}};
+
+    mcp::SamplingMessageContentBlock tool_block = tool_use;
+    nlohmann::json j_tool = tool_block;
+    EXPECT_EQ(j_tool["type"], "tool_use");
+    EXPECT_EQ(j_tool["id"], "call_1");
+
+    auto deserialized_tool = j_tool.get<mcp::SamplingMessageContentBlock>();
+    EXPECT_TRUE(std::holds_alternative<mcp::ToolUseContent>(deserialized_tool));
+    EXPECT_EQ(std::get<mcp::ToolUseContent>(deserialized_tool).name, "calc");
+
+    // ToolResultContent block
+    mcp::ToolResultContent tool_result;
+    tool_result.toolUseId = "call_1";
+    tool_result.content.emplace_back(mcp::TextContent{.text = "42"});
+
+    mcp::SamplingMessageContentBlock result_block = tool_result;
+    nlohmann::json j_result = result_block;
+    EXPECT_EQ(j_result["type"], "tool_result");
+
+    auto deserialized_result = j_result.get<mcp::SamplingMessageContentBlock>();
+    EXPECT_TRUE(std::holds_alternative<mcp::ToolResultContent>(deserialized_result));
+    EXPECT_EQ(std::get<mcp::ToolResultContent>(deserialized_result).toolUseId, "call_1");
+}
+
+TEST(ProtocolTest, SamplingMessageSerialization) {
+    // Single content block
+    mcp::SamplingMessage msg;
+    msg.role = mcp::Role::User;
+    msg.content = mcp::SamplingMessageContentBlock{mcp::TextContent{.text = "What is 2+2?"}};
+
+    nlohmann::json j = msg;
+    EXPECT_EQ(j["role"], "user");
+    EXPECT_EQ(j["content"]["type"], "text");
+    EXPECT_EQ(j["content"]["text"], "What is 2+2?");
+
+    auto deserialized = j.get<mcp::SamplingMessage>();
+    EXPECT_EQ(deserialized.role, mcp::Role::User);
+    EXPECT_TRUE(std::holds_alternative<mcp::SamplingMessageContentBlock>(deserialized.content));
+    auto& block = std::get<mcp::SamplingMessageContentBlock>(deserialized.content);
+    EXPECT_TRUE(std::holds_alternative<mcp::TextContent>(block));
+
+    // Array content
+    mcp::SamplingMessage msg_array;
+    msg_array.role = mcp::Role::Assistant;
+    std::vector<mcp::SamplingMessageContentBlock> blocks;
+    blocks.emplace_back(mcp::TextContent{.text = "Let me calculate..."});
+    blocks.emplace_back(
+        mcp::ToolUseContent{.id = "call_1", .name = "calc", .input = {{"expr", "2+2"}}});
+    msg_array.content = std::move(blocks);
+
+    nlohmann::json j_array = msg_array;
+    EXPECT_EQ(j_array["role"], "assistant");
+    EXPECT_TRUE(j_array["content"].is_array());
+    EXPECT_EQ(j_array["content"].size(), 2);
+    EXPECT_EQ(j_array["content"][0]["type"], "text");
+    EXPECT_EQ(j_array["content"][1]["type"], "tool_use");
+
+    auto deserialized_array = j_array.get<mcp::SamplingMessage>();
+    EXPECT_TRUE(std::holds_alternative<std::vector<mcp::SamplingMessageContentBlock>>(
+        deserialized_array.content));
+    auto& arr = std::get<std::vector<mcp::SamplingMessageContentBlock>>(deserialized_array.content);
+    EXPECT_EQ(arr.size(), 2);
+}
+
+TEST(ProtocolTest, ModelHintSerialization) {
+    mcp::ModelHint hint;
+    hint.name = "claude-3-5-sonnet";
+
+    nlohmann::json j = hint;
+    EXPECT_EQ(j["name"], "claude-3-5-sonnet");
+
+    auto deserialized = j.get<mcp::ModelHint>();
+    ASSERT_TRUE(deserialized.name.has_value());
+    EXPECT_EQ(*deserialized.name, "claude-3-5-sonnet");
+
+    // Empty hint
+    mcp::ModelHint empty;
+    nlohmann::json j_empty = empty;
+    EXPECT_FALSE(j_empty.contains("name"));
+}
+
+TEST(ProtocolTest, ModelPreferencesSerialization) {
+    constexpr double cost = 0.3;
+    constexpr double intelligence = 0.8;
+    constexpr double speed = 0.5;
+
+    mcp::ModelPreferences prefs;
+    prefs.costPriority = cost;
+    prefs.intelligencePriority = intelligence;
+    prefs.speedPriority = speed;
+    prefs.hints = std::vector<mcp::ModelHint>{{.name = "sonnet"}, {.name = "gpt-4"}};
+
+    nlohmann::json j = prefs;
+    EXPECT_EQ(j["costPriority"], cost);
+    EXPECT_EQ(j["intelligencePriority"], intelligence);
+    EXPECT_EQ(j["speedPriority"], speed);
+    EXPECT_EQ(j["hints"].size(), 2);
+    EXPECT_EQ(j["hints"][0]["name"], "sonnet");
+
+    auto deserialized = j.get<mcp::ModelPreferences>();
+    EXPECT_EQ(deserialized.costPriority, cost);
+    EXPECT_EQ(deserialized.intelligencePriority, intelligence);
+    EXPECT_EQ(deserialized.speedPriority, speed);
+    ASSERT_TRUE(deserialized.hints.has_value());
+    EXPECT_EQ(deserialized.hints->size(), 2);
+    EXPECT_EQ(deserialized.hints->at(0).name, "sonnet");
+}
+
+TEST(ProtocolTest, CreateMessageRequestSerialization) {
+    constexpr int max_tokens = 1024;
+    constexpr double temperature = 0.7;
+
+    mcp::SamplingMessage msg;
+    msg.role = mcp::Role::User;
+    msg.content = mcp::SamplingMessageContentBlock{mcp::TextContent{.text = "Hello"}};
+
+    mcp::CreateMessageRequestParams params;
+    params.messages = {msg};
+    params.maxTokens = max_tokens;
+    params.systemPrompt = "You are helpful.";
+    params.temperature = temperature;
+    params.stopSequences = std::vector<std::string>{"STOP"};
+    params.includeContext = "none";
+
+    mcp::CreateMessageRequest req;
+    req.params = params;
+
+    nlohmann::json j = req;
+    EXPECT_EQ(j["method"], "sampling/createMessage");
+    EXPECT_EQ(j["params"]["maxTokens"], max_tokens);
+    EXPECT_EQ(j["params"]["systemPrompt"], "You are helpful.");
+    EXPECT_EQ(j["params"]["temperature"], temperature);
+    EXPECT_EQ(j["params"]["stopSequences"][0], "STOP");
+    EXPECT_EQ(j["params"]["includeContext"], "none");
+    EXPECT_EQ(j["params"]["messages"].size(), 1);
+
+    auto deserialized = j.get<mcp::CreateMessageRequest>();
+    EXPECT_EQ(deserialized.method, "sampling/createMessage");
+    EXPECT_EQ(deserialized.params.maxTokens, max_tokens);
+    EXPECT_EQ(deserialized.params.systemPrompt, "You are helpful.");
+    EXPECT_EQ(deserialized.params.messages.size(), 1);
+}
+
+TEST(ProtocolTest, CreateMessageResultSerialization) {
+    mcp::CreateMessageResult result;
+    result.role = mcp::Role::Assistant;
+    result.content = mcp::SamplingMessageContentBlock{mcp::TextContent{.text = "The answer is 4."}};
+    result.model = "claude-3-5-sonnet-20241022";
+    result.stopReason = "endTurn";
+
+    nlohmann::json j = result;
+    EXPECT_EQ(j["role"], "assistant");
+    EXPECT_EQ(j["content"]["type"], "text");
+    EXPECT_EQ(j["content"]["text"], "The answer is 4.");
+    EXPECT_EQ(j["model"], "claude-3-5-sonnet-20241022");
+    EXPECT_EQ(j["stopReason"], "endTurn");
+
+    auto deserialized = j.get<mcp::CreateMessageResult>();
+    EXPECT_EQ(deserialized.role, mcp::Role::Assistant);
+    EXPECT_EQ(deserialized.model, "claude-3-5-sonnet-20241022");
+    EXPECT_EQ(deserialized.stopReason, "endTurn");
+    EXPECT_TRUE(std::holds_alternative<mcp::SamplingMessageContentBlock>(deserialized.content));
+}
+
+TEST(ProtocolTest, RootSerialization) {
+    mcp::Root root;
+    root.uri = "file:///home/user/project";
+    root.name = "My Project";
+
+    nlohmann::json j = root;
+    EXPECT_EQ(j["uri"], "file:///home/user/project");
+    EXPECT_EQ(j["name"], "My Project");
+    EXPECT_FALSE(j.contains("_meta"));
+
+    auto deserialized = j.get<mcp::Root>();
+    EXPECT_EQ(deserialized.uri, "file:///home/user/project");
+    ASSERT_TRUE(deserialized.name.has_value());
+    EXPECT_EQ(*deserialized.name, "My Project");
+
+    // Minimal root (uri only)
+    mcp::Root minimal;
+    minimal.uri = "file:///tmp";
+    nlohmann::json j_min = minimal;
+    EXPECT_EQ(j_min["uri"], "file:///tmp");
+    EXPECT_FALSE(j_min.contains("name"));
+
+    auto deserialized_min = j_min.get<mcp::Root>();
+    EXPECT_EQ(deserialized_min.uri, "file:///tmp");
+    EXPECT_FALSE(deserialized_min.name.has_value());
+}
+
+TEST(ProtocolTest, ListRootsRequestSerialization) {
+    mcp::ListRootsRequest req;
+
+    nlohmann::json j = req;
+    EXPECT_EQ(j["method"], "roots/list");
+
+    auto deserialized = j.get<mcp::ListRootsRequest>();
+    EXPECT_EQ(deserialized.method, "roots/list");
+}
+
+TEST(ProtocolTest, ListRootsResultSerialization) {
+    mcp::Root root1{.uri = "file:///home/user/project1", .name = "Project 1"};
+    mcp::Root root2{.uri = "file:///home/user/project2"};
+
+    mcp::ListRootsResult result;
+    result.roots = {root1, root2};
+
+    nlohmann::json j = result;
+    EXPECT_EQ(j["roots"].size(), 2);
+    EXPECT_EQ(j["roots"][0]["uri"], "file:///home/user/project1");
+    EXPECT_EQ(j["roots"][0]["name"], "Project 1");
+    EXPECT_EQ(j["roots"][1]["uri"], "file:///home/user/project2");
+    EXPECT_FALSE(j["roots"][1].contains("name"));
+
+    auto deserialized = j.get<mcp::ListRootsResult>();
+    EXPECT_EQ(deserialized.roots.size(), 2);
+    EXPECT_EQ(deserialized.roots[0].uri, "file:///home/user/project1");
+    EXPECT_EQ(deserialized.roots[0].name, "Project 1");
+    EXPECT_EQ(deserialized.roots[1].uri, "file:///home/user/project2");
+    EXPECT_FALSE(deserialized.roots[1].name.has_value());
+}
