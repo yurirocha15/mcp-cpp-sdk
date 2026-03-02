@@ -2261,4 +2261,219 @@ inline void from_json(const nlohmann::json& json_obj, ElicitResult& result) {
     }
 }
 
+// JSON-RPC Base Types
+
+using RequestId = std::variant<std::string, int64_t>;
+using ProgressToken = RequestId;
+
+}  // namespace mcp
+
+template <>
+struct nlohmann::adl_serializer<mcp::RequestId> {
+    static void to_json(nlohmann::json& json_obj, const mcp::RequestId& id) {
+        std::visit([&json_obj](auto&& val) { json_obj = val; }, id);
+    }
+
+    static void from_json(const nlohmann::json& json_obj, mcp::RequestId& id) {
+        if (json_obj.is_string()) {
+            id = json_obj.get<std::string>();
+        } else if (json_obj.is_number_integer()) {
+            id = json_obj.get<int64_t>();
+        } else {
+            throw std::invalid_argument("RequestId must be a string or integer");
+        }
+    }
+};
+
+namespace mcp {
+
+struct Error {
+    int code;                            ///< The error type that occurred.
+    std::string message;                 ///< A short description of the error.
+    std::optional<nlohmann::json> data;  ///< Additional information about the error.
+};
+
+inline void to_json(nlohmann::json& json_obj, const Error& error) {
+    json_obj = nlohmann::json{{"code", error.code}, {"message", error.message}};
+    if (error.data) {
+        json_obj["data"] = *error.data;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, Error& error) {
+    json_obj.at("code").get_to(error.code);
+    json_obj.at("message").get_to(error.message);
+    if (json_obj.contains("data")) {
+        error.data = json_obj.at("data");
+    }
+}
+
+struct JSONRPCRequest {
+    RequestId id;                          ///< Unique request identifier.
+    std::string jsonrpc = "2.0";           ///< JSON-RPC version (always "2.0").
+    std::string method;                    ///< The method to invoke.
+    std::optional<nlohmann::json> params;  ///< Optional parameters object.
+};
+
+inline void to_json(nlohmann::json& json_obj, const JSONRPCRequest& req) {
+    json_obj = nlohmann::json::object();
+    json_obj["id"] = req.id;
+    json_obj["jsonrpc"] = req.jsonrpc;
+    json_obj["method"] = req.method;
+    if (req.params) {
+        json_obj["params"] = *req.params;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, JSONRPCRequest& req) {
+    req.id = json_obj.at("id").get<RequestId>();
+    json_obj.at("jsonrpc").get_to(req.jsonrpc);
+    json_obj.at("method").get_to(req.method);
+    if (json_obj.contains("params")) {
+        req.params = json_obj.at("params");
+    }
+}
+
+struct JSONRPCNotification {
+    std::string jsonrpc = "2.0";           ///< JSON-RPC version (always "2.0").
+    std::string method;                    ///< The notification method.
+    std::optional<nlohmann::json> params;  ///< Optional parameters object.
+};
+
+inline void to_json(nlohmann::json& json_obj, const JSONRPCNotification& notif) {
+    json_obj = nlohmann::json{{"jsonrpc", notif.jsonrpc}, {"method", notif.method}};
+    if (notif.params) {
+        json_obj["params"] = *notif.params;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, JSONRPCNotification& notif) {
+    json_obj.at("jsonrpc").get_to(notif.jsonrpc);
+    json_obj.at("method").get_to(notif.method);
+    if (json_obj.contains("params")) {
+        notif.params = json_obj.at("params");
+    }
+}
+
+struct JSONRPCResultResponse {
+    RequestId id;                 ///< The request ID this responds to.
+    std::string jsonrpc = "2.0";  ///< JSON-RPC version (always "2.0").
+    nlohmann::json result;        ///< The result payload.
+};
+
+inline void to_json(nlohmann::json& json_obj, const JSONRPCResultResponse& resp) {
+    json_obj = nlohmann::json::object();
+    json_obj["id"] = resp.id;
+    json_obj["jsonrpc"] = resp.jsonrpc;
+    json_obj["result"] = resp.result;
+}
+
+inline void from_json(const nlohmann::json& json_obj, JSONRPCResultResponse& resp) {
+    resp.id = json_obj.at("id").get<RequestId>();
+    json_obj.at("jsonrpc").get_to(resp.jsonrpc);
+    json_obj.at("result").get_to(resp.result);
+}
+
+struct JSONRPCErrorResponse {
+    Error error;                  ///< The error object.
+    std::string jsonrpc = "2.0";  ///< JSON-RPC version (always "2.0").
+    std::optional<RequestId> id;  ///< The request ID (may be absent for parse errors).
+};
+
+inline void to_json(nlohmann::json& json_obj, const JSONRPCErrorResponse& resp) {
+    json_obj = nlohmann::json::object();
+    json_obj["error"] = resp.error;
+    json_obj["jsonrpc"] = resp.jsonrpc;
+    if (resp.id) {
+        json_obj["id"] = *resp.id;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, JSONRPCErrorResponse& resp) {
+    json_obj.at("error").get_to(resp.error);
+    json_obj.at("jsonrpc").get_to(resp.jsonrpc);
+    if (json_obj.contains("id")) {
+        resp.id = json_obj.at("id").get<RequestId>();
+    }
+}
+
+using JSONRPCResponse = std::variant<JSONRPCResultResponse, JSONRPCErrorResponse>;
+
+inline void to_json(nlohmann::json& json_obj, const JSONRPCResponse& resp) {
+    std::visit([&json_obj](auto&& arg) { json_obj = arg; }, resp);
+}
+
+inline void from_json(const nlohmann::json& json_obj, JSONRPCResponse& resp) {
+    if (json_obj.contains("error")) {
+        resp = json_obj.get<JSONRPCErrorResponse>();
+    } else {
+        resp = json_obj.get<JSONRPCResultResponse>();
+    }
+}
+
+using JSONRPCMessage =
+    std::variant<JSONRPCRequest, JSONRPCNotification, JSONRPCResultResponse, JSONRPCErrorResponse>;
+
+inline void to_json(nlohmann::json& json_obj, const JSONRPCMessage& msg) {
+    std::visit([&json_obj](auto&& arg) { json_obj = arg; }, msg);
+}
+
+inline void from_json(const nlohmann::json& json_obj, JSONRPCMessage& msg) {
+    if (json_obj.contains("error")) {
+        msg = json_obj.get<JSONRPCErrorResponse>();
+    } else if (json_obj.contains("result")) {
+        msg = json_obj.get<JSONRPCResultResponse>();
+    } else if (json_obj.contains("id")) {
+        msg = json_obj.get<JSONRPCRequest>();
+    } else {
+        msg = json_obj.get<JSONRPCNotification>();
+    }
+}
+
+enum class LoggingLevel : std::uint8_t {
+    Emergency,
+    Alert,
+    Critical,
+    Error,
+    Warning,
+    Notice,
+    Info,
+    Debug
+};
+
+NLOHMANN_JSON_SERIALIZE_ENUM(LoggingLevel, {{LoggingLevel::Emergency, "emergency"},
+                                            {LoggingLevel::Alert, "alert"},
+                                            {LoggingLevel::Critical, "critical"},
+                                            {LoggingLevel::Error, "error"},
+                                            {LoggingLevel::Warning, "warning"},
+                                            {LoggingLevel::Notice, "notice"},
+                                            {LoggingLevel::Info, "info"},
+                                            {LoggingLevel::Debug, "debug"}})
+
+struct SetLevelRequestParams {
+    LoggingLevel level;                  ///< The desired logging level.
+    std::optional<nlohmann::json> meta;  ///< Reserved for protocol use.
+};
+
+inline void to_json(nlohmann::json& json_obj, const SetLevelRequestParams& params) {
+    json_obj = nlohmann::json{{"level", params.level}};
+    if (params.meta) {
+        json_obj["_meta"] = *params.meta;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, SetLevelRequestParams& params) {
+    json_obj.at("level").get_to(params.level);
+    if (json_obj.contains("_meta")) {
+        params.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+}
+
+struct SetLevelRequest {
+    std::string method = "logging/setLevel";  ///< The method name.
+    SetLevelRequestParams params;             ///< The request parameters.
+};
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SetLevelRequest, method, params)
+
 }  // namespace mcp

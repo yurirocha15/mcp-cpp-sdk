@@ -1193,3 +1193,316 @@ TEST(ProtocolTest, ElicitResultSerialization) {
     EXPECT_EQ(deserialized3.action, mcp::ElicitAction::Cancel);
     EXPECT_FALSE(deserialized3.content.has_value());
 }
+
+// ============================================================================
+// C-10: JSON-RPC Base Types
+// ============================================================================
+
+TEST(ProtocolTest, RequestIdStringSerialization) {
+    mcp::RequestId id = std::string("req-42");
+
+    nlohmann::json j = id;
+    EXPECT_TRUE(j.is_string());
+    EXPECT_EQ(j.get<std::string>(), "req-42");
+
+    auto deserialized = j.get<mcp::RequestId>();
+    ASSERT_TRUE(std::holds_alternative<std::string>(deserialized));
+    EXPECT_EQ(std::get<std::string>(deserialized), "req-42");
+}
+
+TEST(ProtocolTest, RequestIdIntegerSerialization) {
+    mcp::RequestId id = int64_t{7};
+
+    nlohmann::json j = id;
+    EXPECT_TRUE(j.is_number_integer());
+    EXPECT_EQ(j.get<int64_t>(), 7);
+
+    auto deserialized = j.get<mcp::RequestId>();
+    ASSERT_TRUE(std::holds_alternative<int64_t>(deserialized));
+    EXPECT_EQ(std::get<int64_t>(deserialized), 7);
+}
+
+TEST(ProtocolTest, RequestIdInvalidTypeThrows) {
+    nlohmann::json j = 3.14;
+    EXPECT_THROW(j.get<mcp::RequestId>(), std::invalid_argument);
+
+    nlohmann::json j2 = true;
+    EXPECT_THROW(j2.get<mcp::RequestId>(), std::invalid_argument);
+}
+
+TEST(ProtocolTest, ProgressTokenIsRequestId) {
+    static_assert(std::is_same_v<mcp::ProgressToken, mcp::RequestId>);
+
+    mcp::ProgressToken token = std::string("progress-1");
+    nlohmann::json j = token;
+    EXPECT_EQ(j.get<std::string>(), "progress-1");
+
+    mcp::ProgressToken int_token = int64_t{99};
+    nlohmann::json j2 = int_token;
+    EXPECT_EQ(j2.get<int64_t>(), 99);
+}
+
+TEST(ProtocolTest, ErrorSerialization) {
+    mcp::Error error;
+    error.code = -32600;
+    error.message = "Invalid Request";
+    error.data = nlohmann::json{{"detail", "missing method"}};
+
+    nlohmann::json j = error;
+    EXPECT_EQ(j["code"], -32600);
+    EXPECT_EQ(j["message"], "Invalid Request");
+    EXPECT_EQ(j["data"]["detail"], "missing method");
+
+    auto deserialized = j.get<mcp::Error>();
+    EXPECT_EQ(deserialized.code, -32600);
+    EXPECT_EQ(deserialized.message, "Invalid Request");
+    ASSERT_TRUE(deserialized.data.has_value());
+    EXPECT_EQ((*deserialized.data)["detail"], "missing method");
+
+    mcp::Error minimal;
+    minimal.code = -32601;
+    minimal.message = "Method not found";
+
+    nlohmann::json j2 = minimal;
+    EXPECT_FALSE(j2.contains("data"));
+
+    auto deserialized2 = j2.get<mcp::Error>();
+    EXPECT_EQ(deserialized2.code, -32601);
+    EXPECT_FALSE(deserialized2.data.has_value());
+}
+
+TEST(ProtocolTest, JSONRPCRequestSerialization) {
+    mcp::JSONRPCRequest req;
+    req.id = std::string("req-1");
+    req.method = "tools/list";
+    req.params = nlohmann::json{{"cursor", "abc"}};
+
+    nlohmann::json j = req;
+    EXPECT_EQ(j["jsonrpc"], "2.0");
+    EXPECT_EQ(j["id"], "req-1");
+    EXPECT_EQ(j["method"], "tools/list");
+    EXPECT_EQ(j["params"]["cursor"], "abc");
+
+    auto deserialized = j.get<mcp::JSONRPCRequest>();
+    EXPECT_EQ(deserialized.jsonrpc, "2.0");
+    ASSERT_TRUE(std::holds_alternative<std::string>(deserialized.id));
+    EXPECT_EQ(std::get<std::string>(deserialized.id), "req-1");
+    EXPECT_EQ(deserialized.method, "tools/list");
+    ASSERT_TRUE(deserialized.params.has_value());
+    EXPECT_EQ((*deserialized.params)["cursor"], "abc");
+
+    // Integer id, no params
+    mcp::JSONRPCRequest int_req;
+    int_req.id = int64_t{42};
+    int_req.method = "ping";
+
+    nlohmann::json j2 = int_req;
+    EXPECT_EQ(j2["id"], 42);
+    EXPECT_FALSE(j2.contains("params"));
+
+    auto deserialized2 = j2.get<mcp::JSONRPCRequest>();
+    ASSERT_TRUE(std::holds_alternative<int64_t>(deserialized2.id));
+    EXPECT_EQ(std::get<int64_t>(deserialized2.id), 42);
+    EXPECT_FALSE(deserialized2.params.has_value());
+}
+
+TEST(ProtocolTest, JSONRPCNotificationSerialization) {
+    mcp::JSONRPCNotification notif;
+    notif.method = "notifications/progress";
+    notif.params = nlohmann::json{{"progressToken", "tok-1"}, {"progress", 50}};
+
+    nlohmann::json j = notif;
+    EXPECT_EQ(j["jsonrpc"], "2.0");
+    EXPECT_EQ(j["method"], "notifications/progress");
+    EXPECT_EQ(j["params"]["progress"], 50);
+
+    auto deserialized = j.get<mcp::JSONRPCNotification>();
+    EXPECT_EQ(deserialized.jsonrpc, "2.0");
+    EXPECT_EQ(deserialized.method, "notifications/progress");
+    ASSERT_TRUE(deserialized.params.has_value());
+
+    // No params
+    mcp::JSONRPCNotification minimal;
+    minimal.method = "notifications/cancelled";
+
+    nlohmann::json j2 = minimal;
+    EXPECT_FALSE(j2.contains("params"));
+
+    auto deserialized2 = j2.get<mcp::JSONRPCNotification>();
+    EXPECT_EQ(deserialized2.method, "notifications/cancelled");
+    EXPECT_FALSE(deserialized2.params.has_value());
+}
+
+TEST(ProtocolTest, JSONRPCResultResponseSerialization) {
+    mcp::JSONRPCResultResponse resp;
+    resp.id = std::string("resp-1");
+    resp.result = nlohmann::json{{"tools", nlohmann::json::array()}};
+
+    nlohmann::json j = resp;
+    EXPECT_EQ(j["jsonrpc"], "2.0");
+    EXPECT_EQ(j["id"], "resp-1");
+    EXPECT_TRUE(j["result"]["tools"].is_array());
+
+    auto deserialized = j.get<mcp::JSONRPCResultResponse>();
+    ASSERT_TRUE(std::holds_alternative<std::string>(deserialized.id));
+    EXPECT_EQ(std::get<std::string>(deserialized.id), "resp-1");
+    EXPECT_TRUE(deserialized.result.contains("tools"));
+
+    // Integer id
+    mcp::JSONRPCResultResponse int_resp;
+    int_resp.id = int64_t{10};
+    int_resp.result = nlohmann::json::object();
+
+    nlohmann::json j2 = int_resp;
+    EXPECT_EQ(j2["id"], 10);
+
+    auto deserialized2 = j2.get<mcp::JSONRPCResultResponse>();
+    ASSERT_TRUE(std::holds_alternative<int64_t>(deserialized2.id));
+    EXPECT_EQ(std::get<int64_t>(deserialized2.id), 10);
+}
+
+TEST(ProtocolTest, JSONRPCErrorResponseSerialization) {
+    mcp::JSONRPCErrorResponse resp;
+    resp.error = {.code = -32700, .message = "Parse error"};
+    resp.id = mcp::RequestId{std::string("err-1")};
+
+    nlohmann::json j = resp;
+    EXPECT_EQ(j["jsonrpc"], "2.0");
+    EXPECT_EQ(j["error"]["code"], -32700);
+    EXPECT_EQ(j["error"]["message"], "Parse error");
+    EXPECT_EQ(j["id"], "err-1");
+
+    auto deserialized = j.get<mcp::JSONRPCErrorResponse>();
+    EXPECT_EQ(deserialized.error.code, -32700);
+    EXPECT_EQ(deserialized.error.message, "Parse error");
+    ASSERT_TRUE(deserialized.id.has_value());
+    ASSERT_TRUE(std::holds_alternative<std::string>(*deserialized.id));
+    EXPECT_EQ(std::get<std::string>(*deserialized.id), "err-1");
+
+    // No id (parse error before id was read)
+    mcp::JSONRPCErrorResponse no_id;
+    no_id.error = {.code = -32700, .message = "Parse error"};
+
+    nlohmann::json j2 = no_id;
+    EXPECT_FALSE(j2.contains("id"));
+
+    auto deserialized2 = j2.get<mcp::JSONRPCErrorResponse>();
+    EXPECT_FALSE(deserialized2.id.has_value());
+}
+
+TEST(ProtocolTest, JSONRPCResponseVariantDispatch) {
+    // Success response
+    nlohmann::json j_ok = {{"jsonrpc", "2.0"}, {"id", "r1"}, {"result", {{"status", "ok"}}}};
+    auto resp_ok = j_ok.get<mcp::JSONRPCResponse>();
+    ASSERT_TRUE(std::holds_alternative<mcp::JSONRPCResultResponse>(resp_ok));
+    auto& ok = std::get<mcp::JSONRPCResultResponse>(resp_ok);
+    EXPECT_EQ(ok.result["status"], "ok");
+
+    // Error response
+    nlohmann::json j_err = {
+        {"jsonrpc", "2.0"}, {"id", 5}, {"error", {{"code", -32600}, {"message", "Invalid"}}}};
+    auto resp_err = j_err.get<mcp::JSONRPCResponse>();
+    ASSERT_TRUE(std::holds_alternative<mcp::JSONRPCErrorResponse>(resp_err));
+    auto& err = std::get<mcp::JSONRPCErrorResponse>(resp_err);
+    EXPECT_EQ(err.error.code, -32600);
+
+    // Round-trip
+    nlohmann::json j_rt = resp_ok;
+    EXPECT_EQ(j_rt["result"]["status"], "ok");
+}
+
+TEST(ProtocolTest, JSONRPCMessageVariantDispatch) {
+    // Request
+    nlohmann::json j_req = {{"jsonrpc", "2.0"}, {"id", "m1"}, {"method", "tools/call"}};
+    auto msg_req = j_req.get<mcp::JSONRPCMessage>();
+    ASSERT_TRUE(std::holds_alternative<mcp::JSONRPCRequest>(msg_req));
+    EXPECT_EQ(std::get<mcp::JSONRPCRequest>(msg_req).method, "tools/call");
+
+    // Notification (no id)
+    nlohmann::json j_notif = {{"jsonrpc", "2.0"}, {"method", "notifications/progress"}};
+    auto msg_notif = j_notif.get<mcp::JSONRPCMessage>();
+    ASSERT_TRUE(std::holds_alternative<mcp::JSONRPCNotification>(msg_notif));
+    EXPECT_EQ(std::get<mcp::JSONRPCNotification>(msg_notif).method, "notifications/progress");
+
+    // Result response
+    nlohmann::json j_result = {{"jsonrpc", "2.0"}, {"id", 1}, {"result", nlohmann::json::object()}};
+    auto msg_result = j_result.get<mcp::JSONRPCMessage>();
+    ASSERT_TRUE(std::holds_alternative<mcp::JSONRPCResultResponse>(msg_result));
+
+    // Error response
+    nlohmann::json j_error = {{"jsonrpc", "2.0"},
+                              {"error", {{"code", -32601}, {"message", "Method not found"}}}};
+    auto msg_error = j_error.get<mcp::JSONRPCMessage>();
+    ASSERT_TRUE(std::holds_alternative<mcp::JSONRPCErrorResponse>(msg_error));
+
+    // Round-trip each
+    nlohmann::json rt_req = msg_req;
+    EXPECT_EQ(rt_req["method"], "tools/call");
+
+    nlohmann::json rt_notif = msg_notif;
+    EXPECT_EQ(rt_notif["method"], "notifications/progress");
+}
+
+TEST(ProtocolTest, LoggingLevelSerialization) {
+    nlohmann::json j;
+
+    j = mcp::LoggingLevel::Emergency;
+    EXPECT_EQ(j.get<std::string>(), "emergency");
+    EXPECT_EQ(j.get<mcp::LoggingLevel>(), mcp::LoggingLevel::Emergency);
+
+    j = mcp::LoggingLevel::Alert;
+    EXPECT_EQ(j.get<std::string>(), "alert");
+    EXPECT_EQ(j.get<mcp::LoggingLevel>(), mcp::LoggingLevel::Alert);
+
+    j = mcp::LoggingLevel::Critical;
+    EXPECT_EQ(j.get<std::string>(), "critical");
+    EXPECT_EQ(j.get<mcp::LoggingLevel>(), mcp::LoggingLevel::Critical);
+
+    j = mcp::LoggingLevel::Error;
+    EXPECT_EQ(j.get<std::string>(), "error");
+    EXPECT_EQ(j.get<mcp::LoggingLevel>(), mcp::LoggingLevel::Error);
+
+    j = mcp::LoggingLevel::Warning;
+    EXPECT_EQ(j.get<std::string>(), "warning");
+    EXPECT_EQ(j.get<mcp::LoggingLevel>(), mcp::LoggingLevel::Warning);
+
+    j = mcp::LoggingLevel::Notice;
+    EXPECT_EQ(j.get<std::string>(), "notice");
+    EXPECT_EQ(j.get<mcp::LoggingLevel>(), mcp::LoggingLevel::Notice);
+
+    j = mcp::LoggingLevel::Info;
+    EXPECT_EQ(j.get<std::string>(), "info");
+    EXPECT_EQ(j.get<mcp::LoggingLevel>(), mcp::LoggingLevel::Info);
+
+    j = mcp::LoggingLevel::Debug;
+    EXPECT_EQ(j.get<std::string>(), "debug");
+    EXPECT_EQ(j.get<mcp::LoggingLevel>(), mcp::LoggingLevel::Debug);
+}
+
+TEST(ProtocolTest, SetLevelRequestSerialization) {
+    mcp::SetLevelRequest req;
+    req.params.level = mcp::LoggingLevel::Warning;
+    req.params.meta = nlohmann::json{{"progressToken", "tok-1"}};
+
+    nlohmann::json j = req;
+    EXPECT_EQ(j["method"], "logging/setLevel");
+    EXPECT_EQ(j["params"]["level"], "warning");
+    EXPECT_EQ(j["params"]["_meta"]["progressToken"], "tok-1");
+
+    auto deserialized = j.get<mcp::SetLevelRequest>();
+    EXPECT_EQ(deserialized.method, "logging/setLevel");
+    EXPECT_EQ(deserialized.params.level, mcp::LoggingLevel::Warning);
+    ASSERT_TRUE(deserialized.params.meta.has_value());
+
+    // Without _meta
+    mcp::SetLevelRequest minimal;
+    minimal.params.level = mcp::LoggingLevel::Debug;
+
+    nlohmann::json j2 = minimal;
+    EXPECT_EQ(j2["params"]["level"], "debug");
+    EXPECT_FALSE(j2["params"].contains("_meta"));
+
+    auto deserialized2 = j2.get<mcp::SetLevelRequest>();
+    EXPECT_EQ(deserialized2.params.level, mcp::LoggingLevel::Debug);
+    EXPECT_FALSE(deserialized2.params.meta.has_value());
+}
