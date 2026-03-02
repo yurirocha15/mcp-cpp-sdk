@@ -1570,19 +1570,19 @@ TEST(ProtocolTest, ClientCapabilitiesFullSerialization) {
         .tools = json::object(),
     };
 
-    mcp::ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability elicitTask;
-    elicitTask.create = json::object();
-    mcp::ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability samplingTask;
-    samplingTask.createMessage = json::object();
+    mcp::ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability elicit_task;
+    elicit_task.create = json::object();
+    mcp::ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability sampling_task;
+    sampling_task.createMessage = json::object();
 
-    mcp::ClientCapabilities::TaskRequestsCapability taskReqs;
-    taskReqs.elicitation = elicitTask;
-    taskReqs.sampling = samplingTask;
+    mcp::ClientCapabilities::TaskRequestsCapability task_reqs;
+    task_reqs.elicitation = elicit_task;
+    task_reqs.sampling = sampling_task;
 
     caps.tasks = mcp::ClientCapabilities::TasksCapability{
         .cancel = json::object(),
         .list = json::object(),
-        .requests = taskReqs,
+        .requests = task_reqs,
     };
 
     json j = caps;
@@ -1679,16 +1679,16 @@ TEST(ProtocolTest, ServerCapabilitiesFullSerialization) {
         .subscribe = true,
     };
 
-    mcp::ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability toolsTask;
-    toolsTask.call = json::object();
+    mcp::ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability tools_task;
+    tools_task.call = json::object();
 
-    mcp::ServerCapabilities::TaskRequestsCapability taskReqs;
-    taskReqs.tools = toolsTask;
+    mcp::ServerCapabilities::TaskRequestsCapability task_reqs;
+    task_reqs.tools = tools_task;
 
     caps.tasks = mcp::ServerCapabilities::TasksCapability{
         .cancel = json::object(),
         .list = json::object(),
-        .requests = taskReqs,
+        .requests = task_reqs,
     };
     caps.tools = mcp::ServerCapabilities::ToolsCapability{.listChanged = true};
 
@@ -1880,4 +1880,176 @@ TEST(ProtocolTest, ServerCapabilitiesFromRawJson) {
 
     json j2 = caps;
     EXPECT_EQ(j2, raw);
+}
+
+TEST(ProtocolTest, PingRequestSerialization) {
+    mcp::PingRequest req;
+    json j = req;
+    EXPECT_EQ(j["method"], "ping");
+
+    auto deserialized = j.get<mcp::PingRequest>();
+    EXPECT_EQ(deserialized.method, "ping");
+}
+
+TEST(ProtocolTest, CancelledNotificationSerialization) {
+    mcp::CancelledNotification notif;
+    notif.params.requestId = "req-1";
+    notif.params.reason = "Timeout";
+
+    json j = notif;
+    EXPECT_EQ(j["method"], "notifications/cancelled");
+    EXPECT_EQ(j["params"]["requestId"], "req-1");
+    EXPECT_EQ(j["params"]["reason"], "Timeout");
+
+    auto deserialized = j.get<mcp::CancelledNotification>();
+    EXPECT_EQ(deserialized.method, "notifications/cancelled");
+    EXPECT_EQ(std::get<std::string>(deserialized.params.requestId), "req-1");
+    ASSERT_TRUE(deserialized.params.reason.has_value());
+    EXPECT_EQ(*deserialized.params.reason, "Timeout");
+
+    // Without reason
+    mcp::CancelledNotification minimal;
+    minimal.params.requestId = int64_t(42);
+
+    json j2 = minimal;
+    EXPECT_EQ(j2["params"]["requestId"], 42);
+    EXPECT_FALSE(j2["params"].contains("reason"));
+
+    auto deserialized2 = j2.get<mcp::CancelledNotification>();
+    EXPECT_EQ(std::get<int64_t>(deserialized2.params.requestId), 42);
+    EXPECT_FALSE(deserialized2.params.reason.has_value());
+}
+
+TEST(ProtocolTest, ProgressNotificationSerialization) {
+    mcp::ProgressNotification notif;
+    notif.params.progressToken = "tok-1";
+    notif.params.progress = 50.5;
+    notif.params.total = 100.0;
+    notif.params.message = "Halfway there";
+
+    json j = notif;
+    EXPECT_EQ(j["method"], "notifications/progress");
+    EXPECT_EQ(j["params"]["progressToken"], "tok-1");
+    EXPECT_EQ(j["params"]["progress"], 50.5);
+    EXPECT_EQ(j["params"]["total"], 100.0);
+    EXPECT_EQ(j["params"]["message"], "Halfway there");
+
+    auto deserialized = j.get<mcp::ProgressNotification>();
+    EXPECT_EQ(deserialized.method, "notifications/progress");
+    EXPECT_EQ(std::get<std::string>(deserialized.params.progressToken), "tok-1");
+    EXPECT_DOUBLE_EQ(deserialized.params.progress, 50.5);
+    ASSERT_TRUE(deserialized.params.total.has_value());
+    EXPECT_DOUBLE_EQ(*deserialized.params.total, 100.0);
+    ASSERT_TRUE(deserialized.params.message.has_value());
+    EXPECT_EQ(*deserialized.params.message, "Halfway there");
+
+    // Minimal
+    mcp::ProgressNotification minimal;
+    minimal.params.progressToken = int64_t(1);
+    minimal.params.progress = 10.0;
+
+    json j2 = minimal;
+    EXPECT_EQ(j2["params"]["progress"], 10.0);
+    EXPECT_FALSE(j2["params"].contains("total"));
+    EXPECT_FALSE(j2["params"].contains("message"));
+
+    auto deserialized2 = j2.get<mcp::ProgressNotification>();
+    EXPECT_DOUBLE_EQ(deserialized2.params.progress, 10.0);
+    EXPECT_FALSE(deserialized2.params.total.has_value());
+    EXPECT_FALSE(deserialized2.params.message.has_value());
+}
+
+TEST(ProtocolTest, LoggingMessageNotificationSerialization) {
+    mcp::LoggingMessageNotification notif;
+    notif.params.level = mcp::LoggingLevel::Error;
+    notif.params.logger = "sys-logger";
+    notif.params.data = json{{"error_code", 500}};
+
+    json j = notif;
+    EXPECT_EQ(j["method"], "notifications/message");
+    EXPECT_EQ(j["params"]["level"], "error");
+    EXPECT_EQ(j["params"]["logger"], "sys-logger");
+    EXPECT_EQ(j["params"]["data"]["error_code"], 500);
+
+    auto deserialized = j.get<mcp::LoggingMessageNotification>();
+    EXPECT_EQ(deserialized.method, "notifications/message");
+    EXPECT_EQ(deserialized.params.level, mcp::LoggingLevel::Error);
+    ASSERT_TRUE(deserialized.params.logger.has_value());
+    EXPECT_EQ(*deserialized.params.logger, "sys-logger");
+    EXPECT_EQ(deserialized.params.data["error_code"], 500);
+
+    // Minimal
+    mcp::LoggingMessageNotification minimal;
+    minimal.params.level = mcp::LoggingLevel::Info;
+    minimal.params.data = "Just a string message";
+
+    json j2 = minimal;
+    EXPECT_EQ(j2["params"]["level"], "info");
+    EXPECT_FALSE(j2["params"].contains("logger"));
+
+    auto deserialized2 = j2.get<mcp::LoggingMessageNotification>();
+    EXPECT_EQ(deserialized2.params.level, mcp::LoggingLevel::Info);
+    EXPECT_FALSE(deserialized2.params.logger.has_value());
+}
+
+TEST(ProtocolTest, InitializedNotificationSerialization) {
+    mcp::InitializedNotification notif;
+    json j = notif;
+    EXPECT_EQ(j["method"], "notifications/initialized");
+
+    auto deserialized = j.get<mcp::InitializedNotification>();
+    EXPECT_EQ(deserialized.method, "notifications/initialized");
+}
+
+TEST(ProtocolTest, ListChangedNotificationsSerialization) {
+    mcp::PromptListChangedNotification p_notif;
+    EXPECT_EQ(json(p_notif)["method"], "notifications/prompts/list_changed");
+
+    mcp::ResourceListChangedNotification r_notif;
+    EXPECT_EQ(json(r_notif)["method"], "notifications/resources/list_changed");
+
+    mcp::ToolListChangedNotification t_notif;
+    EXPECT_EQ(json(t_notif)["method"], "notifications/tools/list_changed");
+
+    mcp::RootsListChangedNotification root_notif;
+    EXPECT_EQ(json(root_notif)["method"], "notifications/roots/list_changed");
+}
+
+TEST(ProtocolTest, ResourceUpdatedNotificationSerialization) {
+    mcp::ResourceUpdatedNotification notif;
+    notif.params.uri = "file:///test.txt";
+
+    json j = notif;
+    EXPECT_EQ(j["method"], "notifications/resources/updated");
+    EXPECT_EQ(j["params"]["uri"], "file:///test.txt");
+
+    auto deserialized = j.get<mcp::ResourceUpdatedNotification>();
+    EXPECT_EQ(deserialized.method, "notifications/resources/updated");
+    EXPECT_EQ(deserialized.params.uri, "file:///test.txt");
+}
+
+TEST(ProtocolTest, SubscribeRequestSerialization) {
+    mcp::SubscribeRequest req;
+    req.params.uri = "file:///sub.txt";
+
+    json j = req;
+    EXPECT_EQ(j["method"], "resources/subscribe");
+    EXPECT_EQ(j["params"]["uri"], "file:///sub.txt");
+
+    auto deserialized = j.get<mcp::SubscribeRequest>();
+    EXPECT_EQ(deserialized.method, "resources/subscribe");
+    EXPECT_EQ(deserialized.params.uri, "file:///sub.txt");
+}
+
+TEST(ProtocolTest, UnsubscribeRequestSerialization) {
+    mcp::UnsubscribeRequest req;
+    req.params.uri = "file:///unsub.txt";
+
+    json j = req;
+    EXPECT_EQ(j["method"], "resources/unsubscribe");
+    EXPECT_EQ(j["params"]["uri"], "file:///unsub.txt");
+
+    auto deserialized = j.get<mcp::UnsubscribeRequest>();
+    EXPECT_EQ(deserialized.method, "resources/unsubscribe");
+    EXPECT_EQ(deserialized.params.uri, "file:///unsub.txt");
 }
