@@ -335,9 +335,18 @@ struct ImageContent {
 };
 
 /**
+ * @brief Represents audio content.
+ */
+struct AudioContent {
+    std::string type = "audio";  ///< The type of content (always "audio").
+    std::string data;            ///< The base64-encoded audio data.
+    std::string mimeType;        ///< The MIME type of the audio.
+};
+
+/**
  * @brief Variant holding either TextContent or ImageContent.
  */
-using Content = std::variant<TextContent, ImageContent>;
+using Content = std::variant<TextContent, ImageContent, AudioContent>;
 
 /**
  * @brief Serializes TextContent to JSON.
@@ -384,6 +393,29 @@ inline void from_json(const nlohmann::json& json_obj, ImageContent& content) {
 }
 
 /**
+ * @brief Serializes AudioContent to JSON.
+ *
+ * @param json_obj The JSON object to populate.
+ * @param content The AudioContent object to serialize.
+ */
+inline void to_json(nlohmann::json& json_obj, const AudioContent& content) {
+    json_obj =
+        nlohmann::json{{"type", content.type}, {"data", content.data}, {"mimeType", content.mimeType}};
+}
+
+/**
+ * @brief Deserializes AudioContent from JSON.
+ *
+ * @param json_obj The JSON object to read from.
+ * @param content The AudioContent object to populate.
+ */
+inline void from_json(const nlohmann::json& json_obj, AudioContent& content) {
+    json_obj.at("type").get_to(content.type);
+    json_obj.at("data").get_to(content.data);
+    json_obj.at("mimeType").get_to(content.mimeType);
+}
+
+/**
  * @brief Serializes Content variant to JSON.
  *
  * @param json_obj The JSON object to populate.
@@ -407,6 +439,9 @@ inline void from_json(const nlohmann::json& json_obj, Content& content) {
         content = json_obj.get<TextContent>();
     } else if (type == "image") {
         content = json_obj.get<ImageContent>();
+
+    } else if (type == "audio") {
+        content = json_obj.get<AudioContent>();
     } else {
         throw std::invalid_argument("Unknown content type: " + type);
     }
@@ -638,10 +673,137 @@ inline void from_json(const nlohmann::json& json_obj, Resource& resource) {
 }
 
 /**
+ * @brief A template description for resources available on the server.
+ */
+struct ResourceTemplate {
+    std::string uriTemplate;                 ///< A URI template (according to RFC 6570).
+    std::string name;                        ///< The name of the template.
+    std::optional<std::string> description;  ///< Optional description.
+    std::optional<std::string> mimeType;     ///< Optional MIME type.
+    std::optional<nlohmann::json> meta;      ///< Reserved for protocol use.
+    std::optional<Annotations> annotations;  ///< Optional annotations.
+    std::optional<std::string> title;        ///< Human-readable title.
+    std::optional<std::vector<Icon>> icons;  ///< Icons for the template.
+};
+
+inline void to_json(nlohmann::json& json_obj, const ResourceTemplate& tmpl) {
+    json_obj = nlohmann::json{{"uriTemplate", tmpl.uriTemplate}, {"name", tmpl.name}};
+    if (tmpl.description) {
+        json_obj["description"] = *tmpl.description;
+    }
+    if (tmpl.mimeType) {
+        json_obj["mimeType"] = *tmpl.mimeType;
+    }
+    if (tmpl.meta) {
+        json_obj["_meta"] = *tmpl.meta;
+    }
+    if (tmpl.annotations) {
+        json_obj["annotations"] = *tmpl.annotations;
+    }
+    if (tmpl.title) {
+        json_obj["title"] = *tmpl.title;
+    }
+    if (tmpl.icons) {
+        json_obj["icons"] = *tmpl.icons;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, ResourceTemplate& tmpl) {
+    json_obj.at("uriTemplate").get_to(tmpl.uriTemplate);
+    json_obj.at("name").get_to(tmpl.name);
+    if (json_obj.contains("description")) {
+        tmpl.description = json_obj.at("description").get<std::string>();
+    }
+    if (json_obj.contains("mimeType")) {
+        tmpl.mimeType = json_obj.at("mimeType").get<std::string>();
+    }
+    if (json_obj.contains("_meta")) {
+        tmpl.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+    if (json_obj.contains("annotations")) {
+        tmpl.annotations = json_obj.at("annotations").get<Annotations>();
+    }
+    if (json_obj.contains("title")) {
+        tmpl.title = json_obj.at("title").get<std::string>();
+    }
+    if (json_obj.contains("icons")) {
+        tmpl.icons = json_obj.at("icons").get<std::vector<Icon>>();
+    }
+}
+
+/**
  * @brief Result of reading a resource.
  */
+
+/**
+ * @brief Represents text resource contents.
+ */
+struct TextResourceContents {
+    std::string uri;                      ///< The URI of this resource.
+    std::string text;                     ///< The text of the item.
+    std::optional<std::string> mimeType;  ///< The MIME type of this resource.
+};
+
+/**
+ * @brief Represents blob resource contents.
+ */
+struct BlobResourceContents {
+    std::string uri;                      ///< The URI of this resource.
+    std::string blob;                     ///< The base64-encoded binary data.
+    std::optional<std::string> mimeType;  ///< The MIME type of this resource.
+};
+
+/**
+ * @brief Variant holding either TextResourceContents or BlobResourceContents.
+ */
+using ResourceContents = std::variant<TextResourceContents, BlobResourceContents>;
+
+inline void to_json(nlohmann::json& json_obj, const TextResourceContents& content) {
+    json_obj = nlohmann::json{{"uri", content.uri}, {"text", content.text}};
+    if (content.mimeType) {
+        json_obj["mimeType"] = *content.mimeType;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, TextResourceContents& content) {
+    json_obj.at("uri").get_to(content.uri);
+    json_obj.at("text").get_to(content.text);
+    if (json_obj.contains("mimeType")) {
+        content.mimeType = json_obj.at("mimeType").get<std::string>();
+    }
+}
+
+inline void to_json(nlohmann::json& json_obj, const BlobResourceContents& content) {
+    json_obj = nlohmann::json{{"uri", content.uri}, {"blob", content.blob}};
+    if (content.mimeType) {
+        json_obj["mimeType"] = *content.mimeType;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, BlobResourceContents& content) {
+    json_obj.at("uri").get_to(content.uri);
+    json_obj.at("blob").get_to(content.blob);
+    if (json_obj.contains("mimeType")) {
+        content.mimeType = json_obj.at("mimeType").get<std::string>();
+    }
+}
+
+inline void to_json(nlohmann::json& json_obj, const ResourceContents& content) {
+    std::visit([&json_obj](auto&& arg) { json_obj = arg; }, content);
+}
+
+inline void from_json(const nlohmann::json& json_obj, ResourceContents& content) {
+    if (json_obj.contains("text")) {
+        content = json_obj.get<TextResourceContents>();
+    } else if (json_obj.contains("blob")) {
+        content = json_obj.get<BlobResourceContents>();
+    } else {
+        throw std::invalid_argument("Unknown resource contents type");
+    }
+}
+
 struct ReadResourceResult {
-    std::vector<Content> contents;  ///< The contents of the resource.
+    std::vector<ResourceContents> contents;  ///< The contents of the resource.
 };
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ReadResourceResult, contents)

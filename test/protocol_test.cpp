@@ -200,6 +200,43 @@ TEST(ProtocolTest, ResourceSerialization) {
     EXPECT_FALSE(deserialized.description.has_value());
 }
 
+TEST(ProtocolTest, ResourceContentsSerialization) {
+    mcp::TextResourceContents text_content{"file:///test.txt", "Hello World", "text/plain"};
+    mcp::ResourceContents rc_text = text_content;
+    nlohmann::json j_text = rc_text;
+    EXPECT_EQ(j_text["uri"], "file:///test.txt");
+    EXPECT_EQ(j_text["text"], "Hello World");
+    EXPECT_EQ(j_text["mimeType"], "text/plain");
+
+    auto deserialized_text = j_text.get<mcp::ResourceContents>();
+    EXPECT_TRUE(std::holds_alternative<mcp::TextResourceContents>(deserialized_text));
+    EXPECT_EQ(std::get<mcp::TextResourceContents>(deserialized_text).text, "Hello World");
+
+    mcp::BlobResourceContents blob_content{"file:///test.bin", "base64blob",
+                                           "application/octet-stream"};
+    mcp::ResourceContents rc_blob = blob_content;
+    nlohmann::json j_blob = rc_blob;
+    EXPECT_EQ(j_blob["uri"], "file:///test.bin");
+    EXPECT_EQ(j_blob["blob"], "base64blob");
+
+    auto deserialized_blob = j_blob.get<mcp::ResourceContents>();
+    EXPECT_TRUE(std::holds_alternative<mcp::BlobResourceContents>(deserialized_blob));
+    EXPECT_EQ(std::get<mcp::BlobResourceContents>(deserialized_blob).blob, "base64blob");
+}
+
+TEST(ProtocolTest, ResourceTemplateSerialization) {
+    mcp::ResourceTemplate tmpl{"file:///{path}", "test_template", "A test template", "text/plain"};
+    nlohmann::json j = tmpl;
+    EXPECT_EQ(j["uriTemplate"], "file:///{path}");
+    EXPECT_EQ(j["name"], "test_template");
+    EXPECT_EQ(j["description"], "A test template");
+
+    auto deserialized = j.get<mcp::ResourceTemplate>();
+    EXPECT_EQ(deserialized.uriTemplate, "file:///{path}");
+    EXPECT_EQ(deserialized.name, "test_template");
+    EXPECT_EQ(deserialized.description, "A test template");
+}
+
 TEST(ProtocolTest, OptionalFieldsSerialization) {
     // Test Icon
     mcp::Icon icon;
