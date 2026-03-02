@@ -26,15 +26,21 @@ constexpr std::string_view PROTOCOL_VERSION_2025_03_26 = "2025-03-26";
 constexpr std::string_view PROTOCOL_VERSION_2025_06_18 = "2025-06-18";
 
 /**
+ * @brief Protocol version 2025-11-25.
+ */
+constexpr std::string_view PROTOCOL_VERSION_2025_11_25 = "2025-11-25";
+
+/**
  * @brief The latest supported protocol version.
  */
-constexpr std::string_view LATEST_PROTOCOL_VERSION = PROTOCOL_VERSION_2025_06_18;
+constexpr std::string_view LATEST_PROTOCOL_VERSION = PROTOCOL_VERSION_2025_11_25;
 
 /**
  * @brief List of all supported protocol versions.
  */
-constexpr std::array<std::string_view, 3> SUPPORTED_PROTOCOL_VERSIONS = {
-    PROTOCOL_VERSION_2024_11_05, PROTOCOL_VERSION_2025_03_26, PROTOCOL_VERSION_2025_06_18};
+constexpr std::array<std::string_view, 4> SUPPORTED_PROTOCOL_VERSIONS = {
+    PROTOCOL_VERSION_2024_11_05, PROTOCOL_VERSION_2025_03_26, PROTOCOL_VERSION_2025_06_18,
+    PROTOCOL_VERSION_2025_11_25};
 
 /**
  * @brief The sender or recipient of messages and data in a conversation.
@@ -211,6 +217,7 @@ struct Implementation {
     std::string name;                        ///< The name of the implementation.
     std::string version;                     ///< The version of the implementation.
     std::optional<std::string> title;        ///< The title of the implementation.
+    std::optional<std::string> description;  ///< Human-readable description of this implementation.
     std::optional<std::string> websiteUrl;   ///< The website URL of the implementation.
     std::optional<std::vector<Icon>> icons;  ///< Icons for the implementation.
 };
@@ -225,6 +232,9 @@ inline void to_json(nlohmann::json& json_obj, const Implementation& impl) {
     json_obj = nlohmann::json{{"name", impl.name}, {"version", impl.version}};
     if (impl.title) {
         json_obj["title"] = *impl.title;
+    }
+    if (impl.description) {
+        json_obj["description"] = *impl.description;
     }
     if (impl.websiteUrl) {
         json_obj["websiteUrl"] = *impl.websiteUrl;
@@ -246,6 +256,9 @@ inline void from_json(const nlohmann::json& json_obj, Implementation& impl) {
     if (json_obj.contains("title")) {
         impl.title = json_obj.at("title").get<std::string>();
     }
+    if (json_obj.contains("description")) {
+        impl.description = json_obj.at("description").get<std::string>();
+    }
     if (json_obj.contains("websiteUrl")) {
         impl.websiteUrl = json_obj.at("websiteUrl").get<std::string>();
     }
@@ -265,12 +278,432 @@ using ClientInfo = Implementation;
 using ServerInfo = Implementation;
 
 /**
+ * @brief Capabilities a client may support.
+ *
+ * @details Known capabilities are defined here, but this is not a closed set:
+ * any client can define its own additional capabilities.
+ */
+struct ClientCapabilities {
+    /// Present if the client supports elicitation from the server.
+    struct ElicitationCapability {
+        std::optional<nlohmann::json> form;  ///< Form-based elicitation support.
+        std::optional<nlohmann::json> url;   ///< URL-based elicitation support.
+    };
+
+    /// Present if the client supports listing roots.
+    struct RootsCapability {
+        std::optional<bool>
+            listChanged;  ///< Whether the client supports root list change notifications.
+    };
+
+    /// Present if the client supports sampling from an LLM.
+    struct SamplingCapability {
+        std::optional<nlohmann::json> context;  ///< Whether the client supports context inclusion.
+        std::optional<nlohmann::json> tools;    ///< Whether the client supports tool use.
+    };
+
+    /// Task support for specific request types (client-side).
+    struct TaskRequestsCapability {
+        /// Task support for elicitation-related requests.
+        struct ElicitationTaskCapability {
+            std::optional<nlohmann::json> create;
+        };
+        /// Task support for sampling-related requests.
+        struct SamplingTaskCapability {
+            std::optional<nlohmann::json> createMessage;
+        };
+
+        std::optional<ElicitationTaskCapability> elicitation;
+        std::optional<SamplingTaskCapability> sampling;
+    };
+
+    /// Present if the client supports task-augmented requests.
+    struct TasksCapability {
+        std::optional<nlohmann::json> cancel;            ///< Whether the client supports tasks/cancel.
+        std::optional<nlohmann::json> list;              ///< Whether the client supports tasks/list.
+        std::optional<TaskRequestsCapability> requests;  ///< Which request types support tasks.
+    };
+
+    std::optional<ElicitationCapability> elicitation;
+    std::optional<nlohmann::json> experimental;
+    std::optional<RootsCapability> roots;
+    std::optional<SamplingCapability> sampling;
+    std::optional<TasksCapability> tasks;
+};
+
+inline void to_json(nlohmann::json& j, const ClientCapabilities::ElicitationCapability& cap) {
+    j = nlohmann::json::object();
+    if (cap.form) {
+        j["form"] = *cap.form;
+    }
+    if (cap.url) {
+        j["url"] = *cap.url;
+    }
+}
+
+inline void from_json(const nlohmann::json& j, ClientCapabilities::ElicitationCapability& cap) {
+    if (j.contains("form")) {
+        cap.form = j.at("form");
+    }
+    if (j.contains("url")) {
+        cap.url = j.at("url");
+    }
+}
+
+inline void to_json(nlohmann::json& j, const ClientCapabilities::RootsCapability& cap) {
+    j = nlohmann::json::object();
+    if (cap.listChanged) {
+        j["listChanged"] = *cap.listChanged;
+    }
+}
+
+inline void from_json(const nlohmann::json& j, ClientCapabilities::RootsCapability& cap) {
+    if (j.contains("listChanged")) {
+        cap.listChanged = j.at("listChanged").get<bool>();
+    }
+}
+
+inline void to_json(nlohmann::json& j, const ClientCapabilities::SamplingCapability& cap) {
+    j = nlohmann::json::object();
+    if (cap.context) {
+        j["context"] = *cap.context;
+    }
+    if (cap.tools) {
+        j["tools"] = *cap.tools;
+    }
+}
+
+inline void from_json(const nlohmann::json& j, ClientCapabilities::SamplingCapability& cap) {
+    if (j.contains("context")) {
+        cap.context = j.at("context");
+    }
+    if (j.contains("tools")) {
+        cap.tools = j.at("tools");
+    }
+}
+
+inline void to_json(nlohmann::json& j,
+                    const ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability& cap) {
+    j = nlohmann::json::object();
+    if (cap.create) {
+        j["create"] = *cap.create;
+    }
+}
+
+inline void from_json(const nlohmann::json& j,
+                      ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability& cap) {
+    if (j.contains("create")) {
+        cap.create = j.at("create");
+    }
+}
+
+inline void to_json(nlohmann::json& j,
+                    const ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability& cap) {
+    j = nlohmann::json::object();
+    if (cap.createMessage) {
+        j["createMessage"] = *cap.createMessage;
+    }
+}
+
+inline void from_json(const nlohmann::json& j,
+                      ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability& cap) {
+    if (j.contains("createMessage")) {
+        cap.createMessage = j.at("createMessage");
+    }
+}
+
+inline void to_json(nlohmann::json& j, const ClientCapabilities::TaskRequestsCapability& cap) {
+    j = nlohmann::json::object();
+    if (cap.elicitation) {
+        j["elicitation"] = *cap.elicitation;
+    }
+    if (cap.sampling) {
+        j["sampling"] = *cap.sampling;
+    }
+}
+
+inline void from_json(const nlohmann::json& j, ClientCapabilities::TaskRequestsCapability& cap) {
+    if (j.contains("elicitation")) {
+        cap.elicitation =
+            j.at("elicitation")
+                .get<ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability>();
+    }
+    if (j.contains("sampling")) {
+        cap.sampling =
+            j.at("sampling").get<ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability>();
+    }
+}
+
+inline void to_json(nlohmann::json& j, const ClientCapabilities::TasksCapability& cap) {
+    j = nlohmann::json::object();
+    if (cap.cancel) {
+        j["cancel"] = *cap.cancel;
+    }
+    if (cap.list) {
+        j["list"] = *cap.list;
+    }
+    if (cap.requests) {
+        j["requests"] = *cap.requests;
+    }
+}
+
+inline void from_json(const nlohmann::json& j, ClientCapabilities::TasksCapability& cap) {
+    if (j.contains("cancel")) {
+        cap.cancel = j.at("cancel");
+    }
+    if (j.contains("list")) {
+        cap.list = j.at("list");
+    }
+    if (j.contains("requests")) {
+        cap.requests = j.at("requests").get<ClientCapabilities::TaskRequestsCapability>();
+    }
+}
+
+inline void to_json(nlohmann::json& j, const ClientCapabilities& cap) {
+    j = nlohmann::json::object();
+    if (cap.elicitation) {
+        j["elicitation"] = *cap.elicitation;
+    }
+    if (cap.experimental) {
+        j["experimental"] = *cap.experimental;
+    }
+    if (cap.roots) {
+        j["roots"] = *cap.roots;
+    }
+    if (cap.sampling) {
+        j["sampling"] = *cap.sampling;
+    }
+    if (cap.tasks) {
+        j["tasks"] = *cap.tasks;
+    }
+}
+
+inline void from_json(const nlohmann::json& j, ClientCapabilities& cap) {
+    if (j.contains("elicitation")) {
+        cap.elicitation = j.at("elicitation").get<ClientCapabilities::ElicitationCapability>();
+    }
+    if (j.contains("experimental")) {
+        cap.experimental = j.at("experimental");
+    }
+    if (j.contains("roots")) {
+        cap.roots = j.at("roots").get<ClientCapabilities::RootsCapability>();
+    }
+    if (j.contains("sampling")) {
+        cap.sampling = j.at("sampling").get<ClientCapabilities::SamplingCapability>();
+    }
+    if (j.contains("tasks")) {
+        cap.tasks = j.at("tasks").get<ClientCapabilities::TasksCapability>();
+    }
+}
+
+/**
+ * @brief Capabilities that a server may support.
+ *
+ * @details Known capabilities are defined here, but this is not a closed set:
+ * any server can define its own additional capabilities.
+ */
+struct ServerCapabilities {
+    /// Present if the server offers any prompt templates.
+    struct PromptsCapability {
+        std::optional<bool>
+            listChanged;  ///< Whether the server supports prompt list change notifications.
+    };
+
+    /// Present if the server offers any resources to read.
+    struct ResourcesCapability {
+        std::optional<bool>
+            listChanged;  ///< Whether the server supports resource list change notifications.
+        std::optional<bool>
+            subscribe;  ///< Whether the server supports subscribing to resource updates.
+    };
+
+    /// Task support for specific request types (server-side).
+    struct TaskRequestsCapability {
+        /// Task support for tool-related requests.
+        struct ToolsTaskCapability {
+            std::optional<nlohmann::json> call;
+        };
+
+        std::optional<ToolsTaskCapability> tools;
+    };
+
+    /// Present if the server supports task-augmented requests.
+    struct TasksCapability {
+        std::optional<nlohmann::json> cancel;            ///< Whether the server supports tasks/cancel.
+        std::optional<nlohmann::json> list;              ///< Whether the server supports tasks/list.
+        std::optional<TaskRequestsCapability> requests;  ///< Which request types support tasks.
+    };
+
+    /// Present if the server offers any tools to call.
+    struct ToolsCapability {
+        std::optional<bool>
+            listChanged;  ///< Whether the server supports tool list change notifications.
+    };
+
+    std::optional<nlohmann::json> completions;
+    std::optional<nlohmann::json> experimental;
+    std::optional<nlohmann::json> logging;
+    std::optional<PromptsCapability> prompts;
+    std::optional<ResourcesCapability> resources;
+    std::optional<TasksCapability> tasks;
+    std::optional<ToolsCapability> tools;
+};
+
+inline void to_json(nlohmann::json& j, const ServerCapabilities::PromptsCapability& cap) {
+    j = nlohmann::json::object();
+    if (cap.listChanged) {
+        j["listChanged"] = *cap.listChanged;
+    }
+}
+
+inline void from_json(const nlohmann::json& j, ServerCapabilities::PromptsCapability& cap) {
+    if (j.contains("listChanged")) {
+        cap.listChanged = j.at("listChanged").get<bool>();
+    }
+}
+
+inline void to_json(nlohmann::json& j, const ServerCapabilities::ResourcesCapability& cap) {
+    j = nlohmann::json::object();
+    if (cap.listChanged) {
+        j["listChanged"] = *cap.listChanged;
+    }
+    if (cap.subscribe) {
+        j["subscribe"] = *cap.subscribe;
+    }
+}
+
+inline void from_json(const nlohmann::json& j, ServerCapabilities::ResourcesCapability& cap) {
+    if (j.contains("listChanged")) {
+        cap.listChanged = j.at("listChanged").get<bool>();
+    }
+    if (j.contains("subscribe")) {
+        cap.subscribe = j.at("subscribe").get<bool>();
+    }
+}
+
+inline void to_json(nlohmann::json& j,
+                    const ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability& cap) {
+    j = nlohmann::json::object();
+    if (cap.call) {
+        j["call"] = *cap.call;
+    }
+}
+
+inline void from_json(const nlohmann::json& j,
+                      ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability& cap) {
+    if (j.contains("call")) {
+        cap.call = j.at("call");
+    }
+}
+
+inline void to_json(nlohmann::json& j, const ServerCapabilities::TaskRequestsCapability& cap) {
+    j = nlohmann::json::object();
+    if (cap.tools) {
+        j["tools"] = *cap.tools;
+    }
+}
+
+inline void from_json(const nlohmann::json& j, ServerCapabilities::TaskRequestsCapability& cap) {
+    if (j.contains("tools")) {
+        cap.tools =
+            j.at("tools").get<ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability>();
+    }
+}
+
+inline void to_json(nlohmann::json& j, const ServerCapabilities::TasksCapability& cap) {
+    j = nlohmann::json::object();
+    if (cap.cancel) {
+        j["cancel"] = *cap.cancel;
+    }
+    if (cap.list) {
+        j["list"] = *cap.list;
+    }
+    if (cap.requests) {
+        j["requests"] = *cap.requests;
+    }
+}
+
+inline void from_json(const nlohmann::json& j, ServerCapabilities::TasksCapability& cap) {
+    if (j.contains("cancel")) {
+        cap.cancel = j.at("cancel");
+    }
+    if (j.contains("list")) {
+        cap.list = j.at("list");
+    }
+    if (j.contains("requests")) {
+        cap.requests = j.at("requests").get<ServerCapabilities::TaskRequestsCapability>();
+    }
+}
+
+inline void to_json(nlohmann::json& j, const ServerCapabilities::ToolsCapability& cap) {
+    j = nlohmann::json::object();
+    if (cap.listChanged) {
+        j["listChanged"] = *cap.listChanged;
+    }
+}
+
+inline void from_json(const nlohmann::json& j, ServerCapabilities::ToolsCapability& cap) {
+    if (j.contains("listChanged")) {
+        cap.listChanged = j.at("listChanged").get<bool>();
+    }
+}
+
+inline void to_json(nlohmann::json& j, const ServerCapabilities& cap) {
+    j = nlohmann::json::object();
+    if (cap.completions) {
+        j["completions"] = *cap.completions;
+    }
+    if (cap.experimental) {
+        j["experimental"] = *cap.experimental;
+    }
+    if (cap.logging) {
+        j["logging"] = *cap.logging;
+    }
+    if (cap.prompts) {
+        j["prompts"] = *cap.prompts;
+    }
+    if (cap.resources) {
+        j["resources"] = *cap.resources;
+    }
+    if (cap.tasks) {
+        j["tasks"] = *cap.tasks;
+    }
+    if (cap.tools) {
+        j["tools"] = *cap.tools;
+    }
+}
+
+inline void from_json(const nlohmann::json& j, ServerCapabilities& cap) {
+    if (j.contains("completions")) {
+        cap.completions = j.at("completions");
+    }
+    if (j.contains("experimental")) {
+        cap.experimental = j.at("experimental");
+    }
+    if (j.contains("logging")) {
+        cap.logging = j.at("logging");
+    }
+    if (j.contains("prompts")) {
+        cap.prompts = j.at("prompts").get<ServerCapabilities::PromptsCapability>();
+    }
+    if (j.contains("resources")) {
+        cap.resources = j.at("resources").get<ServerCapabilities::ResourcesCapability>();
+    }
+    if (j.contains("tasks")) {
+        cap.tasks = j.at("tasks").get<ServerCapabilities::TasksCapability>();
+    }
+    if (j.contains("tools")) {
+        cap.tools = j.at("tools").get<ServerCapabilities::ToolsCapability>();
+    }
+}
+
+/**
  * @brief Represents an initialization request from the client.
  */
 struct InitializeRequest {
-    std::string protocolVersion;  ///< The protocol version supported by the client.
-    ClientInfo clientInfo;        ///< Information about the client implementation.
-    nlohmann::json capabilities;  ///< The capabilities supported by the client.
+    std::string protocolVersion;      ///< The protocol version supported by the client.
+    ClientInfo clientInfo;            ///< Information about the client implementation.
+    ClientCapabilities capabilities;  ///< The capabilities supported by the client.
 };
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(InitializeRequest, protocolVersion, clientInfo, capabilities)
@@ -280,7 +713,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(InitializeRequest, protocolVersion, clientInf
  */
 struct InitializeResult {
     std::string protocolVersion;              ///< The protocol version selected by the server.
-    nlohmann::json capabilities;              ///< The capabilities supported by the server.
+    ServerCapabilities capabilities;          ///< The capabilities supported by the server.
     ServerInfo serverInfo;                    ///< Information about the server implementation.
     std::optional<std::string> instructions;  ///< Optional instructions for the client.
 };

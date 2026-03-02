@@ -10,7 +10,7 @@ TEST(ProtocolTest, InitializeRequestSerialization) {
     mcp::InitializeRequest req;
     req.protocolVersion = std::string(mcp::LATEST_PROTOCOL_VERSION);
     req.clientInfo = {"test-client", "1.0.0"};
-    req.capabilities = nlohmann::json::object();
+    req.capabilities = mcp::ClientCapabilities{};
 
     json json_obj = req;
 
@@ -33,10 +33,10 @@ TEST(ProtocolTest, InitializeResultDeserialization) {
 }
 
 TEST(ProtocolTest, SupportedProtocolVersions) {
-    // Verify that we support the requested versions
     bool has_2024_11_05 = false;
     bool has_2025_03_26 = false;
     bool has_2025_06_18 = false;
+    bool has_2025_11_25 = false;
 
     for (const auto& version : mcp::SUPPORTED_PROTOCOL_VERSIONS) {
         if (version == "2024-11-05") {
@@ -48,11 +48,15 @@ TEST(ProtocolTest, SupportedProtocolVersions) {
         if (version == "2025-06-18") {
             has_2025_06_18 = true;
         }
+        if (version == "2025-11-25") {
+            has_2025_11_25 = true;
+        }
     }
 
     EXPECT_TRUE(has_2024_11_05) << "Protocol version 2024-11-05 not found in supported versions";
     EXPECT_TRUE(has_2025_03_26) << "Protocol version 2025-03-26 not found in supported versions";
     EXPECT_TRUE(has_2025_06_18) << "Protocol version 2025-06-18 not found in supported versions";
+    EXPECT_TRUE(has_2025_11_25) << "Protocol version 2025-11-25 not found in supported versions";
 }
 
 TEST(ProtocolTest, ParseInitializeRequest_2024_11_05) {
@@ -1505,4 +1509,375 @@ TEST(ProtocolTest, SetLevelRequestSerialization) {
     auto deserialized2 = j2.get<mcp::SetLevelRequest>();
     EXPECT_EQ(deserialized2.params.level, mcp::LoggingLevel::Debug);
     EXPECT_FALSE(deserialized2.params.meta.has_value());
+}
+
+TEST(ProtocolTest, ImplementationDescriptionField) {
+    mcp::Implementation impl;
+    impl.name = "test-server";
+    impl.version = "2.0.0";
+    impl.description = "A test MCP server providing math tools";
+
+    json j = impl;
+    EXPECT_EQ(j["name"], "test-server");
+    EXPECT_EQ(j["description"], "A test MCP server providing math tools");
+
+    auto rt = j.get<mcp::Implementation>();
+    EXPECT_EQ(rt.name, "test-server");
+    ASSERT_TRUE(rt.description.has_value());
+    EXPECT_EQ(*rt.description, "A test MCP server providing math tools");
+
+    mcp::Implementation impl2;
+    impl2.name = "minimal";
+    impl2.version = "1.0";
+
+    json j2 = impl2;
+    EXPECT_FALSE(j2.contains("description"));
+
+    auto rt2 = j2.get<mcp::Implementation>();
+    EXPECT_FALSE(rt2.description.has_value());
+}
+
+TEST(ProtocolTest, LatestProtocolVersion) {
+    EXPECT_EQ(mcp::LATEST_PROTOCOL_VERSION, "2025-11-25");
+    EXPECT_EQ(mcp::PROTOCOL_VERSION_2025_11_25, "2025-11-25");
+}
+
+TEST(ProtocolTest, ClientCapabilitiesEmptySerialization) {
+    mcp::ClientCapabilities caps{};
+
+    json j = caps;
+    EXPECT_TRUE(j.is_object());
+    EXPECT_TRUE(j.empty());
+
+    auto rt = j.get<mcp::ClientCapabilities>();
+    EXPECT_FALSE(rt.elicitation.has_value());
+    EXPECT_FALSE(rt.experimental.has_value());
+    EXPECT_FALSE(rt.roots.has_value());
+    EXPECT_FALSE(rt.sampling.has_value());
+    EXPECT_FALSE(rt.tasks.has_value());
+}
+
+TEST(ProtocolTest, ClientCapabilitiesFullSerialization) {
+    mcp::ClientCapabilities caps;
+    caps.elicitation = mcp::ClientCapabilities::ElicitationCapability{
+        .form = json::object(),
+        .url = json::object(),
+    };
+    caps.experimental = json{{"customFeature", json::object()}};
+    caps.roots = mcp::ClientCapabilities::RootsCapability{.listChanged = true};
+    caps.sampling = mcp::ClientCapabilities::SamplingCapability{
+        .context = json::object(),
+        .tools = json::object(),
+    };
+
+    mcp::ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability elicitTask;
+    elicitTask.create = json::object();
+    mcp::ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability samplingTask;
+    samplingTask.createMessage = json::object();
+
+    mcp::ClientCapabilities::TaskRequestsCapability taskReqs;
+    taskReqs.elicitation = elicitTask;
+    taskReqs.sampling = samplingTask;
+
+    caps.tasks = mcp::ClientCapabilities::TasksCapability{
+        .cancel = json::object(),
+        .list = json::object(),
+        .requests = taskReqs,
+    };
+
+    json j = caps;
+
+    EXPECT_TRUE(j.contains("elicitation"));
+    EXPECT_TRUE(j["elicitation"].contains("form"));
+    EXPECT_TRUE(j["elicitation"].contains("url"));
+
+    EXPECT_TRUE(j.contains("experimental"));
+    EXPECT_TRUE(j["experimental"].contains("customFeature"));
+
+    EXPECT_TRUE(j.contains("roots"));
+    EXPECT_EQ(j["roots"]["listChanged"], true);
+
+    EXPECT_TRUE(j.contains("sampling"));
+    EXPECT_TRUE(j["sampling"].contains("context"));
+    EXPECT_TRUE(j["sampling"].contains("tools"));
+
+    EXPECT_TRUE(j.contains("tasks"));
+    EXPECT_TRUE(j["tasks"].contains("cancel"));
+    EXPECT_TRUE(j["tasks"].contains("list"));
+    EXPECT_TRUE(j["tasks"].contains("requests"));
+    EXPECT_TRUE(j["tasks"]["requests"].contains("elicitation"));
+    EXPECT_TRUE(j["tasks"]["requests"]["elicitation"].contains("create"));
+    EXPECT_TRUE(j["tasks"]["requests"].contains("sampling"));
+    EXPECT_TRUE(j["tasks"]["requests"]["sampling"].contains("createMessage"));
+
+    auto rt = j.get<mcp::ClientCapabilities>();
+    ASSERT_TRUE(rt.elicitation.has_value());
+    ASSERT_TRUE(rt.elicitation->form.has_value());
+    ASSERT_TRUE(rt.elicitation->url.has_value());
+    ASSERT_TRUE(rt.roots.has_value());
+    EXPECT_EQ(*rt.roots->listChanged, true);
+    ASSERT_TRUE(rt.sampling.has_value());
+    ASSERT_TRUE(rt.sampling->context.has_value());
+    ASSERT_TRUE(rt.sampling->tools.has_value());
+    ASSERT_TRUE(rt.tasks.has_value());
+    ASSERT_TRUE(rt.tasks->cancel.has_value());
+    ASSERT_TRUE(rt.tasks->list.has_value());
+    ASSERT_TRUE(rt.tasks->requests.has_value());
+    ASSERT_TRUE(rt.tasks->requests->elicitation.has_value());
+    ASSERT_TRUE(rt.tasks->requests->elicitation->create.has_value());
+    ASSERT_TRUE(rt.tasks->requests->sampling.has_value());
+    ASSERT_TRUE(rt.tasks->requests->sampling->createMessage.has_value());
+}
+
+TEST(ProtocolTest, ClientCapabilitiesPartialSerialization) {
+    mcp::ClientCapabilities caps;
+    caps.roots = mcp::ClientCapabilities::RootsCapability{.listChanged = false};
+    caps.sampling = mcp::ClientCapabilities::SamplingCapability{};
+
+    json j = caps;
+    EXPECT_FALSE(j.contains("elicitation"));
+    EXPECT_FALSE(j.contains("experimental"));
+    EXPECT_FALSE(j.contains("tasks"));
+    EXPECT_TRUE(j.contains("roots"));
+    EXPECT_EQ(j["roots"]["listChanged"], false);
+    EXPECT_TRUE(j.contains("sampling"));
+
+    auto rt = j.get<mcp::ClientCapabilities>();
+    EXPECT_FALSE(rt.elicitation.has_value());
+    ASSERT_TRUE(rt.roots.has_value());
+    EXPECT_EQ(*rt.roots->listChanged, false);
+    ASSERT_TRUE(rt.sampling.has_value());
+    EXPECT_FALSE(rt.sampling->context.has_value());
+    EXPECT_FALSE(rt.sampling->tools.has_value());
+}
+
+TEST(ProtocolTest, ServerCapabilitiesEmptySerialization) {
+    mcp::ServerCapabilities caps{};
+
+    json j = caps;
+    EXPECT_TRUE(j.is_object());
+    EXPECT_TRUE(j.empty());
+
+    auto rt = j.get<mcp::ServerCapabilities>();
+    EXPECT_FALSE(rt.completions.has_value());
+    EXPECT_FALSE(rt.experimental.has_value());
+    EXPECT_FALSE(rt.logging.has_value());
+    EXPECT_FALSE(rt.prompts.has_value());
+    EXPECT_FALSE(rt.resources.has_value());
+    EXPECT_FALSE(rt.tasks.has_value());
+    EXPECT_FALSE(rt.tools.has_value());
+}
+
+TEST(ProtocolTest, ServerCapabilitiesFullSerialization) {
+    mcp::ServerCapabilities caps;
+    caps.completions = json::object();
+    caps.experimental = json{{"beta", json::object()}};
+    caps.logging = json::object();
+    caps.prompts = mcp::ServerCapabilities::PromptsCapability{.listChanged = true};
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{
+        .listChanged = true,
+        .subscribe = true,
+    };
+
+    mcp::ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability toolsTask;
+    toolsTask.call = json::object();
+
+    mcp::ServerCapabilities::TaskRequestsCapability taskReqs;
+    taskReqs.tools = toolsTask;
+
+    caps.tasks = mcp::ServerCapabilities::TasksCapability{
+        .cancel = json::object(),
+        .list = json::object(),
+        .requests = taskReqs,
+    };
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{.listChanged = true};
+
+    json j = caps;
+
+    EXPECT_TRUE(j.contains("completions"));
+    EXPECT_TRUE(j.contains("experimental"));
+    EXPECT_TRUE(j.contains("logging"));
+    EXPECT_TRUE(j.contains("prompts"));
+    EXPECT_EQ(j["prompts"]["listChanged"], true);
+    EXPECT_TRUE(j.contains("resources"));
+    EXPECT_EQ(j["resources"]["listChanged"], true);
+    EXPECT_EQ(j["resources"]["subscribe"], true);
+    EXPECT_TRUE(j.contains("tasks"));
+    EXPECT_TRUE(j["tasks"].contains("cancel"));
+    EXPECT_TRUE(j["tasks"].contains("list"));
+    EXPECT_TRUE(j["tasks"]["requests"]["tools"]["call"].is_object());
+    EXPECT_TRUE(j.contains("tools"));
+    EXPECT_EQ(j["tools"]["listChanged"], true);
+
+    auto rt = j.get<mcp::ServerCapabilities>();
+    ASSERT_TRUE(rt.completions.has_value());
+    ASSERT_TRUE(rt.logging.has_value());
+    ASSERT_TRUE(rt.prompts.has_value());
+    EXPECT_EQ(*rt.prompts->listChanged, true);
+    ASSERT_TRUE(rt.resources.has_value());
+    EXPECT_EQ(*rt.resources->listChanged, true);
+    EXPECT_EQ(*rt.resources->subscribe, true);
+    ASSERT_TRUE(rt.tasks.has_value());
+    ASSERT_TRUE(rt.tasks->cancel.has_value());
+    ASSERT_TRUE(rt.tasks->list.has_value());
+    ASSERT_TRUE(rt.tasks->requests.has_value());
+    ASSERT_TRUE(rt.tasks->requests->tools.has_value());
+    ASSERT_TRUE(rt.tasks->requests->tools->call.has_value());
+    ASSERT_TRUE(rt.tools.has_value());
+    EXPECT_EQ(*rt.tools->listChanged, true);
+}
+
+TEST(ProtocolTest, ServerCapabilitiesPartialSerialization) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{.listChanged = false};
+    caps.prompts = mcp::ServerCapabilities::PromptsCapability{};
+
+    json j = caps;
+    EXPECT_FALSE(j.contains("completions"));
+    EXPECT_FALSE(j.contains("experimental"));
+    EXPECT_FALSE(j.contains("logging"));
+    EXPECT_FALSE(j.contains("resources"));
+    EXPECT_FALSE(j.contains("tasks"));
+    EXPECT_TRUE(j.contains("tools"));
+    EXPECT_EQ(j["tools"]["listChanged"], false);
+    EXPECT_TRUE(j.contains("prompts"));
+
+    auto rt = j.get<mcp::ServerCapabilities>();
+    ASSERT_TRUE(rt.tools.has_value());
+    EXPECT_EQ(*rt.tools->listChanged, false);
+    ASSERT_TRUE(rt.prompts.has_value());
+    EXPECT_FALSE(rt.prompts->listChanged.has_value());
+}
+
+TEST(ProtocolTest, InitializeRequestWithClientCapabilities) {
+    mcp::InitializeRequest req;
+    req.protocolVersion = std::string(mcp::LATEST_PROTOCOL_VERSION);
+    req.clientInfo = {"my-client", "3.0.0"};
+    req.clientInfo.description = "An advanced MCP client";
+    req.capabilities.roots = mcp::ClientCapabilities::RootsCapability{.listChanged = true};
+    req.capabilities.sampling = mcp::ClientCapabilities::SamplingCapability{
+        .context = json::object(),
+    };
+
+    json j = req;
+    EXPECT_EQ(j["protocolVersion"], "2025-11-25");
+    EXPECT_EQ(j["clientInfo"]["name"], "my-client");
+    EXPECT_EQ(j["clientInfo"]["description"], "An advanced MCP client");
+    EXPECT_EQ(j["capabilities"]["roots"]["listChanged"], true);
+    EXPECT_TRUE(j["capabilities"]["sampling"].contains("context"));
+    EXPECT_FALSE(j["capabilities"].contains("elicitation"));
+    EXPECT_FALSE(j["capabilities"].contains("tasks"));
+
+    auto rt = j.get<mcp::InitializeRequest>();
+    EXPECT_EQ(rt.protocolVersion, "2025-11-25");
+    EXPECT_EQ(rt.clientInfo.name, "my-client");
+    ASSERT_TRUE(rt.clientInfo.description.has_value());
+    EXPECT_EQ(*rt.clientInfo.description, "An advanced MCP client");
+    ASSERT_TRUE(rt.capabilities.roots.has_value());
+    EXPECT_EQ(*rt.capabilities.roots->listChanged, true);
+    ASSERT_TRUE(rt.capabilities.sampling.has_value());
+    ASSERT_TRUE(rt.capabilities.sampling->context.has_value());
+}
+
+TEST(ProtocolTest, InitializeResultWithServerCapabilities) {
+    mcp::InitializeResult res;
+    res.protocolVersion = std::string(mcp::LATEST_PROTOCOL_VERSION);
+    res.serverInfo = {"my-server", "1.0.0"};
+    res.serverInfo.description = "A powerful MCP server";
+    res.capabilities.tools = mcp::ServerCapabilities::ToolsCapability{.listChanged = true};
+    res.capabilities.resources = mcp::ServerCapabilities::ResourcesCapability{
+        .listChanged = true,
+        .subscribe = false,
+    };
+    res.instructions = "Use the math tools for calculations.";
+
+    json j = res;
+    EXPECT_EQ(j["protocolVersion"], "2025-11-25");
+    EXPECT_EQ(j["serverInfo"]["name"], "my-server");
+    EXPECT_EQ(j["serverInfo"]["description"], "A powerful MCP server");
+    EXPECT_EQ(j["capabilities"]["tools"]["listChanged"], true);
+    EXPECT_EQ(j["capabilities"]["resources"]["listChanged"], true);
+    EXPECT_EQ(j["capabilities"]["resources"]["subscribe"], false);
+    EXPECT_EQ(j["instructions"], "Use the math tools for calculations.");
+
+    auto rt = j.get<mcp::InitializeResult>();
+    EXPECT_EQ(rt.protocolVersion, "2025-11-25");
+    EXPECT_EQ(rt.serverInfo.name, "my-server");
+    ASSERT_TRUE(rt.serverInfo.description.has_value());
+    EXPECT_EQ(*rt.serverInfo.description, "A powerful MCP server");
+    ASSERT_TRUE(rt.capabilities.tools.has_value());
+    EXPECT_EQ(*rt.capabilities.tools->listChanged, true);
+    ASSERT_TRUE(rt.capabilities.resources.has_value());
+    EXPECT_EQ(*rt.capabilities.resources->listChanged, true);
+    EXPECT_EQ(*rt.capabilities.resources->subscribe, false);
+    ASSERT_TRUE(rt.instructions.has_value());
+    EXPECT_EQ(*rt.instructions, "Use the math tools for calculations.");
+}
+
+TEST(ProtocolTest, ClientCapabilitiesFromRawJson) {
+    json raw = R"({
+        "elicitation": {"form": {}, "url": {}},
+        "roots": {"listChanged": true},
+        "sampling": {"context": {}, "tools": {}},
+        "tasks": {
+            "cancel": {},
+            "list": {},
+            "requests": {
+                "elicitation": {"create": {}},
+                "sampling": {"createMessage": {}}
+            }
+        }
+    })"_json;
+
+    auto caps = raw.get<mcp::ClientCapabilities>();
+    ASSERT_TRUE(caps.elicitation.has_value());
+    ASSERT_TRUE(caps.elicitation->form.has_value());
+    ASSERT_TRUE(caps.elicitation->url.has_value());
+    ASSERT_TRUE(caps.roots.has_value());
+    EXPECT_EQ(*caps.roots->listChanged, true);
+    ASSERT_TRUE(caps.sampling.has_value());
+    ASSERT_TRUE(caps.tasks.has_value());
+    ASSERT_TRUE(caps.tasks->requests.has_value());
+    ASSERT_TRUE(caps.tasks->requests->elicitation.has_value());
+    ASSERT_TRUE(caps.tasks->requests->elicitation->create.has_value());
+    ASSERT_TRUE(caps.tasks->requests->sampling.has_value());
+    ASSERT_TRUE(caps.tasks->requests->sampling->createMessage.has_value());
+
+    json j2 = caps;
+    EXPECT_EQ(j2, raw);
+}
+
+TEST(ProtocolTest, ServerCapabilitiesFromRawJson) {
+    json raw = R"({
+        "completions": {},
+        "logging": {},
+        "prompts": {"listChanged": true},
+        "resources": {"listChanged": true, "subscribe": false},
+        "tasks": {
+            "cancel": {},
+            "list": {},
+            "requests": {
+                "tools": {"call": {}}
+            }
+        },
+        "tools": {"listChanged": false}
+    })"_json;
+
+    auto caps = raw.get<mcp::ServerCapabilities>();
+    ASSERT_TRUE(caps.completions.has_value());
+    ASSERT_TRUE(caps.logging.has_value());
+    ASSERT_TRUE(caps.prompts.has_value());
+    EXPECT_EQ(*caps.prompts->listChanged, true);
+    ASSERT_TRUE(caps.resources.has_value());
+    EXPECT_EQ(*caps.resources->listChanged, true);
+    EXPECT_EQ(*caps.resources->subscribe, false);
+    ASSERT_TRUE(caps.tasks.has_value());
+    ASSERT_TRUE(caps.tasks->requests.has_value());
+    ASSERT_TRUE(caps.tasks->requests->tools.has_value());
+    ASSERT_TRUE(caps.tasks->requests->tools->call.has_value());
+    ASSERT_TRUE(caps.tools.has_value());
+    EXPECT_EQ(*caps.tools->listChanged, false);
+
+    json j2 = caps;
+    EXPECT_EQ(j2, raw);
 }
