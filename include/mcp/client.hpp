@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/concepts.hpp>
 #include <mcp/core.hpp>
 #include <mcp/protocol.hpp>
 #include <mcp/transport.hpp>
@@ -17,6 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace mcp {
 
@@ -155,6 +157,146 @@ class Client {
      * @return The count of requests awaiting responses.
      */
     [[nodiscard]] std::size_t pending_request_count() const { return pending_requests_.size(); }
+
+    /**
+     * @brief Call a tool on the server.
+     *
+     * @details Serializes the arguments to JSON, sends a "tools/call"
+     * request, and deserializes the response into a CallToolResult.
+     *
+     * @tparam Args A JsonSerializable type for the tool arguments.
+     * @param name The name of the tool to call.
+     * @param arguments The arguments to pass to the tool.
+     * @return A task that resolves to the server's CallToolResult.
+     */
+    template <JsonSerializable Args>
+    Task<CallToolResult> call_tool(std::string name, Args arguments) {
+        CallToolParams call_params;
+        call_params.name = std::move(name);
+        call_params.arguments = nlohmann::json(std::move(arguments));
+
+        nlohmann::json params = std::move(call_params);
+        auto result_json = co_await send_request("tools/call", std::move(params));
+        co_return result_json.template get<CallToolResult>();
+    }
+
+    /**
+     * @brief List available tools from the server.
+     *
+     * @param cursor Optional pagination cursor.
+     * @return A task that resolves to the server's ListToolsResult.
+     */
+    Task<ListToolsResult> list_tools(std::optional<std::string> cursor = std::nullopt) {
+        std::optional<nlohmann::json> params;
+        if (cursor) {
+            PaginatedRequestParams paginated;
+            paginated.cursor = std::move(cursor);
+            nlohmann::json p = std::move(paginated);
+            params = std::move(p);
+        }
+        auto result_json = co_await send_request("tools/list", std::move(params));
+        co_return result_json.get<ListToolsResult>();
+    }
+
+    /**
+     * @brief List available resources from the server.
+     *
+     * @param cursor Optional pagination cursor.
+     * @return A task that resolves to the server's ListResourcesResult.
+     */
+    Task<ListResourcesResult> list_resources(std::optional<std::string> cursor = std::nullopt) {
+        std::optional<nlohmann::json> params;
+        if (cursor) {
+            PaginatedRequestParams paginated;
+            paginated.cursor = std::move(cursor);
+            nlohmann::json p = std::move(paginated);
+            params = std::move(p);
+        }
+        auto result_json = co_await send_request("resources/list", std::move(params));
+        co_return result_json.get<ListResourcesResult>();
+    }
+
+    /**
+     * @brief Read a resource from the server by URI.
+     *
+     * @param uri The URI of the resource to read.
+     * @return A task that resolves to the server's ReadResourceResult.
+     */
+    Task<ReadResourceResult> read_resource(std::string uri) {
+        ReadResourceRequestParams read_params;
+        read_params.uri = std::move(uri);
+
+        nlohmann::json params = std::move(read_params);
+        auto result_json = co_await send_request("resources/read", std::move(params));
+        co_return result_json.get<ReadResourceResult>();
+    }
+
+    /**
+     * @brief List available resource templates from the server.
+     *
+     * @param cursor Optional pagination cursor.
+     * @return A task that resolves to the server's ListResourceTemplatesResult.
+     */
+    Task<ListResourceTemplatesResult> list_resource_templates(
+        std::optional<std::string> cursor = std::nullopt) {
+        std::optional<nlohmann::json> params;
+        if (cursor) {
+            PaginatedRequestParams paginated;
+            paginated.cursor = std::move(cursor);
+            nlohmann::json p = std::move(paginated);
+            params = std::move(p);
+        }
+        auto result_json = co_await send_request("resources/templates/list", std::move(params));
+        co_return result_json.get<ListResourceTemplatesResult>();
+    }
+
+    /**
+     * @brief List available prompts from the server.
+     *
+     * @param cursor Optional pagination cursor.
+     * @return A task that resolves to the server's ListPromptsResult.
+     */
+    Task<ListPromptsResult> list_prompts(std::optional<std::string> cursor = std::nullopt) {
+        std::optional<nlohmann::json> params;
+        if (cursor) {
+            PaginatedRequestParams paginated;
+            paginated.cursor = std::move(cursor);
+            nlohmann::json p = std::move(paginated);
+            params = std::move(p);
+        }
+        auto result_json = co_await send_request("prompts/list", std::move(params));
+        co_return result_json.get<ListPromptsResult>();
+    }
+
+    /**
+     * @brief Get a specific prompt from the server.
+     *
+     * @param name The name of the prompt.
+     * @param arguments Optional arguments to template the prompt.
+     * @return A task that resolves to the server's GetPromptResult.
+     */
+    Task<GetPromptResult> get_prompt(
+        std::string name, std::optional<std::map<std::string, std::string>> arguments = std::nullopt) {
+        GetPromptRequestParams prompt_params;
+        prompt_params.name = std::move(name);
+        prompt_params.arguments = std::move(arguments);
+
+        nlohmann::json params = std::move(prompt_params);
+        auto result_json = co_await send_request("prompts/get", std::move(params));
+        co_return result_json.get<GetPromptResult>();
+    }
+
+    /**
+     * @brief Request completions from the server.
+     *
+     * @param params The completion parameters.
+     * @return A task that resolves to the server's CompleteResult.
+     */
+    Task<CompleteResult> complete(CompleteParams params) {
+        nlohmann::json json_params = std::move(params);
+        auto result_json = co_await send_request("completion/complete", std::move(json_params));
+        co_return result_json.get<CompleteResult>();
+    }
 
    private:
     /**
