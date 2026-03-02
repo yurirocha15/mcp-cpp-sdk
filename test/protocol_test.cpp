@@ -758,3 +758,438 @@ TEST(ProtocolTest, ListRootsResultSerialization) {
     EXPECT_EQ(deserialized.roots[1].uri, "file:///home/user/project2");
     EXPECT_FALSE(deserialized.roots[1].name.has_value());
 }
+
+// ============================================================================
+// C-09: Task & Elicitation Primitives
+// ============================================================================
+
+TEST(ProtocolTest, TaskStatusSerialization) {
+    // Verify all enum values round-trip correctly
+    nlohmann::json j;
+
+    j = mcp::TaskStatus::Cancelled;
+    EXPECT_EQ(j.get<std::string>(), "cancelled");
+    EXPECT_EQ(j.get<mcp::TaskStatus>(), mcp::TaskStatus::Cancelled);
+
+    j = mcp::TaskStatus::Completed;
+    EXPECT_EQ(j.get<std::string>(), "completed");
+    EXPECT_EQ(j.get<mcp::TaskStatus>(), mcp::TaskStatus::Completed);
+
+    j = mcp::TaskStatus::Failed;
+    EXPECT_EQ(j.get<std::string>(), "failed");
+    EXPECT_EQ(j.get<mcp::TaskStatus>(), mcp::TaskStatus::Failed);
+
+    j = mcp::TaskStatus::InputRequired;
+    EXPECT_EQ(j.get<std::string>(), "input_required");
+    EXPECT_EQ(j.get<mcp::TaskStatus>(), mcp::TaskStatus::InputRequired);
+
+    j = mcp::TaskStatus::Working;
+    EXPECT_EQ(j.get<std::string>(), "working");
+    EXPECT_EQ(j.get<mcp::TaskStatus>(), mcp::TaskStatus::Working);
+}
+
+TEST(ProtocolTest, TaskMetadataSerialization) {
+    // With ttl
+    mcp::TaskMetadata meta;
+    meta.ttl = 60000;
+
+    nlohmann::json j = meta;
+    EXPECT_EQ(j["ttl"], 60000);
+
+    auto deserialized = j.get<mcp::TaskMetadata>();
+    ASSERT_TRUE(deserialized.ttl.has_value());
+    EXPECT_EQ(*deserialized.ttl, 60000);
+
+    // Without ttl (empty object)
+    mcp::TaskMetadata empty_meta;
+    nlohmann::json j_empty = empty_meta;
+    EXPECT_FALSE(j_empty.contains("ttl"));
+
+    auto deserialized_empty = j_empty.get<mcp::TaskMetadata>();
+    EXPECT_FALSE(deserialized_empty.ttl.has_value());
+}
+
+TEST(ProtocolTest, TaskDataSerialization) {
+    // Full TaskData with all optional fields
+    mcp::TaskData task;
+    task.taskId = "task-123";
+    task.status = mcp::TaskStatus::Working;
+    task.createdAt = "2025-01-15T10:30:00Z";
+    task.lastUpdatedAt = "2025-01-15T10:35:00Z";
+    task.ttl = 300000;
+    task.pollInterval = 5000;
+    task.statusMessage = "Processing step 2 of 5";
+
+    nlohmann::json j = task;
+    EXPECT_EQ(j["taskId"], "task-123");
+    EXPECT_EQ(j["status"], "working");
+    EXPECT_EQ(j["createdAt"], "2025-01-15T10:30:00Z");
+    EXPECT_EQ(j["lastUpdatedAt"], "2025-01-15T10:35:00Z");
+    EXPECT_EQ(j["ttl"], 300000);
+    EXPECT_EQ(j["pollInterval"], 5000);
+    EXPECT_EQ(j["statusMessage"], "Processing step 2 of 5");
+
+    auto deserialized = j.get<mcp::TaskData>();
+    EXPECT_EQ(deserialized.taskId, "task-123");
+    EXPECT_EQ(deserialized.status, mcp::TaskStatus::Working);
+    EXPECT_EQ(deserialized.createdAt, "2025-01-15T10:30:00Z");
+    EXPECT_EQ(deserialized.lastUpdatedAt, "2025-01-15T10:35:00Z");
+    EXPECT_EQ(deserialized.ttl, 300000);
+    ASSERT_TRUE(deserialized.pollInterval.has_value());
+    EXPECT_EQ(*deserialized.pollInterval, 5000);
+    ASSERT_TRUE(deserialized.statusMessage.has_value());
+    EXPECT_EQ(*deserialized.statusMessage, "Processing step 2 of 5");
+
+    // Minimal TaskData (required fields only)
+    mcp::TaskData minimal;
+    minimal.taskId = "task-min";
+    minimal.status = mcp::TaskStatus::Completed;
+    minimal.createdAt = "2025-01-15T10:30:00Z";
+    minimal.lastUpdatedAt = "2025-01-15T10:30:00Z";
+    minimal.ttl = 0;
+
+    nlohmann::json j_min = minimal;
+    EXPECT_EQ(j_min["taskId"], "task-min");
+    EXPECT_EQ(j_min["status"], "completed");
+    EXPECT_FALSE(j_min.contains("pollInterval"));
+    EXPECT_FALSE(j_min.contains("statusMessage"));
+
+    auto deserialized_min = j_min.get<mcp::TaskData>();
+    EXPECT_EQ(deserialized_min.taskId, "task-min");
+    EXPECT_FALSE(deserialized_min.pollInterval.has_value());
+    EXPECT_FALSE(deserialized_min.statusMessage.has_value());
+}
+
+TEST(ProtocolTest, CreateTaskResultSerialization) {
+    mcp::TaskData task;
+    task.taskId = "task-456";
+    task.status = mcp::TaskStatus::InputRequired;
+    task.createdAt = "2025-01-15T10:30:00Z";
+    task.lastUpdatedAt = "2025-01-15T10:31:00Z";
+    task.ttl = 60000;
+
+    mcp::CreateTaskResult result;
+    result.task = std::move(task);
+    result.meta = nlohmann::json{{"requestId", "req-1"}};
+
+    nlohmann::json j = result;
+    EXPECT_EQ(j["task"]["taskId"], "task-456");
+    EXPECT_EQ(j["task"]["status"], "input_required");
+    EXPECT_EQ(j["_meta"]["requestId"], "req-1");
+
+    auto deserialized = j.get<mcp::CreateTaskResult>();
+    EXPECT_EQ(deserialized.task.taskId, "task-456");
+    EXPECT_EQ(deserialized.task.status, mcp::TaskStatus::InputRequired);
+    ASSERT_TRUE(deserialized.meta.has_value());
+    EXPECT_EQ((*deserialized.meta)["requestId"], "req-1");
+
+    // Without _meta
+    mcp::CreateTaskResult no_meta;
+    no_meta.task.taskId = "task-789";
+    no_meta.task.status = mcp::TaskStatus::Completed;
+    no_meta.task.createdAt = "2025-01-15T10:30:00Z";
+    no_meta.task.lastUpdatedAt = "2025-01-15T10:30:00Z";
+    no_meta.task.ttl = 0;
+
+    nlohmann::json j2 = no_meta;
+    EXPECT_FALSE(j2.contains("_meta"));
+
+    auto deserialized2 = j2.get<mcp::CreateTaskResult>();
+    EXPECT_FALSE(deserialized2.meta.has_value());
+}
+
+TEST(ProtocolTest, GetTaskResultSerialization) {
+    mcp::GetTaskResult result;
+    result.taskId = "task-get-1";
+    result.status = mcp::TaskStatus::Failed;
+    result.createdAt = "2025-01-15T10:30:00Z";
+    result.lastUpdatedAt = "2025-01-15T10:32:00Z";
+    result.ttl = 120000;
+    result.pollInterval = 10000;
+    result.statusMessage = "Timeout exceeded";
+    result.meta = nlohmann::json{{"trace", "abc"}};
+
+    nlohmann::json j = result;
+    EXPECT_EQ(j["taskId"], "task-get-1");
+    EXPECT_EQ(j["status"], "failed");
+    EXPECT_EQ(j["createdAt"], "2025-01-15T10:30:00Z");
+    EXPECT_EQ(j["lastUpdatedAt"], "2025-01-15T10:32:00Z");
+    EXPECT_EQ(j["ttl"], 120000);
+    EXPECT_EQ(j["pollInterval"], 10000);
+    EXPECT_EQ(j["statusMessage"], "Timeout exceeded");
+    EXPECT_EQ(j["_meta"]["trace"], "abc");
+
+    auto deserialized = j.get<mcp::GetTaskResult>();
+    EXPECT_EQ(deserialized.taskId, "task-get-1");
+    EXPECT_EQ(deserialized.status, mcp::TaskStatus::Failed);
+    EXPECT_EQ(deserialized.ttl, 120000);
+    ASSERT_TRUE(deserialized.pollInterval.has_value());
+    EXPECT_EQ(*deserialized.pollInterval, 10000);
+    ASSERT_TRUE(deserialized.statusMessage.has_value());
+    EXPECT_EQ(*deserialized.statusMessage, "Timeout exceeded");
+    ASSERT_TRUE(deserialized.meta.has_value());
+    EXPECT_EQ((*deserialized.meta)["trace"], "abc");
+
+    // Minimal GetTaskResult
+    mcp::GetTaskResult minimal;
+    minimal.taskId = "task-get-min";
+    minimal.status = mcp::TaskStatus::Cancelled;
+    minimal.createdAt = "2025-01-15T10:30:00Z";
+    minimal.lastUpdatedAt = "2025-01-15T10:30:00Z";
+    minimal.ttl = 0;
+
+    nlohmann::json j_min = minimal;
+    EXPECT_FALSE(j_min.contains("pollInterval"));
+    EXPECT_FALSE(j_min.contains("statusMessage"));
+    EXPECT_FALSE(j_min.contains("_meta"));
+
+    auto deserialized_min = j_min.get<mcp::GetTaskResult>();
+    EXPECT_FALSE(deserialized_min.pollInterval.has_value());
+    EXPECT_FALSE(deserialized_min.statusMessage.has_value());
+    EXPECT_FALSE(deserialized_min.meta.has_value());
+}
+
+TEST(ProtocolTest, ListTasksResultSerialization) {
+    mcp::TaskData task1;
+    task1.taskId = "t1";
+    task1.status = mcp::TaskStatus::Completed;
+    task1.createdAt = "2025-01-15T10:00:00Z";
+    task1.lastUpdatedAt = "2025-01-15T10:01:00Z";
+    task1.ttl = 60000;
+
+    mcp::TaskData task2;
+    task2.taskId = "t2";
+    task2.status = mcp::TaskStatus::Working;
+    task2.createdAt = "2025-01-15T10:02:00Z";
+    task2.lastUpdatedAt = "2025-01-15T10:03:00Z";
+    task2.ttl = 120000;
+
+    mcp::ListTasksResult result;
+    result.tasks = {task1, task2};
+    result.nextCursor = "cursor-abc";
+    result.meta = nlohmann::json{{"page", 1}};
+
+    nlohmann::json j = result;
+    EXPECT_EQ(j["tasks"].size(), 2);
+    EXPECT_EQ(j["tasks"][0]["taskId"], "t1");
+    EXPECT_EQ(j["tasks"][1]["taskId"], "t2");
+    EXPECT_EQ(j["nextCursor"], "cursor-abc");
+    EXPECT_EQ(j["_meta"]["page"], 1);
+
+    auto deserialized = j.get<mcp::ListTasksResult>();
+    EXPECT_EQ(deserialized.tasks.size(), 2);
+    EXPECT_EQ(deserialized.tasks[0].taskId, "t1");
+    EXPECT_EQ(deserialized.tasks[0].status, mcp::TaskStatus::Completed);
+    EXPECT_EQ(deserialized.tasks[1].taskId, "t2");
+    EXPECT_EQ(deserialized.tasks[1].status, mcp::TaskStatus::Working);
+    ASSERT_TRUE(deserialized.nextCursor.has_value());
+    EXPECT_EQ(*deserialized.nextCursor, "cursor-abc");
+    ASSERT_TRUE(deserialized.meta.has_value());
+
+    // Without pagination and meta
+    mcp::ListTasksResult no_cursor;
+    no_cursor.tasks = {task1};
+
+    nlohmann::json j2 = no_cursor;
+    EXPECT_FALSE(j2.contains("nextCursor"));
+    EXPECT_FALSE(j2.contains("_meta"));
+
+    auto deserialized2 = j2.get<mcp::ListTasksResult>();
+    EXPECT_EQ(deserialized2.tasks.size(), 1);
+    EXPECT_FALSE(deserialized2.nextCursor.has_value());
+    EXPECT_FALSE(deserialized2.meta.has_value());
+}
+
+TEST(ProtocolTest, ElicitRequestURLParamsSerialization) {
+    mcp::ElicitRequestURLParams params;
+    params.message = "Please authenticate";
+    params.url = "https://auth.example.com/login";
+    params.elicitationId = "elicit-url-1";
+    params.task = mcp::TaskMetadata{.ttl = 30000};
+    params.meta = nlohmann::json{{"source", "server"}};
+
+    nlohmann::json j = params;
+    EXPECT_EQ(j["mode"], "url");
+    EXPECT_EQ(j["message"], "Please authenticate");
+    EXPECT_EQ(j["url"], "https://auth.example.com/login");
+    EXPECT_EQ(j["elicitationId"], "elicit-url-1");
+    EXPECT_EQ(j["task"]["ttl"], 30000);
+    EXPECT_EQ(j["_meta"]["source"], "server");
+
+    auto deserialized = j.get<mcp::ElicitRequestURLParams>();
+    EXPECT_EQ(deserialized.mode, "url");
+    EXPECT_EQ(deserialized.message, "Please authenticate");
+    EXPECT_EQ(deserialized.url, "https://auth.example.com/login");
+    EXPECT_EQ(deserialized.elicitationId, "elicit-url-1");
+    ASSERT_TRUE(deserialized.task.has_value());
+    ASSERT_TRUE(deserialized.task->ttl.has_value());
+    EXPECT_EQ(*deserialized.task->ttl, 30000);
+    ASSERT_TRUE(deserialized.meta.has_value());
+
+    // Minimal (no task, no _meta)
+    mcp::ElicitRequestURLParams minimal;
+    minimal.message = "Go here";
+    minimal.url = "https://example.com";
+    minimal.elicitationId = "elicit-url-2";
+
+    nlohmann::json j_min = minimal;
+    EXPECT_EQ(j_min["mode"], "url");
+    EXPECT_FALSE(j_min.contains("task"));
+    EXPECT_FALSE(j_min.contains("_meta"));
+
+    auto deserialized_min = j_min.get<mcp::ElicitRequestURLParams>();
+    EXPECT_FALSE(deserialized_min.task.has_value());
+    EXPECT_FALSE(deserialized_min.meta.has_value());
+}
+
+TEST(ProtocolTest, ElicitRequestFormParamsSerialization) {
+    nlohmann::json schema = {
+        {"type", "object"},
+        {"properties", {{"name", {{"type", "string"}}}, {"age", {{"type", "integer"}}}}},
+        {"required", {"name"}}};
+
+    mcp::ElicitRequestFormParams params;
+    params.message = "Please provide your details";
+    params.requestedSchema = schema;
+    params.task = mcp::TaskMetadata{.ttl = 60000};
+
+    nlohmann::json j = params;
+    EXPECT_EQ(j["mode"], "form");
+    EXPECT_EQ(j["message"], "Please provide your details");
+    EXPECT_EQ(j["requestedSchema"]["type"], "object");
+    EXPECT_EQ(j["requestedSchema"]["required"][0], "name");
+    EXPECT_EQ(j["task"]["ttl"], 60000);
+    EXPECT_FALSE(j.contains("_meta"));
+
+    auto deserialized = j.get<mcp::ElicitRequestFormParams>();
+    EXPECT_EQ(deserialized.mode, "form");
+    EXPECT_EQ(deserialized.message, "Please provide your details");
+    EXPECT_EQ(deserialized.requestedSchema["type"], "object");
+    ASSERT_TRUE(deserialized.task.has_value());
+    ASSERT_TRUE(deserialized.task->ttl.has_value());
+    EXPECT_EQ(*deserialized.task->ttl, 60000);
+    EXPECT_FALSE(deserialized.meta.has_value());
+}
+
+TEST(ProtocolTest, ElicitRequestParamsVariantDispatch) {
+    // URL mode round-trip via variant
+    mcp::ElicitRequestURLParams url_params;
+    url_params.message = "Click here";
+    url_params.url = "https://example.com/auth";
+    url_params.elicitationId = "elicit-v-1";
+
+    mcp::ElicitRequestParams variant_url = url_params;
+    nlohmann::json j_url = variant_url;
+    EXPECT_EQ(j_url["mode"], "url");
+    EXPECT_EQ(j_url["url"], "https://example.com/auth");
+
+    auto deserialized_url = j_url.get<mcp::ElicitRequestParams>();
+    ASSERT_TRUE(std::holds_alternative<mcp::ElicitRequestURLParams>(deserialized_url));
+    auto& got_url = std::get<mcp::ElicitRequestURLParams>(deserialized_url);
+    EXPECT_EQ(got_url.message, "Click here");
+    EXPECT_EQ(got_url.url, "https://example.com/auth");
+    EXPECT_EQ(got_url.elicitationId, "elicit-v-1");
+
+    // Form mode round-trip via variant
+    mcp::ElicitRequestFormParams form_params;
+    form_params.message = "Fill this";
+    form_params.requestedSchema = nlohmann::json{{"type", "object"}};
+
+    mcp::ElicitRequestParams variant_form = form_params;
+    nlohmann::json j_form = variant_form;
+    EXPECT_EQ(j_form["mode"], "form");
+    EXPECT_EQ(j_form["requestedSchema"]["type"], "object");
+
+    auto deserialized_form = j_form.get<mcp::ElicitRequestParams>();
+    ASSERT_TRUE(std::holds_alternative<mcp::ElicitRequestFormParams>(deserialized_form));
+    auto& got_form = std::get<mcp::ElicitRequestFormParams>(deserialized_form);
+    EXPECT_EQ(got_form.message, "Fill this");
+
+    // Unknown mode throws
+    nlohmann::json j_bad = {{"mode", "unknown"}, {"message", "x"}};
+    EXPECT_THROW(j_bad.get<mcp::ElicitRequestParams>(), std::invalid_argument);
+}
+
+TEST(ProtocolTest, ElicitRequestSerialization) {
+    mcp::ElicitRequestURLParams url_params;
+    url_params.message = "Please visit";
+    url_params.url = "https://example.com";
+    url_params.elicitationId = "elicit-req-1";
+
+    mcp::ElicitRequest req;
+    req.params = url_params;
+
+    nlohmann::json j = req;
+    EXPECT_EQ(j["method"], "elicitation/create");
+    EXPECT_EQ(j["params"]["mode"], "url");
+    EXPECT_EQ(j["params"]["url"], "https://example.com");
+
+    auto deserialized = j.get<mcp::ElicitRequest>();
+    EXPECT_EQ(deserialized.method, "elicitation/create");
+    ASSERT_TRUE(std::holds_alternative<mcp::ElicitRequestURLParams>(deserialized.params));
+    auto& got = std::get<mcp::ElicitRequestURLParams>(deserialized.params);
+    EXPECT_EQ(got.url, "https://example.com");
+}
+
+TEST(ProtocolTest, ElicitActionSerialization) {
+    nlohmann::json j;
+
+    j = mcp::ElicitAction::Accept;
+    EXPECT_EQ(j.get<std::string>(), "accept");
+    EXPECT_EQ(j.get<mcp::ElicitAction>(), mcp::ElicitAction::Accept);
+
+    j = mcp::ElicitAction::Decline;
+    EXPECT_EQ(j.get<std::string>(), "decline");
+    EXPECT_EQ(j.get<mcp::ElicitAction>(), mcp::ElicitAction::Decline);
+
+    j = mcp::ElicitAction::Cancel;
+    EXPECT_EQ(j.get<std::string>(), "cancel");
+    EXPECT_EQ(j.get<mcp::ElicitAction>(), mcp::ElicitAction::Cancel);
+}
+
+TEST(ProtocolTest, ElicitResultSerialization) {
+    // Accept with content
+    mcp::ElicitResult result;
+    result.action = mcp::ElicitAction::Accept;
+    result.content = nlohmann::json{{"name", "Alice"}, {"age", 30}};
+    result.meta = nlohmann::json{{"requestId", "r-1"}};
+
+    nlohmann::json j = result;
+    EXPECT_EQ(j["action"], "accept");
+    EXPECT_EQ(j["content"]["name"], "Alice");
+    EXPECT_EQ(j["content"]["age"], 30);
+    EXPECT_EQ(j["_meta"]["requestId"], "r-1");
+
+    auto deserialized = j.get<mcp::ElicitResult>();
+    EXPECT_EQ(deserialized.action, mcp::ElicitAction::Accept);
+    ASSERT_TRUE(deserialized.content.has_value());
+    EXPECT_EQ((*deserialized.content)["name"], "Alice");
+    EXPECT_EQ((*deserialized.content)["age"], 30);
+    ASSERT_TRUE(deserialized.meta.has_value());
+
+    // Decline without content
+    mcp::ElicitResult decline;
+    decline.action = mcp::ElicitAction::Decline;
+
+    nlohmann::json j2 = decline;
+    EXPECT_EQ(j2["action"], "decline");
+    EXPECT_FALSE(j2.contains("content"));
+    EXPECT_FALSE(j2.contains("_meta"));
+
+    auto deserialized2 = j2.get<mcp::ElicitResult>();
+    EXPECT_EQ(deserialized2.action, mcp::ElicitAction::Decline);
+    EXPECT_FALSE(deserialized2.content.has_value());
+    EXPECT_FALSE(deserialized2.meta.has_value());
+
+    // Cancel without content
+    mcp::ElicitResult cancel;
+    cancel.action = mcp::ElicitAction::Cancel;
+
+    nlohmann::json j3 = cancel;
+    EXPECT_EQ(j3["action"], "cancel");
+    EXPECT_FALSE(j3.contains("content"));
+
+    auto deserialized3 = j3.get<mcp::ElicitResult>();
+    EXPECT_EQ(deserialized3.action, mcp::ElicitAction::Cancel);
+    EXPECT_FALSE(deserialized3.content.has_value());
+}

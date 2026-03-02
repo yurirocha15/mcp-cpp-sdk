@@ -1930,4 +1930,335 @@ inline void from_json(const nlohmann::json& json_obj, ListRootsResult& result) {
     }
 }
 
+// Task Primitives
+
+/**
+ * @brief The status of a task.
+ */
+enum class TaskStatus : std::uint8_t {
+    Cancelled,      ///< Task has been cancelled.
+    Completed,      ///< Task has completed successfully.
+    Failed,         ///< Task has failed.
+    InputRequired,  ///< Task requires additional input.
+    Working         ///< Task is currently in progress.
+};
+
+NLOHMANN_JSON_SERIALIZE_ENUM(TaskStatus, {{TaskStatus::Cancelled, "cancelled"},
+                                          {TaskStatus::Completed, "completed"},
+                                          {TaskStatus::Failed, "failed"},
+                                          {TaskStatus::InputRequired, "input_required"},
+                                          {TaskStatus::Working, "working"}})
+
+/**
+ * @brief Metadata for augmenting a request with task execution.
+ */
+struct TaskMetadata {
+    std::optional<int64_t> ttl;  ///< Requested retention duration from creation in milliseconds.
+};
+
+inline void to_json(nlohmann::json& json_obj, const TaskMetadata& meta) {
+    json_obj = nlohmann::json::object();
+    if (meta.ttl) {
+        json_obj["ttl"] = *meta.ttl;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, TaskMetadata& meta) {
+    if (json_obj.contains("ttl")) {
+        meta.ttl = json_obj.at("ttl").get<int64_t>();
+    }
+}
+
+/**
+ * @brief Data associated with a task.
+ *
+ * Named TaskData to avoid conflict with mcp::Task (boost::asio::awaitable) in core.hpp.
+ */
+struct TaskData {
+    std::string taskId;                        ///< The task identifier.
+    TaskStatus status;                         ///< Current task state.
+    std::string createdAt;                     ///< ISO 8601 timestamp when the task was created.
+    std::string lastUpdatedAt;                 ///< ISO 8601 timestamp when the task was last updated.
+    int64_t ttl;                               ///< Retention duration from creation in milliseconds.
+    std::optional<int64_t> pollInterval;       ///< Suggested polling interval in milliseconds.
+    std::optional<std::string> statusMessage;  ///< Human-readable message describing current state.
+};
+
+inline void to_json(nlohmann::json& json_obj, const TaskData& task) {
+    json_obj = nlohmann::json{{"taskId", task.taskId},
+                              {"status", task.status},
+                              {"createdAt", task.createdAt},
+                              {"lastUpdatedAt", task.lastUpdatedAt},
+                              {"ttl", task.ttl}};
+    if (task.pollInterval) {
+        json_obj["pollInterval"] = *task.pollInterval;
+    }
+    if (task.statusMessage) {
+        json_obj["statusMessage"] = *task.statusMessage;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, TaskData& task) {
+    json_obj.at("taskId").get_to(task.taskId);
+    json_obj.at("status").get_to(task.status);
+    json_obj.at("createdAt").get_to(task.createdAt);
+    json_obj.at("lastUpdatedAt").get_to(task.lastUpdatedAt);
+    json_obj.at("ttl").get_to(task.ttl);
+    if (json_obj.contains("pollInterval")) {
+        task.pollInterval = json_obj.at("pollInterval").get<int64_t>();
+    }
+    if (json_obj.contains("statusMessage")) {
+        task.statusMessage = json_obj.at("statusMessage").get<std::string>();
+    }
+}
+
+/**
+ * @brief The result returned for a task-augmented request.
+ */
+struct CreateTaskResult {
+    TaskData task;                       ///< The task data.
+    std::optional<nlohmann::json> meta;  ///< Reserved for protocol use.
+};
+
+inline void to_json(nlohmann::json& json_obj, const CreateTaskResult& result) {
+    json_obj = nlohmann::json{{"task", result.task}};
+    if (result.meta) {
+        json_obj["_meta"] = *result.meta;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, CreateTaskResult& result) {
+    json_obj.at("task").get_to(result.task);
+    if (json_obj.contains("_meta")) {
+        result.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+}
+
+/**
+ * @brief The result returned for a tasks/get request.
+ *
+ * Merges Result (_meta) and Task fields per schema allOf.
+ */
+struct GetTaskResult {
+    std::string taskId;                        ///< The task identifier.
+    TaskStatus status;                         ///< Current task state.
+    std::string createdAt;                     ///< ISO 8601 timestamp when the task was created.
+    std::string lastUpdatedAt;                 ///< ISO 8601 timestamp when the task was last updated.
+    int64_t ttl;                               ///< Retention duration from creation in milliseconds.
+    std::optional<int64_t> pollInterval;       ///< Suggested polling interval in milliseconds.
+    std::optional<std::string> statusMessage;  ///< Human-readable message describing current state.
+    std::optional<nlohmann::json> meta;        ///< Reserved for protocol use.
+};
+
+inline void to_json(nlohmann::json& json_obj, const GetTaskResult& result) {
+    json_obj = nlohmann::json{{"taskId", result.taskId},
+                              {"status", result.status},
+                              {"createdAt", result.createdAt},
+                              {"lastUpdatedAt", result.lastUpdatedAt},
+                              {"ttl", result.ttl}};
+    if (result.pollInterval) {
+        json_obj["pollInterval"] = *result.pollInterval;
+    }
+    if (result.statusMessage) {
+        json_obj["statusMessage"] = *result.statusMessage;
+    }
+    if (result.meta) {
+        json_obj["_meta"] = *result.meta;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, GetTaskResult& result) {
+    json_obj.at("taskId").get_to(result.taskId);
+    json_obj.at("status").get_to(result.status);
+    json_obj.at("createdAt").get_to(result.createdAt);
+    json_obj.at("lastUpdatedAt").get_to(result.lastUpdatedAt);
+    json_obj.at("ttl").get_to(result.ttl);
+    if (json_obj.contains("pollInterval")) {
+        result.pollInterval = json_obj.at("pollInterval").get<int64_t>();
+    }
+    if (json_obj.contains("statusMessage")) {
+        result.statusMessage = json_obj.at("statusMessage").get<std::string>();
+    }
+    if (json_obj.contains("_meta")) {
+        result.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+}
+
+/**
+ * @brief The result returned for a tasks/list request.
+ */
+struct ListTasksResult {
+    std::vector<TaskData> tasks;            ///< The list of tasks.
+    std::optional<std::string> nextCursor;  ///< Pagination position after last returned result.
+    std::optional<nlohmann::json> meta;     ///< Reserved for protocol use.
+};
+
+inline void to_json(nlohmann::json& json_obj, const ListTasksResult& result) {
+    json_obj = nlohmann::json{{"tasks", result.tasks}};
+    if (result.nextCursor) {
+        json_obj["nextCursor"] = *result.nextCursor;
+    }
+    if (result.meta) {
+        json_obj["_meta"] = *result.meta;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, ListTasksResult& result) {
+    json_obj.at("tasks").get_to(result.tasks);
+    if (json_obj.contains("nextCursor")) {
+        result.nextCursor = json_obj.at("nextCursor").get<std::string>();
+    }
+    if (json_obj.contains("_meta")) {
+        result.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+}
+
+// Elicitation Primitives
+
+/**
+ * @brief Parameters for a URL-mode elicitation request.
+ */
+struct ElicitRequestURLParams {
+    std::string mode = "url";            ///< The elicitation mode (always "url").
+    std::string message;                 ///< The message to present to the user.
+    std::string url;                     ///< The URL that the user should navigate to.
+    std::string elicitationId;           ///< Unique ID for this elicitation.
+    std::optional<TaskMetadata> task;    ///< Optional task augmentation metadata.
+    std::optional<nlohmann::json> meta;  ///< Reserved for protocol use.
+};
+
+inline void to_json(nlohmann::json& json_obj, const ElicitRequestURLParams& params) {
+    json_obj = nlohmann::json{{"mode", params.mode},
+                              {"message", params.message},
+                              {"url", params.url},
+                              {"elicitationId", params.elicitationId}};
+    if (params.task) {
+        json_obj["task"] = *params.task;
+    }
+    if (params.meta) {
+        json_obj["_meta"] = *params.meta;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, ElicitRequestURLParams& params) {
+    json_obj.at("mode").get_to(params.mode);
+    json_obj.at("message").get_to(params.message);
+    json_obj.at("url").get_to(params.url);
+    json_obj.at("elicitationId").get_to(params.elicitationId);
+    if (json_obj.contains("task")) {
+        params.task = json_obj.at("task").get<TaskMetadata>();
+    }
+    if (json_obj.contains("_meta")) {
+        params.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+}
+
+/**
+ * @brief Parameters for a form-mode elicitation request.
+ */
+struct ElicitRequestFormParams {
+    std::string mode = "form";           ///< The elicitation mode (always "form").
+    std::string message;                 ///< The message describing what info is requested.
+    nlohmann::json requestedSchema;      ///< Restricted JSON Schema for the form.
+    std::optional<TaskMetadata> task;    ///< Optional task augmentation metadata.
+    std::optional<nlohmann::json> meta;  ///< Reserved for protocol use.
+};
+
+inline void to_json(nlohmann::json& json_obj, const ElicitRequestFormParams& params) {
+    json_obj = nlohmann::json{{"mode", params.mode},
+                              {"message", params.message},
+                              {"requestedSchema", params.requestedSchema}};
+    if (params.task) {
+        json_obj["task"] = *params.task;
+    }
+    if (params.meta) {
+        json_obj["_meta"] = *params.meta;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, ElicitRequestFormParams& params) {
+    json_obj.at("mode").get_to(params.mode);
+    json_obj.at("message").get_to(params.message);
+    json_obj.at("requestedSchema").get_to(params.requestedSchema);
+    if (json_obj.contains("task")) {
+        params.task = json_obj.at("task").get<TaskMetadata>();
+    }
+    if (json_obj.contains("_meta")) {
+        params.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+}
+
+/**
+ * @brief Parameters for an elicitation request — either URL or form mode.
+ */
+using ElicitRequestParams = std::variant<ElicitRequestURLParams, ElicitRequestFormParams>;
+
+inline void to_json(nlohmann::json& json_obj, const ElicitRequestParams& params) {
+    std::visit([&json_obj](auto&& arg) { json_obj = arg; }, params);
+}
+
+inline void from_json(const nlohmann::json& json_obj, ElicitRequestParams& params) {
+    std::string mode;
+    json_obj.at("mode").get_to(mode);
+    if (mode == "url") {
+        params = json_obj.get<ElicitRequestURLParams>();
+    } else if (mode == "form") {
+        params = json_obj.get<ElicitRequestFormParams>();
+    } else {
+        throw std::invalid_argument("Unknown elicitation mode: " + mode);
+    }
+}
+
+/**
+ * @brief A request from the server to elicit additional information from the user.
+ */
+struct ElicitRequest {
+    std::string method = "elicitation/create";  ///< The method name.
+    ElicitRequestParams params;                 ///< The request parameters.
+};
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ElicitRequest, method, params)
+
+/**
+ * @brief The user action in response to an elicitation.
+ */
+enum class ElicitAction : std::uint8_t {
+    Accept,   ///< User submitted the form/confirmed the action.
+    Decline,  ///< User explicitly declined the action.
+    Cancel    ///< User dismissed without making an explicit choice.
+};
+
+NLOHMANN_JSON_SERIALIZE_ENUM(ElicitAction, {{ElicitAction::Accept, "accept"},
+                                            {ElicitAction::Decline, "decline"},
+                                            {ElicitAction::Cancel, "cancel"}})
+
+/**
+ * @brief The result returned by the client for an elicitation/create request.
+ */
+struct ElicitResult {
+    ElicitAction action;                    ///< The user action.
+    std::optional<nlohmann::json> content;  ///< Submitted form data (only when action is accept).
+    std::optional<nlohmann::json> meta;     ///< Reserved for protocol use.
+};
+
+inline void to_json(nlohmann::json& json_obj, const ElicitResult& result) {
+    json_obj = nlohmann::json{{"action", result.action}};
+    if (result.content) {
+        json_obj["content"] = *result.content;
+    }
+    if (result.meta) {
+        json_obj["_meta"] = *result.meta;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, ElicitResult& result) {
+    json_obj.at("action").get_to(result.action);
+    if (json_obj.contains("content")) {
+        result.content = json_obj.at("content").get<nlohmann::json>();
+    }
+    if (json_obj.contains("_meta")) {
+        result.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+}
+
 }  // namespace mcp
