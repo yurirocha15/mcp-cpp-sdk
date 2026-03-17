@@ -29,6 +29,7 @@ set(TEST_SRCS
     test/concepts_test.cpp
     test/core_test.cpp
     test/protocol_test.cpp
+    test/server_core_test.cpp
     test/transport_test.cpp
     test/transport_stdio_test.cpp
 )
