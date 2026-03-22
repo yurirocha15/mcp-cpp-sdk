@@ -6,8 +6,15 @@
 #include <mcp/protocol.hpp>
 #include <mcp/transport.hpp>
 
+#include <atomic>
 #include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <chrono>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -203,10 +210,65 @@ class Server {
     }
 
     /**
+     * @brief Send a JSON-RPC request to the client and await its response (reverse RPC).
+     *
+     * @details Assigns a unique integer ID, sends the request over the
+     * transport, then suspends the calling coroutine until the dispatch
+     * loop routes the matching response back to this pending request.
+     *
+     * @param method The JSON-RPC method name.
+     * @param params Optional parameters for the request.
+     * @return A task that resolves to the result JSON.
+     * @throws std::runtime_error If the client returns an error response.
+     */
+    Task<nlohmann::json> send_request(std::string method, std::optional<nlohmann::json> params) {
+        auto id = next_request_id_.fetch_add(1, std::memory_order_relaxed);
+        auto id_str = std::to_string(id);
+
+        JSONRPCRequest request;
+        request.id = RequestId{id_str};
+        request.method = std::move(method);
+        request.params = std::move(params);
+
+        auto& pending = pending_requests_[id_str];
+        pending.timer = std::make_unique<boost::asio::steady_timer>(*strand_);
+        pending.timer->expires_at(std::chrono::steady_clock::time_point::max());
+
+        nlohmann::json msg = request;
+        co_await transport_->write_message(msg.dump());
+
+        try {
+            co_await pending.timer->async_wait(boost::asio::use_awaitable);
+        } catch (const boost::system::system_error& err) {
+            if (err.code() != boost::asio::error::operation_aborted) {
+                throw;
+            }
+        }
+
+        auto it = pending_requests_.find(id_str);
+        if (it == pending_requests_.end()) {
+            throw std::runtime_error("pending request not found for id: " + id_str);
+        }
+
+        auto result = std::move(it->second.result);
+        auto error = std::move(it->second.error);
+        pending_requests_.erase(it);
+
+        if (error) {
+            throw std::runtime_error("JSON-RPC error " + std::to_string(error->code) + ": " +
+                                     error->message);
+        }
+
+        co_return result;
+    }
+
+    /**
      * @brief Start the server session loop on the given transport.
      *
      * @details Reads messages from the transport, parses them as
      * JSON-RPC, and dispatches each to the appropriate handler.
+     * Request handlers are co_spawned so the read loop can continue
+     * processing incoming messages (required for reverse RPC).
      * The loop runs until the transport is closed or an error occurs.
      *
      * @param transport The transport to use for message exchange.
@@ -223,7 +285,7 @@ class Server {
             for (;;) {
                 auto raw = co_await transport_->read_message();
                 auto json_msg = nlohmann::json::parse(raw);
-                co_await dispatch(json_msg);
+                dispatch(std::move(json_msg));
             }
         } catch (const std::exception&) {
         }
@@ -232,19 +294,66 @@ class Server {
     /**
      * @brief Dispatch a parsed JSON-RPC message to the appropriate handler.
      *
-     * @details Routes requests based on the "method" field. Handles
-     * "initialize" and "shutdown" internally. Routes tool, resource,
-     * and prompt methods to their respective handlers. Returns a
-     * JSON-RPC error response for unknown methods. Notifications
-     * (messages without "id") are silently ignored.
+     * @details Non-coroutine entry point that routes messages. Responses
+     * (messages with "id" but no "method") are handled synchronously via
+     * dispatch_response(). Requests are co_spawned as independent
+     * coroutines so the run loop is never blocked—this is essential for
+     * reverse RPC (e.g. sampling) where a handler sends a request to the
+     * client and must wait for a response that arrives on the same
+     * transport. Notifications (messages without "id") are silently ignored.
      *
      * @param json_msg The parsed JSON-RPC message.
      */
-    Task<void> dispatch(const nlohmann::json& json_msg) {
+    void dispatch(nlohmann::json json_msg) {
         if (!json_msg.contains("id")) {
-            co_return;
+            return;
         }
 
+        if (!json_msg.contains("method")) {
+            dispatch_response(json_msg);
+            return;
+        }
+
+        boost::asio::co_spawn(*strand_, dispatch_request(std::move(json_msg)), boost::asio::detached);
+    }
+
+    /**
+     * @brief Check whether the server has been initialized.
+     *
+     * @return true if an initialize request has been handled.
+     */
+    [[nodiscard]] bool is_initialized() const { return initialized_; }
+
+    /**
+     * @brief Check whether a shutdown has been requested.
+     *
+     * @return true if a shutdown request has been handled.
+     */
+    [[nodiscard]] bool is_shutdown_requested() const { return shutdown_requested_; }
+
+   private:
+    Context make_context() {
+        return Context(
+            *transport_,
+            [this](std::string method, std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
+                co_return co_await send_request(std::move(method), std::move(params));
+            });
+    }
+
+    /**
+     * @brief Handle a JSON-RPC request as a coroutine.
+     *
+     * @details Routes the request based on the "method" field. Handles
+     * "initialize" and "shutdown" internally. Routes tool, resource,
+     * and prompt methods to their respective handlers. Returns a
+     * JSON-RPC error response for unknown methods.
+     *
+     * Takes json_msg by value because the coroutine is co_spawned
+     * and may outlive the caller's stack frame.
+     *
+     * @param json_msg The parsed JSON-RPC request message (owned).
+     */
+    Task<void> dispatch_request(nlohmann::json json_msg) {
         auto request = json_msg.get<JSONRPCRequest>();
 
         if (request.method == "initialize") {
@@ -270,21 +379,32 @@ class Server {
         }
     }
 
-    /**
-     * @brief Check whether the server has been initialized.
-     *
-     * @return true if an initialize request has been handled.
-     */
-    [[nodiscard]] bool is_initialized() const { return initialized_; }
+    void dispatch_response(const nlohmann::json& json_msg) {
+        auto id = json_msg.at("id").get<RequestId>();
+        auto id_str = std::visit(
+            [](auto&& val) -> std::string {
+                if constexpr (std::is_same_v<std::decay_t<decltype(val)>, std::string>) {
+                    return val;
+                } else {
+                    return std::to_string(val);
+                }
+            },
+            id);
 
-    /**
-     * @brief Check whether a shutdown has been requested.
-     *
-     * @return true if a shutdown request has been handled.
-     */
-    [[nodiscard]] bool is_shutdown_requested() const { return shutdown_requested_; }
+        auto it = pending_requests_.find(id_str);
+        if (it == pending_requests_.end()) {
+            return;
+        }
 
-   private:
+        if (json_msg.contains("error")) {
+            it->second.error = json_msg.at("error").get<Error>();
+        } else if (json_msg.contains("result")) {
+            it->second.result = json_msg.at("result");
+        }
+
+        it->second.timer->cancel();
+    }
+
     Task<void> handle_initialize(const JSONRPCRequest& request) {
         InitializeResult result;
         result.protocolVersion = std::string(LATEST_PROTOCOL_VERSION);
@@ -309,7 +429,7 @@ class Server {
             co_return;
         }
 
-        Context ctx(*transport_);
+        auto ctx = make_context();
         nlohmann::json result = co_await iter->second(ctx, params.arguments);
         co_await send_result(request.id, std::move(result));
     }
@@ -339,7 +459,7 @@ class Server {
         }
 
         nlohmann::json params_json = std::move(params);
-        Context ctx(*transport_);
+        auto ctx = make_context();
         nlohmann::json result = co_await iter->second(ctx, params_json);
         co_await send_result(request.id, std::move(result));
     }
@@ -369,7 +489,7 @@ class Server {
         }
 
         nlohmann::json params_json = std::move(params);
-        Context ctx(*transport_);
+        auto ctx = make_context();
         nlohmann::json result = co_await iter->second(ctx, params_json);
         co_await send_result(request.id, std::move(result));
     }
@@ -402,6 +522,15 @@ class Server {
     std::unique_ptr<boost::asio::strand<boost::asio::any_io_executor>> strand_;
     bool initialized_ = false;
     bool shutdown_requested_ = false;
+
+    struct PendingRequest {
+        std::unique_ptr<boost::asio::steady_timer> timer;
+        nlohmann::json result;
+        std::optional<Error> error;
+    };
+
+    std::map<std::string, PendingRequest> pending_requests_;
+    std::atomic<int64_t> next_request_id_{1};
 
     /// @brief Registered tool metadata.
     std::vector<Tool> tools_;
