@@ -30,6 +30,7 @@ set(TEST_SRCS
     test/core_test.cpp
     test/protocol_test.cpp
     test/server_core_test.cpp
+    test/server_handlers_test.cpp
     test/transport_test.cpp
     test/transport_stdio_test.cpp
 )
