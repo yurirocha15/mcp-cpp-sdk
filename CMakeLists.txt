@@ -29,7 +29,8 @@ set(TEST_SRCS
     test/server_core_test.cpp
     test/server_handlers_test.cpp
     test/transport_test.cpp
-    test/transport_stdio_test.cpp)
+    test/transport_stdio_test.cpp
+    test/transport_ws_test.cpp)
 add_executable(mcp-sdk-tests ${TEST_SRCS})
 target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
 
