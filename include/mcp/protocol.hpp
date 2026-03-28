@@ -1054,11 +1054,35 @@ inline void from_json(const nlohmann::json& json_obj, ContentBlock& content) {
 // Tool Primitives
 
 // MCP Protocol Constants
+
+/**
+ * @brief JSON-RPC error code for parse errors.
+ */
 inline constexpr int PARSE_ERROR = -32700;
+
+/**
+ * @brief JSON-RPC error code for invalid requests.
+ */
 inline constexpr int INVALID_REQUEST = -32600;
+
+/**
+ * @brief JSON-RPC error code for method not found.
+ */
 inline constexpr int METHOD_NOT_FOUND = -32601;
+
+/**
+ * @brief JSON-RPC error code for invalid parameters.
+ */
 inline constexpr int INVALID_PARAMS = -32602;
+
+/**
+ * @brief JSON-RPC error code for internal errors.
+ */
 inline constexpr int INTERNAL_ERROR = -32603;
+
+/**
+ * @brief Error code indicating URL elicitation is required.
+ */
 inline constexpr int URL_ELICITATION_REQUIRED_ERROR = -32042;
 
 /**
@@ -3240,6 +3264,9 @@ struct CallToolRequest {
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CallToolRequest, method, params)
 
+/**
+ * @brief Parameters for listing available tools.
+ */
 struct ListToolsRequestParams {
     std::optional<std::string> cursor;
 };
@@ -3255,6 +3282,9 @@ inline void from_json(const nlohmann::json& j, ListToolsRequestParams& p) {
     }
 }
 
+/**
+ * @brief A request to list all available tools.
+ */
 struct ListToolsRequest {
     std::string method = "tools/list";
     std::optional<ListToolsRequestParams> params;
@@ -3272,6 +3302,9 @@ inline void from_json(const nlohmann::json& j, ListToolsRequest& r) {
     }
 }
 
+/**
+ * @brief Result containing a list of available tools.
+ */
 struct ListToolsResult {
     std::vector<Tool> tools;
     std::optional<std::string> nextCursor;
@@ -3296,6 +3329,9 @@ inline void from_json(const nlohmann::json& j, ListToolsResult& r) {
     }
 }
 
+/**
+ * @brief Parameters for listing available resources.
+ */
 struct ListResourcesRequestParams {
     std::optional<std::string> cursor;
 };
@@ -3311,6 +3347,9 @@ inline void from_json(const nlohmann::json& j, ListResourcesRequestParams& p) {
     }
 }
 
+/**
+ * @brief A request to list all available resources.
+ */
 struct ListResourcesRequest {
     std::string method = "resources/list";
     std::optional<ListResourcesRequestParams> params;
@@ -3328,6 +3367,9 @@ inline void from_json(const nlohmann::json& j, ListResourcesRequest& r) {
     }
 }
 
+/**
+ * @brief Result containing a list of available resources.
+ */
 struct ListResourcesResult {
     std::vector<Resource> resources;
     std::optional<std::string> nextCursor;
@@ -3352,6 +3394,9 @@ inline void from_json(const nlohmann::json& j, ListResourcesResult& r) {
     }
 }
 
+/**
+ * @brief Parameters for listing resource templates.
+ */
 struct ListResourceTemplatesRequestParams {
     std::optional<std::string> cursor;
 };
@@ -3367,6 +3412,9 @@ inline void from_json(const nlohmann::json& j, ListResourceTemplatesRequestParam
     }
 }
 
+/**
+ * @brief A request to list all available resource templates.
+ */
 struct ListResourceTemplatesRequest {
     std::string method = "resources/templates/list";
     std::optional<ListResourceTemplatesRequestParams> params;
@@ -3384,6 +3432,9 @@ inline void from_json(const nlohmann::json& j, ListResourceTemplatesRequest& r) 
     }
 }
 
+/**
+ * @brief Result containing a list of available resource templates.
+ */
 struct ListResourceTemplatesResult {
     std::vector<ResourceTemplate> resourceTemplates;
     std::optional<std::string> nextCursor;
@@ -3408,11 +3459,17 @@ inline void from_json(const nlohmann::json& j, ListResourceTemplatesResult& r) {
     }
 }
 
+/**
+ * @brief Parameters for reading a resource.
+ */
 struct ReadResourceRequestParams {
     std::string uri;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ReadResourceRequestParams, uri)
 
+/**
+ * @brief A request to read the contents of a resource.
+ */
 struct ReadResourceRequest {
     std::string method = "resources/read";
     ReadResourceRequestParams params;
@@ -3421,28 +3478,43 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ReadResourceRequest, method, params)
 
 // Task Requests & Notifications
 
+/**
+ * @brief Parameters for retrieving a task by ID.
+ */
 struct GetTaskRequestParams {
     std::string id;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetTaskRequestParams, id)
 
+/**
+ * @brief A request to get a task by its ID.
+ */
 struct GetTaskRequest {
     std::string method = "tasks/get";
     GetTaskRequestParams params;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetTaskRequest, method, params)
 
+/**
+ * @brief Parameters for cancelling a task.
+ */
 struct CancelTaskRequestParams {
     std::string id;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CancelTaskRequestParams, id)
 
+/**
+ * @brief A request to cancel a task.
+ */
 struct CancelTaskRequest {
     std::string method = "tasks/cancel";
     CancelTaskRequestParams params;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CancelTaskRequest, method, params)
 
+/**
+ * @brief Result of a task cancellation request.
+ */
 struct CancelTaskResult {
     std::optional<nlohmann::json> meta;
 };
@@ -3458,6 +3530,9 @@ inline void from_json(const nlohmann::json& j, CancelTaskResult& r) {
     }
 }
 
+/**
+ * @brief Parameters for listing tasks.
+ */
 struct ListTasksRequestParams {
     std::optional<std::string> cursor;
 };
@@ -3473,6 +3548,9 @@ inline void from_json(const nlohmann::json& j, ListTasksRequestParams& p) {
     }
 }
 
+/**
+ * @brief A request to list all tasks.
+ */
 struct ListTasksRequest {
     std::string method = "tasks/list";
     std::optional<ListTasksRequestParams> params;
@@ -3490,17 +3568,26 @@ inline void from_json(const nlohmann::json& j, ListTasksRequest& r) {
     }
 }
 
+/**
+ * @brief Parameters for retrieving a task's payload.
+ */
 struct GetTaskPayloadRequestParams {
     std::string id;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetTaskPayloadRequestParams, id)
 
+/**
+ * @brief A request to get a task's payload.
+ */
 struct GetTaskPayloadRequest {
     std::string method = "tasks/getPayload";
     GetTaskPayloadRequestParams params;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetTaskPayloadRequest, method, params)
 
+/**
+ * @brief Result containing a task's payload data.
+ */
 struct GetTaskPayloadResult {
     nlohmann::json payload;
     std::optional<nlohmann::json> meta;
@@ -3518,6 +3605,9 @@ inline void from_json(const nlohmann::json& j, GetTaskPayloadResult& r) {
     }
 }
 
+/**
+ * @brief Parameters for task status notifications.
+ */
 struct TaskStatusNotificationParams {
     std::string id;
     TaskStatus status;
@@ -3544,12 +3634,18 @@ inline void from_json(const nlohmann::json& j, TaskStatusNotificationParams& p) 
     }
 }
 
+/**
+ * @brief A notification about a task's status change.
+ */
 struct TaskStatusNotification {
     std::string method = "notifications/tasks/status";
     TaskStatusNotificationParams params;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TaskStatusNotification, method, params)
 
+/**
+ * @brief Parameters for elicitation completion notifications.
+ */
 struct ElicitationCompleteNotificationParams {
     RequestId requestId;
 };
@@ -3560,6 +3656,9 @@ inline void from_json(const nlohmann::json& j, ElicitationCompleteNotificationPa
     j.at("requestId").get_to(p.requestId);
 }
 
+/**
+ * @brief A notification that an elicitation process has completed.
+ */
 struct ElicitationCompleteNotification {
     std::string method = "notifications/elicitation/complete";
     ElicitationCompleteNotificationParams params;

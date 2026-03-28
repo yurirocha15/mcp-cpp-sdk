@@ -17,6 +17,20 @@ target_link_libraries(mcp-cpp-sdk INTERFACE Boost::headers Boost::system
                                             nlohmann_json::nlohmann_json)
 target_include_directories(mcp-cpp-sdk INTERFACE include)
 
+# Documentation target
+find_package(Doxygen QUIET)
+if(DOXYGEN_FOUND)
+  set(DOXYGEN_OUTPUT_DIR "${CMAKE_BINARY_DIR}/doxygen")
+  configure_file(${CMAKE_SOURCE_DIR}/docs/Doxyfile.in
+                 ${CMAKE_BINARY_DIR}/Doxyfile @ONLY)
+  add_custom_target(
+    docs
+    COMMAND ${DOXYGEN_EXECUTABLE} ${CMAKE_BINARY_DIR}/Doxyfile
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Generating Doxygen XML"
+    VERBATIM)
+endif()
+
 # Build Tests
 enable_testing()
 set(TEST_SRCS

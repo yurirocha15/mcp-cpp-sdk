@@ -52,6 +52,12 @@ class WebSocketTransport final : public ITransport {
     WebSocketTransport(WebSocketTransport&&) = delete;
     WebSocketTransport& operator=(WebSocketTransport&&) = delete;
 
+    /**
+     * @brief Reads a complete text message from the WebSocket connection.
+     *
+     * @return A task that resolves to the received message as a string.
+     * @throws std::runtime_error If the transport is closed.
+     */
     Task<std::string> read_message() override {
         if (closed_.load(std::memory_order_acquire)) {
             throw std::runtime_error("WebSocketTransport is closed");
@@ -63,6 +69,13 @@ class WebSocketTransport final : public ITransport {
         co_return boost::beast::buffers_to_string(buffer.data());
     }
 
+    /**
+     * @brief Writes a message to the WebSocket connection.
+     *
+     * @param message The message content to write.
+     * @return A task that completes when the message is written.
+     * @throws std::runtime_error If the transport is closed.
+     */
     Task<void> write_message(std::string_view message) override {
         if (closed_.load(std::memory_order_acquire)) {
             throw std::runtime_error("WebSocketTransport is closed");
@@ -72,6 +85,9 @@ class WebSocketTransport final : public ITransport {
                                  boost::asio::use_awaitable);
     }
 
+    /**
+     * @brief Closes the WebSocket connection and underlying TCP socket.
+     */
     void close() override {
         if (closed_.exchange(true, std::memory_order_acq_rel)) {
             return;

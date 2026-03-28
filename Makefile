@@ -1,23 +1,19 @@
-.PHONY: all init init-dev build debug test clean format lint coverage
+.PHONY: all init init-dev init-docs build debug test clean format lint coverage docs
 
-SUDO := $(shell [ $$(id -u) -eq 0 ] || echo "sudo")
-# use half of the number of cores
-NUM_CPU_2 := $(shell nproc | awk '{print $$1/2}')
+SUDO := $(shell [ $$(id -u 2>/dev/null || echo 1) -eq 0 ] || echo "sudo")
+# use half of the number of cores (cross-platform)
+NUM_CPU_2 := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
 
 all: build
 
 init:
-	$(SUDO) apt-get update && $(SUDO) apt-get install -y python3-pip pipx
-	pipx ensurepath
-	pipx install conan
-	pipx install gcovr
-	pipx install ninja
-	conan profile detect --force
+	python3 scripts/init.py
 
-init-dev: init
-	$(SUDO) apt-get update && $(SUDO) apt-get install -y clang-format clang-tidy
-	pipx install pre-commit
-	pre-commit install
+init-dev:
+	python3 scripts/init.py --dev
+
+init-docs:
+	python3 scripts/init.py --docs
 
 build:
 	conan install . --output-folder=build --build=missing -s compiler.cppstd=20 -c tools.cmake.cmaketoolchain:generator=Ninja
@@ -44,6 +40,18 @@ coverage:
 	ctest --test-dir build/coverage -j$(NUM_CPU_2) --output-on-failure
 	gcovr -r . --html --html-details -o build/coverage/coverage.html -f include/
 	gcovr -r . -f include/
+
+docs:
+	python3 scripts/init.py --docs
+	conan install . --output-folder=build --build=missing -s compiler.cppstd=20 -c tools.cmake.cmaketoolchain:generator=Ninja
+	@echo '{"version":4,"vendor":{"conan":{}},"include":["build/CMakePresets.json"]}' > CMakeUserPresets.json
+	cmake --preset conan-release
+	@if cmake --build --preset conan-release --target docs -j$(NUM_CPU_2) 2>/dev/null; then \
+		echo "[+] Doxygen XML generated"; \
+	else \
+		echo "[!] Doxygen not available, building Sphinx docs without API reference"; \
+	fi
+	sphinx-build -b html docs build/docs/html
 
 clean:
 	rm -rf build

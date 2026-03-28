@@ -43,6 +43,12 @@ class Context {
     Context(ITransport& transport, RequestSender sender)
         : transport_(transport), sender_(std::move(sender)) {}
 
+    /**
+     * @brief Sends an informational log message to the client.
+     *
+     * @param msg The log message to send.
+     * @return A task that completes when the message is sent.
+     */
     Task<void> log_info(std::string_view msg) {
         LoggingMessageNotificationParams params;
         params.level = LoggingLevel::Info;

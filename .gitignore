@@ -54,3 +54,8 @@
 
 # VSCode cache
 /.vscode
+
+# Documentation build artifacts
+build/doxygen/
+build/docs/
+docs/_build/
