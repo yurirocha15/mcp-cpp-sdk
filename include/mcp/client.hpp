@@ -46,7 +46,15 @@ class Client {
     Client(std::unique_ptr<ITransport> transport, const boost::asio::any_io_executor& executor)
         : transport_(std::move(transport)), strand_(boost::asio::make_strand(executor)) {}
 
-    ~Client() = default;
+    /// @brief Destructor. Closes the transport and clears pending requests
+    /// so that asio-tied objects (timers, streams) are destroyed while the
+    /// io_context is still alive.
+    ~Client() {
+        if (transport_) {
+            transport_->close();
+        }
+        pending_requests_.clear();
+    }
 
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;
@@ -157,6 +165,14 @@ class Client {
      * @return The count of requests awaiting responses.
      */
     [[nodiscard]] std::size_t pending_request_count() const { return pending_requests_.size(); }
+
+    /// @brief Close the client, stopping the read loop and releasing resources.
+    void close() {
+        if (transport_) {
+            transport_->close();
+        }
+        pending_requests_.clear();
+    }
 
     /**
      * @brief Call a tool on the server.

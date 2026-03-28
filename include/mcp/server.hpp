@@ -123,7 +123,7 @@ class Server {
     Server(Implementation server_info, ServerCapabilities capabilities)
         : server_info_(std::move(server_info)), capabilities_(std::move(capabilities)) {}
 
-    ~Server() = default;
+    ~Server() { reset_session(); }
 
     Server(const Server&) = delete;
     Server& operator=(const Server&) = delete;
@@ -230,12 +230,12 @@ class Server {
         request.method = std::move(method);
         request.params = std::move(params);
 
-        auto& pending = pending_requests_[id_str];
-        pending.timer = std::make_unique<boost::asio::steady_timer>(*strand_);
+        auto& pending = session_->pending_requests[id_str];
+        pending.timer = std::make_unique<boost::asio::steady_timer>(*session_->strand);
         pending.timer->expires_at(std::chrono::steady_clock::time_point::max());
 
         nlohmann::json msg = request;
-        co_await transport_->write_message(msg.dump());
+        co_await session_->transport->write_message(msg.dump());
 
         try {
             co_await pending.timer->async_wait(boost::asio::use_awaitable);
@@ -245,14 +245,14 @@ class Server {
             }
         }
 
-        auto it = pending_requests_.find(id_str);
-        if (it == pending_requests_.end()) {
+        auto it = session_->pending_requests.find(id_str);
+        if (it == session_->pending_requests.end()) {
             throw std::runtime_error("pending request not found for id: " + id_str);
         }
 
         auto result = std::move(it->second.result);
         auto error = std::move(it->second.error);
-        pending_requests_.erase(it);
+        session_->pending_requests.erase(it);
 
         if (error) {
             throw std::runtime_error("JSON-RPC error " + std::to_string(error->code) + ": " +
@@ -277,18 +277,21 @@ class Server {
      */
     Task<void> run(std::unique_ptr<ITransport> transport,
                    const boost::asio::any_io_executor& executor) {
-        transport_ = std::move(transport);
-        strand_ = std::make_unique<boost::asio::strand<boost::asio::any_io_executor>>(
+        session_ = std::make_unique<Session>();
+        session_->transport = std::move(transport);
+        session_->strand = std::make_unique<boost::asio::strand<boost::asio::any_io_executor>>(
             boost::asio::make_strand(executor));
 
         try {
             for (;;) {
-                auto raw = co_await transport_->read_message();
+                auto raw = co_await session_->transport->read_message();
                 auto json_msg = nlohmann::json::parse(raw);
                 dispatch(std::move(json_msg));
             }
         } catch (const std::exception&) {
         }
+
+        reset_session();
     }
 
     /**
@@ -314,7 +317,8 @@ class Server {
             return;
         }
 
-        boost::asio::co_spawn(*strand_, dispatch_request(std::move(json_msg)), boost::asio::detached);
+        boost::asio::co_spawn(*session_->strand, dispatch_request(std::move(json_msg)),
+                              boost::asio::detached);
     }
 
     /**
@@ -334,7 +338,7 @@ class Server {
    private:
     Context make_context() {
         return Context(
-            *transport_,
+            *session_->transport,
             [this](std::string method, std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
                 co_return co_await send_request(std::move(method), std::move(params));
             });
@@ -391,8 +395,8 @@ class Server {
             },
             id);
 
-        auto it = pending_requests_.find(id_str);
-        if (it == pending_requests_.end()) {
+        auto it = session_->pending_requests.find(id_str);
+        if (it == session_->pending_requests.end()) {
             return;
         }
 
@@ -500,7 +504,7 @@ class Server {
         response.result = std::move(result);
 
         nlohmann::json json_msg = std::move(response);
-        co_await transport_->write_message(json_msg.dump());
+        co_await session_->transport->write_message(json_msg.dump());
     }
 
     Task<void> send_error(const RequestId& id, int code, std::string message) {
@@ -513,13 +517,11 @@ class Server {
         response.error = std::move(error);
 
         nlohmann::json json_msg = std::move(response);
-        co_await transport_->write_message(json_msg.dump());
+        co_await session_->transport->write_message(json_msg.dump());
     }
 
     Implementation server_info_;
     ServerCapabilities capabilities_;
-    std::unique_ptr<ITransport> transport_;
-    std::unique_ptr<boost::asio::strand<boost::asio::any_io_executor>> strand_;
     bool initialized_ = false;
     bool shutdown_requested_ = false;
 
@@ -529,8 +531,24 @@ class Server {
         std::optional<Error> error;
     };
 
-    std::map<std::string, PendingRequest> pending_requests_;
+    struct Session {
+        std::unique_ptr<ITransport> transport;
+        std::unique_ptr<boost::asio::strand<boost::asio::any_io_executor>> strand;
+        std::map<std::string, PendingRequest> pending_requests;
+    };
+
+    std::unique_ptr<Session> session_;
     std::atomic<int64_t> next_request_id_{1};
+
+    void reset_session() {
+        if (session_) {
+            if (session_->transport) {
+                session_->transport->close();
+            }
+            session_->pending_requests.clear();
+            session_.reset();
+        }
+    }
 
     /// @brief Registered tool metadata.
     std::vector<Tool> tools_;

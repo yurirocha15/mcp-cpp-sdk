@@ -44,3 +44,19 @@ if(ENABLE_COVERAGE)
     target_link_options(mcp-sdk-tests PRIVATE --coverage)
   endif()
 endif()
+
+# Examples
+option(BUILD_EXAMPLES "Build example programs" ON)
+if(BUILD_EXAMPLES)
+  add_executable(example-server-stdio examples/server_stdio.cpp)
+  target_link_libraries(example-server-stdio PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-client-stdio examples/client_stdio.cpp)
+  target_link_libraries(example-client-stdio PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-server-sampling examples/server_with_sampling.cpp)
+  target_link_libraries(example-server-sampling PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-echo-websocket examples/echo_websocket.cpp)
+  target_link_libraries(example-echo-websocket PRIVATE mcp-cpp-sdk)
+endif()

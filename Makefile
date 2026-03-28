@@ -1,4 +1,4 @@
-.PHONY: all init init-dev build test clean format lint coverage
+.PHONY: all init init-dev build debug test clean format lint coverage
 
 SUDO := $(shell [ $$(id -u) -eq 0 ] || echo "sudo")
 # use half of the number of cores
@@ -21,8 +21,18 @@ init-dev: init
 
 build:
 	conan install . --output-folder=build --build=missing -s compiler.cppstd=20 -c tools.cmake.cmaketoolchain:generator=Ninja
+	@# Conan auto-includes all discovered preset files; strip extras to avoid duplicates.
+	@echo '{"version":4,"vendor":{"conan":{}},"include":["build/CMakePresets.json"]}' > CMakeUserPresets.json
 	cmake --preset conan-release
 	cmake --build --preset conan-release -j$(NUM_CPU_2)
+
+debug:
+	conan install . --output-folder=build/debug --build=missing -s compiler.cppstd=20 -s build_type=Debug -c tools.cmake.cmaketoolchain:generator=Ninja
+	cmake -B build/debug -DCMAKE_TOOLCHAIN_FILE=build/debug/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -G Ninja
+	cmake --build build/debug -j$(NUM_CPU_2)
+	@# Conan adds build/debug to CMakeUserPresets.json, causing duplicate preset errors.
+	@# Restore the file to only include the release preset.
+	@echo '{"version":4,"vendor":{"conan":{}},"include":["build/CMakePresets.json"]}' > CMakeUserPresets.json
 
 test:
 	ctest --preset conan-release -j$(NUM_CPU_2)

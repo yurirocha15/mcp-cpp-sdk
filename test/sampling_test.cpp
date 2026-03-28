@@ -138,12 +138,13 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
         });
 
     int write_count = 0;
-    raw_transport->set_on_write([&write_count, raw_transport](std::string_view msg) {
+    std::vector<std::string> written_messages;
+    raw_transport->set_on_write([&write_count, &written_messages, raw_transport](std::string_view msg) {
         ++write_count;
+        written_messages.emplace_back(msg);
         auto json_msg = nlohmann::json::parse(msg);
 
         if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
-            // This is the server's outgoing sampling request — mock client responds
             auto request_id = json_msg["id"].get<std::string>();
             mcp::CreateMessageResult sample_result;
             sample_result.role = mcp::Role::Assistant;
@@ -160,7 +161,6 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
 
             raw_transport->enqueue_message(response_json.dump());
         } else if (json_msg.contains("result") && !json_msg.contains("method")) {
-            // This is the final tool call response — close transport
             raw_transport->close();
         }
     });
@@ -182,12 +182,12 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
 
     ASSERT_GE(write_count, 2);
 
-    auto sampling_req = nlohmann::json::parse(raw_transport->written()[0]);
+    auto sampling_req = nlohmann::json::parse(written_messages[0]);
     EXPECT_EQ(sampling_req["method"], "sampling/createMessage");
     ASSERT_TRUE(sampling_req.contains("params"));
     EXPECT_EQ(sampling_req["params"]["maxTokens"], 100);
 
-    auto tool_response = nlohmann::json::parse(raw_transport->written()[1]);
+    auto tool_response = nlohmann::json::parse(written_messages[1]);
     EXPECT_EQ(tool_response["id"], "req-1");
     ASSERT_TRUE(tool_response.contains("result"));
     auto content_arr = tool_response["result"]["content"];
@@ -250,7 +250,9 @@ TEST_F(SamplingTest, SampleLlmErrorResponseThrows) {
             co_return result;
         });
 
-    raw_transport->set_on_write([raw_transport](std::string_view msg) {
+    std::vector<std::string> written_messages;
+    raw_transport->set_on_write([&written_messages, raw_transport](std::string_view msg) {
+        written_messages.emplace_back(msg);
         auto json_msg = nlohmann::json::parse(msg);
 
         if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
@@ -285,7 +287,7 @@ TEST_F(SamplingTest, SampleLlmErrorResponseThrows) {
     EXPECT_TRUE(handler_threw);
 
     bool found_result = false;
-    for (const auto& w : raw_transport->written()) {
+    for (const auto& w : written_messages) {
         auto parsed = nlohmann::json::parse(w);
         if (parsed.contains("result") && parsed.value("id", "") == "req-2") {
             EXPECT_EQ(parsed["result"]["content"][0]["text"], "recovered");
