@@ -77,4 +77,7 @@ if(BUILD_EXAMPLES)
 
   add_executable(example-http-loopback examples/http_loopback.cpp)
   target_link_libraries(example-http-loopback PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-llama-mcp examples/llama/llama_server.cpp)
+  target_link_libraries(example-llama-mcp PRIVATE mcp-cpp-sdk)
 endif()
