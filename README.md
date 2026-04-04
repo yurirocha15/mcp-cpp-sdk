@@ -9,7 +9,8 @@ A modern C++20 implementation of the Model Context Protocol (MCP), enabling seam
 ## Features
 
 - **MCP 2025-11-25 Protocol**: Full implementation of the latest Model Context Protocol specification
-- **Dual Transport Support**: Stdio and WebSocket transports for flexible deployment scenarios
+- **Triple Transport Support**: Stdio, WebSocket, and Streamable HTTP transports for flexible deployment scenarios
+- **Streamable HTTP**: Streamable HTTP transport (MCP 2025-11-25) for REST-style MCP communication
 - **Server & Client**: Complete implementations for both server and client roles
 - **Modern C++20**: Leverages coroutines via Boost.Asio for clean asynchronous code
 - **Type-Safe Protocol**: Uses nlohmann/json with strong typing for all MCP messages
@@ -107,6 +108,8 @@ The SDK is organized into the following headers:
 - **`mcp/transport.hpp`**: Abstract transport interface (`ITransport`)
 - **`mcp/transport/stdio.hpp`**: Stdio transport implementation
 - **`mcp/transport/websocket.hpp`**: WebSocket transport implementation
+- **`mcp/transport/http_server.hpp`**: Streamable HTTP server transport
+- **`mcp/transport/http_client.hpp`**: Streamable HTTP client transport
 - **`mcp/context.hpp`**: Context for handling server-side requests
 - **`mcp/server.hpp`**: MCP server implementation
 - **`mcp/client.hpp`**: MCP client implementation
@@ -121,6 +124,9 @@ The repository includes several complete examples:
 - **`examples/client_stdio.cpp`**: Stdio client demonstrating initialization and tool calls
 - **`examples/server_with_sampling.cpp`**: Server showcasing LLM sampling integration
 - **`examples/echo_websocket.cpp`**: WebSocket echo server for testing transport
+- **`examples/http_loopback.cpp`**: HTTP transport loopback demonstrating Streamable HTTP
+- **`examples/llama/llama_server.cpp`**: MCP adapter for llama.cpp's llama-server (chat, completion, embedding)
+- **`examples/debugger/debugger_server.cpp`**: LLDB debugger MCP server (requires `-DBUILD_LLDB_EXAMPLE=ON`)
 
 Build and run examples:
 ```bash
@@ -143,7 +149,7 @@ make clean        # Clean build artifacts
 ### Running Tests
 
 ```bash
-# Run all 153 tests
+# Run all 160 tests
 make test
 
 # Run with verbose output

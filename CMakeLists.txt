@@ -81,3 +81,27 @@ if(BUILD_EXAMPLES)
   add_executable(example-llama-mcp examples/llama/llama_server.cpp)
   target_link_libraries(example-llama-mcp PRIVATE mcp-cpp-sdk)
 endif()
+
+option(BUILD_LLDB_EXAMPLE
+       "Build LLDB debugger MCP server example (requires liblldb)" OFF)
+if(BUILD_LLDB_EXAMPLE)
+  find_package(LLDB CONFIG QUIET)
+  if(NOT LLDB_FOUND)
+    find_library(LLDB_LIB lldb)
+    find_path(LLDB_INCLUDE_DIR lldb/API/LLDB.h)
+    if(NOT LLDB_LIB OR NOT LLDB_INCLUDE_DIR)
+      message(
+        FATAL_ERROR
+          "LLDB development libraries not found. Install liblldb-dev/llvm.")
+    endif()
+  endif()
+  add_executable(example-debugger-server examples/debugger/debugger_server.cpp)
+  if(LLDB_FOUND)
+    target_link_libraries(example-debugger-server PRIVATE mcp-cpp-sdk lldb)
+  else()
+    target_include_directories(example-debugger-server
+                               PRIVATE ${LLDB_INCLUDE_DIR}/..)
+    target_link_libraries(example-debugger-server PRIVATE mcp-cpp-sdk
+                                                          ${LLDB_LIB})
+  endif()
+endif()
