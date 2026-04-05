@@ -42,6 +42,7 @@
 
 # cache files
 .cache
+*.pyc
 
 # build folder
 /build

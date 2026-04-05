@@ -1,0 +1,133 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: mcp-redis
+    ports:
+      - "6379:6379"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - mcp-network
+
+  api-service:
+    build: ./api-service
+    container_name: mcp-api-service
+    ports:
+      - "8100:8100"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8100/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - mcp-network
+
+  redis-seeder:
+    build: ./infra/redis
+    container_name: mcp-redis-seeder
+    profiles: ["seeder"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://redis:6379
+    networks:
+      - mcp-network
+
+  cpp-server:
+    build:
+      context: ..
+      dockerfile: benchmark/cpp/Dockerfile
+    container_name: mcp-cpp-server
+    ports:
+      - "8080:8080"
+      - "9080:9080"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - API_SERVICE_URL=http://api-service:8100
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - mcp-network
+
+  python-server:
+    build: ./python
+    container_name: mcp-python-server
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - API_SERVICE_URL=http://api-service:8100
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - mcp-network
+
+  go-server:
+    build: ./go
+    container_name: mcp-go-server
+    ports:
+      - "8082:8082"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - API_SERVICE_URL=http://api-service:8100
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - mcp-network
+
+networks:
+  mcp-network:
+    driver: bridge
