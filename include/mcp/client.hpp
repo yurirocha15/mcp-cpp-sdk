@@ -384,6 +384,52 @@ class Client {
                    });
     }
 
+    /**
+     * @brief Set static roots and auto-register the roots/list handler.
+     *
+     * @details Stores the given roots and registers a request handler for
+     * "roots/list" that returns them. If notify is true, sends a
+     * notifications/roots/list_changed notification to inform the server.
+     *
+     * @param roots The list of roots to provide.
+     * @param notify Whether to send a roots-changed notification.
+     */
+    void set_roots(std::vector<Root> roots, bool notify = false) {
+        roots_ = std::move(roots);
+
+        if (request_handlers_.find("roots/list") == request_handlers_.end()) {
+            on_request("roots/list", [this](const nlohmann::json&) -> Task<nlohmann::json> {
+                ListRootsResult result;
+                result.roots = roots_;
+                nlohmann::json j = std::move(result);
+                co_return j;
+            });
+        }
+
+        if (notify && transport_) {
+            boost::asio::co_spawn(
+                strand_,
+                [this]() -> Task<void> {
+                    co_await send_notification("notifications/roots/list_changed", std::nullopt);
+                },
+                boost::asio::detached);
+        }
+    }
+
+    /**
+     * @brief Register a dynamic handler for roots/list requests.
+     *
+     * @param handler Async handler that returns a ListRootsResult.
+     */
+    void on_roots_list(std::function<Task<ListRootsResult>(const nlohmann::json&)> handler) {
+        on_request("roots/list",
+                   [h = std::move(handler)](const nlohmann::json& params) -> Task<nlohmann::json> {
+                       auto result = co_await h(params);
+                       nlohmann::json j = std::move(result);
+                       co_return j;
+                   });
+    }
+
    private:
     /**
      * @brief A pending request awaiting its response.
@@ -515,6 +561,7 @@ class Client {
 
     std::map<std::string, NotificationCallback, std::less<>> notification_handlers_;
     std::map<std::string, RequestHandler, std::less<>> request_handlers_;
+    std::vector<Root> roots_;
 };
 
 }  // namespace mcp

@@ -40,6 +40,7 @@ set(TEST_SRCS
     test/concepts_test.cpp
     test/core_test.cpp
     test/protocol_test.cpp
+    test/roots_test.cpp
     test/sampling_test.cpp
     test/server_core_test.cpp
     test/server_cancellation_test.cpp

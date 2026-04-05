@@ -194,6 +194,24 @@ class Context {
         co_return result_json.get<ElicitResult>();
     }
 
+    /**
+     * @brief Request the list of roots from the client (reverse RPC).
+     *
+     * @details Sends a "roots/list" request to the client and awaits
+     * the response. The client provides its configured root URIs.
+     *
+     * @return A task that resolves to the client's ListRootsResult.
+     * @throws std::runtime_error If no request sender is available.
+     */
+    Task<ListRootsResult> request_roots() {
+        if (!sender_) {
+            throw std::runtime_error("Context has no request sender for reverse RPC");
+        }
+
+        auto result_json = co_await sender_("roots/list", std::nullopt);
+        co_return result_json.get<ListRootsResult>();
+    }
+
    private:
     ITransport& transport_;
     RequestSender sender_;
