@@ -68,6 +68,9 @@ class HttpClientTransport final : public ITransport {
 
     ~HttpClientTransport() override { close(); }
 
+    [[nodiscard]] const std::string& session_id() const { return state_->session_id; }
+    [[nodiscard]] const std::string& last_event_id() const { return state_->last_event_id; }
+
     /**
      * @brief Dequeue the next MCP message received from HTTP responses.
      *
@@ -130,6 +133,9 @@ class HttpClientTransport final : public ITransport {
             request.set("MCP-Protocol-Version", std::string(LATEST_PROTOCOL_VERSION));
             if (!state_->session_id.empty()) {
                 request.set("MCP-Session-Id", state_->session_id);
+            }
+            if (!state_->last_event_id.empty()) {
+                request.set("Last-Event-ID", state_->last_event_id);
             }
             request.body() = std::string(message);
             request.prepare_payload();
@@ -230,6 +236,7 @@ class HttpClientTransport final : public ITransport {
         std::queue<std::string> queue;
         std::atomic<bool> closed{false};
         std::string session_id;
+        std::string last_event_id;
     };
 
     static ParsedUrl parse_url(std::string url) {
@@ -296,9 +303,15 @@ class HttpClientTransport final : public ITransport {
         return std::string(line);
     }
 
-    static std::queue<std::string> parse_sse_messages(std::string_view sse_body) {
-        std::queue<std::string> parsed_messages;
+    struct ParsedSseEvent {
+        std::string data;
+        std::string id;
+    };
+
+    static std::queue<ParsedSseEvent> parse_sse_messages(std::string_view sse_body) {
+        std::queue<ParsedSseEvent> parsed_messages;
         std::string current_event_payload;
+        std::string current_event_id;
 
         std::size_t offset = 0;
         while (offset <= sse_body.size()) {
@@ -310,8 +323,10 @@ class HttpClientTransport final : public ITransport {
 
             if (normalized_line.empty()) {
                 if (!current_event_payload.empty()) {
-                    parsed_messages.push(std::move(current_event_payload));
+                    parsed_messages.push(
+                        ParsedSseEvent{std::move(current_event_payload), current_event_id});
                     current_event_payload.clear();
+                    current_event_id.clear();
                 }
             } else if (starts_with(normalized_line, "data:")) {
                 std::string_view data_value =
@@ -324,6 +339,13 @@ class HttpClientTransport final : public ITransport {
                     current_event_payload.push_back('\n');
                 }
                 current_event_payload.append(data_value.data(), data_value.size());
+            } else if (starts_with(normalized_line, "id:")) {
+                std::string_view id_value =
+                    std::string_view(normalized_line).substr(std::string_view("id:").size());
+                if (!id_value.empty() && id_value.front() == ' ') {
+                    id_value.remove_prefix(1);
+                }
+                current_event_id = std::string(id_value);
             }
 
             if (line_end == std::string_view::npos) {
@@ -333,7 +355,7 @@ class HttpClientTransport final : public ITransport {
         }
 
         if (!current_event_payload.empty()) {
-            parsed_messages.push(std::move(current_event_payload));
+            parsed_messages.push(ParsedSseEvent{std::move(current_event_payload), current_event_id});
         }
 
         return parsed_messages;
@@ -381,7 +403,11 @@ class HttpClientTransport final : public ITransport {
         if (starts_with(content_type_header, "text/event-stream")) {
             auto parsed_messages = parse_sse_messages(response.body());
             while (!parsed_messages.empty()) {
-                enqueue_message(std::move(parsed_messages.front()));
+                auto& event = parsed_messages.front();
+                if (!event.id.empty()) {
+                    state_->last_event_id = event.id;
+                }
+                enqueue_message(std::move(event.data));
                 parsed_messages.pop();
             }
         }

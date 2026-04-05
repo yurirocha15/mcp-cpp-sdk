@@ -16,6 +16,8 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
+#include <cstdint>
+#include <deque>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -27,11 +29,122 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace mcp {
 
 namespace beast = boost::beast;
 namespace http = boost::beast::http;
+
+/**
+ * @brief A bounded in-memory event store for SSE resumability.
+ *
+ * @details Stores recent SSE events with monotonically increasing IDs. When the
+ * store exceeds its capacity, the oldest events are evicted. Clients can replay
+ * missed events by providing the last event ID they received.
+ *
+ * Thread safety: Not thread-safe. Caller must synchronize access (e.g. via strand).
+ */
+class EventStore {
+   public:
+    /**
+     * @brief Construct an event store with a given capacity.
+     *
+     * @param capacity Maximum number of events to retain.
+     */
+    explicit EventStore(std::size_t capacity = 1024) : capacity_(capacity) {}
+
+    /**
+     * @brief Append an event to the store and return its assigned ID.
+     *
+     * @param data The serialized event data (JSON-RPC message).
+     * @return The monotonically increasing event ID assigned to this event.
+     */
+    std::string append(std::string data) {
+        auto id = std::to_string(++next_id_);
+        events_.push_back(StoredEvent{id, std::move(data)});
+        while (events_.size() > capacity_) {
+            events_.pop_front();
+        }
+        return id;
+    }
+
+    /**
+     * @brief Retrieve all events after a given event ID.
+     *
+     * @param last_event_id The ID of the last event the client received.
+     * @return A vector of (id, data) pairs for events after the given ID,
+     *         or std::nullopt if the last_event_id has been evicted.
+     */
+    std::optional<std::vector<std::pair<std::string, std::string>>> events_after(
+        const std::string& last_event_id) const {
+        if (events_.empty()) {
+            return std::vector<std::pair<std::string, std::string>>{};
+        }
+
+        auto it = events_.begin();
+        bool found = false;
+        for (; it != events_.end(); ++it) {
+            if (it->id == last_event_id) {
+                found = true;
+                ++it;
+                break;
+            }
+        }
+
+        if (!found) {
+            return std::nullopt;
+        }
+
+        std::vector<std::pair<std::string, std::string>> result;
+        for (; it != events_.end(); ++it) {
+            result.emplace_back(it->id, it->data);
+        }
+        return result;
+    }
+
+    /**
+     * @brief Get all events currently in the store.
+     *
+     * @return A vector of (id, data) pairs for all stored events.
+     */
+    std::vector<std::pair<std::string, std::string>> all_events() const {
+        std::vector<std::pair<std::string, std::string>> result;
+        result.reserve(events_.size());
+        for (const auto& event : events_) {
+            result.emplace_back(event.id, event.data);
+        }
+        return result;
+    }
+
+    /**
+     * @brief Get the number of events currently stored.
+     */
+    [[nodiscard]] std::size_t size() const { return events_.size(); }
+
+    /**
+     * @brief Get the maximum capacity of the store.
+     */
+    [[nodiscard]] std::size_t capacity() const { return capacity_; }
+
+    /**
+     * @brief Clear all stored events.
+     */
+    void clear() {
+        events_.clear();
+        next_id_ = 0;
+    }
+
+   private:
+    struct StoredEvent {
+        std::string id;
+        std::string data;
+    };
+
+    std::size_t capacity_;
+    std::deque<StoredEvent> events_;
+    std::uint64_t next_id_{0};
+};
 
 /**
  * @brief HTTP server transport for MCP Streamable HTTP.
@@ -50,12 +163,13 @@ class HttpServerTransport final : public ITransport {
      * @param port Local bind port.
      */
     HttpServerTransport(const boost::asio::any_io_executor& executor, std::string host,
-                        unsigned short port)
+                        unsigned short port, std::size_t event_store_capacity = 1024)
         : host_(std::move(host)),
           port_(port),
           strand_(boost::asio::make_strand(executor)),
           acceptor_(strand_),
-          state_(std::make_shared<SharedState>(strand_)) {
+          state_(std::make_shared<SharedState>(strand_)),
+          event_store_(event_store_capacity) {
         state_->timer.expires_at(std::chrono::steady_clock::time_point::max());
 
         boost::system::error_code ec;
@@ -92,6 +206,8 @@ class HttpServerTransport final : public ITransport {
     HttpServerTransport& operator=(const HttpServerTransport&) = delete;
     HttpServerTransport(HttpServerTransport&&) = delete;
     HttpServerTransport& operator=(HttpServerTransport&&) = delete;
+
+    [[nodiscard]] const EventStore& event_store() const { return event_store_; }
 
     /**
      * @brief Read the next queued JSON-RPC message from HTTP POST bodies.
@@ -142,8 +258,16 @@ class HttpServerTransport final : public ITransport {
         }
 
         const auto response_json = nlohmann::json::parse(message, nullptr, false);
-        if (response_json.is_discarded() || !response_json.is_object() ||
-            !response_json.contains("id")) {
+        if (response_json.is_discarded() || !response_json.is_object()) {
+            co_return;
+        }
+
+        auto event_id = event_store_.append(std::string(message));
+
+        if (!response_json.contains("id")) {
+            for (auto& timer : sse_clients_) {
+                timer->cancel();
+            }
             co_return;
         }
 
@@ -154,6 +278,7 @@ class HttpServerTransport final : public ITransport {
         }
 
         pending_it->second.response_body = std::string(message);
+        pending_it->second.event_id = std::move(event_id);
         pending_it->second.response_ready = true;
 
         if (is_initialize_result_response(response_json)) {
@@ -238,12 +363,14 @@ class HttpServerTransport final : public ITransport {
         std::shared_ptr<boost::asio::steady_timer> ready_timer;
         std::optional<std::string> response_body;
         std::optional<std::string> session_header;
+        std::optional<std::string> event_id;
         bool response_ready{false};
     };
 
     struct PendingResult {
         std::optional<std::string> response_body;
         std::optional<std::string> session_header;
+        std::optional<std::string> event_id;
     };
 
     struct SessionCheckResult {
@@ -316,6 +443,37 @@ class HttpServerTransport final : public ITransport {
         return response;
     }
 
+    static http::response<http::string_body> make_sse_response(
+        const http::request<http::string_body>& request, const std::string& event_id,
+        const std::string& data) {
+        std::string sse_body = "id: " + event_id + "\ndata: " + data + "\n\n";
+        http::response<http::string_body> response{http::status::ok, request.version()};
+        response.set(http::field::server, "mcp-cpp-sdk");
+        response.set(http::field::content_type, "text/event-stream");
+        response.set(http::field::cache_control, "no-cache");
+        response.keep_alive(request.keep_alive());
+        response.body() = std::move(sse_body);
+        response.prepare_payload();
+        return response;
+    }
+
+    static http::response<http::string_body> make_sse_replay_response(
+        const http::request<http::string_body>& request,
+        const std::vector<std::pair<std::string, std::string>>& events) {
+        std::string sse_body;
+        for (const auto& [id, data] : events) {
+            sse_body += "id: " + id + "\ndata: " + data + "\n\n";
+        }
+        http::response<http::string_body> response{http::status::ok, request.version()};
+        response.set(http::field::server, "mcp-cpp-sdk");
+        response.set(http::field::content_type, "text/event-stream");
+        response.set(http::field::cache_control, "no-cache");
+        response.keep_alive(request.keep_alive());
+        response.body() = std::move(sse_body);
+        response.prepare_payload();
+        return response;
+    }
+
     Task<SessionCheckResult> validate_post_session(const http::request<http::string_body>& request) {
         co_await boost::asio::post(strand_, boost::asio::use_awaitable);
 
@@ -375,8 +533,8 @@ class HttpServerTransport final : public ITransport {
         auto timer_signal = std::make_shared<boost::asio::steady_timer>(strand_);
         timer_signal->expires_at(std::chrono::steady_clock::time_point::max());
 
-        pending_responses_.emplace(request_id_key,
-                                   PendingResponse{timer_signal, std::nullopt, std::nullopt, false});
+        pending_responses_.emplace(request_id_key, PendingResponse{timer_signal, std::nullopt,
+                                                                   std::nullopt, std::nullopt, false});
         co_return timer_signal;
     }
 
@@ -400,7 +558,8 @@ class HttpServerTransport final : public ITransport {
         }
 
         PendingResult pending_result{std::move(pending_it->second.response_body),
-                                     std::move(pending_it->second.session_header)};
+                                     std::move(pending_it->second.session_header),
+                                     std::move(pending_it->second.event_id)};
         pending_responses_.erase(pending_it);
         co_return pending_result;
     }
@@ -481,6 +640,20 @@ class HttpServerTransport final : public ITransport {
                                           "Missing response body for request");
         }
 
+        const auto accept_it = request.find(http::field::accept);
+        const bool client_accepts_sse =
+            accept_it != request.end() &&
+            std::string_view(accept_it->value()).find("text/event-stream") != std::string_view::npos;
+
+        if (client_accepts_sse && pending_result.event_id.has_value()) {
+            auto response =
+                make_sse_response(request, *pending_result.event_id, *pending_result.response_body);
+            if (pending_result.session_header.has_value()) {
+                response.set("MCP-Session-Id", *pending_result.session_header);
+            }
+            co_return response;
+        }
+
         auto response =
             make_json_response(request, http::status::ok, std::move(*pending_result.response_body));
         if (pending_result.session_header.has_value()) {
@@ -513,10 +686,49 @@ class HttpServerTransport final : public ITransport {
         co_return make_json_response(request, http::status::ok, "{}");
     }
 
+    Task<http::response<http::string_body>> handle_get(
+        const http::request<http::string_body>& request) {
+        const auto protocol_header_it = request.find("MCP-Protocol-Version");
+        if (protocol_header_it == request.end() ||
+            protocol_header_it->value() != LATEST_PROTOCOL_VERSION) {
+            co_return make_error_response(request, http::status::bad_request,
+                                          "Invalid MCP-Protocol-Version header");
+        }
+
+        if (!session_id_.has_value()) {
+            co_return make_error_response(request, http::status::bad_request, "No active session");
+        }
+
+        const auto session_header_it = request.find("MCP-Session-Id");
+        if (session_header_it == request.end() || session_header_it->value() != *session_id_) {
+            co_return make_error_response(request, http::status::bad_request,
+                                          "Invalid MCP-Session-Id header");
+        }
+
+        const auto last_event_id_it = request.find("Last-Event-ID");
+        if (last_event_id_it != request.end()) {
+            auto last_id = std::string(last_event_id_it->value());
+            auto missed_events = event_store_.events_after(last_id);
+            if (!missed_events.has_value()) {
+                co_return make_error_response(request, http::status::gone,
+                                              "Event ID has been evicted from store");
+            }
+            if (!missed_events->empty()) {
+                co_return make_sse_replay_response(request, *missed_events);
+            }
+        }
+
+        co_return make_empty_json_response(request, http::status::ok);
+    }
+
     Task<http::response<http::string_body>> handle_request(
         const http::request<http::string_body>& request) {
         if (request.method() == http::verb::post) {
             co_return co_await handle_post(request);
+        }
+
+        if (request.method() == http::verb::get) {
+            co_return co_await handle_get(request);
         }
 
         if (request.method() == http::verb::delete_) {
@@ -525,7 +737,7 @@ class HttpServerTransport final : public ITransport {
 
         auto response =
             make_error_response(request, http::status::method_not_allowed, "Method not allowed");
-        response.set(http::field::allow, "POST, DELETE");
+        response.set(http::field::allow, "GET, POST, DELETE");
         co_return response;
     }
 
@@ -571,6 +783,9 @@ class HttpServerTransport final : public ITransport {
 
     bool allow_all_origins_{true};
     std::unordered_set<std::string> allowed_origins_;
+
+    EventStore event_store_;
+    std::vector<std::shared_ptr<boost::asio::steady_timer>> sse_clients_;
 };
 
 }  // namespace mcp
