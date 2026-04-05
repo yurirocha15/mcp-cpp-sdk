@@ -30,6 +30,10 @@ namespace mcp {
 /// @brief Type-erased handler: takes a Context and JSON params, returns JSON result.
 using TypeErasedHandler = std::function<Task<nlohmann::json>(Context&, const nlohmann::json&)>;
 
+/// @brief Middleware function signature for intercepting handler invocations.
+using Middleware =
+    std::function<Task<nlohmann::json>(Context&, const nlohmann::json&, TypeErasedHandler)>;
+
 namespace detail {
 
 /// @brief Detects whether Fn is invocable with (In) returning Task<Out>.
@@ -210,6 +214,18 @@ class Server {
     }
 
     /**
+     * @brief Register a middleware function to intercept handler invocations.
+     *
+     * @details Middleware functions execute in registration order (first registered = outermost).
+     * Each middleware receives the context, request parameters, and a continuation to invoke
+     * the next middleware in the chain (or the final handler). Middleware can modify parameters,
+     * short-circuit execution, or post-process results.
+     *
+     * @param mw The middleware function to register.
+     */
+    void use(Middleware mw) { middlewares_.push_back(std::move(mw)); }
+
+    /**
      * @brief Send a JSON-RPC request to the client and await its response (reverse RPC).
      *
      * @details Assigns a unique integer ID, sends the request over the
@@ -362,6 +378,8 @@ class Server {
 
         if (request.method == "initialize") {
             co_await handle_initialize(request);
+        } else if (request.method == "ping") {
+            co_await handle_ping(request);
         } else if (request.method == "shutdown") {
             co_await handle_shutdown(request);
         } else if (request.method == "tools/call") {
@@ -425,6 +443,10 @@ class Server {
         co_await send_result(request.id, nlohmann::json::object());
     }
 
+    Task<void> handle_ping(const JSONRPCRequest& request) {
+        co_await send_result(request.id, nlohmann::json::object());
+    }
+
     Task<void> handle_tools_call(const JSONRPCRequest& request) {
         auto params = request.params.value().get<CallToolParams>();
         auto iter = tool_handlers_.find(params.name);
@@ -433,8 +455,17 @@ class Server {
             co_return;
         }
 
+        TypeErasedHandler wrapped_handler =
+            [original_handler = iter->second](
+                Context& ctx, const nlohmann::json& full_params) -> Task<nlohmann::json> {
+            auto call_params = full_params.get<CallToolParams>();
+            co_return co_await original_handler(ctx, call_params.arguments);
+        };
+        auto handler = build_middleware_chain(std::move(wrapped_handler));
+
         auto ctx = make_context();
-        nlohmann::json result = co_await iter->second(ctx, params.arguments);
+        nlohmann::json params_json = std::move(params);
+        nlohmann::json result = co_await handler(ctx, params_json);
         co_await send_result(request.id, std::move(result));
     }
 
@@ -462,9 +493,11 @@ class Server {
             co_return;
         }
 
+        auto handler = build_middleware_chain(iter->second);
+
         nlohmann::json params_json = std::move(params);
         auto ctx = make_context();
-        nlohmann::json result = co_await iter->second(ctx, params_json);
+        nlohmann::json result = co_await handler(ctx, params_json);
         co_await send_result(request.id, std::move(result));
     }
 
@@ -492,9 +525,11 @@ class Server {
             co_return;
         }
 
+        auto handler = build_middleware_chain(iter->second);
+
         nlohmann::json params_json = std::move(params);
         auto ctx = make_context();
-        nlohmann::json result = co_await iter->second(ctx, params_json);
+        nlohmann::json result = co_await handler(ctx, params_json);
         co_await send_result(request.id, std::move(result));
     }
 
@@ -518,6 +553,18 @@ class Server {
 
         nlohmann::json json_msg = std::move(response);
         co_await session_->transport->write_message(json_msg.dump());
+    }
+
+    TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler) {
+        auto handler = std::move(final_handler);
+        for (auto it = middlewares_.rbegin(); it != middlewares_.rend(); ++it) {
+            auto mw = *it;
+            handler = [mw, next = std::move(handler)](
+                          Context& ctx, const nlohmann::json& params) -> Task<nlohmann::json> {
+                co_return co_await mw(ctx, params, next);
+            };
+        }
+        return handler;
     }
 
     Implementation server_info_;
@@ -567,6 +614,9 @@ class Server {
     std::vector<Prompt> prompts_;
     /// @brief Type-erased prompt handlers keyed by prompt name.
     std::map<std::string, TypeErasedHandler, std::less<>> prompt_handlers_;
+
+    /// @brief Registered middleware functions in order of registration.
+    std::vector<Middleware> middlewares_;
 };
 
 }  // namespace mcp

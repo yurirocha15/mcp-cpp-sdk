@@ -346,3 +346,34 @@ TEST_F(ServerCoreTest, DispatchDirectlyWithoutRun) {
     ASSERT_TRUE(response.contains("result"));
     EXPECT_FALSE(server.is_shutdown_requested());
 }
+
+TEST_F(ServerCoreTest, PingHandlerReturnsEmptyResult) {
+    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
+    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+
+    mcp::Implementation server_info;
+    server_info.name = "test-server";
+    server_info.version = "1.0";
+
+    mcp::Server server(std::move(server_info), mcp::ServerCapabilities{});
+
+    nlohmann::json response;
+    raw_transport->set_on_write([&response, raw_transport](std::string_view msg) {
+        response = nlohmann::json::parse(msg);
+        raw_transport->close();
+    });
+
+    nlohmann::json ping_req = {{"jsonrpc", "2.0"}, {"id", "99"}, {"method", "ping"}};
+    raw_transport->enqueue_message(ping_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> { co_await server.run(std::move(transport), io_ctx_.get_executor()); },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_TRUE(response.contains("result"));
+    EXPECT_EQ(response["id"], "99");
+    EXPECT_EQ(response["result"], nlohmann::json::object());
+}

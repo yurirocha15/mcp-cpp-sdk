@@ -314,6 +314,8 @@ class Client {
         co_return result_json.get<CompleteResult>();
     }
 
+    Task<void> ping() { co_await send_request("ping", std::nullopt); }
+
    private:
     /**
      * @brief A pending request awaiting its response.

@@ -457,3 +457,45 @@ TEST_F(ClientCoreTest, ConnectReturnsServerCapabilities) {
     ASSERT_TRUE(init_result.capabilities.tools->listChanged.has_value());
     EXPECT_TRUE(*init_result.capabilities.tools->listChanged);
 }
+
+TEST_F(ClientCoreTest, PingSendsRequestAndReceivesResponse) {
+    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
+    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+
+    raw_transport->set_on_write([raw_transport](std::string_view msg) {
+        auto json_msg = nlohmann::json::parse(msg);
+        if (json_msg.contains("id")) {
+            auto id = json_msg["id"].get<std::string>();
+            auto method = json_msg.value("method", "");
+            if (method == "initialize") {
+                raw_transport->enqueue_response(
+                    make_result_response(id, make_initialize_result()).dump());
+            } else if (method == "ping") {
+                raw_transport->enqueue_response(
+                    make_result_response(id, nlohmann::json::object()).dump());
+            }
+        }
+    });
+
+    mcp::Client client(std::move(transport), io_ctx_.get_executor());
+
+    bool ping_completed = false;
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            mcp::Implementation info;
+            info.name = "test-client";
+            info.version = "0.1";
+            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+
+            co_await client.ping();
+            ping_completed = true;
+            raw_transport->close();
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_TRUE(ping_completed);
+    EXPECT_EQ(client.pending_request_count(), 0);
+}
