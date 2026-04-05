@@ -6,23 +6,69 @@ Methodology mirrors [TM Dev Lab v2](https://github.com/thiagomendes/benchmark-mc
 
 ---
 
+## Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) with Compose v2 (`docker compose`)
+- `python3` and `jq` (for orchestration and results parsing)
+
+> k6 runs inside a Docker container (`grafana/k6`) — no host installation needed.
+
+---
+
+## Quick Start
+
+```bash
+cd benchmark/
+
+# Benchmark all three servers (builds, seeds Redis, warms up, runs k6)
+./run.sh
+
+# Benchmark specific servers
+./run.sh cpp
+./run.sh cpp python
+./run.sh cpp,go
+```
+
+`run.sh` handles everything end-to-end:
+1. Starts Redis + API service
+2. Seeds Redis with 130k keys (carts, history, popularity, rate limits)
+3. For each selected server: resets Redis, starts only that server, warms up, runs k6, collects Docker stats
+4. Prints a comparison table and saves results to `benchmark/results/<timestamp>/`
+
+Results per server:
+- `<server>/k6_summary.json` — full k6 metrics
+- `<server>/k6_console.log` — k6 terminal output
+- `<server>/stats.json` — CPU/memory/network samples during the test
+- `comparison.txt` — side-by-side RPS, latency percentiles, error rates
+
+### Benchmark Profile (TM Dev Lab v2)
+
+- **50 virtual users**, 5-minute sustained load
+- 15s ramp-up, 10s ramp-down
+- 60s warmup excluded from metrics (5 init sessions + 9 full tool sessions per server)
+- Each VU cycles through all three tools + `tools/list`
+- Redis FLUSHDB + re-seed between servers
+
+---
+
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────┐
-│                  Docker network                     │
-│                                                     │
-│  ┌──────────┐   ┌──────────────────────────────┐    │
-│  │  Redis   │   │        API Service           │    │
-│  │  :6379   │   │  (Go stdlib, 100k products)  │    │
-│  └────┬─────┘   │           :8100              │    │
-│       │         └──────────────┬───────────────┘    │
-│       │                        │                    │
-│  ┌────┴──────┐  ┌──────────────┴──┐  ┌──────────┐   │
-│  │ C++ MCP   │  │  Python MCP     │  │  Go MCP  │   │
-│  │  :8080    │  │    :8081        │  │  :8082   │   │
-│  └───────────┘  └─────────────────┘  └──────────┘   │
-└─────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph Docker network
+        Redis["Redis :6379"]
+        API["API Service :8100<br/>(Go stdlib, 100k products)"]
+        CPP["C++ MCP :8080"]
+        Python["Python MCP :8081"]
+        Go["Go MCP :8082"]
+    end
+
+    Redis --- CPP
+    Redis --- Python
+    Redis --- Go
+    API --- CPP
+    API --- Python
+    API --- Go
 ```
 
 Each MCP server exposes the same three tools:
@@ -35,84 +81,48 @@ Each MCP server exposes the same three tools:
 
 ---
 
-## Prerequisites
-
-- [Docker](https://docs.docker.com/get-docker/) with Compose v2 (`docker compose`)
-- [k6](https://k6.io/docs/get-started/installation/) for load testing
-
----
-
-## Quick Start
-
-### 1. Seed Redis (one-time)
-
-```bash
-cd benchmark/
-docker compose --profile seeder up redis-seeder
-```
-
-This populates:
-- `bench:cart:user-{00000..09999}` — 10,000 user carts (HASH)
-- `bench:history:user-{00000..00999}` — 1,000 users × 20 order entries (LIST)
-- `bench:popular` — 100,000 product popularity scores (ZSET)
-- `bench:ratelimit:user-{00000..00099}` — 100 rate-limit counters (STRING)
-
-> The seeder exits when done. Redis data is not persisted between `docker compose down` calls unless you add a volume.
-
-### 2. Start all servers
-
-```bash
-docker compose up --build
-```
-
-This starts: Redis, API service, C++ MCP server, Python MCP server, Go MCP server.
-
-Wait for all healthchecks to go green (≈30–60s for the first build):
-
-```bash
-docker compose ps
-```
-
-All services should show `healthy`.
-
-### 3. Verify servers are up
-
-```bash
-# C++ — health on dedicated port 9080
-curl http://localhost:9080/health
-
-# Python
-curl http://localhost:8081/health
-
-# Go
-curl http://localhost:8082/health
-
-# API service
-curl http://localhost:8100/health
-```
-
----
-
 ## Server Ports
 
 | Service | Port | Notes |
 |---|---|---|
 | Redis | 6379 | Internal |
 | API service | 8100 | Go stdlib, no external deps |
-| C++ MCP | 8080 | MCP (Streamable HTTP) |
-| C++ health | 9080 | Separate health-only listener |
+| C++ MCP | 8080 | MCP + `/health` on same port (Streamable HTTP) |
 | Python MCP | 8081 | MCP + `/health` on same port |
 | Go MCP | 8082 | MCP + `/health` on same port |
 
-> The C++ server exposes health on `port + 1000` (9080) because `HttpServerTransport` routes all traffic as MCP — there is no path-based routing in the SDK transport.
+> All three servers expose MCP and health endpoints on the same port.
 
 ---
 
-## Running Individual Servers
+## Go Test Client (correctness verification)
 
-Start only what you need (Redis and API service are always required):
+Verify tool responses before load testing:
 
 ```bash
+cd benchmark/client/
+go build -o benchmark-client .
+
+# Test a single server
+./benchmark-client -url http://localhost:8080/mcp -name cpp
+
+# Compare all three servers
+./benchmark-client -compare
+```
+
+Output is JSON to stdout (machine-readable) and a summary to stderr.
+
+---
+
+## Manual Operations
+
+### Start individual servers
+
+Redis and API service are always required:
+
+```bash
+cd benchmark/
+
 # Just Redis + API + C++
 docker compose up redis api-service cpp-server
 
@@ -123,31 +133,37 @@ docker compose up redis api-service python-server
 docker compose up redis api-service go-server
 ```
 
----
+### Seed Redis manually
 
-## Manual MCP Tool Call
+```bash
+docker compose --profile seeder up redis-seeder
+```
 
-Use any MCP-compatible client or raw HTTP. Example with `curl` (Streamable HTTP protocol):
+### Manual MCP tool call
 
 ```bash
 # 1. Initialize session (C++ server)
 curl -s -X POST http://localhost:8080/mcp \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2025-11-25" \
   -d '{
     "jsonrpc": "2.0",
     "id": 1,
     "method": "initialize",
     "params": {
-      "protocolVersion": "2024-11-05",
+      "protocolVersion": "2025-11-25",
       "clientInfo": {"name": "test", "version": "1.0"},
       "capabilities": {}
     }
   }'
 
-# 2. Call search_products
+# 2. Call search_products (use MCP-Session-Id from step 1 response headers)
 curl -s -X POST http://localhost:8080/mcp \
   -H "Content-Type: application/json" \
-  -H "mcp-session-id: <session-id-from-step-1>" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2025-11-25" \
+  -H "MCP-Session-Id: <session-id-from-step-1>" \
   -d '{
     "jsonrpc": "2.0",
     "id": 2,
@@ -157,29 +173,6 @@ curl -s -X POST http://localhost:8080/mcp \
       "arguments": {"category": "Electronics", "min_price": 50, "max_price": 500, "limit": 5}
     }
   }'
-```
-
----
-
-## Load Testing
-
-> **Coming soon** — k6 scripts and the Go test client
-
-The benchmark profile (matching TM Dev Lab v2):
-- **50 virtual users**, 5-minute sustained load
-- 15s ramp-up, 10s ramp-down
-- 60s warmup excluded from metrics
-- Each VU cycles through all three tools
-
-```bash
-# Run benchmark against C++ server
-k6 run benchmark/k6/benchmark.js -e SERVER_URL=http://localhost:8080
-
-# Run benchmark against Python server
-k6 run benchmark/k6/benchmark.js -e SERVER_URL=http://localhost:8081
-
-# Run benchmark against Go server
-k6 run benchmark/k6/benchmark.js -e SERVER_URL=http://localhost:8082
 ```
 
 ---
@@ -200,7 +193,7 @@ docker compose down --rmi all --volumes
 
 **C++ server build is slow** — the first build compiles the full SDK via Conan inside Docker. Subsequent builds use the Docker layer cache. Expect 3–5 minutes on first run.
 
-**`healthy` never appears for cpp-server** — the healthcheck pings port 9080, not 8080. If 9080 isn't reachable, the server process likely failed during startup. Check logs:
+**`healthy` never appears for cpp-server** — the healthcheck pings port 8080. If it isn't reachable, the server process likely failed during startup. Check logs:
 ```bash
 docker compose logs cpp-server
 ```
@@ -212,3 +205,71 @@ docker compose --profile seeder up redis-seeder
 ```
 
 **Port conflicts** — if 8080/8081/8082/8100/6379 are in use locally, edit the host-side port mappings in `docker-compose.yml` (left side of `host:container`).
+
+---
+
+## Results
+
+Benchmark run: 50 VUs, 5-minute sustained load, 60s warmup excluded. All three servers achieved **0% error rate**.
+
+### Test Environment
+
+| | |
+|---|---|
+| **CPU** | AMD Ryzen 9 9900X — 12 cores / 24 threads, 5.66 GHz max boost |
+| **RAM** | 32 GB DDR5 |
+| **OS** | Ubuntu (kernel 6.17.0-20-generic) |
+| **Docker limits** | 2 CPUs, 2 GB RAM per server container |
+
+### Throughput & Latency
+
+| Server | Total Requests | RPS | p50 (ms) | p95 (ms) | p99 (ms) |
+|---|---|---|---|---|---|
+| **C++** | 3,962,896 | **12,191** | 0.31 | 3.09 | 5.55 |
+| **Go** | 2,975,472 | 9,154 | 0.36 | 4.83 | 36.06 |
+| **Python** | 293,930 | 904 | 18.17 | 162.41 | 190.20 |
+
+C++ handled **13.5× more requests than Python** and **1.33× more than Go** under identical conditions.
+
+### Per-Tool Average Latency (ms)
+
+| Tool | C++ | Go | Python |
+|---|---|---|---|
+| `search_products` | 2.65 | 5.82 | 109.4 |
+| `get_user_cart` | 2.75 | 3.86 | 162.8 |
+| `checkout` | 1.81 | 2.98 | 114.1 |
+
+### Resource Usage (during sustained load)
+
+| Server | CPU (of 2.0 limit) | Memory (steady-state) |
+|---|---|---|
+| **C++** | ~75% | ~12 MB |
+| **Go** | ~200% | ~23 MB |
+| **Python** | ~100% | ~60 MB |
+
+```mermaid
+---
+config:
+  xyChart:
+    xAxis:
+      label: Server
+    yAxis:
+      label: Requests per Second
+---
+xychart-beta
+    x-axis ["C++" , "Go" , "Python"]
+    y-axis "Requests per Second" 0 --> 13000
+    bar [12191, 9154, 904]
+```
+
+### Full Tool Cycle Iterations
+
+Each iteration = `tools/list` → `search_products` → `get_user_cart` → `checkout` (4 HTTP round-trips per cycle).
+
+| Server | Iterations | Iterations/sec |
+|---|---|---|
+| **C++** | 247,681 | 762 |
+| **Go** | 185,967 | 572 |
+| **Python** | 29,393 | 90 |
+
+> Raw results are in `benchmark/results/` — each run is timestamped and contains `k6_summary.json`, `stats.json`, and `comparison.txt` per server.

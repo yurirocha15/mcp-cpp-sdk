@@ -39,6 +39,6 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=builder /build/build/benchmark-server /usr/local/bin/
 
-EXPOSE 8080 9080
+EXPOSE 8080
 
 CMD ["benchmark-server"]

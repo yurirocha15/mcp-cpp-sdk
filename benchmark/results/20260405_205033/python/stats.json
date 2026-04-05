@@ -1,0 +1,1298 @@
+[
+    {
+        "timestamp": "2026-04-05T11:56:18.802787+00:00",
+        "cpu_percent": 35.96,
+        "mem_usage_bytes": 53624176,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 283000,
+        "net_io_tx": 432000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:20.812792+00:00",
+        "cpu_percent": 94.79,
+        "mem_usage_bytes": 55207526,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 1740000,
+        "net_io_tx": 2710000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:22.822672+00:00",
+        "cpu_percent": 100.52,
+        "mem_usage_bytes": 55993958,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 3450000,
+        "net_io_tx": 5380000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:24.832692+00:00",
+        "cpu_percent": 100.52,
+        "mem_usage_bytes": 57388564,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 5170000,
+        "net_io_tx": 8070000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:26.842744+00:00",
+        "cpu_percent": 101.47,
+        "mem_usage_bytes": 57304678,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 6830000,
+        "net_io_tx": 10700000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:28.852274+00:00",
+        "cpu_percent": 100.36,
+        "mem_usage_bytes": 56528732,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 8470000,
+        "net_io_tx": 13300000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:30.862784+00:00",
+        "cpu_percent": 98.17,
+        "mem_usage_bytes": 58049167,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 10100000,
+        "net_io_tx": 15900000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:32.873004+00:00",
+        "cpu_percent": 100.35,
+        "mem_usage_bytes": 58919485,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 11700000,
+        "net_io_tx": 18500000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:34.883304+00:00",
+        "cpu_percent": 100.12,
+        "mem_usage_bytes": 59296972,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 13200000,
+        "net_io_tx": 21000000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:36.893380+00:00",
+        "cpu_percent": 101.37,
+        "mem_usage_bytes": 59779317,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 14800000,
+        "net_io_tx": 23500000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:38.903673+00:00",
+        "cpu_percent": 100.59,
+        "mem_usage_bytes": 60366520,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 16399999,
+        "net_io_tx": 26000000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:40.915044+00:00",
+        "cpu_percent": 100.72,
+        "mem_usage_bytes": 60324577,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 17900000,
+        "net_io_tx": 28500000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:42.925246+00:00",
+        "cpu_percent": 100.47,
+        "mem_usage_bytes": 60555264,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 19500000,
+        "net_io_tx": 31100000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:44.936317+00:00",
+        "cpu_percent": 100.48,
+        "mem_usage_bytes": 60135833,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 21100000,
+        "net_io_tx": 33600000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:46.946823+00:00",
+        "cpu_percent": 101.32,
+        "mem_usage_bytes": 60408463,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 22700000,
+        "net_io_tx": 36200000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:48.956939+00:00",
+        "cpu_percent": 100.42,
+        "mem_usage_bytes": 59653488,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 24300000,
+        "net_io_tx": 38700000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:50.968283+00:00",
+        "cpu_percent": 100.21,
+        "mem_usage_bytes": 59213086,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 25800000,
+        "net_io_tx": 41300000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:52.978987+00:00",
+        "cpu_percent": 100.45,
+        "mem_usage_bytes": 59234058,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 27400000,
+        "net_io_tx": 43800000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:54.988902+00:00",
+        "cpu_percent": 100.37,
+        "mem_usage_bytes": 60460892,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 29000000,
+        "net_io_tx": 46400000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:56.998707+00:00",
+        "cpu_percent": 101.34,
+        "mem_usage_bytes": 61069066,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 30500000,
+        "net_io_tx": 48900000
+    },
+    {
+        "timestamp": "2026-04-05T11:56:59.009527+00:00",
+        "cpu_percent": 100.46,
+        "mem_usage_bytes": 60051947,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 32100000,
+        "net_io_tx": 51400000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:01.019783+00:00",
+        "cpu_percent": 100.42,
+        "mem_usage_bytes": 59622031,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 33700000,
+        "net_io_tx": 53900000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:03.030948+00:00",
+        "cpu_percent": 100.52,
+        "mem_usage_bytes": 60481863,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 35200000,
+        "net_io_tx": 56400000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:05.040835+00:00",
+        "cpu_percent": 100.21,
+        "mem_usage_bytes": 59978547,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 36800000,
+        "net_io_tx": 59000000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:07.051260+00:00",
+        "cpu_percent": 101.21,
+        "mem_usage_bytes": 60418949,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 38400000,
+        "net_io_tx": 61500000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:09.061552+00:00",
+        "cpu_percent": 100.59,
+        "mem_usage_bytes": 60502835,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 40000000,
+        "net_io_tx": 64000000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:11.071902+00:00",
+        "cpu_percent": 100.37,
+        "mem_usage_bytes": 59601059,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 41500000,
+        "net_io_tx": 66500000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:13.081705+00:00",
+        "cpu_percent": 100.4,
+        "mem_usage_bytes": 60041461,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 43100000,
+        "net_io_tx": 69100000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:15.092564+00:00",
+        "cpu_percent": 100.63,
+        "mem_usage_bytes": 59768832,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 44700000,
+        "net_io_tx": 71600000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:17.103174+00:00",
+        "cpu_percent": 101.39,
+        "mem_usage_bytes": 60670607,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 46300000,
+        "net_io_tx": 74200000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:19.114037+00:00",
+        "cpu_percent": 100.58,
+        "mem_usage_bytes": 60146319,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 47900000,
+        "net_io_tx": 76800000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:21.124959+00:00",
+        "cpu_percent": 100.46,
+        "mem_usage_bytes": 59758346,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 49500000,
+        "net_io_tx": 79300000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:23.134927+00:00",
+        "cpu_percent": 100.44,
+        "mem_usage_bytes": 59286487,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 51000000,
+        "net_io_tx": 81800000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:25.146115+00:00",
+        "cpu_percent": 100.4,
+        "mem_usage_bytes": 60198748,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 52600000,
+        "net_io_tx": 84400000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:27.155854+00:00",
+        "cpu_percent": 101.44,
+        "mem_usage_bytes": 60051947,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 54200000,
+        "net_io_tx": 86900000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:29.165825+00:00",
+        "cpu_percent": 100.5,
+        "mem_usage_bytes": 61048094,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 55800000,
+        "net_io_tx": 89500000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:31.175441+00:00",
+        "cpu_percent": 100.39,
+        "mem_usage_bytes": 60586721,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 57300000,
+        "net_io_tx": 92000000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:33.186051+00:00",
+        "cpu_percent": 100.48,
+        "mem_usage_bytes": 60660121,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 58900000,
+        "net_io_tx": 94500000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:35.197027+00:00",
+        "cpu_percent": 100.47,
+        "mem_usage_bytes": 60859351,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 60500000,
+        "net_io_tx": 97100000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:37.207522+00:00",
+        "cpu_percent": 101.16,
+        "mem_usage_bytes": 61111009,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 62100000,
+        "net_io_tx": 99600000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:39.217881+00:00",
+        "cpu_percent": 100.59,
+        "mem_usage_bytes": 60481863,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 63600000,
+        "net_io_tx": 102000000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:41.228863+00:00",
+        "cpu_percent": 100.71,
+        "mem_usage_bytes": 59873689,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 65200000,
+        "net_io_tx": 105000000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:43.238340+00:00",
+        "cpu_percent": 100.49,
+        "mem_usage_bytes": 59496202,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 66700000,
+        "net_io_tx": 107000000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:45.248090+00:00",
+        "cpu_percent": 100.44,
+        "mem_usage_bytes": 60681093,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 68300000,
+        "net_io_tx": 110000000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:47.257970+00:00",
+        "cpu_percent": 101.27,
+        "mem_usage_bytes": 61331210,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 69900000,
+        "net_io_tx": 112000000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:49.268109+00:00",
+        "cpu_percent": 100.56,
+        "mem_usage_bytes": 60167290,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 71400000,
+        "net_io_tx": 115000000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:51.279045+00:00",
+        "cpu_percent": 100.45,
+        "mem_usage_bytes": 61373153,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 73000000,
+        "net_io_tx": 117000000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:53.289629+00:00",
+        "cpu_percent": 100.33,
+        "mem_usage_bytes": 60901294,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 74600000,
+        "net_io_tx": 120000000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:55.299596+00:00",
+        "cpu_percent": 100.51,
+        "mem_usage_bytes": 59936604,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 76100000,
+        "net_io_tx": 122000000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:57.309578+00:00",
+        "cpu_percent": 101.29,
+        "mem_usage_bytes": 61278781,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 77700000,
+        "net_io_tx": 125000000
+    },
+    {
+        "timestamp": "2026-04-05T11:57:59.319869+00:00",
+        "cpu_percent": 100.41,
+        "mem_usage_bytes": 60964208,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 79300000,
+        "net_io_tx": 127000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:01.330513+00:00",
+        "cpu_percent": 100.4,
+        "mem_usage_bytes": 60240691,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 80900000,
+        "net_io_tx": 130000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:03.339687+00:00",
+        "cpu_percent": 100.41,
+        "mem_usage_bytes": 59926118,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 82400000,
+        "net_io_tx": 132000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:05.349871+00:00",
+        "cpu_percent": 100.58,
+        "mem_usage_bytes": 60356034,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 84000000,
+        "net_io_tx": 135000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:07.359831+00:00",
+        "cpu_percent": 101.34,
+        "mem_usage_bytes": 61677240,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 85600000,
+        "net_io_tx": 137000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:09.369558+00:00",
+        "cpu_percent": 100.49,
+        "mem_usage_bytes": 60481863,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 87100000,
+        "net_io_tx": 140000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:11.379359+00:00",
+        "cpu_percent": 100.4,
+        "mem_usage_bytes": 59978547,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 88700000,
+        "net_io_tx": 143000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:13.389059+00:00",
+        "cpu_percent": 100.4,
+        "mem_usage_bytes": 60555264,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 90300000,
+        "net_io_tx": 145000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:15.399626+00:00",
+        "cpu_percent": 100.46,
+        "mem_usage_bytes": 60649635,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 91900000,
+        "net_io_tx": 148000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:17.411243+00:00",
+        "cpu_percent": 101.38,
+        "mem_usage_bytes": 60251176,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 93400000,
+        "net_io_tx": 150000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:19.421856+00:00",
+        "cpu_percent": 100.53,
+        "mem_usage_bytes": 60230205,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 95000000,
+        "net_io_tx": 153000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:21.432848+00:00",
+        "cpu_percent": 100.5,
+        "mem_usage_bytes": 60450406,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 96600000,
+        "net_io_tx": 155000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:23.444600+00:00",
+        "cpu_percent": 100.38,
+        "mem_usage_bytes": 60198748,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 98200000,
+        "net_io_tx": 158000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:25.454879+00:00",
+        "cpu_percent": 100.32,
+        "mem_usage_bytes": 60062433,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 99700000,
+        "net_io_tx": 160000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:27.464660+00:00",
+        "cpu_percent": 101.32,
+        "mem_usage_bytes": 60691578,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 101000000,
+        "net_io_tx": 163000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:29.475099+00:00",
+        "cpu_percent": 100.44,
+        "mem_usage_bytes": 59150172,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 103000000,
+        "net_io_tx": 165000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:31.485062+00:00",
+        "cpu_percent": 100.43,
+        "mem_usage_bytes": 61247324,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 104000000,
+        "net_io_tx": 168000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:33.495330+00:00",
+        "cpu_percent": 100.35,
+        "mem_usage_bytes": 61027123,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 106000000,
+        "net_io_tx": 170000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:35.505499+00:00",
+        "cpu_percent": 100.56,
+        "mem_usage_bytes": 61740154,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 108000000,
+        "net_io_tx": 173000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:37.516025+00:00",
+        "cpu_percent": 101.27,
+        "mem_usage_bytes": 59789803,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 109000000,
+        "net_io_tx": 175000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:39.525851+00:00",
+        "cpu_percent": 100.4,
+        "mem_usage_bytes": 60502835,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 111000000,
+        "net_io_tx": 178000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:41.536343+00:00",
+        "cpu_percent": 100.35,
+        "mem_usage_bytes": 60293120,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 112000000,
+        "net_io_tx": 180000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:43.546656+00:00",
+        "cpu_percent": 100.5,
+        "mem_usage_bytes": 59643002,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 114000000,
+        "net_io_tx": 183000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:45.556477+00:00",
+        "cpu_percent": 100.44,
+        "mem_usage_bytes": 59747860,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 115000000,
+        "net_io_tx": 186000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:47.566737+00:00",
+        "cpu_percent": 101.49,
+        "mem_usage_bytes": 60219719,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 117000000,
+        "net_io_tx": 188000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:49.577318+00:00",
+        "cpu_percent": 100.39,
+        "mem_usage_bytes": 60156805,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 119000000,
+        "net_io_tx": 191000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:51.587742+00:00",
+        "cpu_percent": 100.44,
+        "mem_usage_bytes": 59286487,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 120000000,
+        "net_io_tx": 193000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:53.598233+00:00",
+        "cpu_percent": 100.52,
+        "mem_usage_bytes": 60345548,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 122000000,
+        "net_io_tx": 196000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:55.607821+00:00",
+        "cpu_percent": 100.69,
+        "mem_usage_bytes": 59580088,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 123000000,
+        "net_io_tx": 198000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:57.617635+00:00",
+        "cpu_percent": 101.69,
+        "mem_usage_bytes": 61519953,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 125000000,
+        "net_io_tx": 201000000
+    },
+    {
+        "timestamp": "2026-04-05T11:58:59.627676+00:00",
+        "cpu_percent": 100.27,
+        "mem_usage_bytes": 60869836,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 126000000,
+        "net_io_tx": 203000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:01.638206+00:00",
+        "cpu_percent": 100.45,
+        "mem_usage_bytes": 59947089,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 128000000,
+        "net_io_tx": 206000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:03.648987+00:00",
+        "cpu_percent": 100.48,
+        "mem_usage_bytes": 59569602,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 130000000,
+        "net_io_tx": 208000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:05.658783+00:00",
+        "cpu_percent": 100.52,
+        "mem_usage_bytes": 59045314,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 131000000,
+        "net_io_tx": 211000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:07.668914+00:00",
+        "cpu_percent": 101.39,
+        "mem_usage_bytes": 60565749,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 133000000,
+        "net_io_tx": 213000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:09.679342+00:00",
+        "cpu_percent": 100.4,
+        "mem_usage_bytes": 58646855,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 134000000,
+        "net_io_tx": 216000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:11.689302+00:00",
+        "cpu_percent": 100.25,
+        "mem_usage_bytes": 59632517,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 136000000,
+        "net_io_tx": 218000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:13.699685+00:00",
+        "cpu_percent": 100.45,
+        "mem_usage_bytes": 59443773,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 137000000,
+        "net_io_tx": 221000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:15.709150+00:00",
+        "cpu_percent": 101.01,
+        "mem_usage_bytes": 60209233,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 139000000,
+        "net_io_tx": 224000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:17.719131+00:00",
+        "cpu_percent": 101.28,
+        "mem_usage_bytes": 60345548,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 141000000,
+        "net_io_tx": 226000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:19.729062+00:00",
+        "cpu_percent": 100.39,
+        "mem_usage_bytes": 60125347,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 142000000,
+        "net_io_tx": 229000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:21.739134+00:00",
+        "cpu_percent": 100.28,
+        "mem_usage_bytes": 60261662,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 144000000,
+        "net_io_tx": 231000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:23.749696+00:00",
+        "cpu_percent": 100.5,
+        "mem_usage_bytes": 60660121,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 145000000,
+        "net_io_tx": 234000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:25.759605+00:00",
+        "cpu_percent": 100.39,
+        "mem_usage_bytes": 60083404,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 147000000,
+        "net_io_tx": 236000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:27.770250+00:00",
+        "cpu_percent": 101.43,
+        "mem_usage_bytes": 61142466,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 149000000,
+        "net_io_tx": 239000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:29.780570+00:00",
+        "cpu_percent": 100.5,
+        "mem_usage_bytes": 60681093,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 150000000,
+        "net_io_tx": 241000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:31.789597+00:00",
+        "cpu_percent": 100.36,
+        "mem_usage_bytes": 60282634,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 152000000,
+        "net_io_tx": 244000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:33.800594+00:00",
+        "cpu_percent": 100.4,
+        "mem_usage_bytes": 61247324,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 153000000,
+        "net_io_tx": 246000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:35.810050+00:00",
+        "cpu_percent": 100.47,
+        "mem_usage_bytes": 60691578,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 155000000,
+        "net_io_tx": 249000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:37.820306+00:00",
+        "cpu_percent": 101.51,
+        "mem_usage_bytes": 60723036,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 156000000,
+        "net_io_tx": 251000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:39.830284+00:00",
+        "cpu_percent": 100.47,
+        "mem_usage_bytes": 60418949,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 158000000,
+        "net_io_tx": 254000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:41.841004+00:00",
+        "cpu_percent": 100.54,
+        "mem_usage_bytes": 60565749,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 160000000,
+        "net_io_tx": 256000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:43.851373+00:00",
+        "cpu_percent": 100.31,
+        "mem_usage_bytes": 60932751,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 161000000,
+        "net_io_tx": 259000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:45.861450+00:00",
+        "cpu_percent": 100.52,
+        "mem_usage_bytes": 60681093,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 163000000,
+        "net_io_tx": 262000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:47.871605+00:00",
+        "cpu_percent": 101.39,
+        "mem_usage_bytes": 60880322,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 164000000,
+        "net_io_tx": 264000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:49.882189+00:00",
+        "cpu_percent": 100.33,
+        "mem_usage_bytes": 61236838,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 166000000,
+        "net_io_tx": 267000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:51.892354+00:00",
+        "cpu_percent": 100.44,
+        "mem_usage_bytes": 59758346,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 167000000,
+        "net_io_tx": 269000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:53.902583+00:00",
+        "cpu_percent": 100.41,
+        "mem_usage_bytes": 59779317,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 169000000,
+        "net_io_tx": 272000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:55.912438+00:00",
+        "cpu_percent": 100.57,
+        "mem_usage_bytes": 60607692,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 171000000,
+        "net_io_tx": 274000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:57.923280+00:00",
+        "cpu_percent": 101.36,
+        "mem_usage_bytes": 62966988,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 172000000,
+        "net_io_tx": 277000000
+    },
+    {
+        "timestamp": "2026-04-05T11:59:59.933997+00:00",
+        "cpu_percent": 100.28,
+        "mem_usage_bytes": 61152952,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 174000000,
+        "net_io_tx": 279000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:01.944111+00:00",
+        "cpu_percent": 100.61,
+        "mem_usage_bytes": 61457039,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 175000000,
+        "net_io_tx": 282000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:03.954439+00:00",
+        "cpu_percent": 100.45,
+        "mem_usage_bytes": 60775464,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 177000000,
+        "net_io_tx": 284000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:05.965134+00:00",
+        "cpu_percent": 100.58,
+        "mem_usage_bytes": 62044241,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 179000000,
+        "net_io_tx": 287000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:07.975703+00:00",
+        "cpu_percent": 101.31,
+        "mem_usage_bytes": 61740154,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 180000000,
+        "net_io_tx": 290000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:09.985779+00:00",
+        "cpu_percent": 100.36,
+        "mem_usage_bytes": 60293120,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 182000000,
+        "net_io_tx": 292000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:11.996404+00:00",
+        "cpu_percent": 100.51,
+        "mem_usage_bytes": 61058580,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 183000000,
+        "net_io_tx": 295000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:14.006318+00:00",
+        "cpu_percent": 100.33,
+        "mem_usage_bytes": 61173923,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 185000000,
+        "net_io_tx": 297000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:16.017338+00:00",
+        "cpu_percent": 100.31,
+        "mem_usage_bytes": 61981327,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 186000000,
+        "net_io_tx": 300000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:18.027721+00:00",
+        "cpu_percent": 101.56,
+        "mem_usage_bytes": 62505615,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 188000000,
+        "net_io_tx": 302000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:20.036906+00:00",
+        "cpu_percent": 100.42,
+        "mem_usage_bytes": 61876469,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 190000000,
+        "net_io_tx": 305000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:22.047821+00:00",
+        "cpu_percent": 100.45,
+        "mem_usage_bytes": 62316871,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 191000000,
+        "net_io_tx": 307000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:24.058240+00:00",
+        "cpu_percent": 100.43,
+        "mem_usage_bytes": 61886955,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 193000000,
+        "net_io_tx": 310000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:26.067965+00:00",
+        "cpu_percent": 100.48,
+        "mem_usage_bytes": 61918412,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 194000000,
+        "net_io_tx": 312000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:28.078650+00:00",
+        "cpu_percent": 101.24,
+        "mem_usage_bytes": 61792583,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 196000000,
+        "net_io_tx": 315000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:30.088095+00:00",
+        "cpu_percent": 100.51,
+        "mem_usage_bytes": 62956503,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 197000000,
+        "net_io_tx": 317000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:32.098191+00:00",
+        "cpu_percent": 100.33,
+        "mem_usage_bytes": 62432215,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 199000000,
+        "net_io_tx": 320000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:34.108034+00:00",
+        "cpu_percent": 100.35,
+        "mem_usage_bytes": 62295900,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 200000000,
+        "net_io_tx": 322000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:36.117355+00:00",
+        "cpu_percent": 100.41,
+        "mem_usage_bytes": 61519953,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 202000000,
+        "net_io_tx": 325000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:38.126489+00:00",
+        "cpu_percent": 101.33,
+        "mem_usage_bytes": 61960355,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 204000000,
+        "net_io_tx": 327000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:40.136759+00:00",
+        "cpu_percent": 100.53,
+        "mem_usage_bytes": 61247324,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 205000000,
+        "net_io_tx": 330000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:42.147238+00:00",
+        "cpu_percent": 100.34,
+        "mem_usage_bytes": 61771612,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 207000000,
+        "net_io_tx": 333000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:44.156523+00:00",
+        "cpu_percent": 100.35,
+        "mem_usage_bytes": 61100523,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 208000000,
+        "net_io_tx": 335000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:46.165530+00:00",
+        "cpu_percent": 100.57,
+        "mem_usage_bytes": 61782097,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 210000000,
+        "net_io_tx": 338000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:48.176268+00:00",
+        "cpu_percent": 101.26,
+        "mem_usage_bytes": 61278781,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 212000000,
+        "net_io_tx": 340000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:50.184930+00:00",
+        "cpu_percent": 100.39,
+        "mem_usage_bytes": 61551411,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 213000000,
+        "net_io_tx": 343000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:52.194719+00:00",
+        "cpu_percent": 100.62,
+        "mem_usage_bytes": 62683873,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 215000000,
+        "net_io_tx": 345000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:54.205631+00:00",
+        "cpu_percent": 100.51,
+        "mem_usage_bytes": 62495129,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 216000000,
+        "net_io_tx": 348000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:56.216020+00:00",
+        "cpu_percent": 100.43,
+        "mem_usage_bytes": 62547558,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 218000000,
+        "net_io_tx": 350000000
+    },
+    {
+        "timestamp": "2026-04-05T12:00:58.225409+00:00",
+        "cpu_percent": 101.36,
+        "mem_usage_bytes": 62736302,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 219000000,
+        "net_io_tx": 353000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:00.235699+00:00",
+        "cpu_percent": 100.49,
+        "mem_usage_bytes": 62673387,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 221000000,
+        "net_io_tx": 355000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:02.245540+00:00",
+        "cpu_percent": 100.51,
+        "mem_usage_bytes": 61729669,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 223000000,
+        "net_io_tx": 358000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:04.255265+00:00",
+        "cpu_percent": 100.43,
+        "mem_usage_bytes": 64864911,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 224000000,
+        "net_io_tx": 361000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:06.264997+00:00",
+        "cpu_percent": 100.47,
+        "mem_usage_bytes": 64529367,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 226000000,
+        "net_io_tx": 363000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:08.274955+00:00",
+        "cpu_percent": 101.27,
+        "mem_usage_bytes": 64267223,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 227000000,
+        "net_io_tx": 366000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:10.285061+00:00",
+        "cpu_percent": 100.41,
+        "mem_usage_bytes": 63533219,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 229000000,
+        "net_io_tx": 368000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:12.295721+00:00",
+        "cpu_percent": 100.56,
+        "mem_usage_bytes": 64172851,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 231000000,
+        "net_io_tx": 371000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:14.305024+00:00",
+        "cpu_percent": 100.46,
+        "mem_usage_bytes": 63847792,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 232000000,
+        "net_io_tx": 373000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:16.314238+00:00",
+        "cpu_percent": 100.48,
+        "mem_usage_bytes": 63281561,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 234000000,
+        "net_io_tx": 376000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:18.323524+00:00",
+        "cpu_percent": 101.32,
+        "mem_usage_bytes": 64298680,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 235000000,
+        "net_io_tx": 378000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:20.332826+00:00",
+        "cpu_percent": 100.35,
+        "mem_usage_bytes": 64162365,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 237000000,
+        "net_io_tx": 381000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:22.342975+00:00",
+        "cpu_percent": 100.43,
+        "mem_usage_bytes": 63690506,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 238000000,
+        "net_io_tx": 383000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:24.353605+00:00",
+        "cpu_percent": 100.35,
+        "mem_usage_bytes": 63921192,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 240000000,
+        "net_io_tx": 386000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:26.363998+00:00",
+        "cpu_percent": 100.44,
+        "mem_usage_bytes": 64508395,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 242000000,
+        "net_io_tx": 389000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:28.374249+00:00",
+        "cpu_percent": 101.38,
+        "mem_usage_bytes": 64644710,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 243000000,
+        "net_io_tx": 391000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:30.382656+00:00",
+        "cpu_percent": 100.47,
+        "mem_usage_bytes": 64644710,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 245000000,
+        "net_io_tx": 394000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:32.391805+00:00",
+        "cpu_percent": 100.39,
+        "mem_usage_bytes": 63984107,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 246000000,
+        "net_io_tx": 396000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:34.402599+00:00",
+        "cpu_percent": 100.37,
+        "mem_usage_bytes": 64351109,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 248000000,
+        "net_io_tx": 399000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:36.411640+00:00",
+        "cpu_percent": 100.47,
+        "mem_usage_bytes": 64078479,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 249000000,
+        "net_io_tx": 401000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:38.421336+00:00",
+        "cpu_percent": 101.25,
+        "mem_usage_bytes": 64162365,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 251000000,
+        "net_io_tx": 404000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:40.430850+00:00",
+        "cpu_percent": 100.56,
+        "mem_usage_bytes": 63218647,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 253000000,
+        "net_io_tx": 407000000
+    },
+    {
+        "timestamp": "2026-04-05T12:01:42.440638+00:00",
+        "cpu_percent": 79.52,
+        "mem_usage_bytes": 63491276,
+        "mem_limit_bytes": 2147483648,
+        "net_io_rx": 254000000,
+        "net_io_tx": 409000000
+    }
+]
