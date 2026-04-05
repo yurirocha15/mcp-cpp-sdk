@@ -10,11 +10,13 @@ endif()
 
 find_package(Boost REQUIRED COMPONENTS headers system)
 find_package(nlohmann_json REQUIRED)
+find_package(OpenSSL REQUIRED)
 find_package(GTest REQUIRED)
 
 add_library(mcp-cpp-sdk INTERFACE)
-target_link_libraries(mcp-cpp-sdk INTERFACE Boost::headers Boost::system
-                                            nlohmann_json::nlohmann_json)
+target_link_libraries(
+  mcp-cpp-sdk INTERFACE Boost::headers Boost::system
+                        nlohmann_json::nlohmann_json OpenSSL::Crypto)
 target_include_directories(mcp-cpp-sdk INTERFACE include)
 
 # Documentation target
@@ -34,6 +36,8 @@ endif()
 # Build Tests
 enable_testing()
 set(TEST_SRCS
+    test/auth_integration_test.cpp
+    test/auth_oauth_test.cpp
     test/client_core_test.cpp
     test/client_features_test.cpp
     test/client_notifications_test.cpp
