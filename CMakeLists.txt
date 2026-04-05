@@ -36,6 +36,7 @@ enable_testing()
 set(TEST_SRCS
     test/client_core_test.cpp
     test/client_features_test.cpp
+    test/client_notifications_test.cpp
     test/concepts_test.cpp
     test/core_test.cpp
     test/protocol_test.cpp

@@ -13,12 +13,14 @@
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace mcp {
 
@@ -331,6 +333,39 @@ class Client {
         co_await send_notification("notifications/cancelled", std::move(json_params));
     }
 
+    /// @brief Type for notification callback: receives the notification params JSON.
+    using NotificationCallback = std::function<void(const nlohmann::json&)>;
+
+    /// @brief Type for request handler: receives params JSON, returns result JSON.
+    using RequestHandler = std::function<Task<nlohmann::json>(const nlohmann::json&)>;
+
+    /**
+     * @brief Register a callback for incoming notifications from the server.
+     *
+     * @details When the server sends a notification with the given method,
+     * the callback is invoked with the notification's params JSON.
+     *
+     * @param method The notification method to listen for (e.g. "notifications/progress").
+     * @param callback The callback to invoke when the notification arrives.
+     */
+    void on_notification(std::string method, NotificationCallback callback) {
+        notification_handlers_[std::move(method)] = std::move(callback);
+    }
+
+    /**
+     * @brief Register a handler for incoming requests from the server (reverse RPC).
+     *
+     * @details When the server sends a request with the given method (e.g. "ping",
+     * "sampling/createMessage", "elicitation/create", "roots/list"), the handler
+     * is invoked and its return value is sent back as the JSON-RPC response.
+     *
+     * @param method The request method to handle.
+     * @param handler The async handler that returns a result JSON.
+     */
+    void on_request(std::string method, RequestHandler handler) {
+        request_handlers_[std::move(method)] = std::move(handler);
+    }
+
    private:
     /**
      * @brief A pending request awaiting its response.
@@ -344,12 +379,11 @@ class Client {
     /**
      * @brief Infinite read loop that dispatches incoming messages.
      *
-     * @details Continuously reads messages from the transport, parses them
-     * as JSON-RPC, and dispatches responses to the corresponding pending
-     * request by setting the result and cancelling the timer.
-     *
-     * Notifications received from the server are currently discarded.
-     * The loop exits when the transport is closed or an exception occurs.
+     * @details Continuously reads messages from the transport, classifies
+     * them as responses, requests, or notifications, and dispatches each
+     * to the appropriate handler. Responses wake their pending coroutine.
+     * Requests are dispatched to registered request handlers and their
+     * result is sent back. Notifications invoke registered callbacks.
      */
     Task<void> read_loop() {
         try {
@@ -357,43 +391,112 @@ class Client {
                 auto raw = co_await transport_->read_message();
                 auto json_msg = nlohmann::json::parse(raw);
 
-                if (!json_msg.contains("id")) {
-                    continue;
+                bool has_id = json_msg.contains("id");
+                bool has_method = json_msg.contains("method");
+
+                if (has_id && !has_method) {
+                    dispatch_response(json_msg);
+                } else if (has_id && has_method) {
+                    boost::asio::co_spawn(strand_, dispatch_incoming_request(std::move(json_msg)),
+                                          boost::asio::detached);
+                } else if (!has_id && has_method) {
+                    dispatch_notification(json_msg);
                 }
-
-                auto id = json_msg.at("id").get<RequestId>();
-                auto id_str = std::visit(
-                    [](auto&& val) -> std::string {
-                        if constexpr (std::is_same_v<std::decay_t<decltype(val)>, std::string>) {
-                            return val;
-                        } else {
-                            return std::to_string(val);
-                        }
-                    },
-                    id);
-
-                auto it = pending_requests_.find(id_str);
-                if (it == pending_requests_.end()) {
-                    continue;
-                }
-
-                if (json_msg.contains("error")) {
-                    it->second.error = json_msg.at("error").get<Error>();
-                } else if (json_msg.contains("result")) {
-                    it->second.result = std::move(json_msg.at("result"));
-                }
-
-                // Wake the suspended send_request coroutine.
-                it->second.timer->cancel();
             }
         } catch (const std::exception&) {
         }
+    }
+
+    void dispatch_response(const nlohmann::json& json_msg) {
+        auto id = json_msg.at("id").get<RequestId>();
+        auto id_str = std::visit(
+            [](auto&& val) -> std::string {
+                if constexpr (std::is_same_v<std::decay_t<decltype(val)>, std::string>) {
+                    return val;
+                } else {
+                    return std::to_string(val);
+                }
+            },
+            id);
+
+        auto it = pending_requests_.find(id_str);
+        if (it == pending_requests_.end()) {
+            return;
+        }
+
+        if (json_msg.contains("error")) {
+            it->second.error = json_msg.at("error").get<Error>();
+        } else if (json_msg.contains("result")) {
+            it->second.result = std::move(json_msg.at("result"));
+        }
+
+        it->second.timer->cancel();
+    }
+
+    void dispatch_notification(const nlohmann::json& json_msg) {
+        auto method = json_msg.at("method").get<std::string>();
+        auto it = notification_handlers_.find(method);
+        if (it != notification_handlers_.end()) {
+            auto params = json_msg.contains("params") ? json_msg.at("params") : nlohmann::json{};
+            it->second(params);
+        }
+    }
+
+    Task<void> dispatch_incoming_request(nlohmann::json json_msg) {
+        auto id = json_msg.at("id").get<RequestId>();
+        auto method = json_msg.at("method").get<std::string>();
+
+        auto it = request_handlers_.find(method);
+        if (it != request_handlers_.end()) {
+            auto params = json_msg.contains("params") ? json_msg.at("params") : nlohmann::json{};
+            std::optional<std::string> error_msg;
+            nlohmann::json result;
+            try {
+                result = co_await it->second(params);
+            } catch (const std::exception& e) {
+                error_msg = e.what();
+            }
+            if (error_msg) {
+                co_await send_error_response(id, -32603, std::move(*error_msg));
+            } else {
+                co_await send_response(id, std::move(result));
+            }
+        } else if (method == "ping") {
+            co_await send_response(id, nlohmann::json::object());
+        } else {
+            co_await send_error_response(id, METHOD_NOT_FOUND, "Method not found: " + method);
+        }
+    }
+
+    Task<void> send_response(const RequestId& id, nlohmann::json result) {
+        JSONRPCResultResponse response;
+        response.id = id;
+        response.result = std::move(result);
+
+        nlohmann::json json_msg = std::move(response);
+        co_await transport_->write_message(json_msg.dump());
+    }
+
+    Task<void> send_error_response(const RequestId& id, int code, std::string message) {
+        Error error;
+        error.code = code;
+        error.message = std::move(message);
+
+        JSONRPCErrorResponse response;
+        response.id = id;
+        response.error = std::move(error);
+
+        nlohmann::json json_msg = std::move(response);
+        co_await transport_->write_message(json_msg.dump());
     }
 
     std::unique_ptr<ITransport> transport_;
     boost::asio::strand<boost::asio::any_io_executor> strand_;
     std::map<std::string, PendingRequest> pending_requests_;
     std::atomic<int64_t> next_request_id_{1};
+
+    std::map<std::string, NotificationCallback, std::less<>> notification_handlers_;
+    std::map<std::string, RequestHandler, std::less<>> request_handlers_;
 };
 
 }  // namespace mcp
