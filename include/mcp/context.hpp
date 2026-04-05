@@ -4,7 +4,9 @@
 #include <mcp/protocol.hpp>
 #include <mcp/transport.hpp>
 
+#include <atomic>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -20,9 +22,10 @@ using RequestSender = std::function<Task<nlohmann::json>(std::string, std::optio
  *
  * @details Each incoming request receives a Context that provides
  * utilities for interacting with the client, such as sending log
- * messages and performing reverse RPC (e.g. sampling). The Context
- * holds a non-owning reference to the transport and a request sender
- * callable, both of which must outlive the Context.
+ * messages, reporting progress, checking cancellation, and performing
+ * reverse RPC (e.g. sampling). The Context holds a non-owning reference
+ * to the transport and a request sender callable, both of which must
+ * outlive the Context.
  */
 class Context {
    public:
@@ -44,18 +47,104 @@ class Context {
         : transport_(transport), sender_(std::move(sender)) {}
 
     /**
+     * @brief Construct a full-featured Context with cancellation, progress, and log level.
+     *
+     * @param transport Non-owning reference to the transport.
+     * @param sender A callable that sends a JSON-RPC request and returns the result.
+     * @param cancelled Shared cancellation flag set by the server on notifications/cancelled.
+     * @param progress_token Optional progress token from the request's _meta.
+     * @param log_level Pointer to the server's current log level (shared across all contexts).
+     */
+    Context(ITransport& transport, RequestSender sender, std::shared_ptr<std::atomic<bool>> cancelled,
+            std::optional<ProgressToken> progress_token, const std::atomic<LoggingLevel>* log_level)
+        : transport_(transport),
+          sender_(std::move(sender)),
+          cancelled_(std::move(cancelled)),
+          progress_token_(std::move(progress_token)),
+          log_level_(log_level) {}
+
+    /**
      * @brief Sends an informational log message to the client.
      *
      * @param msg The log message to send.
      * @return A task that completes when the message is sent.
      */
-    Task<void> log_info(std::string_view msg) {
+    Task<void> log_info(std::string_view msg) { co_await log(LoggingLevel::Info, msg); }
+
+    /**
+     * @brief Send a log message at a specific level.
+     *
+     * @details Respects the server's current log level. Messages with a level
+     * higher (less severe) than the current threshold are silently dropped.
+     * LoggingLevel ordering: Emergency(0) < Alert(1) < ... < Debug(7).
+     * A message is sent only if its level <= current server log level.
+     *
+     * @param level The severity level of the log message.
+     * @param msg The log message to send.
+     * @param logger Optional logger name.
+     * @return A task that completes when the message is sent (or immediately if filtered).
+     */
+    Task<void> log(LoggingLevel level, std::string_view msg,
+                   std::optional<std::string> logger = std::nullopt) {
+        if (log_level_) {
+            auto current = log_level_->load(std::memory_order_relaxed);
+            if (static_cast<uint8_t>(level) > static_cast<uint8_t>(current)) {
+                co_return;
+            }
+        }
+
         LoggingMessageNotificationParams params;
-        params.level = LoggingLevel::Info;
+        params.level = level;
         params.data = std::string(msg);
+        params.logger = std::move(logger);
 
         JSONRPCNotification notification;
         notification.method = "notifications/message";
+        nlohmann::json p = std::move(params);
+        notification.params = std::move(p);
+
+        nlohmann::json json_msg = std::move(notification);
+        co_await transport_.write_message(json_msg.dump());
+    }
+
+    /**
+     * @brief Check whether the current request has been cancelled.
+     *
+     * @return true if a notifications/cancelled was received for this request's ID.
+     */
+    [[nodiscard]] bool is_cancelled() const {
+        if (cancelled_) {
+            return cancelled_->load(std::memory_order_relaxed);
+        }
+        return false;
+    }
+
+    /**
+     * @brief Report progress for the current request.
+     *
+     * @details Sends a notifications/progress notification to the client. Uses the
+     * progress token extracted from the request's _meta.progressToken. If no progress
+     * token was provided in the request, this is a no-op.
+     *
+     * @param progress The current progress value.
+     * @param total Optional total progress value.
+     * @param message Optional human-readable progress message.
+     * @return A task that completes when the notification is sent.
+     */
+    Task<void> report_progress(double progress, std::optional<double> total = std::nullopt,
+                               std::optional<std::string> message = std::nullopt) {
+        if (!progress_token_) {
+            co_return;
+        }
+
+        ProgressNotificationParams params;
+        params.progressToken = *progress_token_;
+        params.progress = progress;
+        params.total = total;
+        params.message = std::move(message);
+
+        JSONRPCNotification notification;
+        notification.method = "notifications/progress";
         nlohmann::json p = std::move(params);
         notification.params = std::move(p);
 
@@ -87,6 +176,9 @@ class Context {
    private:
     ITransport& transport_;
     RequestSender sender_;
+    std::shared_ptr<std::atomic<bool>> cancelled_;
+    std::optional<ProgressToken> progress_token_;
+    const std::atomic<LoggingLevel>* log_level_ = nullptr;
 };
 
 }  // namespace mcp

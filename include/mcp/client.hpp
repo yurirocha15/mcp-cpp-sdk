@@ -316,6 +316,21 @@ class Client {
 
     Task<void> ping() { co_await send_request("ping", std::nullopt); }
 
+    /**
+     * @brief Send a cancellation notification for an in-flight request.
+     *
+     * @param request_id The ID of the request to cancel.
+     * @param reason Optional human-readable reason for the cancellation.
+     */
+    Task<void> cancel(RequestId request_id, std::optional<std::string> reason = std::nullopt) {
+        CancelledNotificationParams params;
+        params.requestId = std::move(request_id);
+        params.reason = std::move(reason);
+
+        nlohmann::json json_params = std::move(params);
+        co_await send_notification("notifications/cancelled", std::move(json_params));
+    }
+
    private:
     /**
      * @brief A pending request awaiting its response.

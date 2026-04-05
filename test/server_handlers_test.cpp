@@ -681,3 +681,491 @@ TEST_F(ServerHandlersTest, UnknownToolReturnsError) {
     EXPECT_TRUE(error_response["error"]["message"].get<std::string>().find("nonexistent") !=
                 std::string::npos);
 }
+
+// --- Pagination Tests ---
+
+TEST_F(ServerHandlersTest, ToolsListPaginationFirstPage) {
+    mcp::ServerCapabilities caps;
+    mcp::ServerCapabilities::ToolsCapability tools_cap;
+    caps.tools = std::move(tools_cap);
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.set_page_size(2);
+
+    for (int i = 0; i < 5; ++i) {
+        auto name = "tool_" + std::to_string(i);
+        setup.server.add_tool<AddParams, AddResult>(
+            name, "Tool " + std::to_string(i), nlohmann::json{{"type", "object"}},
+            [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
+    }
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+
+    nlohmann::json list_req;
+    list_req["jsonrpc"] = "2.0";
+    list_req["id"] = "2";
+    list_req["method"] = "tools/list";
+    setup.raw_transport->enqueue_message(list_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& result = responses[1]["result"];
+    ASSERT_EQ(result["tools"].size(), 2);
+    EXPECT_EQ(result["tools"][0]["name"], "tool_0");
+    EXPECT_EQ(result["tools"][1]["name"], "tool_1");
+    ASSERT_TRUE(result.contains("nextCursor"));
+    EXPECT_EQ(result["nextCursor"], "2");
+}
+
+TEST_F(ServerHandlersTest, ToolsListPaginationWithCursor) {
+    mcp::ServerCapabilities caps;
+    mcp::ServerCapabilities::ToolsCapability tools_cap;
+    caps.tools = std::move(tools_cap);
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.set_page_size(2);
+
+    for (int i = 0; i < 5; ++i) {
+        auto name = "tool_" + std::to_string(i);
+        setup.server.add_tool<AddParams, AddResult>(
+            name, "Tool " + std::to_string(i), nlohmann::json{{"type", "object"}},
+            [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
+    }
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+
+    nlohmann::json list_req;
+    list_req["jsonrpc"] = "2.0";
+    list_req["id"] = "2";
+    list_req["method"] = "tools/list";
+    list_req["params"] = nlohmann::json{{"cursor", "2"}};
+    setup.raw_transport->enqueue_message(list_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& result = responses[1]["result"];
+    ASSERT_EQ(result["tools"].size(), 2);
+    EXPECT_EQ(result["tools"][0]["name"], "tool_2");
+    EXPECT_EQ(result["tools"][1]["name"], "tool_3");
+    EXPECT_EQ(result["nextCursor"], "4");
+}
+
+TEST_F(ServerHandlersTest, ToolsListPaginationLastPage) {
+    mcp::ServerCapabilities caps;
+    mcp::ServerCapabilities::ToolsCapability tools_cap;
+    caps.tools = std::move(tools_cap);
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.set_page_size(2);
+
+    for (int i = 0; i < 5; ++i) {
+        auto name = "tool_" + std::to_string(i);
+        setup.server.add_tool<AddParams, AddResult>(
+            name, "Tool " + std::to_string(i), nlohmann::json{{"type", "object"}},
+            [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
+    }
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+
+    nlohmann::json list_req;
+    list_req["jsonrpc"] = "2.0";
+    list_req["id"] = "2";
+    list_req["method"] = "tools/list";
+    list_req["params"] = nlohmann::json{{"cursor", "4"}};
+    setup.raw_transport->enqueue_message(list_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& result = responses[1]["result"];
+    ASSERT_EQ(result["tools"].size(), 1);
+    EXPECT_EQ(result["tools"][0]["name"], "tool_4");
+    EXPECT_FALSE(result.contains("nextCursor"));
+}
+
+TEST_F(ServerHandlersTest, PaginationDisabledByDefault) {
+    mcp::ServerCapabilities caps;
+    mcp::ServerCapabilities::ToolsCapability tools_cap;
+    caps.tools = std::move(tools_cap);
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    for (int i = 0; i < 5; ++i) {
+        auto name = "tool_" + std::to_string(i);
+        setup.server.add_tool<AddParams, AddResult>(
+            name, "Tool " + std::to_string(i), nlohmann::json{{"type", "object"}},
+            [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
+    }
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+
+    nlohmann::json list_req;
+    list_req["jsonrpc"] = "2.0";
+    list_req["id"] = "2";
+    list_req["method"] = "tools/list";
+    setup.raw_transport->enqueue_message(list_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& result = responses[1]["result"];
+    EXPECT_EQ(result["tools"].size(), 5);
+    EXPECT_FALSE(result.contains("nextCursor"));
+}
+
+TEST_F(ServerHandlersTest, ResourcesListPagination) {
+    mcp::ServerCapabilities caps;
+    mcp::ServerCapabilities::ResourcesCapability resources_cap;
+    caps.resources = std::move(resources_cap);
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.set_page_size(1);
+
+    for (int i = 0; i < 3; ++i) {
+        mcp::Resource resource;
+        resource.uri = "file:///r" + std::to_string(i) + ".txt";
+        resource.name = "r" + std::to_string(i);
+
+        setup.server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+            std::move(resource),
+            [](mcp::ReadResourceRequestParams /*params*/) -> mcp::ReadResourceResult {
+                return mcp::ReadResourceResult{};
+            });
+    }
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+
+    nlohmann::json list_req;
+    list_req["jsonrpc"] = "2.0";
+    list_req["id"] = "2";
+    list_req["method"] = "resources/list";
+    setup.raw_transport->enqueue_message(list_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& result = responses[1]["result"];
+    ASSERT_EQ(result["resources"].size(), 1);
+    EXPECT_EQ(result["resources"][0]["name"], "r0");
+    EXPECT_EQ(result["nextCursor"], "1");
+}
+
+// --- OutputSchema Tests ---
+
+TEST_F(ServerHandlersTest, ToolWithOutputSchemaIncludesStructuredContent) {
+    mcp::ServerCapabilities caps;
+    mcp::ServerCapabilities::ToolsCapability tools_cap;
+    caps.tools = std::move(tools_cap);
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    nlohmann::json output_schema = {{"type", "object"},
+                                    {"properties", {{"sum", {{"type", "integer"}}}}}};
+
+    setup.server.add_tool<AddParams, AddResult>(
+        "add_structured", "Adds with output schema",
+        nlohmann::json{
+            {"type", "object"},
+            {"properties", {{"augend", {{"type", "integer"}}}, {"addend", {{"type", "integer"}}}}}},
+        output_schema,
+        [](AddParams params) -> AddResult { return AddResult{params.augend + params.addend}; });
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+
+    nlohmann::json call_req;
+    call_req["jsonrpc"] = "2.0";
+    call_req["id"] = "2";
+    call_req["method"] = "tools/call";
+    call_req["params"] =
+        nlohmann::json{{"name", "add_structured"}, {"arguments", {{"augend", 10}, {"addend", 20}}}};
+    setup.raw_transport->enqueue_message(call_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& result = responses[1]["result"];
+    EXPECT_EQ(result["sum"], 30);
+    ASSERT_TRUE(result.contains("structuredContent"));
+    EXPECT_EQ(result["structuredContent"]["sum"], 30);
+}
+
+TEST_F(ServerHandlersTest, ToolWithoutOutputSchemaNoStructuredContent) {
+    mcp::ServerCapabilities caps;
+    mcp::ServerCapabilities::ToolsCapability tools_cap;
+    caps.tools = std::move(tools_cap);
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool<AddParams, AddResult>(
+        "add_plain", "Adds without output schema", nlohmann::json{{"type", "object"}},
+        [](AddParams params) -> AddResult { return AddResult{params.augend + params.addend}; });
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+
+    nlohmann::json call_req;
+    call_req["jsonrpc"] = "2.0";
+    call_req["id"] = "2";
+    call_req["method"] = "tools/call";
+    call_req["params"] =
+        nlohmann::json{{"name", "add_plain"}, {"arguments", {{"augend", 5}, {"addend", 3}}}};
+    setup.raw_transport->enqueue_message(call_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& result = responses[1]["result"];
+    EXPECT_EQ(result["sum"], 8);
+    EXPECT_FALSE(result.contains("structuredContent"));
+}
+
+TEST_F(ServerHandlersTest, ToolsListIncludesOutputSchema) {
+    mcp::ServerCapabilities caps;
+    mcp::ServerCapabilities::ToolsCapability tools_cap;
+    caps.tools = std::move(tools_cap);
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    nlohmann::json output_schema = {{"type", "object"},
+                                    {"properties", {{"result", {{"type", "string"}}}}}};
+
+    setup.server.add_tool<AddParams, AddResult>(
+        "schema_tool", "Has output schema", nlohmann::json{{"type", "object"}}, output_schema,
+        [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+
+    nlohmann::json list_req;
+    list_req["jsonrpc"] = "2.0";
+    list_req["id"] = "2";
+    list_req["method"] = "tools/list";
+    setup.raw_transport->enqueue_message(list_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& tools = responses[1]["result"]["tools"];
+    ASSERT_EQ(tools.size(), 1);
+    EXPECT_EQ(tools[0]["name"], "schema_tool");
+    ASSERT_TRUE(tools[0].contains("outputSchema"));
+    EXPECT_EQ(tools[0]["outputSchema"]["type"], "object");
+}
+
+// --- Completion Tests ---
+
+TEST_F(ServerHandlersTest, CompletionReturnsResults) {
+    mcp::ServerCapabilities caps;
+    caps.completions = nlohmann::json::object();
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.set_completion_provider(
+        [](const mcp::CompleteParams& params) -> mcp::Task<mcp::CompleteResult> {
+            mcp::CompleteResult result;
+            result.completion.values = {"hello", "help", "hero"};
+            result.completion.total = 3;
+            result.completion.hasMore = false;
+            co_return result;
+        });
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+
+    nlohmann::json complete_req;
+    complete_req["jsonrpc"] = "2.0";
+    complete_req["id"] = "2";
+    complete_req["method"] = "completion/complete";
+    complete_req["params"] = nlohmann::json{{"ref", {{"type", "ref/prompt"}, {"name", "my-prompt"}}},
+                                            {"argument", {{"name", "arg1"}, {"value", "hel"}}}};
+    setup.raw_transport->enqueue_message(complete_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& result = responses[1]["result"];
+    ASSERT_TRUE(result.contains("completion"));
+    auto& completion = result["completion"];
+    ASSERT_EQ(completion["values"].size(), 3);
+    EXPECT_EQ(completion["values"][0], "hello");
+    EXPECT_EQ(completion["values"][1], "help");
+    EXPECT_EQ(completion["values"][2], "hero");
+    EXPECT_EQ(completion["total"], 3);
+    EXPECT_FALSE(completion["hasMore"].get<bool>());
+}
+
+TEST_F(ServerHandlersTest, CompletionWithoutHandlerReturnsError) {
+    mcp::ServerCapabilities caps;
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+
+    nlohmann::json complete_req;
+    complete_req["jsonrpc"] = "2.0";
+    complete_req["id"] = "2";
+    complete_req["method"] = "completion/complete";
+    complete_req["params"] = nlohmann::json{{"ref", {{"type", "ref/prompt"}, {"name", "test"}}},
+                                            {"argument", {{"name", "arg", "value", "val"}}}};
+    setup.raw_transport->enqueue_message(complete_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& error_response = responses[1];
+    ASSERT_TRUE(error_response.contains("error"));
+    EXPECT_EQ(error_response["error"]["code"], mcp::METHOD_NOT_FOUND);
+}

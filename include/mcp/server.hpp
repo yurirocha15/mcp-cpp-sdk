@@ -18,6 +18,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -33,6 +34,9 @@ using TypeErasedHandler = std::function<Task<nlohmann::json>(Context&, const nlo
 /// @brief Middleware function signature for intercepting handler invocations.
 using Middleware =
     std::function<Task<nlohmann::json>(Context&, const nlohmann::json&, TypeErasedHandler)>;
+
+/// @brief Completion handler: takes CompleteParams, returns CompleteResult.
+using CompletionHandler = std::function<Task<CompleteResult>(const CompleteParams&)>;
 
 namespace detail {
 
@@ -161,6 +165,25 @@ class Server {
     }
 
     /**
+     * @brief Register a tool with an output schema for structured output.
+     *
+     * @details Like add_tool, but also sets the tool's outputSchema. When a tool has
+     * an outputSchema, its result will include a structuredContent field alongside content.
+     */
+    template <JsonSerializable In, JsonSerializable Out, typename Fn>
+    void add_tool(std::string name, std::string description, nlohmann::json input_schema,
+                  nlohmann::json output_schema, Fn handler) {
+        Tool tool;
+        tool.name = name;
+        tool.description = std::move(description);
+        tool.inputSchema = std::move(input_schema);
+        tool.outputSchema = std::move(output_schema);
+        tools_.push_back(std::move(tool));
+
+        tool_handlers_.emplace(std::move(name), detail::wrap_handler<In, Out>(std::move(handler)));
+    }
+
+    /**
      * @brief Register a resource with the server.
      *
      * @details Stores the resource metadata and wraps the handler into a
@@ -224,6 +247,22 @@ class Server {
      * @param mw The middleware function to register.
      */
     void use(Middleware mw) { middlewares_.push_back(std::move(mw)); }
+
+    /**
+     * @brief Register a completion handler for completion/complete requests.
+     *
+     * @param handler The handler that provides completion results.
+     */
+    void set_completion_provider(CompletionHandler handler) {
+        completion_handler_ = std::move(handler);
+    }
+
+    /**
+     * @brief Set the page size for paginated list responses.
+     *
+     * @param size The maximum number of items per page. 0 means no pagination.
+     */
+    void set_page_size(std::size_t size) { page_size_ = size; }
 
     /**
      * @brief Send a JSON-RPC request to the client and await its response (reverse RPC).
@@ -319,12 +358,14 @@ class Server {
      * coroutines so the run loop is never blocked—this is essential for
      * reverse RPC (e.g. sampling) where a handler sends a request to the
      * client and must wait for a response that arrives on the same
-     * transport. Notifications (messages without "id") are silently ignored.
+     * transport. Notifications (messages without "id") are dispatched
+     * to notification handlers (e.g. cancellation).
      *
      * @param json_msg The parsed JSON-RPC message.
      */
     void dispatch(nlohmann::json json_msg) {
         if (!json_msg.contains("id")) {
+            dispatch_notification(json_msg);
             return;
         }
 
@@ -351,13 +392,66 @@ class Server {
      */
     [[nodiscard]] bool is_shutdown_requested() const { return shutdown_requested_; }
 
+    /**
+     * @brief Send a notifications/tools/list_changed notification to the client.
+     */
+    Task<void> notify_tools_list_changed() {
+        co_await send_notification("notifications/tools/list_changed", std::nullopt);
+    }
+
+    /**
+     * @brief Send a notifications/resources/list_changed notification to the client.
+     */
+    Task<void> notify_resources_list_changed() {
+        co_await send_notification("notifications/resources/list_changed", std::nullopt);
+    }
+
+    /**
+     * @brief Send a notifications/prompts/list_changed notification to the client.
+     */
+    Task<void> notify_prompts_list_changed() {
+        co_await send_notification("notifications/prompts/list_changed", std::nullopt);
+    }
+
+    /**
+     * @brief Send a notifications/resources/updated notification to all subscribers.
+     *
+     * @param uri The URI of the resource that was updated.
+     */
+    Task<void> notify_resource_updated(const std::string& uri) {
+        if (!session_) {
+            co_return;
+        }
+        auto it = session_->subscriptions.find(uri);
+        if (it == session_->subscriptions.end() || !it->second) {
+            co_return;
+        }
+
+        ResourceUpdatedNotificationParams params;
+        params.uri = uri;
+
+        JSONRPCNotification notification;
+        notification.method = "notifications/resources/updated";
+        nlohmann::json p = std::move(params);
+        notification.params = std::move(p);
+
+        nlohmann::json json_msg = std::move(notification);
+        co_await session_->transport->write_message(json_msg.dump());
+    }
+
+    [[nodiscard]] LoggingLevel get_log_level() const {
+        return log_level_.load(std::memory_order_relaxed);
+    }
+
    private:
-    Context make_context() {
+    Context make_context(std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
+                         std::optional<ProgressToken> progress_token = std::nullopt) {
         return Context(
             *session_->transport,
             [this](std::string method, std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
                 co_return co_await send_request(std::move(method), std::move(params));
-            });
+            },
+            std::move(cancelled), std::move(progress_token), &log_level_);
     }
 
     /**
@@ -392,12 +486,48 @@ class Server {
             co_await handle_resources_read(request);
         } else if (request.method == "resources/templates/list") {
             co_await handle_resource_templates_list(request);
+        } else if (request.method == "resources/subscribe") {
+            co_await handle_subscribe(request);
+        } else if (request.method == "resources/unsubscribe") {
+            co_await handle_unsubscribe(request);
         } else if (request.method == "prompts/list") {
             co_await handle_prompts_list(request);
         } else if (request.method == "prompts/get") {
             co_await handle_prompts_get(request);
+        } else if (request.method == "logging/setLevel") {
+            co_await handle_set_level(request);
+        } else if (request.method == "completion/complete") {
+            co_await handle_complete(request);
         } else {
             co_await send_error(request.id, METHOD_NOT_FOUND, "Method not found: " + request.method);
+        }
+    }
+
+    void dispatch_notification(const nlohmann::json& json_msg) {
+        if (!json_msg.contains("method")) {
+            return;
+        }
+        auto method = json_msg.at("method").get<std::string>();
+
+        if (method == "notifications/cancelled") {
+            if (!json_msg.contains("params")) {
+                return;
+            }
+            auto params = json_msg.at("params").get<CancelledNotificationParams>();
+            auto id_str = std::visit(
+                [](auto&& val) -> std::string {
+                    if constexpr (std::is_same_v<std::decay_t<decltype(val)>, std::string>) {
+                        return val;
+                    } else {
+                        return std::to_string(val);
+                    }
+                },
+                params.requestId);
+
+            auto it = session_->in_flight.find(id_str);
+            if (it != session_->in_flight.end()) {
+                it->second->store(true, std::memory_order_relaxed);
+            }
         }
     }
 
@@ -455,6 +585,27 @@ class Server {
             co_return;
         }
 
+        auto request_id_str = std::visit(
+            [](auto&& val) -> std::string {
+                if constexpr (std::is_same_v<std::decay_t<decltype(val)>, std::string>) {
+                    return val;
+                } else {
+                    return std::to_string(val);
+                }
+            },
+            request.id);
+
+        auto cancelled = std::make_shared<std::atomic<bool>>(false);
+        session_->in_flight[request_id_str] = cancelled;
+
+        std::optional<ProgressToken> progress_token;
+        if (params.meta) {
+            auto& meta = *params.meta;
+            if (meta.contains("progressToken")) {
+                progress_token = meta.at("progressToken").get<ProgressToken>();
+            }
+        }
+
         TypeErasedHandler wrapped_handler =
             [original_handler = iter->second](
                 Context& ctx, const nlohmann::json& full_params) -> Task<nlohmann::json> {
@@ -463,15 +614,28 @@ class Server {
         };
         auto handler = build_middleware_chain(std::move(wrapped_handler));
 
-        auto ctx = make_context();
+        auto ctx = make_context(cancelled, std::move(progress_token));
         nlohmann::json params_json = std::move(params);
         nlohmann::json result = co_await handler(ctx, params_json);
+
+        auto has_output_schema =
+            has_tool_output_schema(request.params.value().at("name").get<std::string>());
+        if (has_output_schema) {
+            result["structuredContent"] = result;
+        }
+
+        session_->in_flight.erase(request_id_str);
+
         co_await send_result(request.id, std::move(result));
     }
 
     Task<void> handle_tools_list(const JSONRPCRequest& request) {
         ListToolsResult result;
-        result.tools = tools_;
+
+        auto [begin, end, next_cursor] = paginate(tools_.size(), request);
+        result.tools.assign(tools_.begin() + static_cast<std::ptrdiff_t>(begin),
+                            tools_.begin() + static_cast<std::ptrdiff_t>(end));
+        result.nextCursor = std::move(next_cursor);
 
         nlohmann::json result_json = std::move(result);
         co_await send_result(request.id, std::move(result_json));
@@ -479,7 +643,11 @@ class Server {
 
     Task<void> handle_resources_list(const JSONRPCRequest& request) {
         ListResourcesResult result;
-        result.resources = resources_;
+
+        auto [begin, end, next_cursor] = paginate(resources_.size(), request);
+        result.resources.assign(resources_.begin() + static_cast<std::ptrdiff_t>(begin),
+                                resources_.begin() + static_cast<std::ptrdiff_t>(end));
+        result.nextCursor = std::move(next_cursor);
 
         nlohmann::json result_json = std::move(result);
         co_await send_result(request.id, std::move(result_json));
@@ -503,15 +671,36 @@ class Server {
 
     Task<void> handle_resource_templates_list(const JSONRPCRequest& request) {
         ListResourceTemplatesResult result;
-        result.resourceTemplates = resource_templates_;
+
+        auto [begin, end, next_cursor] = paginate(resource_templates_.size(), request);
+        result.resourceTemplates.assign(
+            resource_templates_.begin() + static_cast<std::ptrdiff_t>(begin),
+            resource_templates_.begin() + static_cast<std::ptrdiff_t>(end));
+        result.nextCursor = std::move(next_cursor);
 
         nlohmann::json result_json = std::move(result);
         co_await send_result(request.id, std::move(result_json));
     }
 
+    Task<void> handle_subscribe(const JSONRPCRequest& request) {
+        auto params = request.params.value().get<ResourceSubscribeParams>();
+        session_->subscriptions[params.uri] = true;
+        co_await send_result(request.id, nlohmann::json::object());
+    }
+
+    Task<void> handle_unsubscribe(const JSONRPCRequest& request) {
+        auto params = request.params.value().get<ResourceUnsubscribeParams>();
+        session_->subscriptions.erase(params.uri);
+        co_await send_result(request.id, nlohmann::json::object());
+    }
+
     Task<void> handle_prompts_list(const JSONRPCRequest& request) {
         ListPromptsResult result;
-        result.prompts = prompts_;
+
+        auto [begin, end, next_cursor] = paginate(prompts_.size(), request);
+        result.prompts.assign(prompts_.begin() + static_cast<std::ptrdiff_t>(begin),
+                              prompts_.begin() + static_cast<std::ptrdiff_t>(end));
+        result.nextCursor = std::move(next_cursor);
 
         nlohmann::json result_json = std::move(result);
         co_await send_result(request.id, std::move(result_json));
@@ -531,6 +720,25 @@ class Server {
         auto ctx = make_context();
         nlohmann::json result = co_await handler(ctx, params_json);
         co_await send_result(request.id, std::move(result));
+    }
+
+    Task<void> handle_set_level(const JSONRPCRequest& request) {
+        auto params = request.params.value().get<SetLevelRequestParams>();
+        log_level_.store(params.level, std::memory_order_relaxed);
+        co_await send_result(request.id, nlohmann::json::object());
+    }
+
+    Task<void> handle_complete(const JSONRPCRequest& request) {
+        if (!completion_handler_) {
+            co_await send_error(request.id, METHOD_NOT_FOUND, "No completion handler registered");
+            co_return;
+        }
+
+        auto params = request.params.value().get<CompleteParams>();
+        auto result = co_await completion_handler_(params);
+
+        nlohmann::json result_json = std::move(result);
+        co_await send_result(request.id, std::move(result_json));
     }
 
     Task<void> send_result(const RequestId& id, nlohmann::json result) {
@@ -555,6 +763,19 @@ class Server {
         co_await session_->transport->write_message(json_msg.dump());
     }
 
+    Task<void> send_notification(std::string method, std::optional<nlohmann::json> params) {
+        if (!session_) {
+            co_return;
+        }
+
+        JSONRPCNotification notification;
+        notification.method = std::move(method);
+        notification.params = std::move(params);
+
+        nlohmann::json json_msg = std::move(notification);
+        co_await session_->transport->write_message(json_msg.dump());
+    }
+
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler) {
         auto handler = std::move(final_handler);
         for (auto it = middlewares_.rbegin(); it != middlewares_.rend(); ++it) {
@@ -565,6 +786,49 @@ class Server {
             };
         }
         return handler;
+    }
+
+    struct PaginationSlice {
+        std::size_t begin;
+        std::size_t end;
+        std::optional<std::string> next_cursor;
+    };
+
+    PaginationSlice paginate(std::size_t total, const JSONRPCRequest& request) {
+        if (page_size_ == 0 || total == 0) {
+            return {0, total, std::nullopt};
+        }
+
+        std::size_t offset = 0;
+        if (request.params && request.params->contains("cursor")) {
+            auto cursor_str = request.params->at("cursor").get<std::string>();
+            try {
+                offset = std::stoull(cursor_str);
+            } catch (...) {
+                offset = 0;
+            }
+        }
+
+        if (offset >= total) {
+            offset = 0;
+        }
+
+        auto end = std::min(offset + page_size_, total);
+        std::optional<std::string> next_cursor;
+        if (end < total) {
+            next_cursor = std::to_string(end);
+        }
+
+        return {offset, end, std::move(next_cursor)};
+    }
+
+    [[nodiscard]] bool has_tool_output_schema(const std::string& name) const {
+        for (const auto& tool : tools_) {
+            if (tool.name == name) {
+                return tool.outputSchema.has_value();
+            }
+        }
+        return false;
     }
 
     Implementation server_info_;
@@ -582,10 +846,20 @@ class Server {
         std::unique_ptr<ITransport> transport;
         std::unique_ptr<boost::asio::strand<boost::asio::any_io_executor>> strand;
         std::map<std::string, PendingRequest> pending_requests;
+
+        std::map<std::string, std::shared_ptr<std::atomic<bool>>> in_flight;
+
+        std::map<std::string, bool> subscriptions;
     };
 
     std::unique_ptr<Session> session_;
     std::atomic<int64_t> next_request_id_{1};
+
+    std::atomic<LoggingLevel> log_level_{LoggingLevel::Debug};
+
+    std::size_t page_size_ = 0;
+
+    CompletionHandler completion_handler_;
 
     void reset_session() {
         if (session_) {
@@ -593,6 +867,8 @@ class Server {
                 session_->transport->close();
             }
             session_->pending_requests.clear();
+            session_->in_flight.clear();
+            session_->subscriptions.clear();
             session_.reset();
         }
     }

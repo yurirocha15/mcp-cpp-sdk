@@ -41,8 +41,12 @@ set(TEST_SRCS
     test/protocol_test.cpp
     test/sampling_test.cpp
     test/server_core_test.cpp
+    test/server_cancellation_test.cpp
     test/server_handlers_test.cpp
+    test/server_logging_test.cpp
     test/server_middleware_test.cpp
+    test/server_progress_test.cpp
+    test/server_subscriptions_test.cpp
     test/transport_test.cpp
     test/transport_stdio_test.cpp
     test/transport_ws_test.cpp
