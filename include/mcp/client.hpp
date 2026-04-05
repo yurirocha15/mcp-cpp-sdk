@@ -366,6 +366,24 @@ class Client {
         request_handlers_[std::move(method)] = std::move(handler);
     }
 
+    /**
+     * @brief Register a handler for incoming elicitation requests from the server.
+     *
+     * @details Convenience wrapper that registers a request handler for "elicitation/create".
+     * The handler receives ElicitRequestParams and returns ElicitResult.
+     *
+     * @param handler Async handler: receives ElicitRequestParams, returns ElicitResult.
+     */
+    void on_elicitation(std::function<Task<ElicitResult>(ElicitRequestParams)> handler) {
+        on_request("elicitation/create",
+                   [h = std::move(handler)](const nlohmann::json& params) -> Task<nlohmann::json> {
+                       auto elicit_params = params.get<ElicitRequestParams>();
+                       auto result = co_await h(std::move(elicit_params));
+                       nlohmann::json result_json = std::move(result);
+                       co_return result_json;
+                   });
+    }
+
    private:
     /**
      * @brief A pending request awaiting its response.

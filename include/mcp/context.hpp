@@ -173,6 +173,27 @@ class Context {
         co_return result_json.get<CreateMessageResult>();
     }
 
+    /**
+     * @brief Elicit additional information from the user via the client (reverse RPC).
+     *
+     * @details Sends an "elicitation/create" request to the client and awaits the response.
+     * Supports both form mode (ElicitRequestFormParams) and URL mode (ElicitRequestURLParams)
+     * via the ElicitRequestParams variant.
+     *
+     * @param params The elicitation request parameters (form or URL mode).
+     * @return A task that resolves to the client's ElicitResult.
+     * @throws std::runtime_error If no request sender is available.
+     */
+    Task<ElicitResult> elicit(ElicitRequestParams params) {
+        if (!sender_) {
+            throw std::runtime_error("Context has no request sender for reverse RPC");
+        }
+
+        nlohmann::json json_params = std::move(params);
+        auto result_json = co_await sender_("elicitation/create", std::move(json_params));
+        co_return result_json.get<ElicitResult>();
+    }
+
    private:
     ITransport& transport_;
     RequestSender sender_;

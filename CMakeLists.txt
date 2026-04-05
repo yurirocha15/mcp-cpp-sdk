@@ -43,6 +43,7 @@ set(TEST_SRCS
     test/sampling_test.cpp
     test/server_core_test.cpp
     test/server_cancellation_test.cpp
+    test/server_elicitation_test.cpp
     test/server_handlers_test.cpp
     test/server_logging_test.cpp
     test/server_middleware_test.cpp
