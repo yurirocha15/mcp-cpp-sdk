@@ -184,6 +184,21 @@ class Server {
     }
 
     /**
+     * @brief Register a tool with a simple synchronous JSON handler.
+     *
+     * @details Convenience overload that avoids templates and coroutines.
+     * The handler receives raw JSON params and returns a raw JSON result.
+     * Exceptions thrown by the handler are propagated as JSON-RPC errors.
+     *
+     * @param name         The name of the tool.
+     * @param description  A human-readable description of the tool.
+     * @param input_schema The JSON schema describing the tool's input.
+     * @param handler      Synchronous handler: takes JSON params, returns JSON result.
+     */
+    void add_tool(std::string name, std::string description, nlohmann::json input_schema,
+                  std::function<nlohmann::json(const nlohmann::json&)> handler);
+
+    /**
      * @brief Register a resource with the server.
      *
      * @details Stores the resource metadata and wraps the handler into a

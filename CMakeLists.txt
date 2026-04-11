@@ -16,8 +16,9 @@ target_link_libraries(
   mcp-cpp-sdk PUBLIC Boost::headers Boost::system nlohmann_json::nlohmann_json
                      OpenSSL::Crypto)
 target_include_directories(mcp-cpp-sdk PUBLIC include)
-target_sources(mcp-cpp-sdk PRIVATE src/version.cpp src/runtime.cpp
-                                   src/server_stdio.cpp src/server_http.cpp)
+target_sources(
+  mcp-cpp-sdk PRIVATE src/version.cpp src/runtime.cpp src/server_stdio.cpp
+                      src/server_http.cpp src/server_tool.cpp)
 
 # Documentation target
 find_package(Doxygen QUIET)
@@ -66,7 +67,8 @@ if(BUILD_TESTING)
       test/transport_memory_test.cpp
       test/runtime_test.cpp
       test/server_stdio_test.cpp
-      test/server_http_test.cpp)
+      test/server_http_test.cpp
+      test/server_tool_test.cpp)
   add_executable(mcp-sdk-tests ${TEST_SRCS})
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
 
