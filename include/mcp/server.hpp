@@ -350,6 +350,27 @@ class Server {
     }
 
     /**
+     * @brief Run the server on stdio (stdin/stdout), blocking until shutdown.
+     *
+     * @details Creates the transport and event loop internally, installs
+     * signal handlers for SIGINT and SIGTERM, and blocks until the server
+     * session ends or a signal is received. Exceptions from the server
+     * session are propagated to the caller.
+     */
+    void run_stdio();
+
+    /**
+     * @brief Run the server on custom streams, blocking until shutdown.
+     *
+     * @details Same as run_stdio() but reads from / writes to the given
+     * streams instead of stdin / stdout.
+     *
+     * @param input  Stream to read JSON-RPC messages from.
+     * @param output Stream to write JSON-RPC responses to.
+     */
+    void run_stdio(std::istream& input, std::ostream& output);
+
+    /**
      * @brief Dispatch a parsed JSON-RPC message to the appropriate handler.
      *
      * @details Non-coroutine entry point that routes messages. Responses
