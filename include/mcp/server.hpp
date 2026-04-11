@@ -371,6 +371,20 @@ class Server {
     void run_stdio(std::istream& input, std::ostream& output);
 
     /**
+     * @brief Run the server over HTTP, blocking until shutdown.
+     *
+     * @details Binds to the given host and port, accepts HTTP connections,
+     * and processes JSON-RPC requests. Installs signal handlers for SIGINT
+     * and SIGTERM for clean shutdown. Blocks until the server session ends
+     * or a signal is received. Exceptions from the server session are
+     * propagated to the caller.
+     *
+     * @param host  Local address to bind (e.g. "0.0.0.0" or "127.0.0.1").
+     * @param port  TCP port to listen on.
+     */
+    void run_http(const std::string& host, uint16_t port);
+
+    /**
      * @brief Dispatch a parsed JSON-RPC message to the appropriate handler.
      *
      * @details Non-coroutine entry point that routes messages. Responses

@@ -316,6 +316,9 @@ TEST_F(RootsTest, ClientSetRootsWithNotifySendsNotification) {
                 init_result.protocolVersion = std::string(mcp::LATEST_PROTOCOL_VERSION);
                 init_result.serverInfo.name = "test-server";
                 init_result.serverInfo.version = "1.0";
+                mcp::ServerCapabilities::ResourcesCapability res_cap;
+                res_cap.listChanged = true;
+                init_result.capabilities.resources = std::move(res_cap);
 
                 nlohmann::json response_json;
                 response_json["jsonrpc"] = "2.0";
