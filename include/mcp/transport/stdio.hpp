@@ -99,6 +99,7 @@ class StdioTransport final : public ITransport {
      * are safe without a mutex.
      *
      * @param message The message to write.
+     * @return A task that completes when the message has been flushed.
      */
     Task<void> write_message(std::string_view message) override {
         co_await boost::asio::post(strand_, boost::asio::use_awaitable);

@@ -13,12 +13,12 @@ find_package(nlohmann_json REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(GTest REQUIRED)
 
-add_library(mcp-cpp-sdk INTERFACE)
+add_library(mcp-cpp-sdk STATIC)
 target_link_libraries(
-  mcp-cpp-sdk INTERFACE Boost::headers Boost::system
-                        nlohmann_json::nlohmann_json OpenSSL::Crypto)
-target_include_directories(mcp-cpp-sdk INTERFACE include)
-
+  mcp-cpp-sdk PUBLIC Boost::headers Boost::system nlohmann_json::nlohmann_json
+                     OpenSSL::Crypto)
+target_include_directories(mcp-cpp-sdk PUBLIC include)
+target_sources(mcp-cpp-sdk PRIVATE src/version.cpp)
 # Documentation target
 find_package(Doxygen QUIET)
 if(DOXYGEN_FOUND)
