@@ -942,11 +942,72 @@ inline void from_json(const nlohmann::json& json_obj, EmbeddedResource& res) {
     }
 }
 
-/**
- * @brief Variant holding either TextContent or ImageContent.
- */
-using ContentBlock =
-    std::variant<TextContent, ImageContent, AudioContent, ResourceLink, EmbeddedResource>;
+struct ToolUseContent {
+    std::string type = "tool_use";
+    std::string id;
+    std::string name;
+    nlohmann::json input;
+    std::optional<nlohmann::json> meta;
+};
+
+inline void to_json(nlohmann::json& json_obj, const ToolUseContent& content) {
+    json_obj = nlohmann::json{
+        {"type", content.type}, {"id", content.id}, {"name", content.name}, {"input", content.input}};
+    if (content.meta) {
+        json_obj["_meta"] = *content.meta;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, ToolUseContent& content) {
+    json_obj.at("type").get_to(content.type);
+    json_obj.at("id").get_to(content.id);
+    json_obj.at("name").get_to(content.name);
+    json_obj.at("input").get_to(content.input);
+    if (json_obj.contains("_meta")) {
+        content.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+}
+
+struct ToolResultContent {
+    std::string type = "tool_result";
+    std::string toolUseId;
+    nlohmann::json content;
+    std::optional<bool> isError;
+    std::optional<nlohmann::json> structuredContent;
+    std::optional<nlohmann::json> meta;
+};
+
+inline void to_json(nlohmann::json& json_obj, const ToolResultContent& content) {
+    json_obj = nlohmann::json{
+        {"type", content.type}, {"toolUseId", content.toolUseId}, {"content", content.content}};
+    if (content.isError) {
+        json_obj["isError"] = *content.isError;
+    }
+    if (content.structuredContent) {
+        json_obj["structuredContent"] = *content.structuredContent;
+    }
+    if (content.meta) {
+        json_obj["_meta"] = *content.meta;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, ToolResultContent& content) {
+    json_obj.at("type").get_to(content.type);
+    json_obj.at("toolUseId").get_to(content.toolUseId);
+    json_obj.at("content").get_to(content.content);
+    if (json_obj.contains("isError")) {
+        content.isError = json_obj.at("isError").get<bool>();
+    }
+    if (json_obj.contains("structuredContent")) {
+        content.structuredContent = json_obj.at("structuredContent").get<nlohmann::json>();
+    }
+    if (json_obj.contains("_meta")) {
+        content.meta = json_obj.at("_meta").get<nlohmann::json>();
+    }
+}
+
+using ContentBlock = std::variant<TextContent, ImageContent, AudioContent, ResourceLink,
+                                  EmbeddedResource, ToolUseContent, ToolResultContent>;
 
 /**
  * @brief Serializes TextContent to JSON.
@@ -1046,6 +1107,10 @@ inline void from_json(const nlohmann::json& json_obj, ContentBlock& content) {
         content = json_obj.get<ResourceLink>();
     } else if (type == "resource") {
         content = json_obj.get<EmbeddedResource>();
+    } else if (type == "tool_use") {
+        content = json_obj.get<ToolUseContent>();
+    } else if (type == "tool_result") {
+        content = json_obj.get<ToolResultContent>();
     } else {
         throw std::invalid_argument("Unknown content type: " + type);
     }
@@ -1961,145 +2026,7 @@ inline void from_json(const nlohmann::json& json_obj, ToolChoice& choice) {
     }
 }
 
-/**
- * @brief A request from the assistant to call a tool.
- */
-struct ToolUseContent {
-    std::string type = "tool_use";       ///< The type of content (always "tool_use").
-    std::string id;                      ///< A unique identifier for this tool use.
-    std::string name;                    ///< The name of the tool to call.
-    nlohmann::json input;                ///< The arguments to pass to the tool.
-    std::optional<nlohmann::json> meta;  ///< Optional metadata about the tool use.
-};
-
-/**
- * @brief Serializes ToolUseContent to JSON.
- *
- * @param json_obj The JSON object to populate.
- * @param content The ToolUseContent object to serialize.
- */
-inline void to_json(nlohmann::json& json_obj, const ToolUseContent& content) {
-    json_obj = nlohmann::json{
-        {"type", content.type}, {"id", content.id}, {"name", content.name}, {"input", content.input}};
-    if (content.meta) {
-        json_obj["_meta"] = *content.meta;
-    }
-}
-
-/**
- * @brief Deserializes ToolUseContent from JSON.
- *
- * @param json_obj The JSON object to read from.
- * @param content The ToolUseContent object to populate.
- */
-inline void from_json(const nlohmann::json& json_obj, ToolUseContent& content) {
-    json_obj.at("type").get_to(content.type);
-    json_obj.at("id").get_to(content.id);
-    json_obj.at("name").get_to(content.name);
-    json_obj.at("input").get_to(content.input);
-    if (json_obj.contains("_meta")) {
-        content.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
-
-/**
- * @brief The result of a tool use, provided by the user back to the assistant.
- *
- * Uses ContentBlock (not SamplingMessageContentBlock) for its content array,
- * avoiding circular variant definitions.
- */
-struct ToolResultContent {
-    std::string type = "tool_result";   ///< The type of content (always "tool_result").
-    std::string toolUseId;              ///< The ID of the tool use this result corresponds to.
-    std::vector<ContentBlock> content;  ///< The unstructured result content.
-    std::optional<bool> isError;        ///< Whether the tool use resulted in an error.
-    std::optional<nlohmann::json> structuredContent;  ///< Optional structured result object.
-    std::optional<nlohmann::json> meta;               ///< Optional metadata about the tool result.
-};
-
-/**
- * @brief Serializes ToolResultContent to JSON.
- *
- * @param json_obj The JSON object to populate.
- * @param content The ToolResultContent object to serialize.
- */
-inline void to_json(nlohmann::json& json_obj, const ToolResultContent& content) {
-    json_obj = nlohmann::json{
-        {"type", content.type}, {"toolUseId", content.toolUseId}, {"content", content.content}};
-    if (content.isError) {
-        json_obj["isError"] = *content.isError;
-    }
-    if (content.structuredContent) {
-        json_obj["structuredContent"] = *content.structuredContent;
-    }
-    if (content.meta) {
-        json_obj["_meta"] = *content.meta;
-    }
-}
-
-/**
- * @brief Deserializes ToolResultContent from JSON.
- *
- * @param json_obj The JSON object to read from.
- * @param content The ToolResultContent object to populate.
- */
-inline void from_json(const nlohmann::json& json_obj, ToolResultContent& content) {
-    json_obj.at("type").get_to(content.type);
-    json_obj.at("toolUseId").get_to(content.toolUseId);
-    json_obj.at("content").get_to(content.content);
-    if (json_obj.contains("isError")) {
-        content.isError = json_obj.at("isError").get<bool>();
-    }
-    if (json_obj.contains("structuredContent")) {
-        content.structuredContent = json_obj.at("structuredContent").get<nlohmann::json>();
-    }
-    if (json_obj.contains("_meta")) {
-        content.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
-
-/**
- * @brief Content block variant for sampling messages.
- *
- * Extends ContentBlock with ToolUseContent and ToolResultContent.
- */
-using SamplingMessageContentBlock =
-    std::variant<TextContent, ImageContent, AudioContent, ToolUseContent, ToolResultContent>;
-
-/**
- * @brief Serializes SamplingMessageContentBlock variant to JSON.
- *
- * @param json_obj The JSON object to populate.
- * @param block The SamplingMessageContentBlock variant to serialize.
- */
-inline void to_json(nlohmann::json& json_obj, const SamplingMessageContentBlock& block) {
-    std::visit([&json_obj](auto&& arg) { json_obj = arg; }, block);
-}
-
-/**
- * @brief Deserializes SamplingMessageContentBlock variant from JSON.
- *
- * @param json_obj The JSON object to read from.
- * @param block The SamplingMessageContentBlock variant to populate.
- * @throw std::invalid_argument If the content type is unknown.
- */
-inline void from_json(const nlohmann::json& json_obj, SamplingMessageContentBlock& block) {
-    std::string type;
-    json_obj.at("type").get_to(type);
-    if (type == "text") {
-        block = json_obj.get<TextContent>();
-    } else if (type == "image") {
-        block = json_obj.get<ImageContent>();
-    } else if (type == "audio") {
-        block = json_obj.get<AudioContent>();
-    } else if (type == "tool_use") {
-        block = json_obj.get<ToolUseContent>();
-    } else if (type == "tool_result") {
-        block = json_obj.get<ToolResultContent>();
-    } else {
-        throw std::invalid_argument("Unknown sampling content type: " + type);
-    }
-}
+using SamplingMessageContentBlock = ContentBlock;
 
 /**
  * @brief Content for sampling messages — either a single block or an array of blocks.

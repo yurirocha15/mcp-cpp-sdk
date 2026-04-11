@@ -262,17 +262,78 @@ for server_name in "${selected_servers[@]}"; do
     python3 "$SCRIPT_DIR/collect_stats.py" "$container_name" "$server_results/stats.json" 1.0 &
     stats_pid=$!
 
-    info "[$server_name] Run k6 benchmark"
-    docker run --rm \
-        --network host \
-        --user "$(id -u):$(id -g)" \
-        -v "$SCRIPT_DIR/k6:/scripts:ro" \
-        -v "$server_results:/results" \
-        -e SERVER_URL="$mcp_url" \
-        -e SERVER_NAME="$server_name" \
-        -e OUTPUT_PATH="/results/k6_summary.json" \
-        grafana/k6:latest run /scripts/benchmark.js \
-        2>&1 | tee "$server_results/k6_console.log"
+    K6_RUNS=3
+    info "[$server_name] Run k6 benchmark ($K6_RUNS iterations)"
+    for run_idx in $(seq 1 "$K6_RUNS"); do
+        info "[$server_name] k6 run $run_idx/$K6_RUNS"
+
+        if (( run_idx > 1 )); then
+            info "[$server_name] Re-seed Redis before run $run_idx"
+            docker compose -f "$SCRIPT_DIR/docker-compose.yml" exec -T redis redis-cli FLUSHDB >/dev/null
+            docker rm -f mcp-redis-seeder >/dev/null 2>&1 || true
+            docker compose -f "$SCRIPT_DIR/docker-compose.yml" --profile seeder run --rm redis-seeder >/dev/null
+            run_warmup "$server_name" "$mcp_url"
+        fi
+
+        docker run --rm \
+            --network host \
+            --user "$(id -u):$(id -g)" \
+            -v "$SCRIPT_DIR/k6:/scripts:ro" \
+            -v "$server_results:/results" \
+            -e SERVER_URL="$mcp_url" \
+            -e SERVER_NAME="$server_name" \
+            -e OUTPUT_PATH="/results/k6_summary_run${run_idx}.json" \
+            grafana/k6:latest run /scripts/benchmark.js \
+            2>&1 | tee "$server_results/k6_console_run${run_idx}.log"
+    done
+
+    # Pick the median run by RPS and symlink as the canonical k6_summary.json
+    python3 -c "
+import json, sys, os, math
+
+results_dir = sys.argv[1]
+n = int(sys.argv[2])
+
+runs = []
+for i in range(1, n + 1):
+    path = os.path.join(results_dir, f'k6_summary_run{i}.json')
+    with open(path) as f:
+        data = json.load(f)
+    rps = data['metrics']['http_reqs']['values']['rate']
+    runs.append((rps, i, path))
+
+runs.sort(key=lambda x: x[0])
+median_idx = len(runs) // 2
+median_rps, median_run, median_path = runs[median_idx]
+
+# Compute CV% (coefficient of variation)
+rps_values = [r[0] for r in runs]
+mean_rps = sum(rps_values) / len(rps_values)
+if mean_rps > 0:
+    variance = sum((v - mean_rps) ** 2 for v in rps_values) / len(rps_values)
+    std_dev = math.sqrt(variance)
+    cv_pct = (std_dev / mean_rps) * 100
+else:
+    cv_pct = 0.0
+
+# Copy median run as canonical summary
+import shutil
+canonical = os.path.join(results_dir, 'k6_summary.json')
+shutil.copy2(median_path, canonical)
+
+# Write CV% and per-run RPS to a stats file
+stats = {
+    'runs': [{'run': r[1], 'rps': r[0]} for r in sorted(runs, key=lambda x: x[1])],
+    'median_run': median_run,
+    'median_rps': median_rps,
+    'mean_rps': mean_rps,
+    'cv_pct': round(cv_pct, 2)
+}
+with open(os.path.join(results_dir, 'k6_multi_run_stats.json'), 'w') as f:
+    json.dump(stats, f, indent=2)
+
+print(f'Median run: {median_run} (RPS={median_rps:.2f}), CV%={cv_pct:.2f}%')
+" "$server_results" "$K6_RUNS"
 
     info "[$server_name] Stop stats collector"
     if kill -0 "$stats_pid" 2>/dev/null; then
@@ -281,7 +342,7 @@ for server_name in "${selected_servers[@]}"; do
     fi
     stats_pid=""
 
-    ok "[$server_name] Benchmark complete"
+    ok "[$server_name] Benchmark complete ($K6_RUNS runs, median selected)"
 done
 
 info "Step 5/6: Generate comparison summary"
@@ -290,13 +351,14 @@ comparison_file="$RESULTS_DIR/comparison.txt"
 {
     printf "Benchmark comparison\n"
     printf "Results: %s\n\n" "$RESULTS_DIR"
-    printf "%-10s %-12s %-10s %-12s %-12s %-12s %-12s\n" "Server" "Requests" "RPS" "p50(ms)" "p95(ms)" "p99(ms)" "ErrorRate"
-    printf "%-10s %-12s %-10s %-12s %-12s %-12s %-12s\n" "----------" "------------" "----------" "------------" "------------" "------------" "------------"
+    printf "%-10s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" "Server" "Requests" "RPS" "CV%" "p50(ms)" "p95(ms)" "p99(ms)" "ErrorRate"
+    printf "%-10s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" "----------" "------------" "----------" "--------" "------------" "------------" "------------" "------------"
 
     for server_name in "${selected_servers[@]}"; do
         summary="$RESULTS_DIR/$server_name/k6_summary.json"
+        multi_stats="$RESULTS_DIR/$server_name/k6_multi_run_stats.json"
         if [[ ! -f "$summary" ]]; then
-            printf "%-10s %-12s %-10s %-12s %-12s %-12s %-12s\n" "$server_name" "N/A" "N/A" "N/A" "N/A" "N/A" "N/A"
+            printf "%-10s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" "$server_name" "N/A" "N/A" "N/A" "N/A" "N/A" "N/A" "N/A"
             continue
         fi
 
@@ -307,8 +369,13 @@ comparison_file="$RESULTS_DIR/comparison.txt"
         p99="$(jq -r '.metrics.http_req_duration.values["p(99)"] // 0' "$summary")"
         err_rate="$(jq -r '.metrics.http_req_failed.values.rate // 0' "$summary")"
 
-        printf "%-10s %-12s %-10.2f %-12.2f %-12.2f %-12.2f %-12.4f\n" \
-            "$server_name" "$requests" "$rps" "$p50" "$p95" "$p99" "$err_rate"
+        cv_pct="N/A"
+        if [[ -f "$multi_stats" ]]; then
+            cv_pct="$(jq -r '.cv_pct' "$multi_stats")"
+        fi
+
+        printf "%-10s %-12s %-10.2f %-8s %-12.2f %-12.2f %-12.2f %-12.4f\n" \
+            "$server_name" "$requests" "$rps" "${cv_pct}%" "$p50" "$p95" "$p99" "$err_rate"
     done
 } | tee "$comparison_file"
 

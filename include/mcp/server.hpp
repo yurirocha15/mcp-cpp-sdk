@@ -439,6 +439,12 @@ class Server {
         co_await session_->transport->write_message(json_msg.dump());
     }
 
+    using SubscriptionHandler = std::function<void(const std::string& uri)>;
+
+    void on_subscribe(SubscriptionHandler handler) { subscribe_handler_ = std::move(handler); }
+
+    void on_unsubscribe(SubscriptionHandler handler) { unsubscribe_handler_ = std::move(handler); }
+
     [[nodiscard]] LoggingLevel get_log_level() const {
         return log_level_.load(std::memory_order_relaxed);
     }
@@ -621,7 +627,8 @@ class Server {
         auto has_output_schema =
             has_tool_output_schema(request.params.value().at("name").get<std::string>());
         if (has_output_schema) {
-            result["structuredContent"] = result;
+            nlohmann::json structured = result;
+            result["structuredContent"] = std::move(structured);
         }
 
         session_->in_flight.erase(request_id_str);
@@ -630,9 +637,14 @@ class Server {
     }
 
     Task<void> handle_tools_list(const JSONRPCRequest& request) {
-        ListToolsResult result;
+        auto page = paginate(tools_.size(), request);
+        if (!page) {
+            co_await send_error(request.id, INVALID_PARAMS, "Invalid pagination cursor");
+            co_return;
+        }
 
-        auto [begin, end, next_cursor] = paginate(tools_.size(), request);
+        ListToolsResult result;
+        auto [begin, end, next_cursor] = *page;
         result.tools.assign(tools_.begin() + static_cast<std::ptrdiff_t>(begin),
                             tools_.begin() + static_cast<std::ptrdiff_t>(end));
         result.nextCursor = std::move(next_cursor);
@@ -642,9 +654,14 @@ class Server {
     }
 
     Task<void> handle_resources_list(const JSONRPCRequest& request) {
-        ListResourcesResult result;
+        auto page = paginate(resources_.size(), request);
+        if (!page) {
+            co_await send_error(request.id, INVALID_PARAMS, "Invalid pagination cursor");
+            co_return;
+        }
 
-        auto [begin, end, next_cursor] = paginate(resources_.size(), request);
+        ListResourcesResult result;
+        auto [begin, end, next_cursor] = *page;
         result.resources.assign(resources_.begin() + static_cast<std::ptrdiff_t>(begin),
                                 resources_.begin() + static_cast<std::ptrdiff_t>(end));
         result.nextCursor = std::move(next_cursor);
@@ -670,9 +687,14 @@ class Server {
     }
 
     Task<void> handle_resource_templates_list(const JSONRPCRequest& request) {
-        ListResourceTemplatesResult result;
+        auto page = paginate(resource_templates_.size(), request);
+        if (!page) {
+            co_await send_error(request.id, INVALID_PARAMS, "Invalid pagination cursor");
+            co_return;
+        }
 
-        auto [begin, end, next_cursor] = paginate(resource_templates_.size(), request);
+        ListResourceTemplatesResult result;
+        auto [begin, end, next_cursor] = *page;
         result.resourceTemplates.assign(
             resource_templates_.begin() + static_cast<std::ptrdiff_t>(begin),
             resource_templates_.begin() + static_cast<std::ptrdiff_t>(end));
@@ -686,18 +708,29 @@ class Server {
         auto params = request.params.value().get<ResourceSubscribeParams>();
         session_->subscriptions[params.uri] = true;
         co_await send_result(request.id, nlohmann::json::object());
+        if (subscribe_handler_) {
+            subscribe_handler_(params.uri);
+        }
     }
 
     Task<void> handle_unsubscribe(const JSONRPCRequest& request) {
         auto params = request.params.value().get<ResourceUnsubscribeParams>();
         session_->subscriptions.erase(params.uri);
         co_await send_result(request.id, nlohmann::json::object());
+        if (unsubscribe_handler_) {
+            unsubscribe_handler_(params.uri);
+        }
     }
 
     Task<void> handle_prompts_list(const JSONRPCRequest& request) {
-        ListPromptsResult result;
+        auto page = paginate(prompts_.size(), request);
+        if (!page) {
+            co_await send_error(request.id, INVALID_PARAMS, "Invalid pagination cursor");
+            co_return;
+        }
 
-        auto [begin, end, next_cursor] = paginate(prompts_.size(), request);
+        ListPromptsResult result;
+        auto [begin, end, next_cursor] = *page;
         result.prompts.assign(prompts_.begin() + static_cast<std::ptrdiff_t>(begin),
                               prompts_.begin() + static_cast<std::ptrdiff_t>(end));
         result.nextCursor = std::move(next_cursor);
@@ -794,9 +827,9 @@ class Server {
         std::optional<std::string> next_cursor;
     };
 
-    PaginationSlice paginate(std::size_t total, const JSONRPCRequest& request) {
+    std::optional<PaginationSlice> paginate(std::size_t total, const JSONRPCRequest& request) {
         if (page_size_ == 0 || total == 0) {
-            return {0, total, std::nullopt};
+            return PaginationSlice{0, total, std::nullopt};
         }
 
         std::size_t offset = 0;
@@ -805,7 +838,7 @@ class Server {
             try {
                 offset = std::stoull(cursor_str);
             } catch (...) {
-                offset = 0;
+                return std::nullopt;
             }
         }
 
@@ -819,7 +852,7 @@ class Server {
             next_cursor = std::to_string(end);
         }
 
-        return {offset, end, std::move(next_cursor)};
+        return PaginationSlice{offset, end, std::move(next_cursor)};
     }
 
     [[nodiscard]] bool has_tool_output_schema(const std::string& name) const {
@@ -893,6 +926,9 @@ class Server {
 
     /// @brief Registered middleware functions in order of registration.
     std::vector<Middleware> middlewares_;
+
+    SubscriptionHandler subscribe_handler_;
+    SubscriptionHandler unsubscribe_handler_;
 };
 
 }  // namespace mcp

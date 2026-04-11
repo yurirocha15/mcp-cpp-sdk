@@ -351,8 +351,7 @@ TEST_F(SamplingTest, SamplingResponseWithToolResultContent) {
             received_tool_use_id = tool_result.toolUseId;
             received_is_error = tool_result.isError.value_or(true);
             if (!tool_result.content.empty()) {
-                auto& inner_text = std::get<mcp::TextContent>(tool_result.content[0]);
-                received_content_text = inner_text.text;
+                received_content_text = tool_result.content[0]["text"].get<std::string>();
             }
 
             mcp::CallToolResult result;
@@ -373,7 +372,7 @@ TEST_F(SamplingTest, SamplingResponseWithToolResultContent) {
             trc.toolUseId = "call-456";
             mcp::TextContent inner_tc;
             inner_tc.text = "Weather in Tokyo: 22°C";
-            trc.content.push_back(std::move(inner_tc));
+            trc.content.push_back(nlohmann::json(inner_tc));
             trc.isError = false;
             sample_result.content = trc;
             sample_result.model = "test-model";
@@ -440,7 +439,7 @@ TEST_F(SamplingTest, ToolResultContentRoundtripSerialization) {
     original.toolUseId = "call-789";
     mcp::TextContent inner;
     inner.text = "result text";
-    original.content.push_back(std::move(inner));
+    original.content.push_back(nlohmann::json(inner));
     original.isError = false;
 
     nlohmann::json serialized = original;
@@ -459,8 +458,8 @@ TEST_F(SamplingTest, ToolResultContentRoundtripSerialization) {
     EXPECT_EQ(recovered.toolUseId, "call-789");
     EXPECT_FALSE(recovered.isError.value());
     ASSERT_EQ(recovered.content.size(), 1);
-    auto& recovered_text = std::get<mcp::TextContent>(recovered.content[0]);
-    EXPECT_EQ(recovered_text.text, "result text");
+    EXPECT_EQ(recovered.content[0]["type"], "text");
+    EXPECT_EQ(recovered.content[0]["text"], "result text");
 }
 
 TEST_F(SamplingTest, SampleLlmErrorResponseThrows) {

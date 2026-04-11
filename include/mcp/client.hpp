@@ -86,6 +86,8 @@ class Client {
         auto result_json = co_await send_request("initialize", std::move(params));
         auto result = result_json.get<InitializeResult>();
 
+        server_capabilities_ = result.capabilities;
+
         co_await send_notification("notifications/initialized", std::nullopt);
 
         co_return result;
@@ -352,6 +354,15 @@ class Client {
         notification_handlers_[std::move(method)] = std::move(callback);
     }
 
+    using ProgressCallback = std::function<void(const ProgressNotificationParams&)>;
+
+    void on_progress(ProgressCallback callback) {
+        on_notification("notifications/progress",
+                        [cb = std::move(callback)](const nlohmann::json& params) {
+                            cb(params.get<ProgressNotificationParams>());
+                        });
+    }
+
     /**
      * @brief Register a handler for incoming requests from the server (reverse RPC).
      *
@@ -406,7 +417,11 @@ class Client {
             });
         }
 
-        if (notify && transport_) {
+        bool server_supports_roots_changed =
+            server_capabilities_.resources.has_value() &&
+            server_capabilities_.resources->listChanged.value_or(false);
+
+        if (notify && server_supports_roots_changed && transport_) {
             boost::asio::co_spawn(
                 strand_,
                 [this]() -> Task<void> {
@@ -499,6 +514,29 @@ class Client {
 
     void dispatch_notification(const nlohmann::json& json_msg) {
         auto method = json_msg.at("method").get<std::string>();
+
+        if (method == "notifications/cancelled") {
+            if (json_msg.contains("params")) {
+                auto params = json_msg.at("params").get<CancelledNotificationParams>();
+                auto id_str = std::visit(
+                    [](auto&& val) -> std::string {
+                        if constexpr (std::is_same_v<std::decay_t<decltype(val)>, std::string>) {
+                            return val;
+                        } else {
+                            return std::to_string(val);
+                        }
+                    },
+                    params.requestId);
+
+                auto it = pending_requests_.find(id_str);
+                if (it != pending_requests_.end()) {
+                    it->second.error = Error{-32800, "Request cancelled by server"};
+                    it->second.timer->cancel();
+                }
+            }
+            return;
+        }
+
         auto it = notification_handlers_.find(method);
         if (it != notification_handlers_.end()) {
             auto params = json_msg.contains("params") ? json_msg.at("params") : nlohmann::json{};
@@ -562,6 +600,7 @@ class Client {
     std::map<std::string, NotificationCallback, std::less<>> notification_handlers_;
     std::map<std::string, RequestHandler, std::less<>> request_handlers_;
     std::vector<Root> roots_;
+    ServerCapabilities server_capabilities_;
 };
 
 }  // namespace mcp

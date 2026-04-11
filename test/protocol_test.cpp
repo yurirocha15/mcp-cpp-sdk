@@ -507,7 +507,7 @@ TEST(ProtocolTest, ToolUseContentSerialization) {
 TEST(ProtocolTest, ToolResultContentSerialization) {
     mcp::ToolResultContent content;
     content.toolUseId = "call_123";
-    content.content.emplace_back(mcp::TextContent{.text = "72°F, sunny"});
+    content.content.push_back(nlohmann::json(mcp::TextContent{.text = "72°F, sunny"}));
     content.isError = false;
 
     nlohmann::json j = content;
@@ -521,8 +521,8 @@ TEST(ProtocolTest, ToolResultContentSerialization) {
     EXPECT_EQ(deserialized.type, "tool_result");
     EXPECT_EQ(deserialized.toolUseId, "call_123");
     EXPECT_EQ(deserialized.content.size(), 1);
-    EXPECT_TRUE(std::holds_alternative<mcp::TextContent>(deserialized.content[0]));
-    EXPECT_EQ(std::get<mcp::TextContent>(deserialized.content[0]).text, "72°F, sunny");
+    EXPECT_EQ(deserialized.content[0]["type"], "text");
+    EXPECT_EQ(deserialized.content[0]["text"], "72°F, sunny");
     EXPECT_EQ(deserialized.isError, false);
 }
 
@@ -553,7 +553,7 @@ TEST(ProtocolTest, SamplingMessageContentBlockSerialization) {
     // ToolResultContent block
     mcp::ToolResultContent tool_result;
     tool_result.toolUseId = "call_1";
-    tool_result.content.emplace_back(mcp::TextContent{.text = "42"});
+    tool_result.content.push_back(nlohmann::json(mcp::TextContent{.text = "42"}));
 
     mcp::SamplingMessageContentBlock result_block = tool_result;
     nlohmann::json j_result = result_block;

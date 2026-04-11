@@ -526,6 +526,7 @@ class OAuthDiscoveryClient {
                 };
                 co_return metadata;
             } catch (...) {
+                // Expected: trying next well-known URL fallback
                 continue;
             }
         }
@@ -576,6 +577,7 @@ class OAuthDiscoveryClient {
                 };
                 co_return metadata;
             } catch (...) {
+                // Expected: trying next well-known URL fallback
                 continue;
             }
         }
@@ -671,10 +673,28 @@ class OAuthClientTransport final : public ITransport {
           config_(std::move(config)),
           server_url_(std::move(server_url)) {}
 
-    Task<std::string> read_message() override { co_return co_await inner_->read_message(); }
+    Task<std::string> read_message() override {
+        auto raw = co_await inner_->read_message();
+
+        auto json_msg = nlohmann::json::parse(raw, nullptr, false);
+        if (!json_msg.is_discarded() && json_msg.contains("error")) {
+            auto code = json_msg["error"].value("code", 0);
+            if (code == -32001 || code == -32000) {
+                bool refreshed = co_await try_refresh_token();
+                if (refreshed && !last_written_message_.empty()) {
+                    co_await inner_->write_message(inject_token(last_written_message_));
+                    co_return co_await inner_->read_message();
+                }
+            }
+        }
+
+        co_return raw;
+    }
 
     Task<void> write_message(std::string_view message) override {
-        co_await inner_->write_message(message);
+        auto injected = inject_token(message);
+        last_written_message_ = std::string(message);
+        co_await inner_->write_message(injected);
     }
 
     void close() override { inner_->close(); }
@@ -708,11 +728,31 @@ class OAuthClientTransport final : public ITransport {
     void store_token(TokenResponse token) { token_store_->store(server_url_, std::move(token)); }
 
    private:
+    std::string inject_token(std::string_view message) const {
+        auto token = get_access_token();
+        if (token.empty()) {
+            return std::string(message);
+        }
+        auto json_msg = nlohmann::json::parse(message, nullptr, false);
+        if (json_msg.is_discarded()) {
+            return std::string(message);
+        }
+        if (!json_msg.contains("params")) {
+            json_msg["params"] = nlohmann::json::object();
+        }
+        if (!json_msg["params"].contains("_meta")) {
+            json_msg["params"]["_meta"] = nlohmann::json::object();
+        }
+        json_msg["params"]["_meta"]["auth_token"] = token;
+        return json_msg.dump();
+    }
+
     std::unique_ptr<ITransport> inner_;
     std::shared_ptr<TokenStore> token_store_;
     std::shared_ptr<OAuthHttpClient> oauth_client_;
     OAuthConfig config_;
     std::string server_url_;
+    std::string last_written_message_;
 };
 
 }  // namespace mcp::auth
