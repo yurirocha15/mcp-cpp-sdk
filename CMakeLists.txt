@@ -11,14 +11,13 @@ endif()
 find_package(Boost REQUIRED COMPONENTS headers system)
 find_package(nlohmann_json REQUIRED)
 find_package(OpenSSL REQUIRED)
-find_package(GTest REQUIRED)
-
 add_library(mcp-cpp-sdk STATIC)
 target_link_libraries(
   mcp-cpp-sdk PUBLIC Boost::headers Boost::system nlohmann_json::nlohmann_json
                      OpenSSL::Crypto)
 target_include_directories(mcp-cpp-sdk PUBLIC include)
 target_sources(mcp-cpp-sdk PRIVATE src/version.cpp)
+
 # Documentation target
 find_package(Doxygen QUIET)
 if(DOXYGEN_FOUND)
@@ -34,44 +33,48 @@ if(DOXYGEN_FOUND)
 endif()
 
 # Build Tests
-enable_testing()
-set(TEST_SRCS
-    test/auth_integration_test.cpp
-    test/auth_oauth_test.cpp
-    test/client_core_test.cpp
-    test/client_features_test.cpp
-    test/client_notifications_test.cpp
-    test/concepts_test.cpp
-    test/core_test.cpp
-    test/protocol_test.cpp
-    test/roots_test.cpp
-    test/sampling_test.cpp
-    test/server_core_test.cpp
-    test/server_cancellation_test.cpp
-    test/server_elicitation_test.cpp
-    test/server_handlers_test.cpp
-    test/server_logging_test.cpp
-    test/server_middleware_test.cpp
-    test/server_progress_test.cpp
-    test/server_subscriptions_test.cpp
-    test/transport_test.cpp
-    test/transport_stdio_test.cpp
-    test/transport_ws_test.cpp
-    test/transport_http_test.cpp
-    test/transport_http_resumability_test.cpp
-    test/transport_http_session_manager_test.cpp
-    test/transport_memory_test.cpp)
-add_executable(mcp-sdk-tests ${TEST_SRCS})
-target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
+option(BUILD_TESTING "Build tests" ON)
+if(BUILD_TESTING)
+  find_package(GTest REQUIRED)
+  enable_testing()
+  set(TEST_SRCS
+      test/auth_integration_test.cpp
+      test/auth_oauth_test.cpp
+      test/client_core_test.cpp
+      test/client_features_test.cpp
+      test/client_notifications_test.cpp
+      test/concepts_test.cpp
+      test/core_test.cpp
+      test/protocol_test.cpp
+      test/roots_test.cpp
+      test/sampling_test.cpp
+      test/server_core_test.cpp
+      test/server_cancellation_test.cpp
+      test/server_elicitation_test.cpp
+      test/server_handlers_test.cpp
+      test/server_logging_test.cpp
+      test/server_middleware_test.cpp
+      test/server_progress_test.cpp
+      test/server_subscriptions_test.cpp
+      test/transport_test.cpp
+      test/transport_stdio_test.cpp
+      test/transport_ws_test.cpp
+      test/transport_http_test.cpp
+      test/transport_http_resumability_test.cpp
+      test/transport_http_session_manager_test.cpp
+      test/transport_memory_test.cpp)
+  add_executable(mcp-sdk-tests ${TEST_SRCS})
+  target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
 
-include(GoogleTest)
-gtest_discover_tests(mcp-sdk-tests)
+  include(GoogleTest)
+  gtest_discover_tests(mcp-sdk-tests)
 
-option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
-if(ENABLE_COVERAGE)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(mcp-sdk-tests PRIVATE --coverage -O0 -g)
-    target_link_options(mcp-sdk-tests PRIVATE --coverage)
+  option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
+  if(ENABLE_COVERAGE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+      target_compile_options(mcp-sdk-tests PRIVATE --coverage -O0 -g)
+      target_link_options(mcp-sdk-tests PRIVATE --coverage)
+    endif()
   endif()
 endif()
 
