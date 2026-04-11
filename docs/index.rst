@@ -13,10 +13,11 @@ Features
 
 * **Header-only**: Easy integration, no separate compilation required
 * **Modern C++20**: Leverages coroutines, concepts, and ranges
-* **Flexible transports**: stdio, WebSocket, and custom transport support
+* **Flexible transports**: stdio, WebSocket, Streamable HTTP, and custom transport support
 * **Type-safe**: Strong typing with JSON serialization via nlohmann_json
 * **Async-first**: Built on Boost.Asio for high-performance I/O
-* **Full MCP support**: Tools, resources, prompts, sampling, and notifications
+* **Full MCP support**: Tools, resources, prompts, sampling, roots, progress, and notifications
+* **Authentication-ready**: OAuth 2.1 helpers and authenticated client transport support
 
 Quick Links
 -----------

@@ -10,7 +10,8 @@ A modern C++20 implementation of the Model Context Protocol (MCP), enabling seam
 
 - **MCP 2025-11-25 Protocol**: Full implementation of the latest Model Context Protocol specification
 - **Triple Transport Support**: Stdio, WebSocket, and Streamable HTTP transports for flexible deployment scenarios
-- **Streamable HTTP**: Streamable HTTP transport (MCP 2025-11-25) for REST-style MCP communication
+- **Streamable HTTP**: Client transport, server transport, and multi-session session manager for MCP over HTTP
+- **OAuth 2.1 Support**: PKCE, token refresh, discovery, and transport wrapping for authenticated MCP clients
 - **Server & Client**: Complete implementations for both server and client roles
 - **Modern C++20**: Leverages coroutines via Boost.Asio for clean asynchronous code
 - **Type-Safe Protocol**: Uses nlohmann/json with strong typing for all MCP messages
@@ -21,8 +22,8 @@ A modern C++20 implementation of the Model Context Protocol (MCP), enabling seam
 ### Prerequisites
 
 - **C++20 Compiler**: GCC 10+, Clang 11+, or MSVC 2019+
-- **CMake**: 3.25 or later
-- **Boost**: 1.82 or later (managed via Conan)
+- **CMake**: 3.20 or later
+- **Boost**: Managed via Conan for source builds
 - **Conan**: 2.x package manager
 - **Python**: 3.8+ (for build scripts)
 
@@ -61,18 +62,44 @@ make docs
 ```cpp
 #include <mcp/server.hpp>
 #include <mcp/transport/stdio.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
+#include <boost/asio/io_context.hpp>
 
-mcp::Task<void> run_server() {
-    auto transport = std::make_unique<mcp::StdioServerTransport>();
-    mcp::Server server(std::move(transport));
+int main() {
+    boost::asio::io_context io_ctx;
 
-    // Register a simple tool
-    server.add_tool("hello", "Greets the user",
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+
+    mcp::Implementation info;
+    info.name = "hello-server";
+    info.version = "1.0.0";
+
+    mcp::Server server(std::move(info), std::move(caps));
+
+    nlohmann::json schema = {
+        {"type", "object"},
+        {"properties", {{"name", {{"type", "string"}}}}},
+        {"required", nlohmann::json::array({"name"})},
+    };
+
+    server.add_tool<nlohmann::json, nlohmann::json>(
+        "hello", "Greets the user", std::move(schema),
         [](const nlohmann::json& args) -> mcp::Task<nlohmann::json> {
-            co_return nlohmann::json{{"message", "Hello, World!"}};
+            co_return nlohmann::json{{"message", "Hello, " + args.at("name").get<std::string>() + "!"}};
         });
 
-    co_await server.run();
+    auto transport = std::make_unique<mcp::StdioTransport>(io_ctx.get_executor());
+    boost::asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            co_await server.run(std::move(transport), io_ctx.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx.run();
+    return 0;
 }
 ```
 
@@ -81,20 +108,35 @@ mcp::Task<void> run_server() {
 ```cpp
 #include <mcp/client.hpp>
 #include <mcp/transport/stdio.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
+#include <boost/asio/io_context.hpp>
 
-mcp::Task<void> run_client() {
-    auto transport = std::make_unique<mcp::StdioClientTransport>(
-        "./server", std::vector<std::string>{});
-    mcp::Client client(std::move(transport));
+int main() {
+    boost::asio::io_context io_ctx;
+    auto transport = std::make_unique<mcp::StdioTransport>(io_ctx.get_executor());
+    mcp::Client client(std::move(transport), io_ctx.get_executor());
 
-    // Initialize connection
-    co_await client.initialize({{"name", "my-client"}});
+    boost::asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            mcp::Implementation client_info;
+            client_info.name = "my-client";
+            client_info.version = "1.0.0";
 
-    // List available tools
-    auto tools = co_await client.list_tools();
+            mcp::ClientCapabilities caps;
+            auto init = co_await client.connect(std::move(client_info), std::move(caps));
 
-    // Call a tool
-    auto result = co_await client.call_tool("hello", {});
+            auto tools = co_await client.list_tools();
+            auto result = co_await client.call_tool("hello", nlohmann::json{{"name", "World"}});
+            (void)init;
+            (void)tools;
+            (void)result;
+        },
+        boost::asio::detached);
+
+    io_ctx.run();
+    return 0;
 }
 ```
 
@@ -110,6 +152,8 @@ The SDK is organized into the following headers:
 - **`mcp/transport/websocket.hpp`**: WebSocket transport implementation
 - **`mcp/transport/http_server.hpp`**: Streamable HTTP server transport
 - **`mcp/transport/http_client.hpp`**: Streamable HTTP client transport
+- **`mcp/transport/http_session_manager.hpp`**: Multi-session Streamable HTTP endpoint manager
+- **`mcp/auth/oauth.hpp`**: OAuth 2.1 helpers and authenticated transport wrapper
 - **`mcp/context.hpp`**: Context for handling server-side requests
 - **`mcp/server.hpp`**: MCP server implementation
 - **`mcp/client.hpp`**: MCP client implementation
@@ -149,7 +193,7 @@ make clean        # Clean build artifacts
 ### Running Tests
 
 ```bash
-# Run all 160 tests
+# Run the full test suite
 make test
 
 # Run with verbose output
@@ -187,6 +231,33 @@ Documentation includes:
 - Architecture Overview
 - Examples Walkthrough
 - Contributing Guidelines
+
+## Authentication
+
+The SDK includes OAuth 2.1 support for authenticated MCP clients in
+`mcp/auth/oauth.hpp`.
+
+```cpp
+#include <mcp/auth/oauth.hpp>
+#include <mcp/transport/http_client.hpp>
+
+auto inner = std::make_unique<mcp::HttpClientTransport>(executor, "http://localhost:8080/mcp");
+auto token_store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+auto oauth_http = std::make_shared<mcp::auth::OAuthHttpClient>(executor);
+
+mcp::auth::OAuthConfig config{
+    .client_id = "my-client",
+    .token_endpoint = "https://issuer.example/token",
+    .redirect_uri = "http://localhost/callback",
+};
+
+auto transport = std::make_unique<mcp::auth::OAuthClientTransport>(
+    std::move(inner), token_store, oauth_http, std::move(config),
+    "http://localhost:8080/mcp");
+```
+
+For multi-session HTTP servers, use `mcp/transport/http_session_manager.hpp`.
+The canonical session header name used throughout the docs is `MCP-Session-Id`.
 
 ## Contributing
 

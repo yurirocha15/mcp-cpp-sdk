@@ -10,9 +10,9 @@ Prerequisites
 Before installing mcp-cpp-sdk, ensure you have the following:
 
 * **C++20 compiler**: GCC 10+, Clang 12+, or MSVC 2019+
-* **CMake**: Version 3.15 or higher
-* **Boost**: Version 1.75 or higher (Asio, Beast, JSON)
-* **nlohmann_json**: Version 3.9.0 or higher
+* **CMake**: Version 3.20 or higher
+* **Boost**: Recent version with Asio and Beast support (managed via Conan for source builds)
+* **nlohmann_json**: Installed automatically for source builds via Conan
 * **Conan**: Version 2.0+ (for dependency management)
 
 Installation
@@ -47,7 +47,7 @@ Add mcp-cpp-sdk to your CMakeLists.txt:
    )
    FetchContent_MakeAvailable(mcp-cpp-sdk)
 
-   target_link_libraries(your_target PRIVATE mcp::mcp)
+   target_link_libraries(your_target PRIVATE mcp-cpp-sdk)
 
 Using Git Submodule
 ^^^^^^^^^^^^^^^^^^^
@@ -64,7 +64,7 @@ Then in your CMakeLists.txt:
 .. code-block:: cmake
 
    add_subdirectory(third_party/mcp-cpp-sdk)
-   target_link_libraries(your_target PRIVATE mcp::mcp)
+   target_link_libraries(your_target PRIVATE mcp-cpp-sdk)
 
 Building from Source
 --------------------
@@ -95,6 +95,8 @@ Here's a minimal MCP server that exposes a single "add" tool over stdio:
 
    #include <mcp/server.hpp>
    #include <mcp/transport/stdio.hpp>
+   #include <boost/asio/co_spawn.hpp>
+   #include <boost/asio/detached.hpp>
    #include <boost/asio/io_context.hpp>
 
    int main() {
@@ -128,7 +130,9 @@ Here's a minimal MCP server that exposes a single "add" tool over stdio:
        auto transport = std::make_unique<StdioTransport>(io.get_executor());
        boost::asio::co_spawn(
            io,
-           server.run(std::move(transport)),
+           [&]() -> Task<void> {
+               co_await server.run(std::move(transport), io.get_executor());
+           },
            boost::asio::detached
        );
        io.run();
@@ -143,6 +147,8 @@ Here's a minimal MCP client that connects to a server and calls the "add" tool:
 
    #include <mcp/client.hpp>
    #include <mcp/transport/stdio.hpp>
+   #include <boost/asio/co_spawn.hpp>
+   #include <boost/asio/detached.hpp>
    #include <boost/asio/io_context.hpp>
    #include <iostream>
 
@@ -158,7 +164,7 @@ Here's a minimal MCP client that connects to a server and calls the "add" tool:
            io,
            [&]() -> Task<void> {
                // Connect and initialize
-               ClientInfo info;
+               Implementation info;
                info.name = "math-client";
                info.version = "1.0.0";
                co_await client.connect(std::move(info), {});

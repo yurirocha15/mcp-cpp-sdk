@@ -28,6 +28,7 @@ namespace mcp {
  */
 class WebSocketTransport final : public ITransport {
    public:
+    /// @brief Concrete Boost.Beast WebSocket stream type wrapped by this transport.
     using WsStream = boost::beast::websocket::stream<boost::beast::tcp_stream>;
 
     /**

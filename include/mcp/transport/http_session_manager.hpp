@@ -167,7 +167,7 @@ inline http::response<http::string_body> make_sse_replay_response(
  *
  * @details Manages multiple concurrent MCP sessions over a single HTTP port.
  * Each session is backed by its own Server + MemoryTransport pair. Requests
- * are routed by the `Mcp-Session-Id` header. New sessions are created on
+ * are routed by the `MCP-Session-Id` header. New sessions are created on
  * `initialize` requests that arrive without a session ID.
  *
  * This matches the behavior of Python's StreamableHTTPSessionManager and
@@ -273,6 +273,8 @@ class StreamableHttpSessionManager {
 
     /**
      * @brief Get the number of active sessions.
+     *
+     * @return The number of live MCP sessions currently managed by this endpoint.
      */
     [[nodiscard]] std::size_t session_count() const { return sessions_.size(); }
 
@@ -304,7 +306,7 @@ class StreamableHttpSessionManager {
     /**
      * @brief Start accepting HTTP connections.
      *
-     * @return A task that completes when the accept loop exits.
+     * @return A task that completes when the listener stops accepting connections.
      */
     Task<void> listen() {
         namespace beast = boost::beast;

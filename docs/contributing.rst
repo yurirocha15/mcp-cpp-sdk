@@ -110,12 +110,12 @@ All contributions must include tests. The SDK uses Google Test (GTest).
 Writing Tests
 ^^^^^^^^^^^^^
 
-Place tests in ``tests/`` directory, mirroring the structure of ``include/``:
+Place tests in ``test/`` directory, mirroring the library surface area:
 
 .. code-block:: bash
 
-   include/mcp/server.hpp  →  tests/test_server.cpp
-   include/mcp/client.hpp  →  tests/test_client.cpp
+   include/mcp/server.hpp  →  test/server_core_test.cpp
+   include/mcp/client.hpp  →  test/client_core_test.cpp
 
 Example test structure:
 
@@ -143,11 +143,11 @@ Running Tests
    # Run all tests
    make test
 
-   # Run specific test suite
-   ./build/tests/test_server
+   # Run the full suite with ctest output on failures
+   ctest --preset conan-release --output-on-failure
 
-   # Run with verbose output
-   ./build/tests/test_server --gtest_filter=ServerTest.*
+   # Run the GoogleTest binary directly with a filter
+   ./build/mcp-sdk-tests --gtest_filter=ServerCoreTest.*
 
 Code Coverage
 ^^^^^^^^^^^^^

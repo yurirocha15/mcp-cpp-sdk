@@ -68,7 +68,20 @@ class HttpClientTransport final : public ITransport {
 
     ~HttpClientTransport() override { close(); }
 
+    /**
+     * @brief Get the currently active MCP session identifier.
+     *
+     * @return The session identifier captured from server responses, or an empty string if no session
+     * exists.
+     */
     [[nodiscard]] const std::string& session_id() const { return state_->session_id; }
+
+    /**
+     * @brief Get the most recent SSE event identifier seen from the server.
+     *
+     * @return The last event ID used for resumable HTTP replay, or an empty string if none was
+     * received.
+     */
     [[nodiscard]] const std::string& last_event_id() const { return state_->last_event_id; }
 
     /**

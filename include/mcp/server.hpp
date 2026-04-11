@@ -439,12 +439,28 @@ class Server {
         co_await session_->transport->write_message(json_msg.dump());
     }
 
+    /// @brief Callback invoked when a client subscribes to or unsubscribes from a resource URI.
     using SubscriptionHandler = std::function<void(const std::string& uri)>;
 
+    /**
+     * @brief Register a callback invoked after a successful resource subscription.
+     *
+     * @param handler Callback receiving the subscribed resource URI.
+     */
     void on_subscribe(SubscriptionHandler handler) { subscribe_handler_ = std::move(handler); }
 
+    /**
+     * @brief Register a callback invoked after a successful resource unsubscription.
+     *
+     * @param handler Callback receiving the unsubscribed resource URI.
+     */
     void on_unsubscribe(SubscriptionHandler handler) { unsubscribe_handler_ = std::move(handler); }
 
+    /**
+     * @brief Get the currently active server log level.
+     *
+     * @return The log level used when filtering context log messages.
+     */
     [[nodiscard]] LoggingLevel get_log_level() const {
         return log_level_.load(std::memory_order_relaxed);
     }

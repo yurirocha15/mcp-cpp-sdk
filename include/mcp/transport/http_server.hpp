@@ -119,11 +119,15 @@ class EventStore {
 
     /**
      * @brief Get the number of events currently stored.
+     *
+     * @return The current number of stored events.
      */
     [[nodiscard]] std::size_t size() const { return events_.size(); }
 
     /**
      * @brief Get the maximum capacity of the store.
+     *
+     * @return The maximum number of events retained before eviction.
      */
     [[nodiscard]] std::size_t capacity() const { return capacity_; }
 
@@ -161,6 +165,7 @@ class HttpServerTransport final : public ITransport {
      * @param executor Executor used for asynchronous operations.
      * @param host Local bind address.
      * @param port Local bind port.
+     * @param event_store_capacity Maximum number of replayable SSE events to retain.
      */
     HttpServerTransport(const boost::asio::any_io_executor& executor, std::string host,
                         unsigned short port, std::size_t event_store_capacity = 1024)
@@ -207,6 +212,11 @@ class HttpServerTransport final : public ITransport {
     HttpServerTransport(HttpServerTransport&&) = delete;
     HttpServerTransport& operator=(HttpServerTransport&&) = delete;
 
+    /**
+     * @brief Access the event store used for SSE replay support.
+     *
+     * @return A const reference to the transport's in-memory event store.
+     */
     [[nodiscard]] const EventStore& event_store() const { return event_store_; }
 
     /**

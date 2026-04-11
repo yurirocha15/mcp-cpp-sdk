@@ -103,8 +103,8 @@ Transport Abstraction
 
    class ITransport {
    public:
-       virtual Task<std::string> read() = 0;
-       virtual Task<void> write(std::string message) = 0;
+       virtual Task<std::string> read_message() = 0;
+       virtual Task<void> write_message(std::string_view message) = 0;
        virtual void close() = 0;
    };
 
@@ -112,6 +112,13 @@ Built-in implementations:
 
 * **StdioTransport**: Reads from stdin, writes to stdout (common for AI tools)
 * **WebSocketTransport**: Communicates over WebSocket (Boost.Beast)
+* **HttpClientTransport**: Sends MCP messages to a Streamable HTTP endpoint
+* **HttpServerTransport**: Exposes a single-session Streamable HTTP endpoint
+
+For multi-session HTTP deployments, ``StreamableHttpSessionManager`` owns the
+listener and creates per-session ``Server`` instances backed by in-memory
+transports. The canonical session header name used in the docs is
+``MCP-Session-Id``.
 
 Custom transports can be added by implementing the ``ITransport`` interface.
 
@@ -130,6 +137,7 @@ Context
 * **Logging**: ``log_debug()``, ``log_info()``, ``log_warning()``, ``log_error()``
 * **Reverse RPC**: ``sample_llm()`` for server-to-client sampling requests
 * **Notifications**: Send notifications back to the connected peer
+* **Request utilities**: Progress reporting, roots requests, elicitation, and cancellation state
 
 Context is passed to handlers that declare a ``Context&`` parameter.
 
@@ -198,6 +206,19 @@ Boost.Asio is the de facto standard for async I/O in C++:
 * Well-documented and performant
 
 Alternative considered: ``std::execution`` - not yet standardized or widely available.
+
+Authentication and Authorization
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The SDK includes OAuth 2.1 helpers in ``mcp::auth``:
+
+* ``OAuthHttpClient`` for token and metadata HTTP calls
+* ``OAuthDiscoveryClient`` for protected resource and authorization-server discovery
+* ``OAuthClientTransport`` for injecting Bearer tokens into outgoing MCP requests
+* ``InMemoryTokenStore`` as a simple token persistence implementation
+
+This keeps authentication concerns out of the core client/server types while
+still allowing authenticated transports and middleware-based validation.
 
 Why nlohmann_json?
 ^^^^^^^^^^^^^^^^^^
@@ -271,14 +292,13 @@ The SDK is designed for extension:
 * **Custom transports**: Implement ``ITransport`` (e.g., for HTTP/2)
 * **Custom serialization**: Provide ``to_json``/``from_json`` for your types
 * **Custom executors**: Pass any ``boost::asio::any_io_executor``
-* **Middleware**: Add interceptors by wrapping handlers (future extension)
+* **Middleware**: Intercept handler execution for auth, logging, and request shaping
 
 Future Work
 -----------
 
 Potential future enhancements:
 
-* **Middleware API**: Request/response interceptors for logging, metrics, auth
 * **Connection pooling**: Reuse transports across multiple requests
 * **HTTP/2 transport**: For high-performance network scenarios
 * **std::execution support**: When standardized and available

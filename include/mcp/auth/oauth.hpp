@@ -144,12 +144,21 @@ inline std::string build_form_body(const std::vector<std::pair<std::string, std:
 
 }  // namespace detail
 
+/**
+ * @brief PKCE verifier and challenge values for OAuth authorization flows.
+ */
 struct PkcePair {
-    std::string code_verifier;
-    std::string code_challenge;
-    std::string challenge_method;
+    std::string code_verifier;     ///< High-entropy verifier sent to the token endpoint.
+    std::string code_challenge;    ///< Derived challenge sent to the authorization endpoint.
+    std::string challenge_method;  ///< Challenge method name, typically S256.
 };
 
+/**
+ * @brief Generate a PKCE verifier/challenge pair.
+ *
+ * @param verifier_length Length of the verifier string, between 43 and 128 characters.
+ * @return A PKCE pair suitable for OAuth 2.1 authorization code flows.
+ */
 inline PkcePair generate_pkce_pair(std::size_t verifier_length = 64) {
     if (verifier_length < 43 || verifier_length > 128) {
         throw std::invalid_argument("PKCE verifier length must be 43-128 characters");
@@ -165,14 +174,24 @@ inline PkcePair generate_pkce_pair(std::size_t verifier_length = 64) {
     return pair;
 }
 
+/**
+ * @brief OAuth token response data returned by an authorization server.
+ */
 struct TokenResponse {
-    std::string access_token;
-    std::string token_type;
-    std::optional<std::string> refresh_token;
-    std::optional<int> expires_in;
-    std::optional<std::string> scope;
-    std::chrono::steady_clock::time_point received_at{std::chrono::steady_clock::now()};
+    std::string access_token;                  ///< Access token used for authenticated MCP requests.
+    std::string token_type;                    ///< Token type, typically Bearer.
+    std::optional<std::string> refresh_token;  ///< Optional refresh token for renewal.
+    std::optional<int> expires_in;             ///< Lifetime in seconds reported by the server.
+    std::optional<std::string> scope;          ///< Granted OAuth scope string.
+    std::chrono::steady_clock::time_point received_at{
+        std::chrono::steady_clock::now()};  ///< Local receipt time.
 
+    /**
+     * @brief Determine whether the token should be treated as expired.
+     *
+     * @param margin Safety margin in seconds applied before reported expiry.
+     * @return True when the token is expired or within the safety margin.
+     */
     [[nodiscard]] bool is_expired(int margin = 30) const {
         if (!expires_in.has_value()) {
             return false;
@@ -182,6 +201,12 @@ struct TokenResponse {
     }
 };
 
+/**
+ * @brief Deserialize a token response from JSON.
+ *
+ * @param j JSON token payload.
+ * @param t Token response to populate.
+ */
 inline void from_json(const nlohmann::json& j, TokenResponse& t) {
     j.at("access_token").get_to(t.access_token);
     t.token_type = j.value("token_type", "Bearer");
@@ -197,6 +222,12 @@ inline void from_json(const nlohmann::json& j, TokenResponse& t) {
     t.received_at = std::chrono::steady_clock::now();
 }
 
+/**
+ * @brief Serialize a token response to JSON.
+ *
+ * @param j JSON object to populate.
+ * @param t Token response to serialize.
+ */
 inline void to_json(nlohmann::json& j, const TokenResponse& t) {
     j = nlohmann::json{{"access_token", t.access_token}, {"token_type", t.token_type}};
     if (t.refresh_token) {
@@ -210,21 +241,56 @@ inline void to_json(nlohmann::json& j, const TokenResponse& t) {
     }
 }
 
+/**
+ * @brief Abstract storage interface for OAuth tokens keyed by server URL.
+ */
 class TokenStore {
    public:
     virtual ~TokenStore() = default;
+    /**
+     * @brief Store or replace the token associated with a server URL.
+     *
+     * @param server_url MCP server URL used as the storage key.
+     * @param token Token data to persist.
+     */
     virtual void store(const std::string& server_url, TokenResponse token) = 0;
+    /**
+     * @brief Load the token associated with a server URL.
+     *
+     * @param server_url MCP server URL used as the storage key.
+     * @return The stored token, if present.
+     */
     virtual std::optional<TokenResponse> load(const std::string& server_url) const = 0;
+    /**
+     * @brief Remove the token associated with a server URL.
+     *
+     * @param server_url MCP server URL used as the storage key.
+     */
     virtual void remove(const std::string& server_url) = 0;
 };
 
+/**
+ * @brief Thread-safe in-memory token store implementation.
+ */
 class InMemoryTokenStore : public TokenStore {
    public:
+    /**
+     * @brief Store or replace a token in the in-memory cache.
+     *
+     * @param server_url MCP server URL used as the storage key.
+     * @param token Token data to persist.
+     */
     void store(const std::string& server_url, TokenResponse token) override {
         std::lock_guard lock(mutex_);
         tokens_[server_url] = std::move(token);
     }
 
+    /**
+     * @brief Load a token from the in-memory cache.
+     *
+     * @param server_url MCP server URL used as the storage key.
+     * @return The stored token, if present.
+     */
     std::optional<TokenResponse> load(const std::string& server_url) const override {
         std::lock_guard lock(mutex_);
         auto it = tokens_.find(server_url);
@@ -234,6 +300,11 @@ class InMemoryTokenStore : public TokenStore {
         return it->second;
     }
 
+    /**
+     * @brief Remove a token from the in-memory cache.
+     *
+     * @param server_url MCP server URL used as the storage key.
+     */
     void remove(const std::string& server_url) override {
         std::lock_guard lock(mutex_);
         tokens_.erase(server_url);
@@ -244,22 +315,41 @@ class InMemoryTokenStore : public TokenStore {
     std::unordered_map<std::string, TokenResponse> tokens_;
 };
 
+/**
+ * @brief Configuration for OAuth token exchange and refresh operations.
+ */
 struct OAuthConfig {
-    std::string client_id;
-    std::optional<std::string> client_secret;
-    std::string token_endpoint;
-    std::optional<std::string> authorization_endpoint;
-    std::optional<std::string> revocation_endpoint;
-    std::string redirect_uri;
-    std::optional<std::string> scope;
-    std::optional<std::string> resource;
+    std::string client_id;                              ///< OAuth client identifier.
+    std::optional<std::string> client_secret;           ///< Optional confidential-client secret.
+    std::string token_endpoint;                         ///< Token endpoint URL.
+    std::optional<std::string> authorization_endpoint;  ///< Optional authorization endpoint URL.
+    std::optional<std::string> revocation_endpoint;     ///< Optional revocation endpoint URL.
+    std::string redirect_uri;             ///< Redirect URI used during authorization code flow.
+    std::optional<std::string> scope;     ///< Optional requested scope string.
+    std::optional<std::string> resource;  ///< Optional resource or audience hint.
 };
 
+/**
+ * @brief Minimal HTTP client for OAuth token exchange and metadata retrieval.
+ */
 class OAuthHttpClient {
    public:
+    /**
+     * @brief Construct an OAuth HTTP client.
+     *
+     * @param executor Executor used for asynchronous operations.
+     */
     explicit OAuthHttpClient(const net::any_io_executor& executor)
         : strand_(net::make_strand(executor)) {}
 
+    /**
+     * @brief Exchange an authorization code for an access token.
+     *
+     * @param config OAuth client configuration.
+     * @param code Authorization code obtained from the authorization server.
+     * @param code_verifier PKCE verifier associated with the original request.
+     * @return A task resolving to the parsed token response.
+     */
     Task<TokenResponse> exchange_code(const OAuthConfig& config, const std::string& code,
                                       const std::string& code_verifier) {
         std::vector<std::pair<std::string, std::string>> params = {
@@ -278,6 +368,13 @@ class OAuthHttpClient {
         co_return co_await post_token_request(config.token_endpoint, params);
     }
 
+    /**
+     * @brief Refresh an access token using a refresh token.
+     *
+     * @param config OAuth client configuration.
+     * @param refresh_token Refresh token issued by the authorization server.
+     * @return A task resolving to the parsed token response.
+     */
     Task<TokenResponse> refresh_token(const OAuthConfig& config, const std::string& refresh_token) {
         std::vector<std::pair<std::string, std::string>> params = {
             {"grant_type", "refresh_token"},
@@ -295,6 +392,12 @@ class OAuthHttpClient {
         co_return co_await post_token_request(config.token_endpoint, params);
     }
 
+    /**
+     * @brief Fetch a JSON document from an OAuth discovery endpoint.
+     *
+     * @param url HTTP URL to fetch.
+     * @return A task resolving to the parsed JSON body.
+     */
     Task<nlohmann::json> get_json(const std::string& url) {
         auto parsed = parse_url(url);
 
@@ -413,13 +516,22 @@ class OAuthHttpClient {
     net::strand<net::any_io_executor> strand_;
 };
 
+/**
+ * @brief Metadata exposed by an OAuth protected resource.
+ */
 struct ProtectedResourceMetadata {
-    std::string resource;
-    std::vector<std::string> authorization_servers;
-    std::optional<std::vector<std::string>> scopes_supported;
-    nlohmann::json raw;
+    std::string resource;                            ///< Protected resource identifier.
+    std::vector<std::string> authorization_servers;  ///< Authorization servers that can issue tokens.
+    std::optional<std::vector<std::string>> scopes_supported;  ///< Optional supported scopes.
+    nlohmann::json raw;                                        ///< Raw source document.
 };
 
+/**
+ * @brief Deserialize protected-resource metadata from JSON.
+ *
+ * @param j JSON metadata payload.
+ * @param m Metadata structure to populate.
+ */
 inline void from_json(const nlohmann::json& j, ProtectedResourceMetadata& m) {
     m.raw = j;
     if (j.contains("resource")) {
@@ -433,19 +545,30 @@ inline void from_json(const nlohmann::json& j, ProtectedResourceMetadata& m) {
     }
 }
 
+/**
+ * @brief Metadata exposed by an OAuth authorization server.
+ */
 struct AuthServerMetadata {
-    std::string issuer;
-    std::string authorization_endpoint;
-    std::string token_endpoint;
-    std::optional<std::string> revocation_endpoint;
-    std::optional<std::string> registration_endpoint;
-    std::optional<std::vector<std::string>> scopes_supported;
-    std::optional<std::vector<std::string>> response_types_supported;
-    std::optional<std::vector<std::string>> grant_types_supported;
-    std::optional<std::vector<std::string>> code_challenge_methods_supported;
-    nlohmann::json raw;
+    std::string issuer;                                ///< Authorization server issuer URL.
+    std::string authorization_endpoint;                ///< Authorization endpoint URL.
+    std::string token_endpoint;                        ///< Token endpoint URL.
+    std::optional<std::string> revocation_endpoint;    ///< Optional revocation endpoint URL.
+    std::optional<std::string> registration_endpoint;  ///< Optional dynamic registration endpoint URL.
+    std::optional<std::vector<std::string>> scopes_supported;  ///< Optional supported scopes.
+    std::optional<std::vector<std::string>>
+        response_types_supported;  ///< Optional supported response types.
+    std::optional<std::vector<std::string>> grant_types_supported;  ///< Optional supported grant types.
+    std::optional<std::vector<std::string>>
+        code_challenge_methods_supported;  ///< Optional PKCE methods.
+    nlohmann::json raw;                    ///< Raw source document.
 };
 
+/**
+ * @brief Deserialize authorization-server metadata from JSON.
+ *
+ * @param j JSON metadata payload.
+ * @param m Metadata structure to populate.
+ */
 inline void from_json(const nlohmann::json& j, AuthServerMetadata& m) {
     m.raw = j;
     if (j.contains("issuer")) {
@@ -486,12 +609,27 @@ struct CachedEntry {
     [[nodiscard]] bool is_expired() const { return std::chrono::steady_clock::now() >= expires_at; }
 };
 
+/**
+ * @brief Client for OAuth protected-resource and authorization-server discovery.
+ */
 class OAuthDiscoveryClient {
    public:
+    /**
+     * @brief Construct an OAuth discovery client.
+     *
+     * @param http_client HTTP helper used to fetch discovery documents.
+     * @param cache_ttl Time-to-live for cached discovery responses.
+     */
     explicit OAuthDiscoveryClient(std::shared_ptr<OAuthHttpClient> http_client,
                                   std::chrono::seconds cache_ttl = std::chrono::seconds(300))
         : http_client_(std::move(http_client)), cache_ttl_(cache_ttl) {}
 
+    /**
+     * @brief Discover metadata for a protected resource.
+     *
+     * @param resource_url Resource URL whose metadata should be resolved.
+     * @return A task resolving to the discovered protected-resource metadata.
+     */
     Task<ProtectedResourceMetadata> discover_protected_resource(const std::string& resource_url) {
         {
             std::lock_guard lock(cache_mutex_);
@@ -534,6 +672,12 @@ class OAuthDiscoveryClient {
         throw std::runtime_error("Failed to discover protected resource metadata for " + resource_url);
     }
 
+    /**
+     * @brief Discover metadata for an authorization server.
+     *
+     * @param issuer_url Issuer URL or base URL of the authorization server.
+     * @return A task resolving to the discovered authorization-server metadata.
+     */
     Task<AuthServerMetadata> discover_auth_server(const std::string& issuer_url) {
         {
             std::lock_guard lock(cache_mutex_);
@@ -585,6 +729,9 @@ class OAuthDiscoveryClient {
         throw std::runtime_error("Failed to discover authorization server metadata for " + issuer_url);
     }
 
+    /**
+     * @brief Clear all cached discovery metadata.
+     */
     void clear_cache() {
         std::lock_guard lock(cache_mutex_);
         resource_cache_.clear();
@@ -626,8 +773,15 @@ class OAuthDiscoveryClient {
     std::unordered_map<std::string, CachedEntry<AuthServerMetadata>> auth_cache_;
 };
 
+/// @brief Callback used to validate a bearer token extracted from request metadata.
 using TokenValidator = std::function<Task<bool>(const std::string& token)>;
 
+/**
+ * @brief Create middleware that validates bearer tokens in request metadata.
+ *
+ * @param validator Async callback that returns true when the token is accepted.
+ * @return Middleware enforcing presence and validity of `_meta.auth_token`.
+ */
 inline Middleware make_auth_middleware(TokenValidator validator) {
     return [validator = std::move(validator)](mcp::Context& ctx, const nlohmann::json& params,
                                               TypeErasedHandler next) -> Task<nlohmann::json> {
@@ -653,6 +807,12 @@ inline Middleware make_auth_middleware(TokenValidator validator) {
     };
 }
 
+/**
+ * @brief Extract a bearer token from an Authorization header value.
+ *
+ * @param auth_header_value Header value to parse.
+ * @return The token value without the `Bearer ` prefix, or an empty string on mismatch.
+ */
 inline std::string extract_bearer_token(std::string_view auth_header_value) {
     constexpr std::string_view prefix = "Bearer ";
     if (auth_header_value.size() > prefix.size() &&
@@ -662,8 +822,20 @@ inline std::string extract_bearer_token(std::string_view auth_header_value) {
     return {};
 }
 
+/**
+ * @brief Transport wrapper that injects and refreshes OAuth bearer tokens.
+ */
 class OAuthClientTransport final : public ITransport {
    public:
+    /**
+     * @brief Construct an authenticated transport wrapper.
+     *
+     * @param inner Underlying transport used for MCP message exchange.
+     * @param token_store Token storage keyed by server URL.
+     * @param oauth_client HTTP helper used for token refresh.
+     * @param config OAuth configuration for refresh operations.
+     * @param server_url MCP server URL used as the token-store key.
+     */
     OAuthClientTransport(std::unique_ptr<ITransport> inner, std::shared_ptr<TokenStore> token_store,
                          std::shared_ptr<OAuthHttpClient> oauth_client, OAuthConfig config,
                          std::string server_url)
@@ -673,6 +845,11 @@ class OAuthClientTransport final : public ITransport {
           config_(std::move(config)),
           server_url_(std::move(server_url)) {}
 
+    /**
+     * @brief Read a message from the inner transport.
+     *
+     * @return A task resolving to the next serialized MCP message.
+     */
     Task<std::string> read_message() override {
         auto raw = co_await inner_->read_message();
 
@@ -691,14 +868,28 @@ class OAuthClientTransport final : public ITransport {
         co_return raw;
     }
 
+    /**
+     * @brief Inject the current bearer token into an outgoing MCP message.
+     *
+     * @param message Serialized JSON-RPC request or notification.
+     * @return A task that completes once the wrapped transport accepts the message.
+     */
     Task<void> write_message(std::string_view message) override {
         auto injected = inject_token(message);
         last_written_message_ = std::string(message);
         co_await inner_->write_message(injected);
     }
 
+    /**
+     * @brief Close the wrapped transport.
+     */
     void close() override { inner_->close(); }
 
+    /**
+     * @brief Load the currently stored access token for the configured server.
+     *
+     * @return The stored access token, or an empty string when none is available.
+     */
     [[nodiscard]] std::string get_access_token() const {
         auto token = token_store_->load(server_url_);
         if (token) {
@@ -707,6 +898,11 @@ class OAuthClientTransport final : public ITransport {
         return {};
     }
 
+    /**
+     * @brief Attempt to refresh the stored access token.
+     *
+     * @return A task resolving to true when refresh succeeds.
+     */
     Task<bool> try_refresh_token() {
         auto stored = token_store_->load(server_url_);
         if (!stored || !stored->refresh_token) {
@@ -725,6 +921,11 @@ class OAuthClientTransport final : public ITransport {
         }
     }
 
+    /**
+     * @brief Persist a token for future request injection.
+     *
+     * @param token Token data to store.
+     */
     void store_token(TokenResponse token) { token_store_->store(server_url_, std::move(token)); }
 
    private:

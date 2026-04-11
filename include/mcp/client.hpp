@@ -153,6 +153,7 @@ class Client {
      *
      * @param method The notification method name.
      * @param params Optional parameters for the notification.
+     * @return A task that completes when the notification has been written to the transport.
      */
     Task<void> send_notification(std::string method, std::optional<nlohmann::json> params) {
         JSONRPCNotification notification;
@@ -318,6 +319,11 @@ class Client {
         co_return result_json.get<CompleteResult>();
     }
 
+    /**
+     * @brief Send a ping request to the connected server.
+     *
+     * @return A task that completes once the ping round-trip succeeds.
+     */
     Task<void> ping() { co_await send_request("ping", std::nullopt); }
 
     /**
@@ -325,6 +331,7 @@ class Client {
      *
      * @param request_id The ID of the request to cancel.
      * @param reason Optional human-readable reason for the cancellation.
+     * @return A task that completes when the cancellation notification has been sent.
      */
     Task<void> cancel(RequestId request_id, std::optional<std::string> reason = std::nullopt) {
         CancelledNotificationParams params;
@@ -354,8 +361,14 @@ class Client {
         notification_handlers_[std::move(method)] = std::move(callback);
     }
 
+    /// @brief Callback invoked for a deserialized progress notification.
     using ProgressCallback = std::function<void(const ProgressNotificationParams&)>;
 
+    /**
+     * @brief Register a callback for progress notifications.
+     *
+     * @param callback The callback invoked when a notifications/progress message arrives.
+     */
     void on_progress(ProgressCallback callback) {
         on_notification("notifications/progress",
                         [cb = std::move(callback)](const nlohmann::json& params) {

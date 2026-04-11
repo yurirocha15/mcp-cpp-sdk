@@ -32,7 +32,7 @@ class MemoryTransport final : public ITransport {
     /**
      * @brief Constructs a MemoryTransport with the given executor.
      *
-     * @param executor The executor for async operations
+     * @param executor The executor for async operations.
      */
     explicit MemoryTransport(const boost::asio::any_io_executor& executor)
         : strand_(boost::asio::make_strand(executor)), timer_(strand_) {
@@ -45,8 +45,8 @@ class MemoryTransport final : public ITransport {
      * Suspends using a timer until a message is available or the transport is closed.
      * Follows the exact pattern from ScriptedTransport.
      *
-     * @return Task yielding the next message
-     * @throws std::runtime_error if transport is closed
+     * @return A task yielding the next queued message.
+     * @throws std::runtime_error If the transport is closed.
      */
     Task<std::string> read_message() override {
         for (;;) {
@@ -72,9 +72,9 @@ class MemoryTransport final : public ITransport {
     /**
      * @brief Writes a message to the peer's queue and wakes the peer.
      *
-     * @param message The message to send
-     * @return Task that completes when message is enqueued
-     * @throws std::runtime_error if transport is closed or peer is null
+     * @param message The message to send.
+     * @return A task that completes when the peer queue has been updated.
+     * @throws std::runtime_error If the transport is closed or the peer is not set.
      */
     Task<void> write_message(std::string_view message) override {
         co_await boost::asio::post(strand_, boost::asio::use_awaitable);
@@ -110,7 +110,7 @@ class MemoryTransport final : public ITransport {
     /**
      * @brief Sets the peer transport for bidirectional communication.
      *
-     * @param peer Shared pointer to the peer MemoryTransport
+     * @param peer Non-owning pointer to the peer MemoryTransport.
      */
     void set_peer(MemoryTransport* peer) { peer_ = peer; }
 
@@ -131,8 +131,8 @@ class MemoryTransport final : public ITransport {
  * The returned unique_ptrs have custom deleters that properly manage
  * the shared ownership between the two transports.
  *
- * @param executor The executor for both transports
- * @return Pair of connected MemoryTransport unique pointers
+ * @param executor The executor for both transports.
+ * @return A pair of connected transport instances that can exchange in-memory messages.
  */
 inline std::pair<std::unique_ptr<ITransport>, std::unique_ptr<ITransport>> create_memory_transport_pair(
     const boost::asio::any_io_executor& executor) {
