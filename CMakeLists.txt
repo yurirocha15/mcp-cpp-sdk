@@ -17,8 +17,9 @@ target_link_libraries(
                      OpenSSL::Crypto)
 target_include_directories(mcp-cpp-sdk PUBLIC include)
 target_sources(
-  mcp-cpp-sdk PRIVATE src/version.cpp src/runtime.cpp src/server_stdio.cpp
-                      src/server_http.cpp src/server_tool.cpp)
+  mcp-cpp-sdk
+  PRIVATE src/version.cpp src/runtime.cpp src/server_stdio.cpp
+          src/server_http.cpp src/server_tool.cpp src/transport_factories.cpp)
 
 # Documentation target
 find_package(Doxygen QUIET)
@@ -68,7 +69,8 @@ if(BUILD_TESTING)
       test/runtime_test.cpp
       test/server_stdio_test.cpp
       test/server_http_test.cpp
-      test/server_tool_test.cpp)
+      test/server_tool_test.cpp
+      test/transport_factory_test.cpp)
   add_executable(mcp-sdk-tests ${TEST_SRCS})
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
 
