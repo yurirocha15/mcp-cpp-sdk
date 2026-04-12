@@ -18,8 +18,13 @@ target_link_libraries(
 target_include_directories(mcp-cpp-sdk PUBLIC include)
 target_sources(
   mcp-cpp-sdk
-  PRIVATE src/version.cpp src/runtime.cpp src/server_stdio.cpp
-          src/server_http.cpp src/server_tool.cpp src/transport_factories.cpp)
+  PRIVATE src/version.cpp
+          src/runtime.cpp
+          src/server_stdio.cpp
+          src/server_http.cpp
+          src/server_tool.cpp
+          src/server.cpp
+          src/transport_factories.cpp)
 
 # Documentation target
 find_package(Doxygen QUIET)
