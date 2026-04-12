@@ -20,6 +20,7 @@ target_sources(
   mcp-cpp-sdk
   PRIVATE src/version.cpp
           src/runtime.cpp
+          src/stdio_transport.cpp
           src/server_stdio.cpp
           src/server_http.cpp
           src/server_tool.cpp
