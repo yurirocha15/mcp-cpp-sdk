@@ -301,17 +301,18 @@ TEST(AuthClientTransportTest, StoreAndRetrieveToken) {
     config.token_endpoint = "http://localhost/token";
     config.redirect_uri = "http://localhost/callback";
 
-    mcp::auth::OAuthClientTransport transport(std::move(inner), store, oauth_client, config,
-                                              "http://server1");
+    auto authenticator =
+        std::make_shared<mcp::auth::OAuthAuthenticator>(store, oauth_client, config, "http://server1");
+    mcp::auth::OAuthClientTransport transport(std::move(inner), authenticator);
 
-    EXPECT_TRUE(transport.get_access_token().empty());
+    EXPECT_TRUE(authenticator->get_access_token().empty());
 
     mcp::auth::TokenResponse token;
     token.access_token = "my_token";
     token.token_type = "Bearer";
-    transport.store_token(std::move(token));
+    authenticator->store_token(std::move(token));
 
-    EXPECT_EQ(transport.get_access_token(), "my_token");
+    EXPECT_EQ(authenticator->get_access_token(), "my_token");
 }
 
 TEST(AuthClientTransportTest, ReadWritePassThrough) {
@@ -327,8 +328,9 @@ TEST(AuthClientTransportTest, ReadWritePassThrough) {
     config.token_endpoint = "http://localhost/token";
     config.redirect_uri = "http://localhost/callback";
 
-    mcp::auth::OAuthClientTransport transport(std::move(inner), store, oauth_client, config,
-                                              "http://server1");
+    auto authenticator =
+        std::make_shared<mcp::auth::OAuthAuthenticator>(store, oauth_client, config, "http://server1");
+    mcp::auth::OAuthClientTransport transport(std::move(inner), authenticator);
 
     inner_ptr->enqueue_message("hello from server");
 
@@ -398,19 +400,20 @@ TEST(AuthClientTransportTest, RefreshTokenReturnsTrue) {
     old_token.refresh_token = "old_refresh_token";
     store->store("http://server1", old_token);
 
-    mcp::auth::OAuthClientTransport transport(std::move(inner), store, oauth_client, config,
-                                              "http://server1");
+    auto authenticator =
+        std::make_shared<mcp::auth::OAuthAuthenticator>(store, oauth_client, config, "http://server1");
+    mcp::auth::OAuthClientTransport transport(std::move(inner), authenticator);
 
     bool refresh_result = false;
 
     asio::co_spawn(
-        io, [&]() -> mcp::Task<void> { refresh_result = co_await transport.try_refresh_token(); },
+        io, [&]() -> mcp::Task<void> { refresh_result = co_await authenticator->try_refresh_token(); },
         asio::detached);
 
     io.run();
 
     EXPECT_TRUE(refresh_result);
-    EXPECT_EQ(transport.get_access_token(), "new_access_token");
+    EXPECT_EQ(authenticator->get_access_token(), "new_access_token");
 }
 
 TEST(AuthClientTransportTest, RefreshTokenReturnsFalseWithoutRefreshToken) {
@@ -429,13 +432,14 @@ TEST(AuthClientTransportTest, RefreshTokenReturnsFalseWithoutRefreshToken) {
     token_without_refresh.access_token = "expired_token";
     store->store("http://server1", token_without_refresh);
 
-    mcp::auth::OAuthClientTransport transport(std::move(inner), store, oauth_client, config,
-                                              "http://server1");
+    auto authenticator =
+        std::make_shared<mcp::auth::OAuthAuthenticator>(store, oauth_client, config, "http://server1");
+    mcp::auth::OAuthClientTransport transport(std::move(inner), authenticator);
 
     bool refresh_result = true;
 
     asio::co_spawn(
-        io, [&]() -> mcp::Task<void> { refresh_result = co_await transport.try_refresh_token(); },
+        io, [&]() -> mcp::Task<void> { refresh_result = co_await authenticator->try_refresh_token(); },
         asio::detached);
 
     io.run();
@@ -455,13 +459,14 @@ TEST(AuthClientTransportTest, RefreshTokenReturnsFalseWithNoStoredToken) {
     config.token_endpoint = "http://localhost/token";
     config.redirect_uri = "http://localhost/callback";
 
-    mcp::auth::OAuthClientTransport transport(std::move(inner), store, oauth_client, config,
-                                              "http://server1");
+    auto authenticator =
+        std::make_shared<mcp::auth::OAuthAuthenticator>(store, oauth_client, config, "http://server1");
+    mcp::auth::OAuthClientTransport transport(std::move(inner), authenticator);
 
     bool refresh_result = true;
 
     asio::co_spawn(
-        io, [&]() -> mcp::Task<void> { refresh_result = co_await transport.try_refresh_token(); },
+        io, [&]() -> mcp::Task<void> { refresh_result = co_await authenticator->try_refresh_token(); },
         asio::detached);
 
     io.run();
@@ -512,15 +517,16 @@ TEST(AuthClientTransportTest, RefreshPreservesOldRefreshTokenIfNewOneMissing) {
     old_token.refresh_token = "keep_this_rt";
     store->store("http://server1", old_token);
 
-    mcp::auth::OAuthClientTransport transport(std::move(inner), store, oauth_client, config,
-                                              "http://server1");
+    auto authenticator =
+        std::make_shared<mcp::auth::OAuthAuthenticator>(store, oauth_client, config, "http://server1");
+    mcp::auth::OAuthClientTransport transport(std::move(inner), authenticator);
 
     asio::co_spawn(
-        io, [&]() -> mcp::Task<void> { co_await transport.try_refresh_token(); }, asio::detached);
+        io, [&]() -> mcp::Task<void> { co_await authenticator->try_refresh_token(); }, asio::detached);
 
     io.run();
 
-    EXPECT_EQ(transport.get_access_token(), "refreshed_at");
+    EXPECT_EQ(authenticator->get_access_token(), "refreshed_at");
     auto stored = store->load("http://server1");
     ASSERT_TRUE(stored.has_value());
     ASSERT_TRUE(stored->refresh_token.has_value());

@@ -823,74 +823,46 @@ inline std::string extract_bearer_token(std::string_view auth_header_value) {
 }
 
 /**
- * @brief Transport wrapper that injects and refreshes OAuth bearer tokens.
+ * @brief Abstract interface for providing access tokens and handling refresh.
+ *
+ * @details Implementations must be safe to call from within an asio strand context.
+ * `get_access_token()` must be lightweight — no network I/O. Returns the current bearer token or empty
+ * string. `try_refresh_token()` is a coroutine that performs network I/O to refresh the token and
+ * persists the new token via the configured token store on success.
  */
-class OAuthClientTransport final : public ITransport {
+class Authenticator {
    public:
+    virtual ~Authenticator() = default;
+
     /**
-     * @brief Construct an authenticated transport wrapper.
+     * @brief Returns the current bearer token without network I/O.
      *
-     * @param inner Underlying transport used for MCP message exchange.
-     * @param token_store Token storage keyed by server URL.
-     * @param oauth_client HTTP helper used for token refresh.
-     * @param config OAuth configuration for refresh operations.
-     * @param server_url MCP server URL used as the token-store key.
+     * @return The stored access token, or an empty string when none is available.
      */
-    OAuthClientTransport(std::unique_ptr<ITransport> inner, std::shared_ptr<TokenStore> token_store,
-                         std::shared_ptr<OAuthHttpClient> oauth_client, OAuthConfig config,
-                         std::string server_url)
-        : inner_(std::move(inner)),
-          token_store_(std::move(token_store)),
+    [[nodiscard]] virtual std::string get_access_token() const = 0;
+
+    /**
+     * @brief Performs a token refresh via network I/O, persisting the new token on success.
+     *
+     * @return true if refresh succeeded and a new token was persisted; false otherwise.
+     */
+    virtual Task<bool> try_refresh_token() = 0;
+};
+
+/**
+ * @brief OAuth 2.0 implementation of the Authenticator interface.
+ */
+class OAuthAuthenticator : public Authenticator {
+   public:
+    OAuthAuthenticator(std::shared_ptr<TokenStore> token_store,
+                       std::shared_ptr<OAuthHttpClient> oauth_client, OAuthConfig config,
+                       std::string server_url)
+        : token_store_(std::move(token_store)),
           oauth_client_(std::move(oauth_client)),
           config_(std::move(config)),
           server_url_(std::move(server_url)) {}
 
-    /**
-     * @brief Read a message from the inner transport.
-     *
-     * @return A task resolving to the next serialized MCP message.
-     */
-    Task<std::string> read_message() override {
-        auto raw = co_await inner_->read_message();
-
-        auto json_msg = nlohmann::json::parse(raw, nullptr, false);
-        if (!json_msg.is_discarded() && json_msg.contains("error")) {
-            auto code = json_msg["error"].value("code", 0);
-            if (code == -32001 || code == -32000) {
-                bool refreshed = co_await try_refresh_token();
-                if (refreshed && !last_written_message_.empty()) {
-                    co_await inner_->write_message(inject_token(last_written_message_));
-                    co_return co_await inner_->read_message();
-                }
-            }
-        }
-
-        co_return raw;
-    }
-
-    /**
-     * @brief Inject the current bearer token into an outgoing MCP message.
-     *
-     * @param message Serialized JSON-RPC request or notification.
-     * @return A task that completes once the wrapped transport accepts the message.
-     */
-    Task<void> write_message(std::string_view message) override {
-        auto injected = inject_token(message);
-        last_written_message_ = std::string(message);
-        co_await inner_->write_message(injected);
-    }
-
-    /**
-     * @brief Close the wrapped transport.
-     */
-    void close() override { inner_->close(); }
-
-    /**
-     * @brief Load the currently stored access token for the configured server.
-     *
-     * @return The stored access token, or an empty string when none is available.
-     */
-    [[nodiscard]] std::string get_access_token() const {
+    [[nodiscard]] std::string get_access_token() const override {
         auto token = token_store_->load(server_url_);
         if (token) {
             return token->access_token;
@@ -898,12 +870,7 @@ class OAuthClientTransport final : public ITransport {
         return {};
     }
 
-    /**
-     * @brief Attempt to refresh the stored access token.
-     *
-     * @return A task resolving to true when refresh succeeds.
-     */
-    Task<bool> try_refresh_token() {
+    Task<bool> try_refresh_token() override {
         auto stored = token_store_->load(server_url_);
         if (!stored || !stored->refresh_token) {
             co_return false;
@@ -921,38 +888,134 @@ class OAuthClientTransport final : public ITransport {
         }
     }
 
-    /**
-     * @brief Persist a token for future request injection.
-     *
-     * @param token Token data to store.
-     */
+    /// @brief Stores an initial token obtained from an explicit OAuth exchange (e.g., authorization
+    /// code flow).
+    /// @param token The token response to persist via the configured TokenStore.
     void store_token(TokenResponse token) { token_store_->store(server_url_, std::move(token)); }
 
    private:
-    std::string inject_token(std::string_view message) const {
-        auto token = get_access_token();
-        if (token.empty()) {
-            return std::string(message);
-        }
-        auto json_msg = nlohmann::json::parse(message, nullptr, false);
-        if (json_msg.is_discarded()) {
-            return std::string(message);
-        }
-        if (!json_msg.contains("params")) {
-            json_msg["params"] = nlohmann::json::object();
-        }
-        if (!json_msg["params"].contains("_meta")) {
-            json_msg["params"]["_meta"] = nlohmann::json::object();
-        }
-        json_msg["params"]["_meta"]["auth_token"] = token;
-        return json_msg.dump();
-    }
-
-    std::unique_ptr<ITransport> inner_;
     std::shared_ptr<TokenStore> token_store_;
     std::shared_ptr<OAuthHttpClient> oauth_client_;
     OAuthConfig config_;
     std::string server_url_;
+};
+
+/**
+ * @brief Transport wrapper that injects and refreshes OAuth bearer tokens.
+ *
+ * @details Wraps any `ITransport` to automatically inject OAuth bearer tokens on write and handle token
+ * refresh on auth failures. When the server returns error codes -32001 or -32000
+ * (authentication-related), the transport calls `Authenticator::try_refresh_token()` and, if
+ * successful, re-sends the last written message and reads the new response. Only one retry attempt is
+ * made per `read_message()` call. Callers should ensure messages are idempotent since they may be
+ * re-sent after a token refresh. `last_written_message_` stores the most recently written message for
+ * potential replay.
+ */
+class OAuthClientTransport final : public ITransport {
+   public:
+    /**
+     * @brief Construct an authenticated transport wrapper.
+     *
+     * @param inner Underlying transport used for MCP message exchange.
+     * @param authenticator Authenticator used to retrieve and refresh tokens.
+     */
+    OAuthClientTransport(std::unique_ptr<ITransport> inner,
+                         std::shared_ptr<Authenticator> authenticator)
+        : inner_(std::move(inner)), authenticator_(std::move(authenticator)) {}
+
+    /**
+     * @brief Read a message from the inner transport, retrying once on authentication errors.
+     * @details If the received message contains an authentication error (JSON-RPC error code -32001 or
+     * -32000), attempts one token refresh via `Authenticator::try_refresh_token()`. On successful
+     * refresh, replays the last written message and returns the new response. If refresh fails or a
+     * second auth error is received, returns the error response as-is. If the response cannot be parsed
+     * as JSON, the raw string is returned unchanged.
+     * @return The (possibly retried) raw message string.
+     */
+    Task<std::string> read_message() override {
+        auto raw = co_await inner_->read_message();
+        bool retried = false;  // Retry guard: prevents re-entering the retry branch more than once
+
+        try {
+            auto json_msg = nlohmann::json::parse(raw);
+            JSONRPCMessage msg = json_msg.get<JSONRPCMessage>();
+
+            if (auto* error_resp = std::get_if<JSONRPCErrorResponse>(&msg)) {
+                auto code = error_resp->error.code;
+                // Error codes -32001 (authentication required) and -32000 (authentication failed)
+                // are MCP standard JSON-RPC error codes for auth-related failures.
+                // Attempt to refresh token and retry the original request once.
+                if ((code == -32001 || code == -32000) && !retried) {
+                    retried = true;
+                    bool refreshed = co_await authenticator_->try_refresh_token();
+                    if (refreshed && !last_written_message_.empty()) {
+                        co_await write_message(last_written_message_);
+                        co_return co_await inner_->read_message();
+                    }
+                }
+            }
+        } catch (...) {
+            // Silently ignore JSON parse errors: returns raw message to caller unchanged.
+            // This allows the client to handle non-JSON responses gracefully.
+        }
+
+        co_return raw;
+    }
+
+    /**
+     * @brief Inject the current bearer token into an outgoing MCP message.
+     *
+     * @param message Serialized JSON-RPC request or notification.
+     * @return A task that completes once the wrapped transport accepts the message.
+     */
+    Task<void> write_message(std::string_view message) override {
+        std::string injected = std::string(message);
+        try {
+            auto json_msg = nlohmann::json::parse(message);
+            JSONRPCMessage msg = json_msg.get<JSONRPCMessage>();
+
+            if (std::holds_alternative<JSONRPCRequest>(msg)) {
+                injected = inject_token(std::get<JSONRPCRequest>(msg));
+            }
+        } catch (...) {
+            // Ignore parse errors, send original message.
+        }
+
+        last_written_message_ = std::string(message);
+        co_await inner_->write_message(injected);
+    }
+
+    /**
+     * @brief Close the wrapped transport.
+     */
+    void close() override { inner_->close(); }
+
+   private:
+    std::string inject_token(JSONRPCRequest request) const {
+        auto token = authenticator_->get_access_token();
+        if (token.empty()) {
+            return nlohmann::json(request).dump();
+        }
+
+        if (!request.params) {
+            request.params = nlohmann::json::object();
+        }
+
+        auto& params = *request.params;
+        if (!params.is_object()) {
+            params = nlohmann::json::object();
+        }
+
+        if (!params.contains("_meta")) {
+            params["_meta"] = nlohmann::json::object();
+        }
+        params["_meta"]["auth_token"] = token;
+
+        return nlohmann::json(request).dump();
+    }
+
+    std::unique_ptr<ITransport> inner_;
+    std::shared_ptr<Authenticator> authenticator_;
     std::string last_written_message_;
 };
 
