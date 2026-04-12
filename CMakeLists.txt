@@ -26,6 +26,7 @@ target_sources(
           src/server_tool.cpp
           src/server.cpp
           src/http_server_transport.cpp
+          src/http_client_transport.cpp
           src/transport_factories.cpp)
 
 # Documentation target
