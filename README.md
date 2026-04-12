@@ -180,7 +180,19 @@ The SDK is organized into the following headers:
 - **`mcp/core.hpp`**: Core types (`Task<T>`, `LogLevel`, `LogHandler`)
 - **`mcp/runtime.hpp`**: `mcp::Runtime` — manages the event loop for `run_stdio()` / `run_http()`
 - **`mcp/concepts.hpp`**: C++20 concepts for transport and message handling
-- **`mcp/protocol.hpp`**: Complete MCP protocol types and JSON serialization
+- **`mcp/protocol.hpp`**: MCP protocol types umbrella — includes all protocol sub-headers:
+  - `protocol/base.hpp`: JSON-RPC wire types (`RequestId`, error codes, `JSONRPCRequest`/`JSONRPCResponse`)
+  - `protocol/capabilities.hpp`: Client/server capabilities, `Implementation`, initialization handshake
+  - `protocol/content.hpp`: Content types (`TextContent`, `ImageContent`, `AudioContent`, `ContentBlock`)
+  - `protocol/tools.hpp`: Tool definitions and call types (`Tool`, `ToolCall`, `ListToolsResult`)
+  - `protocol/resources.hpp`: Resource and resource template types (`Resource`, `ResourceTemplate`)
+  - `protocol/prompts.hpp`: Prompt definitions and argument types (`Prompt`, `GetPromptResult`)
+  - `protocol/completion.hpp`: Completion request/result types (`CompleteRequest`, `CompleteResult`)
+  - `protocol/notification.hpp`: Notification and logging types (`LoggingLevel`, notification structs)
+  - `protocol/roots.hpp`: Root directory/file definitions (`Root`, `ListRootsResult`)
+  - `protocol/tasks.hpp`: Task CRUD operations (`TaskData`, `CreateTaskResult`, `ListTasksResult`)
+  - `protocol/sampling.hpp`: LLM sampling message types (`SamplingMessage`, `CreateMessageRequest`)
+  - `protocol/elicitation.hpp`: User elicitation request/result types (`ElicitRequest`, `ElicitResult`)
 - **`mcp/transport.hpp`**: Abstract transport interface (`ITransport`)
 - **`mcp/transport/stdio.hpp`**: Stdio transport implementation
 - **`mcp/transport/websocket.hpp`**: WebSocket transport implementation
@@ -286,9 +298,11 @@ mcp::auth::OAuthConfig config{
     .redirect_uri = "http://localhost/callback",
 };
 
+auto authenticator = std::make_shared<mcp::auth::OAuthAuthenticator>(
+    token_store, oauth_http, std::move(config), "http://localhost:8080/mcp");
+
 auto transport = std::make_unique<mcp::auth::OAuthClientTransport>(
-    std::move(inner), token_store, oauth_http, std::move(config),
-    "http://localhost:8080/mcp");
+    std::move(inner), authenticator);
 ```
 
 For multi-session HTTP servers, use `mcp/transport/http_session_manager.hpp`.

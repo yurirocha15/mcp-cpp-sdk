@@ -74,7 +74,8 @@ Server
 
 * Protocol compliance (MCP handshake, request handling)
 * Handler type erasure and invocation
-* Error handling and JSON-RPC error responses
+* ``ensure_async_handler`` — automatically normalizes handler signatures (sync/async, with/without ``Context``) into unified async form; called internally by ``add_tool``, ``add_resource``, etc.
+* Error handling: exceptions thrown during request dispatch are automatically caught and returned as ``INTERNAL_ERROR`` (-32603) JSON-RPC error responses
 * Context creation and lifecycle management
 
 Client
@@ -90,7 +91,8 @@ Client
 
 **Key responsibilities**:
 
-* Request/response correlation (JSON-RPC id matching)
+* Request/response correlation (JSON-RPC id matching) via ``RequestId`` — a type-safe wrapper for JSON-RPC request identifiers (string or integer)
+* Reverse RPC: ``dispatch_incoming_request`` handles server-to-client JSON-RPC requests, enabling servers to request client capabilities (elicitation, sampling, roots)
 * Timeout management for requests
 * Connection lifecycle (connect, run, close)
 * Error propagation from server responses
@@ -166,8 +168,12 @@ Protocol Types
 * Response types: ``InitializeResult``, ``ListToolsResult``, ``CallToolResult``, etc.
 * Notification types: ``InitializedNotification``, ``ProgressNotification``, etc.
 * Capability structs: ``ServerCapabilities``, ``ClientCapabilities``
+* ``RequestId`` — a named wrapper for JSON-RPC request identifiers (string or integer), replacing raw ``std::variant`` usage
 
-All types support JSON serialization via nlohmann_json.
+All types support JSON serialization via nlohmann_json. Protocol types are
+organized into focused sub-headers (``capabilities.hpp``, ``content.hpp``,
+``tools.hpp``, ``roots.hpp``, ``sampling.hpp``, ``elicitation.hpp``, etc.)
+included via the ``mcp/protocol.hpp`` umbrella.
 
 Data Flow
 ---------
@@ -213,9 +219,11 @@ Authentication and Authorization
 
 The SDK includes OAuth 2.1 helpers in ``mcp::auth``:
 
+* ``Authenticator``: abstract interface for token providers, enabling custom authentication beyond OAuth
+* ``OAuthAuthenticator``: concrete OAuth 2.0 implementation of the ``Authenticator`` interface
 * ``OAuthHttpClient`` for token and metadata HTTP calls
 * ``OAuthDiscoveryClient`` for protected resource and authorization-server discovery
-* ``OAuthClientTransport`` for injecting Bearer tokens into outgoing MCP requests
+* ``OAuthClientTransport`` for injecting Bearer tokens into outgoing MCP requests, with automatic token refresh on ``-32001`` or ``-32000`` error responses
 * ``InMemoryTokenStore`` as a simple token persistence implementation
 
 This keeps authentication concerns out of the core client/server types while

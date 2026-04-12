@@ -16,6 +16,8 @@ The mcp-cpp-sdk is organized into several key namespaces and components:
 * **mcp::StreamableHttpSessionManager** - Multi-session HTTP endpoint manager
 * **mcp::Context** - Execution context providing logging and reverse RPC
 * **mcp::Task<T>** - Coroutine return type for async operations
+* **mcp::auth::Authenticator** - Abstract interface for token providers
+* **mcp::RequestId** - JSON-RPC request identifier wrapper
 * **Protocol Types** - Request/response types for JSON-RPC messages
 * **mcp::auth** - OAuth 2.1 helpers, discovery client, token store, and authenticated transport wrapper
 
@@ -84,6 +86,14 @@ Authentication
    :members:
    :undoc-members:
 
+.. doxygenclass:: mcp::auth::Authenticator
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: mcp::auth::OAuthAuthenticator
+   :members:
+   :undoc-members:
+
 Core Types
 ----------
 
@@ -98,6 +108,13 @@ Protocol Types
 The SDK includes comprehensive protocol and supporting types for all MCP
 messages. They are available through the complete generated index below,
 which avoids duplicating the class-level API sections above.
+
+RequestId
+^^^^^^^^^
+
+.. doxygenstruct:: mcp::RequestId
+   :members:
+   :undoc-members:
 
 Complete Index
 --------------
