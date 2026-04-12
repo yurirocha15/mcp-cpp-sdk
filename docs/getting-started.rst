@@ -89,7 +89,41 @@ To build the SDK and examples from source:
 Quick Start: Minimal Server
 ----------------------------
 
-Here's a minimal MCP server that exposes a single "add" tool over stdio:
+Here's a minimal MCP server that exposes a single tool over stdio.
+
+.. code-block:: cpp
+
+   #include <mcp/mcp.hpp>
+
+   int main() {
+       mcp::ServerCapabilities caps;
+       caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+
+       mcp::Implementation info{"hello-server", "1.0.0"};
+       mcp::Server server(std::move(info), std::move(caps));
+
+       nlohmann::json schema = {
+           {"type", "object"},
+           {"properties", {{"name", {{"type", "string"}}}}},
+           {"required", nlohmann::json::array({"name"})}};
+
+       server.add_tool("hello", "Greets the user", std::move(schema),
+                       [](const nlohmann::json& args) -> nlohmann::json {
+                           return {{"message", "Hello, " + args.at("name").get<std::string>() + "!"}};
+                       });
+
+       server.run_stdio();
+   }
+
+``server.run_stdio()`` blocks until the client closes the connection or the
+process receives SIGINT/SIGTERM. The runtime, transport, and event loop are
+all managed internally.
+
+Advanced: Manual Transport Setup
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+If you need direct control over the ``io_context`` — for example, to share it
+with other async work — you can wire up the transport manually:
 
 .. code-block:: cpp
 
@@ -100,48 +134,43 @@ Here's a minimal MCP server that exposes a single "add" tool over stdio:
    #include <boost/asio/io_context.hpp>
 
    int main() {
-       using namespace mcp;
+       mcp::ServerCapabilities caps;
+       caps.tools = mcp::ServerCapabilities::ToolsCapability{};
 
-       // Create server with capabilities
-       ServerCapabilities caps;
-       caps.tools = ServerCapabilities::ToolsCapability{};
+       mcp::Implementation info{"math-server", "1.0.0"};
+       mcp::Server server(std::move(info), std::move(caps));
 
-       Implementation info;
-       info.name = "math-server";
-       info.version = "1.0.0";
+       nlohmann::json schema = {
+           {"type", "object"},
+           {"properties", {{"a", {{"type", "number"}}}, {"b", {{"type", "number"}}}}}};
 
-       Server server(std::move(info), std::move(caps));
-
-       // Register an "add" tool
-       server.add_tool(
-           "add",
-           "Add two numbers",
-           nlohmann::json{{"type", "object"},
-                         {"properties", {{"a", {{"type", "number"}}},
-                                       {"b", {{"type", "number"}}}}}},
-           [](const nlohmann::json& params) -> Task<nlohmann::json> {
+       server.add_tool<nlohmann::json, nlohmann::json>(
+           "add", "Add two numbers", std::move(schema),
+           [](const nlohmann::json& params) -> mcp::Task<nlohmann::json> {
                double result = params["a"].get<double>() + params["b"].get<double>();
                co_return nlohmann::json{{"result", result}};
-           }
-       );
+           });
 
-       // Run server over stdio transport
        boost::asio::io_context io;
-       auto transport = std::make_unique<StdioTransport>(io.get_executor());
+       auto transport = std::make_unique<mcp::StdioTransport>(io.get_executor());
        boost::asio::co_spawn(
            io,
-           [&]() -> Task<void> {
+           [&]() -> mcp::Task<void> {
                co_await server.run(std::move(transport), io.get_executor());
            },
-           boost::asio::detached
-       );
+           boost::asio::detached);
        io.run();
    }
 
 Quick Start: Minimal Client
 ----------------------------
 
-Here's a minimal MCP client that connects to a server and calls the "add" tool:
+.. note::
+
+   A convenience ``client.run_stdio()`` API is planned. For now, clients
+   require manual ``io_context`` setup as shown below.
+
+Here's a minimal MCP client that connects to a server and calls a tool:
 
 .. code-block:: cpp
 

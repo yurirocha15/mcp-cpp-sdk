@@ -9,19 +9,20 @@ Design Principles
 
 The mcp-cpp-sdk is built on several core design principles:
 
-Header-Only Design
-^^^^^^^^^^^^^^^^^^
+Compiled Static Library
+^^^^^^^^^^^^^^^^^^^^^^^^
 
-The SDK is entirely header-only, meaning no separate compilation or linking is
-required. This design choice:
+The SDK is a compiled static library (``libmcp-cpp-sdk.a``). Implementation
+details — including all Boost.Asio and Boost.Beast usage — are hidden behind
+PImpl boundaries in ``.cpp`` files. Only ``core.hpp`` retains a direct Boost
+include, because the ``Task<T>`` template alias must be visible at call sites.
 
-* Simplifies integration - just add the include directory
-* Enables full compiler optimization across boundaries
-* Reduces build complexity for consumers
-* Allows template-heavy code to be fully visible to the compiler
+This design:
 
-All implementation is in headers under ``include/mcp/``, with no ``.cpp`` files
-in the library itself.
+* Reduces consumer compile times — Boost headers are not parsed for every
+  translation unit that includes an SDK header
+* Isolates ABI-unstable Boost internals behind a stable C++ interface
+* Keeps public headers free of Boost types except ``Task<T>``
 
 RAII and Value Semantics
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -233,17 +234,22 @@ nlohmann_json is the most popular C++ JSON library:
 
 Alternative considered: RapidJSON - faster but more complex API.
 
-Why Header-Only?
-^^^^^^^^^^^^^^^^
+Why Compiled Static Library?
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Header-only design simplifies integration:
+Compiling the SDK as a static library reduces consumer build times:
 
-* **No build system complexity**: Just add ``-I include/``
-* **Full optimization**: Compiler sees all code, can inline aggressively
-* **No ABI concerns**: No binary compatibility issues between versions
-* **Single-file distribution**: Can be amalgamated if needed
+* **Faster builds**: Boost headers are compiled once into the library, not
+  re-parsed in every consumer translation unit
+* **Encapsulation**: Boost.Asio and Boost.Beast internals stay behind PImpl
+  boundaries and do not leak into consumer headers
+* **Stable interface**: Public headers expose only standard C++ and
+  ``Task<T>`` (the one unavoidable Boost type)
+* **Unchanged link model**: Consumers still link a single ``mcp-cpp-sdk``
+  target — no change to CMake integration
 
-Tradeoff: Longer compile times for consumers, but acceptable for library size.
+Tradeoff: Cross-boundary inlining is no longer possible for PImpl'd types,
+which is acceptable given that the hot paths are I/O-bound.
 
 Why Multiple Handler Signatures?
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -291,7 +297,7 @@ The SDK is designed for extension:
 
 * **Custom transports**: Implement ``ITransport`` (e.g., for HTTP/2)
 * **Custom serialization**: Provide ``to_json``/``from_json`` for your types
-* **Custom executors**: Pass any ``boost::asio::any_io_executor``
+* **Custom executors**: Pass any ``mcp::Runtime``-compatible executor
 * **Middleware**: Intercept handler execution for auth, logging, and request shaping
 
 Future Work

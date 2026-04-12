@@ -60,6 +60,36 @@ make docs
 ### Minimal MCP Server (Stdio)
 
 ```cpp
+#include <mcp/mcp.hpp>
+
+int main() {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+
+    mcp::Implementation info{"hello-server", "1.0.0"};
+    mcp::Server server(std::move(info), std::move(caps));
+
+    nlohmann::json schema = {
+        {"type", "object"},
+        {"properties", {{"name", {{"type", "string"}}}}},
+        {"required", nlohmann::json::array({"name"})}};
+
+    server.add_tool("hello", "Greets the user", std::move(schema),
+                    [](const nlohmann::json& args) -> nlohmann::json {
+                        return {{"message", "Hello, " + args.at("name").get<std::string>() + "!"}};
+                    });
+
+    server.run_stdio();
+}
+```
+
+`server.run_stdio()` blocks until the client closes the connection.
+The runtime, transport, and event loop are all managed internally.
+
+<details>
+<summary>Advanced: manual transport setup</summary>
+
+```cpp
 #include <mcp/server.hpp>
 #include <mcp/transport/stdio.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -103,6 +133,8 @@ int main() {
 }
 ```
 
+</details>
+
 ### Minimal MCP Client (Stdio)
 
 ```cpp
@@ -144,7 +176,9 @@ int main() {
 
 The SDK is organized into the following headers:
 
-- **`mcp/core.hpp`**: Core types (`Task<T>`, executor infrastructure)
+- **`mcp/mcp.hpp`**: Umbrella header — includes everything needed for common use cases
+- **`mcp/core.hpp`**: Core types (`Task<T>`, `LogLevel`, `LogHandler`)
+- **`mcp/runtime.hpp`**: `mcp::Runtime` — manages the event loop for `run_stdio()` / `run_http()`
 - **`mcp/concepts.hpp`**: C++20 concepts for transport and message handling
 - **`mcp/protocol.hpp`**: Complete MCP protocol types and JSON serialization
 - **`mcp/transport.hpp`**: Abstract transport interface (`ITransport`)
@@ -164,6 +198,7 @@ Full API documentation is available at [https://yurirocha15.github.io/mcp-cpp-sd
 
 The repository includes several complete examples:
 
+- **`examples/server_simple.cpp`**: Minimal stdio server using the convenience API (zero Boost headers)
 - **`examples/server_stdio.cpp`**: Full-featured stdio server with tools, resources, and prompts
 - **`examples/client_stdio.cpp`**: Stdio client demonstrating initialization and tool calls
 - **`examples/server_with_sampling.cpp`**: Server showcasing LLM sampling integration
@@ -175,7 +210,7 @@ The repository includes several complete examples:
 Build and run examples:
 ```bash
 make build
-./build/example-server-stdio
+./build/example-server-simple
 ```
 
 ## Building & Testing
