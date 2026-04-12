@@ -21,10 +21,7 @@ void Server::run_http(const std::string& host, uint16_t port) {
     auto* transport_ptr = transport.get();
 
     boost::asio::signal_set signals(io_ctx, SIGINT, SIGTERM);
-    signals.async_wait([&](const boost::system::error_code&, int) {
-        transport_ptr->close();
-        io_ctx.stop();
-    });
+    signals.async_wait([&](const boost::system::error_code&, int) { transport_ptr->close(); });
 
     boost::asio::co_spawn(io_ctx, transport_ptr->listen(), boost::asio::detached);
 
