@@ -61,43 +61,56 @@ concept SyncHandlerWithCtx = requires(Fn fn, Context& ctx, In in) {
 };
 
 /**
- * @brief Wraps a handler of any supported signature into a TypeErasedHandler.
+ * @brief Ensures a handler is async by wrapping sync handlers into Task-returning ones.
  *
- * Supported signatures:
- * - `Fn(In) -> Task<Out>`           (async, no context)
- * - `Fn(Context&, In) -> Task<Out>` (async, with context)
- * - `Fn(In) -> Out`                 (sync, no context)
- * - `Fn(Context&, In) -> Out`       (sync, with context)
+ * @tparam In  The input type deserialized from JSON.
+ * @tparam Out The output type serialized to JSON.
+ * @tparam Fn  The handler callable type (may be sync or async).
+ *
+ * @details This template accepts four handler signatures:
+ * - `Task<Out>(Context&, In)` — async with context
+ * - `Task<Out>(In)` — async without context
+ * - `Out(Context&, In)` — sync with context (wrapped in co_return)
+ * - `Out(In)` — sync without context (wrapped in co_return)
+ *
+ * Sync handlers are automatically lifted into coroutines.
+ */
+template <typename In, typename Out, typename Fn>
+auto ensure_async_handler(Fn fn) {
+    if constexpr (AsyncHandlerWithCtx<Fn, In, Out> || AsyncHandlerNoCtx<Fn, In, Out>) {
+        return fn;
+    } else if constexpr (SyncHandlerWithCtx<Fn, In, Out>) {
+        return [handler = std::move(fn)](Context& ctx, In in) -> Task<Out> {
+            co_return handler(ctx, std::move(in));
+        };
+    } else {
+        static_assert(SyncHandlerNoCtx<Fn, In, Out>,
+                      "Handler must be sync or async with supported signature");
+        return [handler = std::move(fn)](In in) -> Task<Out> { co_return handler(std::move(in)); };
+    }
+}
+
+/**
+ * @brief Wraps an asynchronous handler into a TypeErasedHandler.
  *
  * @tparam In  The input type (must satisfy JsonSerializable).
  * @tparam Out The output type (must satisfy JsonSerializable).
- * @tparam Fn  The handler callable type.
- * @param fn The handler to wrap.
+ * @tparam Fn  The handler callable type (must be async).
+ * @param fn The async handler to wrap.
  * @return A TypeErasedHandler that deserializes JSON to In, calls fn, and serializes Out to JSON.
  */
 template <JsonSerializable In, JsonSerializable Out, typename Fn>
-    requires AsyncHandlerWithCtx<Fn, In, Out> || AsyncHandlerNoCtx<Fn, In, Out> ||
-             SyncHandlerWithCtx<Fn, In, Out> || SyncHandlerNoCtx<Fn, In, Out>
+    requires AsyncHandlerWithCtx<Fn, In, Out> || AsyncHandlerNoCtx<Fn, In, Out>
 TypeErasedHandler wrap_handler(Fn fn) {
     return
         [handler = std::move(fn)](Context& ctx, const nlohmann::json& params) -> Task<nlohmann::json> {
-            auto input = params.template get<In>();
+            auto input = params.get<In>();
             if constexpr (AsyncHandlerWithCtx<Fn, In, Out>) {
                 Out output = co_await handler(ctx, std::move(input));
-                nlohmann::json json_result = std::move(output);
-                co_return json_result;
-            } else if constexpr (AsyncHandlerNoCtx<Fn, In, Out>) {
-                Out output = co_await handler(std::move(input));
-                nlohmann::json json_result = std::move(output);
-                co_return json_result;
-            } else if constexpr (SyncHandlerWithCtx<Fn, In, Out>) {
-                Out output = handler(ctx, std::move(input));
-                nlohmann::json json_result = std::move(output);
-                co_return json_result;
+                co_return nlohmann::json(std::move(output));
             } else {
-                Out output = handler(std::move(input));
-                nlohmann::json json_result = std::move(output);
-                co_return json_result;
+                Out output = co_await handler(std::move(input));
+                co_return nlohmann::json(std::move(output));
             }
         };
 }
@@ -146,7 +159,8 @@ class Server {
         tool.name = name;
         tool.description = std::move(description);
         tool.inputSchema = std::move(input_schema);
-        register_tool(std::move(tool), name, detail::wrap_handler<In, Out>(std::move(handler)));
+        auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
+        register_tool(std::move(tool), name, detail::wrap_handler<In, Out>(std::move(async_handler)));
     }
 
     /**
@@ -163,7 +177,8 @@ class Server {
         tool.description = std::move(description);
         tool.inputSchema = std::move(input_schema);
         tool.outputSchema = std::move(output_schema);
-        register_tool(std::move(tool), name, detail::wrap_handler<In, Out>(std::move(handler)));
+        auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
+        register_tool(std::move(tool), name, detail::wrap_handler<In, Out>(std::move(async_handler)));
     }
 
     /**
@@ -192,7 +207,8 @@ class Server {
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_resource(Resource resource, Fn handler) {
-        register_resource(std::move(resource), detail::wrap_handler<In, Out>(std::move(handler)));
+        auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
+        register_resource(std::move(resource), detail::wrap_handler<In, Out>(std::move(async_handler)));
     }
 
     /**
@@ -213,7 +229,8 @@ class Server {
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_prompt(Prompt prompt, Fn handler) {
-        register_prompt(std::move(prompt), detail::wrap_handler<In, Out>(std::move(handler)));
+        auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
+        register_prompt(std::move(prompt), detail::wrap_handler<In, Out>(std::move(async_handler)));
     }
 
     /**
@@ -368,6 +385,14 @@ class Server {
     Context make_context(std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
                          std::optional<ProgressToken> progress_token = std::nullopt);
 
+    /**
+     * @brief Dispatches an incoming JSON-RPC request to the appropriate registered handler.
+     *
+     * @details Exceptions thrown during dispatch are caught and returned as `INTERNAL_ERROR`
+     * (-32603) JSON-RPC error responses. The exception's `what()` message becomes the error data.
+     *
+     * @param json_msg The raw JSON-RPC request object.
+     */
     Task<void> dispatch_request(nlohmann::json json_msg);
 
     void dispatch_notification(const nlohmann::json& json_msg);

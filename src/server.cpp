@@ -200,39 +200,54 @@ Context Server::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
         std::move(cancelled), std::move(progress_token), &impl_->log_level);
 }
 
+// Exceptions from handlers are caught and reported as INTERNAL_ERROR (-32603) responses.
 Task<void> Server::dispatch_request(nlohmann::json json_msg) {
-    auto request = json_msg.get<JSONRPCRequest>();
+    RequestId req_id;
+    std::optional<std::string> internal_error_message;
 
-    if (request.method == "initialize") {
-        co_await handle_initialize(request);
-    } else if (request.method == "ping") {
-        co_await handle_ping(request);
-    } else if (request.method == "shutdown") {
-        co_await handle_shutdown(request);
-    } else if (request.method == "tools/call") {
-        co_await handle_tools_call(request);
-    } else if (request.method == "tools/list") {
-        co_await handle_tools_list(request);
-    } else if (request.method == "resources/list") {
-        co_await handle_resources_list(request);
-    } else if (request.method == "resources/read") {
-        co_await handle_resources_read(request);
-    } else if (request.method == "resources/templates/list") {
-        co_await handle_resource_templates_list(request);
-    } else if (request.method == "resources/subscribe") {
-        co_await handle_subscribe(request);
-    } else if (request.method == "resources/unsubscribe") {
-        co_await handle_unsubscribe(request);
-    } else if (request.method == "prompts/list") {
-        co_await handle_prompts_list(request);
-    } else if (request.method == "prompts/get") {
-        co_await handle_prompts_get(request);
-    } else if (request.method == "logging/setLevel") {
-        co_await handle_set_level(request);
-    } else if (request.method == "completion/complete") {
-        co_await handle_complete(request);
-    } else {
-        co_await send_error(request.id, METHOD_NOT_FOUND, "Method not found: " + request.method);
+    try {
+        req_id = json_msg.at("id").get<RequestId>();
+        auto request = json_msg.get<JSONRPCRequest>();
+
+        if (request.method == "initialize") {
+            co_await handle_initialize(request);
+        } else if (request.method == "ping") {
+            co_await handle_ping(request);
+        } else if (request.method == "shutdown") {
+            co_await handle_shutdown(request);
+        } else if (request.method == "tools/call") {
+            co_await handle_tools_call(request);
+        } else if (request.method == "tools/list") {
+            co_await handle_tools_list(request);
+        } else if (request.method == "resources/list") {
+            co_await handle_resources_list(request);
+        } else if (request.method == "resources/read") {
+            co_await handle_resources_read(request);
+        } else if (request.method == "resources/templates/list") {
+            co_await handle_resource_templates_list(request);
+        } else if (request.method == "resources/subscribe") {
+            co_await handle_subscribe(request);
+        } else if (request.method == "resources/unsubscribe") {
+            co_await handle_unsubscribe(request);
+        } else if (request.method == "prompts/list") {
+            co_await handle_prompts_list(request);
+        } else if (request.method == "prompts/get") {
+            co_await handle_prompts_get(request);
+        } else if (request.method == "logging/setLevel") {
+            co_await handle_set_level(request);
+        } else if (request.method == "completion/complete") {
+            co_await handle_complete(request);
+        } else {
+            co_await send_error(request.id, METHOD_NOT_FOUND, "Method not found: " + request.method);
+        }
+    } catch (const std::exception& e) {
+        if (json_msg.contains("id")) {
+            internal_error_message = e.what();
+        }
+    }
+
+    if (internal_error_message) {
+        co_await send_error(req_id, INTERNAL_ERROR, *internal_error_message);
     }
 }
 
@@ -247,15 +262,7 @@ void Server::dispatch_notification(const nlohmann::json& json_msg) {
             return;
         }
         auto params = json_msg.at("params").get<CancelledNotificationParams>();
-        auto id_str = std::visit(
-            [](auto&& val) -> std::string {
-                if constexpr (std::is_same_v<std::decay_t<decltype(val)>, std::string>) {
-                    return val;
-                } else {
-                    return std::to_string(val);
-                }
-            },
-            params.requestId);
+        auto id_str = params.requestId.to_string();
 
         auto it = impl_->session->in_flight.find(id_str);
         if (it != impl_->session->in_flight.end()) {
@@ -266,15 +273,7 @@ void Server::dispatch_notification(const nlohmann::json& json_msg) {
 
 void Server::dispatch_response(const nlohmann::json& json_msg) {
     auto id = json_msg.at("id").get<RequestId>();
-    auto id_str = std::visit(
-        [](auto&& val) -> std::string {
-            if constexpr (std::is_same_v<std::decay_t<decltype(val)>, std::string>) {
-                return val;
-            } else {
-                return std::to_string(val);
-            }
-        },
-        id);
+    auto id_str = id.to_string();
 
     auto it = impl_->session->pending_requests.find(id_str);
     if (it == impl_->session->pending_requests.end()) {
@@ -318,15 +317,7 @@ Task<void> Server::handle_tools_call(const JSONRPCRequest& request) {
         co_return;
     }
 
-    auto request_id_str = std::visit(
-        [](auto&& val) -> std::string {
-            if constexpr (std::is_same_v<std::decay_t<decltype(val)>, std::string>) {
-                return val;
-            } else {
-                return std::to_string(val);
-            }
-        },
-        request.id);
+    auto request_id_str = request.id.to_string();
 
     auto cancelled = std::make_shared<std::atomic<bool>>(false);
     impl_->session->in_flight[request_id_str] = cancelled;
