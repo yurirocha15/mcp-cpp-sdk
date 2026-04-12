@@ -6,6 +6,26 @@
 
 namespace {
 
+TEST(TransportFactoryTest, FactoryCreateStdioReturnsNonNull) {
+    mcp::Runtime runtime;
+    mcp::TransportFactory factory(runtime);
+    auto transport = factory.create_stdio();
+    ASSERT_NE(transport, nullptr);
+}
+
+TEST(TransportFactoryTest, FactoryCreateHttpClientReturnsNonNull) {
+    mcp::Runtime runtime;
+    mcp::TransportFactory factory(runtime);
+    auto transport = factory.create_http_client("http://localhost:9999/mcp");
+    ASSERT_NE(transport, nullptr);
+}
+
+TEST(TransportFactoryTest, FactoryCreateHttpClientThrowsOnInvalidUrl) {
+    mcp::Runtime runtime;
+    mcp::TransportFactory factory(runtime);
+    EXPECT_THROW(factory.create_http_client("ftp://bad"), std::invalid_argument);
+}
+
 TEST(TransportFactoryTest, MakeStdioTransportReturnsNonNull) {
     mcp::Runtime runtime;
     auto transport = mcp::make_stdio_transport(runtime);
