@@ -1,8 +1,8 @@
 .PHONY: all init init-dev init-docs build debug test clean format lint coverage docs
 
 SUDO := $(shell [ $$(id -u 2>/dev/null || echo 1) -eq 0 ] || echo "sudo")
-# use half of the number of cores (cross-platform)
-NUM_CPU_2 := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
+# Use half of the number of cores (cross-platform), ensuring a minimum of 1
+NUM_CPU_2 := $(shell c=$$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2); h=$$((c / 2)); [ $$h -gt 0 ] && echo $$h || echo 1)
 
 all: build
 

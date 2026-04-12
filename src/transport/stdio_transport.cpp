@@ -26,11 +26,11 @@ struct StdioTransport::Impl {
     };
 
     Impl(const boost::asio::any_io_executor& executor, std::istream& input, std::ostream& output)
-        : output(output),
+        : input(input),
+          output(output),
           strand(boost::asio::make_strand(executor)),
           state(std::make_shared<SharedState>(strand)) {
         state->timer.expires_at(std::chrono::steady_clock::time_point::max());
-        start_reader(input);
     }
 
     ~Impl() {
@@ -40,18 +40,21 @@ struct StdioTransport::Impl {
         }
     }
 
-    void start_reader(std::istream& input) {
+    void ensure_reader_started() {
+        if (reader_started) {
+            return;
+        }
+        reader_started = true;
         auto shared_state = state;
-        reader_thread = std::thread([&input, shared_state]() {
+        reader_thread = std::thread([&in = input, shared_state]() {
             std::string line;
-            while (std::getline(input, line)) {
+            while (std::getline(in, line)) {
                 if (shared_state->closed.load(std::memory_order_acquire)) {
                     break;
                 }
 
-                auto message = std::move(line);
                 boost::asio::post(shared_state->timer.get_executor(),
-                                  [shared_state, m = std::move(message)]() mutable {
+                                  [shared_state, m = std::move(line)]() mutable {
                                       shared_state->queue.push(std::move(m));
                                       shared_state->timer.cancel();
                                   });
@@ -64,9 +67,11 @@ struct StdioTransport::Impl {
         });
     }
 
+    std::istream& input;
     std::ostream& output;
     boost::asio::strand<boost::asio::any_io_executor> strand;
     std::shared_ptr<SharedState> state;
+    bool reader_started{false};
     std::thread reader_thread;
 };
 
@@ -77,6 +82,7 @@ StdioTransport::StdioTransport(const boost::asio::any_io_executor& executor, std
 StdioTransport::~StdioTransport() = default;
 
 Task<std::string> StdioTransport::read_message() {
+    impl_->ensure_reader_started();
     auto& state = *impl_->state;
     for (;;) {
         if (!state.queue.empty()) {
@@ -107,6 +113,9 @@ Task<void> StdioTransport::write_message(std::string_view message) {
     co_return;
 }
 
-void StdioTransport::close() { impl_->state->closed.store(true, std::memory_order_release); }
+void StdioTransport::close() {
+    impl_->state->closed.store(true, std::memory_order_release);
+    impl_->state->timer.cancel();
+}
 
 }  // namespace mcp

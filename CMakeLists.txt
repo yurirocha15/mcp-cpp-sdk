@@ -20,16 +20,16 @@ target_sources(
   mcp-cpp-sdk
   PRIVATE src/version.cpp
           src/runtime.cpp
-          src/stdio_transport.cpp
           src/server_stdio.cpp
           src/server_http.cpp
           src/server_tool.cpp
           src/server.cpp
-          src/http_server_transport.cpp
-          src/http_client_transport.cpp
-          src/http_session_manager.cpp
-          src/websocket_transport.cpp
-          src/transport_factories.cpp)
+          src/transport/stdio_transport.cpp
+          src/transport/http_server_transport.cpp
+          src/transport/http_client_transport.cpp
+          src/transport/http_session_manager.cpp
+          src/transport/websocket_transport.cpp
+          src/transport/transport_factories.cpp)
 
 # Documentation target
 find_package(Doxygen QUIET)
@@ -76,6 +76,7 @@ if(BUILD_TESTING)
       test/transport_http_resumability_test.cpp
       test/transport_http_session_manager_test.cpp
       test/transport_memory_test.cpp
+      test/e2e_integration_test.cpp
       test/runtime_test.cpp
       test/server_stdio_test.cpp
       test/server_http_test.cpp

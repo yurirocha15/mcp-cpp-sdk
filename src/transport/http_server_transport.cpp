@@ -133,12 +133,16 @@ struct HttpServerTransport::Impl {
                           });
     }
 
+    static void set_common_headers(http::response<http::string_body>& response, bool keep_alive) {
+        response.set(http::field::server, "mcp-cpp-sdk");
+        response.keep_alive(keep_alive);
+    }
+
     static http::response<http::string_body> make_json_response(
         const http::request<http::string_body>& request, http::status status_code, std::string body) {
         http::response<http::string_body> response{status_code, request.version()};
-        response.set(http::field::server, "mcp-cpp-sdk");
+        set_common_headers(response, request.keep_alive());
         response.set(http::field::content_type, "application/json");
-        response.keep_alive(request.keep_alive());
         response.body() = std::move(body);
         response.prepare_payload();
         return response;
@@ -147,8 +151,7 @@ struct HttpServerTransport::Impl {
     static http::response<http::string_body> make_error_response(
         const http::request<http::string_body>& request, http::status status_code,
         std::string_view error_message) {
-        nlohmann::json error_body = nlohmann::json::object();
-        error_body["error"] = std::string(error_message);
+        nlohmann::json error_body = {{"error", std::string(error_message)}};
         return make_json_response(request, status_code, error_body.dump());
     }
 
@@ -164,10 +167,9 @@ struct HttpServerTransport::Impl {
         const std::string& data) {
         std::string sse_body = "id: " + event_id + "\ndata: " + data + "\n\n";
         http::response<http::string_body> response{http::status::ok, request.version()};
-        response.set(http::field::server, "mcp-cpp-sdk");
+        set_common_headers(response, request.keep_alive());
         response.set(http::field::content_type, "text/event-stream");
         response.set(http::field::cache_control, "no-cache");
-        response.keep_alive(request.keep_alive());
         response.body() = std::move(sse_body);
         response.prepare_payload();
         return response;
@@ -181,10 +183,9 @@ struct HttpServerTransport::Impl {
             sse_body += "id: " + id + "\ndata: " + data + "\n\n";
         }
         http::response<http::string_body> response{http::status::ok, request.version()};
-        response.set(http::field::server, "mcp-cpp-sdk");
+        set_common_headers(response, request.keep_alive());
         response.set(http::field::content_type, "text/event-stream");
         response.set(http::field::cache_control, "no-cache");
-        response.keep_alive(request.keep_alive());
         response.body() = std::move(sse_body);
         response.prepare_payload();
         return response;
@@ -285,18 +286,33 @@ struct HttpServerTransport::Impl {
         co_return;
     }
 
-    Task<http::response<http::string_body>> handle_post(
+    std::optional<http::response<http::string_body>> check_protocol_version(
         const http::request<http::string_body>& request) {
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         if (protocol_header_it == request.end() ||
             protocol_header_it->value() != LATEST_PROTOCOL_VERSION) {
-            co_return make_error_response(request, http::status::bad_request,
-                                          "Invalid MCP-Protocol-Version header");
+            return make_error_response(request, http::status::bad_request,
+                                       "Invalid MCP-Protocol-Version header");
         }
+        return std::nullopt;
+    }
 
+    std::optional<http::response<http::string_body>> check_origin(
+        const http::request<http::string_body>& request) {
         const auto origin_header_it = request.find(http::field::origin);
         if (origin_header_it != request.end() && !is_origin_allowed(origin_header_it->value())) {
-            co_return make_error_response(request, http::status::forbidden, "Origin not allowed");
+            return make_error_response(request, http::status::forbidden, "Origin not allowed");
+        }
+        return std::nullopt;
+    }
+
+    Task<http::response<http::string_body>> handle_post(
+        const http::request<http::string_body>& request) {
+        if (auto error = check_protocol_version(request)) {
+            co_return std::move(*error);
+        }
+        if (auto error = check_origin(request)) {
+            co_return std::move(*error);
         }
 
         const auto session_check = co_await validate_post_session(request);
@@ -377,16 +393,11 @@ struct HttpServerTransport::Impl {
 
     Task<http::response<http::string_body>> handle_delete(
         const http::request<http::string_body>& request) {
-        const auto protocol_header_it = request.find("MCP-Protocol-Version");
-        if (protocol_header_it == request.end() ||
-            protocol_header_it->value() != LATEST_PROTOCOL_VERSION) {
-            co_return make_error_response(request, http::status::bad_request,
-                                          "Invalid MCP-Protocol-Version header");
+        if (auto error = check_protocol_version(request)) {
+            co_return std::move(*error);
         }
-
-        const auto origin_header_it = request.find(http::field::origin);
-        if (origin_header_it != request.end() && !is_origin_allowed(origin_header_it->value())) {
-            co_return make_error_response(request, http::status::forbidden, "Origin not allowed");
+        if (auto error = check_origin(request)) {
+            co_return std::move(*error);
         }
 
         const auto session_check = co_await validate_delete_session(request);
@@ -401,11 +412,8 @@ struct HttpServerTransport::Impl {
 
     Task<http::response<http::string_body>> handle_get(
         const http::request<http::string_body>& request) {
-        const auto protocol_header_it = request.find("MCP-Protocol-Version");
-        if (protocol_header_it == request.end() ||
-            protocol_header_it->value() != LATEST_PROTOCOL_VERSION) {
-            co_return make_error_response(request, http::status::bad_request,
-                                          "Invalid MCP-Protocol-Version header");
+        if (auto error = check_protocol_version(request)) {
+            co_return std::move(*error);
         }
 
         if (!session_id.has_value()) {
