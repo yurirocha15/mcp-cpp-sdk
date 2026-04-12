@@ -52,7 +52,7 @@ class ScriptedTransport final : public mcp::ITransport {
         written_.emplace_back(msg);
         if (on_write_) {
             auto cb = on_write_;
-            cb(written_.back());
+            boost::asio::post(strand_, [cb, m = written_.back()]() { cb(m); });
         }
     }
 
@@ -128,7 +128,9 @@ TEST_F(ClientNotificationsTest, NotificationCallbackFires) {
             progress_notif["method"] = "notifications/progress";
             progress_notif["params"] = {{"progressToken", "tok-1"}, {"progress", 0.5}};
             raw->enqueue_message(progress_notif.dump());
-            raw->close();
+
+            boost::asio::post(io_ctx_,
+                              [raw]() { boost::asio::post(raw->strand(), [raw]() { raw->close(); }); });
         }
     });
 
@@ -165,7 +167,9 @@ TEST_F(ClientNotificationsTest, UnhandledNotificationSilentlyDropped) {
             notif["method"] = "notifications/unknown";
             notif["params"] = {{"data", "test"}};
             raw->enqueue_message(notif.dump());
-            raw->close();
+
+            boost::asio::post(io_ctx_,
+                              [raw]() { boost::asio::post(raw->strand(), [raw]() { raw->close(); }); });
         }
     });
 

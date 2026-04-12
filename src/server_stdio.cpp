@@ -18,10 +18,9 @@ void Server::run_stdio(std::istream& input, std::ostream& output) {
     auto executor = io_ctx.get_executor();
 
     auto transport = std::make_unique<StdioTransport>(executor, input, output);
-    auto* transport_ptr = transport.get();
 
     boost::asio::signal_set signals(io_ctx, SIGINT, SIGTERM);
-    signals.async_wait([&](const boost::system::error_code&, int) { transport_ptr->close(); });
+    signals.async_wait([&](const boost::system::error_code&, int) { io_ctx.stop(); });
 
     std::exception_ptr ep;
     boost::asio::co_spawn(
