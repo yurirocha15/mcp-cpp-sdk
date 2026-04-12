@@ -359,6 +359,7 @@ void HttpClientTransport::close() {
                     co_await http::async_read(*shared_state->stream, delete_response_buffer,
                                               delete_response, net::use_awaitable);
                 } catch (...) {
+                    // Best-effort DELETE on close; ignore errors if the server is unreachable.
                 }
             }
 

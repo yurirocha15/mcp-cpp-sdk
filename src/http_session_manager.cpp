@@ -630,7 +630,10 @@ Task<void> StreamableHttpSessionManager::listen() {
         }
 
         boost::asio::co_spawn(impl_->strand, impl_->handle_connection(std::move(socket)),
-                              [](std::exception_ptr) {});
+                              [](std::exception_ptr) {
+                                  // Connection errors (EOF, client disconnect) are normal;
+                                  // handled per-connection, not propagated to the accept loop.
+                              });
     }
 }
 

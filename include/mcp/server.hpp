@@ -11,15 +11,12 @@
 #include <cstdint>
 #include <functional>
 #include <iosfwd>
-#include <map>
 #include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 namespace boost::asio {
 class any_io_executor;
@@ -66,11 +63,11 @@ concept SyncHandlerWithCtx = requires(Fn fn, Context& ctx, In in) {
 /**
  * @brief Wraps a handler of any supported signature into a TypeErasedHandler.
  *
- * @details Supports four handler signatures via if constexpr:
- * - Fn(In) -> Task<Out>         (async, no context)
- * - Fn(Context&, In) -> Task<Out>  (async, with context)
- * - Fn(In) -> Out               (sync, no context)
- * - Fn(Context&, In) -> Out     (sync, with context)
+ * Supported signatures:
+ * - `Fn(In) -> Task<Out>`           (async, no context)
+ * - `Fn(Context&, In) -> Task<Out>` (async, with context)
+ * - `Fn(In) -> Out`                 (sync, no context)
+ * - `Fn(Context&, In) -> Out`       (sync, with context)
  *
  * @tparam In  The input type (must satisfy JsonSerializable).
  * @tparam Out The output type (must satisfy JsonSerializable).
@@ -87,20 +84,20 @@ TypeErasedHandler wrap_handler(Fn fn) {
             auto input = params.template get<In>();
             if constexpr (AsyncHandlerWithCtx<Fn, In, Out>) {
                 Out output = co_await handler(ctx, std::move(input));
-                nlohmann::json result = std::move(output);
-                co_return result;
+                nlohmann::json json_result = std::move(output);
+                co_return json_result;
             } else if constexpr (AsyncHandlerNoCtx<Fn, In, Out>) {
                 Out output = co_await handler(std::move(input));
-                nlohmann::json result = std::move(output);
-                co_return result;
+                nlohmann::json json_result = std::move(output);
+                co_return json_result;
             } else if constexpr (SyncHandlerWithCtx<Fn, In, Out>) {
                 Out output = handler(ctx, std::move(input));
-                nlohmann::json result = std::move(output);
-                co_return result;
+                nlohmann::json json_result = std::move(output);
+                co_return json_result;
             } else {
                 Out output = handler(std::move(input));
-                nlohmann::json result = std::move(output);
-                co_return result;
+                nlohmann::json json_result = std::move(output);
+                co_return json_result;
             }
         };
 }
@@ -149,9 +146,7 @@ class Server {
         tool.name = name;
         tool.description = std::move(description);
         tool.inputSchema = std::move(input_schema);
-        tools_.push_back(std::move(tool));
-
-        tool_handlers_.emplace(std::move(name), detail::wrap_handler<In, Out>(std::move(handler)));
+        register_tool(std::move(tool), name, detail::wrap_handler<In, Out>(std::move(handler)));
     }
 
     /**
@@ -168,16 +163,15 @@ class Server {
         tool.description = std::move(description);
         tool.inputSchema = std::move(input_schema);
         tool.outputSchema = std::move(output_schema);
-        tools_.push_back(std::move(tool));
-
-        tool_handlers_.emplace(std::move(name), detail::wrap_handler<In, Out>(std::move(handler)));
+        register_tool(std::move(tool), name, detail::wrap_handler<In, Out>(std::move(handler)));
     }
 
     /**
      * @brief Register a tool with a simple synchronous JSON handler.
      *
      * Accepts raw JSON params and returns a raw JSON result. Exceptions thrown
-     * by the handler are propagated as JSON-RPC errors.
+     * by the handler become a tool error result (isError=true) rather than a
+     * JSON-RPC protocol error.
      *
      * @param name         Tool name.
      * @param description  Human-readable description.
@@ -198,9 +192,7 @@ class Server {
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_resource(Resource resource, Fn handler) {
-        auto uri = resource.uri;
-        resources_.push_back(std::move(resource));
-        resource_handlers_.emplace(std::move(uri), detail::wrap_handler<In, Out>(std::move(handler)));
+        register_resource(std::move(resource), detail::wrap_handler<In, Out>(std::move(handler)));
     }
 
     /**
@@ -208,9 +200,7 @@ class Server {
      *
      * @param tmpl Resource template metadata.
      */
-    void add_resource_template(ResourceTemplate tmpl) {
-        resource_templates_.push_back(std::move(tmpl));
-    }
+    void add_resource_template(ResourceTemplate tmpl);
 
     /**
      * @brief Register a prompt with the server.
@@ -223,9 +213,7 @@ class Server {
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_prompt(Prompt prompt, Fn handler) {
-        auto name = prompt.name;
-        prompts_.push_back(std::move(prompt));
-        prompt_handlers_.emplace(std::move(name), detail::wrap_handler<In, Out>(std::move(handler)));
+        register_prompt(std::move(prompt), detail::wrap_handler<In, Out>(std::move(handler)));
     }
 
     /**
@@ -237,23 +225,21 @@ class Server {
      *
      * @param mw Middleware function to register.
      */
-    void use(Middleware mw) { middlewares_.push_back(std::move(mw)); }
+    void use(Middleware mw);
 
     /**
      * @brief Register a completion handler for completion/complete requests.
      *
      * @param handler The handler that provides completion results.
      */
-    void set_completion_provider(CompletionHandler handler) {
-        completion_handler_ = std::move(handler);
-    }
+    void set_completion_provider(CompletionHandler handler);
 
     /**
      * @brief Set the page size for paginated list responses.
      *
      * @param size The maximum number of items per page. 0 means no pagination.
      */
-    void set_page_size(std::size_t size) { page_size_ = size; }
+    void set_page_size(std::size_t size);
 
     /**
      * @brief Send a JSON-RPC request to the connected client and await its response.
@@ -318,14 +304,14 @@ class Server {
      *
      * @return true if an initialize request has been handled.
      */
-    [[nodiscard]] bool is_initialized() const { return initialized_; }
+    [[nodiscard]] bool is_initialized() const;
 
     /**
      * @brief Check whether a shutdown has been requested.
      *
      * @return true if a shutdown request has been handled.
      */
-    [[nodiscard]] bool is_shutdown_requested() const { return shutdown_requested_; }
+    [[nodiscard]] bool is_shutdown_requested() const;
 
     /**
      * @brief Send a notifications/tools/list_changed notification to the client.
@@ -357,25 +343,28 @@ class Server {
      *
      * @param handler Callback receiving the subscribed resource URI.
      */
-    void on_subscribe(SubscriptionHandler handler) { subscribe_handler_ = std::move(handler); }
+    void on_subscribe(SubscriptionHandler handler);
 
     /**
      * @brief Register a callback invoked after a successful resource unsubscription.
      *
      * @param handler Callback receiving the unsubscribed resource URI.
      */
-    void on_unsubscribe(SubscriptionHandler handler) { unsubscribe_handler_ = std::move(handler); }
+    void on_unsubscribe(SubscriptionHandler handler);
 
     /**
      * @brief Get the currently active server log level.
      *
      * @return The log level used when filtering context log messages.
      */
-    [[nodiscard]] LoggingLevel get_log_level() const {
-        return log_level_.load(std::memory_order_relaxed);
-    }
+    [[nodiscard]] LoggingLevel get_log_level() const;
 
    private:
+    // Non-template registration helpers called by the template add_* methods above.
+    void register_tool(Tool tool, std::string name, TypeErasedHandler handler);
+    void register_resource(Resource resource, TypeErasedHandler handler);
+    void register_prompt(Prompt prompt, TypeErasedHandler handler);
+
     Context make_context(std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
                          std::optional<ProgressToken> progress_token = std::nullopt);
 
@@ -431,48 +420,13 @@ class Server {
 
     [[nodiscard]] bool has_tool_output_schema(const std::string& name) const;
 
-    Implementation server_info_;
-    ServerCapabilities capabilities_;
-    bool initialized_ = false;
-    bool shutdown_requested_ = false;
+    void reset_session();
 
     struct PendingRequest;
     struct Session;
 
-    std::unique_ptr<Session> session_;
-    std::atomic<int64_t> next_request_id_{1};
-
-    std::atomic<LoggingLevel> log_level_{LoggingLevel::Debug};
-
-    std::size_t page_size_ = 0;
-
-    CompletionHandler completion_handler_;
-
-    void reset_session();
-
-    /// @brief Registered tool metadata.
-    std::vector<Tool> tools_;
-    /// @brief Type-erased tool handlers keyed by tool name.
-    std::map<std::string, TypeErasedHandler, std::less<>> tool_handlers_;
-
-    /// @brief Registered resource metadata.
-    std::vector<Resource> resources_;
-    /// @brief Type-erased resource handlers keyed by resource URI.
-    std::map<std::string, TypeErasedHandler, std::less<>> resource_handlers_;
-
-    /// @brief Registered resource template metadata.
-    std::vector<ResourceTemplate> resource_templates_;
-
-    /// @brief Registered prompt metadata.
-    std::vector<Prompt> prompts_;
-    /// @brief Type-erased prompt handlers keyed by prompt name.
-    std::map<std::string, TypeErasedHandler, std::less<>> prompt_handlers_;
-
-    /// @brief Registered middleware functions in order of registration.
-    std::vector<Middleware> middlewares_;
-
-    SubscriptionHandler subscribe_handler_;
-    SubscriptionHandler unsubscribe_handler_;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace mcp

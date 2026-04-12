@@ -496,7 +496,6 @@ struct HttpServerTransport::Impl {
     std::unordered_set<std::string> allowed_origins;
 
     EventStore event_store;
-    std::vector<std::shared_ptr<boost::asio::steady_timer>> sse_clients;
 };
 
 HttpServerTransport::HttpServerTransport(const boost::asio::any_io_executor& executor, std::string host,
@@ -546,9 +545,6 @@ Task<void> HttpServerTransport::write_message(std::string_view message) {
     auto event_id = impl_->event_store.append(std::string(message));
 
     if (!response_json.contains("id")) {
-        for (auto& timer : impl_->sse_clients) {
-            timer->cancel();
-        }
         co_return;
     }
 
@@ -615,7 +611,10 @@ Task<void> HttpServerTransport::listen() {
         }
 
         boost::asio::co_spawn(impl_->strand, impl_->handle_connection(std::move(socket)),
-                              [](std::exception_ptr) {});
+                              [](std::exception_ptr) {
+                                  // Connection errors (EOF, client disconnect) are normal;
+                                  // handled per-connection, not propagated to the accept loop.
+                              });
     }
 }
 
