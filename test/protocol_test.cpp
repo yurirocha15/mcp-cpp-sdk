@@ -1210,8 +1210,8 @@ TEST(ProtocolTest, RequestIdStringSerialization) {
     EXPECT_EQ(j.get<std::string>(), "req-42");
 
     auto deserialized = j.get<mcp::RequestId>();
-    ASSERT_TRUE(std::holds_alternative<std::string>(deserialized));
-    EXPECT_EQ(std::get<std::string>(deserialized), "req-42");
+    ASSERT_TRUE(std::holds_alternative<std::string>(deserialized.value));
+    EXPECT_EQ(std::get<std::string>(deserialized.value), "req-42");
 }
 
 TEST(ProtocolTest, RequestIdIntegerSerialization) {
@@ -1222,8 +1222,8 @@ TEST(ProtocolTest, RequestIdIntegerSerialization) {
     EXPECT_EQ(j.get<int64_t>(), 7);
 
     auto deserialized = j.get<mcp::RequestId>();
-    ASSERT_TRUE(std::holds_alternative<int64_t>(deserialized));
-    EXPECT_EQ(std::get<int64_t>(deserialized), 7);
+    ASSERT_TRUE(std::holds_alternative<int64_t>(deserialized.value));
+    EXPECT_EQ(std::get<int64_t>(deserialized.value), 7);
 }
 
 TEST(ProtocolTest, RequestIdInvalidTypeThrows) {
@@ -1289,8 +1289,8 @@ TEST(ProtocolTest, JSONRPCRequestSerialization) {
 
     auto deserialized = j.get<mcp::JSONRPCRequest>();
     EXPECT_EQ(deserialized.jsonrpc, "2.0");
-    ASSERT_TRUE(std::holds_alternative<std::string>(deserialized.id));
-    EXPECT_EQ(std::get<std::string>(deserialized.id), "req-1");
+    ASSERT_TRUE(std::holds_alternative<std::string>(deserialized.id.value));
+    EXPECT_EQ(std::get<std::string>(deserialized.id.value), "req-1");
     EXPECT_EQ(deserialized.method, "tools/list");
     ASSERT_TRUE(deserialized.params.has_value());
     EXPECT_EQ((*deserialized.params)["cursor"], "abc");
@@ -1305,8 +1305,8 @@ TEST(ProtocolTest, JSONRPCRequestSerialization) {
     EXPECT_FALSE(j2.contains("params"));
 
     auto deserialized2 = j2.get<mcp::JSONRPCRequest>();
-    ASSERT_TRUE(std::holds_alternative<int64_t>(deserialized2.id));
-    EXPECT_EQ(std::get<int64_t>(deserialized2.id), 42);
+    ASSERT_TRUE(std::holds_alternative<int64_t>(deserialized2.id.value));
+    EXPECT_EQ(std::get<int64_t>(deserialized2.id.value), 42);
     EXPECT_FALSE(deserialized2.params.has_value());
 }
 
@@ -1348,8 +1348,8 @@ TEST(ProtocolTest, JSONRPCResultResponseSerialization) {
     EXPECT_TRUE(j["result"]["tools"].is_array());
 
     auto deserialized = j.get<mcp::JSONRPCResultResponse>();
-    ASSERT_TRUE(std::holds_alternative<std::string>(deserialized.id));
-    EXPECT_EQ(std::get<std::string>(deserialized.id), "resp-1");
+    ASSERT_TRUE(std::holds_alternative<std::string>(deserialized.id.value));
+    EXPECT_EQ(std::get<std::string>(deserialized.id.value), "resp-1");
     EXPECT_TRUE(deserialized.result.contains("tools"));
 
     // Integer id
@@ -1361,8 +1361,8 @@ TEST(ProtocolTest, JSONRPCResultResponseSerialization) {
     EXPECT_EQ(j2["id"], 10);
 
     auto deserialized2 = j2.get<mcp::JSONRPCResultResponse>();
-    ASSERT_TRUE(std::holds_alternative<int64_t>(deserialized2.id));
-    EXPECT_EQ(std::get<int64_t>(deserialized2.id), 10);
+    ASSERT_TRUE(std::holds_alternative<int64_t>(deserialized2.id.value));
+    EXPECT_EQ(std::get<int64_t>(deserialized2.id.value), 10);
 }
 
 TEST(ProtocolTest, JSONRPCErrorResponseSerialization) {
@@ -1380,8 +1380,8 @@ TEST(ProtocolTest, JSONRPCErrorResponseSerialization) {
     EXPECT_EQ(deserialized.error.code, -32700);
     EXPECT_EQ(deserialized.error.message, "Parse error");
     ASSERT_TRUE(deserialized.id.has_value());
-    ASSERT_TRUE(std::holds_alternative<std::string>(*deserialized.id));
-    EXPECT_EQ(std::get<std::string>(*deserialized.id), "err-1");
+    ASSERT_TRUE(std::holds_alternative<std::string>(deserialized.id->value));
+    EXPECT_EQ(std::get<std::string>(deserialized.id->value), "err-1");
 
     // No id (parse error before id was read)
     mcp::JSONRPCErrorResponse no_id;
@@ -1903,7 +1903,7 @@ TEST(ProtocolTest, CancelledNotificationSerialization) {
 
     auto deserialized = j.get<mcp::CancelledNotification>();
     EXPECT_EQ(deserialized.method, "notifications/cancelled");
-    EXPECT_EQ(std::get<std::string>(deserialized.params.requestId), "req-1");
+    EXPECT_EQ(std::get<std::string>(deserialized.params.requestId.value), "req-1");
     ASSERT_TRUE(deserialized.params.reason.has_value());
     EXPECT_EQ(*deserialized.params.reason, "Timeout");
 
@@ -1916,7 +1916,7 @@ TEST(ProtocolTest, CancelledNotificationSerialization) {
     EXPECT_FALSE(j2["params"].contains("reason"));
 
     auto deserialized2 = j2.get<mcp::CancelledNotification>();
-    EXPECT_EQ(std::get<int64_t>(deserialized2.params.requestId), 42);
+    EXPECT_EQ(std::get<int64_t>(deserialized2.params.requestId.value), 42);
     EXPECT_FALSE(deserialized2.params.reason.has_value());
 }
 
@@ -1936,7 +1936,7 @@ TEST(ProtocolTest, ProgressNotificationSerialization) {
 
     auto deserialized = j.get<mcp::ProgressNotification>();
     EXPECT_EQ(deserialized.method, "notifications/progress");
-    EXPECT_EQ(std::get<std::string>(deserialized.params.progressToken), "tok-1");
+    EXPECT_EQ(std::get<std::string>(deserialized.params.progressToken.value), "tok-1");
     EXPECT_DOUBLE_EQ(deserialized.params.progress, 50.5);
     ASSERT_TRUE(deserialized.params.total.has_value());
     EXPECT_DOUBLE_EQ(*deserialized.params.total, 100.0);

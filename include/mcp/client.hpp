@@ -496,20 +496,13 @@ class Client {
                 }
             }
         } catch (const std::exception&) {
+            // Transport closed or error occurred, terminate loop.
         }
     }
 
     void dispatch_response(const nlohmann::json& json_msg) {
         auto id = json_msg.at("id").get<RequestId>();
-        auto id_str = std::visit(
-            [](auto&& val) -> std::string {
-                if constexpr (std::is_same_v<std::decay_t<decltype(val)>, std::string>) {
-                    return val;
-                } else {
-                    return std::to_string(val);
-                }
-            },
-            id);
+        auto id_str = id.to_string();
 
         auto it = pending_requests_.find(id_str);
         if (it == pending_requests_.end()) {
@@ -531,15 +524,7 @@ class Client {
         if (method == "notifications/cancelled") {
             if (json_msg.contains("params")) {
                 auto params = json_msg.at("params").get<CancelledNotificationParams>();
-                auto id_str = std::visit(
-                    [](auto&& val) -> std::string {
-                        if constexpr (std::is_same_v<std::decay_t<decltype(val)>, std::string>) {
-                            return val;
-                        } else {
-                            return std::to_string(val);
-                        }
-                    },
-                    params.requestId);
+                auto id_str = params.requestId.to_string();
 
                 auto it = pending_requests_.find(id_str);
                 if (it != pending_requests_.end()) {
@@ -557,6 +542,18 @@ class Client {
         }
     }
 
+    /**
+     * @brief Handles an incoming JSON-RPC request from the server (reverse RPC).
+     *
+     * @details Looks up the method in request_handlers_ and invokes the registered
+     * handler. Exceptions from handlers are caught and returned as JSON-RPC error
+     * responses with code -32603 (INTERNAL_ERROR). The @c ping method is handled
+     * automatically and returns an empty result object. Unknown methods return a
+     * METHOD_NOT_FOUND error response. Runs on the client's asio strand
+     * (co_spawned from the read loop).
+     *
+     * @param json_msg The raw JSON-RPC request with @c id, @c method, and optional @c params.
+     */
     Task<void> dispatch_incoming_request(nlohmann::json json_msg) {
         auto id = json_msg.at("id").get<RequestId>();
         auto method = json_msg.at("method").get<std::string>();
