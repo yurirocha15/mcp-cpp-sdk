@@ -107,8 +107,9 @@ Task<std::string> StdioTransport::read_message() {
 }
 
 Task<void> StdioTransport::write_message(std::string_view message) {
+    std::string msg(message);
     co_await boost::asio::post(impl_->strand, boost::asio::use_awaitable);
-    impl_->output << message << '\n';
+    impl_->output << msg << '\n';
     impl_->output.flush();
     co_return;
 }

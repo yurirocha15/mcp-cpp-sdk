@@ -163,7 +163,7 @@ TEST_F(SessionManagerTest, InitializeCreatesSession) {
 
     auto body = json::parse(init_response.body);
     EXPECT_TRUE(body.contains("result"));
-    EXPECT_EQ(body["result"]["protocolVersion"], mcp::LATEST_PROTOCOL_VERSION);
+    EXPECT_EQ(body["result"]["protocolVersion"], std::string(mcp::LATEST_PROTOCOL_VERSION));
 }
 
 // ---------------------------------------------------------------------------

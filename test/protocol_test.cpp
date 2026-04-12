@@ -14,7 +14,7 @@ TEST(ProtocolTest, InitializeRequestSerialization) {
 
     json json_obj = req;
 
-    EXPECT_EQ(json_obj["protocolVersion"], mcp::LATEST_PROTOCOL_VERSION);
+    EXPECT_EQ(json_obj["protocolVersion"], std::string(mcp::LATEST_PROTOCOL_VERSION));
     EXPECT_EQ(json_obj["clientInfo"]["name"], "test-client");
     EXPECT_EQ(json_obj["clientInfo"]["version"], "1.0.0");
     EXPECT_TRUE(json_obj["capabilities"].is_object());
@@ -27,7 +27,7 @@ TEST(ProtocolTest, InitializeResultDeserialization) {
 
     mcp::InitializeResult res = json_obj.get<mcp::InitializeResult>();
 
-    EXPECT_EQ(res.protocolVersion, mcp::LATEST_PROTOCOL_VERSION);
+    EXPECT_EQ(res.protocolVersion, std::string(mcp::LATEST_PROTOCOL_VERSION));
     EXPECT_EQ(res.serverInfo.name, "test-server");
     EXPECT_FALSE(res.instructions.has_value());
 }
@@ -1538,7 +1538,7 @@ TEST(ProtocolTest, ImplementationDescriptionField) {
 }
 
 TEST(ProtocolTest, LatestProtocolVersion) {
-    EXPECT_EQ(mcp::LATEST_PROTOCOL_VERSION, "2025-11-25");
+    EXPECT_EQ(std::string(mcp::LATEST_PROTOCOL_VERSION), "2025-11-25");
     EXPECT_EQ(mcp::PROTOCOL_VERSION_2025_11_25, "2025-11-25");
 }
 

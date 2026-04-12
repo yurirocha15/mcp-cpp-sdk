@@ -47,10 +47,12 @@ class ScriptedTransport final : public mcp::ITransport {
     }
 
     mcp::Task<void> write_message(std::string_view message) override {
+        std::string msg(message);
         co_await boost::asio::post(strand_, boost::asio::use_awaitable);
-        written_.emplace_back(message);
+        written_.emplace_back(msg);
         if (on_write_) {
-            on_write_(written_.back());
+            auto cb = on_write_;
+            boost::asio::post(strand_, [cb, m = written_.back()]() { cb(m); });
         }
     }
 

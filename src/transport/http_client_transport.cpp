@@ -282,6 +282,7 @@ Task<void> HttpClientTransport::write_message(std::string_view message) {
         throw std::runtime_error("HttpClientTransport is closed");
     }
 
+    std::string msg(message);
     co_await net::post(impl_->strand, net::use_awaitable);
 
     if (impl_->state->closed.load(std::memory_order_acquire)) {
@@ -302,7 +303,7 @@ Task<void> HttpClientTransport::write_message(std::string_view message) {
         if (!impl_->state->last_event_id.empty()) {
             request.set("Last-Event-ID", impl_->state->last_event_id);
         }
-        request.body() = std::string(message);
+        request.body() = std::move(msg);
         request.prepare_payload();
 
         impl_->state->stream->expires_after(std::chrono::seconds(30));

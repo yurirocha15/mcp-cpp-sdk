@@ -133,7 +133,7 @@ TEST_F(ServerHttpTest, RunHttpInitializesAndResponds) {
 #ifdef _WIN32
     std::raise(SIGINT);
 #else
-    ::kill(::getpid(), SIGINT);
+    ::kill(::getpid(), SIGTERM);
 #endif
     server_thread.join();
 
@@ -158,7 +158,7 @@ TEST_F(ServerHttpTest, RunHttpShutdownOnSignal) {
 #ifdef _WIN32
         std::raise(SIGINT);
 #else
-        ::kill(::getpid(), SIGINT);
+        ::kill(::getpid(), SIGTERM);
 #endif
     });
 

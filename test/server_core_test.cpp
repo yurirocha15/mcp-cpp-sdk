@@ -141,7 +141,7 @@ TEST_F(ServerCoreTest, InitializeReturnsServerCapabilities) {
     EXPECT_EQ(response["jsonrpc"], "2.0");
 
     auto result = response["result"];
-    EXPECT_EQ(result["protocolVersion"], mcp::LATEST_PROTOCOL_VERSION);
+    EXPECT_EQ(result["protocolVersion"], std::string(mcp::LATEST_PROTOCOL_VERSION));
     EXPECT_EQ(result["serverInfo"]["name"], "test-server");
     EXPECT_EQ(result["serverInfo"]["version"], "1.0");
     ASSERT_TRUE(result["capabilities"].contains("tools"));

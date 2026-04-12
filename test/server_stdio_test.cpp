@@ -202,7 +202,7 @@ TEST_F(ServerStdioTest, RunStdioSignalCausesShutdown) {
 #ifdef _WIN32
         std::raise(SIGINT);
 #else
-        ::kill(::getpid(), SIGINT);
+        ::kill(::getpid(), SIGTERM);
 #endif
         sbuf.close();
     });

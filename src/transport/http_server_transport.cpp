@@ -539,18 +539,19 @@ Task<std::string> HttpServerTransport::read_message() {
 }
 
 Task<void> HttpServerTransport::write_message(std::string_view message) {
+    std::string msg(message);
     co_await boost::asio::post(impl_->strand, boost::asio::use_awaitable);
 
     if (impl_->state->closed.load(std::memory_order_acquire)) {
         throw std::runtime_error("HttpServerTransport is closed");
     }
 
-    const auto response_json = nlohmann::json::parse(message, nullptr, false);
+    const auto response_json = nlohmann::json::parse(msg, nullptr, false);
     if (response_json.is_discarded() || !response_json.is_object()) {
         co_return;
     }
 
-    auto event_id = impl_->event_store.append(std::string(message));
+    auto event_id = impl_->event_store.append(msg);
 
     if (!response_json.contains("id")) {
         co_return;
@@ -562,7 +563,7 @@ Task<void> HttpServerTransport::write_message(std::string_view message) {
         co_return;
     }
 
-    pending_it->second.response_body = std::string(message);
+    pending_it->second.response_body = msg;
     pending_it->second.event_id = std::move(event_id);
     pending_it->second.response_ready = true;
 

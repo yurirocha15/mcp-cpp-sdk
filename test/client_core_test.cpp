@@ -181,7 +181,7 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
     EXPECT_EQ(first["method"], "initialize");
     EXPECT_TRUE(first.contains("id"));
     EXPECT_EQ(first["jsonrpc"], "2.0");
-    EXPECT_EQ(first["params"]["protocolVersion"], mcp::LATEST_PROTOCOL_VERSION);
+    EXPECT_EQ(first["params"]["protocolVersion"], std::string(mcp::LATEST_PROTOCOL_VERSION));
     EXPECT_EQ(first["params"]["clientInfo"]["name"], "test-client");
     EXPECT_EQ(first["params"]["clientInfo"]["version"], "0.1");
 
@@ -190,7 +190,7 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
     EXPECT_FALSE(second.contains("id"));
     EXPECT_EQ(second["jsonrpc"], "2.0");
 
-    EXPECT_EQ(init_result.protocolVersion, mcp::LATEST_PROTOCOL_VERSION);
+    EXPECT_EQ(init_result.protocolVersion, std::string(mcp::LATEST_PROTOCOL_VERSION));
     EXPECT_EQ(init_result.serverInfo.name, "test-server");
     EXPECT_EQ(init_result.serverInfo.version, "1.0");
 }
@@ -450,7 +450,7 @@ TEST_F(ClientCoreTest, ConnectReturnsServerCapabilities) {
 
     io_ctx_.run();
 
-    EXPECT_EQ(init_result.protocolVersion, mcp::LATEST_PROTOCOL_VERSION);
+    EXPECT_EQ(init_result.protocolVersion, std::string(mcp::LATEST_PROTOCOL_VERSION));
     EXPECT_EQ(init_result.serverInfo.name, "test-server");
     ASSERT_TRUE(init_result.instructions.has_value());
     EXPECT_EQ(*init_result.instructions, "Welcome to the test server");

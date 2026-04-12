@@ -149,7 +149,8 @@ TEST_F(HttpTransportTest, FullMcpHandshake) {
     auto response_json = nlohmann::json::parse(client_received_response);
     EXPECT_TRUE(response_json.contains("result"));
     EXPECT_TRUE(response_json.at("result").contains("protocolVersion"));
-    EXPECT_EQ(response_json.at("result").at("protocolVersion"), mcp::LATEST_PROTOCOL_VERSION);
+    EXPECT_EQ(response_json.at("result").at("protocolVersion"),
+              std::string(mcp::LATEST_PROTOCOL_VERSION));
 }
 
 TEST_F(HttpTransportTest, SessionIdPropagation) {
