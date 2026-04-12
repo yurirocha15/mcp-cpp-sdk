@@ -22,16 +22,23 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install Dependencies
-        run: python3 scripts/init.py --docs
       - name: Install CMake
         uses: jwlawson/actions-setup-cmake@v2
         with:
           cmake-version: '3.25'
-      - name: Build Doxygen XML
+      - name: Install Dependencies
         run: |
-          make build
-          cmake --build --preset conan-release --target docs
+          sudo apt-get update -qq
+          sudo apt-get install -y doxygen
+          python3 scripts/init.py --docs
+      - name: Build
+        run: |
+          conan install . --output-folder=build --build=missing -s compiler.cppstd=20 -c tools.cmake.cmaketoolchain:generator=Ninja
+          echo '{"version":4,"vendor":{"conan":{}},"include":["build/CMakePresets.json"]}' > CMakeUserPresets.json
+          cmake --preset conan-release
+          cmake --build --preset conan-release -j$(nproc)
+      - name: Build Doxygen XML
+        run: cmake --build --preset conan-release --target docs
       - name: Build Sphinx HTML
         run: sphinx-build -b html docs build/docs/html
       - name: Upload Pages artifact

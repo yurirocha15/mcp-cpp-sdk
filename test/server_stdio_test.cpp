@@ -9,6 +9,11 @@
 #include <string>
 #include <thread>
 
+#ifndef _WIN32
+#include <sys/types.h>
+#include <unistd.h>
+#endif
+
 namespace {
 
 nlohmann::json make_initialize_request(std::string_view id) {
@@ -190,7 +195,15 @@ TEST_F(ServerStdioTest, RunStdioSignalCausesShutdown) {
 
     std::thread signal_sender([&sbuf] {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // Use kill(getpid()) instead of raise() so the signal is delivered to the
+        // whole process. On macOS, raise() only targets the calling thread, which
+        // means boost::asio::signal_set (running on the io_context thread) never
+        // sees it and the default handler fires instead, causing a crash.
+#ifdef _WIN32
         std::raise(SIGINT);
+#else
+        ::kill(::getpid(), SIGINT);
+#endif
         sbuf.close();
     });
 

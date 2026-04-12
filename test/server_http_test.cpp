@@ -18,6 +18,11 @@
 #include <string>
 #include <thread>
 
+#ifndef _WIN32
+#include <sys/types.h>
+#include <unistd.h>
+#endif
+
 namespace {
 
 namespace asio = boost::asio;
@@ -125,7 +130,11 @@ TEST_F(ServerHttpTest, RunHttpInitializesAndResponds) {
     beast::error_code ec;
     stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
 
+#ifdef _WIN32
     std::raise(SIGINT);
+#else
+    ::kill(::getpid(), SIGINT);
+#endif
     server_thread.join();
 
     EXPECT_EQ(init_json["id"], "1");
@@ -146,7 +155,11 @@ TEST_F(ServerHttpTest, RunHttpShutdownOnSignal) {
 
     std::thread signal_sender([] {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+#ifdef _WIN32
         std::raise(SIGINT);
+#else
+        ::kill(::getpid(), SIGINT);
+#endif
     });
 
     server_->run_http("127.0.0.1", port);
