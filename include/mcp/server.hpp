@@ -110,14 +110,10 @@ TypeErasedHandler wrap_handler(Fn fn) {
 /**
  * @brief MCP server that handles client requests over a transport.
  *
- * @details Manages the JSON-RPC message loop, dispatching incoming
- * requests to the appropriate handler. Supports the MCP initialize
- * handshake and shutdown flow, as well as tool, resource, and prompt
- * handler registration and dispatch. Creates a Context per request
- * for handler use.
- *
- * All async operations execute on a boost::asio::strand for thread
- * safety without std::mutex.
+ * Manages the JSON-RPC message loop, dispatching incoming requests to
+ * registered handlers. Supports the MCP initialize handshake and shutdown
+ * flow, as well as tool, resource, and prompt handler registration.
+ * Creates a Context per request for handler use.
  */
 class Server {
    public:
@@ -139,17 +135,13 @@ class Server {
     /**
      * @brief Register a tool with the server.
      *
-     * @details Stores the tool metadata and wraps the handler into a
-     * type-erased function. The handler is called when a tools/call
-     * request matches the tool's name.
-     *
-     * @tparam In  The input type for the handler (must satisfy JsonSerializable).
-     * @tparam Out The output type for the handler (must satisfy JsonSerializable).
-     * @tparam Fn  The handler callable type (sync/async, with/without Context).
-     * @param name The name of the tool.
-     * @param description A human-readable description of the tool.
-     * @param input_schema The JSON schema describing the tool's input.
-     * @param handler The handler function to invoke on tools/call.
+     * @tparam In  Handler input type (must satisfy JsonSerializable).
+     * @tparam Out Handler output type (must satisfy JsonSerializable).
+     * @tparam Fn  Handler callable (sync/async, with/without Context).
+     * @param name         Tool name.
+     * @param description  Human-readable description.
+     * @param input_schema JSON schema for the tool's input parameters.
+     * @param handler      Handler invoked on tools/call requests.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_tool(std::string name, std::string description, nlohmann::json input_schema, Fn handler) {
@@ -165,8 +157,8 @@ class Server {
     /**
      * @brief Register a tool with an output schema for structured output.
      *
-     * @details Like add_tool, but also sets the tool's outputSchema. When a tool has
-     * an outputSchema, its result will include a structuredContent field alongside content.
+     * Like add_tool(), but also sets the tool's outputSchema so results include
+     * a structuredContent field alongside content.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_tool(std::string name, std::string description, nlohmann::json input_schema,
@@ -184,13 +176,12 @@ class Server {
     /**
      * @brief Register a tool with a simple synchronous JSON handler.
      *
-     * @details Convenience overload that avoids templates and coroutines.
-     * The handler receives raw JSON params and returns a raw JSON result.
-     * Exceptions thrown by the handler are propagated as JSON-RPC errors.
+     * Accepts raw JSON params and returns a raw JSON result. Exceptions thrown
+     * by the handler are propagated as JSON-RPC errors.
      *
-     * @param name         The name of the tool.
-     * @param description  A human-readable description of the tool.
-     * @param input_schema The JSON schema describing the tool's input.
+     * @param name         Tool name.
+     * @param description  Human-readable description.
+     * @param input_schema JSON schema for the tool's input parameters.
      * @param handler      Synchronous handler: takes JSON params, returns JSON result.
      */
     void add_tool(std::string name, std::string description, nlohmann::json input_schema,
@@ -199,15 +190,11 @@ class Server {
     /**
      * @brief Register a resource with the server.
      *
-     * @details Stores the resource metadata and wraps the handler into a
-     * type-erased function. The handler is called when a resources/read
-     * request matches the resource's URI.
-     *
-     * @tparam In  The input type for the handler (must satisfy JsonSerializable).
-     * @tparam Out The output type for the handler (must satisfy JsonSerializable).
-     * @tparam Fn  The handler callable type (sync/async, with/without Context).
-     * @param resource The resource metadata.
-     * @param handler The handler function to invoke on resources/read.
+     * @tparam In  Handler input type (must satisfy JsonSerializable).
+     * @tparam Out Handler output type (must satisfy JsonSerializable).
+     * @tparam Fn  Handler callable (sync/async, with/without Context).
+     * @param resource Resource metadata.
+     * @param handler  Handler invoked on resources/read requests.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_resource(Resource resource, Fn handler) {
@@ -217,13 +204,9 @@ class Server {
     }
 
     /**
-     * @brief Register a resource template with the server.
+     * @brief Register a resource template for listing via resources/templates/list.
      *
-     * @details Stores the resource template metadata for listing.
-     * Resource templates describe parameterized resources that clients
-     * can discover via resources/templates/list.
-     *
-     * @param tmpl The resource template metadata.
+     * @param tmpl Resource template metadata.
      */
     void add_resource_template(ResourceTemplate tmpl) {
         resource_templates_.push_back(std::move(tmpl));
@@ -232,15 +215,11 @@ class Server {
     /**
      * @brief Register a prompt with the server.
      *
-     * @details Stores the prompt metadata and wraps the handler into a
-     * type-erased function. The handler is called when a prompts/get
-     * request matches the prompt's name.
-     *
-     * @tparam In  The input type for the handler (must satisfy JsonSerializable).
-     * @tparam Out The output type for the handler (must satisfy JsonSerializable).
-     * @tparam Fn  The handler callable type (sync/async, with/without Context).
-     * @param prompt The prompt metadata.
-     * @param handler The handler function to invoke on prompts/get.
+     * @tparam In  Handler input type (must satisfy JsonSerializable).
+     * @tparam Out Handler output type (must satisfy JsonSerializable).
+     * @tparam Fn  Handler callable (sync/async, with/without Context).
+     * @param prompt  Prompt metadata.
+     * @param handler Handler invoked on prompts/get requests.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_prompt(Prompt prompt, Fn handler) {
@@ -252,12 +231,11 @@ class Server {
     /**
      * @brief Register a middleware function to intercept handler invocations.
      *
-     * @details Middleware functions execute in registration order (first registered = outermost).
-     * Each middleware receives the context, request parameters, and a continuation to invoke
-     * the next middleware in the chain (or the final handler). Middleware can modify parameters,
-     * short-circuit execution, or post-process results.
+     * Middleware executes in registration order (first registered = outermost).
+     * Each middleware receives the context, request parameters, and a
+     * continuation to call the next in the chain or the final handler.
      *
-     * @param mw The middleware function to register.
+     * @param mw Middleware function to register.
      */
     void use(Middleware mw) { middlewares_.push_back(std::move(mw)); }
 
@@ -278,14 +256,10 @@ class Server {
     void set_page_size(std::size_t size) { page_size_ = size; }
 
     /**
-     * @brief Send a JSON-RPC request to the client and await its response (reverse RPC).
+     * @brief Send a JSON-RPC request to the connected client and await its response.
      *
-     * @details Assigns a unique integer ID, sends the request over the
-     * transport, then suspends the calling coroutine until the dispatch
-     * loop routes the matching response back to this pending request.
-     *
-     * @param method The JSON-RPC method name.
-     * @param params Optional parameters for the request.
+     * @param method JSON-RPC method name.
+     * @param params Optional request parameters.
      * @return A task that resolves to the result JSON.
      * @throws std::runtime_error If the client returns an error response.
      */
@@ -294,33 +268,26 @@ class Server {
     /**
      * @brief Start the server session loop on the given transport.
      *
-     * @details Reads messages from the transport, parses them as
-     * JSON-RPC, and dispatches each to the appropriate handler.
-     * Request handlers are co_spawned so the read loop can continue
-     * processing incoming messages (required for reverse RPC).
-     * The loop runs until the transport is closed or an error occurs.
+     * Runs until the transport is closed or an error occurs.
      *
-     * @param transport The transport to use for message exchange.
-     *                  Ownership is transferred to the server.
-     * @param executor The executor to use for async operations.
+     * @param transport The transport to use for message exchange. Ownership is transferred.
+     * @param executor  The executor to use for async operations.
      */
     Task<void> run(std::unique_ptr<ITransport> transport, const boost::asio::any_io_executor& executor);
 
     /**
      * @brief Run the server on stdio (stdin/stdout), blocking until shutdown.
      *
-     * @details Creates the transport and event loop internally, installs
-     * signal handlers for SIGINT and SIGTERM, and blocks until the server
-     * session ends or a signal is received. Exceptions from the server
-     * session are propagated to the caller.
+     * Handles SIGINT and SIGTERM for clean shutdown. Exceptions from the
+     * server session are propagated to the caller.
      */
     void run_stdio();
 
     /**
      * @brief Run the server on custom streams, blocking until shutdown.
      *
-     * @details Same as run_stdio() but reads from / writes to the given
-     * streams instead of stdin / stdout.
+     * Same as run_stdio() but reads from / writes to the given streams
+     * instead of stdin / stdout.
      *
      * @param input  Stream to read JSON-RPC messages from.
      * @param output Stream to write JSON-RPC responses to.
@@ -330,11 +297,9 @@ class Server {
     /**
      * @brief Run the server over HTTP, blocking until shutdown.
      *
-     * @details Binds to the given host and port, accepts HTTP connections,
-     * and processes JSON-RPC requests. Installs signal handlers for SIGINT
-     * and SIGTERM for clean shutdown. Blocks until the server session ends
-     * or a signal is received. Exceptions from the server session are
-     * propagated to the caller.
+     * Binds to the given host and port, accepts HTTP connections, and
+     * processes JSON-RPC requests. Handles SIGINT and SIGTERM for clean
+     * shutdown. Exceptions from the server session are propagated to the caller.
      *
      * @param host  Local address to bind (e.g. "0.0.0.0" or "127.0.0.1").
      * @param port  TCP port to listen on.
@@ -343,15 +308,6 @@ class Server {
 
     /**
      * @brief Dispatch a parsed JSON-RPC message to the appropriate handler.
-     *
-     * @details Non-coroutine entry point that routes messages. Responses
-     * (messages with "id" but no "method") are handled synchronously via
-     * dispatch_response(). Requests are co_spawned as independent
-     * coroutines so the run loop is never blocked—this is essential for
-     * reverse RPC (e.g. sampling) where a handler sends a request to the
-     * client and must wait for a response that arrives on the same
-     * transport. Notifications (messages without "id") are dispatched
-     * to notification handlers (e.g. cancellation).
      *
      * @param json_msg The parsed JSON-RPC message.
      */
@@ -423,19 +379,6 @@ class Server {
     Context make_context(std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
                          std::optional<ProgressToken> progress_token = std::nullopt);
 
-    /**
-     * @brief Handle a JSON-RPC request as a coroutine.
-     *
-     * @details Routes the request based on the "method" field. Handles
-     * "initialize" and "shutdown" internally. Routes tool, resource,
-     * and prompt methods to their respective handlers. Returns a
-     * JSON-RPC error response for unknown methods.
-     *
-     * Takes json_msg by value because the coroutine is co_spawned
-     * and may outlive the caller's stack frame.
-     *
-     * @param json_msg The parsed JSON-RPC request message (owned).
-     */
     Task<void> dispatch_request(nlohmann::json json_msg);
 
     void dispatch_notification(const nlohmann::json& json_msg);

@@ -12,10 +12,8 @@ namespace mcp {
 /**
  * @brief HTTP transport implementation for MCP client message exchange.
  *
- * @details Sends JSON-RPC messages via HTTP POST to an MCP Streamable HTTP
- * endpoint and enqueues response payloads for asynchronous consumption via
- * read_message(). Supports both `application/json` and `text/event-stream`
- * response content types.
+ * Sends JSON-RPC messages via HTTP POST to an MCP Streamable HTTP endpoint.
+ * Supports both `application/json` and `text/event-stream` response content types.
  */
 class HttpClientTransport final : public ITransport {
    public:
@@ -54,12 +52,8 @@ class HttpClientTransport final : public ITransport {
     [[nodiscard]] const std::string& last_event_id() const;
 
     /**
-     * @brief Dequeue the next MCP message received from HTTP responses.
+     * @brief Dequeue the next MCP message received from the server.
      *
-     * @details Suspends until a queued response message is available or until
-     * the transport is closed.
-     *
-     * @return A task resolving to the next queued message.
      * @throws std::runtime_error If the transport is closed.
      */
     Task<std::string> read_message() override;
@@ -69,17 +63,12 @@ class HttpClientTransport final : public ITransport {
      *
      * @param message Serialized JSON-RPC message body.
      *
-     * @throws std::runtime_error On transport closure or HTTP error status.
-     * @throws boost::system::system_error On networking failures.
+     * @throws std::runtime_error On transport closure or HTTP error.
      */
     Task<void> write_message(std::string_view message) override;
 
     /**
-     * @brief Close the transport and release HTTP connection resources.
-     *
-     * @details Marks the transport as closed, wakes pending readers, sends an
-     * HTTP DELETE request if an MCP session is active, and closes the TCP
-     * connection.
+     * @brief Close the transport and release connection resources.
      */
     void close() override;
 

@@ -28,6 +28,7 @@ target_sources(
           src/http_server_transport.cpp
           src/http_client_transport.cpp
           src/http_session_manager.cpp
+          src/websocket_transport.cpp
           src/transport_factories.cpp)
 
 # Documentation target

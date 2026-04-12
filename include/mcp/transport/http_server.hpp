@@ -18,11 +18,11 @@ namespace mcp {
 /**
  * @brief A bounded in-memory event store for SSE resumability.
  *
- * @details Stores recent SSE events with monotonically increasing IDs. When the
+ * Stores recent SSE events with monotonically increasing IDs. When the
  * store exceeds its capacity, the oldest events are evicted. Clients can replay
  * missed events by providing the last event ID they received.
  *
- * Thread safety: Not thread-safe. Caller must synchronize access (e.g. via strand).
+ * Not thread-safe. External synchronization is required for concurrent access.
  */
 class EventStore {
    public:
@@ -132,9 +132,9 @@ class EventStore {
 /**
  * @brief HTTP server transport for MCP Streamable HTTP.
  *
- * @details Accepts HTTP requests, enqueues inbound JSON-RPC messages for MCP
- * server processing, and maps outbound JSON-RPC responses back to the matching
- * HTTP requests. Supports SSE replay via an in-memory event store.
+ * Accepts HTTP connections, processes inbound JSON-RPC messages, and routes
+ * outbound responses back to their matching HTTP requests. Supports SSE
+ * replay via an in-memory event store.
  */
 class HttpServerTransport final : public ITransport {
    public:
@@ -165,19 +165,13 @@ class HttpServerTransport final : public ITransport {
 
     /**
      * @brief Read the next queued JSON-RPC message from HTTP POST bodies.
-     *
-     * @return A task resolving to the next JSON-RPC payload.
      */
     Task<std::string> read_message() override;
 
     /**
-     * @brief Store a JSON-RPC response for the pending HTTP request.
-     *
-     * @details Matches the response by JSON-RPC id and signals the waiting HTTP
-     * handler through a per-request timer.
+     * @brief Send a JSON-RPC response for the pending HTTP request.
      *
      * @param message Serialized JSON-RPC response.
-     * @return A task that completes when the response is stored.
      */
     Task<void> write_message(std::string_view message) override;
 
@@ -188,8 +182,6 @@ class HttpServerTransport final : public ITransport {
 
     /**
      * @brief Start accepting HTTP connections.
-     *
-     * @details Runs an accept loop and spawns one coroutine per TCP connection.
      *
      * @return A task that completes when the accept loop exits.
      */

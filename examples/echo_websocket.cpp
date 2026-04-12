@@ -10,18 +10,13 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/use_awaitable.hpp>
-#include <boost/beast/core/tcp_stream.hpp>
-#include <boost/beast/websocket/stream.hpp>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <string>
 
 namespace asio = boost::asio;
-namespace beast = boost::beast;
-namespace ws = beast::websocket;
 using tcp = asio::ip::tcp;
-using WsStream = ws::stream<beast::tcp_stream>;
 
 int main() {
     using namespace mcp;
@@ -52,32 +47,22 @@ int main() {
     tcp::acceptor acceptor(io_ctx, tcp::endpoint(tcp::v4(), 0));
     auto port = acceptor.local_endpoint().port();
 
-    // Server side: accept connection → WebSocket handshake → run MCP server
+    // Server side: accept TCP socket → WebSocketServerTransport handles WS upgrade
     asio::co_spawn(
         io_ctx,
         [&]() -> Task<void> {
             auto socket = co_await acceptor.async_accept(asio::use_awaitable);
-            WsStream ws_stream(std::move(socket));
-            co_await ws_stream.async_accept(asio::use_awaitable);
-            auto transport = std::make_unique<WebSocketTransport>(std::move(ws_stream));
+            auto transport = std::make_unique<WebSocketServerTransport>(std::move(socket));
             co_await server.run(std::move(transport), io_ctx.get_executor());
         },
         boost::asio::detached);
 
-    // Client side: connect → WebSocket handshake → run MCP client
+    // Client side: WebSocketClientTransport handles connect + WS handshake internally
     asio::co_spawn(
         io_ctx,
         [&]() -> Task<void> {
-            tcp::resolver resolver(io_ctx.get_executor());
-            auto results =
-                co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
-
-            WsStream ws_stream(io_ctx.get_executor());
-            co_await ws_stream.next_layer().async_connect(*results.begin(), asio::use_awaitable);
-            co_await ws_stream.async_handshake("127.0.0.1:" + std::to_string(port), "/",
-                                               asio::use_awaitable);
-
-            auto transport = std::make_unique<WebSocketTransport>(std::move(ws_stream));
+            auto transport = std::make_unique<WebSocketClientTransport>(
+                io_ctx.get_executor(), "127.0.0.1", std::to_string(port));
             Client client(std::move(transport), io_ctx.get_executor());
 
             Implementation client_info;
