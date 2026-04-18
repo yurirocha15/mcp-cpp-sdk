@@ -159,40 +159,115 @@ def ensure_pip():
         print("[+] pip available")
 
 
+def _is_externally_managed_python():
+    """Detect whether the system Python is PEP 668 externally managed (Ubuntu 23.04+, Debian 12+, Fedora 38+)."""
+    import sysconfig
+    marker = Path(sysconfig.get_path('data')) / 'lib' / 'python{}.{}'.format(
+        sys.version_info.major, sys.version_info.minor) / 'EXTERNALLY-MANAGED'
+    if marker.exists():
+        return True
+    # Also check the stdlib path (used on some distros)
+    stdlib_marker = Path(sysconfig.get_path('stdlib')) / 'EXTERNALLY-MANAGED'
+    return stdlib_marker.exists()
+
+
+def _detect_linux_package_manager():
+    """Return the first available Linux package manager command, or None."""
+    for pm in ('apt-get', 'dnf', 'yum'):
+        if check_command_exists(pm):
+            return pm
+    return None
+
+
 def ensure_pipx():
-    """Ensure pipx is installed and configured."""
-    if not check_command_exists('pipx'):
-        print("[*] Installing pipx...")
-        ensure_pip()
+    """Ensure pipx is installed and configured.
 
-        # Install pipx using pip --user
-        pip_cmd = 'pip3' if check_command_exists('pip3') else 'pip'
-        run_command([pip_cmd, 'install', '--user', 'pipx'])
-
-        # Ensure pipx path is configured
-        run_command(['python3', '-m', 'pipx', 'ensurepath'], check=False)
-
-        print("[+] pipx installed (you may need to restart your shell)")
-
-        # Try to find pipx in common locations
-        home = Path.home()
-        possible_paths = [
-            home / '.local' / 'bin' / 'pipx',
-            home / 'Library' / 'Python' / '*' / 'bin' / 'pipx',  # macOS
-        ]
-
-        pipx_found = False
-        for path_pattern in possible_paths:
-            matches = list(Path('/').glob(str(path_pattern).lstrip('/')))
-            if matches and matches[0].exists():
-                pipx_found = True
-                break
-
-        if not pipx_found and not check_command_exists('pipx'):
-            print("[!] Warning: pipx may not be in PATH. You may need to restart your shell.",
-                  file=sys.stderr)
-    else:
+    Installation strategy (per https://pipx.pypa.io/stable/how-to/install-pipx/):
+      - macOS:          brew install pipx
+      - Linux apt:      sudo apt install pipx   (Ubuntu 23.04+/Debian 12+ are PEP 668 – never use pip here)
+      - Linux dnf/yum:  sudo dnf install pipx
+      - Windows/other:  py -m pip install --user pipx
+      - Fallback:       bootstrap via a throw-away venv to avoid touching the system Python
+    """
+    if check_command_exists('pipx'):
         print("[+] pipx available")
+        return
+
+    print("[*] Installing pipx...")
+    os_type = detect_os()
+
+    if os_type == 'macos':
+        if check_command_exists('brew'):
+            run_command(['brew', 'install', 'pipx'])
+        else:
+            # Homebrew not available – fall back to pip
+            pip_cmd = 'pip3' if check_command_exists('pip3') else 'pip'
+            run_command([pip_cmd, 'install', '--user', 'pipx'])
+
+    elif os_type == 'linux':
+        pm = _detect_linux_package_manager()
+        if pm in ('apt-get',):
+            # Ubuntu 23.04+ / Debian 12+: use apt; pip install --user is blocked by PEP 668
+            try:
+                run_command(['sudo', 'apt-get', 'update', '-qq'])
+                run_command(['sudo', 'apt-get', 'install', '-y', 'pipx'])
+            except subprocess.CalledProcessError:
+                _install_pipx_via_venv_bootstrap()
+        elif pm in ('dnf', 'yum'):
+            try:
+                run_command(['sudo', pm, 'install', '-y', 'pipx'])
+            except subprocess.CalledProcessError:
+                _install_pipx_via_venv_bootstrap()
+        elif _is_externally_managed_python():
+            # PEP 668 system but no known package manager – use venv bootstrap
+            _install_pipx_via_venv_bootstrap()
+        else:
+            # Older / non-PEP-668 distro: plain pip --user is fine
+            pip_cmd = 'pip3' if check_command_exists('pip3') else 'pip'
+            run_command([pip_cmd, 'install', '--user', 'pipx'])
+
+    elif os_type == 'windows':
+        # Windows: py -m pip install --user pipx (scoop is optional, not always present)
+        py_cmd = 'py' if check_command_exists('py') else 'python3'
+        run_command([py_cmd, '-m', 'pip', 'install', '--user', 'pipx'])
+
+    # Add ~/.local/bin to PATH for this process so subsequent pipx calls work
+    local_bin = str(Path.home() / '.local' / 'bin')
+    if local_bin not in os.environ.get('PATH', ''):
+        os.environ['PATH'] = local_bin + os.pathsep + os.environ.get('PATH', '')
+
+    # Ensure pipx's own bin dir is on PATH
+    run_command(['pipx', 'ensurepath'], check=False)
+
+    if not check_command_exists('pipx'):
+        print("[!] Warning: pipx may not be in PATH. You may need to restart your shell "
+              "or run: export PATH=\"$HOME/.local/bin:$PATH\"", file=sys.stderr)
+    else:
+        print("[+] pipx installed")
+
+
+def _install_pipx_via_venv_bootstrap():
+    """Install pipx via a throw-away venv (fallback for PEP 668 systems without a distro package).
+
+    Mirrors the official bootstrap from https://pipx.pypa.io/stable/how-to/install-pipx/:
+        python3 -m venv /tmp/bootstrap
+        /tmp/bootstrap/bin/pip install pipx
+        /tmp/bootstrap/bin/pipx install pipx
+        rm -rf /tmp/bootstrap
+        pipx ensurepath
+    """
+    import tempfile
+    bootstrap_dir = Path(tempfile.mkdtemp(prefix='pipx-bootstrap-'))
+    try:
+        print(f"[*] Bootstrapping pipx via temporary venv at {bootstrap_dir}...")
+        run_command([sys.executable, '-m', 'venv', str(bootstrap_dir)])
+        bootstrap_pip = bootstrap_dir / 'bin' / 'pip'
+        bootstrap_pipx = bootstrap_dir / 'bin' / 'pipx'
+        run_command([str(bootstrap_pip), 'install', 'pipx'])
+        run_command([str(bootstrap_pipx), 'install', 'pipx'])
+    finally:
+        import shutil as _shutil
+        _shutil.rmtree(bootstrap_dir, ignore_errors=True)
 
 
 def install_pipx_tool(tool):
@@ -307,8 +382,6 @@ Examples:
         # === Build dependencies (always installed) ===
         print("\n=== Installing build dependencies ===")
 
-        # Ensure pip and pipx
-        ensure_pip()
         ensure_pipx()
 
         # Install CMake if missing
