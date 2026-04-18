@@ -95,6 +95,21 @@ if(BUILD_TESTING)
       target_link_options(mcp-sdk-tests PRIVATE --coverage)
     endif()
   endif()
+
+  option(ENABLE_SANITIZERS
+         "Enable AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
+  if(ENABLE_SANITIZERS)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+      set(SANITIZER_FLAGS -fsanitize=address,undefined -fno-omit-frame-pointer
+                          -g)
+      target_compile_options(mcp-cpp-sdk PUBLIC ${SANITIZER_FLAGS})
+      target_link_options(mcp-cpp-sdk PUBLIC -fsanitize=address,undefined)
+      target_compile_options(mcp-sdk-tests PRIVATE ${SANITIZER_FLAGS})
+      target_link_options(mcp-sdk-tests PRIVATE -fsanitize=address,undefined)
+    else()
+      message(WARNING "ENABLE_SANITIZERS is only supported with GCC or Clang")
+    endif()
+  endif()
 endif()
 
 # Examples

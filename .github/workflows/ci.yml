@@ -32,18 +32,32 @@ jobs:
       uses: ilammy/msvc-dev-cmd@v1
 
     - name: Install Dependencies
-      run: |
-        if [ "$RUNNER_OS" == "Windows" ]; then
-          python scripts/init.py
-        else
-          python3 scripts/init.py
-        fi
-      shell: bash
+      run: python scripts/init.py
 
     - name: Build
-      run: make build
-      shell: bash
+      run: python scripts/build.py build
 
     - name: Test
-      run: make test
-      shell: bash
+      run: python scripts/build.py test
+
+  sanitize:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install CMake
+      uses: jwlawson/actions-setup-cmake@v2
+      with:
+        cmake-version: '3.25'
+
+    - name: Install Dependencies
+      run: python scripts/init.py
+
+    - name: Build and Test with Sanitizers
+      run: python scripts/build.py sanitize

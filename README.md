@@ -35,24 +35,24 @@ git clone https://github.com/yurirocha15/mcp-cpp-sdk.git
 cd mcp-cpp-sdk
 
 # Install dependencies (cross-platform)
-make init
+python scripts/init.py
 
 # Build the project
-make build
+python scripts/build.py build
 
 # Run tests
-make test
+python scripts/build.py test
 ```
 
 For development with additional tools (clang-format, clang-tidy, pre-commit):
 ```bash
-make init-dev
+python scripts/init.py --dev
 ```
 
 For documentation generation:
 ```bash
-make init-docs
-make docs
+python scripts/init.py --docs
+python scripts/build.py docs
 ```
 
 ## Quick Start Examples
@@ -221,7 +221,7 @@ The repository includes several complete examples:
 
 Build and run examples:
 ```bash
-make build
+python scripts/build.py build
 ./build/example-server-simple
 ```
 
@@ -230,18 +230,19 @@ make build
 ### Build Commands
 
 ```bash
-make build        # Release build with optimizations
-make debug        # Debug build with symbols
-make test         # Run all tests
-make coverage     # Generate coverage report
-make clean        # Clean build artifacts
+python scripts/build.py build     # Release build with optimizations
+python scripts/build.py debug     # Debug build with symbols
+python scripts/build.py test      # Run all tests
+python scripts/build.py sanitize  # Build with ASan + UBSan, run tests
+python scripts/build.py coverage  # Generate coverage report
+python scripts/build.py clean     # Clean build artifacts
 ```
 
 ### Running Tests
 
 ```bash
 # Run the full test suite
-make test
+python scripts/build.py test
 
 # Run with verbose output
 ctest --preset conan-release --verbose
@@ -263,10 +264,10 @@ Documentation is built using Doxygen + Sphinx + Breathe:
 
 ```bash
 # Install documentation dependencies
-make init-docs
+python scripts/init.py --docs
 
 # Generate HTML documentation
-make docs
+python scripts/build.py docs
 
 # Open in browser
 open build/docs/html/index.html

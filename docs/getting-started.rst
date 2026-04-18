@@ -78,13 +78,13 @@ To build the SDK and examples from source:
    cd mcp-cpp-sdk
 
    # Initialize development environment
-   make init
+   python scripts/init.py
 
    # Build the project
-   make build
+   python scripts/build.py build
 
    # Run tests
-   make test
+   python scripts/build.py test
 
 Quick Start: Minimal Server
 ----------------------------

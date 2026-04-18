@@ -16,15 +16,15 @@ To set up your development environment:
    cd mcp-cpp-sdk
 
    # Initialize development environment
-   make init-dev
+   python scripts/init.py --dev
 
    # Build with tests
-   make build
+   python scripts/build.py build
 
    # Run tests
-   make test
+   python scripts/build.py test
 
-The ``make init-dev`` target installs all development dependencies including:
+The ``python scripts/init.py --dev`` target installs all development dependencies including:
 
 * Conan packages (Boost, nlohmann_json, GTest)
 * Git hooks for pre-commit checks
@@ -141,7 +141,7 @@ Running Tests
 .. code-block:: bash
 
    # Run all tests
-   make test
+   python scripts/build.py test
 
    # Run the full suite with ctest output on failures
    ctest --preset conan-release --output-on-failure
@@ -157,7 +157,7 @@ Aim for >80% code coverage for new features:
 .. code-block:: bash
 
    # Generate coverage report
-   make coverage
+   python scripts/build.py coverage
 
    # View report
    open build/coverage/index.html
@@ -187,7 +187,7 @@ Use descriptive branch names:
 * Write code following the style guide
 * Add tests for new functionality
 * Update documentation (Doxygen comments, .rst files)
-* Run tests locally: ``make test``
+* Run tests locally: ``python scripts/build.py test``
 * Format code: ``make format``
 
 3. Commit
