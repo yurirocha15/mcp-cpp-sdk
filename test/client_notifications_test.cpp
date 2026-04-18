@@ -51,8 +51,7 @@ class ScriptedTransport final : public mcp::ITransport {
         co_await boost::asio::post(strand_, boost::asio::use_awaitable);
         written_.emplace_back(msg);
         if (on_write_) {
-            auto cb = on_write_;
-            boost::asio::post(strand_, [cb, m = written_.back()]() { cb(m); });
+            on_write_(written_.back());
         }
     }
 
