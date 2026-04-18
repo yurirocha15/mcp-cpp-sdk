@@ -206,23 +206,26 @@ def ensure_pipx():
 
     elif os_type == 'linux':
         pm = _detect_linux_package_manager()
-        if pm in ('apt-get',):
-            # Ubuntu 23.04+ / Debian 12+: use apt; pip install --user is blocked by PEP 668
-            try:
-                run_command(['sudo', 'apt-get', 'update', '-qq'])
-                run_command(['sudo', 'apt-get', 'install', '-y', 'pipx'])
-            except subprocess.CalledProcessError:
+        if _is_externally_managed_python():
+            # PEP 668 system (Ubuntu 23.04+, Debian 12+, Fedora 38+): pip install --user is blocked.
+            # Use the distro package manager; fall back to venv bootstrap if the package isn't available.
+            if pm == 'apt-get':
+                try:
+                    run_command(['sudo', 'apt-get', 'update', '-qq'])
+                    run_command(['sudo', 'apt-get', 'install', '-y', 'pipx'])
+                except subprocess.CalledProcessError:
+                    _install_pipx_via_venv_bootstrap()
+            elif pm in ('dnf', 'yum'):
+                try:
+                    run_command(['sudo', pm, 'install', '-y', 'pipx'])
+                except subprocess.CalledProcessError:
+                    _install_pipx_via_venv_bootstrap()
+            else:
                 _install_pipx_via_venv_bootstrap()
-        elif pm in ('dnf', 'yum'):
-            try:
-                run_command(['sudo', pm, 'install', '-y', 'pipx'])
-            except subprocess.CalledProcessError:
-                _install_pipx_via_venv_bootstrap()
-        elif _is_externally_managed_python():
-            # PEP 668 system but no known package manager – use venv bootstrap
-            _install_pipx_via_venv_bootstrap()
         else:
-            # Older / non-PEP-668 distro: plain pip --user is fine
+            # Older / non-PEP-668 distro (e.g. Ubuntu 22.04, Debian 11): pip --user is fine.
+            # Ensure pip is available first.
+            ensure_pip()
             pip_cmd = 'pip3' if check_command_exists('pip3') else 'pip'
             run_command([pip_cmd, 'install', '--user', 'pipx'])
 
