@@ -433,6 +433,7 @@ Examples:
             install_pip_package('sphinx')
             install_pip_package('breathe')
             install_pip_package('furo')
+            install_pip_package('sphinx_rtd_theme')
 
         print("\n[+] All dependencies installed successfully!")
         print("\nNote: If pipx tools are not in PATH, restart your shell or run:")
