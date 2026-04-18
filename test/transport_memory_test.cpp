@@ -30,11 +30,12 @@ TEST_F(MemoryTransportTest, SendFromAReceiveOnB) {
 
     boost::asio::co_spawn(
         io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await transport_a->write_message("hello from A");
-            received_message = co_await transport_b->read_message();
+        [ta = std::move(transport_a), tb = std::move(transport_b), &success,
+         &received_message]() -> mcp::Task<void> {
+            co_await ta->write_message("hello from A");
+            received_message = co_await tb->read_message();
             success = true;
-        }(),
+        },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -51,11 +52,12 @@ TEST_F(MemoryTransportTest, SendFromBReceiveOnA) {
 
     boost::asio::co_spawn(
         io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await transport_b->write_message("hello from B");
-            received_message = co_await transport_a->read_message();
+        [ta = std::move(transport_a), tb = std::move(transport_b), &success,
+         &received_message]() -> mcp::Task<void> {
+            co_await tb->write_message("hello from B");
+            received_message = co_await ta->read_message();
             success = true;
-        }(),
+        },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -72,15 +74,16 @@ TEST_F(MemoryTransportTest, MultipleMessagesInOrder) {
 
     boost::asio::co_spawn(
         io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await transport_a->write_message("message1");
-            co_await transport_a->write_message("message2");
-            co_await transport_a->write_message("message3");
-            msg1 = co_await transport_b->read_message();
-            msg2 = co_await transport_b->read_message();
-            msg3 = co_await transport_b->read_message();
+        [ta = std::move(transport_a), tb = std::move(transport_b), &success, &msg1, &msg2,
+         &msg3]() -> mcp::Task<void> {
+            co_await ta->write_message("message1");
+            co_await ta->write_message("message2");
+            co_await ta->write_message("message3");
+            msg1 = co_await tb->read_message();
+            msg2 = co_await tb->read_message();
+            msg3 = co_await tb->read_message();
             success = true;
-        }(),
+        },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -99,13 +102,14 @@ TEST_F(MemoryTransportTest, BidirectionalCommunication) {
 
     boost::asio::co_spawn(
         io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await transport_a->write_message("A to B");
-            co_await transport_b->write_message("B to A");
-            a_received = co_await transport_a->read_message();
-            b_received = co_await transport_b->read_message();
+        [ta = std::move(transport_a), tb = std::move(transport_b), &success, &a_received,
+         &b_received]() -> mcp::Task<void> {
+            co_await ta->write_message("A to B");
+            co_await tb->write_message("B to A");
+            a_received = co_await ta->read_message();
+            b_received = co_await tb->read_message();
             success = true;
-        }(),
+        },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -117,20 +121,21 @@ TEST_F(MemoryTransportTest, BidirectionalCommunication) {
 
 TEST_F(MemoryTransportTest, CloseStopsRead) {
     auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    (void)transport_b;
 
     bool exception_thrown = false;
 
     boost::asio::co_spawn(
         io_ctx_,
-        [&]() -> mcp::Task<void> {
-            transport_a->close();
+        [ta = std::move(transport_a), &exception_thrown]() -> mcp::Task<void> {
+            ta->close();
             try {
-                co_await transport_a->read_message();
+                co_await ta->read_message();
             } catch (const std::runtime_error& e) {
                 exception_thrown = true;
                 EXPECT_STREQ(e.what(), "transport closed");
             }
-        }(),
+        },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -145,15 +150,16 @@ TEST_F(MemoryTransportTest, CloseOnOneSideAffectsOther) {
 
     boost::asio::co_spawn(
         io_ctx_,
-        [&]() -> mcp::Task<void> {
-            transport_a->close();
+        [ta = std::move(transport_a), tb = std::move(transport_b),
+         &exception_thrown]() -> mcp::Task<void> {
+            ta->close();
             try {
-                co_await transport_b->read_message();
+                co_await tb->read_message();
             } catch (const std::runtime_error& e) {
                 exception_thrown = true;
                 EXPECT_STREQ(e.what(), "transport closed");
             }
-        }(),
+        },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -163,6 +169,7 @@ TEST_F(MemoryTransportTest, CloseOnOneSideAffectsOther) {
 
 TEST_F(MemoryTransportTest, CloseIsIdempotent) {
     auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    (void)transport_b;
 
     transport_a->close();
     transport_a->close();
@@ -172,14 +179,14 @@ TEST_F(MemoryTransportTest, CloseIsIdempotent) {
 
     boost::asio::co_spawn(
         io_ctx_,
-        [&]() -> mcp::Task<void> {
+        [ta = std::move(transport_a), &exception_thrown]() -> mcp::Task<void> {
             try {
-                co_await transport_a->read_message();
+                co_await ta->read_message();
             } catch (const std::runtime_error& e) {
                 exception_thrown = true;
                 EXPECT_STREQ(e.what(), "transport closed");
             }
-        }(),
+        },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -189,20 +196,21 @@ TEST_F(MemoryTransportTest, CloseIsIdempotent) {
 
 TEST_F(MemoryTransportTest, WriteAfterCloseThrows) {
     auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    (void)transport_b;
 
     bool exception_thrown = false;
 
     boost::asio::co_spawn(
         io_ctx_,
-        [&]() -> mcp::Task<void> {
-            transport_a->close();
+        [ta = std::move(transport_a), &exception_thrown]() -> mcp::Task<void> {
+            ta->close();
             try {
-                co_await transport_a->write_message("test");
+                co_await ta->write_message("test");
             } catch (const std::runtime_error& e) {
                 exception_thrown = true;
                 EXPECT_STREQ(e.what(), "transport closed");
             }
-        }(),
+        },
         boost::asio::detached);
 
     io_ctx_.run();
