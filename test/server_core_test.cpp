@@ -105,8 +105,8 @@ class ServerCoreTest : public ::testing::Test {
 };
 
 TEST_F(ServerCoreTest, InitializeReturnsServerCapabilities) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     mcp::Implementation server_info;
     server_info.name = "test-server";
@@ -129,8 +129,7 @@ TEST_F(ServerCoreTest, InitializeReturnsServerCapabilities) {
     raw_transport->enqueue_message(init_req.dump());
 
     boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> { co_await server.run(std::move(transport), io_ctx_.get_executor()); },
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -151,8 +150,8 @@ TEST_F(ServerCoreTest, InitializeReturnsServerCapabilities) {
 }
 
 TEST_F(ServerCoreTest, ShutdownSetsFlag) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     mcp::Implementation server_info;
     server_info.name = "test-server";
@@ -174,8 +173,7 @@ TEST_F(ServerCoreTest, ShutdownSetsFlag) {
     raw_transport->enqueue_message(shutdown_req.dump());
 
     boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> { co_await server.run(std::move(transport), io_ctx_.get_executor()); },
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -194,8 +192,8 @@ TEST_F(ServerCoreTest, ShutdownSetsFlag) {
 }
 
 TEST_F(ServerCoreTest, UnknownMethodReturnsError) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     mcp::Implementation server_info;
     server_info.name = "test-server";
@@ -213,8 +211,7 @@ TEST_F(ServerCoreTest, UnknownMethodReturnsError) {
     raw_transport->enqueue_message(unknown_req.dump());
 
     boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> { co_await server.run(std::move(transport), io_ctx_.get_executor()); },
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -227,8 +224,8 @@ TEST_F(ServerCoreTest, UnknownMethodReturnsError) {
 }
 
 TEST_F(ServerCoreTest, NotificationsAreSilentlyIgnored) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     mcp::Implementation server_info;
     server_info.name = "test-server";
@@ -250,8 +247,7 @@ TEST_F(ServerCoreTest, NotificationsAreSilentlyIgnored) {
     raw_transport->enqueue_message(init_req.dump());
 
     boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> { co_await server.run(std::move(transport), io_ctx_.get_executor()); },
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -319,8 +315,8 @@ TEST_F(ServerCoreTest, DispatchDirectlyWithoutRun) {
     server_info.name = "test-server";
     server_info.version = "1.0";
 
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     mcp::Server server(std::move(server_info), mcp::ServerCapabilities{});
 
@@ -337,8 +333,7 @@ TEST_F(ServerCoreTest, DispatchDirectlyWithoutRun) {
     raw_transport->enqueue_message(init_req.dump());
 
     boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> { co_await server.run(std::move(transport), io_ctx_.get_executor()); },
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -349,8 +344,8 @@ TEST_F(ServerCoreTest, DispatchDirectlyWithoutRun) {
 }
 
 TEST_F(ServerCoreTest, PingHandlerReturnsEmptyResult) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     mcp::Implementation server_info;
     server_info.name = "test-server";
@@ -368,8 +363,7 @@ TEST_F(ServerCoreTest, PingHandlerReturnsEmptyResult) {
     raw_transport->enqueue_message(ping_req.dump());
 
     boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> { co_await server.run(std::move(transport), io_ctx_.get_executor()); },
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
         boost::asio::detached);
 
     io_ctx_.run();

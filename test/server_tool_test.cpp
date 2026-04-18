@@ -96,13 +96,13 @@ class ServerToolTest : public ::testing::Test {
     boost::asio::io_context io_ctx_;
 
     struct ServerSetup {
+        std::shared_ptr<mcp::ITransport> transport;
         ScriptedTransport* raw_transport;
-        std::unique_ptr<mcp::ITransport> transport;
         mcp::Server server;
 
         ServerSetup(boost::asio::io_context& io_ctx, mcp::ServerCapabilities caps)
-            : raw_transport(new ScriptedTransport(io_ctx.get_executor())),
-              transport(raw_transport),
+            : transport(std::make_shared<ScriptedTransport>(io_ctx.get_executor())),
+              raw_transport(static_cast<ScriptedTransport*>(transport.get())),
               server(
                   [] {
                       mcp::Implementation info;
@@ -146,7 +146,7 @@ TEST_F(ServerToolTest, NonTemplateSyncHandlerReturnsResult) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -187,7 +187,7 @@ TEST_F(ServerToolTest, NonTemplateHandlerExceptionBecomesJsonRpcError) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -232,7 +232,7 @@ TEST_F(ServerToolTest, NonTemplateToolAppearsInToolsList) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 

@@ -99,10 +99,10 @@ class ClientNotificationsTest : public ::testing::Test {
 };
 
 TEST_F(ClientNotificationsTest, NotificationCallbackFires) {
-    auto* raw = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw = transport.get();
 
-    mcp::Client client(std::move(transport), io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor());
 
     bool callback_fired = false;
     nlohmann::json received_params;
@@ -145,10 +145,10 @@ TEST_F(ClientNotificationsTest, NotificationCallbackFires) {
 }
 
 TEST_F(ClientNotificationsTest, UnhandledNotificationSilentlyDropped) {
-    auto* raw = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw = transport.get();
 
-    mcp::Client client(std::move(transport), io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor());
 
     int write_count = 0;
     raw->set_on_write([&](std::string_view msg) {
@@ -186,10 +186,10 @@ TEST_F(ClientNotificationsTest, UnhandledNotificationSilentlyDropped) {
 }
 
 TEST_F(ClientNotificationsTest, PingRequestHandledAutomatically) {
-    auto* raw = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw = transport.get();
 
-    mcp::Client client(std::move(transport), io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor());
 
     std::vector<std::string> written_messages;
     int write_count = 0;
@@ -228,10 +228,10 @@ TEST_F(ClientNotificationsTest, PingRequestHandledAutomatically) {
 }
 
 TEST_F(ClientNotificationsTest, CustomRequestHandlerDispatch) {
-    auto* raw = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw = transport.get();
 
-    mcp::Client client(std::move(transport), io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor());
 
     bool handler_called = false;
     nlohmann::json handler_params;
@@ -287,10 +287,10 @@ TEST_F(ClientNotificationsTest, CustomRequestHandlerDispatch) {
 }
 
 TEST_F(ClientNotificationsTest, UnknownRequestReturnsMethodNotFound) {
-    auto* raw = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw = transport.get();
 
-    mcp::Client client(std::move(transport), io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor());
 
     std::vector<std::string> written_messages;
     int write_count = 0;

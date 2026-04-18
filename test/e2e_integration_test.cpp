@@ -27,14 +27,14 @@ class E2EIntegrationTest : public ::testing::Test {
         client_info_ = std::move(client_info);
         client_caps_ = std::move(client_caps);
 
-        client_ = std::make_unique<mcp::Client>(std::move(client_transport), io_ctx_.get_executor());
-        server_transport_ = std::move(server_transport);
+        client_ = std::make_unique<mcp::Client>(client_transport, io_ctx_.get_executor());
+        server_transport_ = server_transport;
     }
 
     boost::asio::io_context io_ctx_;
     std::unique_ptr<mcp::Server> server_;
     std::unique_ptr<mcp::Client> client_;
-    std::unique_ptr<mcp::ITransport> server_transport_;
+    std::shared_ptr<mcp::ITransport> server_transport_;
     mcp::Implementation client_info_;
     mcp::ClientCapabilities client_caps_;
 };
@@ -50,7 +50,7 @@ TEST_F(E2EIntegrationTest, InitializeAndPingSession) {
                 io_ctx_,
                 [&]() -> mcp::Task<void> {
                     try {
-                        co_await server_->run(std::move(server_transport_), io_ctx_.get_executor());
+                        co_await server_->run(server_transport_, io_ctx_.get_executor());
                     } catch (...) {
                     }
                 },

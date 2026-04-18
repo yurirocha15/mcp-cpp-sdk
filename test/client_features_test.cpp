@@ -103,8 +103,8 @@ class ClientFeaturesTest : public ::testing::Test {
     };
 
     ConnectedClient make_client_with_auto_init() {
-        auto* raw = new ScriptedTransport(io_ctx_.get_executor());
-        auto transport = std::unique_ptr<mcp::ITransport>(raw);
+        auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+        auto* raw = transport.get();
 
         raw->set_on_write([raw](std::string_view msg) {
             auto json_msg = nlohmann::json::parse(msg);
@@ -114,7 +114,7 @@ class ClientFeaturesTest : public ::testing::Test {
             }
         });
 
-        return {mcp::Client(std::move(transport), io_ctx_.get_executor()), raw};
+        return {mcp::Client(transport, io_ctx_.get_executor()), raw};
     }
 };
 

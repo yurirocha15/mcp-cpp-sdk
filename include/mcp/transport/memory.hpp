@@ -26,6 +26,9 @@ namespace mcp {
  *
  * Thread-safety is achieved via boost::asio::strand (no mutexes needed).
  * The async pattern follows ScriptedTransport exactly: strand + timer + queue.
+ *
+ * @note Always create instances via create_memory_transport_pair(). Never
+ *       construct MemoryTransport directly — the peer link would be unset.
  */
 class MemoryTransport final : public ITransport {
    public:
@@ -74,18 +77,20 @@ class MemoryTransport final : public ITransport {
      *
      * @param message The message to send.
      * @return A task that completes when the peer queue has been updated.
-     * @throws std::runtime_error If the transport is closed or the peer is not set.
+     * @throws std::runtime_error If the transport is closed or the peer is not set or has been
+     * destroyed.
      */
     Task<void> write_message(std::string_view message) override {
         co_await boost::asio::post(strand_, boost::asio::use_awaitable);
         if (closed_) {
             throw std::runtime_error("transport closed");
         }
-        if (!peer_) {
+        auto peer = peer_.lock();
+        if (!peer) {
             throw std::runtime_error("peer transport not set");
         }
         // Post message to peer's strand
-        boost::asio::post(peer_->strand_, [peer = peer_, msg = std::string(message)]() mutable {
+        boost::asio::post(peer->strand_, [peer, msg = std::string(message)]() mutable {
             peer->incoming_.push(std::move(msg));
             peer->timer_.cancel();
         });
@@ -102,23 +107,23 @@ class MemoryTransport final : public ITransport {
         }
         closed_ = true;
         timer_.cancel();
-        if (peer_ && !peer_->closed_) {
-            peer_->close();
+        if (auto peer = peer_.lock(); peer && !peer->closed_) {
+            peer->close();
         }
     }
 
     /**
      * @brief Sets the peer transport for bidirectional communication.
      *
-     * @param peer Non-owning pointer to the peer MemoryTransport.
+     * @param peer Shared pointer to the peer MemoryTransport.
      */
-    void set_peer(MemoryTransport* peer) { peer_ = peer; }
+    void set_peer(std::shared_ptr<MemoryTransport> peer) { peer_ = peer; }
 
    private:
     boost::asio::strand<boost::asio::any_io_executor> strand_;
     boost::asio::steady_timer timer_;
     std::queue<std::string> incoming_;
-    MemoryTransport* peer_ = nullptr;
+    std::weak_ptr<MemoryTransport> peer_;
     bool closed_ = false;
 };
 
@@ -128,21 +133,19 @@ class MemoryTransport final : public ITransport {
  * Messages written to the first transport are readable on the second,
  * and vice versa. Both transports share the same executor.
  *
- * The returned unique_ptrs have custom deleters that properly manage
- * the shared ownership between the two transports.
+ * The peer relationship uses weak_ptr to avoid reference cycles; each
+ * transport holds only a weak reference to the other.
  *
  * @param executor The executor for both transports.
  * @return A pair of connected transport instances that can exchange in-memory messages.
  */
-inline std::pair<std::unique_ptr<ITransport>, std::unique_ptr<ITransport>> create_memory_transport_pair(
+inline std::pair<std::shared_ptr<ITransport>, std::shared_ptr<ITransport>> create_memory_transport_pair(
     const boost::asio::any_io_executor& executor) {
-    auto* transport_a = new MemoryTransport(executor);
-    auto* transport_b = new MemoryTransport(executor);
-
+    auto transport_a = std::make_shared<MemoryTransport>(executor);
+    auto transport_b = std::make_shared<MemoryTransport>(executor);
     transport_a->set_peer(transport_b);
     transport_b->set_peer(transport_a);
-
-    return {std::unique_ptr<ITransport>(transport_a), std::unique_ptr<ITransport>(transport_b)};
+    return {transport_a, transport_b};
 }
 
 }  // namespace mcp

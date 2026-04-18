@@ -26,7 +26,7 @@ struct Server::PendingRequest {
 };
 
 struct Server::Session {
-    std::unique_ptr<ITransport> transport;
+    std::shared_ptr<ITransport> transport;
     std::unique_ptr<boost::asio::strand<boost::asio::any_io_executor>> strand;
     std::map<std::string, PendingRequest> pending_requests;
     std::map<std::string, std::shared_ptr<std::atomic<bool>>> in_flight;
@@ -155,8 +155,7 @@ Task<nlohmann::json> Server::send_request(std::string method, std::optional<nloh
     co_return json_result;
 }
 
-Task<void> Server::run(std::unique_ptr<ITransport> transport,
-                       const boost::asio::any_io_executor& executor) {
+Task<void> Server::run(std::shared_ptr<ITransport> transport, boost::asio::any_io_executor executor) {
     impl_->session = std::make_unique<Session>();
     impl_->session->transport = std::move(transport);
     impl_->session->strand = std::make_unique<boost::asio::strand<boost::asio::any_io_executor>>(

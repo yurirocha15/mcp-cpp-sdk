@@ -137,7 +137,7 @@ TEST(ServerMiddlewareTest, MiddlewareModifiesParams) {
             return json{{"sum", result}};
         });
 
-    auto transport = std::make_unique<ScriptedTransport>(io.get_executor());
+    auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
     auto* transport_ptr = transport.get();
 
     std::vector<json> responses;
@@ -156,8 +156,7 @@ TEST(ServerMiddlewareTest, MiddlewareModifiesParams) {
                   {"params", {{"name", "add"}, {"arguments", {{"addend", 5}}}}}};
     transport_ptr->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(io, server.run(std::move(transport), io.get_executor()),
-                          boost::asio::detached);
+    boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
     io.run();
 
     // Check that the result reflects the modified param (10 + 105 = 115)
@@ -199,7 +198,7 @@ TEST(ServerMiddlewareTest, MiddlewareShortCircuits) {
                                     return json{{"result", "should not see this"}};
                                 });
 
-    auto transport = std::make_unique<ScriptedTransport>(io.get_executor());
+    auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
     auto* transport_ptr = transport.get();
 
     std::vector<json> responses;
@@ -218,8 +217,7 @@ TEST(ServerMiddlewareTest, MiddlewareShortCircuits) {
                   {"params", {{"name", "forbidden"}, {"arguments", {}}}}};
     transport_ptr->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(io, server.run(std::move(transport), io.get_executor()),
-                          boost::asio::detached);
+    boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
     io.run();
 
     // Verify the tool was never executed
@@ -274,7 +272,7 @@ TEST(ServerMiddlewareTest, MultipleMiddlewaresExecuteInOrder) {
                                     return json{{"order", *order}};
                                 });
 
-    auto transport = std::make_unique<ScriptedTransport>(io.get_executor());
+    auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
     auto* transport_ptr = transport.get();
 
     std::vector<json> responses;
@@ -293,8 +291,7 @@ TEST(ServerMiddlewareTest, MultipleMiddlewaresExecuteInOrder) {
                   {"params", {{"name", "track"}, {"arguments", {}}}}};
     transport_ptr->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(io, server.run(std::move(transport), io.get_executor()),
-                          boost::asio::detached);
+    boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
     io.run();
 
     // Expected order: [1, 2, 99, 4, 3]
@@ -342,7 +339,7 @@ TEST(ServerMiddlewareTest, MiddlewarePostProcessesResult) {
             return json{{"sum", value * 2}};
         });
 
-    auto transport = std::make_unique<ScriptedTransport>(io.get_executor());
+    auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
     auto* transport_ptr = transport.get();
 
     std::vector<json> responses;
@@ -361,8 +358,7 @@ TEST(ServerMiddlewareTest, MiddlewarePostProcessesResult) {
                   {"params", {{"name", "compute"}, {"arguments", {{"value", 10}}}}}};
     transport_ptr->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(io, server.run(std::move(transport), io.get_executor()),
-                          boost::asio::detached);
+    boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
     io.run();
 
     // Check the result: original would be 20, middleware doubles to 40

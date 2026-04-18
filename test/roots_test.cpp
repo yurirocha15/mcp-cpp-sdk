@@ -100,8 +100,8 @@ class RootsTest : public ::testing::Test {
 };
 
 TEST_F(RootsTest, ServerRequestsRootsFromClient) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     mcp::Implementation server_info;
     server_info.name = "test-server";
@@ -174,8 +174,7 @@ TEST_F(RootsTest, ServerRequestsRootsFromClient) {
     raw_transport->enqueue_message(tool_call_request.dump());
 
     boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> { co_await server.run(std::move(transport), io_ctx_.get_executor()); },
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -216,10 +215,10 @@ TEST_F(RootsTest, RequestRootsWithoutSenderThrows) {
 }
 
 TEST_F(RootsTest, ClientSetRootsServesRootsList) {
-    auto* client_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto client_transport_ptr = std::unique_ptr<mcp::ITransport>(client_transport);
+    auto client_transport_ptr = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* client_transport = client_transport_ptr.get();
 
-    mcp::Client client(std::move(client_transport_ptr), io_ctx_.get_executor());
+    mcp::Client client(client_transport_ptr, io_ctx_.get_executor());
 
     mcp::Root root1;
     root1.uri = "file:///workspace/src";
@@ -297,10 +296,10 @@ TEST_F(RootsTest, ClientSetRootsServesRootsList) {
 }
 
 TEST_F(RootsTest, ClientSetRootsWithNotifySendsNotification) {
-    auto* client_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto client_transport_ptr = std::unique_ptr<mcp::ITransport>(client_transport);
+    auto client_transport_ptr = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* client_transport = client_transport_ptr.get();
 
-    mcp::Client client(std::move(client_transport_ptr), io_ctx_.get_executor());
+    mcp::Client client(client_transport_ptr, io_ctx_.get_executor());
 
     int write_count = 0;
     std::vector<std::string> written_messages;

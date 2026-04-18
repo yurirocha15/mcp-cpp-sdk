@@ -54,7 +54,7 @@ struct PendingResult {
 struct SessionRuntime {
     std::string session_id;
 
-    std::unique_ptr<ITransport> client_transport;
+    std::shared_ptr<ITransport> client_transport;
     MemoryTransport* client_transport_ptr{nullptr};
 
     EventStore event_store;
@@ -218,14 +218,14 @@ struct StreamableHttpSessionManager::Impl {
     detail_session_mgr::SessionRuntime* create_session() {
         auto session_id = detail_session_mgr::generate_session_id();
 
-        auto client_mem = std::make_unique<MemoryTransport>(executor);
-        auto server_mem = std::make_unique<MemoryTransport>(executor);
-        client_mem->set_peer(server_mem.get());
-        server_mem->set_peer(client_mem.get());
+        auto client_mem = std::make_shared<MemoryTransport>(executor);
+        auto server_mem = std::make_shared<MemoryTransport>(executor);
+        client_mem->set_peer(server_mem);
+        server_mem->set_peer(client_mem);
 
         auto* client_mem_ptr = client_mem.get();
         auto server = factory(executor);
-        std::unique_ptr<ITransport> server_transport(server_mem.release());
+        std::shared_ptr<ITransport> server_transport = server_mem;
 
         boost::asio::co_spawn(
             executor,
@@ -237,7 +237,7 @@ struct StreamableHttpSessionManager::Impl {
 
         auto runtime =
             std::make_unique<detail_session_mgr::SessionRuntime>(session_id, event_store_capacity);
-        runtime->client_transport.reset(client_mem.release());
+        runtime->client_transport = client_mem;
         runtime->client_transport_ptr = client_mem_ptr;
 
         auto* runtime_ptr = runtime.get();

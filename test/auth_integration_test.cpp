@@ -154,7 +154,7 @@ TEST(AuthMiddlewareTest, AcceptsValidToken) {
     server.add_tool<json, json>("echo", "Echoes input", json{{"type", "object"}},
                                 [](const json& args) -> json { return args; });
 
-    auto transport = std::make_unique<ScriptedTransport>(io.get_executor());
+    auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
     auto* transport_ptr = transport.get();
 
     std::vector<json> responses;
@@ -176,7 +176,7 @@ TEST(AuthMiddlewareTest, AcceptsValidToken) {
                     {"_meta", {{"auth_token", "valid_token"}}}}}};
     transport_ptr->enqueue_message(call_req.dump());
 
-    asio::co_spawn(io, server.run(std::move(transport), io.get_executor()), asio::detached);
+    asio::co_spawn(io, server.run(transport, io.get_executor()), asio::detached);
     io.run();
 
     ASSERT_GE(responses.size(), 2);
@@ -205,7 +205,7 @@ TEST(AuthMiddlewareTest, RejectsInvalidToken) {
     server.add_tool<json, json>("echo", "Echoes input", json{{"type", "object"}},
                                 [](const json& args) -> json { return args; });
 
-    auto transport = std::make_unique<ScriptedTransport>(io.get_executor());
+    auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
     auto* transport_ptr = transport.get();
 
     std::vector<json> responses;
@@ -227,7 +227,7 @@ TEST(AuthMiddlewareTest, RejectsInvalidToken) {
                     {"_meta", {{"auth_token", "wrong_token"}}}}}};
     transport_ptr->enqueue_message(call_req.dump());
 
-    asio::co_spawn(io, server.run(std::move(transport), io.get_executor()), asio::detached);
+    asio::co_spawn(io, server.run(transport, io.get_executor()), asio::detached);
     io.run();
 
     ASSERT_GE(responses.size(), 2);
@@ -258,7 +258,7 @@ TEST(AuthMiddlewareTest, RejectsMissingToken) {
     server.add_tool<json, json>("echo", "Echoes input", json{{"type", "object"}},
                                 [](const json& args) -> json { return args; });
 
-    auto transport = std::make_unique<ScriptedTransport>(io.get_executor());
+    auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
     auto* transport_ptr = transport.get();
 
     std::vector<json> responses;
@@ -277,7 +277,7 @@ TEST(AuthMiddlewareTest, RejectsMissingToken) {
                   {"params", {{"name", "echo"}, {"arguments", {{"hello", "world"}}}}}};
     transport_ptr->enqueue_message(call_req.dump());
 
-    asio::co_spawn(io, server.run(std::move(transport), io.get_executor()), asio::detached);
+    asio::co_spawn(io, server.run(transport, io.get_executor()), asio::detached);
     io.run();
 
     ASSERT_GE(responses.size(), 2);
@@ -292,7 +292,7 @@ TEST(AuthMiddlewareTest, RejectsMissingToken) {
 TEST(AuthClientTransportTest, StoreAndRetrieveToken) {
     asio::io_context io;
 
-    auto inner = std::make_unique<ScriptedTransport>(io.get_executor());
+    auto inner = std::make_shared<ScriptedTransport>(io.get_executor());
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     auto oauth_client = std::make_shared<mcp::auth::OAuthHttpClient>(io.get_executor());
 
@@ -303,7 +303,7 @@ TEST(AuthClientTransportTest, StoreAndRetrieveToken) {
 
     auto authenticator =
         std::make_shared<mcp::auth::OAuthAuthenticator>(store, oauth_client, config, "http://server1");
-    mcp::auth::OAuthClientTransport transport(std::move(inner), authenticator);
+    mcp::auth::OAuthClientTransport transport(inner, authenticator);
 
     EXPECT_TRUE(authenticator->get_access_token().empty());
 
@@ -318,7 +318,7 @@ TEST(AuthClientTransportTest, StoreAndRetrieveToken) {
 TEST(AuthClientTransportTest, ReadWritePassThrough) {
     asio::io_context io;
 
-    auto inner = std::make_unique<ScriptedTransport>(io.get_executor());
+    auto inner = std::make_shared<ScriptedTransport>(io.get_executor());
     auto* inner_ptr = inner.get();
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     auto oauth_client = std::make_shared<mcp::auth::OAuthHttpClient>(io.get_executor());
@@ -330,7 +330,7 @@ TEST(AuthClientTransportTest, ReadWritePassThrough) {
 
     auto authenticator =
         std::make_shared<mcp::auth::OAuthAuthenticator>(store, oauth_client, config, "http://server1");
-    mcp::auth::OAuthClientTransport transport(std::move(inner), authenticator);
+    mcp::auth::OAuthClientTransport transport(inner, authenticator);
 
     inner_ptr->enqueue_message("hello from server");
 
@@ -386,7 +386,7 @@ TEST(AuthClientTransportTest, RefreshTokenReturnsTrue) {
         },
         asio::detached);
 
-    auto inner = std::make_unique<ScriptedTransport>(io.get_executor());
+    auto inner = std::make_shared<ScriptedTransport>(io.get_executor());
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     auto oauth_client = std::make_shared<mcp::auth::OAuthHttpClient>(io.get_executor());
 
@@ -402,7 +402,7 @@ TEST(AuthClientTransportTest, RefreshTokenReturnsTrue) {
 
     auto authenticator =
         std::make_shared<mcp::auth::OAuthAuthenticator>(store, oauth_client, config, "http://server1");
-    mcp::auth::OAuthClientTransport transport(std::move(inner), authenticator);
+    mcp::auth::OAuthClientTransport transport(inner, authenticator);
 
     bool refresh_result = false;
 
@@ -419,7 +419,7 @@ TEST(AuthClientTransportTest, RefreshTokenReturnsTrue) {
 TEST(AuthClientTransportTest, RefreshTokenReturnsFalseWithoutRefreshToken) {
     asio::io_context io;
 
-    auto inner = std::make_unique<ScriptedTransport>(io.get_executor());
+    auto inner = std::make_shared<ScriptedTransport>(io.get_executor());
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     auto oauth_client = std::make_shared<mcp::auth::OAuthHttpClient>(io.get_executor());
 
@@ -434,7 +434,7 @@ TEST(AuthClientTransportTest, RefreshTokenReturnsFalseWithoutRefreshToken) {
 
     auto authenticator =
         std::make_shared<mcp::auth::OAuthAuthenticator>(store, oauth_client, config, "http://server1");
-    mcp::auth::OAuthClientTransport transport(std::move(inner), authenticator);
+    mcp::auth::OAuthClientTransport transport(inner, authenticator);
 
     bool refresh_result = true;
 
@@ -450,7 +450,7 @@ TEST(AuthClientTransportTest, RefreshTokenReturnsFalseWithoutRefreshToken) {
 TEST(AuthClientTransportTest, RefreshTokenReturnsFalseWithNoStoredToken) {
     asio::io_context io;
 
-    auto inner = std::make_unique<ScriptedTransport>(io.get_executor());
+    auto inner = std::make_shared<ScriptedTransport>(io.get_executor());
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     auto oauth_client = std::make_shared<mcp::auth::OAuthHttpClient>(io.get_executor());
 
@@ -461,7 +461,7 @@ TEST(AuthClientTransportTest, RefreshTokenReturnsFalseWithNoStoredToken) {
 
     auto authenticator =
         std::make_shared<mcp::auth::OAuthAuthenticator>(store, oauth_client, config, "http://server1");
-    mcp::auth::OAuthClientTransport transport(std::move(inner), authenticator);
+    mcp::auth::OAuthClientTransport transport(inner, authenticator);
 
     bool refresh_result = true;
 
@@ -503,7 +503,7 @@ TEST(AuthClientTransportTest, RefreshPreservesOldRefreshTokenIfNewOneMissing) {
         },
         asio::detached);
 
-    auto inner = std::make_unique<ScriptedTransport>(io.get_executor());
+    auto inner = std::make_shared<ScriptedTransport>(io.get_executor());
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     auto oauth_client = std::make_shared<mcp::auth::OAuthHttpClient>(io.get_executor());
 
@@ -519,7 +519,7 @@ TEST(AuthClientTransportTest, RefreshPreservesOldRefreshTokenIfNewOneMissing) {
 
     auto authenticator =
         std::make_shared<mcp::auth::OAuthAuthenticator>(store, oauth_client, config, "http://server1");
-    mcp::auth::OAuthClientTransport transport(std::move(inner), authenticator);
+    mcp::auth::OAuthClientTransport transport(inner, authenticator);
 
     asio::co_spawn(
         io, [&]() -> mcp::Task<void> { co_await authenticator->try_refresh_token(); }, asio::detached);

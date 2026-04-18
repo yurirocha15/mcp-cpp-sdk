@@ -14,25 +14,25 @@ init-docs:
 	$(PYTHON) scripts/init.py --docs
 
 build:
-	$(PYTHON) scripts/build.py build
+	$(PYTHON) scripts/build.py
 
 debug:
-	$(PYTHON) scripts/build.py debug
+	$(PYTHON) scripts/build.py --debug
 
 test:
-	$(PYTHON) scripts/build.py test
+	$(PYTHON) scripts/build.py --test
 
 sanitize:
-	$(PYTHON) scripts/build.py sanitize
+	$(PYTHON) scripts/build.py --sanitize --test
 
 coverage:
-	$(PYTHON) scripts/build.py coverage
+	$(PYTHON) scripts/build.py --coverage --test
 
 docs:
-	$(PYTHON) scripts/build.py docs
+	$(PYTHON) scripts/build.py --docs
 
 clean:
-	$(PYTHON) scripts/build.py clean
+	$(PYTHON) scripts/build.py --clean
 
 format:
 	find include src test examples -name '*.hpp' -o -name '*.cpp' | xargs clang-format -i

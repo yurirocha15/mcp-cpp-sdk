@@ -48,12 +48,12 @@ class TransportTest : public ::testing::Test {
 };
 
 TEST_F(TransportTest, MockImplementsInterface) {
-    std::unique_ptr<mcp::ITransport> transport = std::make_unique<MockTransport>();
+    std::shared_ptr<mcp::ITransport> transport = std::make_shared<MockTransport>();
     EXPECT_NE(transport, nullptr);
 }
 
 TEST_F(TransportTest, ReadMessageReturnsEnqueued) {
-    auto mock = std::make_unique<MockTransport>();
+    auto mock = std::make_shared<MockTransport>();
     mock->enqueue(R"({"jsonrpc":"2.0","method":"ping"})");
 
     std::string result;
@@ -66,7 +66,7 @@ TEST_F(TransportTest, ReadMessageReturnsEnqueued) {
 }
 
 TEST_F(TransportTest, WriteMessageStoresOutput) {
-    auto mock = std::make_unique<MockTransport>();
+    auto mock = std::make_shared<MockTransport>();
 
     boost::asio::co_spawn(
         io_ctx_,
@@ -88,7 +88,7 @@ TEST_F(TransportTest, CloseMarksTransportClosed) {
 }
 
 TEST_F(TransportTest, ReadEmptyThrows) {
-    auto mock = std::make_unique<MockTransport>();
+    auto mock = std::make_shared<MockTransport>();
 
     std::exception_ptr ex;
     boost::asio::co_spawn(
@@ -108,7 +108,7 @@ TEST_F(TransportTest, ReadEmptyThrows) {
 }
 
 TEST_F(TransportTest, PolymorphicThroughBasePointer) {
-    std::unique_ptr<mcp::ITransport> transport = std::make_unique<MockTransport>();
+    std::shared_ptr<mcp::ITransport> transport = std::make_shared<MockTransport>();
     auto* mock = dynamic_cast<MockTransport*>(transport.get());
     mock->enqueue("hello");
 

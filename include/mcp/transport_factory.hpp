@@ -30,7 +30,7 @@ class MCP_API TransportFactory {
      *
      * @return A unique pointer to the configured stdio transport.
      */
-    [[nodiscard]] std::unique_ptr<ITransport> create_stdio() const;
+    [[nodiscard]] std::shared_ptr<ITransport> create_stdio() const;
 
     /**
      * @brief Create an HTTP client transport.
@@ -40,7 +40,7 @@ class MCP_API TransportFactory {
      *
      * @throws std::invalid_argument If the provided URL is malformed.
      */
-    [[nodiscard]] std::unique_ptr<ITransport> create_http_client(const std::string& url) const;
+    [[nodiscard]] std::shared_ptr<ITransport> create_http_client(const std::string& url) const;
 
    private:
     Runtime& runtime_;
@@ -50,13 +50,13 @@ class MCP_API TransportFactory {
  * @brief Legacy free-function factory for stdio transport.
  * @deprecated Use TransportFactory::create_stdio instead.
  */
-MCP_API std::unique_ptr<ITransport> make_stdio_transport(Runtime& runtime);
+MCP_API std::shared_ptr<ITransport> make_stdio_transport(Runtime& runtime);
 
 /**
  * @brief Legacy free-function factory for HTTP client transport.
  * @deprecated Use TransportFactory::create_http_client instead.
  */
-MCP_API std::unique_ptr<ITransport> make_http_client_transport(Runtime& runtime,
+MCP_API std::shared_ptr<ITransport> make_http_client_transport(Runtime& runtime,
                                                                const std::string& url);
 
 }  // namespace mcp

@@ -48,16 +48,16 @@ int main() {
 
     constexpr unsigned short http_port = 18099;
     auto http_server_transport =
-        std::make_unique<HttpServerTransport>(io_ctx.get_executor(), "127.0.0.1", http_port);
+        std::make_shared<HttpServerTransport>(io_ctx.get_executor(), "127.0.0.1", http_port);
 
     std::cout << "Starting HTTP server on port " << http_port << std::endl;
 
     auto* http_transport_ptr = http_server_transport.get();
     asio::co_spawn(
         io_ctx,
-        [&, transport = std::move(http_server_transport)]() mutable -> Task<void> {
+        [&, transport = http_server_transport]() mutable -> Task<void> {
             asio::co_spawn(io_ctx, http_transport_ptr->listen(), asio::detached);
-            co_await server.run(std::move(transport), io_ctx.get_executor());
+            co_await server.run(transport, io_ctx.get_executor());
         },
         asio::detached);
 
@@ -71,11 +71,11 @@ int main() {
                 co_await delay_timer.async_wait(asio::use_awaitable);
 
                 std::cout << "Client: creating transport" << std::endl;
-                auto http_client_transport = std::make_unique<HttpClientTransport>(
+                auto http_client_transport = std::make_shared<HttpClientTransport>(
                     io_ctx.get_executor(), "http://127.0.0.1:18099/mcp");
 
                 std::cout << "Client: creating client object" << std::endl;
-                Client client(std::move(http_client_transport), io_ctx.get_executor());
+                Client client(http_client_transport, io_ctx.get_executor());
 
                 Implementation client_info;
                 client_info.name = "http-echo-client";

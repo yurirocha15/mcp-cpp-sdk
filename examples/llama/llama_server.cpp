@@ -311,25 +311,25 @@ int main(int argc, char** argv) {
         });
 
     if (opts.transport == "stdio") {
-        auto transport = std::make_unique<StdioTransport>(io_ctx.get_executor());
+        auto transport = std::make_shared<StdioTransport>(io_ctx.get_executor());
 
         boost::asio::co_spawn(
             io_ctx,
-            [&, transport = std::move(transport)]() mutable -> Task<void> {
-                co_await server.run(std::move(transport), io_ctx.get_executor());
+            [&, transport = transport]() mutable -> Task<void> {
+                co_await server.run(transport, io_ctx.get_executor());
             },
             boost::asio::detached);
     } else {
         std::cerr << "Listening on http://" << opts.host << ":" << std::to_string(opts.port)
                   << "/mcp\n";
         auto http_transport =
-            std::make_unique<mcp::HttpServerTransport>(io_ctx.get_executor(), opts.host, opts.port);
+            std::make_shared<mcp::HttpServerTransport>(io_ctx.get_executor(), opts.host, opts.port);
         auto* http_ptr = http_transport.get();
         boost::asio::co_spawn(
             io_ctx,
-            [&, transport = std::move(http_transport)]() mutable -> mcp::Task<void> {
+            [&, transport = http_transport]() mutable -> mcp::Task<void> {
                 boost::asio::co_spawn(io_ctx, http_ptr->listen(), boost::asio::detached);
-                co_await server.run(std::move(transport), io_ctx.get_executor());
+                co_await server.run(transport, io_ctx.get_executor());
             },
             boost::asio::detached);
     }

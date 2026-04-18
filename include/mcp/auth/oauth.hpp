@@ -919,7 +919,7 @@ class OAuthClientTransport final : public ITransport {
      * @param inner Underlying transport used for MCP message exchange.
      * @param authenticator Authenticator used to retrieve and refresh tokens.
      */
-    OAuthClientTransport(std::unique_ptr<ITransport> inner,
+    OAuthClientTransport(std::shared_ptr<ITransport> inner,
                          std::shared_ptr<Authenticator> authenticator)
         : inner_(std::move(inner)), authenticator_(std::move(authenticator)) {}
 
@@ -1014,7 +1014,7 @@ class OAuthClientTransport final : public ITransport {
         return nlohmann::json(request).dump();
     }
 
-    std::unique_ptr<ITransport> inner_;
+    std::shared_ptr<ITransport> inner_;
     std::shared_ptr<Authenticator> authenticator_;
     std::string last_written_message_;
 };

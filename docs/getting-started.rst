@@ -81,10 +81,10 @@ To build the SDK and examples from source:
    python scripts/init.py
 
    # Build the project
-   python scripts/build.py build
+   python scripts/build.py
 
    # Run tests
-   python scripts/build.py test
+   python scripts/build.py --test
 
 Quick Start: Minimal Server
 ----------------------------

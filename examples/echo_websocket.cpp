@@ -52,8 +52,8 @@ int main() {
         io_ctx,
         [&]() -> Task<void> {
             auto socket = co_await acceptor.async_accept(asio::use_awaitable);
-            auto transport = std::make_unique<WebSocketServerTransport>(std::move(socket));
-            co_await server.run(std::move(transport), io_ctx.get_executor());
+            auto transport = std::make_shared<WebSocketServerTransport>(std::move(socket));
+            co_await server.run(transport, io_ctx.get_executor());
         },
         boost::asio::detached);
 
@@ -61,9 +61,9 @@ int main() {
     asio::co_spawn(
         io_ctx,
         [&]() -> Task<void> {
-            auto transport = std::make_unique<WebSocketClientTransport>(
+            auto transport = std::make_shared<WebSocketClientTransport>(
                 io_ctx.get_executor(), "127.0.0.1", std::to_string(port));
-            Client client(std::move(transport), io_ctx.get_executor());
+            Client client(transport, io_ctx.get_executor());
 
             Implementation client_info;
             client_info.name = "ws-echo-client";

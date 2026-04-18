@@ -38,10 +38,10 @@ cd mcp-cpp-sdk
 python scripts/init.py
 
 # Build the project
-python scripts/build.py build
+python scripts/build.py
 
 # Run tests
-python scripts/build.py test
+python scripts/build.py --test
 ```
 
 For development with additional tools (clang-format, clang-tidy, pre-commit):
@@ -52,7 +52,7 @@ python scripts/init.py --dev
 For documentation generation:
 ```bash
 python scripts/init.py --docs
-python scripts/build.py docs
+python scripts/build.py --docs
 ```
 
 ## Quick Start Examples
@@ -221,7 +221,7 @@ The repository includes several complete examples:
 
 Build and run examples:
 ```bash
-python scripts/build.py build
+python scripts/build.py
 ./build/example-server-simple
 ```
 
@@ -230,19 +230,22 @@ python scripts/build.py build
 ### Build Commands
 
 ```bash
-python scripts/build.py build     # Release build with optimizations
-python scripts/build.py debug     # Debug build with symbols
-python scripts/build.py test      # Run all tests
-python scripts/build.py sanitize  # Build with ASan + UBSan, run tests
-python scripts/build.py coverage  # Generate coverage report
-python scripts/build.py clean     # Clean build artifacts
+python scripts/build.py                        # Release build (library only)
+python scripts/build.py --debug                # Debug build
+python scripts/build.py --test                 # Release build + run tests
+python scripts/build.py --debug --test         # Debug build + run tests
+python scripts/build.py --sanitize --test      # ASan/UBSan build + run tests
+python scripts/build.py --coverage --test      # Coverage build + run tests + report
+python scripts/build.py --examples             # Build with examples
+python scripts/build.py --docs                 # Build documentation
+python scripts/build.py --clean                # Clean build artifacts
 ```
 
 ### Running Tests
 
 ```bash
 # Run the full test suite
-python scripts/build.py test
+python scripts/build.py --test
 
 # Run with verbose output
 ctest --preset conan-release --verbose
@@ -267,7 +270,7 @@ Documentation is built using Doxygen + Sphinx + Breathe:
 python scripts/init.py --docs
 
 # Generate HTML documentation
-python scripts/build.py docs
+python scripts/build.py --docs
 
 # Open in browser
 open build/docs/html/index.html

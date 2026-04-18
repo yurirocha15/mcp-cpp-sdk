@@ -99,8 +99,8 @@ class ElicitationTest : public ::testing::Test {
 };
 
 TEST_F(ElicitationTest, FormElicitationRoundtrip) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     mcp::Implementation server_info;
     server_info.name = "test-server";
@@ -171,8 +171,7 @@ TEST_F(ElicitationTest, FormElicitationRoundtrip) {
     raw_transport->enqueue_message(tool_call_request.dump());
 
     boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> { co_await server.run(std::move(transport), io_ctx_.get_executor()); },
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -192,8 +191,8 @@ TEST_F(ElicitationTest, FormElicitationRoundtrip) {
 }
 
 TEST_F(ElicitationTest, URLElicitationRoundtrip) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     mcp::Implementation server_info;
     server_info.name = "test-server";
@@ -256,8 +255,7 @@ TEST_F(ElicitationTest, URLElicitationRoundtrip) {
     raw_transport->enqueue_message(tool_call_request.dump());
 
     boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> { co_await server.run(std::move(transport), io_ctx_.get_executor()); },
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -276,8 +274,8 @@ TEST_F(ElicitationTest, URLElicitationRoundtrip) {
 }
 
 TEST_F(ElicitationTest, ClientDeclinesElicitation) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     mcp::Implementation server_info;
     server_info.name = "test-server";
@@ -340,8 +338,7 @@ TEST_F(ElicitationTest, ClientDeclinesElicitation) {
     raw_transport->enqueue_message(tool_call_request.dump());
 
     boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> { co_await server.run(std::move(transport), io_ctx_.get_executor()); },
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
         boost::asio::detached);
 
     io_ctx_.run();

@@ -29,8 +29,8 @@ int main() {
     using namespace mcp;
 
     boost::asio::io_context io_ctx;
-    auto transport = std::make_unique<StdioTransport>(io_ctx.get_executor());
-    Client client(std::move(transport), io_ctx.get_executor());
+    auto transport = std::make_shared<StdioTransport>(io_ctx.get_executor());
+    Client client(transport, io_ctx.get_executor());
 
     boost::asio::co_spawn(
         io_ctx,

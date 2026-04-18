@@ -42,10 +42,10 @@ class Client {
      * @brief Construct a Client.
      *
      * @param transport The transport to use for message exchange.
-     *                  Ownership is transferred to the client.
+     *                  Ownership is shared with the client.
      * @param executor  The executor to use for async operations.
      */
-    Client(std::unique_ptr<ITransport> transport, const boost::asio::any_io_executor& executor)
+    Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_executor& executor)
         : transport_(std::move(transport)), strand_(boost::asio::make_strand(executor)) {}
 
     /// @brief Destructor. Closes the transport and clears pending requests
@@ -602,7 +602,7 @@ class Client {
         co_await transport_->write_message(json_msg.dump());
     }
 
-    std::unique_ptr<ITransport> transport_;
+    std::shared_ptr<ITransport> transport_;
     boost::asio::strand<boost::asio::any_io_executor> strand_;
     std::map<std::string, PendingRequest> pending_requests_;
     std::atomic<int64_t> next_request_id_{1};

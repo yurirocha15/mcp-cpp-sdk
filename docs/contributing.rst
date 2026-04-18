@@ -19,10 +19,10 @@ To set up your development environment:
    python scripts/init.py --dev
 
    # Build with tests
-   python scripts/build.py build
+   python scripts/build.py
 
    # Run tests
-   python scripts/build.py test
+   python scripts/build.py --test
 
 The ``python scripts/init.py --dev`` target installs all development dependencies including:
 
@@ -141,7 +141,7 @@ Running Tests
 .. code-block:: bash
 
    # Run all tests
-   python scripts/build.py test
+   python scripts/build.py --test
 
    # Run the full suite with ctest output on failures
    ctest --preset conan-release --output-on-failure
@@ -157,7 +157,7 @@ Aim for >80% code coverage for new features:
 .. code-block:: bash
 
    # Generate coverage report
-   python scripts/build.py coverage
+   python scripts/build.py --coverage --test
 
    # View report
    open build/coverage/index.html
@@ -187,7 +187,7 @@ Use descriptive branch names:
 * Write code following the style guide
 * Add tests for new functionality
 * Update documentation (Doxygen comments, .rst files)
-* Run tests locally: ``python scripts/build.py test``
+* Run tests locally: ``python scripts/build.py --test``
 * Format code: ``make format``
 
 3. Commit

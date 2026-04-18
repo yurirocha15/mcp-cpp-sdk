@@ -107,8 +107,8 @@ class ClientCoreTest : public ::testing::Test {
 };
 
 TEST_F(ClientCoreTest, SendRequestAddsToMapAndReturnsResult) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     raw_transport->set_on_write([raw_transport](std::string_view msg) {
         auto json_msg = nlohmann::json::parse(msg);
@@ -124,7 +124,7 @@ TEST_F(ClientCoreTest, SendRequestAddsToMapAndReturnsResult) {
         }
     });
 
-    mcp::Client client(std::move(transport), io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor());
 
     nlohmann::json result;
     boost::asio::co_spawn(
@@ -148,8 +148,8 @@ TEST_F(ClientCoreTest, SendRequestAddsToMapAndReturnsResult) {
 }
 
 TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     raw_transport->set_on_write([raw_transport](std::string_view msg) {
         auto json_msg = nlohmann::json::parse(msg);
@@ -159,7 +159,7 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
         }
     });
 
-    mcp::Client client(std::move(transport), io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor());
 
     mcp::InitializeResult init_result;
     boost::asio::co_spawn(
@@ -196,8 +196,8 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
 }
 
 TEST_F(ClientCoreTest, SendRequestErrorResponseThrows) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     raw_transport->set_on_write([raw_transport](std::string_view msg) {
         auto json_msg = nlohmann::json::parse(msg);
@@ -211,7 +211,7 @@ TEST_F(ClientCoreTest, SendRequestErrorResponseThrows) {
         }
     });
 
-    mcp::Client client(std::move(transport), io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor());
 
     std::exception_ptr captured_ex;
     boost::asio::co_spawn(
@@ -244,8 +244,8 @@ TEST_F(ClientCoreTest, SendRequestErrorResponseThrows) {
 }
 
 TEST_F(ClientCoreTest, SendNotificationDoesNotExpectResponse) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     raw_transport->set_on_write([raw_transport](std::string_view msg) {
         auto json_msg = nlohmann::json::parse(msg);
@@ -255,7 +255,7 @@ TEST_F(ClientCoreTest, SendNotificationDoesNotExpectResponse) {
         }
     });
 
-    mcp::Client client(std::move(transport), io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor());
 
     boost::asio::co_spawn(
         io_ctx_,
@@ -283,8 +283,8 @@ TEST_F(ClientCoreTest, SendNotificationDoesNotExpectResponse) {
 }
 
 TEST_F(ClientCoreTest, MultipleRequestsDispatchCorrectly) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     raw_transport->set_on_write([raw_transport](std::string_view msg) {
         auto json_msg = nlohmann::json::parse(msg);
@@ -301,7 +301,7 @@ TEST_F(ClientCoreTest, MultipleRequestsDispatchCorrectly) {
         }
     });
 
-    mcp::Client client(std::move(transport), io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor());
 
     nlohmann::json result_a;
     nlohmann::json result_b;
@@ -328,8 +328,8 @@ TEST_F(ClientCoreTest, MultipleRequestsDispatchCorrectly) {
 }
 
 TEST_F(ClientCoreTest, ReadLoopIgnoresServerNotifications) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     raw_transport->set_on_write([raw_transport](std::string_view msg) {
         auto json_msg = nlohmann::json::parse(msg);
@@ -348,7 +348,7 @@ TEST_F(ClientCoreTest, ReadLoopIgnoresServerNotifications) {
         }
     });
 
-    mcp::Client client(std::move(transport), io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor());
 
     nlohmann::json result;
     boost::asio::co_spawn(
@@ -371,12 +371,12 @@ TEST_F(ClientCoreTest, ReadLoopIgnoresServerNotifications) {
 }
 
 TEST_F(ClientCoreTest, PendingRequestCountReflectsInFlightRequests) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     std::size_t count_during_flight = 0;
 
-    mcp::Client client(std::move(transport), io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor());
 
     raw_transport->set_on_write([raw_transport, &count_during_flight, &client](std::string_view msg) {
         auto json_msg = nlohmann::json::parse(msg);
@@ -418,8 +418,8 @@ TEST_F(ClientCoreTest, PendingRequestCountReflectsInFlightRequests) {
 }
 
 TEST_F(ClientCoreTest, ConnectReturnsServerCapabilities) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     auto init_result_json = make_initialize_result();
     init_result_json["capabilities"]["tools"] = {{"listChanged", true}};
@@ -434,7 +434,7 @@ TEST_F(ClientCoreTest, ConnectReturnsServerCapabilities) {
             }
         });
 
-    mcp::Client client(std::move(transport), io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor());
 
     mcp::InitializeResult init_result;
     boost::asio::co_spawn(
@@ -460,8 +460,8 @@ TEST_F(ClientCoreTest, ConnectReturnsServerCapabilities) {
 }
 
 TEST_F(ClientCoreTest, PingSendsRequestAndReceivesResponse) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
-    auto transport = std::unique_ptr<mcp::ITransport>(raw_transport);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     raw_transport->set_on_write([raw_transport](std::string_view msg) {
         auto json_msg = nlohmann::json::parse(msg);
@@ -478,7 +478,7 @@ TEST_F(ClientCoreTest, PingSendsRequestAndReceivesResponse) {
         }
     });
 
-    mcp::Client client(std::move(transport), io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor());
 
     bool ping_completed = false;
     boost::asio::co_spawn(

@@ -273,10 +273,10 @@ class Server {
      *
      * Runs until the transport is closed or an error occurs.
      *
-     * @param transport The transport to use for message exchange. Ownership is transferred.
+     * @param transport The transport to use for message exchange. Ownership is shared.
      * @param executor  The executor to use for async operations.
      */
-    Task<void> run(std::unique_ptr<ITransport> transport, const boost::asio::any_io_executor& executor);
+    Task<void> run(std::shared_ptr<ITransport> transport, boost::asio::any_io_executor executor);
 
     /**
      * @brief Run the server on stdio (stdin/stdout), blocking until shutdown.

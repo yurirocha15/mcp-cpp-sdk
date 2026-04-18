@@ -125,8 +125,8 @@ TEST_F(StdioTransportTest, PolymorphicThroughBasePointer) {
     std::istringstream input("polymorphic\n");
     std::ostringstream output;
 
-    std::unique_ptr<mcp::ITransport> transport =
-        std::make_unique<mcp::StdioTransport>(io_ctx_.get_executor(), input, output);
+    std::shared_ptr<mcp::ITransport> transport =
+        std::make_shared<mcp::StdioTransport>(io_ctx_.get_executor(), input, output);
 
     std::string result;
     boost::asio::co_spawn(

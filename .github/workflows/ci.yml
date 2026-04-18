@@ -15,10 +15,10 @@ jobs:
         os: [ubuntu-24.04, ubuntu-22.04, windows-latest, macos-latest]
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: '3.12'
 
@@ -34,20 +34,31 @@ jobs:
     - name: Install Dependencies
       run: python scripts/init.py
 
-    - name: Build
-      run: python scripts/build.py build
+    - name: Cache Conan packages
+      uses: actions/cache@v5
+      with:
+        path: ${{ env.HOME || env.USERPROFILE }}/.conan2/p
+        key: ${{ matrix.os }}-conan-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
+        restore-keys: ${{ matrix.os }}-conan-
 
-    - name: Test
-      run: python scripts/build.py test
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@v1
+      with:
+        key: ${{ matrix.os }}-ccache-${{ github.ref }}
+        restore-keys: ${{ matrix.os }}-ccache-
+        max-size: 500M
+
+    - name: Build and Test
+      run: python scripts/build.py --test
 
   sanitize:
     runs-on: ubuntu-24.04
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: '3.12'
 
@@ -59,5 +70,19 @@ jobs:
     - name: Install Dependencies
       run: python scripts/init.py
 
+    - name: Cache Conan packages
+      uses: actions/cache@v5
+      with:
+        path: ${{ env.HOME || env.USERPROFILE }}/.conan2/p
+        key: ubuntu-24.04-conan-sanitize-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
+        restore-keys: ubuntu-24.04-conan-
+
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@v1
+      with:
+        key: ubuntu-24.04-sanitize-ccache-${{ github.ref }}
+        restore-keys: ubuntu-24.04-sanitize-ccache-
+        max-size: 500M
+
     - name: Build and Test with Sanitizers
-      run: python scripts/build.py sanitize
+      run: python scripts/build.py --sanitize --test

@@ -136,8 +136,8 @@ TEST_F(WebSocketTransportTest, PolymorphicThroughBasePointer) {
     asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            std::unique_ptr<mcp::ITransport> transport =
-                std::make_unique<mcp::WebSocketClientTransport>(io_ctx_.get_executor(), "127.0.0.1",
+            std::shared_ptr<mcp::ITransport> transport =
+                std::make_shared<mcp::WebSocketClientTransport>(io_ctx_.get_executor(), "127.0.0.1",
                                                                 std::to_string(port));
             co_await transport->write_message("polymorphic");
             result = co_await transport->read_message();

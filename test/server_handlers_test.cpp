@@ -124,13 +124,13 @@ class ServerHandlersTest : public ::testing::Test {
     boost::asio::io_context io_ctx_;
 
     struct ServerSetup {
+        std::shared_ptr<mcp::ITransport> transport;
         ScriptedTransport* raw_transport;
-        std::unique_ptr<mcp::ITransport> transport;
         mcp::Server server;
 
         ServerSetup(boost::asio::io_context& io_ctx, mcp::ServerCapabilities caps)
-            : raw_transport(new ScriptedTransport(io_ctx.get_executor())),
-              transport(raw_transport),
+            : transport(std::make_shared<ScriptedTransport>(io_ctx.get_executor())),
+              raw_transport(static_cast<ScriptedTransport*>(transport.get())),
               server(
                   [] {
                       mcp::Implementation info;
@@ -179,7 +179,7 @@ TEST_F(ServerHandlersTest, SyncToolCallReturnsResult) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -230,7 +230,7 @@ TEST_F(ServerHandlersTest, AsyncToolCallReturnsResult) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -281,7 +281,7 @@ TEST_F(ServerHandlersTest, ToolWithContextLogsMessage) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -335,7 +335,7 @@ TEST_F(ServerHandlersTest, ToolsListReturnsRegisteredTools) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -396,7 +396,7 @@ TEST_F(ServerHandlersTest, ResourcesReadReturnsContent) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -450,7 +450,7 @@ TEST_F(ServerHandlersTest, ResourcesListReturnsRegisteredResources) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -498,7 +498,7 @@ TEST_F(ServerHandlersTest, ResourceTemplatesListReturnsRegisteredTemplates) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -571,7 +571,7 @@ TEST_F(ServerHandlersTest, PromptsGetReturnsPromptMessages) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -623,7 +623,7 @@ TEST_F(ServerHandlersTest, PromptsListReturnsRegisteredPrompts) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -668,7 +668,7 @@ TEST_F(ServerHandlersTest, UnknownToolReturnsError) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -720,7 +720,7 @@ TEST_F(ServerHandlersTest, ToolsListPaginationFirstPage) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -771,7 +771,7 @@ TEST_F(ServerHandlersTest, ToolsListPaginationWithCursor) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -821,7 +821,7 @@ TEST_F(ServerHandlersTest, ToolsListPaginationLastPage) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -867,7 +867,7 @@ TEST_F(ServerHandlersTest, PaginationDisabledByDefault) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -919,7 +919,7 @@ TEST_F(ServerHandlersTest, ResourcesListPagination) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -973,7 +973,7 @@ TEST_F(ServerHandlersTest, ToolWithOutputSchemaIncludesStructuredContent) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -1018,7 +1018,7 @@ TEST_F(ServerHandlersTest, ToolWithoutOutputSchemaNoStructuredContent) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -1063,7 +1063,7 @@ TEST_F(ServerHandlersTest, ToolsListIncludesOutputSchema) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -1115,7 +1115,7 @@ TEST_F(ServerHandlersTest, CompletionReturnsResults) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
@@ -1159,7 +1159,7 @@ TEST_F(ServerHandlersTest, CompletionWithoutHandlerReturnsError) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await setup.server.run(std::move(setup.transport), io_ctx_.get_executor());
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
         },
         boost::asio::detached);
 
