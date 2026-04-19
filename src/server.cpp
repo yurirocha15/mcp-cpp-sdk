@@ -49,7 +49,7 @@ struct Server::Impl {
     bool initialized{false};
     bool shutdown_requested{false};
 
-    std::unique_ptr<Session> session;
+    std::shared_ptr<Session> session;
     std::atomic<int64_t> next_request_id{1};
     std::atomic<LoggingLevel> log_level{LoggingLevel::eDebug};
     std::size_t page_size{0};
@@ -173,24 +173,20 @@ Task<nlohmann::json> Server::send_request(const std::string& method,
 }
 
 Task<void> Server::run(std::shared_ptr<ITransport> transport, boost::asio::any_io_executor executor) {
-    impl_->session = std::make_unique<Session>();
-    impl_->session->transport = std::move(transport);
-    impl_->session->strand = std::make_unique<boost::asio::strand<boost::asio::any_io_executor>>(
+    auto session = std::make_shared<Session>();
+    session->transport = std::move(transport);
+    session->strand = std::make_unique<boost::asio::strand<boost::asio::any_io_executor>>(
         boost::asio::make_strand(executor));
+    impl_->session = session;
 
     try {
         for (;;) {
-            auto raw = co_await impl_->session->transport->read_message();
-            // send_request() also runs on the strand.
-            // It inserts a pending entry, co_awaits write_message, then
-            // calls timer::async_wait().
-            // If dispatch_response() were called directly here it could cancel
-            // the timer *before* async_wait() is reached, causing a permanent hang.
-            // Funnelling all dispatch work through the strand serialises access
-            // to pending_requests / in_flight and eliminates the race.
+            auto raw = co_await session->transport->read_message();
+            // Pass the session shared_ptr to the dispatch coroutine to ensure
+            // it stays alive even if server.run terminates.
             boost::asio::co_spawn(
-                *impl_->session->strand,
-                [this, json_msg = nlohmann::json::parse(raw)]() mutable -> Task<void> {
+                *session->strand,
+                [this, session, json_msg = nlohmann::json::parse(raw)]() mutable -> Task<void> {
                     dispatch(std::move(json_msg));
                     co_return;
                 },

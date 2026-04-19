@@ -21,12 +21,11 @@ namespace {
 class ScriptedTransport final : public mcp::ITransport {
    public:
     explicit ScriptedTransport(const boost::asio::any_io_executor& executor)
-        : strand_(boost::asio::make_strand(executor)), timer_(strand_) {
-        timer_.expires_at(std::chrono::steady_clock::time_point::max());
-    }
+        : strand_(boost::asio::make_strand(executor)), timer_(strand_) {}
 
     mcp::Task<std::string> read_message() override {
         for (;;) {
+            co_await boost::asio::post(strand_, boost::asio::use_awaitable);
             if (closed_) {
                 throw std::runtime_error("transport closed");
             }
@@ -35,7 +34,7 @@ class ScriptedTransport final : public mcp::ITransport {
                 incoming_.pop();
                 co_return msg;
             }
-            timer_.expires_at(std::chrono::steady_clock::time_point::max());
+            timer_.expires_after(std::chrono::seconds(30));
             try {
                 co_await timer_.async_wait(boost::asio::use_awaitable);
             } catch (const boost::system::system_error& err) {
@@ -353,7 +352,8 @@ TEST_F(ElicitationTest, ClientDeclinesElicitation) {
 }
 
 TEST_F(ElicitationTest, ElicitWithoutSenderThrows) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     mcp::Context ctx(*raw_transport);
 
