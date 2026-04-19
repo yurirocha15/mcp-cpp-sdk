@@ -14,34 +14,34 @@ namespace mcp {
 /**
  * @brief Protocol version 2024-11-05.
  */
-constexpr std::string_view PROTOCOL_VERSION_2024_11_05 = "2024-11-05";
+constexpr std::string_view g_PROTOCOL_VERSION_2024_11_05 = "2024-11-05";
 
 /**
  * @brief Protocol version 2025-03-26.
  */
-constexpr std::string_view PROTOCOL_VERSION_2025_03_26 = "2025-03-26";
+constexpr std::string_view g_PROTOCOL_VERSION_2025_03_26 = "2025-03-26";
 
 /**
  * @brief Protocol version 2025-06-18.
  */
-constexpr std::string_view PROTOCOL_VERSION_2025_06_18 = "2025-06-18";
+constexpr std::string_view g_PROTOCOL_VERSION_2025_06_18 = "2025-06-18";
 
 /**
  * @brief Protocol version 2025-11-25.
  */
-constexpr std::string_view PROTOCOL_VERSION_2025_11_25 = "2025-11-25";
+constexpr std::string_view g_PROTOCOL_VERSION_2025_11_25 = "2025-11-25";
 
 /**
  * @brief The latest supported protocol version.
  */
-constexpr std::string_view LATEST_PROTOCOL_VERSION = PROTOCOL_VERSION_2025_11_25;
+constexpr std::string_view g_LATEST_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2025_11_25;
 
 /**
  * @brief List of all supported protocol versions.
  */
-constexpr std::array<std::string_view, 4> SUPPORTED_PROTOCOL_VERSIONS = {
-    PROTOCOL_VERSION_2024_11_05, PROTOCOL_VERSION_2025_03_26, PROTOCOL_VERSION_2025_06_18,
-    PROTOCOL_VERSION_2025_11_25};
+constexpr std::array<std::string_view, 4> g_SUPPORTED_PROTOCOL_VERSIONS = {
+    g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
+    g_PROTOCOL_VERSION_2025_11_25};
 
 /**
  * @brief Provides visual identifiers for resources, tools, prompts, and implementations.

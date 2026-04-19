@@ -94,7 +94,7 @@ nlohmann::json make_error_response(std::string_view id, int code, std::string_vi
 }
 
 nlohmann::json make_initialize_result() {
-    return {{"protocolVersion", mcp::LATEST_PROTOCOL_VERSION},
+    return {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
             {"capabilities", nlohmann::json::object()},
             {"serverInfo", {{"name", "test-server"}, {"version", "1.0"}}}};
 }
@@ -181,7 +181,7 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
     EXPECT_EQ(first["method"], "initialize");
     EXPECT_TRUE(first.contains("id"));
     EXPECT_EQ(first["jsonrpc"], "2.0");
-    EXPECT_EQ(first["params"]["protocolVersion"], std::string(mcp::LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(first["params"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
     EXPECT_EQ(first["params"]["clientInfo"]["name"], "test-client");
     EXPECT_EQ(first["params"]["clientInfo"]["version"], "0.1");
 
@@ -190,7 +190,7 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
     EXPECT_FALSE(second.contains("id"));
     EXPECT_EQ(second["jsonrpc"], "2.0");
 
-    EXPECT_EQ(init_result.protocolVersion, std::string(mcp::LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(init_result.protocolVersion, std::string(mcp::g_LATEST_PROTOCOL_VERSION));
     EXPECT_EQ(init_result.serverInfo.name, "test-server");
     EXPECT_EQ(init_result.serverInfo.version, "1.0");
 }
@@ -207,7 +207,7 @@ TEST_F(ClientCoreTest, SendRequestErrorResponseThrows) {
         } else if (json_msg.contains("id")) {
             auto id = json_msg["id"].get<std::string>();
             raw_transport->enqueue_response(
-                make_error_response(id, mcp::METHOD_NOT_FOUND, "method not found").dump());
+                make_error_response(id, mcp::g_METHOD_NOT_FOUND, "method not found").dump());
         }
     });
 
@@ -238,7 +238,7 @@ TEST_F(ClientCoreTest, SendRequestErrorResponseThrows) {
         std::rethrow_exception(captured_ex);
     } catch (const std::runtime_error& err) {
         std::string msg = err.what();
-        EXPECT_TRUE(msg.find("-32601") != std::string::npos);
+        EXPECT_TRUE(msg.find(std::to_string(mcp::g_METHOD_NOT_FOUND)) != std::string::npos);
         EXPECT_TRUE(msg.find("method not found") != std::string::npos);
     }
 }
@@ -450,7 +450,7 @@ TEST_F(ClientCoreTest, ConnectReturnsServerCapabilities) {
 
     io_ctx_.run();
 
-    EXPECT_EQ(init_result.protocolVersion, std::string(mcp::LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(init_result.protocolVersion, std::string(mcp::g_LATEST_PROTOCOL_VERSION));
     EXPECT_EQ(init_result.serverInfo.name, "test-server");
     ASSERT_TRUE(init_result.instructions.has_value());
     EXPECT_EQ(*init_result.instructions, "Welcome to the test server");

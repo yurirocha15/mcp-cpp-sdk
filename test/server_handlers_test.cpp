@@ -112,7 +112,7 @@ nlohmann::json make_initialize_request(std::string_view req_id) {
             {"id", req_id},
             {"method", "initialize"},
             {"params",
-             {{"protocolVersion", mcp::LATEST_PROTOCOL_VERSION},
+             {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
               {"clientInfo", {{"name", "test-client"}, {"version", "0.1"}}},
               {"capabilities", nlohmann::json::object()}}}};
 }
@@ -542,7 +542,7 @@ TEST_F(ServerHandlersTest, PromptsGetReturnsPromptMessages) {
             text.text = "Hello, " + name_val + "!";
 
             mcp::PromptMessage msg;
-            msg.role = mcp::Role::User;
+            msg.role = mcp::Role::eUser;
             msg.content = std::move(text);
 
             mcp::GetPromptResult result;
@@ -678,7 +678,7 @@ TEST_F(ServerHandlersTest, UnknownToolReturnsError) {
     auto& error_response = responses[1];
     EXPECT_EQ(error_response["id"], "2");
     ASSERT_TRUE(error_response.contains("error"));
-    EXPECT_EQ(error_response["error"]["code"], mcp::METHOD_NOT_FOUND);
+    EXPECT_EQ(error_response["error"]["code"], mcp::g_METHOD_NOT_FOUND);
     EXPECT_TRUE(error_response["error"]["message"].get<std::string>().find("nonexistent") !=
                 std::string::npos);
 }
@@ -1168,5 +1168,5 @@ TEST_F(ServerHandlersTest, CompletionWithoutHandlerReturnsError) {
     ASSERT_EQ(responses.size(), 2);
     auto& error_response = responses[1];
     ASSERT_TRUE(error_response.contains("error"));
-    EXPECT_EQ(error_response["error"]["code"], mcp::METHOD_NOT_FOUND);
+    EXPECT_EQ(error_response["error"]["code"], mcp::g_METHOD_NOT_FOUND);
 }

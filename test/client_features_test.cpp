@@ -86,7 +86,7 @@ nlohmann::json make_result_response(std::string_view id, nlohmann::json result) 
 }
 
 nlohmann::json make_initialize_result() {
-    return {{"protocolVersion", mcp::LATEST_PROTOCOL_VERSION},
+    return {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
             {"capabilities", nlohmann::json::object()},
             {"serverInfo", {{"name", "test-server"}, {"version", "1.0"}}}};
 }
@@ -476,7 +476,7 @@ TEST_F(ClientFeaturesTest, GetPromptSendsCorrectWireFormat) {
     EXPECT_EQ(captured_params["name"], "greeting");
     EXPECT_EQ(captured_params["arguments"]["name"], "Alice");
     ASSERT_EQ(result.messages.size(), 1);
-    EXPECT_EQ(result.messages[0].role, mcp::Role::User);
+    EXPECT_EQ(result.messages[0].role, mcp::Role::eUser);
     auto& text_content = std::get<mcp::TextContent>(result.messages[0].content);
     EXPECT_EQ(text_content.text, "Hello Alice");
 }
@@ -523,7 +523,7 @@ TEST_F(ClientFeaturesTest, GetPromptWithoutArgumentsSendsCorrectWireFormat) {
     EXPECT_EQ(captured_params["name"], "simple_prompt");
     EXPECT_FALSE(captured_params.contains("arguments"));
     ASSERT_EQ(result.messages.size(), 1);
-    EXPECT_EQ(result.messages[0].role, mcp::Role::Assistant);
+    EXPECT_EQ(result.messages[0].role, mcp::Role::eAssistant);
 }
 
 TEST_F(ClientFeaturesTest, CompleteSendsCorrectWireFormat) {

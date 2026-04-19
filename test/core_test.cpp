@@ -25,8 +25,3 @@ TEST_F(CoreTest, CoroutineCompilation) {
     io_ctx.run();
     EXPECT_TRUE(executed);
 }
-
-TEST_F(CoreTest, LogLevelEnum) {
-    mcp::LogLevel level = mcp::LogLevel::Info;
-    EXPECT_EQ(level, mcp::LogLevel::Info);
-}

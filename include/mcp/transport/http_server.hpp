@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/constants.hpp>
 #include <mcp/protocol.hpp>
 #include <mcp/transport.hpp>
 
@@ -31,7 +32,8 @@ class EventStore {
      *
      * @param capacity Maximum number of events to retain.
      */
-    explicit EventStore(std::size_t capacity = 1024) : capacity_(capacity) {}
+    explicit EventStore(std::size_t capacity = constants::g_event_store_default_capacity)
+        : capacity_(capacity) {}
 
     /**
      * @brief Append an event to the store and return its assigned ID.
@@ -55,7 +57,7 @@ class EventStore {
      * @return A vector of (id, data) pairs for events after the given ID,
      *         or std::nullopt if the last_event_id has been evicted.
      */
-    std::optional<std::vector<std::pair<std::string, std::string>>> events_after(
+    [[nodiscard]] std::optional<std::vector<std::pair<std::string, std::string>>> events_after(
         const std::string& last_event_id) const {
         if (events_.empty()) {
             return std::vector<std::pair<std::string, std::string>>{};
@@ -87,7 +89,7 @@ class EventStore {
      *
      * @return A vector of (id, data) pairs for all stored events.
      */
-    std::vector<std::pair<std::string, std::string>> all_events() const {
+    [[nodiscard]] std::vector<std::pair<std::string, std::string>> all_events() const {
         std::vector<std::pair<std::string, std::string>> result;
         result.reserve(events_.size());
         for (const auto& event : events_) {
@@ -146,8 +148,9 @@ class HttpServerTransport final : public ITransport {
      * @param port Local bind port.
      * @param event_store_capacity Maximum number of replayable SSE events to retain.
      */
-    HttpServerTransport(const boost::asio::any_io_executor& executor, std::string host,
-                        unsigned short port, std::size_t event_store_capacity = 1024);
+    HttpServerTransport(
+        const boost::asio::any_io_executor& executor, std::string host, unsigned short port,
+        std::size_t event_store_capacity = mcp::constants::g_event_store_default_capacity);
 
     ~HttpServerTransport() override;
 

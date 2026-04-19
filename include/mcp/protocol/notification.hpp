@@ -9,24 +9,24 @@ namespace mcp {
  * @brief Severity threshold used for logging notifications.
  */
 enum class LoggingLevel : std::uint8_t {
-    Emergency,
-    Alert,
-    Critical,
-    Error,
-    Warning,
-    Notice,
-    Info,
-    Debug
+    eEmergency,
+    eAlert,
+    eCritical,
+    eError,
+    eWarning,
+    eNotice,
+    eInfo,
+    eDebug
 };
 
-NLOHMANN_JSON_SERIALIZE_ENUM(LoggingLevel, {{LoggingLevel::Emergency, "emergency"},
-                                            {LoggingLevel::Alert, "alert"},
-                                            {LoggingLevel::Critical, "critical"},
-                                            {LoggingLevel::Error, "error"},
-                                            {LoggingLevel::Warning, "warning"},
-                                            {LoggingLevel::Notice, "notice"},
-                                            {LoggingLevel::Info, "info"},
-                                            {LoggingLevel::Debug, "debug"}})
+NLOHMANN_JSON_SERIALIZE_ENUM(LoggingLevel, {{LoggingLevel::eEmergency, "emergency"},
+                                            {LoggingLevel::eAlert, "alert"},
+                                            {LoggingLevel::eCritical, "critical"},
+                                            {LoggingLevel::eError, "error"},
+                                            {LoggingLevel::eWarning, "warning"},
+                                            {LoggingLevel::eNotice, "notice"},
+                                            {LoggingLevel::eInfo, "info"},
+                                            {LoggingLevel::eDebug, "debug"}})
 
 struct SetLevelRequestParams {
     LoggingLevel level;                  ///< The desired logging level.

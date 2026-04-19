@@ -164,14 +164,14 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ElicitRequest, method, params)
  * @brief The user action in response to an elicitation.
  */
 enum class ElicitAction : std::uint8_t {
-    Accept,   ///< User submitted the form/confirmed the action.
-    Decline,  ///< User explicitly declined the action.
-    Cancel    ///< User dismissed without making an explicit choice.
+    eAccept,   ///< User submitted the form/confirmed the action.
+    eDecline,  ///< User explicitly declined the action.
+    eCancel    ///< User dismissed without making an explicit choice.
 };
 
-NLOHMANN_JSON_SERIALIZE_ENUM(ElicitAction, {{ElicitAction::Accept, "accept"},
-                                            {ElicitAction::Decline, "decline"},
-                                            {ElicitAction::Cancel, "cancel"}})
+NLOHMANN_JSON_SERIALIZE_ENUM(ElicitAction, {{ElicitAction::eAccept, "accept"},
+                                            {ElicitAction::eDecline, "decline"},
+                                            {ElicitAction::eCancel, "cancel"}})
 
 /**
  * @brief The result returned by the client for an elicitation/create request.

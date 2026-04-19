@@ -30,6 +30,7 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -60,16 +61,13 @@ class ScriptedTransport final : public mcp::ITransport {
             if (!incoming_.empty()) {
                 auto msg = std::move(incoming_.front());
                 incoming_.pop();
+                if (incoming_.empty() && !closed_) {
+                    timer_.expires_at(std::chrono::steady_clock::time_point::max());
+                }
                 co_return msg;
             }
-            timer_.expires_at(std::chrono::steady_clock::time_point::max());
-            try {
-                co_await timer_.async_wait(boost::asio::use_awaitable);
-            } catch (const boost::system::system_error& e) {
-                if (e.code() != boost::asio::error::operation_aborted) {
-                    throw;
-                }
-            }
+            boost::system::error_code ec;
+            co_await timer_.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
         }
     }
 
@@ -85,13 +83,13 @@ class ScriptedTransport final : public mcp::ITransport {
 
     void close() override {
         closed_ = true;
-        timer_.cancel();
+        timer_.expires_at(std::chrono::steady_clock::time_point::min());
     }
 
     void enqueue(std::string msg) {
         boost::asio::post(strand_, [this, m = std::move(msg)]() mutable {
             incoming_.push(std::move(m));
-            timer_.cancel();
+            timer_.expires_at(std::chrono::steady_clock::time_point::min());
         });
     }
 
@@ -116,7 +114,7 @@ nlohmann::json make_init_response(const std::string& id) {
     return {{"jsonrpc", "2.0"},
             {"id", id},
             {"result",
-             {{"protocolVersion", mcp::LATEST_PROTOCOL_VERSION},
+             {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
               {"capabilities", nlohmann::json::object()},
               {"serverInfo", {{"name", "test-server"}, {"version", "1.0"}}}}}};
 }
@@ -307,7 +305,7 @@ TEST_F(GCC11SSOCrashTest, PatternC_DispatchIncomingRequest_SSO_IdAndMethod) {
 }
 
 // ---------------------------------------------------------------------------
-// Pattern C2: dispatch_incoming_request() — unknown method (METHOD_NOT_FOUND).
+// Pattern C2: dispatch_incoming_request() — unknown method (g_METHOD_NOT_FOUND).
 // exercises send_error_response() with SSO id and short error message.
 // ---------------------------------------------------------------------------
 TEST_F(GCC11SSOCrashTest, PatternC2_DispatchIncomingRequest_UnknownMethod_ErrorResponse) {
@@ -346,12 +344,12 @@ TEST_F(GCC11SSOCrashTest, PatternC2_DispatchIncomingRequest_UnknownMethod_ErrorR
     auto response = nlohmann::json::parse(writes[2]);
     EXPECT_EQ(response["id"], "x");
     EXPECT_TRUE(response.contains("error"));
-    EXPECT_EQ(response["error"]["code"], mcp::METHOD_NOT_FOUND);
+    EXPECT_EQ(response["error"]["code"], mcp::g_METHOD_NOT_FOUND);
 }
 
 // ---------------------------------------------------------------------------
 // Pattern C3: dispatch_incoming_request() — registered handler throws,
-// exercises send_error_response() with INTERNAL_ERROR (-32603).
+// exercises send_error_response() with g_INTERNAL_ERROR (-32603).
 // Error message comes from e.what() which can be short (SSO).
 // ---------------------------------------------------------------------------
 TEST_F(GCC11SSOCrashTest, PatternC3_DispatchIncomingRequest_HandlerThrows_InternalError) {
@@ -395,7 +393,7 @@ TEST_F(GCC11SSOCrashTest, PatternC3_DispatchIncomingRequest_HandlerThrows_Intern
     auto response = nlohmann::json::parse(writes[2]);
     EXPECT_EQ(response["id"], "e1");
     EXPECT_TRUE(response.contains("error"));
-    EXPECT_EQ(response["error"]["code"], -32603);
+    EXPECT_EQ(response["error"]["code"], mcp::g_INTERNAL_ERROR);
 }
 
 // ---------------------------------------------------------------------------

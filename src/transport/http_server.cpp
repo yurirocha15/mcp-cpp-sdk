@@ -75,22 +75,22 @@ struct HttpServerTransport::Impl {
         }
 
         const auto endpoint = boost::asio::ip::tcp::endpoint(bind_address, this->port);
-        acceptor.open(endpoint.protocol(), ec);
+        (void)acceptor.open(endpoint.protocol(), ec);
         if (ec) {
             throw std::runtime_error("Failed to open HTTP acceptor: " + ec.message());
         }
 
-        acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
+        (void)acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
         if (ec) {
             throw std::runtime_error("Failed to set reuse_address: " + ec.message());
         }
 
-        acceptor.bind(endpoint, ec);
+        (void)acceptor.bind(endpoint, ec);
         if (ec) {
             throw std::runtime_error("Failed to bind HTTP acceptor: " + ec.message());
         }
 
-        acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
+        (void)acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
         if (ec) {
             throw std::runtime_error("Failed to listen on HTTP acceptor: " + ec.message());
         }
@@ -105,14 +105,15 @@ struct HttpServerTransport::Impl {
     }
 
     static std::string generate_session_id() {
-        static constexpr char hex_digits[] = "0123456789abcdef";
+        static constexpr std::size_t s_session_id_length = 32;
         std::random_device random_device;
         std::mt19937 generator(random_device());
-        std::uniform_int_distribution<int> distribution(0, 15);
+        std::uniform_int_distribution<std::size_t> distribution(0, constants::g_hex_digits.size() - 1);
 
-        std::string session_identifier(32, '0');
-        for (char& current_char : session_identifier) {
-            current_char = hex_digits[distribution(generator)];
+        std::string session_identifier;
+        session_identifier.reserve(s_session_id_length);
+        for (std::size_t i = 0; i < s_session_id_length; i++) {
+            session_identifier.push_back(constants::g_hex_digits[distribution(generator)]);
         }
         return session_identifier;
     }
@@ -124,7 +125,7 @@ struct HttpServerTransport::Impl {
         return allowed_origins.contains(std::string(origin_value));
     }
 
-    void enqueue_incoming_message(std::string message_payload) {
+    void enqueue_incoming_message(std::string message_payload) const {
         auto shared_state = state;
         boost::asio::post(shared_state->timer.get_executor(),
                           [shared_state, payload = std::move(message_payload)]() mutable {
@@ -180,7 +181,11 @@ struct HttpServerTransport::Impl {
         const std::vector<std::pair<std::string, std::string>>& events) {
         std::string sse_body;
         for (const auto& [id, data] : events) {
-            sse_body += "id: " + id + "\ndata: " + data + "\n\n";
+            sse_body += "id: ";
+            sse_body += id;
+            sse_body += "\ndata: ";
+            sse_body += data;
+            sse_body += "\n\n";
         }
         http::response<http::string_body> response{http::status::ok, request.version()};
         set_common_headers(response, request.keep_alive());
@@ -286,11 +291,11 @@ struct HttpServerTransport::Impl {
         co_return;
     }
 
-    std::optional<http::response<http::string_body>> check_protocol_version(
+    static std::optional<http::response<http::string_body>> check_protocol_version(
         const http::request<http::string_body>& request) {
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         if (protocol_header_it == request.end() ||
-            protocol_header_it->value() != LATEST_PROTOCOL_VERSION) {
+            protocol_header_it->value() != g_LATEST_PROTOCOL_VERSION) {
             return make_error_response(request, http::status::bad_request,
                                        "Invalid MCP-Protocol-Version header");
         }
@@ -298,7 +303,7 @@ struct HttpServerTransport::Impl {
     }
 
     std::optional<http::response<http::string_body>> check_origin(
-        const http::request<http::string_body>& request) {
+        const http::request<http::string_body>& request) const {
         const auto origin_header_it = request.find(http::field::origin);
         if (origin_header_it != request.end() && !is_origin_allowed(origin_header_it->value())) {
             return make_error_response(request, http::status::forbidden, "Origin not allowed");
@@ -383,8 +388,7 @@ struct HttpServerTransport::Impl {
             co_return response;
         }
 
-        auto response =
-            make_json_response(request, http::status::ok, std::move(*pending_result.response_body));
+        auto response = make_json_response(request, http::status::ok, *pending_result.response_body);
         if (pending_result.session_header.has_value()) {
             response.set("MCP-Session-Id", *pending_result.session_header);
         }
@@ -487,7 +491,7 @@ struct HttpServerTransport::Impl {
         }
 
         boost::system::error_code shutdown_error;
-        stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
+        (void)stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
     }
 
     std::string host;
@@ -510,7 +514,13 @@ HttpServerTransport::HttpServerTransport(const boost::asio::any_io_executor& exe
                                          unsigned short port, std::size_t event_store_capacity)
     : impl_(std::make_unique<Impl>(executor, std::move(host), port, event_store_capacity)) {}
 
-HttpServerTransport::~HttpServerTransport() { close(); }
+HttpServerTransport::~HttpServerTransport() {
+    try {
+        close();
+    } catch (...) {
+        // Ignore exceptions in destructor
+    }
+}
 
 const EventStore& HttpServerTransport::event_store() const { return impl_->event_store; }
 
@@ -586,8 +596,8 @@ void HttpServerTransport::close() {
 
     boost::asio::post(impl_->strand, [this]() {
         boost::system::error_code ec;
-        impl_->acceptor.cancel(ec);
-        impl_->acceptor.close(ec);
+        (void)impl_->acceptor.cancel(ec);
+        (void)impl_->acceptor.close(ec);
 
         for (auto& pending_entry : impl_->pending_responses) {
             pending_entry.second.ready_timer->cancel();
@@ -620,7 +630,7 @@ Task<void> HttpServerTransport::listen() {
         }
 
         boost::asio::co_spawn(impl_->strand, impl_->handle_connection(std::move(socket)),
-                              [](std::exception_ptr) {
+                              [](const std::exception_ptr&) {
                                   // Connection errors (EOF, client disconnect) are normal;
                                   // handled per-connection, not propagated to the accept loop.
                               });

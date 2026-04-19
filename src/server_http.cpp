@@ -10,6 +10,7 @@
 #include <exception>
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace mcp {
 
@@ -34,7 +35,7 @@ void Server::run_http(const std::string& host, uint16_t port) {
         io_ctx,
         [this, transport, executor]() mutable -> Task<void> { co_await run(transport, executor); },
         [&](std::exception_ptr e) {
-            ep = e;
+            ep = std::move(e);
             signals.cancel();
         });
 

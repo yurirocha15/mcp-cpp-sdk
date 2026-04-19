@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/constants.hpp>
 #include <mcp/server.hpp>
 #include <mcp/transport.hpp>
 #include <mcp/transport/http_server.hpp>
@@ -68,9 +69,10 @@ class StreamableHttpSessionManager {
      * @param factory Callback that creates a configured Server for each new session.
      * @param event_store_capacity Per-session event store capacity.
      */
-    StreamableHttpSessionManager(const boost::asio::any_io_executor& executor, std::string host,
-                                 unsigned short port, ServerFactory factory,
-                                 std::size_t event_store_capacity = 1024);
+    StreamableHttpSessionManager(
+        const boost::asio::any_io_executor& executor, std::string host, unsigned short port,
+        ServerFactory factory,
+        std::size_t event_store_capacity = constants::g_event_store_default_capacity);
 
     ~StreamableHttpSessionManager();
 

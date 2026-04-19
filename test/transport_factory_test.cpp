@@ -23,7 +23,7 @@ TEST(TransportFactoryTest, FactoryCreateHttpClientReturnsNonNull) {
 TEST(TransportFactoryTest, FactoryCreateHttpClientThrowsOnInvalidUrl) {
     mcp::Runtime runtime;
     mcp::TransportFactory factory(runtime);
-    EXPECT_THROW(factory.create_http_client("ftp://bad"), std::invalid_argument);
+    EXPECT_THROW((void)factory.create_http_client("ftp://bad"), std::invalid_argument);
 }
 
 TEST(TransportFactoryTest, MakeStdioTransportReturnsNonNull) {
@@ -40,7 +40,7 @@ TEST(TransportFactoryTest, MakeHttpClientTransportReturnsNonNull) {
 
 TEST(TransportFactoryTest, MakeHttpClientTransportThrowsOnInvalidUrl) {
     mcp::Runtime runtime;
-    EXPECT_THROW(mcp::make_http_client_transport(runtime, "ftp://bad"), std::invalid_argument);
+    EXPECT_THROW((void)mcp::make_http_client_transport(runtime, "ftp://bad"), std::invalid_argument);
 }
 
 }  // namespace

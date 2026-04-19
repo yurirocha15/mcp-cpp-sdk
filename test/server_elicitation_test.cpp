@@ -126,7 +126,7 @@ TEST_F(ElicitationTest, FormElicitationRoundtrip) {
 
             mcp::CallToolResult tool_result;
             mcp::TextContent tc;
-            if (result.action == mcp::ElicitAction::Accept && result.content) {
+            if (result.action == mcp::ElicitAction::eAccept && result.content) {
                 tc.text = result.content->dump();
             } else {
                 tc.text = "declined";
@@ -147,7 +147,7 @@ TEST_F(ElicitationTest, FormElicitationRoundtrip) {
             EXPECT_EQ(json_msg["params"]["message"], "Please enter your name");
 
             mcp::ElicitResult elicit_result;
-            elicit_result.action = mcp::ElicitAction::Accept;
+            elicit_result.action = mcp::ElicitAction::eAccept;
             elicit_result.content = nlohmann::json{{"name", "Alice"}};
 
             nlohmann::json response_json;
@@ -214,7 +214,7 @@ TEST_F(ElicitationTest, URLElicitationRoundtrip) {
             mcp::CallToolResult tool_result;
             mcp::TextContent tc;
             tc.text =
-                (result.action == mcp::ElicitAction::Accept) ? "authenticated" : "not_authenticated";
+                (result.action == mcp::ElicitAction::eAccept) ? "authenticated" : "not_authenticated";
             tool_result.content.push_back(std::move(tc));
             co_return tool_result;
         });
@@ -232,7 +232,7 @@ TEST_F(ElicitationTest, URLElicitationRoundtrip) {
             EXPECT_EQ(json_msg["params"]["elicitationId"], "elicit-123");
 
             mcp::ElicitResult elicit_result;
-            elicit_result.action = mcp::ElicitAction::Accept;
+            elicit_result.action = mcp::ElicitAction::eAccept;
 
             nlohmann::json response_json;
             response_json["jsonrpc"] = "2.0";
@@ -295,9 +295,9 @@ TEST_F(ElicitationTest, ClientDeclinesElicitation) {
 
             mcp::CallToolResult tool_result;
             mcp::TextContent tc;
-            if (result.action == mcp::ElicitAction::Decline) {
+            if (result.action == mcp::ElicitAction::eDecline) {
                 tc.text = "user_declined";
-            } else if (result.action == mcp::ElicitAction::Cancel) {
+            } else if (result.action == mcp::ElicitAction::eCancel) {
                 tc.text = "user_cancelled";
             } else {
                 tc.text = "unexpected";
@@ -315,7 +315,7 @@ TEST_F(ElicitationTest, ClientDeclinesElicitation) {
             auto request_id = json_msg["id"].get<std::string>();
 
             mcp::ElicitResult elicit_result;
-            elicit_result.action = mcp::ElicitAction::Decline;
+            elicit_result.action = mcp::ElicitAction::eDecline;
 
             nlohmann::json response_json;
             response_json["jsonrpc"] = "2.0";

@@ -21,7 +21,7 @@ nlohmann::json make_initialize_request(std::string_view id) {
             {"id", id},
             {"method", "initialize"},
             {"params",
-             {{"protocolVersion", mcp::LATEST_PROTOCOL_VERSION},
+             {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
               {"clientInfo", {{"name", "test-client"}, {"version", "0.1"}}},
               {"capabilities", nlohmann::json::object()}}}};
 }

@@ -1,20 +1,21 @@
 #include <mcp/mcp.hpp>
 
 int main() {
-    mcp::ServerCapabilities caps;
-    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    try {
+        mcp::ServerCapabilities caps;
+        caps.tools = mcp::ServerCapabilities::ToolsCapability{};
 
-    mcp::Implementation info{"hello-server", "1.0.0"};
-    mcp::Server server(std::move(info), std::move(caps));
+        mcp::Implementation info{"hello-server", "1.0.0"};
+        mcp::Server server(info, caps);
 
-    nlohmann::json schema = {{"type", "object"},
-                             {"properties", {{"name", {{"type", "string"}}}}},
-                             {"required", nlohmann::json::array({"name"})}};
+        nlohmann::json schema = {{"type", "object"},
+                                 {"properties", {{"name", {{"type", "string"}}}}},
+                                 {"required", nlohmann::json::array({"name"})}};
 
-    server.add_tool("hello", "Greets the user", std::move(schema),
-                    [](const nlohmann::json& args) -> nlohmann::json {
-                        return {{"message", "Hello, " + args.at("name").get<std::string>() + "!"}};
-                    });
+        server.add_tool("hello", "Greets the user", schema,
+                        [](const nlohmann::json& args) -> nlohmann::json {
+                            return {{"message", "Hello, " + args.at("name").get<std::string>() + "!"}};
+                        });
 
-    server.run_stdio();
-}
+        server.run_stdio();
+    }

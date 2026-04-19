@@ -40,8 +40,12 @@ WebSocketServerTransport::WebSocketServerTransport(asio::ip::tcp::socket socket)
     : impl_(std::make_unique<Impl>(std::move(socket))) {}
 
 WebSocketServerTransport::~WebSocketServerTransport() {
-    if (!impl_->closed.load(std::memory_order_acquire)) {
-        close();
+    try {
+        if (!impl_->closed.load(std::memory_order_acquire)) {
+            close();
+        }
+    } catch (...) {
+        // Ignore exceptions in destructor
     }
 }
 
@@ -80,8 +84,8 @@ void WebSocketServerTransport::close() {
 
     beast::error_code ec;
     auto& socket = impl_->ws.next_layer().socket();
-    socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-    socket.close(ec);
+    (void)socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+    (void)socket.close(ec);
 }
 
 // ============================================================================
@@ -126,12 +130,16 @@ WebSocketClientTransport::WebSocketClientTransport(const asio::any_io_executor& 
     : impl_(std::make_unique<Impl>(executor, std::move(host), std::move(port), std::move(path))) {}
 
 WebSocketClientTransport::~WebSocketClientTransport() {
-    impl_->closed.store(true, std::memory_order_release);
-    if (impl_->connected) {
-        beast::error_code ec;
-        auto& socket = impl_->ws.next_layer().socket();
-        socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-        socket.close(ec);
+    try {
+        impl_->closed.store(true, std::memory_order_release);
+        if (impl_->connected) {
+            beast::error_code ec;
+            auto& socket = impl_->ws.next_layer().socket();
+            (void)socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+            (void)socket.close(ec);
+        }
+    } catch (...) {
+        // Ignore exceptions in destructor
     }
 }
 
@@ -168,8 +176,8 @@ void WebSocketClientTransport::close() {
 
     beast::error_code ec;
     auto& socket = impl_->ws.next_layer().socket();
-    socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-    socket.close(ec);
+    (void)socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+    (void)socket.close(ec);
 }
 
 }  // namespace mcp

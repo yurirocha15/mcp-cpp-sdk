@@ -16,6 +16,10 @@ target_link_libraries(
   mcp-cpp-sdk PUBLIC Boost::headers Boost::system nlohmann_json::nlohmann_json
                      OpenSSL::Crypto)
 target_include_directories(mcp-cpp-sdk PUBLIC include)
+if(WIN32)
+  # Windows 10 as the minimum supported version
+  target_compile_definitions(mcp-cpp-sdk PUBLIC _WIN32_WINNT=0x0A00)
+endif()
 target_sources(
   mcp-cpp-sdk
   PRIVATE src/version.cpp
@@ -24,11 +28,11 @@ target_sources(
           src/server_http.cpp
           src/server_tool.cpp
           src/server.cpp
-          src/transport/stdio_transport.cpp
-          src/transport/http_server_transport.cpp
-          src/transport/http_client_transport.cpp
+          src/transport/stdio.cpp
+          src/transport/http_server.cpp
+          src/transport/http_client.cpp
           src/transport/http_session_manager.cpp
-          src/transport/websocket_transport.cpp
+          src/transport/websocket.cpp
           src/transport/transport_factories.cpp)
 
 # Documentation target

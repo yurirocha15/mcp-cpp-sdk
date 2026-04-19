@@ -26,7 +26,7 @@ class HttpClientTransport final : public ITransport {
      * @throws std::invalid_argument If the URL is malformed or does not use
      *         the `http://` scheme.
      */
-    HttpClientTransport(const boost::asio::any_io_executor& executor, std::string url);
+    HttpClientTransport(const boost::asio::any_io_executor& executor, const std::string& url);
 
     ~HttpClientTransport() override;
 

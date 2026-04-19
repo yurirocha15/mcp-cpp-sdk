@@ -121,7 +121,7 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
         [](mcp::Context& ctx, EchoInput input) -> mcp::Task<mcp::CallToolResult> {
             mcp::CreateMessageRequestParams sample_req;
             mcp::SamplingMessage msg;
-            msg.role = mcp::Role::User;
+            msg.role = mcp::Role::eUser;
             mcp::TextContent tc;
             tc.text = input.text;
             msg.content = tc;
@@ -148,7 +148,7 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
         if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
             auto request_id = json_msg["id"].get<std::string>();
             mcp::CreateMessageResult sample_result;
-            sample_result.role = mcp::Role::Assistant;
+            sample_result.role = mcp::Role::eAssistant;
             mcp::TextContent tc;
             tc.text = "LLM says hello";
             sample_result.content = tc;
@@ -244,7 +244,7 @@ TEST_F(SamplingTest, SamplingResponseWithToolUseContent) {
         [&](mcp::Context& ctx, EchoInput input) -> mcp::Task<mcp::CallToolResult> {
             mcp::CreateMessageRequestParams sample_req;
             mcp::SamplingMessage msg;
-            msg.role = mcp::Role::User;
+            msg.role = mcp::Role::eUser;
             mcp::TextContent tc;
             tc.text = input.text;
             msg.content = tc;
@@ -272,7 +272,7 @@ TEST_F(SamplingTest, SamplingResponseWithToolUseContent) {
         if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
             auto request_id = json_msg["id"].get<std::string>();
             mcp::CreateMessageResult sample_result;
-            sample_result.role = mcp::Role::Assistant;
+            sample_result.role = mcp::Role::eAssistant;
             mcp::ToolUseContent tuc;
             tuc.id = "call-123";
             tuc.name = "get_weather";
@@ -336,7 +336,7 @@ TEST_F(SamplingTest, SamplingResponseWithToolResultContent) {
         [&](mcp::Context& ctx, EchoInput input) -> mcp::Task<mcp::CallToolResult> {
             mcp::CreateMessageRequestParams sample_req;
             mcp::SamplingMessage msg;
-            msg.role = mcp::Role::User;
+            msg.role = mcp::Role::eUser;
             mcp::TextContent tc;
             tc.text = input.text;
             msg.content = tc;
@@ -366,7 +366,7 @@ TEST_F(SamplingTest, SamplingResponseWithToolResultContent) {
         if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
             auto request_id = json_msg["id"].get<std::string>();
             mcp::CreateMessageResult sample_result;
-            sample_result.role = mcp::Role::Assistant;
+            sample_result.role = mcp::Role::eAssistant;
             mcp::ToolResultContent trc;
             trc.toolUseId = "call-456";
             mcp::TextContent inner_tc;
@@ -502,7 +502,8 @@ TEST_F(SamplingTest, SampleLlmErrorResponseThrows) {
             nlohmann::json error_response;
             error_response["jsonrpc"] = "2.0";
             error_response["id"] = request_id;
-            error_response["error"] = {{"code", -32600}, {"message", "sampling denied"}};
+            error_response["error"] = {{"code", mcp::g_INVALID_REQUEST},
+                                       {"message", "sampling denied"}};
 
             raw_transport->enqueue_message(error_response.dump());
         } else if (json_msg.contains("result") && !json_msg.contains("method")) {

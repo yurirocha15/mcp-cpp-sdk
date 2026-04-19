@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/constants.hpp>
 #include <mcp/context.hpp>
 #include <mcp/core.hpp>
 #include <mcp/server.hpp>
@@ -35,28 +36,47 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 namespace net = boost::asio;
 
+namespace constants {
+
+constexpr int g_default_token_lifetime_safety_margin_seconds = 30;
+constexpr std::size_t g_buffer_size = 4096;
+constexpr int g_shift6 = 6;
+constexpr int g_shift8 = 8;
+constexpr int g_shift12 = 12;
+constexpr int g_shift16 = 16;
+constexpr int g_shift18 = 18;
+constexpr unsigned int g_mask0x3F = 0x3F;
+constexpr std::size_t g_min_verifier_length = 43;
+constexpr std::size_t g_max_verifier_length = 128;
+constexpr unsigned int g_mask0x0F = 0x0F;
+constexpr std::size_t g_sha256_digest_length = 32;
+constexpr std::size_t g_default_verifier_length = 64;
+constexpr std::size_t g_default_cache_ttl_seconds = 300;
+}  // namespace constants
+
 namespace detail {
-
 inline std::string base64_encode(const unsigned char* data, std::size_t len) {
-    static constexpr char alphabet[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
     std::string result;
     result.reserve(((len + 2) / 3) * 4);
 
     for (std::size_t i = 0; i < len; i += 3) {
-        unsigned int n = static_cast<unsigned int>(data[i]) << 16;
+        unsigned int n = static_cast<unsigned int>(data[i]) << constants::g_shift16;
         if (i + 1 < len) {
-            n |= static_cast<unsigned int>(data[i + 1]) << 8;
+            n |= static_cast<unsigned int>(data[i + 1]) << constants::g_shift8;
         }
         if (i + 2 < len) {
             n |= static_cast<unsigned int>(data[i + 2]);
         }
 
-        result.push_back(alphabet[(n >> 18) & 0x3F]);
-        result.push_back(alphabet[(n >> 12) & 0x3F]);
-        result.push_back((i + 1 < len) ? alphabet[(n >> 6) & 0x3F] : '=');
-        result.push_back((i + 2 < len) ? alphabet[n & 0x3F] : '=');
+        result.push_back(
+            mcp::constants::g_alphabet[(n >> constants::g_shift18) & constants::g_mask0x3F]);
+        result.push_back(
+            mcp::constants::g_alphabet[(n >> constants::g_shift12) & constants::g_mask0x3F]);
+        result.push_back(
+            (i + 1 < len)
+                ? mcp::constants::g_alphabet[(n >> constants::g_shift6) & constants::g_mask0x3F]
+                : '=');
+        result.push_back((i + 2 < len) ? mcp::constants::g_alphabet[n & constants::g_mask0x3F] : '=');
     }
 
     return result;
@@ -77,8 +97,8 @@ inline std::string base64url_encode(const unsigned char* data, std::size_t len) 
 }
 
 /// SHA-256 via OpenSSL EVP interface.
-inline std::array<unsigned char, 32> sha256(const std::string& input) {
-    std::array<unsigned char, 32> digest{};
+inline std::array<unsigned char, constants::g_sha256_digest_length> sha256(const std::string& input) {
+    std::array<unsigned char, constants::g_sha256_digest_length> digest{};
     unsigned int digest_len = 0;
 
     std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
@@ -92,12 +112,10 @@ inline std::array<unsigned char, 32> sha256(const std::string& input) {
 }
 
 inline std::string generate_random_string(std::size_t length) {
-    static constexpr char unreserved_chars[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-    static constexpr std::size_t charset_size = sizeof(unreserved_chars) - 1;
+    static const std::size_t s_charset_size = mcp::constants::g_unreserved_chars.size();
     // Largest multiple of charset_size that fits in a byte (avoids modulo bias)
-    static constexpr unsigned char bias_limit =
-        static_cast<unsigned char>((256 / charset_size) * charset_size);
+    static const auto s_bias_limit =
+        static_cast<unsigned char>((256 / s_charset_size) * s_charset_size);
 
     std::string result;
     result.reserve(length);
@@ -106,15 +124,14 @@ inline std::string generate_random_string(std::size_t length) {
         if (RAND_bytes(&byte, 1) != 1) {
             throw std::runtime_error("RAND_bytes failed");
         }
-        if (byte < bias_limit) {
-            result.push_back(unreserved_chars[byte % charset_size]);
+        if (byte < s_bias_limit) {
+            result.push_back(mcp::constants::g_unreserved_chars[byte % s_charset_size]);
         }
     }
     return result;
 }
 
 inline std::string url_encode(const std::string& value) {
-    static constexpr char hex_chars[] = "0123456789ABCDEF";
     std::string result;
     result.reserve(value.size() * 3);
 
@@ -124,8 +141,8 @@ inline std::string url_encode(const std::string& value) {
             result.push_back(static_cast<char>(ch));
         } else {
             result.push_back('%');
-            result.push_back(hex_chars[ch >> 4]);
-            result.push_back(hex_chars[ch & 0x0F]);
+            result.push_back(mcp::constants::g_hex_digits_upper[ch >> constants::g_shift4]);
+            result.push_back(mcp::constants::g_hex_digits_upper[ch & constants::g_mask0x0F]);
         }
     }
     return result;
@@ -159,8 +176,9 @@ struct PkcePair {
  * @param verifier_length Length of the verifier string, between 43 and 128 characters.
  * @return A PKCE pair suitable for OAuth 2.1 authorization code flows.
  */
-inline PkcePair generate_pkce_pair(std::size_t verifier_length = 64) {
-    if (verifier_length < 43 || verifier_length > 128) {
+inline PkcePair generate_pkce_pair(std::size_t verifier_length = constants::g_default_verifier_length) {
+    if (verifier_length < constants::g_min_verifier_length ||
+        verifier_length > constants::g_max_verifier_length) {
         throw std::invalid_argument("PKCE verifier length must be 43-128 characters");
     }
 
@@ -192,7 +210,8 @@ struct TokenResponse {
      * @param margin Safety margin in seconds applied before reported expiry.
      * @return True when the token is expired or within the safety margin.
      */
-    [[nodiscard]] bool is_expired(int margin = 30) const {
+    [[nodiscard]] bool is_expired(
+        int margin = constants::g_default_token_lifetime_safety_margin_seconds) const {
         if (!expires_in.has_value()) {
             return false;
         }
@@ -260,7 +279,7 @@ class TokenStore {
      * @param server_url MCP server URL used as the storage key.
      * @return The stored token, if present.
      */
-    virtual std::optional<TokenResponse> load(const std::string& server_url) const = 0;
+    [[nodiscard]] virtual std::optional<TokenResponse> load(const std::string& server_url) const = 0;
     /**
      * @brief Remove the token associated with a server URL.
      *
@@ -407,14 +426,15 @@ class OAuthHttpClient {
         auto endpoints = co_await resolver.async_resolve(parsed.host, parsed.port, net::use_awaitable);
 
         beast::tcp_stream stream(strand_);
-        stream.expires_after(std::chrono::seconds(30));
+        stream.expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
         co_await stream.async_connect(endpoints, net::use_awaitable);
 
-        http::request<http::empty_body> req{http::verb::get, parsed.path, 11};
+        http::request<http::empty_body> req{http::verb::get, parsed.path,
+                                            mcp::constants::g_http_version_11};
         req.set(http::field::host, parsed.host);
         req.set(http::field::accept, "application/json");
 
-        stream.expires_after(std::chrono::seconds(30));
+        stream.expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
         co_await http::async_write(stream, req, net::use_awaitable);
 
         beast::flat_buffer buffer;
@@ -422,9 +442,9 @@ class OAuthHttpClient {
         co_await http::async_read(stream, buffer, res, net::use_awaitable);
 
         beast::error_code ec;
-        stream.socket().shutdown(net::ip::tcp::socket::shutdown_both, ec);
+        (void)stream.socket().shutdown(net::ip::tcp::socket::shutdown_both, ec);
 
-        if (res.result_int() >= 400) {
+        if (res.result_int() >= mcp::constants::g_http_bad_request) {
             throw std::runtime_error("HTTP GET " + url + " failed with status " +
                                      std::to_string(res.result_int()));
         }
@@ -445,15 +465,14 @@ class OAuthHttpClient {
     };
 
     static ParsedUrl parse_url(const std::string& url) {
-        constexpr std::string_view scheme = "http://";
-        if (url.rfind(std::string(scheme), 0) != 0) {
+        if (!url.starts_with(mcp::constants::g_http_prefix)) {
             throw std::invalid_argument("OAuth HTTP client URL must start with http://");
         }
 
-        auto authority_and_path = url.substr(scheme.size());
+        auto authority_and_path = url.substr(mcp::constants::g_http_prefix.size());
         auto path_sep = authority_and_path.find('/');
         auto authority = authority_and_path.substr(0, path_sep);
-        auto path = path_sep == std::string::npos ? "/" : authority_and_path.substr(path_sep);
+        auto path_val = path_sep == std::string::npos ? "/" : authority_and_path.substr(path_sep);
 
         std::string host;
         std::string port = "80";
@@ -465,7 +484,7 @@ class OAuthHttpClient {
             port = authority.substr(colon + 1);
         }
 
-        return {std::move(host), std::move(port), std::move(path)};
+        return {std::move(host), std::move(port), std::move(path_val)};
     }
 
     Task<TokenResponse> post_token_request(
@@ -480,17 +499,18 @@ class OAuthHttpClient {
         auto endpoints = co_await resolver.async_resolve(parsed.host, parsed.port, net::use_awaitable);
 
         beast::tcp_stream stream(strand_);
-        stream.expires_after(std::chrono::seconds(30));
+        stream.expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
         co_await stream.async_connect(endpoints, net::use_awaitable);
 
-        http::request<http::string_body> req{http::verb::post, parsed.path, 11};
+        http::request<http::string_body> req{http::verb::post, parsed.path,
+                                             mcp::constants::g_http_version_11};
         req.set(http::field::host, parsed.host);
         req.set(http::field::content_type, "application/x-www-form-urlencoded");
         req.set(http::field::accept, "application/json");
         req.body() = std::move(form_body);
         req.prepare_payload();
 
-        stream.expires_after(std::chrono::seconds(30));
+        stream.expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
         co_await http::async_write(stream, req, net::use_awaitable);
 
         beast::flat_buffer buffer;
@@ -498,9 +518,9 @@ class OAuthHttpClient {
         co_await http::async_read(stream, buffer, res, net::use_awaitable);
 
         beast::error_code ec;
-        stream.socket().shutdown(net::ip::tcp::socket::shutdown_both, ec);
+        (void)stream.socket().shutdown(net::ip::tcp::socket::shutdown_both, ec);
 
-        if (res.result_int() >= 400) {
+        if (res.result_int() >= mcp::constants::g_http_bad_request) {
             throw std::runtime_error("Token request failed with status " +
                                      std::to_string(res.result_int()) + ": " + res.body());
         }
@@ -620,8 +640,9 @@ class OAuthDiscoveryClient {
      * @param http_client HTTP helper used to fetch discovery documents.
      * @param cache_ttl Time-to-live for cached discovery responses.
      */
-    explicit OAuthDiscoveryClient(std::shared_ptr<OAuthHttpClient> http_client,
-                                  std::chrono::seconds cache_ttl = std::chrono::seconds(300))
+    explicit OAuthDiscoveryClient(
+        std::shared_ptr<OAuthHttpClient> http_client,
+        std::chrono::seconds cache_ttl = std::chrono::seconds(constants::g_default_cache_ttl_seconds))
         : http_client_(std::move(http_client)), cache_ttl_(cache_ttl) {}
 
     /**
@@ -664,7 +685,7 @@ class OAuthDiscoveryClient {
                 };
                 co_return metadata;
             } catch (...) {
-                // Expected: trying next well-known URL fallback
+                // Ignore failure and try next fallback URL
                 continue;
             }
         }
@@ -721,7 +742,7 @@ class OAuthDiscoveryClient {
                 };
                 co_return metadata;
             } catch (...) {
-                // Expected: trying next well-known URL fallback
+                // Ignore failure and try next fallback URL
                 continue;
             }
         }
@@ -934,7 +955,6 @@ class OAuthClientTransport final : public ITransport {
      */
     Task<std::string> read_message() override {
         auto raw = co_await inner_->read_message();
-        bool retried = false;  // Retry guard: prevents re-entering the retry branch more than once
 
         try {
             auto json_msg = nlohmann::json::parse(raw);
@@ -945,8 +965,7 @@ class OAuthClientTransport final : public ITransport {
                 // Error codes -32001 (authentication required) and -32000 (authentication failed)
                 // are MCP standard JSON-RPC error codes for auth-related failures.
                 // Attempt to refresh token and retry the original request once.
-                if ((code == -32001 || code == -32000) && !retried) {
-                    retried = true;
+                if (code == g_REQUEST_TIMEOUT || code == g_UNAUTHORIZED) {
                     bool refreshed = co_await authenticator_->try_refresh_token();
                     if (refreshed && !last_written_message_.empty()) {
                         co_await write_message(last_written_message_);
@@ -954,9 +973,10 @@ class OAuthClientTransport final : public ITransport {
                     }
                 }
             }
-        } catch (...) {
+        } catch (const std::exception& e) {
             // Silently ignore JSON parse errors: returns raw message to caller unchanged.
             // This allows the client to handle non-JSON responses gracefully.
+            (void)e;
         }
 
         co_return raw;
@@ -977,8 +997,9 @@ class OAuthClientTransport final : public ITransport {
             if (std::holds_alternative<JSONRPCRequest>(msg)) {
                 injected = inject_token(std::get<JSONRPCRequest>(msg));
             }
-        } catch (...) {
+        } catch (const std::exception& e) {
             // Ignore parse errors, send original message.
+            (void)e;
         }
 
         last_written_message_ = std::string(message);
@@ -991,7 +1012,7 @@ class OAuthClientTransport final : public ITransport {
     void close() override { inner_->close(); }
 
    private:
-    std::string inject_token(JSONRPCRequest request) const {
+    [[nodiscard]] std::string inject_token(JSONRPCRequest request) const {
         auto token = authenticator_->get_access_token();
         if (token.empty()) {
             return nlohmann::json(request).dump();

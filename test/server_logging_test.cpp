@@ -100,7 +100,7 @@ nlohmann::json make_initialize_request(std::string_view req_id) {
             {"id", req_id},
             {"method", "initialize"},
             {"params",
-             {{"protocolVersion", mcp::LATEST_PROTOCOL_VERSION},
+             {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
               {"clientInfo", {{"name", "test-client"}, {"version", "0.1"}}},
               {"capabilities", nlohmann::json::object()}}}};
 }
@@ -126,7 +126,7 @@ TEST_F(ServerLoggingTest, SetLevelChangesServerLogLevel) {
     mcp::Server server(std::move(info), std::move(caps));
 
     // Default level is Debug
-    EXPECT_EQ(server.get_log_level(), mcp::LoggingLevel::Debug);
+    EXPECT_EQ(server.get_log_level(), mcp::LoggingLevel::eDebug);
 
     std::vector<nlohmann::json> responses;
     raw_transport->set_on_write([&responses, raw_transport](std::string_view msg) {
@@ -155,7 +155,7 @@ TEST_F(ServerLoggingTest, SetLevelChangesServerLogLevel) {
     EXPECT_EQ(responses[1]["id"], "2");
     EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
 
-    EXPECT_EQ(server.get_log_level(), mcp::LoggingLevel::Warning);
+    EXPECT_EQ(server.get_log_level(), mcp::LoggingLevel::eWarning);
 }
 
 TEST_F(ServerLoggingTest, LogFilteredByLevel) {
@@ -176,8 +176,8 @@ TEST_F(ServerLoggingTest, LogFilteredByLevel) {
     server.add_tool<NoopParams, NoopResult>(
         "log_tool", "Logs at multiple levels", nlohmann::json{{"type", "object"}},
         [](mcp::Context& ctx, NoopParams /*params*/) -> mcp::Task<NoopResult> {
-            co_await ctx.log(mcp::LoggingLevel::Error, "error message");
-            co_await ctx.log(mcp::LoggingLevel::Debug, "debug message");
+            co_await ctx.log(mcp::LoggingLevel::eError, "error message");
+            co_await ctx.log(mcp::LoggingLevel::eDebug, "debug message");
             co_return NoopResult{true};
         });
 
@@ -248,7 +248,7 @@ TEST_F(ServerLoggingTest, LogWithLoggerField) {
     server.add_tool<NoopParams, NoopResult>(
         "logger_tool", "Logs with logger name", nlohmann::json{{"type", "object"}},
         [](mcp::Context& ctx, NoopParams /*params*/) -> mcp::Task<NoopResult> {
-            co_await ctx.log(mcp::LoggingLevel::Info, "tagged message", "my-component");
+            co_await ctx.log(mcp::LoggingLevel::eInfo, "tagged message", "my-component");
             co_return NoopResult{true};
         });
 

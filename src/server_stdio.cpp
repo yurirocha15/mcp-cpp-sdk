@@ -8,6 +8,7 @@
 #include <exception>
 #include <iostream>
 #include <memory>
+#include <utility>
 
 namespace mcp {
 
@@ -32,7 +33,7 @@ void Server::run_stdio(std::istream& input, std::ostream& output) {
         io_ctx,
         [this, transport, executor]() mutable -> Task<void> { co_await run(transport, executor); },
         [&](std::exception_ptr e) {
-            ep = e;
+            ep = std::move(e);
             signals.cancel();
         });
 

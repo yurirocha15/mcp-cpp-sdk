@@ -1,3 +1,4 @@
+#include <mcp/constants.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 #include <mcp/transport/memory.hpp>
 
@@ -61,7 +62,8 @@ struct SessionRuntime {
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
 
-    explicit SessionRuntime(std::string id, std::size_t event_store_capacity = 1024)
+    explicit SessionRuntime(
+        std::string id, std::size_t event_store_capacity = constants::g_event_store_default_capacity)
         : session_id(std::move(id)), event_store(event_store_capacity) {}
 };
 
@@ -70,14 +72,13 @@ struct SessionRuntime {
 // ============================================================================
 
 inline std::string generate_session_id() {
-    static constexpr char hex_digits[] = "0123456789abcdef";
     std::random_device random_device;
     std::mt19937 generator(random_device());
     std::uniform_int_distribution<int> distribution(0, 15);
 
     std::string session_identifier(32, '0');
     for (char& current_char : session_identifier) {
-        current_char = hex_digits[distribution(generator)];
+        current_char = constants::g_hex_digits[distribution(generator)];
     }
     return session_identifier;
 }
@@ -141,7 +142,11 @@ inline http::response<http::string_body> make_sse_replay_response(
     const std::vector<std::pair<std::string, std::string>>& events) {
     std::string sse_body;
     for (const auto& [id, data] : events) {
-        sse_body += "id: " + id + "\ndata: " + data + "\n\n";
+        sse_body += "id: ";
+        sse_body += id;
+        sse_body += "\ndata: ";
+        sse_body += data;
+        sse_body += "\n\n";
     }
     http::response<http::string_body> response{http::status::ok, request.version()};
     response.set(http::field::server, "mcp-cpp-sdk");
@@ -192,22 +197,22 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         const auto endpoint = boost::asio::ip::tcp::endpoint(bind_address, port);
-        acceptor.open(endpoint.protocol(), ec);
+        (void)acceptor.open(endpoint.protocol(), ec);
         if (ec) {
             throw std::runtime_error("Failed to open HTTP acceptor: " + ec.message());
         }
 
-        acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
+        (void)acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
         if (ec) {
             throw std::runtime_error("Failed to set reuse_address: " + ec.message());
         }
 
-        acceptor.bind(endpoint, ec);
+        (void)acceptor.bind(endpoint, ec);
         if (ec) {
             throw std::runtime_error("Failed to bind HTTP acceptor: " + ec.message());
         }
 
-        acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
+        (void)acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
         if (ec) {
             throw std::runtime_error("Failed to listen on HTTP acceptor: " + ec.message());
         }
@@ -260,7 +265,7 @@ struct StreamableHttpSessionManager::Impl {
             return;
         }
         for (auto& [key, pending] : it->second->pending_responses) {
-            pending.ready_timer->cancel();
+            (void)pending.ready_timer->cancel();
         }
         if (it->second->client_transport) {
             it->second->client_transport->close();
@@ -300,7 +305,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         boost::system::error_code shutdown_error;
-        stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
+        (void)stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
     }
 
     Task<boost::beast::http::response<boost::beast::http::string_body>> handle_request(
@@ -338,7 +343,7 @@ struct StreamableHttpSessionManager::Impl {
 
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         if (protocol_header_it == request.end() ||
-            protocol_header_it->value() != LATEST_PROTOCOL_VERSION) {
+            protocol_header_it->value() != g_LATEST_PROTOCOL_VERSION) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid MCP-Protocol-Version header");
         }
@@ -361,15 +366,15 @@ struct StreamableHttpSessionManager::Impl {
         if (!has_session_header) {
             if (!detail_session_mgr::is_initialize_request(request_json)) {
                 co_return detail_session_mgr::make_jsonrpc_error_response(
-                    request, http::status::bad_request, -32600,
+                    request, http::status::bad_request, g_INVALID_REQUEST,
                     "Missing Mcp-Session-Id header; only initialize is allowed without a session");
             }
             session = create_session();
         } else {
             session = find_session(session_id_value);
-            if (!session) {
+            if (session == nullptr) {
                 co_return detail_session_mgr::make_jsonrpc_error_response(
-                    request, http::status::not_found, -32600, "Session not found");
+                    request, http::status::not_found, g_INVALID_REQUEST, "Session not found");
             }
         }
 
@@ -409,7 +414,7 @@ struct StreamableHttpSessionManager::Impl {
                     co_await dispatch_response_to_pending(session_ptr, std::move(response_str));
                 } catch (...) {
                     for (auto& [key, pending] : session_ptr->pending_responses) {
-                        pending.ready_timer->cancel();
+                        (void)pending.ready_timer->cancel();
                     }
                 }
             },
@@ -471,7 +476,7 @@ struct StreamableHttpSessionManager::Impl {
 
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         if (protocol_header_it == request.end() ||
-            protocol_header_it->value() != LATEST_PROTOCOL_VERSION) {
+            protocol_header_it->value() != g_LATEST_PROTOCOL_VERSION) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid MCP-Protocol-Version header");
         }
@@ -484,9 +489,9 @@ struct StreamableHttpSessionManager::Impl {
 
         std::string session_id_value(session_header_it->value());
         auto* session = find_session(session_id_value);
-        if (!session) {
-            co_return detail_session_mgr::make_jsonrpc_error_response(request, http::status::not_found,
-                                                                      -32600, "Session not found");
+        if (session == nullptr) {
+            co_return detail_session_mgr::make_jsonrpc_error_response(
+                request, http::status::not_found, g_INVALID_REQUEST, "Session not found");
         }
 
         destroy_session(session_id_value);
@@ -499,7 +504,7 @@ struct StreamableHttpSessionManager::Impl {
 
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         if (protocol_header_it == request.end() ||
-            protocol_header_it->value() != LATEST_PROTOCOL_VERSION) {
+            protocol_header_it->value() != g_LATEST_PROTOCOL_VERSION) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid MCP-Protocol-Version header");
         }
@@ -512,9 +517,9 @@ struct StreamableHttpSessionManager::Impl {
 
         std::string session_id_value(session_header_it->value());
         auto* session = find_session(session_id_value);
-        if (!session) {
-            co_return detail_session_mgr::make_jsonrpc_error_response(request, http::status::not_found,
-                                                                      -32600, "Session not found");
+        if (session == nullptr) {
+            co_return detail_session_mgr::make_jsonrpc_error_response(
+                request, http::status::not_found, g_INVALID_REQUEST, "Session not found");
         }
 
         const auto last_event_id_it = request.find("Last-Event-ID");
@@ -533,8 +538,8 @@ struct StreamableHttpSessionManager::Impl {
         co_return detail_session_mgr::make_empty_json_response(request, http::status::ok);
     }
 
-    Task<void> dispatch_response_to_pending(detail_session_mgr::SessionRuntime* session,
-                                            std::string response_str) {
+    static Task<void> dispatch_response_to_pending(detail_session_mgr::SessionRuntime* session,
+                                                   std::string response_str) {
         const auto response_json = nlohmann::json::parse(response_str, nullptr, false);
         if (response_json.is_discarded() || !response_json.is_object()) {
             co_return;
@@ -555,10 +560,10 @@ struct StreamableHttpSessionManager::Impl {
         pending_it->second.response_body = std::move(response_str);
         pending_it->second.event_id = std::move(event_id);
         pending_it->second.response_ready = true;
-        pending_it->second.ready_timer->cancel();
+        (void)pending_it->second.ready_timer->cancel();
     }
 
-    detail_session_mgr::PendingResult consume_pending_response(
+    static detail_session_mgr::PendingResult consume_pending_response(
         detail_session_mgr::SessionRuntime* session, const std::string& request_id_key) {
         auto pending_it = session->pending_responses.find(request_id_key);
         if (pending_it == session->pending_responses.end()) {
@@ -582,7 +587,13 @@ StreamableHttpSessionManager::StreamableHttpSessionManager(const boost::asio::an
     : impl_(std::make_unique<Impl>(executor, std::move(host), port, std::move(factory),
                                    event_store_capacity)) {}
 
-StreamableHttpSessionManager::~StreamableHttpSessionManager() { close(); }
+StreamableHttpSessionManager::~StreamableHttpSessionManager() {
+    try {
+        close();
+    } catch (...) {
+        // Ignore exceptions in destructor
+    }
+}
 
 void StreamableHttpSessionManager::set_custom_request_handler(CustomRequestHandler handler) {
     impl_->custom_handler = std::move(handler);
@@ -597,12 +608,12 @@ void StreamableHttpSessionManager::close() {
 
     boost::asio::post(impl_->strand, [this]() {
         boost::system::error_code ec;
-        impl_->acceptor.cancel(ec);
-        impl_->acceptor.close(ec);
+        (void)impl_->acceptor.cancel(ec);
+        (void)impl_->acceptor.close(ec);
 
         for (auto& [id, session] : impl_->sessions) {
             for (auto& [key, pending] : session->pending_responses) {
-                pending.ready_timer->cancel();
+                (void)pending.ready_timer->cancel();
             }
             if (session->client_transport) {
                 session->client_transport->close();
@@ -630,7 +641,7 @@ Task<void> StreamableHttpSessionManager::listen() {
         }
 
         boost::asio::co_spawn(impl_->strand, impl_->handle_connection(std::move(socket)),
-                              [](std::exception_ptr) {
+                              [](const std::exception_ptr&) {
                                   // Connection errors (EOF, client disconnect) are normal;
                                   // handled per-connection, not propagated to the accept loop.
                               });

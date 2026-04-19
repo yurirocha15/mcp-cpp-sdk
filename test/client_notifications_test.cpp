@@ -86,7 +86,7 @@ class ScriptedTransport final : public mcp::ITransport {
 };
 
 nlohmann::json make_initialize_result() {
-    return {{"protocolVersion", mcp::LATEST_PROTOCOL_VERSION},
+    return {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
             {"capabilities", nlohmann::json::object()},
             {"serverInfo", {{"name", "test-server"}, {"version", "1.0"}}}};
 }
@@ -325,5 +325,5 @@ TEST_F(ClientNotificationsTest, UnknownRequestReturnsMethodNotFound) {
     auto response = nlohmann::json::parse(written_messages[2]);
     EXPECT_EQ(response["id"], "server-req-unknown");
     ASSERT_TRUE(response.contains("error"));
-    EXPECT_EQ(response["error"]["code"], -32601);
+    EXPECT_EQ(response["error"]["code"], mcp::g_METHOD_NOT_FOUND);
 }

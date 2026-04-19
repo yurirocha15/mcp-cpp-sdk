@@ -201,11 +201,16 @@ namespace asio = boost::asio;
 #if __has_include(<lldb/API/LLDB.h>)
 static void set_env(const char* key, const std::string& value) {
 #ifdef _WIN32
-    _putenv_s(key, value.c_str());
+    (void)_putenv_s(key, value.c_str());
 #else
-    setenv(key, value.c_str(), 1);
+    (void)setenv(key, value.c_str(), 1);
 #endif
 }
+
+constexpr int g_event_timeout_seconds = 30;
+constexpr int g_default_backtrace_count = 20;
+constexpr std::size_t g_stop_desc_buf_size = 256;
+constexpr unsigned short g_default_port = 9695;
 
 static void setup_lldb_server_path() {
     // Check if LLDB_DEBUGSERVER_PATH is already set
@@ -246,27 +251,26 @@ static void setup_lldb_server_path() {
 #elif defined(__linux__)
     // Linux: Glob /usr/lib/llvm-*/bin/lldb-server-<version>
     if (!version.empty()) {
-        try {
-            std::filesystem::path llvm_base("/usr/lib");
-            if (std::filesystem::exists(llvm_base)) {
-                for (const auto& entry : std::filesystem::directory_iterator(llvm_base)) {
-                    if (entry.is_directory()) {
-                        std::string dir_name = entry.path().filename().string();
-                        // Check if it matches llvm-*
-                        if (dir_name.find("llvm-") == 0) {
-                            std::string lldb_server_name = "lldb-server-";
-                            lldb_server_name += version;
-                            std::filesystem::path candidate = entry.path() / "bin" / lldb_server_name;
-                            if (std::filesystem::exists(candidate)) {
-                                set_env("LLDB_DEBUGSERVER_PATH", candidate.string());
-                                return;
-                            }
-                        }
-                    }
+        const std::filesystem::path llvm_base("/usr/lib");
+        if (std::filesystem::exists(llvm_base)) {
+            for (const auto& entry : std::filesystem::directory_iterator(llvm_base)) {
+                if (!entry.is_directory()) {
+                    continue;
+                }
+
+                std::string dir_name = entry.path().filename().string();
+                if (!dir_name.starts_with("llvm-")) {
+                    continue;
+                }
+
+                std::string lldb_server_name = "lldb-server-";
+                lldb_server_name += version;
+                std::filesystem::path candidate = entry.path() / "bin" / lldb_server_name;
+                if (std::filesystem::exists(candidate)) {
+                    set_env("LLDB_DEBUGSERVER_PATH", candidate.string());
+                    return;
                 }
             }
-        } catch (...) {
-            // Silently ignore filesystem errors
         }
     }
 
@@ -301,7 +305,7 @@ struct LLDBGuard {
 struct AppOptions {
     std::string transport = "stdio";
     std::string host = "127.0.0.1";
-    unsigned short port = 9695;
+    unsigned short port = g_default_port;
 };
 
 static void print_usage(const char* prog) {
@@ -309,14 +313,14 @@ static void print_usage(const char* prog) {
               << "Options:\n"
               << "  --transport=<stdio|http>  Transport to use (default: stdio)\n"
               << "  --host=<addr>             HTTP listen address (default: 127.0.0.1)\n"
-              << "  --port=<n>                HTTP listen port (default: 9695)\n"
+              << "  --port=<n>                HTTP listen port (default: " << g_default_port << ")\n"
               << "  --help                    Show this help\n";
 }
 
-enum class ParseResult {
-    Ok,
-    Help,
-    Error
+enum class ParseResult : std::uint8_t {
+    eOk,
+    eHelp,
+    eError
 };
 
 static ParseResult parse_args(int argc, char** argv, AppOptions& opts) {
@@ -329,29 +333,29 @@ static ParseResult parse_args(int argc, char** argv, AppOptions& opts) {
         const std::string_view arg(argv[i]);
         if (arg == "--help"sv) {
             print_usage(argv[0]);
-            return ParseResult::Help;
+            return ParseResult::eHelp;
         }
 
-        if (arg.rfind(transport_prefix, 0) == 0) {
+        if (arg.starts_with(transport_prefix)) {
             opts.transport = std::string(arg.substr(transport_prefix.size()));
             if (opts.transport != "stdio" && opts.transport != "http") {
                 std::cerr << "Invalid transport: " << opts.transport << "\n";
                 print_usage(argv[0]);
-                return ParseResult::Error;
+                return ParseResult::eError;
             }
-        } else if (arg.rfind(host_prefix, 0) == 0) {
+        } else if (arg.starts_with(host_prefix)) {
             opts.host = std::string(arg.substr(host_prefix.size()));
-        } else if (arg.rfind(port_prefix, 0) == 0) {
+        } else if (arg.starts_with(port_prefix)) {
             opts.port =
                 static_cast<unsigned short>(std::stoi(std::string(arg.substr(port_prefix.size()))));
         } else {
             std::cerr << "Unknown option: " << arg << "\n";
             print_usage(argv[0]);
-            return ParseResult::Error;
+            return ParseResult::eError;
         }
     }
 
-    return ParseResult::Ok;
+    return ParseResult::eOk;
 }
 
 static nlohmann::json make_text_result(std::string_view text) {
@@ -367,7 +371,7 @@ static nlohmann::json make_error_result(std::string_view msg) {
 }
 
 static std::string safe_cstr(const char* p, std::string_view fallback = "<unknown>") {
-    return p ? std::string(p) : std::string(fallback);
+    return (p != nullptr) ? std::string(p) : std::string(fallback);
 }
 
 static std::string state_to_string(lldb::StateType state) {
@@ -396,8 +400,9 @@ static std::string state_to_string(lldb::StateType state) {
             return "exited";
         case lldb::eStateSuspended:
             return "suspended";
+        default:
+            return "unknown";
     }
-    return "unknown";
 }
 
 static std::string stop_reason_to_string(lldb::StopReason reason) {
@@ -424,8 +429,9 @@ static std::string stop_reason_to_string(lldb::StopReason reason) {
             return "thread_exiting";
         case lldb::eStopReasonInstrumentation:
             return "instrumentation";
+        default:
+            return "unknown";
     }
-    return "unknown";
 }
 
 struct CommandInput {
@@ -583,727 +589,742 @@ inline void from_json(const nlohmann::json& j, BacktraceInput& x) {
     }
 }
 
-int main(int argc, char** argv) {
-    LLDBGuard lldb_guard;
-    using namespace mcp;
+int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-complexity)
+    try {
+        LLDBGuard lldb_guard;
+        using namespace mcp;
 
-    AppOptions opts;
-    const auto parse_result = parse_args(argc, argv, opts);
-    if (parse_result == ParseResult::Help) {
-        return EXIT_SUCCESS;
-    }
-    if (parse_result == ParseResult::Error) {
-        return EXIT_FAILURE;
-    }
+        AppOptions opts;
+        const auto parse_result = parse_args(argc, argv, opts);
+        if (parse_result == ParseResult::eHelp) {
+            return EXIT_SUCCESS;
+        }
+        if (parse_result == ParseResult::eError) {
+            return EXIT_FAILURE;
+        }
 
-    ServerCapabilities caps;
-    caps.tools = ServerCapabilities::ToolsCapability{.listChanged = true};
-    caps.resources = ServerCapabilities::ResourcesCapability{.listChanged = true};
-    caps.prompts = ServerCapabilities::PromptsCapability{.listChanged = true};
-    caps.logging = nlohmann::json::object();
+        ServerCapabilities caps;
+        caps.tools = ServerCapabilities::ToolsCapability{.listChanged = true};
+        caps.resources = ServerCapabilities::ResourcesCapability{.listChanged = true};
+        caps.prompts = ServerCapabilities::PromptsCapability{.listChanged = true};
+        caps.logging = nlohmann::json::object();
 
-    Implementation info;
-    info.name = "lldb-mcp-server";
-    info.version = "1.0.0";
-    info.description = "MCP adapter for LLDB SB API";
+        Implementation info;
+        info.name = "lldb-mcp-server";
+        info.version = "1.0.0";
+        info.description = "MCP adapter for LLDB SB API";
 
-    Server server(std::move(info), std::move(caps));
+        Server server(info, caps);
 
-    boost::asio::io_context io_ctx;
-    asio::any_io_executor io_executor = io_ctx.get_executor();
+        boost::asio::io_context io_ctx;
+        asio::any_io_executor io_executor = io_ctx.get_executor();
 
-    auto debugger_ptr = std::make_shared<lldb::SBDebugger>(lldb::SBDebugger::Create(false));
-    auto target_ptr = std::make_shared<std::optional<lldb::SBTarget>>(std::nullopt);
-    auto listener_ptr = std::make_shared<lldb::SBListener>(lldb::SBListener("mcp-process-listener"));
+        auto debugger_ptr = std::make_shared<lldb::SBDebugger>(lldb::SBDebugger::Create(false));
+        auto target_ptr = std::make_shared<std::optional<lldb::SBTarget>>(std::nullopt);
+        auto listener_ptr =
+            std::make_shared<lldb::SBListener>(lldb::SBListener("mcp-process-listener"));
 
-    nlohmann::json command_schema = {{"type", "object"},
-                                     {"properties", {{"command", {{"type", "string"}}}}},
-                                     {"required", nlohmann::json::array({"command"})}};
-    server.add_tool<CommandInput, nlohmann::json>(
-        "lldb_command", "Run raw LLDB command", std::move(command_schema),
-        [io_executor, debugger_ptr](CommandInput args) -> mcp::Task<nlohmann::json> {
-            (void)io_executor;
-            try {
-                if (!debugger_ptr->IsValid()) {
-                    co_return make_error_result("Debugger is not valid");
-                }
-                auto interp = debugger_ptr->GetCommandInterpreter();
-                if (!interp.IsValid()) {
-                    co_return make_error_result("Command interpreter is not valid");
-                }
-                lldb::SBCommandReturnObject result_obj;
-                bool ok = interp.HandleCommand(args.command.c_str(), result_obj);
-                if (!ok) {
-                    co_return make_error_result(safe_cstr(result_obj.GetError(), "Command failed"));
-                }
-                co_return make_text_result(safe_cstr(result_obj.GetOutput(), ""));
-            } catch (const std::exception& e) {
-                co_return make_error_result(e.what());
-            }
-        });
-
-    nlohmann::json launch_schema = {{"type", "object"},
-                                    {"properties",
-                                     {{"program", {{"type", "string"}}},
-                                      {"args", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-                                      {"stop_at_entry", {{"type", "boolean"}}}}},
-                                    {"required", nlohmann::json::array({"program"})}};
-    server.add_tool<LaunchInput, nlohmann::json>(
-        "launch", "Launch program under LLDB", std::move(launch_schema),
-        [io_executor, debugger_ptr, target_ptr,
-         listener_ptr](LaunchInput args) -> mcp::Task<nlohmann::json> {
-            (void)io_executor;
-            try {
-                if (!debugger_ptr->IsValid()) {
-                    co_return make_error_result("Debugger is not valid");
-                }
-                auto target = debugger_ptr->CreateTarget(args.program.c_str());
-                if (!target.IsValid()) {
-                    co_return make_error_result("Failed to create target");
-                }
-
-                std::vector<std::string> argv_storage;
-                if (args.args) {
-                    argv_storage = *args.args;
-                }
-                std::vector<const char*> argv;
-                argv.reserve(argv_storage.size() + 1);
-                for (const auto& a : argv_storage) {
-                    argv.push_back(a.c_str());
-                }
-                argv.push_back(nullptr);
-
-                *listener_ptr = lldb::SBListener("mcp-process-listener");
-                lldb::SBLaunchInfo launch_info(argv.data());
-                launch_info.SetLaunchFlags(
-                    args.stop_at_entry.value_or(true) ? lldb::eLaunchFlagStopAtEntry : 0);
-                launch_info.SetListener(*listener_ptr);
-                lldb::SBError error;
-                auto process = target.Launch(launch_info, error);
-                if (error.Fail() || !process.IsValid()) {
-                    co_return make_error_result(safe_cstr(error.GetCString(), "Launch failed"));
-                }
-
-                *target_ptr = target;
-                lldb::SBEvent drain_ev;
-                while (listener_ptr->GetNextEvent(drain_ev)) {
-                }
-                nlohmann::json out;
-                out["pid"] = process.GetProcessID();
-                out["state"] = state_to_string(process.GetState());
-                out["description"] = "Program launched";
-                co_return make_text_result(out.dump());
-            } catch (const std::exception& e) {
-                co_return make_error_result(e.what());
-            }
-        });
-
-    nlohmann::json attach_schema = {
-        {"type", "object"},
-        {"properties", {{"pid", {{"type", "integer"}}}, {"name", {{"type", "string"}}}}}};
-    server.add_tool<AttachInput, nlohmann::json>(
-        "attach", "Attach to existing process", std::move(attach_schema),
-        [io_executor, debugger_ptr, target_ptr,
-         listener_ptr](AttachInput args) -> mcp::Task<nlohmann::json> {
-            (void)io_executor;
-            try {
-                if (!debugger_ptr->IsValid()) {
-                    co_return make_error_result("Debugger is not valid");
-                }
-                if (!args.pid && !args.name) {
-                    co_return make_error_result("Must provide pid or name");
-                }
-                auto target = debugger_ptr->CreateTarget("");
-                if (!target.IsValid()) {
-                    co_return make_error_result("Failed to create target");
-                }
-
-                *listener_ptr = lldb::SBListener("mcp-process-listener");
-                lldb::SBError error;
-                lldb::SBProcess process;
-                if (args.pid) {
-                    lldb::SBAttachInfo info(static_cast<lldb::pid_t>(*args.pid));
-                    info.SetListener(*listener_ptr);
-                    process = target.Attach(info, error);
-                } else {
-                    if (!listener_ptr->IsValid()) {
-                        co_return make_error_result("Listener is not valid");
+        nlohmann::json command_schema = {{"type", "object"},
+                                         {"properties", {{"command", {{"type", "string"}}}}},
+                                         {"required", nlohmann::json::array({"command"})}};
+        server.add_tool<CommandInput, nlohmann::json>(
+            "lldb_command", "Run raw LLDB command", command_schema,
+            [io_executor, debugger_ptr](CommandInput args) -> mcp::Task<nlohmann::json> {
+                (void)io_executor;
+                try {
+                    if (!debugger_ptr->IsValid()) {
+                        co_return make_error_result("Debugger is not valid");
                     }
-                    process =
-                        target.AttachToProcessWithName(*listener_ptr, args.name->c_str(), false, error);
-                }
-                if (error.Fail() || !process.IsValid()) {
-                    co_return make_error_result(safe_cstr(error.GetCString(), "Attach failed"));
-                }
-
-                *target_ptr = target;
-                lldb::SBEvent drain_ev;
-                while (listener_ptr->GetNextEvent(drain_ev)) {
-                }
-                nlohmann::json out;
-                out["pid"] = process.GetProcessID();
-                out["state"] = state_to_string(process.GetState());
-                co_return make_text_result(out.dump());
-            } catch (const std::exception& e) {
-                co_return make_error_result(e.what());
-            }
-        });
-
-    nlohmann::json bp_schema = {{"type", "object"},
-                                {"properties",
-                                 {{"file", {{"type", "string"}}},
-                                  {"line", {{"type", "integer"}}},
-                                  {"function_name", {{"type", "string"}}},
-                                  {"condition", {{"type", "string"}}}}}};
-    server.add_tool<BreakpointInput, nlohmann::json>(
-        "set_breakpoint", "Set file/line or function breakpoint", std::move(bp_schema),
-        [io_executor, target_ptr](BreakpointInput args) -> mcp::Task<nlohmann::json> {
-            (void)io_executor;
-            try {
-                if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
-                    co_return make_error_result("No valid current target");
-                }
-                auto target = target_ptr->value();
-
-                lldb::SBBreakpoint bp;
-                if (args.file && args.line) {
-                    bp = target.BreakpointCreateByLocation(args.file->c_str(),
-                                                           static_cast<unsigned>(*args.line));
-                } else if (args.function_name) {
-                    bp = target.BreakpointCreateByName(args.function_name->c_str());
-                } else {
-                    co_return make_error_result("Must provide file+line or function_name");
-                }
-                if (!bp.IsValid()) {
-                    co_return make_error_result("Failed to create breakpoint");
-                }
-                if (args.condition) {
-                    bp.SetCondition(args.condition->c_str());
-                }
-
-                nlohmann::json out;
-                out["id"] = bp.GetID();
-                out["is_valid"] = bp.IsValid();
-                out["is_enabled"] = bp.IsEnabled();
-                co_return make_text_result(out.dump());
-            } catch (const std::exception& e) {
-                co_return make_error_result(e.what());
-            }
-        });
-
-    nlohmann::json continue_schema = {{"type", "object"}, {"properties", nlohmann::json::object()}};
-    server.add_tool<nlohmann::json, nlohmann::json>(
-        "continue_process", "Continue current process", std::move(continue_schema),
-        [io_executor, target_ptr, listener_ptr](nlohmann::json) -> mcp::Task<nlohmann::json> {
-            (void)io_executor;
-            try {
-                if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
-                    co_return make_error_result("No valid current target");
-                }
-                auto process = target_ptr->value().GetProcess();
-                if (!process.IsValid()) {
-                    co_return make_error_result("No valid process");
-                }
-                auto current_state = process.GetState();
-                if (current_state == lldb::eStateExited || current_state == lldb::eStateDetached) {
-                    co_return make_error_result("Process has already " +
-                                                state_to_string(current_state));
-                }
-                lldb::SBEvent event;
-                while (listener_ptr->GetNextEvent(event)) {
-                }
-                uint32_t stop0 = process.GetStopID();
-                auto err = process.Continue();
-                if (err.Fail()) {
-                    co_return make_error_result(safe_cstr(err.GetCString(), "Continue failed"));
-                }
-                lldb::StateType waited_state = process.GetState();
-                while (listener_ptr->WaitForEvent(30, event)) {
-                    auto st = lldb::SBProcess::GetStateFromEvent(event);
-                    waited_state = st;
-                    if (st == lldb::eStateRunning || st == lldb::eStateStepping) {
-                        continue;
+                    auto interp = debugger_ptr->GetCommandInterpreter();
+                    if (!interp.IsValid()) {
+                        co_return make_error_result("Command interpreter is not valid");
                     }
-                    if (st == lldb::eStateStopped && process.GetStopID() <= stop0) {
-                        continue;
+                    lldb::SBCommandReturnObject result_obj;
+                    bool ok = interp.HandleCommand(args.command.c_str(), result_obj) != 0U;
+                    if (!ok) {
+                        co_return make_error_result(safe_cstr(result_obj.GetError(), "Command failed"));
                     }
-                    break;
+                    co_return make_text_result(safe_cstr(result_obj.GetOutput(), ""));
+                } catch (const std::exception& e) {
+                    co_return make_error_result(e.what());
                 }
-                nlohmann::json out;
-                if (waited_state == lldb::eStateExited || waited_state == lldb::eStateDetached) {
-                    out["state"] = state_to_string(waited_state);
-                } else {
+            });
+
+        nlohmann::json launch_schema = {
+            {"type", "object"},
+            {"properties",
+             {{"program", {{"type", "string"}}},
+              {"args", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+              {"stop_at_entry", {{"type", "boolean"}}}}},
+            {"required", nlohmann::json::array({"program"})}};
+        server.add_tool<LaunchInput, nlohmann::json>(
+            "launch", "Launch program under LLDB", launch_schema,
+            [io_executor, debugger_ptr, target_ptr,
+             listener_ptr](LaunchInput args) -> mcp::Task<nlohmann::json> {
+                (void)io_executor;
+                try {
+                    if (!debugger_ptr->IsValid()) {
+                        co_return make_error_result("Debugger is not valid");
+                    }
+                    auto target = debugger_ptr->CreateTarget(args.program.c_str());
+                    if (!target.IsValid()) {
+                        co_return make_error_result("Failed to create target");
+                    }
+
+                    std::vector<std::string> argv_storage;
+                    if (args.args) {
+                        argv_storage = *args.args;
+                    }
+                    std::vector<const char*> argv;
+                    argv.reserve(argv_storage.size() + 1);
+                    for (const auto& a : argv_storage) {
+                        argv.push_back(a.c_str());
+                    }
+                    argv.push_back(nullptr);
+
+                    *listener_ptr = lldb::SBListener("mcp-process-listener");
+                    lldb::SBLaunchInfo launch_info(argv.data());
+                    launch_info.SetLaunchFlags(
+                        args.stop_at_entry.value_or(true) ? lldb::eLaunchFlagStopAtEntry : 0);
+                    launch_info.SetListener(*listener_ptr);
+                    lldb::SBError error;
+                    auto process = target.Launch(launch_info, error);
+                    if (error.Fail() || !process.IsValid()) {
+                        co_return make_error_result(safe_cstr(error.GetCString(), "Launch failed"));
+                    }
+
+                    *target_ptr = target;
+                    lldb::SBEvent drain_ev;
+                    while (listener_ptr->GetNextEvent(drain_ev)) {
+                    }
+                    nlohmann::json out;
+                    out["pid"] = process.GetProcessID();
                     out["state"] = state_to_string(process.GetState());
+                    out["description"] = "Program launched";
+                    co_return make_text_result(out.dump());
+                } catch (const std::exception& e) {
+                    co_return make_error_result(e.what());
                 }
-                co_return make_text_result(out.dump());
-            } catch (const std::exception& e) {
-                co_return make_error_result(e.what());
-            }
-        });
+            });
 
-    nlohmann::json step_schema = {
-        {"type", "object"},
-        {"properties",
-         {{"thread_index", {{"type", "integer"}}},
-          {"type", {{"type", "string"}, {"enum", nlohmann::json::array({"over", "into", "out"})}}}}}};
-    server.add_tool<StepInput, nlohmann::json>(
-        "step", "Step selected thread", std::move(step_schema),
-        [io_executor, target_ptr, listener_ptr](StepInput args) -> mcp::Task<nlohmann::json> {
-            (void)io_executor;
-            try {
-                if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
-                    co_return make_error_result("No valid current target");
-                }
-                auto process = target_ptr->value().GetProcess();
-                if (!process.IsValid()) {
-                    co_return make_error_result("No valid process");
-                }
-                auto current_state = process.GetState();
-                if (current_state == lldb::eStateExited || current_state == lldb::eStateDetached) {
-                    co_return make_error_result("Process has already " +
-                                                state_to_string(current_state));
-                }
-
-                int idx = args.thread_index.value_or(0);
-                if (idx < 0 || static_cast<unsigned>(idx) >= process.GetNumThreads()) {
-                    co_return make_error_result("Invalid thread_index");
-                }
-                auto thread = process.GetThreadAtIndex(static_cast<unsigned>(idx));
-                if (!thread.IsValid()) {
-                    co_return make_error_result("Thread is not valid");
-                }
-
-                const std::string type = args.type.value_or("over");
-                lldb::SBEvent event;
-                while (listener_ptr->GetNextEvent(event)) {
-                }
-                uint32_t stop0 = process.GetStopID();
-                if (type == "over") {
-                    thread.StepOver(lldb::eOnlyDuringStepping);
-                } else if (type == "into") {
-                    thread.StepInto();
-                } else if (type == "out") {
-                    thread.StepOut();
-                } else {
-                    co_return make_error_result("Invalid step type");
-                }
-
-                while (listener_ptr->WaitForEvent(30, event)) {
-                    auto st = lldb::SBProcess::GetStateFromEvent(event);
-                    if (st == lldb::eStateRunning || st == lldb::eStateStepping) {
-                        continue;
+        nlohmann::json attach_schema = {
+            {"type", "object"},
+            {"properties", {{"pid", {{"type", "integer"}}}, {"name", {{"type", "string"}}}}}};
+        server.add_tool<AttachInput, nlohmann::json>(
+            "attach", "Attach to existing process", attach_schema,
+            [io_executor, debugger_ptr, target_ptr,
+             listener_ptr](AttachInput args) -> mcp::Task<nlohmann::json> {
+                (void)io_executor;
+                try {
+                    if (!debugger_ptr->IsValid()) {
+                        co_return make_error_result("Debugger is not valid");
                     }
-                    if (st == lldb::eStateStopped && process.GetStopID() <= stop0) {
-                        continue;
+                    if (!args.pid && !args.name) {
+                        co_return make_error_result("Must provide pid or name");
                     }
-                    break;
-                }
+                    auto target = debugger_ptr->CreateTarget("");
+                    if (!target.IsValid()) {
+                        co_return make_error_result("Failed to create target");
+                    }
 
-                auto frame = thread.GetFrameAtIndex(0);
-                if (!frame.IsValid()) {
-                    co_return make_error_result("Top frame is not valid");
-                }
-                auto le = frame.GetLineEntry();
+                    *listener_ptr = lldb::SBListener("mcp-process-listener");
+                    lldb::SBError error;
+                    lldb::SBProcess process;
+                    if (args.pid) {
+                        lldb::SBAttachInfo info(static_cast<lldb::pid_t>(*args.pid));
+                        info.SetListener(*listener_ptr);
+                        process = target.Attach(info, error);
+                    } else {
+                        if (!listener_ptr->IsValid()) {
+                            co_return make_error_result("Listener is not valid");
+                        }
+                        process = target.AttachToProcessWithName(*listener_ptr, args.name->c_str(),
+                                                                 false, error);
+                    }
+                    if (error.Fail() || !process.IsValid()) {
+                        co_return make_error_result(safe_cstr(error.GetCString(), "Attach failed"));
+                    }
 
-                nlohmann::json out;
-                out["state"] = state_to_string(process.GetState());
-                out["thread_index"] = idx;
-                out["function"] = safe_cstr(frame.GetFunctionName(), "<unknown>");
-                out["file"] = le.IsValid() ? safe_cstr(le.GetFileSpec().GetFilename(), "<unknown>")
-                                           : std::string("<unknown>");
-                out["line"] = le.IsValid() ? le.GetLine() : 0;
-                co_return make_text_result(out.dump());
-            } catch (const std::exception& e) {
-                co_return make_error_result(e.what());
-            }
-        });
+                    *target_ptr = target;
+                    lldb::SBEvent drain_ev;
+                    while (listener_ptr->GetNextEvent(drain_ev)) {
+                    }
+                    nlohmann::json out;
+                    out["pid"] = process.GetProcessID();
+                    out["state"] = state_to_string(process.GetState());
+                    co_return make_text_result(out.dump());
+                } catch (const std::exception& e) {
+                    co_return make_error_result(e.what());
+                }
+            });
 
-    nlohmann::json eval_schema = {{"type", "object"},
-                                  {"properties",
-                                   {{"expression", {{"type", "string"}}},
-                                    {"thread_index", {{"type", "integer"}}},
-                                    {"frame_index", {{"type", "integer"}}}}},
-                                  {"required", nlohmann::json::array({"expression"})}};
-    server.add_tool<EvalInput, nlohmann::json>(
-        "evaluate", "Evaluate expression", std::move(eval_schema),
-        [io_executor, target_ptr](EvalInput args) -> mcp::Task<nlohmann::json> {
-            (void)io_executor;
-            try {
-                if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
-                    co_return make_error_result("No valid current target");
-                }
-                auto process = target_ptr->value().GetProcess();
-                if (!process.IsValid()) {
-                    co_return make_error_result("No valid process");
-                }
+        nlohmann::json bp_schema = {{"type", "object"},
+                                    {"properties",
+                                     {{"file", {{"type", "string"}}},
+                                      {"line", {{"type", "integer"}}},
+                                      {"function_name", {{"type", "string"}}},
+                                      {"condition", {{"type", "string"}}}}}};
+        server.add_tool<BreakpointInput, nlohmann::json>(
+            "set_breakpoint", "Set file/line or function breakpoint", bp_schema,
+            [io_executor, target_ptr](BreakpointInput args) -> mcp::Task<nlohmann::json> {
+                (void)io_executor;
+                try {
+                    if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
+                        co_return make_error_result("No valid current target");
+                    }
+                    auto target = target_ptr->value();
 
-                int thread_index = args.thread_index.value_or(0);
-                if (thread_index < 0 ||
-                    static_cast<unsigned>(thread_index) >= process.GetNumThreads()) {
-                    co_return make_error_result("Invalid thread_index");
-                }
-                auto thread = process.GetThreadAtIndex(static_cast<unsigned>(thread_index));
-                if (!thread.IsValid()) {
-                    co_return make_error_result("Thread is not valid");
-                }
+                    lldb::SBBreakpoint bp;
+                    if (args.file && args.line) {
+                        bp = target.BreakpointCreateByLocation(args.file->c_str(),
+                                                               static_cast<unsigned>(*args.line));
+                    } else if (args.function_name) {
+                        bp = target.BreakpointCreateByName(args.function_name->c_str());
+                    } else {
+                        co_return make_error_result("Must provide file+line or function_name");
+                    }
+                    if (!bp.IsValid()) {
+                        co_return make_error_result("Failed to create breakpoint");
+                    }
+                    if (args.condition) {
+                        bp.SetCondition(args.condition->c_str());
+                    }
 
-                int frame_index = args.frame_index.value_or(0);
-                if (frame_index < 0 || static_cast<unsigned>(frame_index) >= thread.GetNumFrames()) {
-                    co_return make_error_result("Invalid frame_index");
+                    nlohmann::json out;
+                    out["id"] = bp.GetID();
+                    out["is_valid"] = bp.IsValid();
+                    out["is_enabled"] = bp.IsEnabled();
+                    co_return make_text_result(out.dump());
+                } catch (const std::exception& e) {
+                    co_return make_error_result(e.what());
                 }
-                auto frame = thread.GetFrameAtIndex(static_cast<unsigned>(frame_index));
-                if (!frame.IsValid()) {
-                    co_return make_error_result("Frame is not valid");
-                }
+            });
 
-                auto val = frame.EvaluateExpression(args.expression.c_str());
-                if (!val.IsValid()) {
-                    co_return make_error_result("Evaluation returned invalid value");
+        nlohmann::json continue_schema = {{"type", "object"}, {"properties", nlohmann::json::object()}};
+        server.add_tool<nlohmann::json, nlohmann::json>(
+            "continue_process", "Continue current process", continue_schema,
+            [io_executor, target_ptr, listener_ptr](nlohmann::json) -> mcp::Task<nlohmann::json> {
+                (void)io_executor;
+                try {
+                    if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
+                        co_return make_error_result("No valid current target");
+                    }
+                    auto process = target_ptr->value().GetProcess();
+                    if (!process.IsValid()) {
+                        co_return make_error_result("No valid process");
+                    }
+                    auto current_state = process.GetState();
+                    if (current_state == lldb::eStateExited || current_state == lldb::eStateDetached) {
+                        co_return make_error_result("Process has already " +
+                                                    state_to_string(current_state));
+                    }
+                    lldb::SBEvent event;
+                    while (listener_ptr->GetNextEvent(event)) {
+                    }
+                    uint32_t stop0 = process.GetStopID();
+                    auto err = process.Continue();
+                    if (err.Fail()) {
+                        co_return make_error_result(safe_cstr(err.GetCString(), "Continue failed"));
+                    }
+                    lldb::StateType waited_state = process.GetState();
+                    while (listener_ptr->WaitForEvent(g_event_timeout_seconds, event)) {
+                        auto st = lldb::SBProcess::GetStateFromEvent(event);
+                        waited_state = st;
+                        if (st == lldb::eStateRunning || st == lldb::eStateStepping) {
+                            continue;
+                        }
+                        if (st == lldb::eStateStopped && process.GetStopID() <= stop0) {
+                            continue;
+                        }
+                        break;
+                    }
+                    nlohmann::json out;
+                    if (waited_state == lldb::eStateExited || waited_state == lldb::eStateDetached) {
+                        out["state"] = state_to_string(waited_state);
+                    } else {
+                        out["state"] = state_to_string(process.GetState());
+                    }
+                    co_return make_text_result(out.dump());
+                } catch (const std::exception& e) {
+                    co_return make_error_result(e.what());
                 }
-                auto err = val.GetError();
+            });
 
-                nlohmann::json out;
-                out["expression"] = args.expression;
-                out["value"] = safe_cstr(val.GetValue(), "");
-                out["type"] = safe_cstr(val.GetTypeName(), "<unknown>");
-                out["summary"] = safe_cstr(val.GetSummary(), "");
-                out["has_error"] = err.Fail();
-                out["error"] = safe_cstr(err.GetCString(), "");
-                co_return make_text_result(out.dump());
-            } catch (const std::exception& e) {
-                co_return make_error_result(e.what());
-            }
-        });
+        nlohmann::json step_schema = {
+            {"type", "object"},
+            {"properties",
+             {{"thread_index", {{"type", "integer"}}},
+              {"type",
+               {{"type", "string"}, {"enum", nlohmann::json::array({"over", "into", "out"})}}}}}};
+        server.add_tool<StepInput, nlohmann::json>(
+            "step", "Step selected thread", step_schema,
+            [io_executor, target_ptr, listener_ptr](StepInput args) -> mcp::Task<nlohmann::json> {
+                (void)io_executor;
+                try {
+                    if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
+                        co_return make_error_result("No valid current target");
+                    }
+                    auto process = target_ptr->value().GetProcess();
+                    if (!process.IsValid()) {
+                        co_return make_error_result("No valid process");
+                    }
+                    auto current_state = process.GetState();
+                    if (current_state == lldb::eStateExited || current_state == lldb::eStateDetached) {
+                        co_return make_error_result("Process has already " +
+                                                    state_to_string(current_state));
+                    }
 
-    nlohmann::json bt_schema = {
-        {"type", "object"},
-        {"properties", {{"thread_index", {{"type", "integer"}}}, {"count", {{"type", "integer"}}}}}};
-    server.add_tool<BacktraceInput, nlohmann::json>(
-        "backtrace", "Collect thread backtrace", std::move(bt_schema),
-        [io_executor, target_ptr](BacktraceInput args) -> mcp::Task<nlohmann::json> {
-            (void)io_executor;
-            try {
-                if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
-                    co_return make_error_result("No valid current target");
-                }
-                auto process = target_ptr->value().GetProcess();
-                if (!process.IsValid()) {
-                    co_return make_error_result("No valid process");
-                }
+                    int idx = args.thread_index.value_or(0);
+                    if (idx < 0 || static_cast<unsigned>(idx) >= process.GetNumThreads()) {
+                        co_return make_error_result("Invalid thread_index");
+                    }
+                    auto thread = process.GetThreadAtIndex(static_cast<unsigned>(idx));
+                    if (!thread.IsValid()) {
+                        co_return make_error_result("Thread is not valid");
+                    }
 
-                int thread_index = args.thread_index.value_or(0);
-                if (thread_index < 0 ||
-                    static_cast<unsigned>(thread_index) >= process.GetNumThreads()) {
-                    co_return make_error_result("Invalid thread_index");
-                }
-                auto thread = process.GetThreadAtIndex(static_cast<unsigned>(thread_index));
-                if (!thread.IsValid()) {
-                    co_return make_error_result("Thread is not valid");
-                }
+                    const std::string type = args.type.value_or("over");
+                    lldb::SBEvent event;
+                    while (listener_ptr->GetNextEvent(event)) {
+                    }
+                    uint32_t stop0 = process.GetStopID();
+                    if (type == "over") {
+                        thread.StepOver(lldb::eOnlyDuringStepping);
+                    } else if (type == "into") {
+                        thread.StepInto();
+                    } else if (type == "out") {
+                        thread.StepOut();
+                    } else {
+                        co_return make_error_result("Invalid step type");
+                    }
 
-                unsigned total = thread.GetNumFrames();
-                int req = args.count.value_or(20);
-                unsigned max_frames =
-                    req <= 0
-                        ? 0
-                        : (total < static_cast<unsigned>(req) ? total : static_cast<unsigned>(req));
+                    while (listener_ptr->WaitForEvent(g_event_timeout_seconds, event)) {
+                        auto st = lldb::SBProcess::GetStateFromEvent(event);
+                        if (st == lldb::eStateRunning || st == lldb::eStateStepping) {
+                            continue;
+                        }
+                        if (st == lldb::eStateStopped && process.GetStopID() <= stop0) {
+                            continue;
+                        }
+                        break;
+                    }
 
-                nlohmann::json frames = nlohmann::json::array();
-                for (unsigned i = 0; i < max_frames; ++i) {
-                    auto frame = thread.GetFrameAtIndex(i);
+                    auto frame = thread.GetFrameAtIndex(0);
                     if (!frame.IsValid()) {
-                        continue;
+                        co_return make_error_result("Top frame is not valid");
                     }
                     auto le = frame.GetLineEntry();
-                    auto module = frame.GetModule();
 
-                    std::string file = "<unknown>";
-                    unsigned line = 0;
-                    if (le.IsValid()) {
-                        file = safe_cstr(le.GetFileSpec().GetFilename(), "<unknown>");
-                        line = le.GetLine();
-                    }
-
-                    std::string mod = "<unknown>";
-                    if (module.IsValid()) {
-                        mod = safe_cstr(module.GetFileSpec().GetFilename(), "<unknown>");
-                    }
-
-                    frames.push_back({{"frame_index", i},
-                                      {"function", safe_cstr(frame.GetFunctionName(), "<unknown>")},
-                                      {"file", file},
-                                      {"line", line},
-                                      {"module", mod}});
+                    nlohmann::json out;
+                    out["state"] = state_to_string(process.GetState());
+                    out["thread_index"] = idx;
+                    out["function"] = safe_cstr(frame.GetFunctionName(), "<unknown>");
+                    out["file"] = le.IsValid() ? safe_cstr(le.GetFileSpec().GetFilename(), "<unknown>")
+                                               : std::string("<unknown>");
+                    out["line"] = le.IsValid() ? le.GetLine() : 0;
+                    co_return make_text_result(out.dump());
+                } catch (const std::exception& e) {
+                    co_return make_error_result(e.what());
                 }
+            });
 
-                nlohmann::json out;
-                out["thread_index"] = thread_index;
-                out["frames"] = std::move(frames);
-                co_return make_text_result(out.dump());
-            } catch (const std::exception& e) {
-                co_return make_error_result(e.what());
-            }
-        });
+        nlohmann::json eval_schema = {{"type", "object"},
+                                      {"properties",
+                                       {{"expression", {{"type", "string"}}},
+                                        {"thread_index", {{"type", "integer"}}},
+                                        {"frame_index", {{"type", "integer"}}}}},
+                                      {"required", nlohmann::json::array({"expression"})}};
+        server.add_tool<EvalInput, nlohmann::json>(
+            "evaluate", "Evaluate expression", eval_schema,
+            [io_executor, target_ptr](EvalInput args) -> mcp::Task<nlohmann::json> {
+                (void)io_executor;
+                try {
+                    if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
+                        co_return make_error_result("No valid current target");
+                    }
+                    auto process = target_ptr->value().GetProcess();
+                    if (!process.IsValid()) {
+                        co_return make_error_result("No valid process");
+                    }
 
-    mcp::Resource targets;
-    targets.uri = "lldb://targets";
-    targets.name = "Targets";
-    targets.description = "All debugger targets";
-    targets.mimeType = "application/json";
-    server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
-        std::move(targets),
-        [debugger_ptr](mcp::ReadResourceRequestParams params) -> mcp::Task<mcp::ReadResourceResult> {
-            try {
-                if (!debugger_ptr->IsValid()) {
+                    int thread_index = args.thread_index.value_or(0);
+                    if (thread_index < 0 ||
+                        static_cast<unsigned>(thread_index) >= process.GetNumThreads()) {
+                        co_return make_error_result("Invalid thread_index");
+                    }
+                    auto thread = process.GetThreadAtIndex(static_cast<unsigned>(thread_index));
+                    if (!thread.IsValid()) {
+                        co_return make_error_result("Thread is not valid");
+                    }
+
+                    int frame_index = args.frame_index.value_or(0);
+                    if (frame_index < 0 ||
+                        static_cast<unsigned>(frame_index) >= thread.GetNumFrames()) {
+                        co_return make_error_result("Invalid frame_index");
+                    }
+                    auto frame = thread.GetFrameAtIndex(static_cast<unsigned>(frame_index));
+                    if (!frame.IsValid()) {
+                        co_return make_error_result("Frame is not valid");
+                    }
+
+                    auto val = frame.EvaluateExpression(args.expression.c_str());
+                    if (!val.IsValid()) {
+                        co_return make_error_result("Evaluation returned invalid value");
+                    }
+                    auto err = val.GetError();
+
+                    nlohmann::json out;
+                    out["expression"] = args.expression;
+                    out["value"] = safe_cstr(val.GetValue(), "");
+                    out["type"] = safe_cstr(val.GetTypeName(), "<unknown>");
+                    out["summary"] = safe_cstr(val.GetSummary(), "");
+                    out["has_error"] = err.Fail();
+                    out["error"] = safe_cstr(err.GetCString(), "");
+                    co_return make_text_result(out.dump());
+                } catch (const std::exception& e) {
+                    co_return make_error_result(e.what());
+                }
+            });
+
+        nlohmann::json bt_schema = {
+            {"type", "object"},
+            {"properties",
+             {{"thread_index", {{"type", "integer"}}}, {"count", {{"type", "integer"}}}}}};
+        server.add_tool<BacktraceInput, nlohmann::json>(
+            "backtrace", "Collect thread backtrace", bt_schema,
+            [io_executor, target_ptr](BacktraceInput args) -> mcp::Task<nlohmann::json> {
+                (void)io_executor;
+                try {
+                    if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
+                        co_return make_error_result("No valid current target");
+                    }
+                    auto process = target_ptr->value().GetProcess();
+                    if (!process.IsValid()) {
+                        co_return make_error_result("No valid process");
+                    }
+
+                    int thread_index = args.thread_index.value_or(0);
+                    if (thread_index < 0 ||
+                        static_cast<unsigned>(thread_index) >= process.GetNumThreads()) {
+                        co_return make_error_result("Invalid thread_index");
+                    }
+                    auto thread = process.GetThreadAtIndex(static_cast<unsigned>(thread_index));
+                    if (!thread.IsValid()) {
+                        co_return make_error_result("Thread is not valid");
+                    }
+
+                    unsigned total = thread.GetNumFrames();
+                    int req = args.count.value_or(g_default_backtrace_count);
+                    unsigned max_frames =
+                        req <= 0
+                            ? 0
+                            : (total < static_cast<unsigned>(req) ? total : static_cast<unsigned>(req));
+
+                    nlohmann::json frames = nlohmann::json::array();
+                    for (unsigned i = 0; i < max_frames; ++i) {
+                        auto frame = thread.GetFrameAtIndex(i);
+                        if (!frame.IsValid()) {
+                            continue;
+                        }
+                        auto le = frame.GetLineEntry();
+                        auto module = frame.GetModule();
+
+                        std::string file = "<unknown>";
+                        unsigned line = 0;
+                        if (le.IsValid()) {
+                            file = safe_cstr(le.GetFileSpec().GetFilename(), "<unknown>");
+                            line = le.GetLine();
+                        }
+
+                        std::string mod = "<unknown>";
+                        if (module.IsValid()) {
+                            mod = safe_cstr(module.GetFileSpec().GetFilename(), "<unknown>");
+                        }
+
+                        frames.push_back({{"frame_index", i},
+                                          {"function", safe_cstr(frame.GetFunctionName(), "<unknown>")},
+                                          {"file", file},
+                                          {"line", line},
+                                          {"module", mod}});
+                    }
+
+                    nlohmann::json out;
+                    out["thread_index"] = thread_index;
+                    out["frames"] = std::move(frames);
+                    co_return make_text_result(out.dump());
+                } catch (const std::exception& e) {
+                    co_return make_error_result(e.what());
+                }
+            });
+
+        mcp::Resource targets;
+        targets.uri = "lldb://targets";
+        targets.name = "Targets";
+        targets.description = "All debugger targets";
+        targets.mimeType = "application/json";
+        server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+            targets,
+            [debugger_ptr](
+                mcp::ReadResourceRequestParams params) -> mcp::Task<mcp::ReadResourceResult> {
+                try {
+                    if (!debugger_ptr->IsValid()) {
+                        mcp::TextResourceContents err;
+                        err.uri = params.uri;
+                        err.text = "Error: Debugger is not valid";
+                        err.mimeType = "text/plain";
+                        mcp::ReadResourceResult res;
+                        res.contents.emplace_back(std::move(err));
+                        co_return res;
+                    }
+                    nlohmann::json rows = nlohmann::json::array();
+                    unsigned n = debugger_ptr->GetNumTargets();
+                    for (unsigned i = 0; i < n; ++i) {
+                        auto t = debugger_ptr->GetTargetAtIndex(i);
+                        if (!t.IsValid()) {
+                            continue;
+                        }
+                        rows.push_back(
+                            {{"index", i},
+                             {"triple", safe_cstr(t.GetTriple(), "<unknown>")},
+                             {"executable", safe_cstr(t.GetExecutable().GetFilename(), "<unknown>")}});
+                    }
+                    mcp::TextResourceContents c;
+                    c.uri = params.uri;
+                    c.text = rows.dump();
+                    c.mimeType = "application/json";
+                    mcp::ReadResourceResult res;
+                    res.contents.emplace_back(std::move(c));
+                    co_return res;
+                } catch (const std::exception& e) {
                     mcp::TextResourceContents err;
                     err.uri = params.uri;
-                    err.text = "Error: Debugger is not valid";
+                    err.text = std::string("Error: ") + e.what();
                     err.mimeType = "text/plain";
                     mcp::ReadResourceResult res;
-                    res.contents.push_back(std::move(err));
+                    res.contents.emplace_back(std::move(err));
                     co_return res;
                 }
-                nlohmann::json rows = nlohmann::json::array();
-                unsigned n = debugger_ptr->GetNumTargets();
-                for (unsigned i = 0; i < n; ++i) {
-                    auto t = debugger_ptr->GetTargetAtIndex(i);
-                    if (!t.IsValid()) {
-                        continue;
-                    }
-                    rows.push_back(
-                        {{"index", i},
-                         {"triple", safe_cstr(t.GetTriple(), "<unknown>")},
-                         {"executable", safe_cstr(t.GetExecutable().GetFilename(), "<unknown>")}});
-                }
-                mcp::TextResourceContents c;
-                c.uri = params.uri;
-                c.text = rows.dump();
-                c.mimeType = "application/json";
-                mcp::ReadResourceResult res;
-                res.contents.push_back(std::move(c));
-                co_return res;
-            } catch (const std::exception& e) {
-                mcp::TextResourceContents err;
-                err.uri = params.uri;
-                err.text = std::string("Error: ") + e.what();
-                err.mimeType = "text/plain";
-                mcp::ReadResourceResult res;
-                res.contents.push_back(std::move(err));
-                co_return res;
-            }
-        });
+            });
 
-    mcp::Resource threads;
-    threads.uri = "lldb://threads";
-    threads.name = "Threads";
-    threads.description = "Threads in current process";
-    threads.mimeType = "application/json";
-    server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
-        std::move(threads),
-        [target_ptr](mcp::ReadResourceRequestParams params) -> mcp::Task<mcp::ReadResourceResult> {
-            try {
-                if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
-                    mcp::TextResourceContents err;
-                    err.uri = params.uri;
-                    err.text = "Error: No valid current target";
-                    err.mimeType = "text/plain";
-                    mcp::ReadResourceResult res;
-                    res.contents.push_back(std::move(err));
-                    co_return res;
-                }
-                auto process = target_ptr->value().GetProcess();
-                if (!process.IsValid()) {
-                    mcp::TextResourceContents err;
-                    err.uri = params.uri;
-                    err.text = "Error: No valid process";
-                    err.mimeType = "text/plain";
-                    mcp::ReadResourceResult res;
-                    res.contents.push_back(std::move(err));
-                    co_return res;
-                }
-                nlohmann::json rows = nlohmann::json::array();
-                unsigned n = process.GetNumThreads();
-                for (unsigned i = 0; i < n; ++i) {
-                    auto th = process.GetThreadAtIndex(i);
-                    if (!th.IsValid()) {
-                        continue;
+        mcp::Resource threads;
+        threads.uri = "lldb://threads";
+        threads.name = "Threads";
+        threads.description = "Threads in current process";
+        threads.mimeType = "application/json";
+        server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+            threads,
+            [target_ptr](mcp::ReadResourceRequestParams params) -> mcp::Task<mcp::ReadResourceResult> {
+                try {
+                    if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
+                        mcp::TextResourceContents err;
+                        err.uri = params.uri;
+                        err.text = "Error: No valid current target";
+                        err.mimeType = "text/plain";
+                        mcp::ReadResourceResult res;
+                        res.contents.emplace_back(std::move(err));
+                        co_return res;
                     }
-                    char stop_buf[256] = {};
-                    th.GetStopDescription(stop_buf, sizeof(stop_buf));
-                    rows.push_back({{"index", i},
-                                    {"thread_id", th.GetThreadID()},
-                                    {"name", safe_cstr(th.GetName(), "<unnamed>")},
-                                    {"stop_reason", stop_reason_to_string(th.GetStopReason())},
-                                    {"stop_description", safe_cstr(stop_buf, "")},
-                                    {"queue", safe_cstr(th.GetQueueName(), "")}});
+                    auto process = target_ptr->value().GetProcess();
+                    if (!process.IsValid()) {
+                        mcp::TextResourceContents err;
+                        err.uri = params.uri;
+                        err.text = "Error: No valid process";
+                        err.mimeType = "text/plain";
+                        mcp::ReadResourceResult res;
+                        res.contents.emplace_back(std::move(err));
+                        co_return res;
+                    }
+                    nlohmann::json rows = nlohmann::json::array();
+                    unsigned n = process.GetNumThreads();
+                    for (unsigned i = 0; i < n; ++i) {
+                        auto th = process.GetThreadAtIndex(i);
+                        if (!th.IsValid()) {
+                            continue;
+                        }
+                        std::array<char, g_stop_desc_buf_size> stop_buf{};
+                        th.GetStopDescription(stop_buf.data(), stop_buf.size());
+                        rows.push_back({{"index", i},
+                                        {"thread_id", th.GetThreadID()},
+                                        {"name", safe_cstr(th.GetName(), "<unnamed>")},
+                                        {"stop_reason", stop_reason_to_string(th.GetStopReason())},
+                                        {"stop_description", safe_cstr(stop_buf.data(), "")},
+                                        {"queue", safe_cstr(th.GetQueueName(), "")}});
+                    }
+                    mcp::TextResourceContents c;
+                    c.uri = params.uri;
+                    c.text = rows.dump();
+                    c.mimeType = "application/json";
+                    mcp::ReadResourceResult res;
+                    res.contents.emplace_back(std::move(c));
+                    co_return res;
+                } catch (const std::exception& e) {
+                    mcp::TextResourceContents err;
+                    err.uri = params.uri;
+                    err.text = std::string("Error: ") + e.what();
+                    err.mimeType = "text/plain";
+                    mcp::ReadResourceResult res;
+                    res.contents.emplace_back(std::move(err));
+                    co_return res;
                 }
-                mcp::TextResourceContents c;
-                c.uri = params.uri;
-                c.text = rows.dump();
-                c.mimeType = "application/json";
-                mcp::ReadResourceResult res;
-                res.contents.push_back(std::move(c));
-                co_return res;
-            } catch (const std::exception& e) {
-                mcp::TextResourceContents err;
-                err.uri = params.uri;
-                err.text = std::string("Error: ") + e.what();
-                err.mimeType = "text/plain";
-                mcp::ReadResourceResult res;
-                res.contents.push_back(std::move(err));
-                co_return res;
-            }
-        });
+            });
 
-    mcp::Resource breakpoints;
-    breakpoints.uri = "lldb://breakpoints";
-    breakpoints.name = "Breakpoints";
-    breakpoints.description = "Breakpoints in current target";
-    breakpoints.mimeType = "application/json";
-    server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
-        std::move(breakpoints),
-        [target_ptr](mcp::ReadResourceRequestParams params) -> mcp::Task<mcp::ReadResourceResult> {
-            try {
-                if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
-                    mcp::TextResourceContents err;
-                    err.uri = params.uri;
-                    err.text = "Error: No valid current target";
-                    err.mimeType = "text/plain";
-                    mcp::ReadResourceResult res;
-                    res.contents.push_back(std::move(err));
-                    co_return res;
-                }
-                auto target = target_ptr->value();
-                nlohmann::json rows = nlohmann::json::array();
-                unsigned n = target.GetNumBreakpoints();
-                for (unsigned i = 0; i < n; ++i) {
-                    auto bp = target.GetBreakpointAtIndex(i);
-                    if (!bp.IsValid()) {
-                        continue;
+        mcp::Resource breakpoints;
+        breakpoints.uri = "lldb://breakpoints";
+        breakpoints.name = "Breakpoints";
+        breakpoints.description = "Breakpoints in current target";
+        breakpoints.mimeType = "application/json";
+        server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+            breakpoints,
+            [target_ptr](mcp::ReadResourceRequestParams params) -> mcp::Task<mcp::ReadResourceResult> {
+                try {
+                    if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
+                        mcp::TextResourceContents err;
+                        err.uri = params.uri;
+                        err.text = "Error: No valid current target";
+                        err.mimeType = "text/plain";
+                        mcp::ReadResourceResult res;
+                        res.contents.emplace_back(std::move(err));
+                        co_return res;
                     }
-                    std::string desc = "<unknown>";
-                    if (bp.GetNumLocations() > 0) {
-                        auto loc = bp.GetLocationAtIndex(0);
-                        if (loc.IsValid()) {
-                            auto addr = loc.GetAddress();
-                            if (addr.IsValid()) {
-                                auto fn = addr.GetFunction();
-                                if (fn.IsValid()) {
-                                    desc = safe_cstr(fn.GetName(), "<unknown>");
-                                } else {
-                                    auto le = addr.GetLineEntry();
-                                    if (le.IsValid()) {
-                                        desc = safe_cstr(le.GetFileSpec().GetFilename(), "<unknown>") +
-                                               ":" + std::to_string(le.GetLine());
+                    auto target = target_ptr->value();
+                    nlohmann::json rows = nlohmann::json::array();
+                    unsigned n = target.GetNumBreakpoints();
+                    for (unsigned i = 0; i < n; ++i) {
+                        auto bp = target.GetBreakpointAtIndex(i);
+                        if (!bp.IsValid()) {
+                            continue;
+                        }
+                        std::string desc = "<unknown>";
+                        if (bp.GetNumLocations() > 0) {
+                            auto loc = bp.GetLocationAtIndex(0);
+                            if (loc.IsValid()) {
+                                auto addr = loc.GetAddress();
+                                if (addr.IsValid()) {
+                                    auto fn = addr.GetFunction();
+                                    if (fn.IsValid()) {
+                                        desc = safe_cstr(fn.GetName(), "<unknown>");
+                                    } else {
+                                        auto le = addr.GetLineEntry();
+                                        if (le.IsValid()) {
+                                            desc =
+                                                safe_cstr(le.GetFileSpec().GetFilename(), "<unknown>") +
+                                                ":" + std::to_string(le.GetLine());
+                                        }
                                     }
                                 }
                             }
                         }
+                        rows.push_back({{"id", bp.GetID()},
+                                        {"enabled", bp.IsEnabled()},
+                                        {"hit_count", bp.GetHitCount()},
+                                        {"description", desc}});
                     }
-                    rows.push_back({{"id", bp.GetID()},
-                                    {"enabled", bp.IsEnabled()},
-                                    {"hit_count", bp.GetHitCount()},
-                                    {"description", desc}});
+                    mcp::TextResourceContents c;
+                    c.uri = params.uri;
+                    c.text = rows.dump();
+                    c.mimeType = "application/json";
+                    mcp::ReadResourceResult res;
+                    res.contents.emplace_back(std::move(c));
+                    co_return res;
+                } catch (const std::exception& e) {
+                    mcp::TextResourceContents err;
+                    err.uri = params.uri;
+                    err.text = std::string("Error: ") + e.what();
+                    err.mimeType = "text/plain";
+                    mcp::ReadResourceResult res;
+                    res.contents.emplace_back(std::move(err));
+                    co_return res;
                 }
-                mcp::TextResourceContents c;
-                c.uri = params.uri;
-                c.text = rows.dump();
-                c.mimeType = "application/json";
-                mcp::ReadResourceResult res;
-                res.contents.push_back(std::move(c));
-                co_return res;
-            } catch (const std::exception& e) {
-                mcp::TextResourceContents err;
-                err.uri = params.uri;
-                err.text = std::string("Error: ") + e.what();
-                err.mimeType = "text/plain";
-                mcp::ReadResourceResult res;
-                res.contents.push_back(std::move(err));
-                co_return res;
-            }
-        });
+            });
 
-    mcp::ResourceTemplate thread_tmpl;
-    thread_tmpl.uriTemplate = "lldb://thread/{id}";
-    thread_tmpl.name = "Thread Details";
-    thread_tmpl.description = "Detailed info for a specific thread by ID";
-    thread_tmpl.mimeType = "application/json";
-    server.add_resource_template(std::move(thread_tmpl));
+        mcp::ResourceTemplate thread_tmpl;
+        thread_tmpl.uriTemplate = "lldb://thread/{id}";
+        thread_tmpl.name = "Thread Details";
+        thread_tmpl.description = "Detailed info for a specific thread by ID";
+        thread_tmpl.mimeType = "application/json";
+        server.add_resource_template(thread_tmpl);
 
-    mcp::ResourceTemplate frame_tmpl;
-    frame_tmpl.uriTemplate = "lldb://frame/{thread_id}/{frame_index}";
-    frame_tmpl.name = "Stack Frame";
-    frame_tmpl.description = "Specific frame in a thread's call stack";
-    frame_tmpl.mimeType = "application/json";
-    server.add_resource_template(std::move(frame_tmpl));
+        mcp::ResourceTemplate frame_tmpl;
+        frame_tmpl.uriTemplate = "lldb://frame/{thread_id}/{frame_index}";
+        frame_tmpl.name = "Stack Frame";
+        frame_tmpl.description = "Specific frame in a thread's call stack";
+        frame_tmpl.mimeType = "application/json";
+        server.add_resource_template(frame_tmpl);
 
-    mcp::Prompt dbg_prompt;
-    dbg_prompt.name = "debug_session";
-    dbg_prompt.description = "Generate a debugging session prompt for the given program";
+        mcp::Prompt dbg_prompt;
+        dbg_prompt.name = "debug_session";
+        dbg_prompt.description = "Generate a debugging session prompt for the given program";
 
-    mcp::PromptArgument prog_arg;
-    prog_arg.name = "program";
-    prog_arg.description = "Path to the program to debug";
-    prog_arg.required = true;
+        mcp::PromptArgument prog_arg;
+        prog_arg.name = "program";
+        prog_arg.description = "Path to the program to debug";
+        prog_arg.required = true;
 
-    mcp::PromptArgument issue_arg;
-    issue_arg.name = "issue";
-    issue_arg.description = "Description of the issue to investigate (optional)";
-    issue_arg.required = false;
+        mcp::PromptArgument issue_arg;
+        issue_arg.name = "issue";
+        issue_arg.description = "Description of the issue to investigate (optional)";
+        issue_arg.required = false;
 
-    dbg_prompt.arguments = {prog_arg, issue_arg};
-    server.add_prompt<mcp::GetPromptRequestParams, mcp::GetPromptResult>(
-        std::move(dbg_prompt), [](mcp::GetPromptRequestParams params) -> mcp::GetPromptResult {
-            std::string program = "<program>";
-            std::string issue_text;
-            if (params.arguments) {
-                if (auto it = params.arguments->find("program"); it != params.arguments->end()) {
-                    program = it->second;
+        dbg_prompt.arguments = {prog_arg, issue_arg};
+        server.add_prompt<mcp::GetPromptRequestParams, mcp::GetPromptResult>(
+            dbg_prompt, [](mcp::GetPromptRequestParams params) -> mcp::GetPromptResult {
+                std::string program = "<program>";
+                std::string issue_text;
+                if (params.arguments) {
+                    if (auto it = params.arguments->find("program"); it != params.arguments->end()) {
+                        program = it->second;
+                    }
+                    if (auto it = params.arguments->find("issue"); it != params.arguments->end()) {
+                        issue_text = "\n\nIssue to investigate: " + it->second;
+                    }
                 }
-                if (auto it = params.arguments->find("issue"); it != params.arguments->end()) {
-                    issue_text = "\n\nIssue to investigate: " + it->second;
-                }
-            }
-            mcp::PromptMessage msg;
-            msg.role = mcp::Role::User;
-            mcp::TextContent tc;
-            tc.text = "You are debugging the program: " + program + issue_text +
-                      "\n\nUse the available LLDB tools to:\n"
-                      "1. Launch or attach to the program\n"
-                      "2. Set breakpoints at relevant locations\n"
-                      "3. Step through the code and inspect variables\n"
-                      "4. Use backtrace to understand the call stack\n"
-                      "5. Evaluate expressions to inspect state";
-            msg.content = std::move(tc);
-            mcp::GetPromptResult result;
-            result.description = "LLDB debugging session prompt";
-            result.messages.push_back(std::move(msg));
-            return result;
-        });
+                mcp::PromptMessage msg;
+                msg.role = mcp::Role::eUser;
+                mcp::TextContent tc;
+                tc.text = "You are debugging the program: " + program + issue_text +
+                          "\n\nUse the available LLDB tools to:\n"
+                          "1. Launch or attach to the program\n"
+                          "2. Set breakpoints at relevant locations\n"
+                          "3. Step through the code and inspect variables\n"
+                          "4. Use backtrace to understand the call stack\n"
+                          "5. Evaluate expressions to inspect state";
+                msg.content = std::move(tc);
+                mcp::GetPromptResult result;
+                result.description = "LLDB debugging session prompt";
+                result.messages.push_back(std::move(msg));
+                return result;
+            });
 
-    if (opts.transport == "stdio") {
-        auto transport = std::make_shared<StdioTransport>(io_ctx.get_executor());
-        boost::asio::co_spawn(
-            io_ctx,
-            [&, transport = transport]() mutable -> Task<void> {
-                co_await server.run(transport, io_ctx.get_executor());
-            },
-            boost::asio::detached);
-    } else {
-        std::cerr << "Listening on http://" << opts.host << ":" << std::to_string(opts.port)
-                  << "/mcp\n";
-        auto http_transport =
-            std::make_shared<mcp::HttpServerTransport>(io_ctx.get_executor(), opts.host, opts.port);
-        auto* http_ptr = http_transport.get();
-        boost::asio::co_spawn(
-            io_ctx,
-            [&, transport = http_transport]() mutable -> mcp::Task<void> {
-                boost::asio::co_spawn(io_ctx, http_ptr->listen(), boost::asio::detached);
-                co_await server.run(transport, io_ctx.get_executor());
-            },
-            boost::asio::detached);
+        if (opts.transport == "stdio") {
+            auto transport = std::make_shared<StdioTransport>(io_ctx.get_executor());
+            boost::asio::co_spawn(
+                io_ctx,
+                [&, transport = transport]() mutable -> Task<void> {
+                    co_await server.run(transport, io_ctx.get_executor());
+                },
+                boost::asio::detached);
+        } else {
+            std::cerr << "Listening on http://" << opts.host << ":" << std::to_string(opts.port)
+                      << "/mcp\n";
+            auto http_transport =
+                std::make_shared<mcp::HttpServerTransport>(io_ctx.get_executor(), opts.host, opts.port);
+            auto* http_ptr = http_transport.get();
+            boost::asio::co_spawn(
+                io_ctx,
+                [&, transport = http_transport]() mutable -> mcp::Task<void> {
+                    boost::asio::co_spawn(io_ctx, http_ptr->listen(), boost::asio::detached);
+                    co_await server.run(transport, io_ctx.get_executor());
+                },
+                boost::asio::detached);
+        }
+
+        io_ctx.run();
+        return EXIT_SUCCESS;
+    } catch (const std::exception& e) {
+        std::cerr << "Fatal error: " << e.what() << "\n";
+        return EXIT_FAILURE;
+    } catch (...) {
+        std::cerr << "Fatal unknown error\n";
+        return EXIT_FAILURE;
     }
-
-    io_ctx.run();
-    return EXIT_SUCCESS;
 }

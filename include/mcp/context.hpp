@@ -74,7 +74,7 @@ class Context {
      * @param msg The log message to send.
      * @return A task that completes when the message is sent.
      */
-    Task<void> log_info(std::string_view msg) { co_await log(LoggingLevel::Info, msg); }
+    Task<void> log_info(std::string_view msg) { co_await log(LoggingLevel::eInfo, msg); }
 
     /**
      * @brief Send a log message at a specific level.
@@ -91,7 +91,7 @@ class Context {
      */
     Task<void> log(LoggingLevel level, std::string_view msg,
                    const std::optional<std::string>& logger = std::nullopt) {
-        if (log_level_) {
+        if (log_level_ != nullptr) {
             auto current = log_level_->load(std::memory_order_relaxed);
             if (static_cast<uint8_t>(level) > static_cast<uint8_t>(current)) {
                 co_return;

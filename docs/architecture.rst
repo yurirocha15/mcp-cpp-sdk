@@ -75,7 +75,7 @@ Server
 * Protocol compliance (MCP handshake, request handling)
 * Handler type erasure and invocation
 * ``ensure_async_handler`` — automatically normalizes handler signatures (sync/async, with/without ``Context``) into unified async form; called internally by ``add_tool``, ``add_resource``, etc.
-* Error handling: exceptions thrown during request dispatch are automatically caught and returned as ``INTERNAL_ERROR`` (-32603) JSON-RPC error responses
+* Error handling: exceptions thrown during request dispatch are automatically caught and returned as ``g_INTERNAL_ERROR`` (-32603) JSON-RPC error responses
 * Context creation and lifecycle management
 
 Client
