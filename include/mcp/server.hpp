@@ -1,5 +1,12 @@
 #pragma once
 
+// GCC 11 SSO Coroutine Safety — see docs/contributing.rst "Known Issues" for full details.
+// Do NOT store std::string in a coroutine frame across co_await (GCC bugs #107288/#100611).
+// Named patterns referenced at each call site below:
+//   [no-named-temporaries] Pass params.get<In>() directly; don't store it in a named local.
+//   [wire-builders]        make_result_wire/make_error_wire are synchronous helpers;
+//                          do NOT convert them to Task<T> coroutines.
+
 #include <mcp/concepts.hpp>
 #include <mcp/context.hpp>
 #include <mcp/core.hpp>
@@ -104,12 +111,12 @@ template <JsonSerializable In, JsonSerializable Out, typename Fn>
 TypeErasedHandler wrap_handler(Fn fn) {
     return
         [handler = std::move(fn)](Context& ctx, const nlohmann::json& params) -> Task<nlohmann::json> {
-            auto input = params.get<In>();
+            // [gcc11-sso: no-named-temporaries] DO NOT introduce a named `input` variable here.
             if constexpr (AsyncHandlerWithCtx<Fn, In, Out>) {
-                Out output = co_await handler(ctx, std::move(input));
+                Out output = co_await handler(ctx, params.get<In>());
                 co_return nlohmann::json(std::move(output));
             } else {
-                Out output = co_await handler(std::move(input));
+                Out output = co_await handler(params.get<In>());
                 co_return nlohmann::json(std::move(output));
             }
         };
@@ -133,7 +140,7 @@ class Server {
      * @param server_info Information about this server implementation.
      * @param capabilities The capabilities this server advertises.
      */
-    Server(Implementation server_info, ServerCapabilities capabilities);
+    Server(const Implementation& server_info, const ServerCapabilities& capabilities);
 
     ~Server();
 
@@ -154,13 +161,14 @@ class Server {
      * @param handler      Handler invoked on tools/call requests.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
-    void add_tool(std::string name, std::string description, nlohmann::json input_schema, Fn handler) {
+    void add_tool(const std::string& name, const std::string& description,
+                  const nlohmann::json& input_schema, Fn handler) {
         Tool tool;
         tool.name = name;
-        tool.description = std::move(description);
-        tool.inputSchema = std::move(input_schema);
+        tool.description = description;
+        tool.inputSchema = input_schema;
         auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        register_tool(std::move(tool), name, detail::wrap_handler<In, Out>(std::move(async_handler)));
+        register_tool(tool, name, detail::wrap_handler<In, Out>(std::move(async_handler)));
     }
 
     /**
@@ -170,15 +178,15 @@ class Server {
      * a structuredContent field alongside content.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
-    void add_tool(std::string name, std::string description, nlohmann::json input_schema,
-                  nlohmann::json output_schema, Fn handler) {
+    void add_tool(const std::string& name, const std::string& description,
+                  const nlohmann::json& input_schema, const nlohmann::json& output_schema, Fn handler) {
         Tool tool;
         tool.name = name;
-        tool.description = std::move(description);
-        tool.inputSchema = std::move(input_schema);
-        tool.outputSchema = std::move(output_schema);
+        tool.description = description;
+        tool.inputSchema = input_schema;
+        tool.outputSchema = output_schema;
         auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        register_tool(std::move(tool), name, detail::wrap_handler<In, Out>(std::move(async_handler)));
+        register_tool(tool, name, detail::wrap_handler<In, Out>(std::move(async_handler)));
     }
 
     /**
@@ -193,7 +201,8 @@ class Server {
      * @param input_schema JSON schema for the tool's input parameters.
      * @param handler      Synchronous handler: takes JSON params, returns JSON result.
      */
-    void add_tool(std::string name, std::string description, nlohmann::json input_schema,
+    void add_tool(const std::string& name, const std::string& description,
+                  const nlohmann::json& input_schema,
                   std::function<nlohmann::json(const nlohmann::json&)> handler);
 
     /**
@@ -206,9 +215,9 @@ class Server {
      * @param handler  Handler invoked on resources/read requests.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
-    void add_resource(Resource resource, Fn handler) {
+    void add_resource(const Resource& resource, Fn handler) {
         auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        register_resource(std::move(resource), detail::wrap_handler<In, Out>(std::move(async_handler)));
+        register_resource(resource, detail::wrap_handler<In, Out>(std::move(async_handler)));
     }
 
     /**
@@ -216,7 +225,7 @@ class Server {
      *
      * @param tmpl Resource template metadata.
      */
-    void add_resource_template(ResourceTemplate tmpl);
+    void add_resource_template(const ResourceTemplate& tmpl);
 
     /**
      * @brief Register a prompt with the server.
@@ -228,9 +237,9 @@ class Server {
      * @param handler Handler invoked on prompts/get requests.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
-    void add_prompt(Prompt prompt, Fn handler) {
+    void add_prompt(const Prompt& prompt, Fn handler) {
         auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        register_prompt(std::move(prompt), detail::wrap_handler<In, Out>(std::move(async_handler)));
+        register_prompt(prompt, detail::wrap_handler<In, Out>(std::move(async_handler)));
     }
 
     /**
@@ -266,7 +275,8 @@ class Server {
      * @return A task that resolves to the result JSON.
      * @throws std::runtime_error If the client returns an error response.
      */
-    Task<nlohmann::json> send_request(std::string method, std::optional<nlohmann::json> params);
+    Task<nlohmann::json> send_request(const std::string& method,
+                                      const std::optional<nlohmann::json>& params);
 
     /**
      * @brief Start the server session loop on the given transport.
@@ -360,14 +370,14 @@ class Server {
      *
      * @param handler Callback receiving the subscribed resource URI.
      */
-    void on_subscribe(SubscriptionHandler handler);
+    void on_subscribe(const SubscriptionHandler& handler);
 
     /**
      * @brief Register a callback invoked after a successful resource unsubscription.
      *
      * @param handler Callback receiving the unsubscribed resource URI.
      */
-    void on_unsubscribe(SubscriptionHandler handler);
+    void on_unsubscribe(const SubscriptionHandler& handler);
 
     /**
      * @brief Get the currently active server log level.
@@ -378,9 +388,9 @@ class Server {
 
    private:
     // Non-template registration helpers called by the template add_* methods above.
-    void register_tool(Tool tool, std::string name, TypeErasedHandler handler);
-    void register_resource(Resource resource, TypeErasedHandler handler);
-    void register_prompt(Prompt prompt, TypeErasedHandler handler);
+    void register_tool(const Tool& tool, const std::string& name, TypeErasedHandler handler);
+    void register_resource(const Resource& resource, TypeErasedHandler handler);
+    void register_prompt(const Prompt& prompt, TypeErasedHandler handler);
 
     Context make_context(std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
                          std::optional<ProgressToken> progress_token = std::nullopt);
@@ -399,39 +409,40 @@ class Server {
 
     void dispatch_response(const nlohmann::json& json_msg);
 
-    Task<void> handle_initialize(const JSONRPCRequest& request);
+    Task<void> handle_initialize(const nlohmann::json& json_msg);
 
-    Task<void> handle_shutdown(const JSONRPCRequest& request);
+    Task<void> handle_shutdown(const nlohmann::json& json_msg);
 
-    Task<void> handle_ping(const JSONRPCRequest& request);
+    Task<void> handle_ping(const nlohmann::json& json_msg);
 
-    Task<void> handle_tools_call(const JSONRPCRequest& request);
+    Task<void> handle_tools_call(const nlohmann::json& json_msg);
 
-    Task<void> handle_tools_list(const JSONRPCRequest& request);
+    Task<void> handle_tools_list(const nlohmann::json& json_msg);
 
-    Task<void> handle_resources_list(const JSONRPCRequest& request);
+    Task<void> handle_resources_list(const nlohmann::json& json_msg);
 
-    Task<void> handle_resources_read(const JSONRPCRequest& request);
+    Task<void> handle_resources_read(const nlohmann::json& json_msg);
 
-    Task<void> handle_resource_templates_list(const JSONRPCRequest& request);
+    Task<void> handle_resource_templates_list(const nlohmann::json& json_msg);
 
-    Task<void> handle_subscribe(const JSONRPCRequest& request);
+    Task<void> handle_subscribe(const nlohmann::json& json_msg);
 
-    Task<void> handle_unsubscribe(const JSONRPCRequest& request);
+    Task<void> handle_unsubscribe(const nlohmann::json& json_msg);
 
-    Task<void> handle_prompts_list(const JSONRPCRequest& request);
+    Task<void> handle_prompts_list(const nlohmann::json& json_msg);
 
-    Task<void> handle_prompts_get(const JSONRPCRequest& request);
+    Task<void> handle_prompts_get(const nlohmann::json& json_msg);
 
-    Task<void> handle_set_level(const JSONRPCRequest& request);
+    Task<void> handle_set_level(const nlohmann::json& json_msg);
 
-    Task<void> handle_complete(const JSONRPCRequest& request);
+    Task<void> handle_complete(const nlohmann::json& json_msg);
 
-    Task<void> send_result(const RequestId& id, nlohmann::json result);
+    // [gcc11-sso: wire-builders] DO NOT convert to Task<T>.
+    static std::string make_result_wire(const RequestId& id, nlohmann::json result);
+    static std::string make_error_wire(const RequestId& id, int code, std::string message);
 
-    Task<void> send_error(const RequestId& id, int code, std::string message);
-
-    Task<void> send_notification(std::string method, std::optional<nlohmann::json> params);
+    Task<void> send_notification(const std::string& method,
+                                 const std::optional<nlohmann::json>& params);
 
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
 
@@ -441,7 +452,7 @@ class Server {
         std::optional<std::string> next_cursor;
     };
 
-    std::optional<PaginationSlice> paginate(std::size_t total, const JSONRPCRequest& request);
+    std::optional<PaginationSlice> paginate(std::size_t total, const nlohmann::json& json_msg);
 
     [[nodiscard]] bool has_tool_output_schema(const std::string& name) const;
 

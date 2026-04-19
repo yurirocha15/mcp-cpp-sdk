@@ -81,7 +81,8 @@ if(BUILD_TESTING)
       test/server_stdio_test.cpp
       test/server_http_test.cpp
       test/server_tool_test.cpp
-      test/transport_factory_test.cpp)
+      test/transport_factory_test.cpp
+      test/gcc11_sso_crash_test.cpp)
   add_executable(mcp-sdk-tests ${TEST_SRCS})
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
 

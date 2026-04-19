@@ -1,5 +1,16 @@
 #pragma once
 
+// GCC 11 SSO Coroutine Safety — see docs/contributing.rst "Known Issues" for full details.
+// Do NOT store std::string in a coroutine frame across co_await (GCC bugs #107288/#100611).
+// Named patterns referenced at each call site below:
+//   [not-a-coroutine]    Public methods with std::string params are plain functions; they
+//                        serialise inputs before delegating to the real coroutine.
+//   [string_view]        Use std::string_view (trivially copyable) for coroutine method params.
+//   [int64-id]           Keep request IDs as int64_t across suspensions; rebuild string after.
+//   [scope-before-await] Build SSO-risky objects in {}, serialise to wire string, then co_await.
+//   [wire-builders]      make_result_wire/make_error_wire are synchronous helpers;
+//                        do NOT convert them to Task<T> coroutines.
+
 #include <mcp/concepts.hpp>
 #include <mcp/core.hpp>
 #include <mcp/protocol.hpp>
@@ -74,78 +85,53 @@ class Client {
      * @param capabilities The capabilities this client supports.
      * @return A task that resolves to the server's InitializeResult.
      */
-    Task<InitializeResult> connect(Implementation client_info, ClientCapabilities capabilities) {
-        boost::asio::co_spawn(strand_, read_loop(), boost::asio::detached);
+    Task<InitializeResult> connect(std::string_view name, std::string_view version) {
+        Implementation info;
+        info.name = std::string(name);
+        info.version = std::string(version);
+        return connect(info, {});
+    }
 
+    Task<InitializeResult> connect(const Implementation& client_info,
+                                   const ClientCapabilities& capabilities) {
+        // [gcc11-sso: not-a-coroutine] DO NOT add co_await / co_return here.
+        boost::asio::co_spawn(strand_, read_loop(), boost::asio::detached);
         InitializeRequest init_req;
         init_req.protocolVersion = std::string(LATEST_PROTOCOL_VERSION);
-        init_req.clientInfo = std::move(client_info);
-        init_req.capabilities = std::move(capabilities);
-
-        nlohmann::json params = init_req;
-        auto result_json = co_await send_request("initialize", std::move(params));
-        auto result = result_json.get<InitializeResult>();
-
-        server_capabilities_ = result.capabilities;
-
-        co_await send_notification("notifications/initialized", std::nullopt);
-
-        co_return result;
+        init_req.clientInfo = client_info;
+        init_req.capabilities = capabilities;
+        return connect_impl(nlohmann::json(std::move(init_req)));
     }
 
     /**
      * @brief Send a JSON-RPC request and await its response.
      *
-     * @details Assigns a unique integer ID, sends the request over the
-     * transport, then suspends the calling coroutine until the read loop
-     * dispatches the matching response.
+     * @details Assigns a unique integer ID, serializes the request on the stack,
+     * and delegates to a coroutine that handles transport and suspension.
+     * This is done to avoid GCC 11 SSO bugs and dangling references.
      *
-     * @param method The JSON-RPC method name.
+     * @param method JSON-RPC method name.
      * @param params Optional parameters for the request.
-     * @return A task that resolves to the result JSON.
+     * @return A task that resolves to the result JSON object.
      * @throws std::runtime_error If the server returns an error response.
      */
-    Task<nlohmann::json> send_request(std::string method, std::optional<nlohmann::json> params) {
-        auto id = next_request_id_.fetch_add(1, std::memory_order_relaxed);
+    // [gcc11-sso: string_view]
+    Task<nlohmann::json> send_request(std::string_view method,
+                                      const std::optional<nlohmann::json>& params) {
+        int64_t id = next_request_id_.fetch_add(1, std::memory_order_relaxed);
         auto id_str = std::to_string(id);
 
         JSONRPCRequest request;
         request.id = RequestId{id_str};
-        request.method = std::move(method);
-        request.params = std::move(params);
+        request.method = std::string(method);
+        request.params = params;
 
-        // Pending entry uses a timer as a coroutine suspension mechanism:
-        // set to max expiry, cancelled by read_loop when response arrives.
         auto& pending = pending_requests_[id_str];
         pending.timer = std::make_unique<boost::asio::steady_timer>(strand_);
         pending.timer->expires_at(std::chrono::steady_clock::time_point::max());
+        auto* timer_ptr = pending.timer.get();
 
-        nlohmann::json msg = request;
-        co_await transport_->write_message(msg.dump());
-
-        try {
-            co_await pending.timer->async_wait(boost::asio::use_awaitable);
-        } catch (const boost::system::system_error& err) {
-            if (err.code() != boost::asio::error::operation_aborted) {
-                throw;
-            }
-        }
-
-        auto it = pending_requests_.find(id_str);
-        if (it == pending_requests_.end()) {
-            throw std::runtime_error("pending request not found for id: " + id_str);
-        }
-
-        auto result = std::move(it->second.result);
-        auto error = std::move(it->second.error);
-        pending_requests_.erase(it);
-
-        if (error) {
-            throw std::runtime_error("JSON-RPC error " + std::to_string(error->code) + ": " +
-                                     error->message);
-        }
-
-        co_return result;
+        return send_request_impl(nlohmann::json(std::move(request)).dump(), timer_ptr, id);
     }
 
     /**
@@ -155,13 +141,12 @@ class Client {
      * @param params Optional parameters for the notification.
      * @return A task that completes when the notification has been written to the transport.
      */
-    Task<void> send_notification(std::string method, std::optional<nlohmann::json> params) {
+    // [gcc11-sso: string_view]
+    Task<void> send_notification(std::string_view method, const std::optional<nlohmann::json>& params) {
         JSONRPCNotification notification;
-        notification.method = std::move(method);
-        notification.params = std::move(params);
-
-        nlohmann::json msg = notification;
-        co_await transport_->write_message(msg.dump());
+        notification.method = std::string(method);
+        notification.params = params;
+        return send_notification_impl(nlohmann::json(std::move(notification)).dump());
     }
 
     /**
@@ -191,14 +176,12 @@ class Client {
      * @return A task that resolves to the server's CallToolResult.
      */
     template <JsonSerializable Args>
-    Task<CallToolResult> call_tool(std::string name, Args arguments) {
+    Task<CallToolResult> call_tool(const std::string& name, const Args& arguments) {
+        // [gcc11-sso: not-a-coroutine]
         CallToolParams call_params;
-        call_params.name = std::move(name);
-        call_params.arguments = nlohmann::json(std::move(arguments));
-
-        nlohmann::json params = std::move(call_params);
-        auto result_json = co_await send_request("tools/call", std::move(params));
-        co_return result_json.template get<CallToolResult>();
+        call_params.name = name;
+        call_params.arguments = nlohmann::json(arguments);
+        return call_and_parse<CallToolResult>("tools/call", nlohmann::json(std::move(call_params)));
     }
 
     /**
@@ -207,16 +190,15 @@ class Client {
      * @param cursor Optional pagination cursor.
      * @return A task that resolves to the server's ListToolsResult.
      */
-    Task<ListToolsResult> list_tools(std::optional<std::string> cursor = std::nullopt) {
+    Task<ListToolsResult> list_tools(const std::optional<std::string>& cursor = std::nullopt) {
+        // [gcc11-sso: not-a-coroutine]
         std::optional<nlohmann::json> params;
         if (cursor) {
             PaginatedRequestParams paginated;
-            paginated.cursor = std::move(cursor);
-            nlohmann::json p = std::move(paginated);
-            params = std::move(p);
+            paginated.cursor = cursor;
+            params = nlohmann::json(std::move(paginated));
         }
-        auto result_json = co_await send_request("tools/list", std::move(params));
-        co_return result_json.get<ListToolsResult>();
+        return call_and_parse<ListToolsResult>("tools/list", std::move(params));
     }
 
     /**
@@ -225,16 +207,15 @@ class Client {
      * @param cursor Optional pagination cursor.
      * @return A task that resolves to the server's ListResourcesResult.
      */
-    Task<ListResourcesResult> list_resources(std::optional<std::string> cursor = std::nullopt) {
+    Task<ListResourcesResult> list_resources(const std::optional<std::string>& cursor = std::nullopt) {
+        // [gcc11-sso: not-a-coroutine]
         std::optional<nlohmann::json> params;
         if (cursor) {
             PaginatedRequestParams paginated;
-            paginated.cursor = std::move(cursor);
-            nlohmann::json p = std::move(paginated);
-            params = std::move(p);
+            paginated.cursor = cursor;
+            params = nlohmann::json(std::move(paginated));
         }
-        auto result_json = co_await send_request("resources/list", std::move(params));
-        co_return result_json.get<ListResourcesResult>();
+        return call_and_parse<ListResourcesResult>("resources/list", std::move(params));
     }
 
     /**
@@ -243,13 +224,11 @@ class Client {
      * @param uri The URI of the resource to read.
      * @return A task that resolves to the server's ReadResourceResult.
      */
-    Task<ReadResourceResult> read_resource(std::string uri) {
-        ReadResourceRequestParams read_params;
-        read_params.uri = std::move(uri);
-
-        nlohmann::json params = std::move(read_params);
-        auto result_json = co_await send_request("resources/read", std::move(params));
-        co_return result_json.get<ReadResourceResult>();
+    Task<ReadResourceResult> read_resource(const std::string& uri) {
+        // [gcc11-sso: not-a-coroutine]
+        ReadResourceRequestParams p;
+        p.uri = uri;
+        return call_and_parse<ReadResourceResult>("resources/read", nlohmann::json(std::move(p)));
     }
 
     /**
@@ -259,16 +238,16 @@ class Client {
      * @return A task that resolves to the server's ListResourceTemplatesResult.
      */
     Task<ListResourceTemplatesResult> list_resource_templates(
-        std::optional<std::string> cursor = std::nullopt) {
+        const std::optional<std::string>& cursor = std::nullopt) {
+        // [gcc11-sso: not-a-coroutine]
         std::optional<nlohmann::json> params;
         if (cursor) {
             PaginatedRequestParams paginated;
-            paginated.cursor = std::move(cursor);
-            nlohmann::json p = std::move(paginated);
-            params = std::move(p);
+            paginated.cursor = cursor;
+            params = nlohmann::json(std::move(paginated));
         }
-        auto result_json = co_await send_request("resources/templates/list", std::move(params));
-        co_return result_json.get<ListResourceTemplatesResult>();
+        return call_and_parse<ListResourceTemplatesResult>("resources/templates/list",
+                                                           std::move(params));
     }
 
     /**
@@ -277,16 +256,15 @@ class Client {
      * @param cursor Optional pagination cursor.
      * @return A task that resolves to the server's ListPromptsResult.
      */
-    Task<ListPromptsResult> list_prompts(std::optional<std::string> cursor = std::nullopt) {
+    Task<ListPromptsResult> list_prompts(const std::optional<std::string>& cursor = std::nullopt) {
+        // [gcc11-sso: not-a-coroutine]
         std::optional<nlohmann::json> params;
         if (cursor) {
             PaginatedRequestParams paginated;
-            paginated.cursor = std::move(cursor);
-            nlohmann::json p = std::move(paginated);
-            params = std::move(p);
+            paginated.cursor = cursor;
+            params = nlohmann::json(std::move(paginated));
         }
-        auto result_json = co_await send_request("prompts/list", std::move(params));
-        co_return result_json.get<ListPromptsResult>();
+        return call_and_parse<ListPromptsResult>("prompts/list", std::move(params));
     }
 
     /**
@@ -297,14 +275,13 @@ class Client {
      * @return A task that resolves to the server's GetPromptResult.
      */
     Task<GetPromptResult> get_prompt(
-        std::string name, std::optional<std::map<std::string, std::string>> arguments = std::nullopt) {
-        GetPromptRequestParams prompt_params;
-        prompt_params.name = std::move(name);
-        prompt_params.arguments = std::move(arguments);
-
-        nlohmann::json params = std::move(prompt_params);
-        auto result_json = co_await send_request("prompts/get", std::move(params));
-        co_return result_json.get<GetPromptResult>();
+        const std::string& name,
+        const std::optional<std::map<std::string, std::string>>& arguments = std::nullopt) {
+        // [gcc11-sso: not-a-coroutine]
+        GetPromptRequestParams p;
+        p.name = name;
+        p.arguments = arguments;
+        return call_and_parse<GetPromptResult>("prompts/get", nlohmann::json(std::move(p)));
     }
 
     /**
@@ -313,10 +290,9 @@ class Client {
      * @param params The completion parameters.
      * @return A task that resolves to the server's CompleteResult.
      */
-    Task<CompleteResult> complete(CompleteParams params) {
-        nlohmann::json json_params = std::move(params);
-        auto result_json = co_await send_request("completion/complete", std::move(json_params));
-        co_return result_json.get<CompleteResult>();
+    Task<CompleteResult> complete(const CompleteParams& params) {
+        // [gcc11-sso: not-a-coroutine]
+        return call_and_parse<CompleteResult>("completion/complete", nlohmann::json(params));
     }
 
     /**
@@ -333,13 +309,13 @@ class Client {
      * @param reason Optional human-readable reason for the cancellation.
      * @return A task that completes when the cancellation notification has been sent.
      */
-    Task<void> cancel(RequestId request_id, std::optional<std::string> reason = std::nullopt) {
+    Task<void> cancel(const RequestId& request_id,
+                      const std::optional<std::string>& reason = std::nullopt) {
+        // [gcc11-sso: not-a-coroutine]
         CancelledNotificationParams params;
-        params.requestId = std::move(request_id);
-        params.reason = std::move(reason);
-
-        nlohmann::json json_params = std::move(params);
-        co_await send_notification("notifications/cancelled", std::move(json_params));
+        params.requestId = request_id;
+        params.reason = reason;
+        return send_notification("notifications/cancelled", nlohmann::json(std::move(params)));
     }
 
     /// @brief Type for notification callback: receives the notification params JSON.
@@ -357,8 +333,8 @@ class Client {
      * @param method The notification method to listen for (e.g. "notifications/progress").
      * @param callback The callback to invoke when the notification arrives.
      */
-    void on_notification(std::string method, NotificationCallback callback) {
-        notification_handlers_[std::move(method)] = std::move(callback);
+    void on_notification(const std::string& method, NotificationCallback callback) {
+        notification_handlers_[method] = std::move(callback);
     }
 
     /// @brief Callback invoked for a deserialized progress notification.
@@ -386,8 +362,8 @@ class Client {
      * @param method The request method to handle.
      * @param handler The async handler that returns a result JSON.
      */
-    void on_request(std::string method, RequestHandler handler) {
-        request_handlers_[std::move(method)] = std::move(handler);
+    void on_request(const std::string& method, RequestHandler handler) {
+        request_handlers_[method] = std::move(handler);
     }
 
     /**
@@ -398,11 +374,11 @@ class Client {
      *
      * @param handler Async handler: receives ElicitRequestParams, returns ElicitResult.
      */
-    void on_elicitation(std::function<Task<ElicitResult>(ElicitRequestParams)> handler) {
+    void on_elicitation(std::function<Task<ElicitResult>(const ElicitRequestParams&)> handler) {
         on_request("elicitation/create",
                    [h = std::move(handler)](const nlohmann::json& params) -> Task<nlohmann::json> {
                        auto elicit_params = params.get<ElicitRequestParams>();
-                       auto result = co_await h(std::move(elicit_params));
+                       auto result = co_await h(elicit_params);
                        nlohmann::json result_json = std::move(result);
                        co_return result_json;
                    });
@@ -418,8 +394,8 @@ class Client {
      * @param roots The list of roots to provide.
      * @param notify Whether to send a roots-changed notification.
      */
-    void set_roots(std::vector<Root> roots, bool notify = false) {
-        roots_ = std::move(roots);
+    void set_roots(const std::vector<Root>& roots, bool notify = false) {
+        roots_ = roots;
 
         if (request_handlers_.find("roots/list") == request_handlers_.end()) {
             on_request("roots/list", [this](const nlohmann::json&) -> Task<nlohmann::json> {
@@ -459,14 +435,56 @@ class Client {
     }
 
    private:
-    /**
-     * @brief A pending request awaiting its response.
-     */
     struct PendingRequest {
-        std::unique_ptr<boost::asio::steady_timer> timer;  ///< Timer used for coroutine suspension.
-        nlohmann::json result;                             ///< The result payload when resolved.
-        std::optional<Error> error;                        ///< The error, if the request failed.
+        std::unique_ptr<boost::asio::steady_timer> timer;
+        nlohmann::json result;
+        std::optional<Error> error;
     };
+
+    // [gcc11-sso: not-a-coroutine] DO NOT change init_params to a type containing std::string.
+    Task<InitializeResult> connect_impl(nlohmann::json init_params) {
+        auto result_json = co_await send_request("initialize", std::move(init_params));
+        server_capabilities_ = result_json.get<InitializeResult>().capabilities;
+        co_await send_notification("notifications/initialized", std::nullopt);
+        co_return result_json.get<InitializeResult>();
+    }
+
+    Task<nlohmann::json> send_request_impl(std::string wire, boost::asio::steady_timer* timer_ptr,
+                                           int64_t id) {
+        co_await transport_->write_message(wire);
+
+        try {
+            co_await timer_ptr->async_wait(boost::asio::use_awaitable);
+        } catch (const boost::system::system_error& err) {
+            if (err.code() != boost::asio::error::operation_aborted) {
+                throw;
+            }
+        }
+
+        auto id_str = std::to_string(id);
+        auto it = pending_requests_.find(id_str);
+        if (it == pending_requests_.end()) {
+            throw std::runtime_error("pending request not found for id: " + id_str);
+        }
+        auto result = std::move(it->second.result);
+        auto error = std::move(it->second.error);
+        pending_requests_.erase(it);
+
+        if (error) {
+            throw std::runtime_error("JSON-RPC error " + std::to_string(error->code) + ": " +
+                                     error->message);
+        }
+        co_return result;
+    }
+
+    Task<void> send_notification_impl(std::string wire) { co_await transport_->write_message(wire); }
+
+    // [gcc11-sso: string_view] nlohmann::json is heap-allocated; string_view is trivially copyable.
+    template <typename Result>
+    Task<Result> call_and_parse(std::string_view method, std::optional<nlohmann::json> params) {
+        auto result_json = co_await send_request(method, std::move(params));
+        co_return result_json.template get<Result>();
+    }
 
     /**
      * @brief Infinite read loop that dispatches incoming messages.
@@ -555,51 +573,54 @@ class Client {
      * @param json_msg The raw JSON-RPC request with @c id, @c method, and optional @c params.
      */
     Task<void> dispatch_incoming_request(nlohmann::json json_msg) {
-        auto id = json_msg.at("id").get<RequestId>();
-        auto method = json_msg.at("method").get<std::string>();
+        // [gcc11-sso: string_view] Points into heap-allocated json_msg. DO NOT change to std::string.
+        std::string_view method = json_msg.at("method").get_ref<const nlohmann::json::string_t&>();
 
         auto it = request_handlers_.find(method);
         if (it != request_handlers_.end()) {
             auto params = json_msg.contains("params") ? json_msg.at("params") : nlohmann::json{};
-            std::optional<std::string> error_msg;
+            // [gcc11-sso: scope-before-await] nlohmann::json is heap-safe. DO NOT use optional<string>.
+            nlohmann::json error_payload;
             nlohmann::json result;
             try {
                 result = co_await it->second(params);
             } catch (const std::exception& e) {
-                error_msg = e.what();
+                error_payload = e.what();
             }
-            if (error_msg) {
-                co_await send_error_response(id, -32603, std::move(*error_msg));
+            // Re-extract id just-in-time AFTER suspension — never stored in frame as RequestId.
+            if (!error_payload.is_null()) {
+                co_await transport_->write_message(make_error_wire(
+                    json_msg.at("id").get<RequestId>(), -32603, error_payload.get<std::string>()));
             } else {
-                co_await send_response(id, std::move(result));
+                co_await transport_->write_message(
+                    make_result_wire(json_msg.at("id").get<RequestId>(), std::move(result)));
             }
         } else if (method == "ping") {
-            co_await send_response(id, nlohmann::json::object());
+            co_await transport_->write_message(
+                make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object()));
         } else {
-            co_await send_error_response(id, METHOD_NOT_FOUND, "Method not found: " + method);
+            co_await transport_->write_message(
+                make_error_wire(json_msg.at("id").get<RequestId>(), METHOD_NOT_FOUND,
+                                "Method not found: " + std::string(method)));
         }
     }
 
-    Task<void> send_response(const RequestId& id, nlohmann::json result) {
+    // [gcc11-sso: wire-builders] DO NOT convert to Task<T>.
+    static std::string make_result_wire(const RequestId& id, nlohmann::json result) {
         JSONRPCResultResponse response;
         response.id = id;
         response.result = std::move(result);
-
-        nlohmann::json json_msg = std::move(response);
-        co_await transport_->write_message(json_msg.dump());
+        return nlohmann::json(std::move(response)).dump();
     }
 
-    Task<void> send_error_response(const RequestId& id, int code, std::string message) {
+    static std::string make_error_wire(const RequestId& id, int code, std::string message) {
         Error error;
         error.code = code;
         error.message = std::move(message);
-
         JSONRPCErrorResponse response;
         response.id = id;
         response.error = std::move(error);
-
-        nlohmann::json json_msg = std::move(response);
-        co_await transport_->write_message(json_msg.dump());
+        return nlohmann::json(std::move(response)).dump();
     }
 
     std::shared_ptr<ITransport> transport_;

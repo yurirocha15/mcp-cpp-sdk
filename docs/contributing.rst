@@ -309,6 +309,81 @@ Example bug report:
    **Stack Trace**
    (gdb output if available)
 
+Known Issues
+------------
+
+GCC 11 SSO Coroutine Bug
+------------------------
+
+**When writing coroutines (``Task<T>`` functions), never store ``std::string`` locals
+in the coroutine frame across a ``co_await`` suspension on GCC 11.**
+
+There is a confirmed GCC 11 compiler bug:
+
+* `GCC Bug #107288 <https://gcc.gnu.org/bugzilla/show_bug.cgi?id=107288>`_
+* `GCC Bug #100611 <https://gcc.gnu.org/bugzilla/show_bug.cgi?id=100611>`_
+* `Boost.Asio Issue #1027 <https://github.com/chriskohlhoff/asio/issues/1027>`_
+
+GCC 11 corrupts the internal self-pointer of ``std::string`` (SSO — Small String
+Optimization) when the string lives in a heap-allocated coroutine frame and survives
+across a suspension point. The corruption happens at destructor time, causing
+``munmap_chunk(): invalid pointer`` crashes.
+
+**Affected types** (unsafe across ``co_await`` in GCC 11):
+
+* ``std::string`` (including moved-from empty strings)
+* ``std::optional<std::string>`` with short values
+* Any struct containing ``std::string`` (e.g. ``JSONRPCRequest``, ``RequestId`` with string variant)
+
+**Safe types** across ``co_await``:
+
+* ``nlohmann::json`` (heap-allocated internally)
+* ``std::string_view`` (trivially copyable pointer+size)
+* ``int64_t``, raw pointers (trivially copyable)
+
+**Fix patterns used in this codebase:**
+
+**Scope-before-await**: Build SSO-prone objects inside a ``{}`` scope,
+serialize to ``std::string wire`` (long output, > 15 chars, heap-allocated), close scope
+(destroying all SSO strings), then ``co_await transport->write_message(wire)``.
+
+.. code-block:: cpp
+
+   std::string wire;
+   {
+       JSONRPCNotification notification;
+       notification.method = std::move(method);  // SSO risk
+       notification.params = std::move(params);
+       wire = nlohmann::json(std::move(notification)).dump();
+   }  // SSO strings destroyed here
+   co_await transport_->write_message(wire);  // safe: wire is always > 15 chars
+
+**int64_t for IDs**: Store the request ID as ``int64_t`` across suspensions
+(trivially copyable), reconstruct the string after all ``co_await`` calls.
+
+.. code-block:: cpp
+
+   int64_t id = next_id_.fetch_add(1);  // safe across suspension
+   // ... co_await ...
+   auto id_str = std::to_string(id);  // reconstruct after suspension
+
+**No named temporaries**: Pass ``params.get<In>()`` directly as a function
+argument instead of storing it in a named local, so no SSO string ever enters the frame.
+
+.. code-block:: cpp
+
+   // DO NOT: auto input = params.get<In>();  // named local stays in frame
+   Out output = co_await handler(ctx, params.get<In>());  // direct: never in frame
+
+**Rule for wire builders**: ``make_result_wire()`` and ``make_error_wire()`` are
+**synchronous** static helpers. Do NOT convert them to ``Task<void>`` coroutines —
+that would force callers to store ``RequestId`` (SSO risk) in their frames across the
+callee's suspensions.
+
+**Detection**: Run tests on Ubuntu 22.04 / GCC 11.
+The crash manifests as ``munmap_chunk(): invalid pointer`` at process exit, not at the
+point of access, making it hard to debug without valgrind.
+
 Feature Requests
 ----------------
 

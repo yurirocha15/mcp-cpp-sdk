@@ -134,7 +134,7 @@ TEST_F(ClientNotificationsTest, NotificationCallbackFires) {
     });
 
     boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect({"test-client", "1.0"}, {}); },
+        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -176,7 +176,7 @@ TEST_F(ClientNotificationsTest, UnhandledNotificationSilentlyDropped) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await client.connect({"test-client", "1.0"}, {});
+            co_await client.connect("test-client", "1.0");
             completed = true;
         },
         boost::asio::detached);
@@ -215,7 +215,7 @@ TEST_F(ClientNotificationsTest, PingRequestHandledAutomatically) {
     });
 
     boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect({"test-client", "1.0"}, {}); },
+        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -272,7 +272,7 @@ TEST_F(ClientNotificationsTest, CustomRequestHandlerDispatch) {
     });
 
     boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect({"test-client", "1.0"}, {}); },
+        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); },
         boost::asio::detached);
 
     io_ctx_.run();
@@ -316,7 +316,7 @@ TEST_F(ClientNotificationsTest, UnknownRequestReturnsMethodNotFound) {
     });
 
     boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect({"test-client", "1.0"}, {}); },
+        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); },
         boost::asio::detached);
 
     io_ctx_.run();

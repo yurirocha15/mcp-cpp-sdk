@@ -1,5 +1,14 @@
 #include <mcp/server.hpp>
 
+// GCC 11 SSO Coroutine Safety — see docs/contributing.rst "Known Issues" for full details.
+// Do NOT store std::string in a coroutine frame across co_await (GCC bugs #107288/#100611).
+// Patterns used here:
+//   [int64-id]           Keep request IDs as int64_t across suspensions; rebuild string after.
+//   [string_view]        Use std::string_view (trivially copyable) for coroutine method params.
+//   [scope-before-await] Build SSO-risky objects in {}, serialise to wire string, then co_await.
+//   [wire-builders]      make_result_wire/make_error_wire are synchronous helpers;
+//                        do NOT convert them to Task<T> coroutines.
+
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -63,33 +72,33 @@ struct Server::Impl {
     SubscriptionHandler unsubscribe_handler;
 };
 
-Server::Server(Implementation server_info, ServerCapabilities capabilities)
+Server::Server(const Implementation& server_info, const ServerCapabilities& capabilities)
     : impl_(std::make_unique<Impl>()) {
-    impl_->server_info = std::move(server_info);
-    impl_->capabilities = std::move(capabilities);
+    impl_->server_info = server_info;
+    impl_->capabilities = capabilities;
 }
 
 Server::~Server() { reset_session(); }
 
-void Server::register_tool(Tool tool, std::string name, TypeErasedHandler handler) {
-    impl_->tools.push_back(std::move(tool));
-    impl_->tool_handlers.emplace(std::move(name), std::move(handler));
+void Server::register_tool(const Tool& tool, const std::string& name, TypeErasedHandler handler) {
+    impl_->tools.push_back(tool);
+    impl_->tool_handlers.emplace(name, std::move(handler));
 }
 
-void Server::register_resource(Resource resource, TypeErasedHandler handler) {
+void Server::register_resource(const Resource& resource, TypeErasedHandler handler) {
     auto uri = resource.uri;
-    impl_->resources.push_back(std::move(resource));
+    impl_->resources.push_back(resource);
     impl_->resource_handlers.emplace(std::move(uri), std::move(handler));
 }
 
-void Server::register_prompt(Prompt prompt, TypeErasedHandler handler) {
+void Server::register_prompt(const Prompt& prompt, TypeErasedHandler handler) {
     auto name = prompt.name;
-    impl_->prompts.push_back(std::move(prompt));
+    impl_->prompts.push_back(prompt);
     impl_->prompt_handlers.emplace(std::move(name), std::move(handler));
 }
 
-void Server::add_resource_template(ResourceTemplate tmpl) {
-    impl_->resource_templates.push_back(std::move(tmpl));
+void Server::add_resource_template(const ResourceTemplate& tmpl) {
+    impl_->resource_templates.push_back(tmpl);
 }
 
 void Server::use(Middleware mw) { impl_->middlewares.push_back(std::move(mw)); }
@@ -100,12 +109,10 @@ void Server::set_completion_provider(CompletionHandler handler) {
 
 void Server::set_page_size(std::size_t size) { impl_->page_size = size; }
 
-void Server::on_subscribe(SubscriptionHandler handler) {
-    impl_->subscribe_handler = std::move(handler);
-}
+void Server::on_subscribe(const SubscriptionHandler& handler) { impl_->subscribe_handler = handler; }
 
-void Server::on_unsubscribe(SubscriptionHandler handler) {
-    impl_->unsubscribe_handler = std::move(handler);
+void Server::on_unsubscribe(const SubscriptionHandler& handler) {
+    impl_->unsubscribe_handler = handler;
 }
 
 bool Server::is_initialized() const { return impl_->initialized; }
@@ -114,30 +121,39 @@ bool Server::is_shutdown_requested() const { return impl_->shutdown_requested; }
 
 LoggingLevel Server::get_log_level() const { return impl_->log_level.load(std::memory_order_relaxed); }
 
-Task<nlohmann::json> Server::send_request(std::string method, std::optional<nlohmann::json> params) {
-    auto id = impl_->next_request_id.fetch_add(1, std::memory_order_relaxed);
-    auto id_str = std::to_string(id);
+Task<nlohmann::json> Server::send_request(const std::string& method,
+                                          const std::optional<nlohmann::json>& params) {
+    // [gcc11-sso: int64-id] DO NOT change id to std::string.
+    int64_t id = impl_->next_request_id.fetch_add(1, std::memory_order_relaxed);
+    boost::asio::steady_timer* timer_ptr = nullptr;
+    std::string wire;
+    {
+        auto id_str = std::to_string(id);
+        JSONRPCRequest request;
+        request.id = RequestId{id_str};
+        request.method = method;
+        request.params = params;
 
-    JSONRPCRequest request;
-    request.id = RequestId{id_str};
-    request.method = std::move(method);
-    request.params = std::move(params);
+        auto& pending = impl_->session->pending_requests[id_str];
+        pending.timer = std::make_unique<boost::asio::steady_timer>(*impl_->session->strand);
+        pending.timer->expires_at(std::chrono::steady_clock::time_point::max());
+        timer_ptr = pending.timer.get();
 
-    auto& pending = impl_->session->pending_requests[id_str];
-    pending.timer = std::make_unique<boost::asio::steady_timer>(*impl_->session->strand);
-    pending.timer->expires_at(std::chrono::steady_clock::time_point::max());
+        wire = nlohmann::json(request).dump();
+    }  // id_str, request, method destroyed here — before co_await
 
-    nlohmann::json msg = request;
-    co_await impl_->session->transport->write_message(msg.dump());
+    co_await impl_->session->transport->write_message(wire);
 
     try {
-        co_await pending.timer->async_wait(boost::asio::use_awaitable);
+        co_await timer_ptr->async_wait(boost::asio::use_awaitable);
     } catch (const boost::system::system_error& err) {
         if (err.code() != boost::asio::error::operation_aborted) {
             throw;
         }
     }
 
+    // [gcc11-sso: int64-id] Rebuild id_str after all suspensions.
+    auto id_str = std::to_string(id);
     auto it = impl_->session->pending_requests.find(id_str);
     if (it == impl_->session->pending_requests.end()) {
         throw std::runtime_error("pending request not found for id: " + id_str);
@@ -193,60 +209,62 @@ Context Server::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
                              std::optional<ProgressToken> progress_token) {
     return Context(
         *impl_->session->transport,
-        [this](std::string method, std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
-            co_return co_await send_request(std::move(method), std::move(params));
-        },
+        [this](const std::string& method, const std::optional<nlohmann::json>& params)
+            -> Task<nlohmann::json> { co_return co_await send_request(method, params); },
         std::move(cancelled), std::move(progress_token), &impl_->log_level);
 }
 
 // Exceptions from handlers are caught and reported as INTERNAL_ERROR (-32603) responses.
 Task<void> Server::dispatch_request(nlohmann::json json_msg) {
-    RequestId req_id;
-    std::optional<std::string> internal_error_message;
+    // [gcc11-sso: string_view] DO NOT change to std::string.
+    std::string_view method = json_msg.at("method").get_ref<const nlohmann::json::string_t&>();
+
+    // [gcc11-sso: scope-before-await] DO NOT use optional<string> for error state.
+    nlohmann::json error_payload;
 
     try {
-        req_id = json_msg.at("id").get<RequestId>();
-        auto request = json_msg.get<JSONRPCRequest>();
-
-        if (request.method == "initialize") {
-            co_await handle_initialize(request);
-        } else if (request.method == "ping") {
-            co_await handle_ping(request);
-        } else if (request.method == "shutdown") {
-            co_await handle_shutdown(request);
-        } else if (request.method == "tools/call") {
-            co_await handle_tools_call(request);
-        } else if (request.method == "tools/list") {
-            co_await handle_tools_list(request);
-        } else if (request.method == "resources/list") {
-            co_await handle_resources_list(request);
-        } else if (request.method == "resources/read") {
-            co_await handle_resources_read(request);
-        } else if (request.method == "resources/templates/list") {
-            co_await handle_resource_templates_list(request);
-        } else if (request.method == "resources/subscribe") {
-            co_await handle_subscribe(request);
-        } else if (request.method == "resources/unsubscribe") {
-            co_await handle_unsubscribe(request);
-        } else if (request.method == "prompts/list") {
-            co_await handle_prompts_list(request);
-        } else if (request.method == "prompts/get") {
-            co_await handle_prompts_get(request);
-        } else if (request.method == "logging/setLevel") {
-            co_await handle_set_level(request);
-        } else if (request.method == "completion/complete") {
-            co_await handle_complete(request);
+        if (method == "initialize") {
+            co_await handle_initialize(json_msg);
+        } else if (method == "ping") {
+            co_await handle_ping(json_msg);
+        } else if (method == "shutdown") {
+            co_await handle_shutdown(json_msg);
+        } else if (method == "tools/call") {
+            co_await handle_tools_call(json_msg);
+        } else if (method == "tools/list") {
+            co_await handle_tools_list(json_msg);
+        } else if (method == "resources/list") {
+            co_await handle_resources_list(json_msg);
+        } else if (method == "resources/read") {
+            co_await handle_resources_read(json_msg);
+        } else if (method == "resources/templates/list") {
+            co_await handle_resource_templates_list(json_msg);
+        } else if (method == "resources/subscribe") {
+            co_await handle_subscribe(json_msg);
+        } else if (method == "resources/unsubscribe") {
+            co_await handle_unsubscribe(json_msg);
+        } else if (method == "prompts/list") {
+            co_await handle_prompts_list(json_msg);
+        } else if (method == "prompts/get") {
+            co_await handle_prompts_get(json_msg);
+        } else if (method == "logging/setLevel") {
+            co_await handle_set_level(json_msg);
+        } else if (method == "completion/complete") {
+            co_await handle_complete(json_msg);
         } else {
-            co_await send_error(request.id, METHOD_NOT_FOUND, "Method not found: " + request.method);
+            co_await impl_->session->transport->write_message(
+                make_error_wire(json_msg.at("id").get<RequestId>(), METHOD_NOT_FOUND,
+                                "Method not found: " + std::string(method)));
         }
     } catch (const std::exception& e) {
         if (json_msg.contains("id")) {
-            internal_error_message = e.what();
+            error_payload = e.what();
         }
     }
 
-    if (internal_error_message) {
-        co_await send_error(req_id, INTERNAL_ERROR, *internal_error_message);
+    if (!error_payload.is_null()) {
+        co_await impl_->session->transport->write_message(make_error_wire(
+            json_msg.at("id").get<RequestId>(), INTERNAL_ERROR, error_payload.get<std::string>()));
     }
 }
 
@@ -288,35 +306,39 @@ void Server::dispatch_response(const nlohmann::json& json_msg) {
     it->second.timer->cancel();
 }
 
-Task<void> Server::handle_initialize(const JSONRPCRequest& request) {
+Task<void> Server::handle_initialize(const nlohmann::json& json_msg) {
     InitializeResult init_result;
     init_result.protocolVersion = std::string(LATEST_PROTOCOL_VERSION);
     init_result.capabilities = impl_->capabilities;
     init_result.serverInfo = impl_->server_info;
 
-    nlohmann::json result_json = std::move(init_result);
-    co_await send_result(request.id, std::move(result_json));
+    co_await impl_->session->transport->write_message(
+        make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json(std::move(init_result))));
     impl_->initialized = true;
 }
 
-Task<void> Server::handle_shutdown(const JSONRPCRequest& request) {
+Task<void> Server::handle_shutdown(const nlohmann::json& json_msg) {
     impl_->shutdown_requested = true;
-    co_await send_result(request.id, nlohmann::json::object());
+    co_await impl_->session->transport->write_message(
+        make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object()));
 }
 
-Task<void> Server::handle_ping(const JSONRPCRequest& request) {
-    co_await send_result(request.id, nlohmann::json::object());
+Task<void> Server::handle_ping(const nlohmann::json& json_msg) {
+    co_await impl_->session->transport->write_message(
+        make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object()));
 }
 
-Task<void> Server::handle_tools_call(const JSONRPCRequest& request) {
-    auto params = request.params.value().get<CallToolParams>();
+Task<void> Server::handle_tools_call(const nlohmann::json& json_msg) {
+    auto params = json_msg.at("params").get<CallToolParams>();
     auto iter = impl_->tool_handlers.find(params.name);
     if (iter == impl_->tool_handlers.end()) {
-        co_await send_error(request.id, METHOD_NOT_FOUND, "Unknown tool: " + params.name);
+        co_await impl_->session->transport->write_message(make_error_wire(
+            json_msg.at("id").get<RequestId>(), METHOD_NOT_FOUND, "Unknown tool: " + params.name));
         co_return;
     }
 
-    auto request_id_str = request.id.to_string();
+    // [gcc11-sso: int64-id] request_id_str from json_msg (heap-safe); used only in in_flight map.
+    auto request_id_str = json_msg.at("id").get<RequestId>().to_string();
 
     auto cancelled = std::make_shared<std::atomic<bool>>(false);
     impl_->session->in_flight[request_id_str] = cancelled;
@@ -338,11 +360,12 @@ Task<void> Server::handle_tools_call(const JSONRPCRequest& request) {
     auto handler = build_middleware_chain(std::move(wrapped_handler));
 
     auto ctx = make_context(cancelled, std::move(progress_token));
+    // [gcc11-sso: scope-before-await] params_json (nlohmann::json) is heap-safe across co_await.
     nlohmann::json params_json = std::move(params);
     nlohmann::json handler_result = co_await handler(ctx, params_json);
 
     auto has_output_schema =
-        has_tool_output_schema(request.params.value().at("name").get<std::string>());
+        has_tool_output_schema(json_msg.at("params").at("name").get<std::string>());
     if (has_output_schema) {
         nlohmann::json structured = handler_result;
         handler_result["structuredContent"] = std::move(structured);
@@ -350,13 +373,16 @@ Task<void> Server::handle_tools_call(const JSONRPCRequest& request) {
 
     impl_->session->in_flight.erase(request_id_str);
 
-    co_await send_result(request.id, std::move(handler_result));
+    // Re-extract id just-in-time after all suspensions.
+    co_await impl_->session->transport->write_message(
+        make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result)));
 }
 
-Task<void> Server::handle_tools_list(const JSONRPCRequest& request) {
-    auto page = paginate(impl_->tools.size(), request);
+Task<void> Server::handle_tools_list(const nlohmann::json& json_msg) {
+    auto page = paginate(impl_->tools.size(), json_msg);
     if (!page) {
-        co_await send_error(request.id, INVALID_PARAMS, "Invalid pagination cursor");
+        co_await impl_->session->transport->write_message(make_error_wire(
+            json_msg.at("id").get<RequestId>(), INVALID_PARAMS, "Invalid pagination cursor"));
         co_return;
     }
 
@@ -366,14 +392,15 @@ Task<void> Server::handle_tools_list(const JSONRPCRequest& request) {
                              impl_->tools.begin() + static_cast<std::ptrdiff_t>(end));
     list_result.nextCursor = std::move(next_cursor);
 
-    nlohmann::json result_json = std::move(list_result);
-    co_await send_result(request.id, std::move(result_json));
+    co_await impl_->session->transport->write_message(
+        make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json(std::move(list_result))));
 }
 
-Task<void> Server::handle_resources_list(const JSONRPCRequest& request) {
-    auto page = paginate(impl_->resources.size(), request);
+Task<void> Server::handle_resources_list(const nlohmann::json& json_msg) {
+    auto page = paginate(impl_->resources.size(), json_msg);
     if (!page) {
-        co_await send_error(request.id, INVALID_PARAMS, "Invalid pagination cursor");
+        co_await impl_->session->transport->write_message(make_error_wire(
+            json_msg.at("id").get<RequestId>(), INVALID_PARAMS, "Invalid pagination cursor"));
         co_return;
     }
 
@@ -383,15 +410,16 @@ Task<void> Server::handle_resources_list(const JSONRPCRequest& request) {
                                  impl_->resources.begin() + static_cast<std::ptrdiff_t>(end));
     list_result.nextCursor = std::move(next_cursor);
 
-    nlohmann::json result_json = std::move(list_result);
-    co_await send_result(request.id, std::move(result_json));
+    co_await impl_->session->transport->write_message(
+        make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json(std::move(list_result))));
 }
 
-Task<void> Server::handle_resources_read(const JSONRPCRequest& request) {
-    auto params = request.params.value().get<ReadResourceRequestParams>();
+Task<void> Server::handle_resources_read(const nlohmann::json& json_msg) {
+    auto params = json_msg.at("params").get<ReadResourceRequestParams>();
     auto iter = impl_->resource_handlers.find(params.uri);
     if (iter == impl_->resource_handlers.end()) {
-        co_await send_error(request.id, INVALID_PARAMS, "Unknown resource: " + params.uri);
+        co_await impl_->session->transport->write_message(make_error_wire(
+            json_msg.at("id").get<RequestId>(), INVALID_PARAMS, "Unknown resource: " + params.uri));
         co_return;
     }
 
@@ -400,13 +428,15 @@ Task<void> Server::handle_resources_read(const JSONRPCRequest& request) {
     nlohmann::json params_json = std::move(params);
     auto ctx = make_context();
     nlohmann::json handler_result = co_await handler(ctx, params_json);
-    co_await send_result(request.id, std::move(handler_result));
+    co_await impl_->session->transport->write_message(
+        make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result)));
 }
 
-Task<void> Server::handle_resource_templates_list(const JSONRPCRequest& request) {
-    auto page = paginate(impl_->resource_templates.size(), request);
+Task<void> Server::handle_resource_templates_list(const nlohmann::json& json_msg) {
+    auto page = paginate(impl_->resource_templates.size(), json_msg);
     if (!page) {
-        co_await send_error(request.id, INVALID_PARAMS, "Invalid pagination cursor");
+        co_await impl_->session->transport->write_message(make_error_wire(
+            json_msg.at("id").get<RequestId>(), INVALID_PARAMS, "Invalid pagination cursor"));
         co_return;
     }
 
@@ -417,32 +447,35 @@ Task<void> Server::handle_resource_templates_list(const JSONRPCRequest& request)
         impl_->resource_templates.begin() + static_cast<std::ptrdiff_t>(end));
     list_result.nextCursor = std::move(next_cursor);
 
-    nlohmann::json result_json = std::move(list_result);
-    co_await send_result(request.id, std::move(result_json));
+    co_await impl_->session->transport->write_message(
+        make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json(std::move(list_result))));
 }
 
-Task<void> Server::handle_subscribe(const JSONRPCRequest& request) {
-    auto params = request.params.value().get<ResourceSubscribeParams>();
+Task<void> Server::handle_subscribe(const nlohmann::json& json_msg) {
+    auto params = json_msg.at("params").get<ResourceSubscribeParams>();
     impl_->session->subscriptions[params.uri] = true;
-    co_await send_result(request.id, nlohmann::json::object());
+    co_await impl_->session->transport->write_message(
+        make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object()));
     if (impl_->subscribe_handler) {
         impl_->subscribe_handler(params.uri);
     }
 }
 
-Task<void> Server::handle_unsubscribe(const JSONRPCRequest& request) {
-    auto params = request.params.value().get<ResourceUnsubscribeParams>();
+Task<void> Server::handle_unsubscribe(const nlohmann::json& json_msg) {
+    auto params = json_msg.at("params").get<ResourceUnsubscribeParams>();
     impl_->session->subscriptions.erase(params.uri);
-    co_await send_result(request.id, nlohmann::json::object());
+    co_await impl_->session->transport->write_message(
+        make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object()));
     if (impl_->unsubscribe_handler) {
         impl_->unsubscribe_handler(params.uri);
     }
 }
 
-Task<void> Server::handle_prompts_list(const JSONRPCRequest& request) {
-    auto page = paginate(impl_->prompts.size(), request);
+Task<void> Server::handle_prompts_list(const nlohmann::json& json_msg) {
+    auto page = paginate(impl_->prompts.size(), json_msg);
     if (!page) {
-        co_await send_error(request.id, INVALID_PARAMS, "Invalid pagination cursor");
+        co_await impl_->session->transport->write_message(make_error_wire(
+            json_msg.at("id").get<RequestId>(), INVALID_PARAMS, "Invalid pagination cursor"));
         co_return;
     }
 
@@ -452,15 +485,16 @@ Task<void> Server::handle_prompts_list(const JSONRPCRequest& request) {
                                impl_->prompts.begin() + static_cast<std::ptrdiff_t>(end));
     list_result.nextCursor = std::move(next_cursor);
 
-    nlohmann::json result_json = std::move(list_result);
-    co_await send_result(request.id, std::move(result_json));
+    co_await impl_->session->transport->write_message(
+        make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json(std::move(list_result))));
 }
 
-Task<void> Server::handle_prompts_get(const JSONRPCRequest& request) {
-    auto params = request.params.value().get<GetPromptRequestParams>();
+Task<void> Server::handle_prompts_get(const nlohmann::json& json_msg) {
+    auto params = json_msg.at("params").get<GetPromptRequestParams>();
     auto iter = impl_->prompt_handlers.find(params.name);
     if (iter == impl_->prompt_handlers.end()) {
-        co_await send_error(request.id, METHOD_NOT_FOUND, "Unknown prompt: " + params.name);
+        co_await impl_->session->transport->write_message(make_error_wire(
+            json_msg.at("id").get<RequestId>(), METHOD_NOT_FOUND, "Unknown prompt: " + params.name));
         co_return;
     }
 
@@ -469,61 +503,62 @@ Task<void> Server::handle_prompts_get(const JSONRPCRequest& request) {
     nlohmann::json params_json = std::move(params);
     auto ctx = make_context();
     nlohmann::json handler_result = co_await handler(ctx, params_json);
-    co_await send_result(request.id, std::move(handler_result));
+    co_await impl_->session->transport->write_message(
+        make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result)));
 }
 
-Task<void> Server::handle_set_level(const JSONRPCRequest& request) {
-    auto params = request.params.value().get<SetLevelRequestParams>();
+Task<void> Server::handle_set_level(const nlohmann::json& json_msg) {
+    auto params = json_msg.at("params").get<SetLevelRequestParams>();
     impl_->log_level.store(params.level, std::memory_order_relaxed);
-    co_await send_result(request.id, nlohmann::json::object());
+    co_await impl_->session->transport->write_message(
+        make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object()));
 }
 
-Task<void> Server::handle_complete(const JSONRPCRequest& request) {
+Task<void> Server::handle_complete(const nlohmann::json& json_msg) {
     if (!impl_->completion_handler) {
-        co_await send_error(request.id, METHOD_NOT_FOUND, "No completion handler registered");
+        co_await impl_->session->transport->write_message(make_error_wire(
+            json_msg.at("id").get<RequestId>(), METHOD_NOT_FOUND, "No completion handler registered"));
         co_return;
     }
 
-    auto params = request.params.value().get<CompleteParams>();
+    auto params = json_msg.at("params").get<CompleteParams>();
     auto complete_result = co_await impl_->completion_handler(params);
 
-    nlohmann::json result_json = std::move(complete_result);
-    co_await send_result(request.id, std::move(result_json));
+    co_await impl_->session->transport->write_message(make_result_wire(
+        json_msg.at("id").get<RequestId>(), nlohmann::json(std::move(complete_result))));
 }
 
-Task<void> Server::send_result(const RequestId& id, nlohmann::json result) {
+std::string Server::make_result_wire(const RequestId& id, nlohmann::json result) {
     JSONRPCResultResponse response;
     response.id = id;
     response.result = std::move(result);
-
-    nlohmann::json json_msg = std::move(response);
-    co_await impl_->session->transport->write_message(json_msg.dump());
+    return nlohmann::json(std::move(response)).dump();
 }
 
-Task<void> Server::send_error(const RequestId& id, int code, std::string message) {
+std::string Server::make_error_wire(const RequestId& id, int code, std::string message) {
     Error error;
     error.code = code;
     error.message = std::move(message);
-
     JSONRPCErrorResponse response;
     response.id = id;
     response.error = std::move(error);
-
-    nlohmann::json json_msg = std::move(response);
-    co_await impl_->session->transport->write_message(json_msg.dump());
+    return nlohmann::json(std::move(response)).dump();
 }
 
-Task<void> Server::send_notification(std::string method, std::optional<nlohmann::json> params) {
+Task<void> Server::send_notification(const std::string& method,
+                                     const std::optional<nlohmann::json>& params) {
     if (!impl_->session) {
         co_return;
     }
-
-    JSONRPCNotification notification;
-    notification.method = std::move(method);
-    notification.params = std::move(params);
-
-    nlohmann::json json_msg = std::move(notification);
-    co_await impl_->session->transport->write_message(json_msg.dump());
+    // [gcc11-sso: scope-before-await]
+    std::string wire;
+    {
+        JSONRPCNotification notification;
+        notification.method = method;
+        notification.params = params;
+        wire = nlohmann::json(std::move(notification)).dump();
+    }
+    co_await impl_->session->transport->write_message(wire);
 }
 
 Task<void> Server::notify_tools_list_changed() {
@@ -572,14 +607,14 @@ TypeErasedHandler Server::build_middleware_chain(TypeErasedHandler final_handler
 }
 
 std::optional<Server::PaginationSlice> Server::paginate(std::size_t total,
-                                                        const JSONRPCRequest& request) {
+                                                        const nlohmann::json& json_msg) {
     if (impl_->page_size == 0 || total == 0) {
         return PaginationSlice{0, total, std::nullopt};
     }
 
     std::size_t offset = 0;
-    if (request.params && request.params->contains("cursor")) {
-        auto cursor_str = request.params->at("cursor").get<std::string>();
+    if (json_msg.contains("params") && json_msg.at("params").contains("cursor")) {
+        auto cursor_str = json_msg.at("params").at("cursor").get<std::string>();
         try {
             offset = std::stoull(cursor_str);
         } catch (...) {

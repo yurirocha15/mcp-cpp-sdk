@@ -2,14 +2,15 @@
 
 namespace mcp {
 
-void Server::add_tool(std::string name, std::string description, nlohmann::json input_schema,
+void Server::add_tool(const std::string& name, const std::string& description,
+                      const nlohmann::json& input_schema,
                       std::function<nlohmann::json(const nlohmann::json&)> handler) {
     Tool tool;
     tool.name = name;
-    tool.description = std::move(description);
-    tool.inputSchema = std::move(input_schema);
+    tool.description = description;
+    tool.inputSchema = input_schema;
 
-    register_tool(std::move(tool), name,
+    register_tool(tool, name,
                   [h = std::move(handler)](Context& /*ctx*/,
                                            const nlohmann::json& params) -> Task<nlohmann::json> {
                       try {
