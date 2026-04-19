@@ -5,6 +5,7 @@
 #include <mcp/core.hpp>
 #include <mcp/server.hpp>
 #include <mcp/transport.hpp>
+#include <mcp/transport/http_types.hpp>
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -40,6 +41,7 @@ namespace constants {
 
 constexpr int g_default_token_lifetime_safety_margin_seconds = 30;
 constexpr std::size_t g_buffer_size = 4096;
+constexpr int g_shift4 = 4;
 constexpr int g_shift6 = 6;
 constexpr int g_shift8 = 8;
 constexpr int g_shift12 = 12;
@@ -148,7 +150,7 @@ inline std::string url_encode(const std::string& value) {
     return result;
 }
 
-inline std::string build_form_body(const std::vector<std::pair<std::string, std::string>>& params) {
+inline std::string build_form_body(const KeyValuePairList& params) {
     std::string body;
     for (const auto& [key, value] : params) {
         if (!body.empty()) {
@@ -371,7 +373,7 @@ class OAuthHttpClient {
      */
     Task<TokenResponse> exchange_code(const OAuthConfig& config, const std::string& code,
                                       const std::string& code_verifier) {
-        std::vector<std::pair<std::string, std::string>> params = {
+        KeyValuePairList params = {
             {"grant_type", "authorization_code"},  {"code", code},
             {"redirect_uri", config.redirect_uri}, {"client_id", config.client_id},
             {"code_verifier", code_verifier},
@@ -395,7 +397,7 @@ class OAuthHttpClient {
      * @return A task resolving to the parsed token response.
      */
     Task<TokenResponse> refresh_token(const OAuthConfig& config, const std::string& refresh_token) {
-        std::vector<std::pair<std::string, std::string>> params = {
+        KeyValuePairList params = {
             {"grant_type", "refresh_token"},
             {"refresh_token", refresh_token},
             {"client_id", config.client_id},
@@ -487,9 +489,8 @@ class OAuthHttpClient {
         return {std::move(host), std::move(port), std::move(path_val)};
     }
 
-    Task<TokenResponse> post_token_request(
-        const std::string& token_endpoint,
-        const std::vector<std::pair<std::string, std::string>>& params) {
+    Task<TokenResponse> post_token_request(const std::string& token_endpoint,
+                                           const KeyValuePairList& params) {
         auto parsed = parse_url(token_endpoint);
         auto form_body = detail::build_form_body(params);
 
@@ -954,6 +955,9 @@ class OAuthClientTransport final : public ITransport {
      * @return The (possibly retried) raw message string.
      */
     Task<std::string> read_message() override {
+        if (!inner_) {
+            throw std::runtime_error("OAuthClientTransport inner transport is null");
+        }
         auto raw = co_await inner_->read_message();
 
         try {
@@ -989,6 +993,9 @@ class OAuthClientTransport final : public ITransport {
      * @return A task that completes once the wrapped transport accepts the message.
      */
     Task<void> write_message(std::string_view message) override {
+        if (!inner_) {
+            throw std::runtime_error("OAuthClientTransport inner transport is null");
+        }
         std::string injected = std::string(message);
         try {
             auto json_msg = nlohmann::json::parse(message);

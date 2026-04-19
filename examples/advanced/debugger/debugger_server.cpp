@@ -1015,10 +1015,10 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
 
                     unsigned total = thread.GetNumFrames();
                     int req = args.count.value_or(g_default_backtrace_count);
-                    unsigned max_frames =
-                        req <= 0
-                            ? 0
-                            : (total < static_cast<unsigned>(req) ? total : static_cast<unsigned>(req));
+                    unsigned max_frames = 0;
+                    if (req > 0) {
+                        max_frames = std::min(total, static_cast<unsigned>(req));
+                    }
 
                     nlohmann::json frames = nlohmann::json::array();
                     for (unsigned i = 0; i < max_frames; ++i) {
@@ -1175,6 +1175,7 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
         breakpoints.mimeType = "application/json";
         server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
             breakpoints,
+            // NOLINTNEXTLINE(readability-function-cognitive-complexity)
             [target_ptr](mcp::ReadResourceRequestParams params) -> mcp::Task<mcp::ReadResourceResult> {
                 try {
                     if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {

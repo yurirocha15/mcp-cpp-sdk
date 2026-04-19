@@ -497,6 +497,9 @@ class Client {
      * result is sent back. Notifications invoke registered callbacks.
      */
     Task<void> read_loop() {
+        if (!transport_) {
+            co_return;
+        }
         try {
             for (;;) {
                 auto raw = co_await transport_->read_message();

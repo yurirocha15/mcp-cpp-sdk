@@ -7,6 +7,7 @@
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/beast/http.hpp>
+#include <mcp/transport/http_types.hpp>
 
 #include <cstddef>
 #include <functional>
@@ -56,9 +57,7 @@ class StreamableHttpSessionManager {
 
     /// Optional callback for handling non-MCP HTTP requests (e.g., health checks).
     /// Return std::nullopt to let the session manager handle the request normally.
-    using CustomRequestHandler =
-        std::function<std::optional<boost::beast::http::response<boost::beast::http::string_body>>(
-            const boost::beast::http::request<boost::beast::http::string_body>&)>;
+    using CustomRequestHandler = std::function<std::optional<StringResponse>(const StringRequest&)>;
 
     /**
      * @brief Construct a multi-session HTTP endpoint.

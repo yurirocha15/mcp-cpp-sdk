@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <iostream>
 #include <mcp/mcp.hpp>
 
 int main() {
@@ -18,4 +20,11 @@ int main() {
                         });
 
         server.run_stdio();
+    } catch (const std::exception& e) {
+        std::cerr << "Exception: " << e.what() << "\n";
+        return EXIT_FAILURE;
+    } catch (...) {
+        return EXIT_FAILURE;
     }
+    return EXIT_SUCCESS;
+}

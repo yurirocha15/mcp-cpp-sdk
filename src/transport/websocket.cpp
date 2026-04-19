@@ -45,7 +45,8 @@ WebSocketServerTransport::~WebSocketServerTransport() {
             close();
         }
     } catch (...) {
-        // Ignore exceptions in destructor
+        // Swallow exceptions in destructor to prevent std::terminate.
+        (void)0;
     }
 }
 
@@ -139,7 +140,8 @@ WebSocketClientTransport::~WebSocketClientTransport() {
             (void)socket.close(ec);
         }
     } catch (...) {
-        // Ignore exceptions in destructor
+        // Swallow exceptions in destructor to prevent std::terminate.
+        (void)0;
     }
 }
 

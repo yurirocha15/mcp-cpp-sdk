@@ -48,4 +48,9 @@ inline constexpr int g_http_timeout_seconds = 30;
  */
 inline constexpr int g_http_bad_request = 400;
 
+/**
+ * @brief Length of a session identifier.
+ */
+inline constexpr std::size_t g_session_id_length = 32;
+
 }  // namespace mcp::constants

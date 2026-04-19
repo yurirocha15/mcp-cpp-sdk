@@ -3,6 +3,7 @@
 #include <mcp/constants.hpp>
 #include <mcp/protocol.hpp>
 #include <mcp/transport.hpp>
+#include <mcp/transport/http_types.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <cstddef>
@@ -57,10 +58,9 @@ class EventStore {
      * @return A vector of (id, data) pairs for events after the given ID,
      *         or std::nullopt if the last_event_id has been evicted.
      */
-    [[nodiscard]] std::optional<std::vector<std::pair<std::string, std::string>>> events_after(
-        const std::string& last_event_id) const {
+    [[nodiscard]] std::optional<SseEventList> events_after(const std::string& last_event_id) const {
         if (events_.empty()) {
-            return std::vector<std::pair<std::string, std::string>>{};
+            return SseEventList{};
         }
 
         auto it = events_.begin();
@@ -77,7 +77,7 @@ class EventStore {
             return std::nullopt;
         }
 
-        std::vector<std::pair<std::string, std::string>> result;
+        SseEventList result;
         for (; it != events_.end(); ++it) {
             result.emplace_back(it->id, it->data);
         }
@@ -89,8 +89,8 @@ class EventStore {
      *
      * @return A vector of (id, data) pairs for all stored events.
      */
-    [[nodiscard]] std::vector<std::pair<std::string, std::string>> all_events() const {
-        std::vector<std::pair<std::string, std::string>> result;
+    [[nodiscard]] SseEventList all_events() const {
+        SseEventList result;
         result.reserve(events_.size());
         for (const auto& event : events_) {
             result.emplace_back(event.id, event.data);
