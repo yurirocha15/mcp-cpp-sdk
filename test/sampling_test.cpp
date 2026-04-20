@@ -6,6 +6,7 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -25,7 +26,6 @@ class ScriptedTransport final : public mcp::ITransport {
 
     mcp::Task<std::string> read_message() override {
         for (;;) {
-            co_await boost::asio::post(strand_, boost::asio::use_awaitable);
             if (closed_) {
                 throw std::runtime_error("transport closed");
             }
@@ -34,19 +34,22 @@ class ScriptedTransport final : public mcp::ITransport {
                 incoming_.pop();
                 co_return msg;
             }
-            timer_.expires_after(std::chrono::hours(24));
-            try {
-                co_await timer_.async_wait(boost::asio::use_awaitable);
-            } catch (const boost::system::system_error& err) {
-                if (err.code() != boost::asio::error::operation_aborted) {
-                    throw;
-                }
+
+            boost::system::error_code ec;
+            timer_.expires_after(std::chrono::seconds(30));  // Shorter safety timeout
+            co_await timer_.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+
+            if (closed_) {
+                throw std::runtime_error("transport closed");
             }
         }
     }
 
     mcp::Task<void> write_message(std::string_view message) override {
         co_await boost::asio::post(strand_, boost::asio::use_awaitable);
+        if (closed_) {
+            throw std::runtime_error("transport closed");
+        }
         written_.emplace_back(message);
         if (on_write_) {
             on_write_(written_.back());
@@ -54,14 +57,18 @@ class ScriptedTransport final : public mcp::ITransport {
     }
 
     void close() override {
-        closed_ = true;
-        timer_.cancel();
+        boost::asio::post(strand_, [this]() {
+            closed_ = true;
+            timer_.cancel();
+        });
     }
 
     void enqueue_message(std::string msg) {
         boost::asio::post(strand_, [this, m = std::move(msg)]() mutable {
-            incoming_.push(std::move(m));
-            timer_.cancel();
+            if (!closed_) {
+                incoming_.push(std::move(m));
+                timer_.cancel();
+            }
         });
     }
 
@@ -131,8 +138,15 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
 
             mcp::CallToolResult tool_result;
             mcp::TextContent result_content;
-            auto& content_block = std::get<mcp::SamplingMessageContentBlock>(sample_result.content);
-            result_content.text = std::get<mcp::TextContent>(content_block).text;
+            if (sample_result.content.index() != 0) {
+                throw std::runtime_error("Expected single content block");
+            }
+            auto& content_block = std::get<0>(sample_result.content);
+            if (content_block.index() != 0) {  // TextContent is index 0 in ContentBlock
+                throw std::runtime_error("Expected TextContent");
+            }
+            auto& result_content_block = std::get<mcp::TextContent>(content_block);
+            result_content.text = result_content_block.text;
             tool_result.content.push_back(std::move(result_content));
             co_return tool_result;
         });
@@ -160,7 +174,8 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
             response_json["result"] = std::move(result_val);
 
             raw_transport->enqueue_message(response_json.dump());
-        } else if (json_msg.contains("result") && !json_msg.contains("method")) {
+        } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
+                   !json_msg.contains("method")) {
             raw_transport->close();
         }
     });
@@ -253,7 +268,13 @@ TEST_F(SamplingTest, SamplingResponseWithToolUseContent) {
 
             auto sample_result = co_await ctx.sample_llm(std::move(sample_req));
 
-            auto& content_block = std::get<mcp::SamplingMessageContentBlock>(sample_result.content);
+            if (sample_result.content.index() != 0) {
+                throw std::runtime_error("Expected single content block");
+            }
+            auto& content_block = std::get<0>(sample_result.content);
+            if (content_block.index() != 5) {  // ToolUseContent is index 5 in ContentBlock
+                throw std::runtime_error("Expected ToolUseContent");
+            }
             auto& tool_use = std::get<mcp::ToolUseContent>(content_block);
             received_tool_name = tool_use.name;
             received_tool_id = tool_use.id;
@@ -287,7 +308,8 @@ TEST_F(SamplingTest, SamplingResponseWithToolUseContent) {
             response_json["result"] = std::move(result_val);
 
             raw_transport->enqueue_message(response_json.dump());
-        } else if (json_msg.contains("result") && !json_msg.contains("method")) {
+        } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
+                   !json_msg.contains("method")) {
             raw_transport->close();
         }
     });
@@ -345,7 +367,13 @@ TEST_F(SamplingTest, SamplingResponseWithToolResultContent) {
 
             auto sample_result = co_await ctx.sample_llm(std::move(sample_req));
 
-            auto& content_block = std::get<mcp::SamplingMessageContentBlock>(sample_result.content);
+            if (sample_result.content.index() != 0) {
+                throw std::runtime_error("Expected single content block");
+            }
+            auto& content_block = std::get<0>(sample_result.content);
+            if (content_block.index() != 6) {  // ToolResultContent is index 6 in ContentBlock
+                throw std::runtime_error("Expected ToolResultContent");
+            }
             auto& tool_result = std::get<mcp::ToolResultContent>(content_block);
             received_tool_use_id = tool_result.toolUseId;
             received_is_error = tool_result.isError.value_or(true);
@@ -383,7 +411,8 @@ TEST_F(SamplingTest, SamplingResponseWithToolResultContent) {
             response_json["result"] = std::move(result_val);
 
             raw_transport->enqueue_message(response_json.dump());
-        } else if (json_msg.contains("result") && !json_msg.contains("method")) {
+        } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
+                   !json_msg.contains("method")) {
             raw_transport->close();
         }
     });
@@ -506,7 +535,8 @@ TEST_F(SamplingTest, SampleLlmErrorResponseThrows) {
                                        {"message", "sampling denied"}};
 
             raw_transport->enqueue_message(error_response.dump());
-        } else if (json_msg.contains("result") && !json_msg.contains("method")) {
+        } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
+                   !json_msg.contains("method")) {
             raw_transport->close();
         }
     });
