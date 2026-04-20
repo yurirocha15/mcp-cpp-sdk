@@ -40,9 +40,11 @@ inline void trigger_shutdown_signal() {
  *
  * Closes the transport and starts a timer to force stop the io_context if it
  * doesn't terminate within the specified timeout.
+ *
+ * @return A shared pointer to the watchdog timer.
  */
 template <typename TransportPtr>
-void graceful_shutdown(boost::asio::io_context& io_ctx, TransportPtr transport,
+auto graceful_shutdown(boost::asio::io_context& io_ctx, TransportPtr transport,
                        std::chrono::milliseconds timeout =
                            std::chrono::milliseconds(mcp::constants::g_shutdown_timeout_ms)) {
     transport->close();
@@ -54,6 +56,7 @@ void graceful_shutdown(boost::asio::io_context& io_ctx, TransportPtr transport,
             io_ctx.stop();
         }
     });
+    return timer;
 }
 
 }  // namespace mcp::detail

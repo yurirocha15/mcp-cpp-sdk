@@ -10,6 +10,8 @@ from pathlib import Path
 
 def cpu_half():
     total = os.cpu_count() or 2
+    if os.environ.get("CI"):
+        return total
     return max(1, total // 2)
 
 
@@ -21,7 +23,7 @@ def run(*args, extra_env=None, **kwargs):
     subprocess.run(list(args), check=True, env=env, **kwargs)
 
 
-def conan_install(output_folder, build_type="Release"):
+def conan_install(output_folder, jobs, build_type="Release"):
     run(
         "conan", "install", ".",
         f"--output-folder={output_folder}",
@@ -29,6 +31,7 @@ def conan_install(output_folder, build_type="Release"):
         "-s", "compiler.cppstd=20",
         "-s", f"build_type={build_type}",
         "-c", "tools.cmake.cmaketoolchain:generator=Ninja",
+        "-c", f"tools.build:jobs={jobs}",
     )
 
 
@@ -139,7 +142,7 @@ def main():
     if args.coverage:
         extra_cmake.append("-DENABLE_COVERAGE=ON")
 
-    conan_install(build_dir, build_type)
+    conan_install(build_dir, args.jobs, build_type)
     cmake_configure(build_dir, build_type, *extra_cmake)
     cmake_build(build_dir, args.jobs)
     write_user_presets(build_dir)

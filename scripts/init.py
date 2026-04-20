@@ -323,6 +323,12 @@ def setup_conan_profile():
     """Set up Conan profile if it doesn't exist."""
     print("[*] Checking Conan profile...")
 
+    if detect_os() == 'windows' and 'CONAN_HOME' not in os.environ:
+        conan_home = "C:\\.c"
+        print(f"[*] Setting CONAN_HOME to {conan_home} to avoid long path issues")
+        os.makedirs(conan_home, exist_ok=True)
+        os.environ['CONAN_HOME'] = conan_home
+
     # Check if profile exists
     result = run_command(['conan', 'profile', 'show', 'default'],
                         check=False, capture_output=True)

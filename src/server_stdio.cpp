@@ -5,6 +5,7 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/signal_set.hpp>
+#include <boost/asio/steady_timer.hpp>
 
 #include <exception>
 #include <iostream>
@@ -21,12 +22,13 @@ void Server::run_stdio(std::istream& input, std::ostream& output) {
 
     auto transport = std::make_shared<StdioTransport>(executor, input, output);
 
+    std::shared_ptr<boost::asio::steady_timer> watchdog;
     boost::asio::signal_set signals(io_ctx, SIGINT, SIGTERM);
-    signals.async_wait([transport, &io_ctx](const boost::system::error_code& ec, int) {
+    signals.async_wait([transport, &io_ctx, &watchdog](const boost::system::error_code& ec, int) {
         if (ec == boost::asio::error::operation_aborted) {
             return;
         }
-        detail::graceful_shutdown(io_ctx, transport);
+        watchdog = detail::graceful_shutdown(io_ctx, transport);
     });
 
     std::exception_ptr ep;
@@ -36,6 +38,9 @@ void Server::run_stdio(std::istream& input, std::ostream& output) {
         [&](std::exception_ptr e) {
             ep = std::move(e);
             signals.cancel();
+            if (watchdog) {
+                watchdog->cancel();
+            }
         });
 
     io_ctx.run();

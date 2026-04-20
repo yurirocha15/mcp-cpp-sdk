@@ -6,6 +6,7 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/signal_set.hpp>
+#include <boost/asio/steady_timer.hpp>
 
 #include <cstdint>
 #include <exception>
@@ -21,12 +22,13 @@ void Server::run_http(const std::string& host, uint16_t port) {
 
     auto transport = std::make_shared<HttpServerTransport>(executor, host, port);
 
+    std::shared_ptr<boost::asio::steady_timer> watchdog;
     boost::asio::signal_set signals(io_ctx, SIGINT, SIGTERM);
-    signals.async_wait([transport, &io_ctx](const boost::system::error_code& ec, int) {
+    signals.async_wait([transport, &io_ctx, &watchdog](const boost::system::error_code& ec, int) {
         if (ec == boost::asio::error::operation_aborted) {
             return;
         }
-        detail::graceful_shutdown(io_ctx, transport);
+        watchdog = detail::graceful_shutdown(io_ctx, transport);
     });
 
     boost::asio::co_spawn(io_ctx, transport->listen(), boost::asio::detached);
@@ -38,6 +40,9 @@ void Server::run_http(const std::string& host, uint16_t port) {
         [&](std::exception_ptr e) {
             ep = std::move(e);
             signals.cancel();
+            if (watchdog) {
+                watchdog->cancel();
+            }
         });
 
     io_ctx.run();
