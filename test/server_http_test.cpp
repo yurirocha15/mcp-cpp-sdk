@@ -1,3 +1,4 @@
+#include "mcp/detail/signal.hpp"
 #include "mcp/server.hpp"
 
 #include <gtest/gtest.h>
@@ -17,11 +18,6 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
-
-#ifndef _WIN32
-#include <sys/types.h>
-#include <unistd.h>
-#endif
 
 namespace {
 
@@ -130,11 +126,7 @@ TEST_F(ServerHttpTest, RunHttpInitializesAndResponds) {
     beast::error_code ec;
     stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
 
-#ifdef _WIN32
-    std::raise(SIGINT);
-#else
-    ::kill(::getpid(), SIGTERM);
-#endif
+    mcp::detail::trigger_shutdown_signal();
     server_thread.join();
 
     EXPECT_EQ(init_json["id"], "1");
@@ -155,11 +147,7 @@ TEST_F(ServerHttpTest, RunHttpShutdownOnSignal) {
 
     std::thread signal_sender([] {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-#ifdef _WIN32
-        std::raise(SIGINT);
-#else
-        ::kill(::getpid(), SIGTERM);
-#endif
+        mcp::detail::trigger_shutdown_signal();
     });
 
     server_->run_http("127.0.0.1", port);

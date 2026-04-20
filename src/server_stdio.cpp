@@ -1,3 +1,4 @@
+#include <mcp/detail/signal.hpp>
 #include <mcp/server.hpp>
 #include <mcp/transport/stdio.hpp>
 
@@ -21,11 +22,11 @@ void Server::run_stdio(std::istream& input, std::ostream& output) {
     auto transport = std::make_shared<StdioTransport>(executor, input, output);
 
     boost::asio::signal_set signals(io_ctx, SIGINT, SIGTERM);
-    signals.async_wait([transport](const boost::system::error_code& ec, int) {
+    signals.async_wait([transport, &io_ctx](const boost::system::error_code& ec, int) {
         if (ec == boost::asio::error::operation_aborted) {
             return;
         }
-        transport->close();
+        detail::graceful_shutdown(io_ctx, transport);
     });
 
     std::exception_ptr ep;

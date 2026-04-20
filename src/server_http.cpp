@@ -1,3 +1,4 @@
+#include <mcp/detail/signal.hpp>
 #include <mcp/server.hpp>
 #include <mcp/transport/http_server.hpp>
 
@@ -21,11 +22,11 @@ void Server::run_http(const std::string& host, uint16_t port) {
     auto transport = std::make_shared<HttpServerTransport>(executor, host, port);
 
     boost::asio::signal_set signals(io_ctx, SIGINT, SIGTERM);
-    signals.async_wait([transport](const boost::system::error_code& ec, int) {
+    signals.async_wait([transport, &io_ctx](const boost::system::error_code& ec, int) {
         if (ec == boost::asio::error::operation_aborted) {
             return;
         }
-        transport->close();
+        detail::graceful_shutdown(io_ctx, transport);
     });
 
     boost::asio::co_spawn(io_ctx, transport->listen(), boost::asio::detached);

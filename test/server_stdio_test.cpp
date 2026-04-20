@@ -1,3 +1,4 @@
+#include "mcp/detail/signal.hpp"
 #include "mcp/server.hpp"
 
 #include <gtest/gtest.h>
@@ -8,11 +9,6 @@
 #include <sstream>
 #include <string>
 #include <thread>
-
-#ifndef _WIN32
-#include <sys/types.h>
-#include <unistd.h>
-#endif
 
 namespace {
 
@@ -195,15 +191,7 @@ TEST_F(ServerStdioTest, RunStdioSignalCausesShutdown) {
 
     std::thread signal_sender([&sbuf] {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        // Use kill(getpid()) instead of raise() so the signal is delivered to the
-        // whole process. On macOS, raise() only targets the calling thread, which
-        // means boost::asio::signal_set (running on the io_context thread) never
-        // sees it and the default handler fires instead, causing a crash.
-#ifdef _WIN32
-        std::raise(SIGINT);
-#else
-        ::kill(::getpid(), SIGTERM);
-#endif
+        mcp::detail::trigger_shutdown_signal();
         sbuf.close();
     });
 

@@ -53,4 +53,9 @@ inline constexpr int g_http_bad_request = 400;
  */
 inline constexpr std::size_t g_session_id_length = 32;
 
+/**
+ * @brief Default shutdown timeout in milliseconds.
+ */
+inline constexpr int g_shutdown_timeout_ms = 5000;
+
 }  // namespace mcp::constants
