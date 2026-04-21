@@ -26,6 +26,9 @@ class ScriptedTransport final : public mcp::ITransport {
 
     mcp::Task<std::string> read_message() override {
         for (;;) {
+            // Ensure we are on the strand to check state
+            co_await boost::asio::post(strand_, boost::asio::use_awaitable);
+
             if (closed_) {
                 throw std::runtime_error("transport closed");
             }
@@ -35,13 +38,13 @@ class ScriptedTransport final : public mcp::ITransport {
                 co_return msg;
             }
 
+            // Wait for a notification (timer cancel) or safety timeout.
+            // async_wait releases the strand while waiting.
+            timer_.expires_after(std::chrono::seconds(30));
             boost::system::error_code ec;
-            timer_.expires_after(std::chrono::seconds(30));  // Shorter safety timeout
             co_await timer_.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
 
-            if (closed_) {
-                throw std::runtime_error("transport closed");
-            }
+            // Loop back to re-check state on the strand.
         }
     }
 
@@ -64,10 +67,12 @@ class ScriptedTransport final : public mcp::ITransport {
     }
 
     void enqueue_message(std::string msg) {
+        // Cancel the timer synchronously before posting.
+        // to avoid deadlocks when the wait and the timer run on the same strand.
+        timer_.cancel();
         boost::asio::post(strand_, [this, m = std::move(msg)]() mutable {
             if (!closed_) {
                 incoming_.push(std::move(m));
-                timer_.cancel();
             }
         });
     }
@@ -154,28 +159,32 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
     int write_count = 0;
     std::vector<std::string> written_messages;
     raw_transport->set_on_write([&write_count, &written_messages, raw_transport](std::string_view msg) {
-        ++write_count;
-        written_messages.emplace_back(msg);
-        auto json_msg = nlohmann::json::parse(msg);
+        try {
+            ++write_count;
+            written_messages.emplace_back(msg);
+            auto json_msg = nlohmann::json::parse(msg);
 
-        if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
-            auto request_id = json_msg["id"].get<std::string>();
-            mcp::CreateMessageResult sample_result;
-            sample_result.role = mcp::Role::eAssistant;
-            mcp::TextContent tc;
-            tc.text = "LLM says hello";
-            sample_result.content = tc;
-            sample_result.model = "test-model";
+            if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
+                auto request_id = json_msg["id"].get<std::string>();
+                mcp::CreateMessageResult sample_result;
+                sample_result.role = mcp::Role::eAssistant;
+                mcp::TextContent tc;
+                tc.text = "LLM says hello";
+                sample_result.content = tc;
+                sample_result.model = "test-model";
 
-            nlohmann::json response_json;
-            response_json["jsonrpc"] = "2.0";
-            response_json["id"] = request_id;
-            nlohmann::json result_val = std::move(sample_result);
-            response_json["result"] = std::move(result_val);
+                nlohmann::json response_json;
+                response_json["jsonrpc"] = "2.0";
+                response_json["id"] = request_id;
+                nlohmann::json result_val = std::move(sample_result);
+                response_json["result"] = std::move(result_val);
 
-            raw_transport->enqueue_message(response_json.dump());
-        } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
-                   !json_msg.contains("method")) {
+                raw_transport->enqueue_message(response_json.dump());
+            } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
+                       !json_msg.contains("method")) {
+                raw_transport->close();
+            }
+        } catch (...) {
             raw_transport->close();
         }
     });
@@ -288,28 +297,32 @@ TEST_F(SamplingTest, SamplingResponseWithToolUseContent) {
         });
 
     raw_transport->set_on_write([raw_transport](std::string_view msg) {
-        auto json_msg = nlohmann::json::parse(msg);
+        try {
+            auto json_msg = nlohmann::json::parse(msg);
 
-        if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
-            auto request_id = json_msg["id"].get<std::string>();
-            mcp::CreateMessageResult sample_result;
-            sample_result.role = mcp::Role::eAssistant;
-            mcp::ToolUseContent tuc;
-            tuc.id = "call-123";
-            tuc.name = "get_weather";
-            tuc.input = {{"location", "Tokyo"}};
-            sample_result.content = tuc;
-            sample_result.model = "test-model";
+            if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
+                auto request_id = json_msg["id"].get<std::string>();
+                mcp::CreateMessageResult sample_result;
+                sample_result.role = mcp::Role::eAssistant;
+                mcp::ToolUseContent tuc;
+                tuc.id = "call-123";
+                tuc.name = "get_weather";
+                tuc.input = {{"location", "Tokyo"}};
+                sample_result.content = tuc;
+                sample_result.model = "test-model";
 
-            nlohmann::json response_json;
-            response_json["jsonrpc"] = "2.0";
-            response_json["id"] = request_id;
-            nlohmann::json result_val = std::move(sample_result);
-            response_json["result"] = std::move(result_val);
+                nlohmann::json response_json;
+                response_json["jsonrpc"] = "2.0";
+                response_json["id"] = request_id;
+                nlohmann::json result_val = std::move(sample_result);
+                response_json["result"] = std::move(result_val);
 
-            raw_transport->enqueue_message(response_json.dump());
-        } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
-                   !json_msg.contains("method")) {
+                raw_transport->enqueue_message(response_json.dump());
+            } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
+                       !json_msg.contains("method")) {
+                raw_transport->close();
+            }
+        } catch (...) {
             raw_transport->close();
         }
     });
@@ -389,30 +402,34 @@ TEST_F(SamplingTest, SamplingResponseWithToolResultContent) {
         });
 
     raw_transport->set_on_write([raw_transport](std::string_view msg) {
-        auto json_msg = nlohmann::json::parse(msg);
+        try {
+            auto json_msg = nlohmann::json::parse(msg);
 
-        if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
-            auto request_id = json_msg["id"].get<std::string>();
-            mcp::CreateMessageResult sample_result;
-            sample_result.role = mcp::Role::eAssistant;
-            mcp::ToolResultContent trc;
-            trc.toolUseId = "call-456";
-            mcp::TextContent inner_tc;
-            inner_tc.text = "Weather in Tokyo: 22°C";
-            trc.content.push_back(nlohmann::json(inner_tc));
-            trc.isError = false;
-            sample_result.content = trc;
-            sample_result.model = "test-model";
+            if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
+                auto request_id = json_msg["id"].get<std::string>();
+                mcp::CreateMessageResult sample_result;
+                sample_result.role = mcp::Role::eAssistant;
+                mcp::ToolResultContent trc;
+                trc.toolUseId = "call-456";
+                mcp::TextContent inner_tc;
+                inner_tc.text = "Weather in Tokyo: 22 degrees";
+                trc.content.push_back(nlohmann::json(inner_tc));
+                trc.isError = false;
+                sample_result.content = trc;
+                sample_result.model = "test-model";
 
-            nlohmann::json response_json;
-            response_json["jsonrpc"] = "2.0";
-            response_json["id"] = request_id;
-            nlohmann::json result_val = std::move(sample_result);
-            response_json["result"] = std::move(result_val);
+                nlohmann::json response_json;
+                response_json["jsonrpc"] = "2.0";
+                response_json["id"] = request_id;
+                nlohmann::json result_val = std::move(sample_result);
+                response_json["result"] = std::move(result_val);
 
-            raw_transport->enqueue_message(response_json.dump());
-        } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
-                   !json_msg.contains("method")) {
+                raw_transport->enqueue_message(response_json.dump());
+            } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
+                       !json_msg.contains("method")) {
+                raw_transport->close();
+            }
+        } catch (...) {
             raw_transport->close();
         }
     });
@@ -433,7 +450,7 @@ TEST_F(SamplingTest, SamplingResponseWithToolResultContent) {
 
     EXPECT_EQ(received_tool_use_id, "call-456");
     EXPECT_FALSE(received_is_error);
-    EXPECT_EQ(received_content_text, "Weather in Tokyo: 22°C");
+    EXPECT_EQ(received_content_text, "Weather in Tokyo: 22 degrees");
 }
 
 TEST_F(SamplingTest, ToolUseContentRoundtripSerialization) {
@@ -522,21 +539,25 @@ TEST_F(SamplingTest, SampleLlmErrorResponseThrows) {
 
     std::vector<std::string> written_messages;
     raw_transport->set_on_write([&written_messages, raw_transport](std::string_view msg) {
-        written_messages.emplace_back(msg);
-        auto json_msg = nlohmann::json::parse(msg);
+        try {
+            written_messages.emplace_back(msg);
+            auto json_msg = nlohmann::json::parse(msg);
 
-        if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
-            auto request_id = json_msg["id"].get<std::string>();
+            if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
+                auto request_id = json_msg["id"].get<std::string>();
 
-            nlohmann::json error_response;
-            error_response["jsonrpc"] = "2.0";
-            error_response["id"] = request_id;
-            error_response["error"] = {{"code", mcp::g_INVALID_REQUEST},
-                                       {"message", "sampling denied"}};
+                nlohmann::json error_response;
+                error_response["jsonrpc"] = "2.0";
+                error_response["id"] = request_id;
+                error_response["error"] = {{"code", mcp::g_INVALID_REQUEST},
+                                           {"message", "sampling denied"}};
 
-            raw_transport->enqueue_message(error_response.dump());
-        } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
-                   !json_msg.contains("method")) {
+                raw_transport->enqueue_message(error_response.dump());
+            } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
+                       !json_msg.contains("method")) {
+                raw_transport->close();
+            }
+        } catch (...) {
             raw_transport->close();
         }
     });
