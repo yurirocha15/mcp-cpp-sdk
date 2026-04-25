@@ -35,7 +35,7 @@ class ScriptedTransport final : public mcp::ITransport {
                 co_return msg;
             }
 
-            timer_.expires_after(std::chrono::milliseconds(10));
+            timer_.expires_after(std::chrono::milliseconds(0));
             boost::system::error_code ec;
             co_await timer_.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
         }
