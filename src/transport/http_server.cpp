@@ -1,4 +1,5 @@
 #include <mcp/transport/http_server.hpp>
+#include <mcp/transport/http_types.hpp>
 
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
@@ -75,22 +76,22 @@ struct HttpServerTransport::Impl {
         }
 
         const auto endpoint = boost::asio::ip::tcp::endpoint(bind_address, this->port);
-        acceptor.open(endpoint.protocol(), ec);
+        (void)acceptor.open(endpoint.protocol(), ec);
         if (ec) {
             throw std::runtime_error("Failed to open HTTP acceptor: " + ec.message());
         }
 
-        acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
+        (void)acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
         if (ec) {
             throw std::runtime_error("Failed to set reuse_address: " + ec.message());
         }
 
-        acceptor.bind(endpoint, ec);
+        (void)acceptor.bind(endpoint, ec);
         if (ec) {
             throw std::runtime_error("Failed to bind HTTP acceptor: " + ec.message());
         }
 
-        acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
+        (void)acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
         if (ec) {
             throw std::runtime_error("Failed to listen on HTTP acceptor: " + ec.message());
         }
@@ -105,14 +106,14 @@ struct HttpServerTransport::Impl {
     }
 
     static std::string generate_session_id() {
-        static constexpr char hex_digits[] = "0123456789abcdef";
         std::random_device random_device;
         std::mt19937 generator(random_device());
-        std::uniform_int_distribution<int> distribution(0, 15);
+        std::uniform_int_distribution<std::size_t> distribution(0, constants::g_hex_digits.size() - 1);
 
-        std::string session_identifier(32, '0');
-        for (char& current_char : session_identifier) {
-            current_char = hex_digits[distribution(generator)];
+        std::string session_identifier;
+        session_identifier.reserve(constants::g_session_id_length);
+        for (std::size_t i = 0; i < constants::g_session_id_length; i++) {
+            session_identifier.push_back(constants::g_hex_digits[distribution(generator)]);
         }
         return session_identifier;
     }
@@ -124,7 +125,7 @@ struct HttpServerTransport::Impl {
         return allowed_origins.contains(std::string(origin_value));
     }
 
-    void enqueue_incoming_message(std::string message_payload) {
+    void enqueue_incoming_message(std::string message_payload) const {
         auto shared_state = state;
         boost::asio::post(shared_state->timer.get_executor(),
                           [shared_state, payload = std::move(message_payload)]() mutable {
@@ -133,14 +134,14 @@ struct HttpServerTransport::Impl {
                           });
     }
 
-    static void set_common_headers(http::response<http::string_body>& response, bool keep_alive) {
+    static void set_common_headers(StringResponse& response, bool keep_alive) {
         response.set(http::field::server, "mcp-cpp-sdk");
         response.keep_alive(keep_alive);
     }
 
-    static http::response<http::string_body> make_json_response(
-        const http::request<http::string_body>& request, http::status status_code, std::string body) {
-        http::response<http::string_body> response{status_code, request.version()};
+    static StringResponse make_json_response(const StringRequest& request, http::status status_code,
+                                             std::string body) {
+        StringResponse response{status_code, request.version()};
         set_common_headers(response, request.keep_alive());
         response.set(http::field::content_type, "application/json");
         response.body() = std::move(body);
@@ -148,25 +149,23 @@ struct HttpServerTransport::Impl {
         return response;
     }
 
-    static http::response<http::string_body> make_error_response(
-        const http::request<http::string_body>& request, http::status status_code,
-        std::string_view error_message) {
+    static StringResponse make_error_response(const StringRequest& request, http::status status_code,
+                                              std::string_view error_message) {
         nlohmann::json error_body = {{"error", std::string(error_message)}};
         return make_json_response(request, status_code, error_body.dump());
     }
 
-    static http::response<http::string_body> make_empty_json_response(
-        const http::request<http::string_body>& request, http::status status_code) {
+    static StringResponse make_empty_json_response(const StringRequest& request,
+                                                   http::status status_code) {
         auto response = make_json_response(request, status_code, "");
         response.content_length(0);
         return response;
     }
 
-    static http::response<http::string_body> make_sse_response(
-        const http::request<http::string_body>& request, const std::string& event_id,
-        const std::string& data) {
+    static StringResponse make_sse_response(const StringRequest& request, const std::string& event_id,
+                                            const std::string& data) {
         std::string sse_body = "id: " + event_id + "\ndata: " + data + "\n\n";
-        http::response<http::string_body> response{http::status::ok, request.version()};
+        StringResponse response{http::status::ok, request.version()};
         set_common_headers(response, request.keep_alive());
         response.set(http::field::content_type, "text/event-stream");
         response.set(http::field::cache_control, "no-cache");
@@ -175,14 +174,17 @@ struct HttpServerTransport::Impl {
         return response;
     }
 
-    static http::response<http::string_body> make_sse_replay_response(
-        const http::request<http::string_body>& request,
-        const std::vector<std::pair<std::string, std::string>>& events) {
+    static StringResponse make_sse_replay_response(const StringRequest& request,
+                                                   const SseEventList& events) {
         std::string sse_body;
         for (const auto& [id, data] : events) {
-            sse_body += "id: " + id + "\ndata: " + data + "\n\n";
+            sse_body += "id: ";
+            sse_body += id;
+            sse_body += "\ndata: ";
+            sse_body += data;
+            sse_body += "\n\n";
         }
-        http::response<http::string_body> response{http::status::ok, request.version()};
+        StringResponse response{http::status::ok, request.version()};
         set_common_headers(response, request.keep_alive());
         response.set(http::field::content_type, "text/event-stream");
         response.set(http::field::cache_control, "no-cache");
@@ -191,7 +193,7 @@ struct HttpServerTransport::Impl {
         return response;
     }
 
-    Task<SessionCheckResult> validate_post_session(const http::request<http::string_body>& request) {
+    Task<SessionCheckResult> validate_post_session(const StringRequest& request) {
         co_await boost::asio::post(strand, boost::asio::use_awaitable);
 
         const auto session_header_it = request.find("MCP-Session-Id");
@@ -218,7 +220,7 @@ struct HttpServerTransport::Impl {
         co_return SessionCheckResult{true, {}};
     }
 
-    Task<SessionCheckResult> validate_delete_session(const http::request<http::string_body>& request) {
+    Task<SessionCheckResult> validate_delete_session(const StringRequest& request) {
         co_await boost::asio::post(strand, boost::asio::use_awaitable);
 
         if (!session_id.has_value()) {
@@ -286,19 +288,17 @@ struct HttpServerTransport::Impl {
         co_return;
     }
 
-    std::optional<http::response<http::string_body>> check_protocol_version(
-        const http::request<http::string_body>& request) {
+    static std::optional<StringResponse> check_protocol_version(const StringRequest& request) {
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         if (protocol_header_it == request.end() ||
-            protocol_header_it->value() != LATEST_PROTOCOL_VERSION) {
+            protocol_header_it->value() != g_LATEST_PROTOCOL_VERSION) {
             return make_error_response(request, http::status::bad_request,
                                        "Invalid MCP-Protocol-Version header");
         }
         return std::nullopt;
     }
 
-    std::optional<http::response<http::string_body>> check_origin(
-        const http::request<http::string_body>& request) {
+    std::optional<StringResponse> check_origin(const StringRequest& request) const {
         const auto origin_header_it = request.find(http::field::origin);
         if (origin_header_it != request.end() && !is_origin_allowed(origin_header_it->value())) {
             return make_error_response(request, http::status::forbidden, "Origin not allowed");
@@ -306,8 +306,7 @@ struct HttpServerTransport::Impl {
         return std::nullopt;
     }
 
-    Task<http::response<http::string_body>> handle_post(
-        const http::request<http::string_body>& request) {
+    Task<StringResponse> handle_post(const StringRequest& request) {
         if (auto error = check_protocol_version(request)) {
             co_return std::move(*error);
         }
@@ -383,16 +382,14 @@ struct HttpServerTransport::Impl {
             co_return response;
         }
 
-        auto response =
-            make_json_response(request, http::status::ok, std::move(*pending_result.response_body));
+        auto response = make_json_response(request, http::status::ok, *pending_result.response_body);
         if (pending_result.session_header.has_value()) {
             response.set("MCP-Session-Id", *pending_result.session_header);
         }
         co_return response;
     }
 
-    Task<http::response<http::string_body>> handle_delete(
-        const http::request<http::string_body>& request) {
+    Task<StringResponse> handle_delete(const StringRequest& request) {
         if (auto error = check_protocol_version(request)) {
             co_return std::move(*error);
         }
@@ -410,8 +407,7 @@ struct HttpServerTransport::Impl {
         co_return make_json_response(request, http::status::ok, "{}");
     }
 
-    Task<http::response<http::string_body>> handle_get(
-        const http::request<http::string_body>& request) {
+    Task<StringResponse> handle_get(const StringRequest& request) {
         if (auto error = check_protocol_version(request)) {
             co_return std::move(*error);
         }
@@ -442,8 +438,7 @@ struct HttpServerTransport::Impl {
         co_return make_empty_json_response(request, http::status::ok);
     }
 
-    Task<http::response<http::string_body>> handle_request(
-        const http::request<http::string_body>& request) {
+    Task<StringResponse> handle_request(const StringRequest& request) {
         if (request.method() == http::verb::post) {
             co_return co_await handle_post(request);
         }
@@ -465,7 +460,7 @@ struct HttpServerTransport::Impl {
         beast::flat_buffer request_buffer;
 
         for (;;) {
-            http::request<http::string_body> request;
+            StringRequest request;
             try {
                 co_await http::async_read(stream, request_buffer, request, boost::asio::use_awaitable);
             } catch (const boost::system::system_error& err) {
@@ -487,7 +482,7 @@ struct HttpServerTransport::Impl {
         }
 
         boost::system::error_code shutdown_error;
-        stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
+        (void)stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
     }
 
     std::string host;
@@ -510,7 +505,14 @@ HttpServerTransport::HttpServerTransport(const boost::asio::any_io_executor& exe
                                          unsigned short port, std::size_t event_store_capacity)
     : impl_(std::make_unique<Impl>(executor, std::move(host), port, event_store_capacity)) {}
 
-HttpServerTransport::~HttpServerTransport() { close(); }
+HttpServerTransport::~HttpServerTransport() {
+    try {
+        close();
+    } catch (...) {
+        // Ignore exceptions in destructor
+        (void)0;
+    }
+}
 
 const EventStore& HttpServerTransport::event_store() const { return impl_->event_store; }
 
@@ -586,8 +588,8 @@ void HttpServerTransport::close() {
 
     boost::asio::post(impl_->strand, [this]() {
         boost::system::error_code ec;
-        impl_->acceptor.cancel(ec);
-        impl_->acceptor.close(ec);
+        (void)impl_->acceptor.cancel(ec);
+        (void)impl_->acceptor.close(ec);
 
         for (auto& pending_entry : impl_->pending_responses) {
             pending_entry.second.ready_timer->cancel();
@@ -620,7 +622,7 @@ Task<void> HttpServerTransport::listen() {
         }
 
         boost::asio::co_spawn(impl_->strand, impl_->handle_connection(std::move(socket)),
-                              [](std::exception_ptr) {
+                              [](const std::exception_ptr&) {
                                   // Connection errors (EOF, client disconnect) are normal;
                                   // handled per-connection, not propagated to the accept loop.
                               });

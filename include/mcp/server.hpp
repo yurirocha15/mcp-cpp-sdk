@@ -398,7 +398,7 @@ class Server {
     /**
      * @brief Dispatches an incoming JSON-RPC request to the appropriate registered handler.
      *
-     * @details Exceptions thrown during dispatch are caught and returned as `INTERNAL_ERROR`
+     * @details Exceptions thrown during dispatch are caught and returned as `g_INTERNAL_ERROR`
      * (-32603) JSON-RPC error responses. The exception's `what()` message becomes the error data.
      *
      * @param json_msg The raw JSON-RPC request object.

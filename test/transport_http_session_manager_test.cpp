@@ -50,7 +50,7 @@ mcp::Task<RawResponse> raw_request(const asio::any_io_executor& executor, unsign
     if (!protocol_version.empty()) {
         request.set("MCP-Protocol-Version", protocol_version);
     } else {
-        request.set("MCP-Protocol-Version", std::string(mcp::LATEST_PROTOCOL_VERSION));
+        request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
     }
 
     if (!session_id.empty()) {
@@ -116,7 +116,7 @@ mcp::Task<RawResponse> do_initialize(const asio::any_io_executor& executor, unsi
     json init_request = {{"jsonrpc", "2.0"},
                          {"method", "initialize"},
                          {"params",
-                          {{"protocolVersion", mcp::LATEST_PROTOCOL_VERSION},
+                          {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
                            {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
                            {"capabilities", json::object()}}},
                          {"id", id}};
@@ -163,7 +163,7 @@ TEST_F(SessionManagerTest, InitializeCreatesSession) {
 
     auto body = json::parse(init_response.body);
     EXPECT_TRUE(body.contains("result"));
-    EXPECT_EQ(body["result"]["protocolVersion"], std::string(mcp::LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(body["result"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
 }
 
 // ---------------------------------------------------------------------------

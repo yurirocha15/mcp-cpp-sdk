@@ -1,3 +1,4 @@
+#include "mcp/detail/signal.hpp"
 #include "mcp/server.hpp"
 
 #include <gtest/gtest.h>
@@ -18,11 +19,6 @@
 #include <string>
 #include <thread>
 
-#ifndef _WIN32
-#include <sys/types.h>
-#include <unistd.h>
-#endif
-
 namespace {
 
 namespace asio = boost::asio;
@@ -34,7 +30,7 @@ nlohmann::json make_initialize_request(std::string_view id) {
             {"id", id},
             {"method", "initialize"},
             {"params",
-             {{"protocolVersion", mcp::LATEST_PROTOCOL_VERSION},
+             {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
               {"clientInfo", {{"name", "test-client"}, {"version", "0.1"}}},
               {"capabilities", nlohmann::json::object()}}}};
 }
@@ -61,7 +57,7 @@ http::response<http::string_body> send_json_rpc(beast::tcp_stream& stream,
     http::request<http::string_body> req{http::verb::post, "/mcp", 11};
     req.set(http::field::host, "127.0.0.1");
     req.set(http::field::content_type, "application/json");
-    req.set("MCP-Protocol-Version", mcp::LATEST_PROTOCOL_VERSION);
+    req.set("MCP-Protocol-Version", mcp::g_LATEST_PROTOCOL_VERSION);
     if (!session_id.empty()) {
         req.set("MCP-Session-Id", session_id);
     }
@@ -130,11 +126,7 @@ TEST_F(ServerHttpTest, RunHttpInitializesAndResponds) {
     beast::error_code ec;
     stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
 
-#ifdef _WIN32
-    std::raise(SIGINT);
-#else
-    ::kill(::getpid(), SIGTERM);
-#endif
+    mcp::detail::trigger_shutdown_signal();
     server_thread.join();
 
     EXPECT_EQ(init_json["id"], "1");
@@ -155,11 +147,7 @@ TEST_F(ServerHttpTest, RunHttpShutdownOnSignal) {
 
     std::thread signal_sender([] {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-#ifdef _WIN32
-        std::raise(SIGINT);
-#else
-        ::kill(::getpid(), SIGTERM);
-#endif
+        mcp::detail::trigger_shutdown_signal();
     });
 
     server_->run_http("127.0.0.1", port);

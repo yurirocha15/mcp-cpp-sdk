@@ -88,7 +88,7 @@ nlohmann::json make_initialize_request(std::string_view id) {
             {"id", id},
             {"method", "initialize"},
             {"params",
-             {{"protocolVersion", mcp::LATEST_PROTOCOL_VERSION},
+             {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
               {"clientInfo", {{"name", "test-client"}, {"version", "0.1"}}},
               {"capabilities", nlohmann::json::object()}}}};
 }
@@ -140,7 +140,7 @@ TEST_F(ServerCoreTest, InitializeReturnsServerCapabilities) {
     EXPECT_EQ(response["jsonrpc"], "2.0");
 
     auto result = response["result"];
-    EXPECT_EQ(result["protocolVersion"], std::string(mcp::LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(result["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
     EXPECT_EQ(result["serverInfo"]["name"], "test-server");
     EXPECT_EQ(result["serverInfo"]["version"], "1.0");
     ASSERT_TRUE(result["capabilities"].contains("tools"));
@@ -218,7 +218,7 @@ TEST_F(ServerCoreTest, UnknownMethodReturnsError) {
 
     ASSERT_TRUE(response.contains("error"));
     EXPECT_EQ(response["id"], "42");
-    EXPECT_EQ(response["error"]["code"], mcp::METHOD_NOT_FOUND);
+    EXPECT_EQ(response["error"]["code"], mcp::g_METHOD_NOT_FOUND);
     EXPECT_TRUE(response["error"]["message"].get<std::string>().find("nonexistent/method") !=
                 std::string::npos);
 }

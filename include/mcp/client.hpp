@@ -85,6 +85,7 @@ class Client {
      * @param capabilities The capabilities this client supports.
      * @return A task that resolves to the server's InitializeResult.
      */
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     Task<InitializeResult> connect(std::string_view name, std::string_view version) {
         Implementation info;
         info.name = std::string(name);
@@ -97,7 +98,7 @@ class Client {
         // [gcc11-sso: not-a-coroutine] DO NOT add co_await / co_return here.
         boost::asio::co_spawn(strand_, read_loop(), boost::asio::detached);
         InitializeRequest init_req;
-        init_req.protocolVersion = std::string(LATEST_PROTOCOL_VERSION);
+        init_req.protocolVersion = std::string(g_LATEST_PROTOCOL_VERSION);
         init_req.clientInfo = client_info;
         init_req.capabilities = capabilities;
         return connect_impl(nlohmann::json(std::move(init_req)));
@@ -482,7 +483,7 @@ class Client {
     // [gcc11-sso: string_view] nlohmann::json is heap-allocated; string_view is trivially copyable.
     template <typename Result>
     Task<Result> call_and_parse(std::string_view method, std::optional<nlohmann::json> params) {
-        auto result_json = co_await send_request(method, std::move(params));
+        auto result_json = co_await send_request(method, params);
         co_return result_json.template get<Result>();
     }
 
@@ -496,6 +497,9 @@ class Client {
      * result is sent back. Notifications invoke registered callbacks.
      */
     Task<void> read_loop() {
+        if (!transport_) {
+            co_return;
+        }
         try {
             for (;;) {
                 auto raw = co_await transport_->read_message();
@@ -513,8 +517,9 @@ class Client {
                     dispatch_notification(json_msg);
                 }
             }
-        } catch (const std::exception&) {
+        } catch (const std::exception& e) {
             // Transport closed or error occurred, terminate loop.
+            (void)e;
         }
     }
 
@@ -530,7 +535,7 @@ class Client {
         if (json_msg.contains("error")) {
             it->second.error = json_msg.at("error").get<Error>();
         } else if (json_msg.contains("result")) {
-            it->second.result = std::move(json_msg.at("result"));
+            it->second.result = json_msg.at("result");
         }
 
         it->second.timer->cancel();
@@ -546,7 +551,7 @@ class Client {
 
                 auto it = pending_requests_.find(id_str);
                 if (it != pending_requests_.end()) {
-                    it->second.error = Error{-32800, "Request cancelled by server"};
+                    it->second.error = Error{g_REQUEST_CANCELLED, "Request cancelled by server"};
                     it->second.timer->cancel();
                 }
             }
@@ -565,9 +570,9 @@ class Client {
      *
      * @details Looks up the method in request_handlers_ and invokes the registered
      * handler. Exceptions from handlers are caught and returned as JSON-RPC error
-     * responses with code -32603 (INTERNAL_ERROR). The @c ping method is handled
+     * responses with code -32603 (g_INTERNAL_ERROR). The @c ping method is handled
      * automatically and returns an empty result object. Unknown methods return a
-     * METHOD_NOT_FOUND error response. Runs on the client's asio strand
+     * g_METHOD_NOT_FOUND error response. Runs on the client's asio strand
      * (co_spawned from the read loop).
      *
      * @param json_msg The raw JSON-RPC request with @c id, @c method, and optional @c params.
@@ -589,8 +594,9 @@ class Client {
             }
             // Re-extract id just-in-time AFTER suspension — never stored in frame as RequestId.
             if (!error_payload.is_null()) {
-                co_await transport_->write_message(make_error_wire(
-                    json_msg.at("id").get<RequestId>(), -32603, error_payload.get<std::string>()));
+                co_await transport_->write_message(make_error_wire(json_msg.at("id").get<RequestId>(),
+                                                                   g_INTERNAL_ERROR,
+                                                                   error_payload.get<std::string>()));
             } else {
                 co_await transport_->write_message(
                     make_result_wire(json_msg.at("id").get<RequestId>(), std::move(result)));
@@ -600,7 +606,7 @@ class Client {
                 make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object()));
         } else {
             co_await transport_->write_message(
-                make_error_wire(json_msg.at("id").get<RequestId>(), METHOD_NOT_FOUND,
+                make_error_wire(json_msg.at("id").get<RequestId>(), g_METHOD_NOT_FOUND,
                                 "Method not found: " + std::string(method)));
         }
     }

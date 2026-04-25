@@ -13,44 +13,54 @@ namespace mcp {
 // MCP Protocol Constants
 
 /**
- * @brief JSON-RPC error code for parse errors.
+ * @brief JSON-RPC error code for unauthorized request.
  */
-inline constexpr int PARSE_ERROR = -32700;
+inline constexpr int g_UNAUTHORIZED = -32000;
+
+/**
+ * @brief JSON-RPC error code for request timeout.
+ */
+inline constexpr int g_REQUEST_TIMEOUT = -32001;
 
 /**
  * @brief JSON-RPC error code for invalid requests.
  */
-inline constexpr int INVALID_REQUEST = -32600;
+inline constexpr int g_INVALID_REQUEST = -32600;
 
 /**
  * @brief JSON-RPC error code for method not found.
  */
-inline constexpr int METHOD_NOT_FOUND = -32601;
+inline constexpr int g_METHOD_NOT_FOUND = -32601;
 
 /**
  * @brief JSON-RPC error code for invalid parameters.
  */
-inline constexpr int INVALID_PARAMS = -32602;
+inline constexpr int g_INVALID_PARAMS = -32602;
 
 /**
  * @brief JSON-RPC error code for internal errors.
  */
-inline constexpr int INTERNAL_ERROR = -32603;
+inline constexpr int g_INTERNAL_ERROR = -32603;
 
 /**
- * @brief Error code indicating URL elicitation is required.
+ * @brief JSON-RPC error code for parse errors.
  */
-inline constexpr int URL_ELICITATION_REQUIRED_ERROR = -32042;
+inline constexpr int g_PARSE_ERROR = -32700;
+
+/**
+ * @brief JSON-RPC error code for request cancelled.
+ */
+inline constexpr int g_REQUEST_CANCELLED = -32800;
 
 /**
  * @brief The sender or recipient of messages and data in a conversation.
  */
 enum class Role : std::uint8_t {
-    User,      ///< The user.
-    Assistant  ///< The assistant (LLM).
+    eUser,      ///< The user.
+    eAssistant  ///< The assistant (LLM).
 };
 
-NLOHMANN_JSON_SERIALIZE_ENUM(Role, {{Role::User, "user"}, {Role::Assistant, "assistant"}})
+NLOHMANN_JSON_SERIALIZE_ENUM(Role, {{Role::eUser, "user"}, {Role::eAssistant, "assistant"}})
 
 // JSON-RPC Base Types
 
@@ -142,18 +152,18 @@ inline void from_json(const nlohmann::json& json_obj, Error& error) {
  * @brief The status of a task.
  */
 enum class TaskStatus : std::uint8_t {
-    Cancelled,      ///< Task has been cancelled.
-    Completed,      ///< Task has completed successfully.
-    Failed,         ///< Task has failed.
-    InputRequired,  ///< Task requires additional input.
-    Working         ///< Task is currently in progress.
+    eCancelled,      ///< Task has been cancelled.
+    eCompleted,      ///< Task has completed successfully.
+    eFailed,         ///< Task has failed.
+    eInputRequired,  ///< Task requires additional input.
+    eWorking         ///< Task is currently in progress.
 };
 
-NLOHMANN_JSON_SERIALIZE_ENUM(TaskStatus, {{TaskStatus::Cancelled, "cancelled"},
-                                          {TaskStatus::Completed, "completed"},
-                                          {TaskStatus::Failed, "failed"},
-                                          {TaskStatus::InputRequired, "input_required"},
-                                          {TaskStatus::Working, "working"}})
+NLOHMANN_JSON_SERIALIZE_ENUM(TaskStatus, {{TaskStatus::eCancelled, "cancelled"},
+                                          {TaskStatus::eCompleted, "completed"},
+                                          {TaskStatus::eFailed, "failed"},
+                                          {TaskStatus::eInputRequired, "input_required"},
+                                          {TaskStatus::eWorking, "working"}})
 
 /**
  * @brief Metadata about a related task.

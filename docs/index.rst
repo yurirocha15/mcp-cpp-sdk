@@ -29,11 +29,24 @@ Quick Links
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
+   :caption: Getting Started
 
+   Overview <self>
    getting-started
-   api/index
    examples
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Core Documentation
+
+   concepts/index
+   integrations/client-apps
+   api/index
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Project Info
+
    architecture
    contributing
 
