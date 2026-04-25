@@ -22,13 +22,10 @@ namespace {
 class ScriptedTransport final : public mcp::ITransport {
    public:
     explicit ScriptedTransport(const boost::asio::any_io_executor& executor)
-        : strand_(boost::asio::make_strand(executor)), timer_(strand_) {}
+        : strand_(boost::asio::make_strand(executor)), timer_(executor) {}
 
     mcp::Task<std::string> read_message() override {
         for (;;) {
-            // Ensure we are on the strand to check state
-            co_await boost::asio::post(strand_, boost::asio::use_awaitable);
-
             if (closed_) {
                 throw std::runtime_error("transport closed");
             }
@@ -38,13 +35,9 @@ class ScriptedTransport final : public mcp::ITransport {
                 co_return msg;
             }
 
-            // Wait for a notification (timer cancel) or safety timeout.
-            // async_wait releases the strand while waiting.
-            timer_.expires_after(std::chrono::seconds(30));
+            timer_.expires_after(std::chrono::milliseconds(10));
             boost::system::error_code ec;
             co_await timer_.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
-
-            // Loop back to re-check state on the strand.
         }
     }
 
@@ -59,22 +52,12 @@ class ScriptedTransport final : public mcp::ITransport {
         }
     }
 
-    void close() override {
-        boost::asio::post(strand_, [this]() {
-            closed_ = true;
-            timer_.cancel();
-        });
-    }
+    void close() override { closed_ = true; }
 
     void enqueue_message(std::string msg) {
-        // Cancel the timer synchronously before posting.
-        // to avoid deadlocks when the wait and the timer run on the same strand.
-        timer_.cancel();
-        boost::asio::post(strand_, [this, m = std::move(msg)]() mutable {
-            if (!closed_) {
-                incoming_.push(std::move(m));
-            }
-        });
+        if (!closed_) {
+            incoming_.push(std::move(msg));
+        }
     }
 
     void set_on_write(std::function<void(std::string_view)> callback) {
