@@ -12,4 +12,8 @@ how these primitives are implemented in the `mcp-cpp-sdk`.
    resources
    prompts
    transports
+   middleware
+   oauth
    context
+   completions
+   elicitation
