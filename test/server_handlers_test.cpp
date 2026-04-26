@@ -1,3 +1,5 @@
+#include "test_utils.hpp"
+
 #include "mcp/server.hpp"
 
 #include <gtest/gtest.h>
@@ -5,81 +7,10 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
-#include <boost/asio/post.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/strand.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <functional>
 #include <memory>
-#include <queue>
 #include <string>
 #include <string_view>
-#include <vector>
-
-namespace {
-
-class ScriptedTransport final : public mcp::ITransport {
-   public:
-    explicit ScriptedTransport(const boost::asio::any_io_executor& executor)
-        : strand_(boost::asio::make_strand(executor)), timer_(strand_) {
-        timer_.expires_at(std::chrono::steady_clock::time_point::max());
-    }
-
-    mcp::Task<std::string> read_message() override {
-        for (;;) {
-            if (closed_) {
-                throw std::runtime_error("transport closed");
-            }
-            if (!incoming_.empty()) {
-                auto msg = std::move(incoming_.front());
-                incoming_.pop();
-                co_return msg;
-            }
-            timer_.expires_at(std::chrono::steady_clock::time_point::max());
-            try {
-                co_await timer_.async_wait(boost::asio::use_awaitable);
-            } catch (const boost::system::system_error& err) {
-                if (err.code() != boost::asio::error::operation_aborted) {
-                    throw;
-                }
-            }
-        }
-    }
-
-    mcp::Task<void> write_message(std::string_view message) override {
-        co_await boost::asio::post(strand_, boost::asio::use_awaitable);
-        written_.emplace_back(message);
-        if (on_write_) {
-            on_write_(written_.back());
-        }
-    }
-
-    void close() override {
-        closed_ = true;
-        timer_.cancel();
-    }
-
-    void enqueue_message(std::string msg) {
-        boost::asio::post(strand_, [this, m = std::move(msg)]() mutable {
-            incoming_.push(std::move(m));
-            timer_.cancel();
-        });
-    }
-
-    void set_on_write(std::function<void(std::string_view)> callback) {
-        on_write_ = std::move(callback);
-    }
-
-    [[nodiscard]] const std::vector<std::string>& written() const { return written_; }
-
-   private:
-    boost::asio::strand<boost::asio::any_io_executor> strand_;
-    boost::asio::steady_timer timer_;
-    std::queue<std::string> incoming_;
-    std::vector<std::string> written_;
-    std::function<void(std::string_view)> on_write_;
-    bool closed_ = false;
-};
 
 struct AddParams {
     int augend = 0;
@@ -106,18 +37,6 @@ inline void to_json(nlohmann::json& json_obj, const AddResult& result) {
 inline void from_json(const nlohmann::json& json_obj, AddResult& result) {
     json_obj.at("sum").get_to(result.sum);
 }
-
-nlohmann::json make_initialize_request(std::string_view req_id) {
-    return {{"jsonrpc", "2.0"},
-            {"id", req_id},
-            {"method", "initialize"},
-            {"params",
-             {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
-              {"clientInfo", {{"name", "test-client"}, {"version", "0.1"}}},
-              {"capabilities", nlohmann::json::object()}}}};
-}
-
-}  // namespace
 
 class ServerHandlersTest : public ::testing::Test {
    protected:

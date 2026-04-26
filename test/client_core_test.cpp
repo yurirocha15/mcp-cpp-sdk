@@ -1,3 +1,5 @@
+#include "test_utils.hpp"
+
 #include "mcp/client.hpp"
 
 #include <gtest/gtest.h>
@@ -5,93 +7,12 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
-#include <boost/asio/post.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/strand.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <functional>
 #include <memory>
-#include <queue>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace {
-
-// Mock transport that captures outgoing messages and feeds scripted responses.
-// write_message stores messages for inspection; read_message returns queued
-// responses, suspending via a timer until one is available.
-class ScriptedTransport final : public mcp::ITransport {
-   public:
-    explicit ScriptedTransport(const boost::asio::any_io_executor& executor)
-        : strand_(boost::asio::make_strand(executor)), timer_(strand_) {
-        timer_.expires_at(std::chrono::steady_clock::time_point::max());
-    }
-
-    mcp::Task<std::string> read_message() override {
-        for (;;) {
-            if (closed_) {
-                throw std::runtime_error("transport closed");
-            }
-            if (!incoming_.empty()) {
-                auto msg = std::move(incoming_.front());
-                incoming_.pop();
-                co_return msg;
-            }
-            timer_.expires_at(std::chrono::steady_clock::time_point::max());
-            try {
-                co_await timer_.async_wait(boost::asio::use_awaitable);
-            } catch (const boost::system::system_error& err) {
-                if (err.code() != boost::asio::error::operation_aborted) {
-                    throw;
-                }
-            }
-        }
-    }
-
-    mcp::Task<void> write_message(std::string_view message) override {
-        co_await boost::asio::post(strand_, boost::asio::use_awaitable);
-        written_.emplace_back(message);
-        if (on_write_) {
-            on_write_(written_.back());
-        }
-    }
-
-    void close() override {
-        closed_ = true;
-        timer_.cancel();
-    }
-
-    void enqueue_response(std::string msg) {
-        boost::asio::post(strand_, [this, m = std::move(msg)]() mutable {
-            incoming_.push(std::move(m));
-            timer_.cancel();
-        });
-    }
-
-    void set_on_write(std::function<void(std::string_view)> callback) {
-        on_write_ = std::move(callback);
-    }
-
-    [[nodiscard]] const std::vector<std::string>& written() const { return written_; }
-    [[nodiscard]] bool is_closed() const { return closed_; }
-
-   private:
-    boost::asio::strand<boost::asio::any_io_executor> strand_;
-    boost::asio::steady_timer timer_;
-    std::queue<std::string> incoming_;
-    std::vector<std::string> written_;
-    std::function<void(std::string_view)> on_write_;
-    bool closed_ = false;
-};
-
-nlohmann::json make_result_response(std::string_view id, nlohmann::json result) {
-    return {{"jsonrpc", "2.0"}, {"id", id}, {"result", std::move(result)}};
-}
-
-nlohmann::json make_error_response(std::string_view id, int code, std::string_view message) {
-    return {{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", code}, {"message", message}}}};
-}
 
 nlohmann::json make_initialize_result() {
     return {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
@@ -116,10 +37,10 @@ TEST_F(ClientCoreTest, SendRequestAddsToMapAndReturnsResult) {
             auto id = json_msg["id"].get<std::string>();
             auto method = json_msg.value("method", "");
             if (method == "initialize") {
-                raw_transport->enqueue_response(
+                raw_transport->enqueue_message(
                     make_result_response(id, make_initialize_result()).dump());
             } else {
-                raw_transport->enqueue_response(make_result_response(id, {{"answer", 42}}).dump());
+                raw_transport->enqueue_message(make_result_response(id, {{"answer", 42}}).dump());
             }
         }
     });
@@ -155,7 +76,7 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
         auto json_msg = nlohmann::json::parse(msg);
         if (json_msg.contains("id")) {
             auto id = json_msg["id"].get<std::string>();
-            raw_transport->enqueue_response(make_result_response(id, make_initialize_result()).dump());
+            raw_transport->enqueue_message(make_result_response(id, make_initialize_result()).dump());
         }
     });
 
@@ -203,10 +124,10 @@ TEST_F(ClientCoreTest, SendRequestErrorResponseThrows) {
         auto json_msg = nlohmann::json::parse(msg);
         if (json_msg.contains("id") && json_msg["method"] == "initialize") {
             auto id = json_msg["id"].get<std::string>();
-            raw_transport->enqueue_response(make_result_response(id, make_initialize_result()).dump());
+            raw_transport->enqueue_message(make_result_response(id, make_initialize_result()).dump());
         } else if (json_msg.contains("id")) {
             auto id = json_msg["id"].get<std::string>();
-            raw_transport->enqueue_response(
+            raw_transport->enqueue_message(
                 make_error_response(id, mcp::g_METHOD_NOT_FOUND, "method not found").dump());
         }
     });
@@ -251,7 +172,7 @@ TEST_F(ClientCoreTest, SendNotificationDoesNotExpectResponse) {
         auto json_msg = nlohmann::json::parse(msg);
         if (json_msg.contains("id")) {
             auto id = json_msg["id"].get<std::string>();
-            raw_transport->enqueue_response(make_result_response(id, make_initialize_result()).dump());
+            raw_transport->enqueue_message(make_result_response(id, make_initialize_result()).dump());
         }
     });
 
@@ -292,10 +213,10 @@ TEST_F(ClientCoreTest, MultipleRequestsDispatchCorrectly) {
             auto id = json_msg["id"].get<std::string>();
             auto method = json_msg.value("method", "");
             if (method == "initialize") {
-                raw_transport->enqueue_response(
+                raw_transport->enqueue_message(
                     make_result_response(id, make_initialize_result()).dump());
             } else {
-                raw_transport->enqueue_response(
+                raw_transport->enqueue_message(
                     make_result_response(id, {{"method_echo", method}}).dump());
             }
         }
@@ -337,13 +258,13 @@ TEST_F(ClientCoreTest, ReadLoopIgnoresServerNotifications) {
             auto id = json_msg["id"].get<std::string>();
             auto method = json_msg.value("method", "");
             if (method == "initialize") {
-                raw_transport->enqueue_response(
+                raw_transport->enqueue_message(
                     make_result_response(id, make_initialize_result()).dump());
             } else {
                 nlohmann::json server_notif = {{"jsonrpc", "2.0"},
                                                {"method", "notifications/tools/list_changed"}};
-                raw_transport->enqueue_response(server_notif.dump());
-                raw_transport->enqueue_response(make_result_response(id, {{"status", "ok"}}).dump());
+                raw_transport->enqueue_message(server_notif.dump());
+                raw_transport->enqueue_message(make_result_response(id, {{"status", "ok"}}).dump());
             }
         }
     });
@@ -384,11 +305,11 @@ TEST_F(ClientCoreTest, PendingRequestCountReflectsInFlightRequests) {
             auto id = json_msg["id"].get<std::string>();
             auto method = json_msg.value("method", "");
             if (method == "initialize") {
-                raw_transport->enqueue_response(
+                raw_transport->enqueue_message(
                     make_result_response(id, make_initialize_result()).dump());
             } else {
                 count_during_flight = client.pending_request_count();
-                raw_transport->enqueue_response(
+                raw_transport->enqueue_message(
                     make_result_response(id, {{"tools", nlohmann::json::array()}}).dump());
             }
         }
@@ -430,7 +351,7 @@ TEST_F(ClientCoreTest, ConnectReturnsServerCapabilities) {
             auto json_msg = nlohmann::json::parse(msg);
             if (json_msg.contains("id")) {
                 auto id = json_msg["id"].get<std::string>();
-                raw_transport->enqueue_response(make_result_response(id, init_result_json).dump());
+                raw_transport->enqueue_message(make_result_response(id, init_result_json).dump());
             }
         });
 
@@ -469,10 +390,10 @@ TEST_F(ClientCoreTest, PingSendsRequestAndReceivesResponse) {
             auto id = json_msg["id"].get<std::string>();
             auto method = json_msg.value("method", "");
             if (method == "initialize") {
-                raw_transport->enqueue_response(
+                raw_transport->enqueue_message(
                     make_result_response(id, make_initialize_result()).dump());
             } else if (method == "ping") {
-                raw_transport->enqueue_response(
+                raw_transport->enqueue_message(
                     make_result_response(id, nlohmann::json::object()).dump());
             }
         }

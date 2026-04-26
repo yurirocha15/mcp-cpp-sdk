@@ -1,3 +1,5 @@
+#include "test_utils.hpp"
+
 #include "mcp/server.hpp"
 
 #include <gtest/gtest.h>
@@ -5,75 +7,12 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
-#include <boost/asio/post.hpp>
-#include <boost/asio/redirect_error.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/strand.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <functional>
 #include <memory>
-#include <queue>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace {
-
-class ScriptedTransport final : public mcp::ITransport {
-   public:
-    explicit ScriptedTransport(const boost::asio::any_io_executor& executor)
-        : strand_(boost::asio::make_strand(executor)), timer_(executor) {}
-
-    mcp::Task<std::string> read_message() override {
-        for (;;) {
-            if (closed_) {
-                throw std::runtime_error("transport closed");
-            }
-            if (!incoming_.empty()) {
-                auto msg = std::move(incoming_.front());
-                incoming_.pop();
-                co_return msg;
-            }
-
-            timer_.expires_after(std::chrono::milliseconds(10));
-            boost::system::error_code ec;
-            co_await timer_.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ec));
-        }
-    }
-
-    mcp::Task<void> write_message(std::string_view message) override {
-        co_await boost::asio::post(strand_, boost::asio::use_awaitable);
-        if (closed_) {
-            throw std::runtime_error("transport closed");
-        }
-        written_.emplace_back(message);
-        if (on_write_) {
-            on_write_(written_.back());
-        }
-    }
-
-    void close() override { closed_ = true; }
-
-    void enqueue_message(std::string msg) {
-        if (!closed_) {
-            incoming_.push(std::move(msg));
-        }
-    }
-
-    void set_on_write(std::function<void(std::string_view)> callback) {
-        on_write_ = std::move(callback);
-    }
-
-    [[nodiscard]] const std::vector<std::string>& written() const { return written_; }
-
-   private:
-    boost::asio::strand<boost::asio::any_io_executor> strand_;
-    boost::asio::steady_timer timer_;
-    std::queue<std::string> incoming_;
-    std::vector<std::string> written_;
-    std::function<void(std::string_view)> on_write_;
-    bool closed_ = false;
-};
 
 struct EchoInput {
     std::string text;

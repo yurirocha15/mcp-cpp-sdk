@@ -126,7 +126,11 @@ TEST_F(ServerHttpTest, RunHttpInitializesAndResponds) {
     beast::error_code ec;
     stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
 
+#ifdef _WIN32
+    std::raise(SIGINT);
+#else
     mcp::detail::trigger_shutdown_signal();
+#endif
     server_thread.join();
 
     EXPECT_EQ(init_json["id"], "1");
@@ -145,11 +149,14 @@ TEST_F(ServerHttpTest, RunHttpInvalidAddressThrows) {
 TEST_F(ServerHttpTest, RunHttpShutdownOnSignal) {
     constexpr uint16_t port = 18072;
 
-    std::thread signal_sender([] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        mcp::detail::trigger_shutdown_signal();
-    });
+    std::thread server_thread([&] { server_->run_http("127.0.0.1", port); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    server_->run_http("127.0.0.1", port);
-    signal_sender.join();
+#ifdef _WIN32
+    std::raise(SIGINT);
+#else
+    mcp::detail::trigger_shutdown_signal();
+#endif
+
+    server_thread.join();
 }
