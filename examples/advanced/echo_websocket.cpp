@@ -85,6 +85,11 @@ int main() {
 
                 std::cout << "WebSocket example complete\n";
                 client.close();
+
+                asio::steady_timer exit_timer(io_ctx.get_executor());
+                exit_timer.expires_after(std::chrono::milliseconds(100));
+                co_await exit_timer.async_wait(asio::use_awaitable);
+                io_ctx.stop();
             },
             boost::asio::detached);
 

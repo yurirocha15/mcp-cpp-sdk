@@ -18,6 +18,42 @@ The SDK provides seven comprehensive examples:
 6. **llama_server** - llama.cpp MCP adapter
 7. **debugger_server** - LLDB debugger MCP server
 
+Feature Examples
+----------------
+
+The ``examples/features/`` directory contains 12 specialized examples, each
+demonstrating a specific MCP capability using the in-process loopback pattern
+for fast, deterministic testing.
+
+1. **progress_cancellation** - Real-time progress updates and request cancellation
+2. **notifications_subscriptions** - Server-to-client notifications and subscription handling
+3. **middleware** - Intercepting and processing requests via a middleware chain
+4. **completions** - Argument completion suggestions for tools
+5. **pagination** - Handling large lists via cursor-based pagination
+6. **elicitation** - Server-initiated information requests (input forms)
+7. **roots** - Declaring and discovering client-side root URIs
+8. **error_handling** - Robust error patterns and exception management
+9. **transport_memory** - Using in-memory transports for testing and modularity
+10. **graceful_shutdown** - Clean exit patterns and signal handling
+11. **http_server_convenience** - Simplified HTTP server setup via ``Server::run_http()``
+12. **oauth_flow** - Full OAuth 2.0 authentication flow (PKCE, token refresh)
+
+These examples are non-interactive and designed to be run as part of a
+test suite or to understand specific API patterns.
+
+Benchmarks
+----------
+
+Performance-focused examples demonstrating the efficiency of different transport
+layers under load.
+
+1. **benchmark_stdio** - Measures roundtrip latency and throughput over stdio
+2. **benchmark_http** - Performance analysis of the HTTP transport layer
+3. **benchmark_websocket** - Benchmarking WebSocket communication throughput
+
+Each benchmark performs a fixed number of iterations (e.g., 1000 tool calls)
+and reports total time, average latency, and calls per second.
+
 Each example is fully functional and can be used as a starting point for your
 own MCP applications.
 
@@ -234,13 +270,13 @@ To build all examples at once:
 
 .. code-block:: bash
 
-   # Using make (recommended)
-   make build
+   # Using build script (recommended)
+   python scripts/build.py --examples
 
    # Or using CMake directly
-   cmake --build build --target all
+   cmake -DBUILD_EXAMPLES=ON -B build && cmake --build build
 
-   # Note: The debugger example is OFF by default and requires:
+   # Note: The debugger example is OFF by default:
    # cmake -DBUILD_LLDB_EXAMPLE=ON -B build && cmake --build build
 
 All example binaries will be located in ``build/``.

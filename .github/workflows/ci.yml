@@ -58,7 +58,10 @@ jobs:
         max-size: 500M
 
     - name: Build and Test
-      run: python scripts/build.py --test
+      run: python scripts/build.py --examples --test
+
+    - name: Run Examples
+      run: python scripts/run_examples.py
 
   sanitize:
     runs-on: ubuntu-24.04

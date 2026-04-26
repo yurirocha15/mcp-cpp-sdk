@@ -16,4 +16,7 @@ how these primitives are implemented in the `mcp-cpp-sdk`.
    oauth
    context
    completions
+   subscriptions
    elicitation
+   pagination
+   roots
