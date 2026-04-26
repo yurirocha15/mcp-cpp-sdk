@@ -81,6 +81,7 @@ if(BUILD_TESTING)
       test/transport_http_session_manager_test.cpp
       test/transport_memory_test.cpp
       test/e2e_integration_test.cpp
+      test/e2e_features_test.cpp
       test/runtime_test.cpp
       test/server_stdio_test.cpp
       test/server_http_test.cpp
