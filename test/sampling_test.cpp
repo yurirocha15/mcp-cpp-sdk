@@ -1,3 +1,5 @@
+#include "test_utils.hpp"
+
 #include "mcp/server.hpp"
 
 #include <gtest/gtest.h>
@@ -5,81 +7,12 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
-#include <boost/asio/post.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/strand.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <functional>
 #include <memory>
-#include <queue>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace {
-
-class ScriptedTransport final : public mcp::ITransport {
-   public:
-    explicit ScriptedTransport(const boost::asio::any_io_executor& executor)
-        : strand_(boost::asio::make_strand(executor)), timer_(strand_) {
-        timer_.expires_at(std::chrono::steady_clock::time_point::max());
-    }
-
-    mcp::Task<std::string> read_message() override {
-        for (;;) {
-            if (closed_) {
-                throw std::runtime_error("transport closed");
-            }
-            if (!incoming_.empty()) {
-                auto msg = std::move(incoming_.front());
-                incoming_.pop();
-                co_return msg;
-            }
-            timer_.expires_at(std::chrono::steady_clock::time_point::max());
-            try {
-                co_await timer_.async_wait(boost::asio::use_awaitable);
-            } catch (const boost::system::system_error& err) {
-                if (err.code() != boost::asio::error::operation_aborted) {
-                    throw;
-                }
-            }
-        }
-    }
-
-    mcp::Task<void> write_message(std::string_view message) override {
-        co_await boost::asio::post(strand_, boost::asio::use_awaitable);
-        written_.emplace_back(message);
-        if (on_write_) {
-            on_write_(written_.back());
-        }
-    }
-
-    void close() override {
-        closed_ = true;
-        timer_.cancel();
-    }
-
-    void enqueue_message(std::string msg) {
-        boost::asio::post(strand_, [this, m = std::move(msg)]() mutable {
-            incoming_.push(std::move(m));
-            timer_.cancel();
-        });
-    }
-
-    void set_on_write(std::function<void(std::string_view)> callback) {
-        on_write_ = std::move(callback);
-    }
-
-    [[nodiscard]] const std::vector<std::string>& written() const { return written_; }
-
-   private:
-    boost::asio::strand<boost::asio::any_io_executor> strand_;
-    boost::asio::steady_timer timer_;
-    std::queue<std::string> incoming_;
-    std::vector<std::string> written_;
-    std::function<void(std::string_view)> on_write_;
-    bool closed_ = false;
-};
 
 struct EchoInput {
     std::string text;
@@ -121,7 +54,7 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
         [](mcp::Context& ctx, EchoInput input) -> mcp::Task<mcp::CallToolResult> {
             mcp::CreateMessageRequestParams sample_req;
             mcp::SamplingMessage msg;
-            msg.role = mcp::Role::User;
+            msg.role = mcp::Role::eUser;
             mcp::TextContent tc;
             tc.text = input.text;
             msg.content = tc;
@@ -132,8 +65,15 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
 
             mcp::CallToolResult tool_result;
             mcp::TextContent result_content;
-            auto& content_block = std::get<mcp::SamplingMessageContentBlock>(sample_result.content);
-            result_content.text = std::get<mcp::TextContent>(content_block).text;
+            if (sample_result.content.index() != 0) {
+                throw std::runtime_error("Expected single content block");
+            }
+            auto& content_block = std::get<0>(sample_result.content);
+            if (content_block.index() != 0) {  // TextContent is index 0 in ContentBlock
+                throw std::runtime_error("Expected TextContent");
+            }
+            auto& result_content_block = std::get<mcp::TextContent>(content_block);
+            result_content.text = result_content_block.text;
             tool_result.content.push_back(std::move(result_content));
             co_return tool_result;
         });
@@ -141,27 +81,32 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
     int write_count = 0;
     std::vector<std::string> written_messages;
     raw_transport->set_on_write([&write_count, &written_messages, raw_transport](std::string_view msg) {
-        ++write_count;
-        written_messages.emplace_back(msg);
-        auto json_msg = nlohmann::json::parse(msg);
+        try {
+            ++write_count;
+            written_messages.emplace_back(msg);
+            auto json_msg = nlohmann::json::parse(msg);
 
-        if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
-            auto request_id = json_msg["id"].get<std::string>();
-            mcp::CreateMessageResult sample_result;
-            sample_result.role = mcp::Role::Assistant;
-            mcp::TextContent tc;
-            tc.text = "LLM says hello";
-            sample_result.content = tc;
-            sample_result.model = "test-model";
+            if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
+                auto request_id = json_msg["id"].get<std::string>();
+                mcp::CreateMessageResult sample_result;
+                sample_result.role = mcp::Role::eAssistant;
+                mcp::TextContent tc;
+                tc.text = "LLM says hello";
+                sample_result.content = tc;
+                sample_result.model = "test-model";
 
-            nlohmann::json response_json;
-            response_json["jsonrpc"] = "2.0";
-            response_json["id"] = request_id;
-            nlohmann::json result_val = std::move(sample_result);
-            response_json["result"] = std::move(result_val);
+                nlohmann::json response_json;
+                response_json["jsonrpc"] = "2.0";
+                response_json["id"] = request_id;
+                nlohmann::json result_val = std::move(sample_result);
+                response_json["result"] = std::move(result_val);
 
-            raw_transport->enqueue_message(response_json.dump());
-        } else if (json_msg.contains("result") && !json_msg.contains("method")) {
+                raw_transport->enqueue_message(response_json.dump());
+            } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
+                       !json_msg.contains("method")) {
+                raw_transport->close();
+            }
+        } catch (...) {
             raw_transport->close();
         }
     });
@@ -196,7 +141,8 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
 }
 
 TEST_F(SamplingTest, SampleLlmWithoutSenderThrows) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     mcp::Context ctx(*raw_transport);
 
@@ -244,7 +190,7 @@ TEST_F(SamplingTest, SamplingResponseWithToolUseContent) {
         [&](mcp::Context& ctx, EchoInput input) -> mcp::Task<mcp::CallToolResult> {
             mcp::CreateMessageRequestParams sample_req;
             mcp::SamplingMessage msg;
-            msg.role = mcp::Role::User;
+            msg.role = mcp::Role::eUser;
             mcp::TextContent tc;
             tc.text = input.text;
             msg.content = tc;
@@ -253,7 +199,13 @@ TEST_F(SamplingTest, SamplingResponseWithToolUseContent) {
 
             auto sample_result = co_await ctx.sample_llm(std::move(sample_req));
 
-            auto& content_block = std::get<mcp::SamplingMessageContentBlock>(sample_result.content);
+            if (sample_result.content.index() != 0) {
+                throw std::runtime_error("Expected single content block");
+            }
+            auto& content_block = std::get<0>(sample_result.content);
+            if (content_block.index() != 5) {  // ToolUseContent is index 5 in ContentBlock
+                throw std::runtime_error("Expected ToolUseContent");
+            }
             auto& tool_use = std::get<mcp::ToolUseContent>(content_block);
             received_tool_name = tool_use.name;
             received_tool_id = tool_use.id;
@@ -267,27 +219,32 @@ TEST_F(SamplingTest, SamplingResponseWithToolUseContent) {
         });
 
     raw_transport->set_on_write([raw_transport](std::string_view msg) {
-        auto json_msg = nlohmann::json::parse(msg);
+        try {
+            auto json_msg = nlohmann::json::parse(msg);
 
-        if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
-            auto request_id = json_msg["id"].get<std::string>();
-            mcp::CreateMessageResult sample_result;
-            sample_result.role = mcp::Role::Assistant;
-            mcp::ToolUseContent tuc;
-            tuc.id = "call-123";
-            tuc.name = "get_weather";
-            tuc.input = {{"location", "Tokyo"}};
-            sample_result.content = tuc;
-            sample_result.model = "test-model";
+            if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
+                auto request_id = json_msg["id"].get<std::string>();
+                mcp::CreateMessageResult sample_result;
+                sample_result.role = mcp::Role::eAssistant;
+                mcp::ToolUseContent tuc;
+                tuc.id = "call-123";
+                tuc.name = "get_weather";
+                tuc.input = {{"location", "Tokyo"}};
+                sample_result.content = tuc;
+                sample_result.model = "test-model";
 
-            nlohmann::json response_json;
-            response_json["jsonrpc"] = "2.0";
-            response_json["id"] = request_id;
-            nlohmann::json result_val = std::move(sample_result);
-            response_json["result"] = std::move(result_val);
+                nlohmann::json response_json;
+                response_json["jsonrpc"] = "2.0";
+                response_json["id"] = request_id;
+                nlohmann::json result_val = std::move(sample_result);
+                response_json["result"] = std::move(result_val);
 
-            raw_transport->enqueue_message(response_json.dump());
-        } else if (json_msg.contains("result") && !json_msg.contains("method")) {
+                raw_transport->enqueue_message(response_json.dump());
+            } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
+                       !json_msg.contains("method")) {
+                raw_transport->close();
+            }
+        } catch (...) {
             raw_transport->close();
         }
     });
@@ -336,7 +293,7 @@ TEST_F(SamplingTest, SamplingResponseWithToolResultContent) {
         [&](mcp::Context& ctx, EchoInput input) -> mcp::Task<mcp::CallToolResult> {
             mcp::CreateMessageRequestParams sample_req;
             mcp::SamplingMessage msg;
-            msg.role = mcp::Role::User;
+            msg.role = mcp::Role::eUser;
             mcp::TextContent tc;
             tc.text = input.text;
             msg.content = tc;
@@ -345,7 +302,13 @@ TEST_F(SamplingTest, SamplingResponseWithToolResultContent) {
 
             auto sample_result = co_await ctx.sample_llm(std::move(sample_req));
 
-            auto& content_block = std::get<mcp::SamplingMessageContentBlock>(sample_result.content);
+            if (sample_result.content.index() != 0) {
+                throw std::runtime_error("Expected single content block");
+            }
+            auto& content_block = std::get<0>(sample_result.content);
+            if (content_block.index() != 6) {  // ToolResultContent is index 6 in ContentBlock
+                throw std::runtime_error("Expected ToolResultContent");
+            }
             auto& tool_result = std::get<mcp::ToolResultContent>(content_block);
             received_tool_use_id = tool_result.toolUseId;
             received_is_error = tool_result.isError.value_or(true);
@@ -361,29 +324,34 @@ TEST_F(SamplingTest, SamplingResponseWithToolResultContent) {
         });
 
     raw_transport->set_on_write([raw_transport](std::string_view msg) {
-        auto json_msg = nlohmann::json::parse(msg);
+        try {
+            auto json_msg = nlohmann::json::parse(msg);
 
-        if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
-            auto request_id = json_msg["id"].get<std::string>();
-            mcp::CreateMessageResult sample_result;
-            sample_result.role = mcp::Role::Assistant;
-            mcp::ToolResultContent trc;
-            trc.toolUseId = "call-456";
-            mcp::TextContent inner_tc;
-            inner_tc.text = "Weather in Tokyo: 22°C";
-            trc.content.push_back(nlohmann::json(inner_tc));
-            trc.isError = false;
-            sample_result.content = trc;
-            sample_result.model = "test-model";
+            if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
+                auto request_id = json_msg["id"].get<std::string>();
+                mcp::CreateMessageResult sample_result;
+                sample_result.role = mcp::Role::eAssistant;
+                mcp::ToolResultContent trc;
+                trc.toolUseId = "call-456";
+                mcp::TextContent inner_tc;
+                inner_tc.text = "Weather in Tokyo: 22 degrees";
+                trc.content.push_back(nlohmann::json(inner_tc));
+                trc.isError = false;
+                sample_result.content = trc;
+                sample_result.model = "test-model";
 
-            nlohmann::json response_json;
-            response_json["jsonrpc"] = "2.0";
-            response_json["id"] = request_id;
-            nlohmann::json result_val = std::move(sample_result);
-            response_json["result"] = std::move(result_val);
+                nlohmann::json response_json;
+                response_json["jsonrpc"] = "2.0";
+                response_json["id"] = request_id;
+                nlohmann::json result_val = std::move(sample_result);
+                response_json["result"] = std::move(result_val);
 
-            raw_transport->enqueue_message(response_json.dump());
-        } else if (json_msg.contains("result") && !json_msg.contains("method")) {
+                raw_transport->enqueue_message(response_json.dump());
+            } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
+                       !json_msg.contains("method")) {
+                raw_transport->close();
+            }
+        } catch (...) {
             raw_transport->close();
         }
     });
@@ -404,7 +372,7 @@ TEST_F(SamplingTest, SamplingResponseWithToolResultContent) {
 
     EXPECT_EQ(received_tool_use_id, "call-456");
     EXPECT_FALSE(received_is_error);
-    EXPECT_EQ(received_content_text, "Weather in Tokyo: 22°C");
+    EXPECT_EQ(received_content_text, "Weather in Tokyo: 22 degrees");
 }
 
 TEST_F(SamplingTest, ToolUseContentRoundtripSerialization) {
@@ -493,19 +461,25 @@ TEST_F(SamplingTest, SampleLlmErrorResponseThrows) {
 
     std::vector<std::string> written_messages;
     raw_transport->set_on_write([&written_messages, raw_transport](std::string_view msg) {
-        written_messages.emplace_back(msg);
-        auto json_msg = nlohmann::json::parse(msg);
+        try {
+            written_messages.emplace_back(msg);
+            auto json_msg = nlohmann::json::parse(msg);
 
-        if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
-            auto request_id = json_msg["id"].get<std::string>();
+            if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
+                auto request_id = json_msg["id"].get<std::string>();
 
-            nlohmann::json error_response;
-            error_response["jsonrpc"] = "2.0";
-            error_response["id"] = request_id;
-            error_response["error"] = {{"code", -32600}, {"message", "sampling denied"}};
+                nlohmann::json error_response;
+                error_response["jsonrpc"] = "2.0";
+                error_response["id"] = request_id;
+                error_response["error"] = {{"code", mcp::g_INVALID_REQUEST},
+                                           {"message", "sampling denied"}};
 
-            raw_transport->enqueue_message(error_response.dump());
-        } else if (json_msg.contains("result") && !json_msg.contains("method")) {
+                raw_transport->enqueue_message(error_response.dump());
+            } else if ((json_msg.contains("result") || json_msg.contains("error")) &&
+                       !json_msg.contains("method")) {
+                raw_transport->close();
+            }
+        } catch (...) {
             raw_transport->close();
         }
     });

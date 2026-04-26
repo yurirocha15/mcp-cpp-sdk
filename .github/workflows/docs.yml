@@ -26,6 +26,12 @@ jobs:
         uses: jwlawson/actions-setup-cmake@v2
         with:
           cmake-version: '3.25'
+      - name: Cache Conan packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.conan2/p
+          key: ubuntu-latest-conan-docs-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
+          restore-keys: ubuntu-latest-conan-
       - name: Install Dependencies
         run: |
           sudo apt-get update -qq

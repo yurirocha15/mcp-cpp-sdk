@@ -124,6 +124,15 @@ def install_system_package(pkg, os_type, optional=False):
                 raise
 
     elif os_type == 'windows':
+        if not check_command_exists('choco'):
+            msg = "Chocolatey not found. Please install from https://chocolatey.org/install"
+            if optional:
+                print(f"[!] Warning: {msg}", file=sys.stderr)
+                return
+            else:
+                print(f"[!] {msg}", file=sys.stderr)
+                raise FileNotFoundError(msg)
+
         result = run_command(['choco', 'list', '--local-only', pkg],
                            check=False, capture_output=True)
         if result and pkg.lower() in result.stdout.lower():
@@ -230,17 +239,24 @@ def ensure_pipx():
             run_command([pip_cmd, 'install', '--user', 'pipx'])
 
     elif os_type == 'windows':
-        # Windows: py -m pip install --user pipx (scoop is optional, not always present)
         py_cmd = 'py' if check_command_exists('py') else 'python3'
         run_command([py_cmd, '-m', 'pip', 'install', '--user', 'pipx'])
 
-    # Add ~/.local/bin to PATH for this process so subsequent pipx calls work
-    local_bin = str(Path.home() / '.local' / 'bin')
-    if local_bin not in os.environ.get('PATH', ''):
-        os.environ['PATH'] = local_bin + os.pathsep + os.environ.get('PATH', '')
+        result = run_command([py_cmd, '-m', 'site', '--user-site'],
+                           capture_output=True, check=False)
+        if result and result.returncode == 0:
+            user_site = result.stdout.strip()
+            user_scripts = str(Path(user_site).parent / 'Scripts')
+            if user_scripts not in os.environ.get('PATH', ''):
+                os.environ['PATH'] = user_scripts + os.pathsep + os.environ.get('PATH', '')
 
-    # Ensure pipx's own bin dir is on PATH
-    run_command(['pipx', 'ensurepath'], check=False)
+        run_command([py_cmd, '-m', 'pipx', 'ensurepath'], check=False)
+    else:
+        local_bin = str(Path.home() / '.local' / 'bin')
+        if local_bin not in os.environ.get('PATH', ''):
+            os.environ['PATH'] = local_bin + os.pathsep + os.environ.get('PATH', '')
+
+        run_command(['pipx', 'ensurepath'], check=False)
 
     if not check_command_exists('pipx'):
         print("[!] Warning: pipx may not be in PATH. You may need to restart your shell "
@@ -322,6 +338,12 @@ def install_pip_package(pkg):
 def setup_conan_profile():
     """Set up Conan profile if it doesn't exist."""
     print("[*] Checking Conan profile...")
+
+    if detect_os() == 'windows' and 'CONAN_HOME' not in os.environ:
+        conan_home = "C:\\.c"
+        print(f"[*] Setting CONAN_HOME to {conan_home} to avoid long path issues")
+        os.makedirs(conan_home, exist_ok=True)
+        os.environ['CONAN_HOME'] = conan_home
 
     # Check if profile exists
     result = run_command(['conan', 'profile', 'show', 'default'],
@@ -433,6 +455,7 @@ Examples:
             install_pip_package('sphinx')
             install_pip_package('breathe')
             install_pip_package('furo')
+            install_pip_package('sphinx_rtd_theme')
 
         print("\n[+] All dependencies installed successfully!")
         print("\nNote: If pipx tools are not in PATH, restart your shell or run:")

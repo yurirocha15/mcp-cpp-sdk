@@ -24,7 +24,7 @@ own MCP applications.
 server_stdio
 ------------
 
-**Location**: ``examples/server_stdio.cpp``
+**Location**: ``examples/servers/stdio/server_stdio.cpp``
 
 A complete MCP server implementation demonstrating:
 
@@ -56,7 +56,7 @@ This is the most comprehensive example, showing virtually every SDK feature.
 client_stdio
 ------------
 
-**Location**: ``examples/client_stdio.cpp``
+**Location**: ``examples/clients/stdio/client_stdio.cpp``
 
 A complete MCP client implementation demonstrating:
 
@@ -87,7 +87,7 @@ A complete MCP client implementation demonstrating:
 server_with_sampling
 --------------------
 
-**Location**: ``examples/server_with_sampling.cpp``
+**Location**: ``examples/advanced/server_with_sampling.cpp``
 
 Demonstrates **reverse RPC** (server-to-client calls) via ``Context::sample_llm()``:
 
@@ -115,7 +115,7 @@ enabling bidirectional communication patterns.
 echo_websocket
 --------------
 
-**Location**: ``examples/echo_websocket.cpp``
+**Location**: ``examples/advanced/echo_websocket.cpp``
 
 In-process loopback demonstration using **WebSocket transport** over TCP:
 
@@ -144,7 +144,7 @@ MCP communication.
 http_loopback
 -------------
 
-**Location**: ``examples/http_loopback.cpp``
+**Location**: ``examples/advanced/http_loopback.cpp``
 
 In-process loopback demonstration using **Streamable HTTP transport**:
 
@@ -171,7 +171,7 @@ MCP communication with standard headers.
 llama_server
 ------------
 
-**Location**: ``examples/llama/llama_server.cpp``
+**Location**: ``examples/advanced/llama/llama_server.cpp``
 
 MCP adapter for llama.cpp's ``llama-server`` (chat, completion, embedding):
 
@@ -200,7 +200,7 @@ a fully compliant MCP server.
 debugger_server
 ---------------
 
-**Location**: ``examples/debugger/debugger_server.cpp``
+**Location**: ``examples/advanced/debugger/debugger_server.cpp``
 
 MCP server wrapping LLDB's SB API for programmatic debugging:
 

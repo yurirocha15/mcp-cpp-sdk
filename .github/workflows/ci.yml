@@ -31,15 +31,24 @@ jobs:
       if: runner.os == 'Windows'
       uses: ilammy/msvc-dev-cmd@v1
 
-    - name: Install Dependencies
-      run: python scripts/init.py
+    - name: Set Conan Home
+      if: runner.os == 'Windows'
+      run: |
+        mkdir -p C:\.c
+        echo "CONAN_HOME=C:\.c" >> $GITHUB_ENV
+      shell: bash
 
     - name: Cache Conan packages
       uses: actions/cache@v5
       with:
-        path: ${{ env.HOME || env.USERPROFILE }}/.conan2/p
+        path: |
+          ~/.conan2/p
+          C:/.c/p
         key: ${{ matrix.os }}-conan-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
         restore-keys: ${{ matrix.os }}-conan-
+
+    - name: Install Dependencies
+      run: python scripts/init.py
 
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@v1
@@ -67,15 +76,15 @@ jobs:
       with:
         cmake-version: '3.25'
 
-    - name: Install Dependencies
-      run: python scripts/init.py
-
     - name: Cache Conan packages
       uses: actions/cache@v5
       with:
-        path: ${{ env.HOME || env.USERPROFILE }}/.conan2/p
+        path: ~/.conan2/p
         key: ubuntu-24.04-conan-sanitize-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
         restore-keys: ubuntu-24.04-conan-
+
+    - name: Install Dependencies
+      run: python scripts/init.py
 
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@v1

@@ -1,7 +1,11 @@
 ---
 Checks: 'bugprone-*,performance-*,readability-*,modernize-*,
+        -bugprone-easily-swappable-parameters,
+        -bugprone-unused-return-value,
         -modernize-use-trailing-return-type,
-        -readability-identifier-length'
+        -readability-identifier-length,
+        -performance-noexcept-destructor,
+        -performance-noexcept-move-constructor'
 WarningsAsErrors: ''
 CheckOptions:
   - key:             llvm-namespace-comment.ShortNamespaceLines
@@ -22,21 +26,30 @@ CheckOptions:
     value:           lower_case
   - key:             readability-identifier-naming.FunctionCase
     value:           lower_case
+  # Ignore UPPER_CASE function-like names — those are macros (NLOHMANN_*, TEST_F, etc.)
+  - key:             readability-identifier-naming.FunctionIgnoredRegexp
+    value:           '^[A-Z][A-Z0-9_]*$'
   # variable names
   - key:             readability-identifier-naming.VariableCase
     value:           lower_case
   - key:             readability-identifier-naming.ClassMemberSuffix
     value:           '_'
-  - key:             readability-identifier-naming.GlobalVariablePrefix
-    value:           'g_'
   - key:             readability-identifier-naming.StaticVariablePrefix
     value:           's_'
-  # const variables or MACROS are UPPER_CASE
+  - key:             readability-identifier-naming.GlobalVariablePrefix
+    value:           'g_'
+  # C++20 concepts are misidentified as global variables; ignore CamelCase globals.
+  - key:             readability-identifier-naming.GlobalVariableIgnoredRegexp
+    value:           '^[A-Z]'
+  # Give concepts their own explicit case rule (clang-tidy 13+).
+  - key:             readability-identifier-naming.ConceptCase
+    value:           CamelCase
+  # MACROS are UPPER_CASE
   - key:             readability-identifier-naming.EnumConstantCase
     value:           CamelCase
+  - key:             readability-identifier-naming.EnumConstantPrefix
+    value:           'e'
   - key:             readability-identifier-naming.MacroDefinitionCase
-    value:           UPPER_CASE
-  - key:             readability-identifier-naming.GlobalConstantCase
     value:           UPPER_CASE
   - key:             readability-identifier-length.MinimumVariableLength
     value:           '3'

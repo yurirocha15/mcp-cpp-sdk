@@ -16,8 +16,22 @@ release = '0.1.0'
 # -- General configuration ---------------------------------------------------
 
 # Conditionally enable Breathe only when Doxygen XML is available.
-_doxygen_xml_dir = os.path.join(os.path.dirname(__file__), '..', 'build', 'doxygen', 'xml')
-_has_doxygen = os.path.isfile(os.path.join(_doxygen_xml_dir, 'index.xml'))
+_doc_dir = os.path.dirname(__file__)
+_possible_xml_dirs = [
+    os.path.join(_doc_dir, '..', 'build', 'doxygen', 'xml'),
+    os.path.join(_doc_dir, '..', 'build', 'release', 'doxygen', 'xml'),
+    os.path.join(_doc_dir, '..', 'build', 'debug', 'doxygen', 'xml'),
+    os.path.join(_doc_dir, '..', 'build', 'sanitize', 'doxygen', 'xml'),
+    os.path.join(_doc_dir, '..', 'build', 'coverage', 'doxygen', 'xml'),
+]
+
+_doxygen_xml_dir = None
+for _dir in _possible_xml_dirs:
+    if os.path.isfile(os.path.join(_dir, 'index.xml')):
+        _doxygen_xml_dir = _dir
+        break
+
+_has_doxygen = _doxygen_xml_dir is not None
 
 extensions = [
     'sphinx.ext.autodoc',
@@ -47,18 +61,31 @@ pygments_style = 'sphinx'
 # -- Options for HTML output -------------------------------------------------
 
 # The theme to use for HTML and HTML Help pages.
-html_theme = 'furo'
+html_theme = 'sphinx_rtd_theme'
 
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.
 html_theme_options = {
-    "sidebar_hide_name": False,
+    'logo_only': False,
+    'prev_next_buttons_location': 'bottom',
+    'style_external_links': False,
+    # Toc options
+    'collapse_navigation': False,
+    'sticky_navigation': True,
+    'navigation_depth': 4,
+    'includehidden': True,
+    'titles_only': False
 }
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = []
+html_static_path = ['_static']
+
+# Add custom CSS files
+html_css_files = [
+    'css/custom.css',
+]
 
 # -- Options for HTMLHelp output ---------------------------------------------
 

@@ -19,7 +19,7 @@ void Server::add_tool(const std::string& name, const std::string& description,
                           CallToolResult err;
                           TextContent tc;
                           tc.text = e.what();
-                          err.content.push_back(std::move(tc));
+                          err.content.emplace_back(std::move(tc));
                           err.isError = true;
                           nlohmann::json j = std::move(err);
                           co_return j;

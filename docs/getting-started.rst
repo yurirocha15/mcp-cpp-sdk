@@ -14,6 +14,7 @@ Before installing mcp-cpp-sdk, ensure you have the following:
 * **Boost**: Recent version with Asio and Beast support (managed via Conan for source builds)
 * **nlohmann_json**: Installed automatically for source builds via Conan
 * **Conan**: Version 2.0+ (for dependency management)
+* **Chocolatey** (Windows only): Required for dependency installation via ``scripts/init.py``. Install from `chocolatey.org <https://chocolatey.org/install>`__.
 
 Installation
 ------------

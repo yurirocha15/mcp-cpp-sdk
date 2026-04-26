@@ -16,6 +16,10 @@ target_link_libraries(
   mcp-cpp-sdk PUBLIC Boost::headers Boost::system nlohmann_json::nlohmann_json
                      OpenSSL::Crypto)
 target_include_directories(mcp-cpp-sdk PUBLIC include)
+if(WIN32)
+  # Windows 10 as the minimum supported version
+  target_compile_definitions(mcp-cpp-sdk PUBLIC _WIN32_WINNT=0x0A00)
+endif()
 target_sources(
   mcp-cpp-sdk
   PRIVATE src/version.cpp
@@ -24,11 +28,11 @@ target_sources(
           src/server_http.cpp
           src/server_tool.cpp
           src/server.cpp
-          src/transport/stdio_transport.cpp
-          src/transport/http_server_transport.cpp
-          src/transport/http_client_transport.cpp
+          src/transport/stdio.cpp
+          src/transport/http_server.cpp
+          src/transport/http_client.cpp
           src/transport/http_session_manager.cpp
-          src/transport/websocket_transport.cpp
+          src/transport/websocket.cpp
           src/transport/transport_factories.cpp)
 
 # Documentation target
@@ -116,25 +120,30 @@ endif()
 # Examples
 option(BUILD_EXAMPLES "Build example programs" ON)
 if(BUILD_EXAMPLES)
-  add_executable(example-server-stdio examples/server_stdio.cpp)
+  add_executable(example-server-stdio examples/servers/stdio/server_stdio.cpp)
   target_link_libraries(example-server-stdio PRIVATE mcp-cpp-sdk)
 
-  add_executable(example-client-stdio examples/client_stdio.cpp)
+  add_executable(example-client-stdio examples/clients/stdio/client_stdio.cpp)
   target_link_libraries(example-client-stdio PRIVATE mcp-cpp-sdk)
 
-  add_executable(example-server-sampling examples/server_with_sampling.cpp)
+  add_executable(example-interactive-client
+                 examples/clients/stdio/interactive_client.cpp)
+  target_link_libraries(example-interactive-client PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-server-sampling
+                 examples/advanced/server_with_sampling.cpp)
   target_link_libraries(example-server-sampling PRIVATE mcp-cpp-sdk)
 
-  add_executable(example-echo-websocket examples/echo_websocket.cpp)
+  add_executable(example-echo-websocket examples/advanced/echo_websocket.cpp)
   target_link_libraries(example-echo-websocket PRIVATE mcp-cpp-sdk)
 
-  add_executable(example-http-loopback examples/http_loopback.cpp)
+  add_executable(example-http-loopback examples/advanced/http_loopback.cpp)
   target_link_libraries(example-http-loopback PRIVATE mcp-cpp-sdk)
 
-  add_executable(example-server-simple examples/server_simple.cpp)
+  add_executable(example-server-simple examples/servers/stdio/server_simple.cpp)
   target_link_libraries(example-server-simple PRIVATE mcp-cpp-sdk)
 
-  add_executable(example-llama-mcp examples/llama/llama_server.cpp)
+  add_executable(example-llama-mcp examples/advanced/llama/llama_server.cpp)
   target_link_libraries(example-llama-mcp PRIVATE mcp-cpp-sdk)
 endif()
 
@@ -151,7 +160,8 @@ if(BUILD_LLDB_EXAMPLE)
           "LLDB development libraries not found. Install liblldb-dev/llvm.")
     endif()
   endif()
-  add_executable(example-debugger-server examples/debugger/debugger_server.cpp)
+  add_executable(example-debugger-server
+                 examples/advanced/debugger/debugger_server.cpp)
   if(LLDB_FOUND)
     target_link_libraries(example-debugger-server PRIVATE mcp-cpp-sdk lldb)
   else()

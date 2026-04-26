@@ -1,3 +1,4 @@
+#include <mcp/constants.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 #include <mcp/transport/memory.hpp>
 
@@ -30,10 +31,10 @@
 
 namespace mcp {
 
-namespace detail_session_mgr {
-
 namespace beast = boost::beast;
 namespace http = boost::beast::http;
+
+namespace detail_session_mgr {
 
 // ============================================================================
 // Per-session runtime state
@@ -61,7 +62,8 @@ struct SessionRuntime {
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
 
-    explicit SessionRuntime(std::string id, std::size_t event_store_capacity = 1024)
+    explicit SessionRuntime(
+        std::string id, std::size_t event_store_capacity = constants::g_event_store_default_capacity)
         : session_id(std::move(id)), event_store(event_store_capacity) {}
 };
 
@@ -70,14 +72,14 @@ struct SessionRuntime {
 // ============================================================================
 
 inline std::string generate_session_id() {
-    static constexpr char hex_digits[] = "0123456789abcdef";
     std::random_device random_device;
     std::mt19937 generator(random_device());
-    std::uniform_int_distribution<int> distribution(0, 15);
+    std::uniform_int_distribution<int> distribution(
+        0, static_cast<int>(constants::g_hex_digits.size() - 1));
 
-    std::string session_identifier(32, '0');
+    std::string session_identifier(constants::g_session_id_length, '0');
     for (char& current_char : session_identifier) {
-        current_char = hex_digits[distribution(generator)];
+        current_char = constants::g_hex_digits[distribution(generator)];
     }
     return session_identifier;
 }
@@ -87,9 +89,9 @@ inline bool is_initialize_request(const nlohmann::json& request_json) {
            request_json.at("method").get<std::string>() == "initialize";
 }
 
-inline http::response<http::string_body> make_json_response(
-    const http::request<http::string_body>& request, http::status status_code, std::string body) {
-    http::response<http::string_body> response{status_code, request.version()};
+inline StringResponse make_json_response(const StringRequest& request, http::status status_code,
+                                         std::string body) {
+    StringResponse response{status_code, request.version()};
     response.set(http::field::server, "mcp-cpp-sdk");
     response.set(http::field::content_type, "application/json");
     response.keep_alive(request.keep_alive());
@@ -98,35 +100,32 @@ inline http::response<http::string_body> make_json_response(
     return response;
 }
 
-inline http::response<http::string_body> make_error_response(
-    const http::request<http::string_body>& request, http::status status_code,
-    std::string_view error_message) {
+inline StringResponse make_error_response(const StringRequest& request, http::status status_code,
+                                          std::string_view error_message) {
     nlohmann::json error_body = nlohmann::json::object();
     error_body["error"] = std::string(error_message);
     return make_json_response(request, status_code, error_body.dump());
 }
 
-inline http::response<http::string_body> make_jsonrpc_error_response(
-    const http::request<http::string_body>& request, http::status status_code, int error_code,
-    std::string_view error_message) {
+inline StringResponse make_jsonrpc_error_response(const StringRequest& request,
+                                                  http::status status_code, int error_code,
+                                                  std::string_view error_message) {
     nlohmann::json error_body = {{"jsonrpc", "2.0"},
                                  {"error", {{"code", error_code}, {"message", error_message}}},
                                  {"id", nullptr}};
     return make_json_response(request, status_code, error_body.dump());
 }
 
-inline http::response<http::string_body> make_empty_json_response(
-    const http::request<http::string_body>& request, http::status status_code) {
+inline StringResponse make_empty_json_response(const StringRequest& request, http::status status_code) {
     auto response = make_json_response(request, status_code, "");
     response.content_length(0);
     return response;
 }
 
-inline http::response<http::string_body> make_sse_response(
-    const http::request<http::string_body>& request, const std::string& event_id,
-    const std::string& data) {
+inline StringResponse make_sse_response(const StringRequest& request, const std::string& event_id,
+                                        const std::string& data) {
     std::string sse_body = "id: " + event_id + "\ndata: " + data + "\n\n";
-    http::response<http::string_body> response{http::status::ok, request.version()};
+    StringResponse response{http::status::ok, request.version()};
     response.set(http::field::server, "mcp-cpp-sdk");
     response.set(http::field::content_type, "text/event-stream");
     response.set(http::field::cache_control, "no-cache");
@@ -136,14 +135,17 @@ inline http::response<http::string_body> make_sse_response(
     return response;
 }
 
-inline http::response<http::string_body> make_sse_replay_response(
-    const http::request<http::string_body>& request,
-    const std::vector<std::pair<std::string, std::string>>& events) {
+inline StringResponse make_sse_replay_response(const StringRequest& request,
+                                               const SseEventList& events) {
     std::string sse_body;
     for (const auto& [id, data] : events) {
-        sse_body += "id: " + id + "\ndata: " + data + "\n\n";
+        sse_body += "id: ";
+        sse_body += id;
+        sse_body += "\ndata: ";
+        sse_body += data;
+        sse_body += "\n\n";
     }
-    http::response<http::string_body> response{http::status::ok, request.version()};
+    StringResponse response{http::status::ok, request.version()};
     response.set(http::field::server, "mcp-cpp-sdk");
     response.set(http::field::content_type, "text/event-stream");
     response.set(http::field::cache_control, "no-cache");
@@ -192,22 +194,22 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         const auto endpoint = boost::asio::ip::tcp::endpoint(bind_address, port);
-        acceptor.open(endpoint.protocol(), ec);
+        (void)acceptor.open(endpoint.protocol(), ec);
         if (ec) {
             throw std::runtime_error("Failed to open HTTP acceptor: " + ec.message());
         }
 
-        acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
+        (void)acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
         if (ec) {
             throw std::runtime_error("Failed to set reuse_address: " + ec.message());
         }
 
-        acceptor.bind(endpoint, ec);
+        (void)acceptor.bind(endpoint, ec);
         if (ec) {
             throw std::runtime_error("Failed to bind HTTP acceptor: " + ec.message());
         }
 
-        acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
+        (void)acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
         if (ec) {
             throw std::runtime_error("Failed to listen on HTTP acceptor: " + ec.message());
         }
@@ -260,7 +262,7 @@ struct StreamableHttpSessionManager::Impl {
             return;
         }
         for (auto& [key, pending] : it->second->pending_responses) {
-            pending.ready_timer->cancel();
+            (void)pending.ready_timer->cancel();
         }
         if (it->second->client_transport) {
             it->second->client_transport->close();
@@ -272,13 +274,12 @@ struct StreamableHttpSessionManager::Impl {
 
     Task<void> handle_connection(boost::asio::ip::tcp::socket socket) {
         namespace beast = boost::beast;
-        namespace http = boost::beast::http;
 
         beast::tcp_stream stream(std::move(socket));
         beast::flat_buffer request_buffer;
 
         for (;;) {
-            http::request<http::string_body> request;
+            StringRequest request;
             try {
                 co_await http::async_read(stream, request_buffer, request, boost::asio::use_awaitable);
             } catch (const boost::system::system_error& err) {
@@ -300,13 +301,10 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         boost::system::error_code shutdown_error;
-        stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
+        (void)stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
     }
 
-    Task<boost::beast::http::response<boost::beast::http::string_body>> handle_request(
-        const boost::beast::http::request<boost::beast::http::string_body>& request) {
-        namespace http = boost::beast::http;
-
+    Task<StringResponse> handle_request(const StringRequest& request) {
         if (custom_handler) {
             auto custom_response = custom_handler(request);
             if (custom_response.has_value()) {
@@ -332,89 +330,31 @@ struct StreamableHttpSessionManager::Impl {
         co_return response;
     }
 
-    Task<boost::beast::http::response<boost::beast::http::string_body>> handle_post(
-        const boost::beast::http::request<boost::beast::http::string_body>& request) {
-        namespace http = boost::beast::http;
-
-        const auto protocol_header_it = request.find("MCP-Protocol-Version");
-        if (protocol_header_it == request.end() ||
-            protocol_header_it->value() != LATEST_PROTOCOL_VERSION) {
-            co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
-                                                              "Invalid MCP-Protocol-Version header");
-        }
-
-        const auto request_json = nlohmann::json::parse(request.body(), nullptr, false);
-        if (request_json.is_discarded() || !request_json.is_object()) {
-            co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
-                                                              "Invalid JSON-RPC payload");
-        }
-
+    std::variant<detail_session_mgr::SessionRuntime*, StringResponse> resolve_session_for_post(
+        const StringRequest& request, const nlohmann::json& request_json) {
         const auto session_header_it = request.find("Mcp-Session-Id");
-        const bool has_session_header = session_header_it != request.end();
-        std::string session_id_value;
-        if (has_session_header) {
-            session_id_value = std::string(session_header_it->value());
-        }
-
-        detail_session_mgr::SessionRuntime* session = nullptr;
-
-        if (!has_session_header) {
+        if (session_header_it == request.end()) {
             if (!detail_session_mgr::is_initialize_request(request_json)) {
-                co_return detail_session_mgr::make_jsonrpc_error_response(
-                    request, http::status::bad_request, -32600,
+                return detail_session_mgr::make_jsonrpc_error_response(
+                    request, http::status::bad_request, g_INVALID_REQUEST,
                     "Missing Mcp-Session-Id header; only initialize is allowed without a session");
             }
-            session = create_session();
-        } else {
-            session = find_session(session_id_value);
-            if (!session) {
-                co_return detail_session_mgr::make_jsonrpc_error_response(
-                    request, http::status::not_found, -32600, "Session not found");
-            }
+            return create_session();
         }
 
-        const bool has_request_id = request_json.contains("id");
-        const bool has_method = request_json.contains("method");
-
-        if (!has_request_id || !has_method) {
-            co_await session->client_transport_ptr->write_message(request.body());
-            auto response =
-                detail_session_mgr::make_empty_json_response(request, http::status::accepted);
-            response.set("Mcp-Session-Id", session->session_id);
-            co_return response;
+        std::string session_id_value(session_header_it->value());
+        auto* session = find_session(session_id_value);
+        if (session == nullptr) {
+            return detail_session_mgr::make_jsonrpc_error_response(
+                request, http::status::not_found, g_INVALID_REQUEST, "Session not found");
         }
+        return session;
+    }
 
-        const auto request_id_key = request_json.at("id").dump();
-
-        if (session->pending_responses.contains(request_id_key)) {
-            co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
-                                                              "Request id already pending");
-        }
-
-        auto timer_signal = std::make_shared<boost::asio::steady_timer>(strand);
-        timer_signal->expires_at(std::chrono::steady_clock::time_point::max());
-
-        session->pending_responses.emplace(
-            request_id_key,
-            detail_session_mgr::PendingResponse{timer_signal, std::nullopt, std::nullopt, false});
-
-        co_await session->client_transport_ptr->write_message(request.body());
-
-        auto* session_ptr = session;
-        boost::asio::co_spawn(
-            strand,
-            [this, session_ptr]() -> Task<void> {
-                try {
-                    auto response_str = co_await session_ptr->client_transport_ptr->read_message();
-                    co_await dispatch_response_to_pending(session_ptr, std::move(response_str));
-                } catch (...) {
-                    for (auto& [key, pending] : session_ptr->pending_responses) {
-                        pending.ready_timer->cancel();
-                    }
-                }
-            },
-            boost::asio::detached);
-
+    Task<StringResponse> wait_for_response(
+        detail_session_mgr::SessionRuntime* session, const StringRequest& request,
+        const std::string& request_id_key,
+        std::shared_ptr<boost::asio::steady_timer> timer_signal) const {
         for (;;) {
             if (closed.load(std::memory_order_acquire)) {
                 consume_pending_response(session, request_id_key);
@@ -455,23 +395,87 @@ struct StreamableHttpSessionManager::Impl {
         if (client_accepts_sse && result.event_id.has_value()) {
             auto response =
                 detail_session_mgr::make_sse_response(request, *result.event_id, *result.response_body);
-            response.set("Mcp-Session-Id", session_ptr->session_id);
+            response.set("Mcp-Session-Id", session->session_id);
             co_return response;
         }
 
         auto response = detail_session_mgr::make_json_response(request, http::status::ok,
                                                                std::move(*result.response_body));
-        response.set("Mcp-Session-Id", session_ptr->session_id);
+        response.set("Mcp-Session-Id", session->session_id);
         co_return response;
     }
 
-    Task<boost::beast::http::response<boost::beast::http::string_body>> handle_delete(
-        const boost::beast::http::request<boost::beast::http::string_body>& request) {
-        namespace http = boost::beast::http;
-
+    Task<StringResponse> handle_post(const StringRequest& request) {
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         if (protocol_header_it == request.end() ||
-            protocol_header_it->value() != LATEST_PROTOCOL_VERSION) {
+            protocol_header_it->value() != g_LATEST_PROTOCOL_VERSION) {
+            co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
+                                                              "Invalid MCP-Protocol-Version header");
+        }
+
+        const auto request_json = nlohmann::json::parse(request.body(), nullptr, false);
+        if (request_json.is_discarded() || !request_json.is_object()) {
+            co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
+                                                              "Invalid JSON-RPC payload");
+        }
+
+        auto session_var = resolve_session_for_post(request, request_json);
+        if (std::holds_alternative<StringResponse>(session_var)) {
+            co_return std::get<StringResponse>(session_var);
+        }
+        auto* session = std::get<detail_session_mgr::SessionRuntime*>(session_var);
+
+        if (session == nullptr || session->client_transport_ptr == nullptr) {
+            co_return detail_session_mgr::make_error_response(
+                request, http::status::internal_server_error, "Session or transport not found");
+        }
+
+        if (!request_json.contains("id") || !request_json.contains("method")) {
+            co_await session->client_transport_ptr->write_message(request.body());
+            auto response =
+                detail_session_mgr::make_empty_json_response(request, http::status::accepted);
+            response.set("Mcp-Session-Id", session->session_id);
+            co_return response;
+        }
+
+        const auto request_id_key = request_json.at("id").dump();
+
+        if (session->pending_responses.contains(request_id_key)) {
+            co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
+                                                              "Request id already pending");
+        }
+
+        auto timer_signal = std::make_shared<boost::asio::steady_timer>(strand);
+        timer_signal->expires_at(std::chrono::steady_clock::time_point::max());
+
+        session->pending_responses.emplace(
+            request_id_key,
+            detail_session_mgr::PendingResponse{timer_signal, std::nullopt, std::nullopt, false});
+
+        co_await session->client_transport_ptr->write_message(request.body());
+
+        auto* session_ptr = session;
+        boost::asio::co_spawn(
+            strand,
+            [this, session_ptr]() -> Task<void> {
+                try {
+                    auto response_str = co_await session_ptr->client_transport_ptr->read_message();
+                    co_await dispatch_response_to_pending(session_ptr, std::move(response_str));
+                } catch (...) {
+                    for (auto& [key, pending] : session_ptr->pending_responses) {
+                        (void)pending.ready_timer->cancel();
+                    }
+                }
+            },
+            boost::asio::detached);
+
+        co_return co_await wait_for_response(session, request, request_id_key, timer_signal);
+    }
+
+    Task<StringResponse> handle_delete(const StringRequest& request) {
+        const auto protocol_header_it = request.find("MCP-Protocol-Version");
+        if (protocol_header_it == request.end() ||
+            protocol_header_it->value() != g_LATEST_PROTOCOL_VERSION) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid MCP-Protocol-Version header");
         }
@@ -484,22 +488,19 @@ struct StreamableHttpSessionManager::Impl {
 
         std::string session_id_value(session_header_it->value());
         auto* session = find_session(session_id_value);
-        if (!session) {
-            co_return detail_session_mgr::make_jsonrpc_error_response(request, http::status::not_found,
-                                                                      -32600, "Session not found");
+        if (session == nullptr) {
+            co_return detail_session_mgr::make_jsonrpc_error_response(
+                request, http::status::not_found, g_INVALID_REQUEST, "Session not found");
         }
 
         destroy_session(session_id_value);
         co_return detail_session_mgr::make_json_response(request, http::status::ok, "{}");
     }
 
-    Task<boost::beast::http::response<boost::beast::http::string_body>> handle_get(
-        const boost::beast::http::request<boost::beast::http::string_body>& request) {
-        namespace http = boost::beast::http;
-
+    Task<StringResponse> handle_get(const StringRequest& request) {
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         if (protocol_header_it == request.end() ||
-            protocol_header_it->value() != LATEST_PROTOCOL_VERSION) {
+            protocol_header_it->value() != g_LATEST_PROTOCOL_VERSION) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid MCP-Protocol-Version header");
         }
@@ -512,9 +513,9 @@ struct StreamableHttpSessionManager::Impl {
 
         std::string session_id_value(session_header_it->value());
         auto* session = find_session(session_id_value);
-        if (!session) {
-            co_return detail_session_mgr::make_jsonrpc_error_response(request, http::status::not_found,
-                                                                      -32600, "Session not found");
+        if (session == nullptr) {
+            co_return detail_session_mgr::make_jsonrpc_error_response(
+                request, http::status::not_found, g_INVALID_REQUEST, "Session not found");
         }
 
         const auto last_event_id_it = request.find("Last-Event-ID");
@@ -533,8 +534,8 @@ struct StreamableHttpSessionManager::Impl {
         co_return detail_session_mgr::make_empty_json_response(request, http::status::ok);
     }
 
-    Task<void> dispatch_response_to_pending(detail_session_mgr::SessionRuntime* session,
-                                            std::string response_str) {
+    static Task<void> dispatch_response_to_pending(detail_session_mgr::SessionRuntime* session,
+                                                   std::string response_str) {
         const auto response_json = nlohmann::json::parse(response_str, nullptr, false);
         if (response_json.is_discarded() || !response_json.is_object()) {
             co_return;
@@ -555,10 +556,10 @@ struct StreamableHttpSessionManager::Impl {
         pending_it->second.response_body = std::move(response_str);
         pending_it->second.event_id = std::move(event_id);
         pending_it->second.response_ready = true;
-        pending_it->second.ready_timer->cancel();
+        (void)pending_it->second.ready_timer->cancel();
     }
 
-    detail_session_mgr::PendingResult consume_pending_response(
+    static detail_session_mgr::PendingResult consume_pending_response(
         detail_session_mgr::SessionRuntime* session, const std::string& request_id_key) {
         auto pending_it = session->pending_responses.find(request_id_key);
         if (pending_it == session->pending_responses.end()) {
@@ -582,7 +583,14 @@ StreamableHttpSessionManager::StreamableHttpSessionManager(const boost::asio::an
     : impl_(std::make_unique<Impl>(executor, std::move(host), port, std::move(factory),
                                    event_store_capacity)) {}
 
-StreamableHttpSessionManager::~StreamableHttpSessionManager() { close(); }
+StreamableHttpSessionManager::~StreamableHttpSessionManager() {
+    try {
+        close();
+    } catch (...) {
+        // Ignore exceptions in destructor
+        (void)0;
+    }
+}
 
 void StreamableHttpSessionManager::set_custom_request_handler(CustomRequestHandler handler) {
     impl_->custom_handler = std::move(handler);
@@ -597,12 +605,12 @@ void StreamableHttpSessionManager::close() {
 
     boost::asio::post(impl_->strand, [this]() {
         boost::system::error_code ec;
-        impl_->acceptor.cancel(ec);
-        impl_->acceptor.close(ec);
+        (void)impl_->acceptor.cancel(ec);
+        (void)impl_->acceptor.close(ec);
 
         for (auto& [id, session] : impl_->sessions) {
             for (auto& [key, pending] : session->pending_responses) {
-                pending.ready_timer->cancel();
+                (void)pending.ready_timer->cancel();
             }
             if (session->client_transport) {
                 session->client_transport->close();
@@ -630,7 +638,7 @@ Task<void> StreamableHttpSessionManager::listen() {
         }
 
         boost::asio::co_spawn(impl_->strand, impl_->handle_connection(std::move(socket)),
-                              [](std::exception_ptr) {
+                              [](const std::exception_ptr&) {
                                   // Connection errors (EOF, client disconnect) are normal;
                                   // handled per-connection, not propagated to the accept loop.
                               });

@@ -1,338 +1,147 @@
 # mcp-cpp-sdk
 
-A modern C++20 implementation of the Model Context Protocol (MCP), enabling seamless integration between LLM applications and external tools/resources.
+A modern C++20 implementation of the Model Context Protocol (MCP), enabling seamless integration between LLM applications and external tools, resources, and prompts.
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://isocpp.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Build Status](https://github.com/yurirocha15/mcp-cpp-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/yurirocha15/mcp-cpp-sdk/actions/workflows/ci.yml)
 
-## Features
+## Why mcp-cpp-sdk?
 
-- **MCP 2025-11-25 Protocol**: Full implementation of the latest Model Context Protocol specification
-- **Triple Transport Support**: Stdio, WebSocket, and Streamable HTTP transports for flexible deployment scenarios
-- **Streamable HTTP**: Client transport, server transport, and multi-session session manager for MCP over HTTP
-- **OAuth 2.1 Support**: PKCE, token refresh, discovery, and transport wrapping for authenticated MCP clients
-- **Server & Client**: Complete implementations for both server and client roles
-- **Modern C++20**: Leverages coroutines via Boost.Asio for clean asynchronous code
-- **Type-Safe Protocol**: Uses nlohmann/json with strong typing for all MCP messages
-- **Cross-Platform**: Works on Linux, macOS, and Windows
+- **Modern C++20**: Asynchronous first, leveraging coroutines (via Boost.Asio) for high-performance I/O.
+- **Type-Safe Protocol**: Strong typing for all MCP messages using `nlohmann/json`.
+- **Flexible Transports**: Native support for Stdio, WebSocket, and Streamable HTTP.
+- **Full Specification**: Complete implementation of the latest MCP protocol (2025-11-25).
 
-## Installation
+## Quick Start
 
-### Prerequisites
+### 1. Installation
 
-- **C++20 Compiler**: GCC 10+, Clang 11+, or MSVC 2019+
-- **CMake**: 3.20 or later
-- **Boost**: Managed via Conan for source builds
-- **Conan**: 2.x package manager
-- **Python**: 3.8+ (for build scripts)
+The easiest way to use the SDK is via CMake's `FetchContent`:
 
-### Quick Start
+```cmake
+include(FetchContent)
+FetchContent_Declare(
+    mcp-cpp-sdk
+    GIT_REPOSITORY https://github.com/yurirocha15/mcp-cpp-sdk.git
+    GIT_TAG main
+)
+FetchContent_MakeAvailable(mcp-cpp-sdk)
 
-```bash
-# Clone the repository
-git clone https://github.com/yurirocha15/mcp-cpp-sdk.git
-cd mcp-cpp-sdk
-
-# Install dependencies (cross-platform)
-python scripts/init.py
-
-# Build the project
-python scripts/build.py
-
-# Run tests
-python scripts/build.py --test
+target_link_libraries(your_target PRIVATE mcp-cpp-sdk)
 ```
 
-For development with additional tools (clang-format, clang-tidy, pre-commit):
-```bash
-python scripts/init.py --dev
-```
-
-For documentation generation:
-```bash
-python scripts/init.py --docs
-python scripts/build.py --docs
-```
-
-## Quick Start Examples
-
-### Minimal MCP Server (Stdio)
+### 2. Create a Minimal Server
 
 ```cpp
 #include <mcp/mcp.hpp>
 
 int main() {
-    mcp::ServerCapabilities caps;
-    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    mcp::Server server({"hello-server", "1.0.0"}, {});
 
-    mcp::Implementation info{"hello-server", "1.0.0"};
-    mcp::Server server(std::move(info), std::move(caps));
-
-    nlohmann::json schema = {
-        {"type", "object"},
-        {"properties", {{"name", {{"type", "string"}}}}},
-        {"required", nlohmann::json::array({"name"})}};
-
-    server.add_tool("hello", "Greets the user", std::move(schema),
-                    [](const nlohmann::json& args) -> nlohmann::json {
-                        return {{"message", "Hello, " + args.at("name").get<std::string>() + "!"}};
-                    });
-
-    server.run_stdio();
-}
-```
-
-`server.run_stdio()` blocks until the client closes the connection.
-The runtime, transport, and event loop are all managed internally.
-
-<details>
-<summary>Advanced: manual transport setup</summary>
-
-```cpp
-#include <mcp/server.hpp>
-#include <mcp/transport/stdio.hpp>
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
-#include <boost/asio/io_context.hpp>
-
-int main() {
-    boost::asio::io_context io_ctx;
-
-    mcp::ServerCapabilities caps;
-    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
-
-    mcp::Implementation info;
-    info.name = "hello-server";
-    info.version = "1.0.0";
-
-    mcp::Server server(std::move(info), std::move(caps));
-
-    nlohmann::json schema = {
-        {"type", "object"},
-        {"properties", {{"name", {{"type", "string"}}}}},
-        {"required", nlohmann::json::array({"name"})},
-    };
-
-    server.add_tool<nlohmann::json, nlohmann::json>(
-        "hello", "Greets the user", std::move(schema),
-        [](const nlohmann::json& args) -> mcp::Task<nlohmann::json> {
-            co_return nlohmann::json{{"message", "Hello, " + args.at("name").get<std::string>() + "!"}};
+    server.add_tool("hello", "Greets the user",
+        {{"type", "object"}, {"properties", {{"name", {{"type", "string"}}}}}},
+        [](const nlohmann::json& args) {
+            return {{"message", "Hello, " + args["name"].get<std::string>() + "!"}};
         });
 
-    auto transport = std::make_unique<mcp::StdioTransport>(io_ctx.get_executor());
-    boost::asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            co_await server.run(std::move(transport), io_ctx.get_executor());
-        },
-        boost::asio::detached);
-
-    io_ctx.run();
-    return 0;
+    server.run_stdio(); // Blocks until connection closes
 }
 ```
 
-</details>
-
-### Minimal MCP Client (Stdio)
+### 3. Create a Minimal Client
 
 ```cpp
 #include <mcp/client.hpp>
 #include <mcp/transport/stdio.hpp>
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
-#include <boost/asio/io_context.hpp>
 
-int main() {
-    boost::asio::io_context io_ctx;
-    auto transport = std::make_unique<mcp::StdioTransport>(io_ctx.get_executor());
-    mcp::Client client(std::move(transport), io_ctx.get_executor());
+boost::asio::co_spawn(executor, [&]() -> mcp::Task<void> {
+    auto transport = std::make_unique<mcp::StdioTransport>(executor);
+    mcp::Client client(std::move(transport), executor);
 
-    boost::asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation client_info;
-            client_info.name = "my-client";
-            client_info.version = "1.0.0";
-
-            mcp::ClientCapabilities caps;
-            auto init = co_await client.connect(std::move(client_info), std::move(caps));
-
-            auto tools = co_await client.list_tools();
-            auto result = co_await client.call_tool("hello", nlohmann::json{{"name", "World"}});
-            (void)init;
-            (void)tools;
-            (void)result;
-        },
-        boost::asio::detached);
-
-    io_ctx.run();
-    return 0;
-}
+    co_await client.connect({"my-client", "1.0.0"}, {});
+    auto result = co_await client.call_tool("hello", {{"name", "World"}});
+    std::cout << result.content.dump() << std::endl;
+}, boost::asio::detached);
 ```
 
-## API Overview
+## Usage Highlights
 
-The SDK is organized into the following headers:
+### Tools, Resources, and Prompts
 
-- **`mcp/mcp.hpp`**: Umbrella header — includes everything needed for common use cases
-- **`mcp/core.hpp`**: Core types (`Task<T>`, `LogLevel`, `LogHandler`)
-- **`mcp/runtime.hpp`**: `mcp::Runtime` — manages the event loop for `run_stdio()` / `run_http()`
-- **`mcp/concepts.hpp`**: C++20 concepts for transport and message handling
-- **`mcp/protocol.hpp`**: MCP protocol types umbrella — includes all protocol sub-headers:
-  - `protocol/base.hpp`: JSON-RPC wire types (`RequestId`, error codes, `JSONRPCRequest`/`JSONRPCResponse`)
-  - `protocol/capabilities.hpp`: Client/server capabilities, `Implementation`, initialization handshake
-  - `protocol/content.hpp`: Content types (`TextContent`, `ImageContent`, `AudioContent`, `ContentBlock`)
-  - `protocol/tools.hpp`: Tool definitions and call types (`Tool`, `ToolCall`, `ListToolsResult`)
-  - `protocol/resources.hpp`: Resource and resource template types (`Resource`, `ResourceTemplate`)
-  - `protocol/prompts.hpp`: Prompt definitions and argument types (`Prompt`, `GetPromptResult`)
-  - `protocol/completion.hpp`: Completion request/result types (`CompleteRequest`, `CompleteResult`)
-  - `protocol/notification.hpp`: Notification and logging types (`LoggingLevel`, notification structs)
-  - `protocol/roots.hpp`: Root directory/file definitions (`Root`, `ListRootsResult`)
-  - `protocol/tasks.hpp`: Task CRUD operations (`TaskData`, `CreateTaskResult`, `ListTasksResult`)
-  - `protocol/sampling.hpp`: LLM sampling message types (`SamplingMessage`, `CreateMessageRequest`)
-  - `protocol/elicitation.hpp`: User elicitation request/result types (`ElicitRequest`, `ElicitResult`)
-- **`mcp/transport.hpp`**: Abstract transport interface (`ITransport`)
-- **`mcp/transport/stdio.hpp`**: Stdio transport implementation
-- **`mcp/transport/websocket.hpp`**: WebSocket transport implementation
-- **`mcp/transport/http_server.hpp`**: Streamable HTTP server transport
-- **`mcp/transport/http_client.hpp`**: Streamable HTTP client transport
-- **`mcp/transport/http_session_manager.hpp`**: Multi-session Streamable HTTP endpoint manager
-- **`mcp/auth/oauth.hpp`**: OAuth 2.1 helpers and authenticated transport wrapper
-- **`mcp/context.hpp`**: Context for handling server-side requests
-- **`mcp/server.hpp`**: MCP server implementation
-- **`mcp/client.hpp`**: MCP client implementation
+```cpp
+// Register a read-only resource
+server.add_resource("mcp://status", "System status", "text/plain", []() {
+    return "All systems go.";
+});
 
-Full API documentation is available at [https://yurirocha15.github.io/mcp-cpp-sdk](https://yurirocha15.github.io/mcp-cpp-sdk) (or generate locally with `make docs`).
-
-## Examples
-
-The repository includes several complete examples:
-
-- **`examples/server_simple.cpp`**: Minimal stdio server using the convenience API (zero Boost headers)
-- **`examples/server_stdio.cpp`**: Full-featured stdio server with tools, resources, and prompts
-- **`examples/client_stdio.cpp`**: Stdio client demonstrating initialization and tool calls
-- **`examples/server_with_sampling.cpp`**: Server showcasing LLM sampling integration
-- **`examples/echo_websocket.cpp`**: WebSocket echo server for testing transport
-- **`examples/http_loopback.cpp`**: HTTP transport loopback demonstrating Streamable HTTP
-- **`examples/llama/llama_server.cpp`**: MCP adapter for llama.cpp's llama-server (chat, completion, embedding)
-- **`examples/debugger/debugger_server.cpp`**: LLDB debugger MCP server (requires `-DBUILD_LLDB_EXAMPLE=ON`)
-
-Build and run examples:
-```bash
-python scripts/build.py
-./build/example-server-simple
+// Register a prompt template
+server.add_prompt("greet", "Greets the user", {{"name", "User name"}}, [](const nlohmann::json& args) {
+    return {{"messages", {{{"role", "user"}, {"content", {{"type", "text"}, {"text", "Hello, " + args["name"].get<std::string>()}}}}}}};
+});
 ```
 
-## Building & Testing
+### Server Context (Logging & Progress)
 
-### Build Commands
+Async handlers have access to a `Context` for real-time interaction:
 
-```bash
-python scripts/build.py                        # Release build (library only)
-python scripts/build.py --debug                # Debug build
-python scripts/build.py --test                 # Release build + run tests
-python scripts/build.py --debug --test         # Debug build + run tests
-python scripts/build.py --sanitize --test      # ASan/UBSan build + run tests
-python scripts/build.py --coverage --test      # Coverage build + run tests + report
-python scripts/build.py --examples             # Build with examples
-python scripts/build.py --docs                 # Build documentation
-python scripts/build.py --clean                # Clean build artifacts
-```
-
-### Running Tests
-
-```bash
-# Run the full test suite
-python scripts/build.py --test
-
-# Run with verbose output
-ctest --preset conan-release --verbose
-```
-
-### Code Quality
-
-```bash
-# Format code
-make format
-
-# Run static analysis (requires clang-tidy)
-make lint
+```cpp
+server.add_tool("long_task", "A task with progress", schema,
+    [](const nlohmann::json& args, mcp::Context& ctx) -> mcp::Task<nlohmann::json> {
+        ctx.log_info("Starting work...");
+        co_await ctx.report_progress(50, 100);
+        co_return {{"status", "done"}};
+    });
 ```
 
 ## Documentation
 
-Documentation is built using Doxygen + Sphinx + Breathe:
+For full guides, API reference, and integration details, visit our **[Documentation Site](https://yurirocha15.github.io/mcp-cpp-sdk)**.
+
+- **[Getting Started](https://yurirocha15.github.io/mcp-cpp-sdk/getting-started.html)**: Detailed installation and build instructions.
+- **[Core Concepts](https://yurirocha15.github.io/mcp-cpp-sdk/concepts/index.html)**: Deep dive into Tools, Resources, and Transports.
+- **[Client App Integrations](https://yurirocha15.github.io/mcp-cpp-sdk/integrations/client-apps.html)**: How to connect your server to Claude, IDEs, and the MCP Inspector.
+- **[Examples](https://yurirocha15.github.io/mcp-cpp-sdk/examples.html)**: Walkthrough of included example applications.
+
+---
+
+## For Developers
+
+This section is for contributors and developers wanting to build, test, and contribute to `mcp-cpp-sdk` itself.
+
+### Building from Source
+
+To build the library, tests, and examples locally:
 
 ```bash
-# Install documentation dependencies
-python scripts/init.py --docs
+# Install dependencies
+python scripts/init.py
 
-# Generate HTML documentation
-python scripts/build.py --docs
-
-# Open in browser
-open build/docs/html/index.html
+# Build project (release with examples and tests)
+python scripts/build.py --examples --test
 ```
 
-Documentation includes:
-- Getting Started Guide
-- Full API Reference (auto-generated from code)
-- Architecture Overview
-- Examples Walkthrough
-- Contributing Guidelines
+### Build Commands Reference
 
-## Authentication
+| Flag | Description |
+|------|-------------|
+| `--debug` | Build in debug mode |
+| `--test` | Build and run unit tests |
+| `--examples` | Build example applications |
+| `--sanitize` | Build with ASan/UBSan (Linux/macOS) |
+| `--docs` | Generate local Doxygen + Sphinx documentation |
+| `--clean` | Clean build artifacts |
 
-The SDK includes OAuth 2.1 support for authenticated MCP clients in
-`mcp/auth/oauth.hpp`.
+### Code Quality & Standards
 
-```cpp
-#include <mcp/auth/oauth.hpp>
-#include <mcp/transport/http_client.hpp>
+- **Formatting**: `make format` (requires `clang-format`)
+- **Linting**: `make lint` (requires `clang-tidy`)
+- **Testing**: We use GoogleTest for all unit and integration tests.
 
-auto inner = std::make_unique<mcp::HttpClientTransport>(executor, "http://localhost:8080/mcp");
-auto token_store = std::make_shared<mcp::auth::InMemoryTokenStore>();
-auto oauth_http = std::make_shared<mcp::auth::OAuthHttpClient>(executor);
+### Contributing
 
-mcp::auth::OAuthConfig config{
-    .client_id = "my-client",
-    .token_endpoint = "https://issuer.example/token",
-    .redirect_uri = "http://localhost/callback",
-};
-
-auto authenticator = std::make_shared<mcp::auth::OAuthAuthenticator>(
-    token_store, oauth_http, std::move(config), "http://localhost:8080/mcp");
-
-auto transport = std::make_unique<mcp::auth::OAuthClientTransport>(
-    std::move(inner), authenticator);
-```
-
-For multi-session HTTP servers, use `mcp/transport/http_session_manager.hpp`.
-The canonical session header name used throughout the docs is `MCP-Session-Id`.
-
-## Contributing
-
-Contributions are welcome! Please see [docs/contributing.rst](docs/contributing.rst) for:
-- Code style guidelines
-- Testing requirements
-- Pull request process
-- Development workflow
+Please see the [CONTRIBUTING guide](docs/contributing.rst) for the full process.
 
 ## License
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- Built on the [Model Context Protocol](https://modelcontextprotocol.io/) specification
-- Uses [Boost.Asio](https://www.boost.org/doc/libs/release/libs/asio/) for async I/O
-- JSON handling via [nlohmann/json](https://github.com/nlohmann/json)
-- Testing with [GoogleTest](https://github.com/google/googletest)
-
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/yurirocha15/mcp-cpp-sdk/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yurirocha15/mcp-cpp-sdk/discussions)
-- **Documentation**: [https://yurirocha15.github.io/mcp-cpp-sdk](https://yurirocha15.github.io/mcp-cpp-sdk)
+Apache License 2.0 - see [LICENSE](LICENSE) for details.

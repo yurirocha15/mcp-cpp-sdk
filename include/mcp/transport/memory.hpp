@@ -117,7 +117,7 @@ class MemoryTransport final : public ITransport {
      *
      * @param peer Shared pointer to the peer MemoryTransport.
      */
-    void set_peer(std::shared_ptr<MemoryTransport> peer) { peer_ = peer; }
+    void set_peer(const std::shared_ptr<MemoryTransport>& peer) { peer_ = peer; }
 
    private:
     boost::asio::strand<boost::asio::any_io_executor> strand_;

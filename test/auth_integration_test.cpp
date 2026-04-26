@@ -3,14 +3,14 @@
  * @brief Tests for OAuth 2.1 integration (Task 19): middleware, bearer extraction, transport wrapper
  */
 
+#include "test_utils.hpp"
+
 #include <gtest/gtest.h>
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/strand.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <mcp/auth/oauth.hpp>
@@ -21,88 +21,10 @@
 #include <string>
 #include <vector>
 
-namespace {
-
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
 using json = nlohmann::json;
-
-class ScriptedTransport : public mcp::ITransport {
-   public:
-    explicit ScriptedTransport(const asio::any_io_executor& executor)
-        : strand_(asio::make_strand(executor)), timer_(strand_) {
-        timer_.expires_at(std::chrono::steady_clock::time_point::max());
-    }
-
-    mcp::Task<std::string> read_message() override {
-        for (;;) {
-            if (closed_) {
-                throw std::runtime_error("transport closed");
-            }
-            if (!incoming_.empty()) {
-                auto msg = std::move(incoming_.front());
-                incoming_.pop();
-                co_return msg;
-            }
-            timer_.expires_at(std::chrono::steady_clock::time_point::max());
-            try {
-                co_await timer_.async_wait(asio::use_awaitable);
-            } catch (const boost::system::system_error& err) {
-                if (err.code() != boost::asio::error::operation_aborted) {
-                    throw;
-                }
-            }
-        }
-    }
-
-    mcp::Task<void> write_message(std::string_view message) override {
-        co_await asio::post(strand_, asio::use_awaitable);
-        written_.emplace_back(message);
-        if (on_write_) {
-            on_write_(written_.back());
-        }
-        co_return;
-    }
-
-    void close() override {
-        closed_ = true;
-        timer_.cancel();
-    }
-
-    void enqueue_message(std::string msg) {
-        asio::post(strand_, [this, m = std::move(msg)]() mutable {
-            incoming_.push(std::move(m));
-            timer_.cancel();
-        });
-    }
-
-    void set_on_write(std::function<void(std::string_view)> callback) {
-        on_write_ = std::move(callback);
-    }
-
-    [[nodiscard]] const std::vector<std::string>& written() const { return written_; }
-
-   private:
-    asio::strand<asio::any_io_executor> strand_;
-    asio::steady_timer timer_;
-    std::queue<std::string> incoming_;
-    std::vector<std::string> written_;
-    std::function<void(std::string_view)> on_write_;
-    bool closed_ = false;
-};
-
-json make_initialize_request(std::string_view req_id) {
-    return {{"jsonrpc", "2.0"},
-            {"id", req_id},
-            {"method", "initialize"},
-            {"params",
-             {{"protocolVersion", mcp::LATEST_PROTOCOL_VERSION},
-              {"clientInfo", {{"name", "test-client"}, {"version", "0.1"}}},
-              {"capabilities", json::object()}}}};
-}
-
-}  // namespace
 
 TEST(AuthBearerExtractionTest, ValidBearerToken) {
     auto token = mcp::auth::extract_bearer_token("Bearer my_access_token");

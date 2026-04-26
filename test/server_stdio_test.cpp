@@ -1,3 +1,4 @@
+#include "mcp/detail/signal.hpp"
 #include "mcp/server.hpp"
 
 #include <gtest/gtest.h>
@@ -9,11 +10,6 @@
 #include <string>
 #include <thread>
 
-#ifndef _WIN32
-#include <sys/types.h>
-#include <unistd.h>
-#endif
-
 namespace {
 
 nlohmann::json make_initialize_request(std::string_view id) {
@@ -21,7 +17,7 @@ nlohmann::json make_initialize_request(std::string_view id) {
             {"id", id},
             {"method", "initialize"},
             {"params",
-             {{"protocolVersion", mcp::LATEST_PROTOCOL_VERSION},
+             {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
               {"clientInfo", {{"name", "test-client"}, {"version", "0.1"}}},
               {"capabilities", nlohmann::json::object()}}}};
 }
@@ -193,21 +189,10 @@ TEST_F(ServerStdioTest, RunStdioSignalCausesShutdown) {
     std::istream input(&sbuf);
     std::ostringstream output;
 
-    std::thread signal_sender([&sbuf] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        // Use kill(getpid()) instead of raise() so the signal is delivered to the
-        // whole process. On macOS, raise() only targets the calling thread, which
-        // means boost::asio::signal_set (running on the io_context thread) never
-        // sees it and the default handler fires instead, causing a crash.
-#ifdef _WIN32
-        std::raise(SIGINT);
-#else
-        ::kill(::getpid(), SIGTERM);
-#endif
-        sbuf.close();
-    });
+    std::thread server_thread([&] { server_->run_stdio(input, output); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    server_->run_stdio(input, output);
-
-    signal_sender.join();
+    mcp::detail::trigger_shutdown_signal();
+    sbuf.close();
+    server_thread.join();
 }

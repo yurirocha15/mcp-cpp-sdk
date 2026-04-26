@@ -1,7 +1,9 @@
 #pragma once
 
+#include <mcp/constants.hpp>
 #include <mcp/protocol.hpp>
 #include <mcp/transport.hpp>
+#include <mcp/transport/http_types.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <cstddef>
@@ -31,7 +33,8 @@ class EventStore {
      *
      * @param capacity Maximum number of events to retain.
      */
-    explicit EventStore(std::size_t capacity = 1024) : capacity_(capacity) {}
+    explicit EventStore(std::size_t capacity = constants::g_event_store_default_capacity)
+        : capacity_(capacity) {}
 
     /**
      * @brief Append an event to the store and return its assigned ID.
@@ -55,10 +58,9 @@ class EventStore {
      * @return A vector of (id, data) pairs for events after the given ID,
      *         or std::nullopt if the last_event_id has been evicted.
      */
-    std::optional<std::vector<std::pair<std::string, std::string>>> events_after(
-        const std::string& last_event_id) const {
+    [[nodiscard]] std::optional<SseEventList> events_after(const std::string& last_event_id) const {
         if (events_.empty()) {
-            return std::vector<std::pair<std::string, std::string>>{};
+            return SseEventList{};
         }
 
         auto it = events_.begin();
@@ -75,7 +77,7 @@ class EventStore {
             return std::nullopt;
         }
 
-        std::vector<std::pair<std::string, std::string>> result;
+        SseEventList result;
         for (; it != events_.end(); ++it) {
             result.emplace_back(it->id, it->data);
         }
@@ -87,8 +89,8 @@ class EventStore {
      *
      * @return A vector of (id, data) pairs for all stored events.
      */
-    std::vector<std::pair<std::string, std::string>> all_events() const {
-        std::vector<std::pair<std::string, std::string>> result;
+    [[nodiscard]] SseEventList all_events() const {
+        SseEventList result;
         result.reserve(events_.size());
         for (const auto& event : events_) {
             result.emplace_back(event.id, event.data);
@@ -146,8 +148,9 @@ class HttpServerTransport final : public ITransport {
      * @param port Local bind port.
      * @param event_store_capacity Maximum number of replayable SSE events to retain.
      */
-    HttpServerTransport(const boost::asio::any_io_executor& executor, std::string host,
-                        unsigned short port, std::size_t event_store_capacity = 1024);
+    HttpServerTransport(
+        const boost::asio::any_io_executor& executor, std::string host, unsigned short port,
+        std::size_t event_store_capacity = mcp::constants::g_event_store_default_capacity);
 
     ~HttpServerTransport() override;
 

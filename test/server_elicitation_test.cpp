@@ -1,3 +1,5 @@
+#include "test_utils.hpp"
+
 #include "mcp/server.hpp"
 
 #include <gtest/gtest.h>
@@ -5,81 +7,12 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
-#include <boost/asio/post.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/strand.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <functional>
 #include <memory>
-#include <queue>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace {
-
-class ScriptedTransport final : public mcp::ITransport {
-   public:
-    explicit ScriptedTransport(const boost::asio::any_io_executor& executor)
-        : strand_(boost::asio::make_strand(executor)), timer_(strand_) {
-        timer_.expires_at(std::chrono::steady_clock::time_point::max());
-    }
-
-    mcp::Task<std::string> read_message() override {
-        for (;;) {
-            if (closed_) {
-                throw std::runtime_error("transport closed");
-            }
-            if (!incoming_.empty()) {
-                auto msg = std::move(incoming_.front());
-                incoming_.pop();
-                co_return msg;
-            }
-            timer_.expires_at(std::chrono::steady_clock::time_point::max());
-            try {
-                co_await timer_.async_wait(boost::asio::use_awaitable);
-            } catch (const boost::system::system_error& err) {
-                if (err.code() != boost::asio::error::operation_aborted) {
-                    throw;
-                }
-            }
-        }
-    }
-
-    mcp::Task<void> write_message(std::string_view message) override {
-        co_await boost::asio::post(strand_, boost::asio::use_awaitable);
-        written_.emplace_back(message);
-        if (on_write_) {
-            on_write_(written_.back());
-        }
-    }
-
-    void close() override {
-        closed_ = true;
-        timer_.cancel();
-    }
-
-    void enqueue_message(std::string msg) {
-        boost::asio::post(strand_, [this, m = std::move(msg)]() mutable {
-            incoming_.push(std::move(m));
-            timer_.cancel();
-        });
-    }
-
-    void set_on_write(std::function<void(std::string_view)> callback) {
-        on_write_ = std::move(callback);
-    }
-
-    [[nodiscard]] const std::vector<std::string>& written() const { return written_; }
-
-   private:
-    boost::asio::strand<boost::asio::any_io_executor> strand_;
-    boost::asio::steady_timer timer_;
-    std::queue<std::string> incoming_;
-    std::vector<std::string> written_;
-    std::function<void(std::string_view)> on_write_;
-    bool closed_ = false;
-};
 
 struct DummyInput {
     std::string text;
@@ -126,7 +59,7 @@ TEST_F(ElicitationTest, FormElicitationRoundtrip) {
 
             mcp::CallToolResult tool_result;
             mcp::TextContent tc;
-            if (result.action == mcp::ElicitAction::Accept && result.content) {
+            if (result.action == mcp::ElicitAction::eAccept && result.content) {
                 tc.text = result.content->dump();
             } else {
                 tc.text = "declined";
@@ -147,7 +80,7 @@ TEST_F(ElicitationTest, FormElicitationRoundtrip) {
             EXPECT_EQ(json_msg["params"]["message"], "Please enter your name");
 
             mcp::ElicitResult elicit_result;
-            elicit_result.action = mcp::ElicitAction::Accept;
+            elicit_result.action = mcp::ElicitAction::eAccept;
             elicit_result.content = nlohmann::json{{"name", "Alice"}};
 
             nlohmann::json response_json;
@@ -214,7 +147,7 @@ TEST_F(ElicitationTest, URLElicitationRoundtrip) {
             mcp::CallToolResult tool_result;
             mcp::TextContent tc;
             tc.text =
-                (result.action == mcp::ElicitAction::Accept) ? "authenticated" : "not_authenticated";
+                (result.action == mcp::ElicitAction::eAccept) ? "authenticated" : "not_authenticated";
             tool_result.content.push_back(std::move(tc));
             co_return tool_result;
         });
@@ -232,7 +165,7 @@ TEST_F(ElicitationTest, URLElicitationRoundtrip) {
             EXPECT_EQ(json_msg["params"]["elicitationId"], "elicit-123");
 
             mcp::ElicitResult elicit_result;
-            elicit_result.action = mcp::ElicitAction::Accept;
+            elicit_result.action = mcp::ElicitAction::eAccept;
 
             nlohmann::json response_json;
             response_json["jsonrpc"] = "2.0";
@@ -295,9 +228,9 @@ TEST_F(ElicitationTest, ClientDeclinesElicitation) {
 
             mcp::CallToolResult tool_result;
             mcp::TextContent tc;
-            if (result.action == mcp::ElicitAction::Decline) {
+            if (result.action == mcp::ElicitAction::eDecline) {
                 tc.text = "user_declined";
-            } else if (result.action == mcp::ElicitAction::Cancel) {
+            } else if (result.action == mcp::ElicitAction::eCancel) {
                 tc.text = "user_cancelled";
             } else {
                 tc.text = "unexpected";
@@ -315,7 +248,7 @@ TEST_F(ElicitationTest, ClientDeclinesElicitation) {
             auto request_id = json_msg["id"].get<std::string>();
 
             mcp::ElicitResult elicit_result;
-            elicit_result.action = mcp::ElicitAction::Decline;
+            elicit_result.action = mcp::ElicitAction::eDecline;
 
             nlohmann::json response_json;
             response_json["jsonrpc"] = "2.0";
@@ -353,7 +286,8 @@ TEST_F(ElicitationTest, ClientDeclinesElicitation) {
 }
 
 TEST_F(ElicitationTest, ElicitWithoutSenderThrows) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     mcp::Context ctx(*raw_transport);
 

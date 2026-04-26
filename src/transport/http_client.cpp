@@ -1,4 +1,6 @@
+#include <mcp/constants.hpp>
 #include <mcp/transport/http_client.hpp>
+#include <mcp/transport/http_types.hpp>
 
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
@@ -49,18 +51,18 @@ struct HttpClientTransport::Impl {
         std::string id;
     };
 
-    Impl(const net::any_io_executor& executor, std::string url)
+    Impl(const net::any_io_executor& executor, const std::string& url)
         : strand(net::make_strand(executor)), state(std::make_shared<SharedState>(strand)) {
-        auto parsed = parse_url(std::move(url));
+        auto parsed = parse_url(url);
         host = std::move(parsed.host);
         port = std::move(parsed.port);
         path = std::move(parsed.path);
         state->timer.expires_at(std::chrono::steady_clock::time_point::max());
     }
 
-    static ParsedUrl parse_url(std::string url) {
+    static ParsedUrl parse_url(const std::string& url) {
         constexpr std::string_view scheme = "http://";
-        if (url.rfind(std::string(scheme), 0) != 0) {
+        if (!url.starts_with(std::string(scheme))) {
             throw std::invalid_argument("HttpClientTransport URL must start with http://");
         }
 
@@ -106,9 +108,12 @@ struct HttpClientTransport::Impl {
 
         auto resolved_endpoints =
             co_await state->resolver.async_resolve(host, port, net::use_awaitable);
-        state->stream.emplace(strand);
-        state->stream->expires_after(std::chrono::seconds(30));
-        co_await state->stream->async_connect(resolved_endpoints, net::use_awaitable);
+        if (!state->stream) {
+            state->stream.emplace(strand);
+        }
+        auto& stream = *state->stream;
+        stream.expires_after(std::chrono::seconds(constants::g_http_timeout_seconds));
+        co_await stream.async_connect(resolved_endpoints, net::use_awaitable);
     }
 
     static bool starts_with(std::string_view value, std::string_view prefix) {
@@ -174,7 +179,7 @@ struct HttpClientTransport::Impl {
         return parsed_messages;
     }
 
-    void enqueue_message(std::string message_text) {
+    void enqueue_message(std::string message_text) const {
         auto shared_state = state;
         net::post(shared_state->timer.get_executor(),
                   [shared_state, queued_message = std::move(message_text)]() mutable {
@@ -183,19 +188,19 @@ struct HttpClientTransport::Impl {
                   });
     }
 
-    void capture_session_id(const http::response<http::string_body>& response) {
+    void capture_session_id(const StringResponse& response) {
         auto header_iter = response.find("MCP-Session-Id");
         if (header_iter != response.end()) {
             state->session_id = std::string(header_iter->value());
         }
     }
 
-    void process_response(const http::response<http::string_body>& response) {
+    void process_response(const StringResponse& response) {
         if (response.result() == http::status::accepted) {
             return;
         }
 
-        if (response.result_int() >= 400) {
+        if (response.result_int() >= constants::g_http_bad_request) {
             throw std::runtime_error("HTTP request failed with status " +
                                      std::to_string(response.result_int()));
         }
@@ -231,9 +236,12 @@ struct HttpClientTransport::Impl {
             return;
         }
 
-        beast::error_code operation_error;
-        state->stream->socket().shutdown(net::ip::tcp::socket::shutdown_both, operation_error);
-        state->stream->socket().close(operation_error);
+        if (state->stream) {
+            beast::error_code operation_error;
+            (void)state->stream->socket().shutdown(net::ip::tcp::socket::shutdown_both,
+                                                   operation_error);
+            (void)state->stream->socket().close(operation_error);
+        }
         state->stream.reset();
     }
 
@@ -244,10 +252,17 @@ struct HttpClientTransport::Impl {
     std::string path;
 };
 
-HttpClientTransport::HttpClientTransport(const net::any_io_executor& executor, std::string url)
-    : impl_(std::make_unique<Impl>(executor, std::move(url))) {}
+HttpClientTransport::HttpClientTransport(const net::any_io_executor& executor, const std::string& url)
+    : impl_(std::make_unique<Impl>(executor, url)) {}
 
-HttpClientTransport::~HttpClientTransport() { close(); }
+HttpClientTransport::~HttpClientTransport() {
+    try {
+        close();
+    } catch (const std::exception& e) {
+        // Destructor must not throw; swallow any exception from close().
+        (void)e;
+    }
+}
 
 const std::string& HttpClientTransport::session_id() const { return impl_->state->session_id; }
 
@@ -292,11 +307,11 @@ Task<void> HttpClientTransport::write_message(std::string_view message) {
     try {
         co_await impl_->ensure_connected();
 
-        http::request<http::string_body> request{http::verb::post, impl_->path, 11};
+        StringRequest request{http::verb::post, impl_->path, constants::g_http_version_11};
         request.set(http::field::host, impl_->host);
         request.set(http::field::content_type, "application/json");
         request.set(http::field::accept, "application/json, text/event-stream");
-        request.set("MCP-Protocol-Version", std::string(LATEST_PROTOCOL_VERSION));
+        request.set("MCP-Protocol-Version", std::string(g_LATEST_PROTOCOL_VERSION));
         if (!impl_->state->session_id.empty()) {
             request.set("MCP-Session-Id", impl_->state->session_id);
         }
@@ -306,12 +321,16 @@ Task<void> HttpClientTransport::write_message(std::string_view message) {
         request.body() = std::move(msg);
         request.prepare_payload();
 
-        impl_->state->stream->expires_after(std::chrono::seconds(30));
-        co_await http::async_write(*impl_->state->stream, request, net::use_awaitable);
+        if (!impl_->state->stream) {
+            throw std::runtime_error("HttpClientTransport stream is not initialized");
+        }
+        auto& stream = *impl_->state->stream;
+        stream.expires_after(std::chrono::seconds(constants::g_http_timeout_seconds));
+        co_await http::async_write(stream, request, net::use_awaitable);
 
         beast::flat_buffer response_buffer;
-        http::response<http::string_body> response;
-        co_await http::async_read(*impl_->state->stream, response_buffer, response, net::use_awaitable);
+        StringResponse response;
+        co_await http::async_read(stream, response_buffer, response, net::use_awaitable);
 
         impl_->capture_session_id(response);
         impl_->process_response(response);
@@ -341,26 +360,30 @@ void HttpClientTransport::close() {
                             host, port, net::use_awaitable);
 
                         shared_state->stream.emplace(shared_state->timer.get_executor());
-                        shared_state->stream->expires_after(std::chrono::seconds(30));
+                        shared_state->stream->expires_after(
+                            std::chrono::seconds(constants::g_http_timeout_seconds));
                         co_await shared_state->stream->async_connect(resolved_endpoints,
                                                                      net::use_awaitable);
                     }
 
-                    http::request<http::empty_body> delete_request{http::verb::delete_, path, 11};
+                    http::request<http::empty_body> delete_request{http::verb::delete_, path,
+                                                                   constants::g_http_version_11};
                     delete_request.set(http::field::host, host);
                     delete_request.set("MCP-Session-Id", active_session_id);
-                    delete_request.set("MCP-Protocol-Version", std::string(LATEST_PROTOCOL_VERSION));
+                    delete_request.set("MCP-Protocol-Version", std::string(g_LATEST_PROTOCOL_VERSION));
 
-                    shared_state->stream->expires_after(std::chrono::seconds(30));
+                    shared_state->stream->expires_after(
+                        std::chrono::seconds(constants::g_http_timeout_seconds));
                     co_await http::async_write(*shared_state->stream, delete_request,
                                                net::use_awaitable);
 
                     beast::flat_buffer delete_response_buffer;
-                    http::response<http::string_body> delete_response;
+                    StringResponse delete_response;
                     co_await http::async_read(*shared_state->stream, delete_response_buffer,
                                               delete_response, net::use_awaitable);
-                } catch (...) {
+                } catch (const std::exception& e) {
                     // Best-effort DELETE on close; ignore errors if the server is unreachable.
+                    (void)e;
                 }
             }
 

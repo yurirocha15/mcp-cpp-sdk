@@ -13,6 +13,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <mcp/auth/oauth.hpp>
+#include <mcp/constants.hpp>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
@@ -27,12 +28,11 @@ using json = nlohmann::json;
 // Known SHA-256 test vector: SHA-256("") =
 // e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 std::string hex_encode(const unsigned char* data, std::size_t len) {
-    static constexpr char hex[] = "0123456789abcdef";
     std::string result;
     result.reserve(len * 2);
     for (std::size_t i = 0; i < len; ++i) {
-        result.push_back(hex[data[i] >> 4]);
-        result.push_back(hex[data[i] & 0x0F]);
+        result.push_back(mcp::constants::g_hex_digits[data[i] >> 4]);
+        result.push_back(mcp::constants::g_hex_digits[data[i] & 0x0F]);
     }
     return result;
 }
