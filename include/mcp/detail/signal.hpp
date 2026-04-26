@@ -7,33 +7,20 @@
 #include <boost/system/error_code.hpp>
 
 #include <chrono>
-#include <memory>
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <sys/types.h>
-#include <unistd.h>
 #include <csignal>
-#endif
+#include <memory>
 
 namespace mcp::detail {
 
 /**
  * @brief Sends a termination signal to the current process in a cross-platform way.
  *
- * On Windows, it uses GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) which is correctly
- * intercepted by boost::asio::signal_set.
- * On other platforms, it uses kill(getpid(), SIGTERM).
+ * Uses std::raise(SIGINT) on all platforms. This is per-process — it does not
+ * affect sibling processes.
+ *
+ * @important Call from the main thread for best cross-platform reliability.
  */
-inline void trigger_shutdown_signal() {
-#ifdef _WIN32
-    GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
-#else
-    ::kill(::getpid(), SIGTERM);
-#endif
-}
+inline void trigger_shutdown_signal() { std::raise(SIGINT); }
 
 /**
  * @brief Performs a graceful shutdown of the IO context and transport.

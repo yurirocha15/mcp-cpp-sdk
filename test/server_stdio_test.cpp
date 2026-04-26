@@ -189,13 +189,10 @@ TEST_F(ServerStdioTest, RunStdioSignalCausesShutdown) {
     std::istream input(&sbuf);
     std::ostringstream output;
 
-    std::thread signal_sender([&sbuf] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        mcp::detail::trigger_shutdown_signal();
-        sbuf.close();
-    });
+    std::thread server_thread([&] { server_->run_stdio(input, output); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    server_->run_stdio(input, output);
-
-    signal_sender.join();
+    mcp::detail::trigger_shutdown_signal();
+    sbuf.close();
+    server_thread.join();
 }

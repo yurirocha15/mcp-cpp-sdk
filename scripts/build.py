@@ -213,7 +213,7 @@ def main():
     write_user_presets(build_dir)
 
     if args.test:
-        test_jobs = 1 if args.sanitize else args.jobs
+        test_jobs = args.jobs
         extra_env = (
             {"ASAN_OPTIONS": "detect_leaks=0",
              "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1"}
