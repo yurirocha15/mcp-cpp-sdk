@@ -40,6 +40,7 @@ Quick Links
    :caption: Core Documentation
 
    concepts/index
+   guides/index
    integrations/client-apps
    api/index
 
