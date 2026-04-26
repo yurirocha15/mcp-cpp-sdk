@@ -217,8 +217,9 @@ void Server::dispatch(nlohmann::json json_msg) {
 Context Server::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
                              std::optional<ProgressToken> progress_token) {
     return {*impl_->session->transport,
-            [this](const std::string& method, const std::optional<nlohmann::json>& params)
-                -> Task<nlohmann::json> { co_return co_await send_request(method, params); },
+            [this](std::string method, std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
+                co_return co_await send_request(std::move(method), std::move(params));
+            },
             std::move(cancelled), std::move(progress_token), &impl_->log_level};
 }
 

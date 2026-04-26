@@ -2,10 +2,60 @@
 import argparse
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+
+def setup_msvc_env():
+    if platform.system() != "Windows":
+        return
+    if shutil.which("cl"):
+        return
+    vs_paths = [
+        Path("C:/Program Files/Microsoft Visual Studio/18/Community/VC/Auxiliary/Build"),
+        Path("C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Auxiliary/Build"),
+        Path("C:/Program Files/Microsoft Visual Studio/2022/Professional/VC/Auxiliary/Build"),
+        Path("C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Auxiliary/Build"),
+        Path("C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/VC/Auxiliary/Build"),
+        Path("C:/Program Files (x86)/Microsoft Visual Studio/2019/Professional/VC/Auxiliary/Build"),
+        Path("C:/Program Files (x86)/Microsoft Visual Studio/2019/Enterprise/VC/Auxiliary/Build"),
+    ]
+    for vs_path in vs_paths:
+        vcvars = vs_path / "vcvars64.bat"
+        if vcvars.exists():
+            vcvars_str = str(vcvars).replace('/', '\\')
+            cmd = f'"{vcvars_str}" && set'
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                shell=True
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    if "=" in line:
+                        key, value = line.split("=", 1)
+                        os.environ[key] = value
+                return
+
+
+def ensure_cmake_in_path():
+    if shutil.which("cmake"):
+        return
+    if platform.system() == "Windows":
+        for path in [
+            Path("C:/Program Files/CMake/bin"),
+            Path("C:/ProgramData/chocolatey/bin"),
+        ]:
+            if path.exists():
+                os.environ["PATH"] = str(path) + os.pathsep + os.environ.get("PATH", "")
+                break
+    if not shutil.which("cmake"):
+        raise FileNotFoundError("cmake not found. Please install cmake and ensure it's in PATH.")
 
 
 def cpu_half():
@@ -23,7 +73,20 @@ def run(*args, extra_env=None, **kwargs):
     subprocess.run(list(args), check=True, env=env, **kwargs)
 
 
+def ensure_conan_profile():
+    result = subprocess.run(
+        ["conan", "profile", "show", "default"],
+        capture_output=True,
+        check=False
+    )
+    if result.returncode != 0:
+        print("[*] Conan profile not found, detecting...")
+        subprocess.run(["conan", "profile", "detect", "--force"], check=True)
+        print("[+] Conan profile created")
+
+
 def conan_install(output_folder, jobs, build_type="Release"):
+    ensure_conan_profile()
     run(
         "conan", "install", ".",
         f"--output-folder={output_folder}",
@@ -43,6 +106,8 @@ def compiler_launcher():
 
 
 def cmake_configure(build_dir, build_type, *extra_args):
+    ensure_cmake_in_path()
+    setup_msvc_env()
     toolchain = f"{build_dir}/conan_toolchain.cmake"
     launcher_args = []
     launcher = compiler_launcher()

@@ -15,6 +15,7 @@ class McpCppSdkConan(ConanFile):
     )
 
     default_options = {
+        "boost/*:shared": False,
         "boost/*:without_python": True,
         "boost/*:without_mpi": True,
         "boost/*:without_graph": True,
