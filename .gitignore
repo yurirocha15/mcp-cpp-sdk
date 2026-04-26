@@ -63,3 +63,9 @@ CMakeUserPresets.json
 build/doxygen/
 build/docs/
 docs/_build/
+
+# Benchmark build artifacts
+benchmark/cpp/build/
+
+# Generated files
+compile_commands.json
