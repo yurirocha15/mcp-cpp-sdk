@@ -117,10 +117,11 @@ mcp::CallToolResult make_text_result(std::string text, std::optional<bool> is_er
 class MockOAuthServer {
    public:
     MockOAuthServer(asio::io_context& io_ctx, unsigned short port)
-        : acceptor_(io_ctx, {asio::ip::make_address("127.0.0.1"), port}),
-          port_(port),
-          issuer_("http://127.0.0.1:" + std::to_string(port_)),
-          protected_resource_url_(issuer_ + "/memory-mcp") {}
+        : acceptor_(io_ctx, {asio::ip::make_address("127.0.0.1"), port}) {
+        port_ = acceptor_.local_endpoint().port();
+        issuer_ = "http://127.0.0.1:" + std::to_string(port_);
+        protected_resource_url_ = issuer_ + "/memory-mcp";
+    }
 
     [[nodiscard]] const std::string& issuer() const { return issuer_; }
 
@@ -275,7 +276,7 @@ class MockOAuthServer {
     }
 
     tcp::acceptor acceptor_;
-    unsigned short port_;
+    unsigned short port_{};
     std::string issuer_;
     std::string protected_resource_url_;
     std::map<std::string, std::string, std::less<>> authorization_codes_;
@@ -514,7 +515,7 @@ int main() {
         asio::io_context io_ctx;
         int exit_code = EXIT_SUCCESS;
 
-        constexpr unsigned short oauth_port = 18120;
+        constexpr unsigned short oauth_port = 0;
         MockOAuthServer mock_oauth(io_ctx, oauth_port);
 
         // ========== MOCK AUTH SERVER SETUP ==========

@@ -182,13 +182,14 @@ void demo_transport_factory() {
                 auto [server_t, client_t] = create_memory_transport_pair(io_ctx.get_executor());
 
                 Server s({"factory-demo", "1.0"}, {});
-                s.add_tool("ping", "", {},
-                           [](const nlohmann::json&) {
-                               return nlohmann::json{
-                                   {"content",
-                                    nlohmann::json::array(
-                                        {nlohmann::json{{"type", "text"}, {"text", "pong"}}})}};
-                           });
+                s.add_tool<nlohmann::json, mcp::CallToolResult>(
+                    "ping", "", {}, [](const nlohmann::json&) {
+                        mcp::CallToolResult result;
+                        mcp::TextContent content;
+                        content.text = "pong";
+                        result.content.emplace_back(std::move(content));
+                        return result;
+                    });
 
                 asio::co_spawn(io_ctx, s.run(server_t, io_ctx.get_executor()), asio::detached);
 
