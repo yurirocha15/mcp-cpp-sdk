@@ -375,3 +375,82 @@ TEST_F(HttpTransportTest, NotificationReturns202) {
 
     EXPECT_TRUE(received_202);
 }
+
+TEST_F(HttpTransportTest, SessionRequestsAllowMissingNegotiatedProtocolHeader) {
+    mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18087);
+
+    asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
+
+    bool tool_request_received = false;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            auto initialize_request = co_await server_transport.read_message();
+            auto init_json = nlohmann::json::parse(initialize_request);
+
+            nlohmann::json initialize_response = {
+                {"jsonrpc", "2.0"},
+                {"result",
+                 {{"protocolVersion", "2025-06-18"},
+                  {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
+                  {"capabilities", {}}}},
+                {"id", init_json.at("id")}};
+
+            co_await server_transport.write_message(initialize_response.dump());
+
+            auto second_request = co_await server_transport.read_message();
+            tool_request_received = true;
+            nlohmann::json second_response = {{"jsonrpc", "2.0"},
+                                              {"result", {{"content", nlohmann::json::array()}}},
+                                              {"id", nlohmann::json::parse(second_request).at("id")}};
+            co_await server_transport.write_message(second_response.dump());
+        },
+        asio::detached);
+
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            beast::tcp_stream stream(io_ctx_.get_executor());
+            auto resolver = asio::ip::tcp::resolver(io_ctx_.get_executor());
+            auto endpoints = co_await resolver.async_resolve("127.0.0.1", "18087", asio::use_awaitable);
+            co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+
+            http::request<http::string_body> init_request{http::verb::post, "/mcp", 11};
+            init_request.set(http::field::host, "127.0.0.1");
+            init_request.set(http::field::content_type, "application/json");
+            init_request.set(http::field::accept, "application/json, text/event-stream");
+            init_request.body() =
+                R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})";
+            init_request.prepare_payload();
+            co_await http::async_write(stream, init_request, asio::use_awaitable);
+
+            beast::flat_buffer response_buffer;
+            http::response<http::string_body> init_response;
+            co_await http::async_read(stream, response_buffer, init_response, asio::use_awaitable);
+
+            const auto session_id = std::string(init_response["MCP-Session-Id"]);
+
+            http::request<http::string_body> tool_request{http::verb::post, "/mcp", 11};
+            tool_request.set(http::field::host, "127.0.0.1");
+            tool_request.set(http::field::content_type, "application/json");
+            tool_request.set(http::field::accept, "application/json, text/event-stream");
+            tool_request.set("MCP-Session-Id", session_id);
+            tool_request.body() = R"({"jsonrpc":"2.0","method":"tools/list","id":2})";
+            tool_request.prepare_payload();
+            co_await http::async_write(stream, tool_request, asio::use_awaitable);
+
+            http::response<http::string_body> tool_response;
+            co_await http::async_read(stream, response_buffer, tool_response, asio::use_awaitable);
+
+            EXPECT_EQ(tool_response.result(), http::status::ok);
+
+            beast::error_code shutdown_error;
+            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
+            server_transport.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_TRUE(tool_request_received);
+}
