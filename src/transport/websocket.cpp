@@ -9,10 +9,14 @@
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
 #include <boost/beast/websocket/stream.hpp>
+#include <chrono>
+#include <exception>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace mcp {
 
@@ -94,6 +98,12 @@ void WebSocketServerTransport::close() {
 // ============================================================================
 
 struct WebSocketClientTransport::Impl {
+    enum class ConnectionState {
+        Disconnected,
+        Connecting,
+        Connected,
+    };
+
     asio::strand<asio::any_io_executor> strand;
     asio::ip::tcp::resolver resolver;
     WsStream ws;
@@ -101,7 +111,9 @@ struct WebSocketClientTransport::Impl {
     std::string port;
     std::string path;
     std::atomic<bool> closed{false};
-    bool connected{false};
+    std::atomic<ConnectionState> connection_state{ConnectionState::Disconnected};
+    std::exception_ptr connect_error;
+    std::vector<std::shared_ptr<asio::steady_timer>> connection_waiters;
 
     Impl(const asio::any_io_executor& executor, std::string host_arg, std::string port_arg,
          std::string path_arg)
@@ -114,15 +126,75 @@ struct WebSocketClientTransport::Impl {
         ws.text(true);
     }
 
-    Task<void> ensure_connected() {
-        if (connected) {
+    void remove_connection_waiter(const std::shared_ptr<asio::steady_timer>& waiter) {
+        for (auto it = connection_waiters.begin(); it != connection_waiters.end(); ++it) {
+            if (*it == waiter) {
+                connection_waiters.erase(it);
+                break;
+            }
+        }
+    }
+
+    void notify_connection_waiters() {
+        for (const auto& waiter : connection_waiters) {
+            waiter->cancel();
+        }
+        connection_waiters.clear();
+    }
+
+    Task<void> wait_for_connection() {
+        auto waiter = std::make_shared<asio::steady_timer>(strand);
+        waiter->expires_at(std::chrono::steady_clock::time_point::max());
+        connection_waiters.push_back(waiter);
+
+        try {
+            co_await waiter->async_wait(asio::use_awaitable);
+        } catch (const boost::system::system_error& err) {
+            remove_connection_waiter(waiter);
+            if (err.code() != asio::error::operation_aborted) {
+                throw;
+            }
+        }
+
+        remove_connection_waiter(waiter);
+
+        if (connection_state.load(std::memory_order_acquire) == ConnectionState::Connected) {
             co_return;
         }
 
-        auto results = co_await resolver.async_resolve(host, port, asio::use_awaitable);
-        co_await ws.next_layer().async_connect(*results.begin(), asio::use_awaitable);
-        co_await ws.async_handshake(host + ":" + port, path, asio::use_awaitable);
-        connected = true;
+        if (connect_error) {
+            std::rethrow_exception(connect_error);
+        }
+
+        throw std::runtime_error("WebSocket connection did not complete");
+    }
+
+    Task<void> ensure_connected() {
+        if (connection_state.load(std::memory_order_acquire) == ConnectionState::Connected) {
+            co_return;
+        }
+
+        if (connection_state.load(std::memory_order_acquire) == ConnectionState::Connecting) {
+            co_await wait_for_connection();
+            co_return;
+        }
+
+        connection_state.store(ConnectionState::Connecting, std::memory_order_release);
+        connect_error = nullptr;
+
+        try {
+            auto results = co_await resolver.async_resolve(host, port, asio::use_awaitable);
+            co_await ws.next_layer().async_connect(*results.begin(), asio::use_awaitable);
+            co_await ws.async_handshake(host + ":" + port, path, asio::use_awaitable);
+
+            connection_state.store(ConnectionState::Connected, std::memory_order_release);
+            notify_connection_waiters();
+        } catch (...) {
+            connect_error = std::current_exception();
+            connection_state.store(ConnectionState::Disconnected, std::memory_order_release);
+            notify_connection_waiters();
+            std::rethrow_exception(connect_error);
+        }
     }
 };
 
@@ -133,7 +205,9 @@ WebSocketClientTransport::WebSocketClientTransport(const asio::any_io_executor& 
 WebSocketClientTransport::~WebSocketClientTransport() {
     try {
         impl_->closed.store(true, std::memory_order_release);
-        if (impl_->connected) {
+        impl_->connection_state.store(Impl::ConnectionState::Disconnected, std::memory_order_release);
+        impl_->notify_connection_waiters();
+        if (impl_->ws.next_layer().socket().is_open()) {
             beast::error_code ec;
             auto& socket = impl_->ws.next_layer().socket();
             (void)socket.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
@@ -172,7 +246,12 @@ void WebSocketClientTransport::close() {
         return;
     }
 
-    if (!impl_->connected) {
+    impl_->connect_error =
+        std::make_exception_ptr(std::runtime_error("WebSocketClientTransport is closed"));
+    impl_->connection_state.store(Impl::ConnectionState::Disconnected, std::memory_order_release);
+    impl_->notify_connection_waiters();
+
+    if (!impl_->ws.next_layer().socket().is_open()) {
         return;
     }
 
