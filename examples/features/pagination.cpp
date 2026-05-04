@@ -59,9 +59,8 @@ int main() {
                 tool_name, description, tool_schema, [i](const nlohmann::json& args) -> nlohmann::json {
                     std::string text = "Tool " + std::to_string(i) +
                                        " executed with: " + args.at("value").get<std::string>();
-                    return {{"content",
-                             nlohmann::json::array(
-                                 {nlohmann::json{{"type", "text"}, {"text", std::move(text)}}})}};
+                    return {{"content", nlohmann::json::array({nlohmann::json{
+                                            {"type", "text"}, {"text", std::move(text)}}})}};
                 });
         }
 

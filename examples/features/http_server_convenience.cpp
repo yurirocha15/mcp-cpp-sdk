@@ -8,21 +8,22 @@
 /// The convenience method is ideal for simple use cases where you don't need
 /// fine-grained control over the transport lifecycle.
 ///
-/// @note This example uses pthread_kill() to deliver SIGINT to the server thread
-///       and is therefore POSIX-only (Linux / macOS). It will not compile on Windows.
+/// @note This example raises ``SIGINT`` from the main thread so ``run_http()`` can
+///       execute its built-in graceful-shutdown path on all supported platforms.
 
 #include <mcp/client.hpp>
 #include <mcp/server.hpp>
 #include <mcp/transport/http_client.hpp>
 
-#include <unistd.h>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/address.hpp>
+#include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <chrono>
 #include <csignal>
-#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -31,6 +32,7 @@
 #include <thread>
 
 namespace asio = boost::asio;
+using tcp = asio::ip::tcp;
 
 int main() {
     try {
@@ -74,7 +76,10 @@ int main() {
                                                       {"type", "text"}, {"text", "Echo: " + text}}})}};
             });
 
-        constexpr unsigned short http_port = 18100;
+        asio::io_context probe_io_ctx;
+        tcp::acceptor probe_acceptor(probe_io_ctx, {asio::ip::make_address("127.0.0.1"), 0});
+        const auto http_port = probe_acceptor.local_endpoint().port();
+        probe_acceptor.close();
 
         std::cout << "Starting HTTP server on port " << http_port << " (convenience method)\n";
         std::cout << "Server will run in background thread\n";
@@ -94,8 +99,10 @@ int main() {
             }
         });
 
+        constexpr auto startup_delay = std::chrono::milliseconds(200);
+
         // Give server time to start
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        std::this_thread::sleep_for(startup_delay);
 
         // ========== CLIENT SIDE ==========
 
@@ -108,7 +115,8 @@ int main() {
                     std::cout << "\nClient: connecting to server\n";
 
                     auto http_client_transport = std::make_shared<HttpClientTransport>(
-                        client_io_ctx.get_executor(), "http://127.0.0.1:18100/mcp");
+                        client_io_ctx.get_executor(),
+                        "http://127.0.0.1:" + std::to_string(http_port) + "/mcp");
 
                     Client client(http_client_transport, client_io_ctx.get_executor());
 
@@ -157,10 +165,11 @@ int main() {
         // ========== SHUTDOWN ==========
 
         std::cout << "\nShutting down server...\n";
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        constexpr auto shutdown_delay = std::chrono::milliseconds(100);
+        std::this_thread::sleep_for(shutdown_delay);
 
-        // Send SIGINT only to the server thread (not the whole process)
-        ::pthread_kill(server_thread.native_handle(), SIGINT);
+        // Raise SIGINT so run_http() can trigger its graceful shutdown path.
+        std::raise(SIGINT);
 
         // Wait for server thread to finish
         server_thread.join();
