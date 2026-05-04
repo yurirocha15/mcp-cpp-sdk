@@ -441,7 +441,15 @@ static std::unique_ptr<RedisPool> g_redis_pool;
 // Tool handlers
 // ============================================================================
 
-mcp::Task<nlohmann::json> handle_search_products(const SearchProductsArgs& args) {
+mcp::CallToolResult make_tool_result(nlohmann::json payload, bool is_error = false) {
+    mcp::CallToolResult result;
+    result.isError = is_error;
+    result.structuredContent = payload;
+    result.content.push_back(mcp::TextContent{.text = payload.dump()});
+    return result;
+}
+
+mcp::Task<mcp::CallToolResult> handle_search_products(const SearchProductsArgs& args) {
     try {
         std::string query = "/products/search?category=" + args.category +
                             "&min_price=" + std::to_string(args.min_price) +
@@ -471,18 +479,18 @@ mcp::Task<nlohmann::json> handle_search_products(const SearchProductsArgs& args)
             }
         }
 
-        co_return nlohmann::json{{"category", args.category},
-                                 {"total_found", search_data.value("total_found", 0)},
-                                 {"products", products},
-                                 {"top10_popular_ids", top10_ids},
-                                 {"server_type", "cpp"}};
+        co_return make_tool_result(nlohmann::json{{"category", args.category},
+                                                  {"total_found", search_data.value("total_found", 0)},
+                                                  {"products", products},
+                                                  {"top10_popular_ids", top10_ids},
+                                                  {"server_type", "cpp"}});
     } catch (const std::exception& e) {
         std::cerr << "search_products error: " << e.what() << std::endl;
-        co_return nlohmann::json{{"error", e.what()}};
+        co_return make_tool_result(nlohmann::json{{"error", e.what()}}, true);
     }
 }
 
-mcp::Task<nlohmann::json> handle_get_user_cart(const GetUserCartArgs& args) {
+mcp::Task<mcp::CallToolResult> handle_get_user_cart(const GetUserCartArgs& args) {
     try {
         std::string cart_key = "bench:cart:" + args.user_id;
         std::string history_key = "bench:history:" + args.user_id;
@@ -522,19 +530,19 @@ mcp::Task<nlohmann::json> handle_get_user_cart(const GetUserCartArgs& args) {
             }
         }
 
-        co_return nlohmann::json{
+        co_return make_tool_result(nlohmann::json{
             {"user_id", args.user_id},
             {"cart",
              {{"items", items}, {"item_count", items.size()}, {"estimated_total", estimated_total}}},
             {"recent_history", recent_history},
-            {"server_type", "cpp"}};
+            {"server_type", "cpp"}});
     } catch (const std::exception& e) {
         std::cerr << "get_user_cart error: " << e.what() << std::endl;
-        co_return nlohmann::json{{"error", e.what()}};
+        co_return make_tool_result(nlohmann::json{{"error", e.what()}}, true);
     }
 }
 
-mcp::Task<nlohmann::json> handle_checkout(const CheckoutArgs& args) {
+mcp::Task<mcp::CallToolResult> handle_checkout(const CheckoutArgs& args) {
     try {
         int user_num = 42;
         auto pos = args.user_id.rfind('-');
@@ -565,16 +573,16 @@ mcp::Task<nlohmann::json> handle_checkout(const CheckoutArgs& args) {
             calc_data.value("order_id", "ORD-" + args.user_id + "-" + std::to_string(now));
         double total = calc_data.value("total", 0.0);
 
-        co_return nlohmann::json{{"order_id", order_id},
-                                 {"user_id", args.user_id},
-                                 {"total", total},
-                                 {"items_count", args.items.size()},
-                                 {"rate_limit_count", rate_count},
-                                 {"status", "confirmed"},
-                                 {"server_type", "cpp"}};
+        co_return make_tool_result(nlohmann::json{{"order_id", order_id},
+                                                  {"user_id", args.user_id},
+                                                  {"total", total},
+                                                  {"items_count", args.items.size()},
+                                                  {"rate_limit_count", rate_count},
+                                                  {"status", "confirmed"},
+                                                  {"server_type", "cpp"}});
     } catch (const std::exception& e) {
         std::cerr << "checkout error: " << e.what() << std::endl;
-        co_return nlohmann::json{{"error", e.what()}};
+        co_return make_tool_result(nlohmann::json{{"error", e.what()}}, true);
     }
 }
 
@@ -600,7 +608,7 @@ static std::unique_ptr<Server> create_server_with_tools(const boost::asio::any_i
                                       {"max_price", {{"type", "number"}, {"default", 500.0}}},
                                       {"limit", {{"type", "integer"}, {"default", 10}}}}}};
 
-    server->add_tool<SearchProductsArgs, nlohmann::json>(
+    server->add_tool<SearchProductsArgs, mcp::CallToolResult>(
         "search_products", "Search products by category and price range, merged with popularity data",
         std::move(search_schema), handle_search_products);
 
@@ -608,9 +616,9 @@ static std::unique_ptr<Server> create_server_with_tools(const boost::asio::any_i
         {"type", "object"},
         {"properties", {{"user_id", {{"type", "string"}, {"default", "user-00042"}}}}}};
 
-    server->add_tool<GetUserCartArgs, nlohmann::json>("get_user_cart",
-                                                      "Get user cart details with recent order history",
-                                                      std::move(cart_schema), handle_get_user_cart);
+    server->add_tool<GetUserCartArgs, mcp::CallToolResult>(
+        "get_user_cart", "Get user cart details with recent order history", std::move(cart_schema),
+        handle_get_user_cart);
 
     nlohmann::json checkout_schema = {
         {"type", "object"},
@@ -624,7 +632,7 @@ static std::unique_ptr<Server> create_server_with_tools(const boost::asio::any_i
                {{"product_id", {{"type", "integer"}}}, {"quantity", {{"type", "integer"}}}}},
               {"required", nlohmann::json::array({"product_id", "quantity"})}}}}}}}};
 
-    server->add_tool<CheckoutArgs, nlohmann::json>(
+    server->add_tool<CheckoutArgs, mcp::CallToolResult>(
         "checkout", "Process checkout: calculate total, update rate limit, record history",
         std::move(checkout_schema), handle_checkout);
 

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -39,9 +40,7 @@ func main() {
 			{Name: "go", URL: "http://localhost:8082/mcp"},
 		}
 	} else {
-		servers = []ServerConfig{
-			{Name: *name, URL: *url},
-		}
+		servers = []ServerConfig{{Name: *name, URL: *url}}
 	}
 
 	var allResults []ToolResult
@@ -57,7 +56,6 @@ func main() {
 		}
 		allResults = append(allResults, results...)
 
-		// Check for failures
 		for _, r := range results {
 			if !r.Success {
 				exitCode = 1
@@ -65,11 +63,9 @@ func main() {
 		}
 	}
 
-	// Output JSON results to stdout
 	output, _ := json.MarshalIndent(allResults, "", "  ")
 	fmt.Println(string(output))
 
-	// Print summary to stderr
 	fmt.Fprintf(os.Stderr, "\n=== Summary ===\n")
 	successCount := 0
 	for _, r := range allResults {
@@ -88,16 +84,12 @@ func main() {
 
 func testServer(server ServerConfig) ([]ToolResult, error) {
 	ctx := context.Background()
-
-	// Create MCP client with Streamable HTTP transport
 	transport := mcp.NewStreamableClientTransport(server.URL, nil)
-
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "benchmark-client",
 		Version: "1.0.0",
 	}, nil)
 
-	// Initialize session
 	fmt.Fprintf(os.Stderr, "Initializing session...\n")
 	session, err := client.Connect(ctx, transport)
 	if err != nil {
@@ -107,49 +99,37 @@ func testServer(server ServerConfig) ([]ToolResult, error) {
 
 	fmt.Fprintf(os.Stderr, "Session initialized, calling tools...\n")
 
-	var results []ToolResult
-
-	// Tool 1: search_products
-	results = append(results, callTool(ctx, session, server.Name, "search_products", map[string]any{
-		"category":  "Electronics",
-		"min_price": 50.0,
-		"max_price": 500.0,
-		"limit":     10,
-	}))
-
-	// Tool 2: get_user_cart
-	results = append(results, callTool(ctx, session, server.Name, "get_user_cart", map[string]any{
-		"user_id": "user-00042",
-	}))
-
-	// Tool 3: checkout
-	results = append(results, callTool(ctx, session, server.Name, "checkout", map[string]any{
-		"user_id": "user-00042",
-		"items": []map[string]any{
-			{"product_id": 42, "quantity": 2},
-			{"product_id": 1337, "quantity": 1},
-		},
-	}))
+	results := []ToolResult{
+		callTool(ctx, session, server.Name, "search_products", map[string]any{
+			"category":  "Electronics",
+			"min_price": 50.0,
+			"max_price": 500.0,
+			"limit":     10,
+		}),
+		callTool(ctx, session, server.Name, "get_user_cart", map[string]any{
+			"user_id": "user-00042",
+		}),
+		callTool(ctx, session, server.Name, "checkout", map[string]any{
+			"user_id": "user-00042",
+			"items": []map[string]any{
+				{"product_id": 42, "quantity": 2},
+				{"product_id": 1337, "quantity": 1},
+			},
+		}),
+	}
 
 	return results, nil
 }
 
 func callTool(ctx context.Context, session *mcp.ClientSession, serverName string, toolName string, args map[string]any) ToolResult {
-	result := ToolResult{
-		Server: serverName,
-		Tool:   toolName,
-	}
+	result := ToolResult{Server: serverName, Tool: toolName}
 
 	start := time.Now()
-
-	// Call the tool - CallTool accepts Arguments as map[string]any directly
 	toolResult, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      toolName,
 		Arguments: args,
 	})
-
-	elapsed := time.Since(start)
-	result.LatencyMs = float64(elapsed.Microseconds()) / 1000.0
+	result.LatencyMs = float64(time.Since(start).Microseconds()) / 1000.0
 
 	if err != nil {
 		result.Error = fmt.Sprintf("tool call failed: %v", err)
@@ -157,38 +137,61 @@ func callTool(ctx context.Context, session *mcp.ClientSession, serverName string
 		return result
 	}
 
-	// Parse the result
-	if len(toolResult.Content) == 0 {
-		result.Error = "no content in tool result"
-		fmt.Fprintf(os.Stderr, "  ✗ %s: no content (%.2fms)\n", toolName, result.LatencyMs)
+	responseData, err := extractResponseData(toolResult)
+	if err != nil {
+		result.Error = err.Error()
+		fmt.Fprintf(os.Stderr, "  ✗ %s: %s (%.2fms)\n", toolName, result.Error, result.LatencyMs)
 		return result
 	}
 
-	// Extract text content
-	textContent, ok := toolResult.Content[0].(*mcp.TextContent)
-	if !ok {
-		result.Error = "content is not TextContent"
-		fmt.Fprintf(os.Stderr, "  ✗ %s: not text content (%.2fms)\n", toolName, result.LatencyMs)
-		return result
-	}
-
-	// Parse JSON from text
-	var responseData map[string]any
-	if err := json.Unmarshal([]byte(textContent.Text), &responseData); err != nil {
-		result.Error = fmt.Sprintf("failed to parse response JSON: %v", err)
-		fmt.Fprintf(os.Stderr, "  ✗ %s: invalid JSON (%.2fms)\n", toolName, result.LatencyMs)
-		return result
-	}
-
-	// Extract keys
 	keys := make([]string, 0, len(responseData))
-	for k := range responseData {
-		keys = append(keys, k)
+	for key := range responseData {
+		keys = append(keys, key)
 	}
+	sort.Strings(keys)
+
 	result.ResponseKeys = keys
 	result.Success = true
-
 	fmt.Fprintf(os.Stderr, "  ✓ %s: %.2fms (keys: %v)\n", toolName, result.LatencyMs, keys)
-
 	return result
+}
+
+func extractResponseData(toolResult *mcp.CallToolResult) (map[string]any, error) {
+	if toolResult == nil {
+		return nil, fmt.Errorf("no tool result returned")
+	}
+	if toolResult.IsError {
+		return nil, fmt.Errorf("tool result marked as error")
+	}
+	if len(toolResult.Content) > 0 {
+		if textContent, ok := toolResult.Content[0].(*mcp.TextContent); ok {
+			var responseData map[string]any
+			if err := json.Unmarshal([]byte(textContent.Text), &responseData); err != nil {
+				return nil, fmt.Errorf("failed to parse response JSON: %w", err)
+			}
+			return responseData, nil
+		}
+	}
+
+	responseData := make(map[string]any)
+	raw, err := json.Marshal(toolResult.StructuredContent)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal structured content: %w", err)
+	}
+	if err := json.Unmarshal(raw, &responseData); err != nil {
+		return nil, fmt.Errorf("failed to parse structured content: %w", err)
+	}
+	if len(responseData) > 0 {
+		return responseData, nil
+	}
+
+	if len(toolResult.Content) == 0 {
+		return nil, fmt.Errorf("tool result missing content and structured content")
+	}
+
+	if _, ok := toolResult.Content[0].(*mcp.TextContent); !ok {
+		return nil, fmt.Errorf("tool result missing structured content")
+	}
+
+	return nil, fmt.Errorf("tool result missing usable payload")
 }
