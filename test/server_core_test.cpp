@@ -63,6 +63,36 @@ TEST_F(ServerCoreTest, InitializeReturnsServerCapabilities) {
     EXPECT_TRUE(server.is_initialized());
 }
 
+TEST_F(ServerCoreTest, InitializeNegotiatesSupportedClientProtocolVersion) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+
+    mcp::Implementation server_info;
+    server_info.name = "test-server";
+    server_info.version = "1.0";
+
+    mcp::Server server(std::move(server_info), mcp::ServerCapabilities{});
+
+    nlohmann::json response;
+    raw_transport->set_on_write([&response, raw_transport](std::string_view msg) {
+        response = nlohmann::json::parse(msg);
+        raw_transport->close();
+    });
+
+    nlohmann::json init_req = make_initialize_request("1");
+    init_req["params"]["protocolVersion"] = "2025-06-18";
+    raw_transport->enqueue_message(init_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_TRUE(response.contains("result"));
+    EXPECT_EQ(response["result"]["protocolVersion"], "2025-06-18");
+}
+
 TEST_F(ServerCoreTest, ShutdownSetsFlag) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw_transport = transport.get();

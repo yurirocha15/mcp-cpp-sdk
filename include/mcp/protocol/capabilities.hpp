@@ -2,6 +2,7 @@
 
 #include <mcp/protocol/base.hpp>
 
+#include <algorithm>
 #include <array>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -42,6 +43,32 @@ constexpr std::string_view g_LATEST_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2025_1
 constexpr std::array<std::string_view, 4> g_SUPPORTED_PROTOCOL_VERSIONS = {
     g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
     g_PROTOCOL_VERSION_2025_11_25};
+
+/**
+ * @brief Check whether a protocol version is supported by this SDK.
+ *
+ * @param version The protocol version to check.
+ * @return true if the version is present in g_SUPPORTED_PROTOCOL_VERSIONS.
+ */
+[[nodiscard]] constexpr bool is_supported_protocol_version(std::string_view version) {
+    return std::find(g_SUPPORTED_PROTOCOL_VERSIONS.begin(), g_SUPPORTED_PROTOCOL_VERSIONS.end(),
+                     version) != g_SUPPORTED_PROTOCOL_VERSIONS.end();
+}
+
+/**
+ * @brief Negotiate the protocol version to use for a session.
+ *
+ * @details If the requested version is supported, it is selected. Otherwise,
+ * the latest supported version is used as a fallback.
+ *
+ * @param requested_version The version requested by the peer.
+ * @return The negotiated protocol version.
+ */
+[[nodiscard]] constexpr std::string_view negotiate_protocol_version(
+    std::string_view requested_version) {
+    return is_supported_protocol_version(requested_version) ? requested_version
+                                                            : g_LATEST_PROTOCOL_VERSION;
+}
 
 /**
  * @brief Provides visual identifiers for resources, tools, prompts, and implementations.
