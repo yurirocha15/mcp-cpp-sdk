@@ -180,7 +180,7 @@ class SBDebugger {
     SBTarget GetTargetAtIndex(unsigned int) const { return {}; }
 };
 }  // namespace lldb
-#endif
+#endif  // __has_include(<lldb/API/LLDB.h>)
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -198,19 +198,19 @@ class SBDebugger {
 
 namespace asio = boost::asio;
 
+constexpr int g_event_timeout_seconds = 30;
+constexpr int g_default_backtrace_count = 20;
+constexpr std::size_t g_stop_desc_buf_size = 256;
+constexpr unsigned short g_default_port = 9695;
+
 #if __has_include(<lldb/API/LLDB.h>)
 static void set_env(const char* key, const std::string& value) {
 #ifdef _WIN32
     (void)_putenv_s(key, value.c_str());
 #else
     (void)setenv(key, value.c_str(), 1);
-#endif
+#endif  // _WIN32
 }
-
-constexpr int g_event_timeout_seconds = 30;
-constexpr int g_default_backtrace_count = 20;
-constexpr std::size_t g_stop_desc_buf_size = 256;
-constexpr unsigned short g_default_port = 9695;
 
 static void setup_lldb_server_path() {
     // Check if LLDB_DEBUGSERVER_PATH is already set
@@ -284,11 +284,9 @@ static void setup_lldb_server_path() {
             return;
         }
     }
-#endif
-
-    // Candidate 3: Plain lldb-server on $PATH (already works, no action needed)
+#endif  // __APPLE__
 }
-#endif
+#endif  // __has_include(<lldb/API/LLDB.h>)
 
 struct LLDBGuard {
     LLDBGuard() {
