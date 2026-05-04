@@ -21,10 +21,12 @@ RUN mkdir -p build && \
     conan install .. --output-folder=. --build=missing -s build_type=Release -s compiler.cppstd=20
 
 COPY include/ include/
-COPY benchmark/cpp/CMakeLists.txt benchmark/cpp/benchmark_server.cpp ./
+COPY src/ src/
+COPY CMakeLists.txt conanfile.py ./
+COPY benchmark/cpp/ benchmark/cpp/
 
 WORKDIR /build/build
-RUN cmake .. \
+RUN cmake ../benchmark/cpp \
     -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_STANDARD=20
