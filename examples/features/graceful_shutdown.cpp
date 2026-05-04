@@ -6,8 +6,8 @@
 /// - Manual transport pattern (not run_stdio convenience)
 /// - Timer-based auto-exit for CI/testing
 
-#include <mcp/detail/signal.hpp>
 #include <mcp/server.hpp>
+#include <mcp/signal.hpp>
 #include <mcp/transport/stdio.hpp>
 
 #include <boost/asio/co_spawn.hpp>
@@ -15,12 +15,53 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <condition_variable>
 #include <cstdlib>
+#include <deque>
 #include <iostream>
 #include <memory>
+#include <mutex>
+#include <streambuf>
 #include <string>
 
 namespace asio = boost::asio;
+
+namespace {
+
+class BlockingInputBuffer : public std::streambuf {
+   public:
+    void close() {
+        {
+            std::lock_guard lock(mutex_);
+            closed_ = true;
+        }
+        cv_.notify_all();
+    }
+
+   protected:
+    int_type underflow() override {
+        std::unique_lock lock(mutex_);
+        cv_.wait(lock, [this] { return closed_ || !buffer_.empty(); });
+
+        if (buffer_.empty()) {
+            return traits_type::eof();
+        }
+
+        current_char_ = buffer_.front();
+        buffer_.pop_front();
+        setg(&current_char_, &current_char_, &current_char_ + 1);
+        return traits_type::to_int_type(current_char_);
+    }
+
+   private:
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::deque<char> buffer_;
+    char current_char_ = '\0';
+    bool closed_ = false;
+};
+
+}  // namespace
 
 int main() {
     try {
@@ -81,7 +122,10 @@ int main() {
             });
 
         // ========== TRANSPORT SETUP ==========
-        auto transport = std::make_shared<StdioTransport>(io_ctx.get_executor());
+        BlockingInputBuffer input_buffer;
+        std::istream controlled_input(&input_buffer);
+        auto transport =
+            std::make_shared<StdioTransport>(io_ctx.get_executor(), controlled_input, std::cout);
 
         // ========== GRACEFUL SHUTDOWN (auto-triggered for CI/testing) ==========
         asio::co_spawn(
@@ -91,6 +135,7 @@ int main() {
                 trigger.expires_after(std::chrono::seconds(1));
                 co_await trigger.async_wait(asio::use_awaitable);
                 std::cout << "[Main] Initiating graceful shutdown\n";
+                input_buffer.close();
                 graceful_shutdown(io_ctx, transport);
                 std::cout << "[Main] Graceful shutdown initiated (timeout: "
                           << constants::g_shutdown_timeout_ms << "ms)\n";
