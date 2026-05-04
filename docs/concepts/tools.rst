@@ -111,10 +111,11 @@ Error Handling
 
 There are two primary ways to handle errors in tool handlers:
 
-1. **Throwing Exceptions**: If a handler throws a `std::exception`, the SDK
-   automatically catches it and returns a tool error response (`isError: true`)
-   to the client. The exception message is typically included in the error
-   content.
+1. **Throwing Exceptions**: The synchronous ``add_tool(name, description,
+   schema, std::function<nlohmann::json(const nlohmann::json&)>)`` overload
+   catches handler exceptions and converts them into a tool error response
+   (``isError: true``). Typed and asynchronous handlers propagate exceptions as
+   JSON-RPC internal errors instead.
 2. **Explicit Error Returns**: You can return a `mcp::CallToolResult` object
    with the `isError` field set to `true`. This gives you full control over
    the error message and any additional metadata you want to return.
@@ -125,15 +126,17 @@ The following example demonstrates both patterns:
    :language: cpp
    :lines: 45-76
 
-Note that errors in tool handlers are treated as application-level errors,
-not JSON-RPC protocol errors. This means the connection remains stable even
-if a tool fails. This is a critical distinction:
+Use ``isError: true`` when the tool completed normally but needs to report an
+application-level failure back to the client. Unhandled exceptions from typed or
+async handlers become JSON-RPC errors, while exceptions from the raw synchronous
+JSON overload are converted into tool error results. In both cases, the SDK
+keeps the session alive when possible. This is a critical distinction:
 
 - **Protocol Errors**: Issues like malformed JSON, invalid method names, or
   disconnected transports cause JSON-RPC level errors.
 - **Application Errors**: Issues within your tool's logic (e.g., "file not found",
-  "invalid input value") should be handled by setting `isError: true` or
-  throwing an exception.
+  "invalid input value") should usually be returned as ``isError: true`` tool
+  results so the client can inspect them as normal tool output.
 
 Tool Output Schema
 ------------------

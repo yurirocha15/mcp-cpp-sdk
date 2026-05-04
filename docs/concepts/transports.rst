@@ -18,7 +18,8 @@ The SDK includes several built-in transport types to cover different use cases:
    This is the most common choice for connecting to local agents like Claude Desktop.
 2. **HttpServerTransport / HttpClientTransport**: For MCP over HTTP with custom
    streamable headers, following the official MCP specification.
-3. **WebSocketTransport**: For persistent, bidirectional network communication.
+3. **WebSocketServerTransport / WebSocketClientTransport**: For persistent,
+   bidirectional network communication.
    Ideal for high-performance remote integrations.
 4. **MemoryTransport**: An in-memory transport for unit testing and in-process
    communication.
@@ -30,7 +31,8 @@ The Stdio transport is the default and recommended way to integrate with local t
 It leverages the standard input and output streams of the process, making it
 extremely easy to deploy as a subprocess.
 
-### Server Side
+Server Side
+~~~~~~~~~~~
 
 The simplest way to start a stdio-based server is using the high-level `run_stdio()`
 method, which blocks the main thread until the connection is closed.
@@ -54,7 +56,8 @@ method, which blocks the main thread until the connection is closed.
        server.run_stdio();
    }
 
-### Client Side
+Client Side
+~~~~~~~~~~~
 
 Clients can connect to a stdio-based server by providing the executor to the
 `StdioTransport`.
@@ -78,7 +81,8 @@ HTTP Transport (Network)
 The HTTP transport follows the MCP over HTTP specification, which uses a long-running
 POST request for server-sent events or streamable data.
 
-### HTTP Server Convenience
+HTTP Server Convenience
+~~~~~~~~~~~~~~~~~~~~~~~
 
 For developers who want a quick way to host an MCP server over HTTP without
 worrying about the underlying networking boilerplate, the SDK provides `run_http()`.
@@ -96,7 +100,8 @@ The following example shows how to use the convenience method:
    :lines: 83-99
    :dedent: 8
 
-### Manual HTTP Configuration
+Manual HTTP Configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
 If you need to integrate the MCP transport into an existing HTTP server (like
 one built with Boost.Beast), you can manage the `HttpServerTransport` lifecycle
@@ -110,7 +115,8 @@ yourself.
 WebSocket Transport
 -------------------
 
-For full-duplex, bidirectional communication over the network, `WebSocketTransport`
+For full-duplex, bidirectional communication over the network,
+``WebSocketServerTransport`` and ``WebSocketClientTransport``
 is the ideal choice. Unlike HTTP, which often requires polling or long-running
 streams for bidirectional data, WebSockets provide a native persistent connection.
 
@@ -118,9 +124,11 @@ streams for bidirectional data, WebSockets provide a native persistent connectio
 
    #include <mcp/transport/websocket.hpp>
 
-   // On the server
-   auto transport = std::make_shared<mcp::WebSocketTransport>(io_ctx.get_executor());
-   co_await server.run(transport, io_ctx.get_executor());
+   // On the server, accept a TCP socket first and then wrap it.
+   mcp::WebSocketServerTransport server_transport(std::move(socket));
+
+   // On the client, the transport performs the TCP + WebSocket handshake.
+   mcp::WebSocketClientTransport client_transport(io_ctx.get_executor(), "127.0.0.1", "9001");
 
 MemoryTransport for Testing
 ---------------------------
@@ -130,7 +138,8 @@ allows you to run both a server and a client in the same process, communicating
 entirely in memory. This eliminates the need for network configuration or local
 process management during testing.
 
-### Creating Transport Pairs
+Creating Transport Pairs
+~~~~~~~~~~~~~~~~~~~~~~~~
 
 You should always use the `create_memory_transport_pair` helper to ensure that
 both ends of the transport are correctly linked.
@@ -140,7 +149,8 @@ both ends of the transport are correctly linked.
    :lines: 74-80
    :dedent: 8
 
-### Usage in Integration Tests
+Usage in Integration Tests
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Because `MemoryTransport` implements the same `ITransport` interface as all other
 transports, your server and client code remain identical to production.

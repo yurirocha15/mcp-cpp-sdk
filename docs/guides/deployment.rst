@@ -62,11 +62,11 @@ In production, servers are frequently restarted or moved. Graceful shutdown ensu
 Signal Handling
 ~~~~~~~~~~~~~~~
 
-You should handle signals like ``SIGINT`` and ``SIGTERM`` to trigger the shutdown process. The SDK provides utility functions in ``mcp/detail/signal.hpp`` to assist with this.
+You should handle signals like ``SIGINT`` and ``SIGTERM`` to trigger the shutdown process. The SDK provides ``mcp::graceful_shutdown()`` in ``mcp/signal.hpp`` to close the transport and stop the ``io_context`` after in-flight work finishes or times out.
 
 .. literalinclude:: ../../examples/features/graceful_shutdown.cpp
    :language: cpp
-   :start-after: // ========== SIGNAL HANDLER COROUTINE ==========
+   :start-after: // ========== GRACEFUL SHUTDOWN (auto-triggered for CI/testing) ==========
    :end-before: // ========== SERVER COROUTINE ==========
    :dedent: 8
 
@@ -196,7 +196,7 @@ For advanced users, ``graceful_shutdown.cpp`` demonstrates how to build a robust
 
 .. literalinclude:: ../../examples/features/graceful_shutdown.cpp
    :language: cpp
-   :lines: 128-140
+   :lines: 86-118
    :dedent: 8
 
 Cross-References

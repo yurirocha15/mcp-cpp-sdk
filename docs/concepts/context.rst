@@ -44,13 +44,14 @@ Available log levels (from most to least severe):
    server.add_tool("debug_tool", "Tool with logging", schema,
                    [](const nlohmann::json& args, mcp::Context& ctx) -> mcp::Task<nlohmann::json> {
                        // Direct level helpers
-                       ctx.log_info("Executing debug tool...");
+                       co_await ctx.log_info("Executing debug tool...");
 
                        // Generic log method
-                       ctx.log(mcp::LoggingLevel::eDebug, "Parameters: " + args.dump());
+                       co_await ctx.log(mcp::LoggingLevel::eDebug, "Parameters: " + args.dump());
 
                        if (args.contains("error")) {
-                           ctx.log(mcp::LoggingLevel::eError, "An intentional error occurred");
+                           co_await ctx.log(mcp::LoggingLevel::eError,
+                                            "An intentional error occurred");
                        }
 
                        co_return nlohmann::json{{"status", "ok"}};
@@ -110,7 +111,7 @@ Handlers should periodically check ``ctx.is_cancelled()`` during long-running op
    for (int i = 0; i < steps; ++i) {
        // Check for cancellation at the start of each iteration
        if (ctx.is_cancelled()) {
-           ctx.log_info("Task cancelled by client. Cleaning up...");
+           co_await ctx.log_info("Task cancelled by client. Cleaning up...");
            // Perform any necessary cleanup (closing files, etc.)
            co_return nlohmann::json{
                {"content", {{{"type", "text"}, {"text", "Task cancelled"}}}},
@@ -147,7 +148,8 @@ The server sends a ``sampling/createMessage`` request back to the client. The cl
                            auto result = co_await ctx.sample_llm(params);
                            co_return nlohmann::json{{"summary", result.content.text}};
                        } catch (const std::exception& e) {
-                           ctx.log(mcp::LoggingLevel::eError, "Sampling failed: " + std::string(e.what()));
+                           co_await ctx.log(mcp::LoggingLevel::eError,
+                                            "Sampling failed: " + std::string(e.what()));
                            co_return nlohmann::json{{"error", "Failed to sample LLM"}};
                        }
                    });

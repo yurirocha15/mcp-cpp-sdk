@@ -1,6 +1,6 @@
 # MCP C++ SDK Feature Examples
 
-This directory contains feature examples demonstrating advanced capabilities of the MCP C++ SDK. Each example is self-contained, non-interactive, and uses the loopback pattern (in-process server+client) for fast, deterministic testing.
+This directory contains feature examples demonstrating advanced capabilities of the MCP C++ SDK. Each example is self-contained and non-interactive. Most examples use loopback or other in-process test-friendly patterns so they remain fast and deterministic in CI.
 
 ## Quick Start
 
@@ -200,7 +200,6 @@ done
 
 **Key APIs:**
 - `mcp::graceful_shutdown()`
-- `mcp::detail::trigger_shutdown_signal()`
 - `Server::run_stdio()`
 
 **Run:** `./build/release/example-feature-graceful-shutdown`
@@ -222,7 +221,7 @@ done
 
 **Run:** `./build/release/example-feature-http-server-convenience`
 
-**Expected output:** HTTP server started on port 18100, client connects and calls tool
+**Expected output:** HTTP server started on a local port, client connects and calls tool
 
 ---
 
@@ -242,13 +241,11 @@ done
 - `make_auth_middleware()`
 - `generate_pkce_pair()`
 
-**Build:** `cmake -DBUILD_OAUTH_EXAMPLE=ON -B build && cmake --build build`
+**Build:** `python scripts/build.py --examples`
 
-**Run:** `./build/example-feature-oauth-flow`
+**Run:** `./build/release/example-feature-oauth-flow`
 
 **Expected output:** OAuth discovery, token acquisition, injection, refresh on expiry
-
-**Note:** This example is gated behind `BUILD_OAUTH_EXAMPLE` CMake option (OFF by default).
 
 ---
 
@@ -256,7 +253,7 @@ done
 
 ### Loopback Pattern (Non-Interactive Testing)
 
-All examples use the loopback pattern for fast, deterministic testing:
+Many examples use the loopback pattern for fast, deterministic testing:
 
 ```cpp
 asio::io_context io_ctx;
@@ -277,14 +274,16 @@ This approach:
 - ✅ Requires no external services
 - ✅ Can run in CI without network access
 
+Examples such as ``http_server_convenience.cpp`` and ``graceful_shutdown.cpp`` demonstrate transport and shutdown behavior directly instead of using ``MemoryTransport``, but they are still written to run unattended in CI.
+
 ### Async Handler Pattern
 
 Async tool handlers with Context:
 
 ```cpp
 server.add_tool("my_tool", "Description", schema,
-    [](mcp::Context& ctx, const nlohmann::json& args) -> mcp::Task<nlohmann::json> {
-        ctx.log_info("Starting work...");
+    [](const nlohmann::json& args, mcp::Context& ctx) -> mcp::Task<nlohmann::json> {
+        co_await ctx.log_info("Starting work...");
 
         if (ctx.is_cancelled()) {
             co_return make_error_result("Cancelled");
@@ -303,12 +302,6 @@ server.add_tool("my_tool", "Description", schema,
 python scripts/build.py --examples
 ```
 
-### Build with OAuth Example
-
-```bash
-cmake -DBUILD_OAUTH_EXAMPLE=ON -B build && cmake --build build
-```
-
 ### Build with Tests and Examples
 
 ```bash
@@ -323,14 +316,6 @@ All examples have auto-exit timers (typically 2-5 seconds). If an example hangs:
 - Check for missing server/client initialization
 - Verify transport is properly connected
 - Check for uncaught exceptions
-
-### OAuth example not building
-
-Ensure you're building with `BUILD_OAUTH_EXAMPLE=ON`:
-
-```bash
-cmake -DBUILD_OAUTH_EXAMPLE=ON -B build && cmake --build build
-```
 
 ### Link errors
 
