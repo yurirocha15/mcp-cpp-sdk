@@ -1,5 +1,5 @@
-#include <mcp/detail/signal.hpp>
 #include <mcp/server.hpp>
+#include <mcp/signal.hpp>
 #include <mcp/transport/stdio.hpp>
 
 #include <boost/asio/co_spawn.hpp>
