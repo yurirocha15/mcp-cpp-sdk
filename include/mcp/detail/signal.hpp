@@ -22,13 +22,19 @@ namespace mcp::detail {
  */
 inline void trigger_shutdown_signal() { std::raise(SIGINT); }
 
+}  // namespace mcp::detail
+
+namespace mcp {
+
 /**
  * @brief Performs a graceful shutdown of the IO context and transport.
  *
- * Closes the transport and starts a timer to force stop the io_context if it
- * doesn't terminate within the specified timeout.
+ * Closes the transport (preventing new connections) and starts a watchdog
+ * timer. If the io_context doesn't terminate within the specified timeout,
+ * it is forcefully stopped.
  *
- * @return A shared pointer to the watchdog timer.
+ * @return A shared pointer to the watchdog timer. Hold or discard — the
+ *         timer self-captures in its callback and auto-destructs on fire.
  */
 template <typename TransportPtr>
 auto graceful_shutdown(boost::asio::io_context& io_ctx, TransportPtr transport,
@@ -46,4 +52,4 @@ auto graceful_shutdown(boost::asio::io_context& io_ctx, TransportPtr transport,
     return timer;
 }
 
-}  // namespace mcp::detail
+}  // namespace mcp

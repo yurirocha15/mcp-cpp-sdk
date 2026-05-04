@@ -2,13 +2,9 @@
 /// @brief Demonstrates graceful shutdown patterns in MCP server.
 ///
 /// This example shows:
-/// - Setting up signal handlers for SIGINT/SIGTERM
-/// - Triggering graceful shutdown with mcp::detail::graceful_shutdown()
-/// - Closing transport to stop accepting new connections
-/// - Waiting for in-flight requests to complete (with timeout)
-/// - Forcing shutdown if graceful timeout expires
-/// - Using timer-based auto-exit for CI/testing (no actual signal waiting)
+/// - Calling mcp::graceful_shutdown() to close transport and stop io_context
 /// - Manual transport pattern (not run_stdio convenience)
+/// - Timer-based auto-exit for CI/testing
 
 #include <mcp/detail/signal.hpp>
 #include <mcp/server.hpp>
@@ -17,7 +13,6 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
-#include <boost/asio/signal_set.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <cstdlib>
@@ -88,32 +83,17 @@ int main() {
         // ========== TRANSPORT SETUP ==========
         auto transport = std::make_shared<StdioTransport>(io_ctx.get_executor());
 
-        // ========== SIGNAL HANDLING + GRACEFUL SHUTDOWN ==========
-        auto signals = std::make_shared<asio::signal_set>(io_ctx, SIGINT, SIGTERM);
-        std::shared_ptr<asio::steady_timer> shutdown_timer;
-
+        // ========== GRACEFUL SHUTDOWN (auto-triggered for CI/testing) ==========
         asio::co_spawn(
             io_ctx,
-            [&, signals]() -> Task<void> {
-                std::cout << "[Main] Signal handler ready (waiting for SIGINT/SIGTERM)\n";
-                auto signal_number = co_await signals->async_wait(asio::use_awaitable);
-                std::cout << "[Main] Received signal " << signal_number
-                          << ", initiating graceful shutdown\n";
-                shutdown_timer = detail::graceful_shutdown(io_ctx, transport);
+            [&, transport]() -> Task<void> {
+                asio::steady_timer trigger(io_ctx.get_executor());
+                trigger.expires_after(std::chrono::seconds(1));
+                co_await trigger.async_wait(asio::use_awaitable);
+                std::cout << "[Main] Initiating graceful shutdown\n";
+                graceful_shutdown(io_ctx, transport);
                 std::cout << "[Main] Graceful shutdown initiated (timeout: "
-                          << mcp::constants::g_shutdown_timeout_ms << "ms)\n";
-            },
-            asio::detached);
-
-        // ========== AUTO-EXIT TIMER (for CI/testing) ==========
-        asio::co_spawn(
-            io_ctx,
-            [&]() -> Task<void> {
-                asio::steady_timer auto_trigger(io_ctx.get_executor());
-                auto_trigger.expires_after(std::chrono::seconds(1));
-                co_await auto_trigger.async_wait(asio::use_awaitable);
-                std::cout << "[Main] Auto-triggering shutdown signal (for CI/testing)\n";
-                detail::trigger_shutdown_signal();
+                          << constants::g_shutdown_timeout_ms << "ms)\n";
             },
             asio::detached);
 
@@ -135,7 +115,6 @@ int main() {
         std::cout << "[Main] Starting io_context\n";
         io_ctx.run();
 
-        shutdown_timer.reset();
         std::cout << "[Main] io_context stopped, exiting normally\n";
         return EXIT_SUCCESS;
 

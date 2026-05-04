@@ -86,7 +86,7 @@ This is the most comprehensive example, showing virtually every SDK feature.
 
 .. code-block:: bash
 
-   make build
+   python scripts/build.py --examples
    ./build/example-server-stdio
 
 client_stdio
@@ -117,7 +117,7 @@ A complete MCP client implementation demonstrating:
 
 .. code-block:: bash
 
-   make build
+   python scripts/build.py --examples
    ./build/example-client-stdio
 
 server_with_sampling
@@ -145,7 +145,7 @@ enabling bidirectional communication patterns.
 
 .. code-block:: bash
 
-   make build
+   python scripts/build.py --examples
    ./build/example-server-sampling
 
 echo_websocket
@@ -174,7 +174,7 @@ MCP communication.
 
 .. code-block:: bash
 
-   make build
+   python scripts/build.py --examples
    ./build/example-echo-websocket
 
 http_loopback
@@ -201,7 +201,7 @@ MCP communication with standard headers.
 
 .. code-block:: bash
 
-   make build
+   python scripts/build.py --examples
    ./build/example-http-loopback
 
 llama_server
@@ -228,7 +228,7 @@ a fully compliant MCP server.
 
 .. code-block:: bash
 
-   make build
+   python scripts/build.py --examples
    ./build/example-llama-mcp
    # or with HTTP transport:
    ./build/example-llama-mcp --transport=http

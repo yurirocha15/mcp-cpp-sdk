@@ -70,7 +70,7 @@ You should handle signals like ``SIGINT`` and ``SIGTERM`` to trigger the shutdow
    :end-before: // ========== SERVER COROUTINE ==========
    :dedent: 8
 
-The :cpp:func:`mcp::detail::graceful_shutdown` function closes the transport (preventing new connections) and starts a watchdog timer. If requests don't finish within the timeout (defined by ``mcp::constants::g_shutdown_timeout_ms``), it stops the ``io_context`` forcefully.
+The :cpp:func:`mcp::graceful_shutdown` function closes the transport (preventing new connections) and starts a watchdog timer. If requests don't finish within the timeout (defined by ``mcp::constants::g_shutdown_timeout_ms``), it stops the ``io_context`` forcefully.
 
 Production Considerations
 -------------------------

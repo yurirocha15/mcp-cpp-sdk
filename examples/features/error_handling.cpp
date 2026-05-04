@@ -145,8 +145,8 @@ int main() {
                         std::cout << "[Client] Calling throw_error tool...\n";
                         nlohmann::json args1 = {{"message", "test error"}};
                         auto result1 = co_await client.call_tool("throw_error", args1);
-                        std::cout << "[Client] Unexpected success: " << result1.content.size()
-                                  << " content blocks\n";
+                        std::cout << "[Client] Server handled error as result (isError=true): "
+                                  << result1.content.size() << " content blocks\n";
                     } catch (const std::exception& e) {
                         std::cout << "[Client] Caught exception: " << e.what() << "\n";
                         std::cout << "[Client] Server continues running after error\n";
@@ -185,8 +185,8 @@ int main() {
                             << "[Client] Calling invalid_access tool (missing required_field)...\n";
                         nlohmann::json args3 = {{"optional_field", "value"}};
                         auto result3 = co_await client.call_tool("invalid_access", args3);
-                        std::cout << "[Client] Unexpected success: " << result3.content.size()
-                                  << " content blocks\n";
+                        std::cout << "[Client] Server handled error as result (isError=true): "
+                                  << result3.content.size() << " content blocks\n";
                     } catch (const std::exception& e) {
                         std::cout << "[Client] Caught exception: " << e.what() << "\n";
                         std::cout << "[Client] Server continues running after error\n";

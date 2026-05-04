@@ -28,7 +28,7 @@ void Server::run_stdio(std::istream& input, std::ostream& output) {
         if (ec == boost::asio::error::operation_aborted) {
             return;
         }
-        watchdog = detail::graceful_shutdown(io_ctx, transport);
+        watchdog = graceful_shutdown(io_ctx, transport);
     });
 
     std::exception_ptr ep;

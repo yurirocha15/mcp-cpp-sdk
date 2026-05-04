@@ -33,7 +33,7 @@ int main() {
         const int NUM_ITERATIONS = 1000;
 
         std::cout << "\n" << std::string(70, '=') << "\n";
-        std::cout << "Stdio Transport Benchmark\n";
+        std::cout << "Memory Transport Benchmark (stdio-equivalent)\n";
         std::cout << std::string(70, '=') << "\n";
         std::cout << "Iterations: " << NUM_ITERATIONS << "\n\n";
 
@@ -113,7 +113,7 @@ int main() {
                     double calls_per_sec = (NUM_ITERATIONS * 1000.0) / total_ms;
 
                     std::cout << "\n" << std::string(70, '=') << "\n";
-                    std::cout << "Benchmark Results (Stdio Transport)\n";
+                    std::cout << "Benchmark Results (Memory Transport)\n";
                     std::cout << std::string(70, '=') << "\n";
                     std::cout << std::fixed << std::setprecision(2);
                     std::cout << "Total time:        " << total_ms << " ms\n";

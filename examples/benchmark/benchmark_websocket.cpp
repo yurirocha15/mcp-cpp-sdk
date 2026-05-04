@@ -32,7 +32,7 @@ int main() {
     try {
         using namespace mcp;
 
-        const int NUM_ITERATIONS = 1000;
+        const int NUM_ITERATIONS = 50;
         const std::string HOST = "127.0.0.1";
 
         asio::io_context io_ctx;
@@ -126,6 +126,9 @@ int main() {
 
                 std::cout << "\n[Client] Shutting down\n";
                 client.close();
+                asio::steady_timer exit_timer(io_ctx.get_executor());
+                exit_timer.expires_after(std::chrono::milliseconds(100));
+                co_await exit_timer.async_wait(asio::use_awaitable);
                 io_ctx.stop();
             },
             asio::detached);

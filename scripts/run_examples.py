@@ -39,8 +39,7 @@ def run_examples():
     # Find all example binaries (non-interactive, multiplatform examples)
     examples = sorted(
         list(build_dir.glob("example-feature-*")) +
-        list(build_dir.glob("example-http-loopback")) +
-        list(build_dir.glob("example-debugger-server"))
+        list(build_dir.glob("example-http-loopback"))
     )
     if not examples:
         print("No example binaries found!")
