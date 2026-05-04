@@ -8,7 +8,7 @@ directory.
 Overview
 --------
 
-The SDK provides seven comprehensive examples:
+The SDK provides seven core examples plus 12 specialized feature examples:
 
 1. **server_stdio** - Full-featured MCP server over stdio
 2. **client_stdio** - MCP client demonstrating all client operations
@@ -45,14 +45,18 @@ Benchmarks
 ----------
 
 Performance-focused examples demonstrating the efficiency of different transport
-layers under load.
+layers under load. These are quick teaching benchmarks that run locally and in
+CI; for sustained multi-service load testing, use the separate ``benchmark/``
+suite.
 
-1. **benchmark_stdio** - Measures roundtrip latency and throughput over stdio
+1. **benchmark_stdio** - Measures roundtrip latency and throughput over the in-memory stdio-equivalent transport
 2. **benchmark_http** - Performance analysis of the HTTP transport layer
 3. **benchmark_websocket** - Benchmarking WebSocket communication throughput
 
-Each benchmark performs a fixed number of iterations (e.g., 1000 tool calls)
-and reports total time, average latency, and calls per second.
+Each benchmark performs a fixed number of iterations and reports total time,
+average latency, and calls per second. The current examples run 1000 iterations
+for the memory and HTTP transports, and 50 iterations for the WebSocket
+transport so the example remains fast and deterministic in automation.
 
 Each example is fully functional and can be used as a starting point for your
 own MCP applications.
@@ -87,7 +91,7 @@ This is the most comprehensive example, showing virtually every SDK feature.
 .. code-block:: bash
 
    python scripts/build.py --examples
-   ./build/example-server-stdio
+   ./build/release/example-server-stdio
 
 client_stdio
 ------------
@@ -118,7 +122,7 @@ A complete MCP client implementation demonstrating:
 .. code-block:: bash
 
    python scripts/build.py --examples
-   ./build/example-client-stdio
+   ./build/release/example-client-stdio
 
 server_with_sampling
 --------------------
@@ -146,7 +150,7 @@ enabling bidirectional communication patterns.
 .. code-block:: bash
 
    python scripts/build.py --examples
-   ./build/example-server-sampling
+   ./build/release/example-server-sampling
 
 echo_websocket
 --------------
@@ -175,7 +179,7 @@ MCP communication.
 .. code-block:: bash
 
    python scripts/build.py --examples
-   ./build/example-echo-websocket
+   ./build/release/example-echo-websocket
 
 http_loopback
 -------------
@@ -202,7 +206,7 @@ MCP communication with standard headers.
 .. code-block:: bash
 
    python scripts/build.py --examples
-   ./build/example-http-loopback
+   ./build/release/example-http-loopback
 
 llama_server
 ------------
@@ -229,9 +233,9 @@ a fully compliant MCP server.
 .. code-block:: bash
 
    python scripts/build.py --examples
-   ./build/example-llama-mcp
+   ./build/release/example-llama-mcp
    # or with HTTP transport:
-   ./build/example-llama-mcp --transport=http
+   ./build/release/example-llama-mcp --transport=http
 
 debugger_server
 ---------------
@@ -259,7 +263,7 @@ integration with system-level debugging tools.
 .. code-block:: bash
 
    cmake -DBUILD_LLDB_EXAMPLE=ON -B build && cmake --build build
-   ./build/example-debugger-server
+   ./build/release/example-debugger-server
 
 Note: Requires ``-DBUILD_LLDB_EXAMPLE=ON`` and LLDB development libraries installed.
 

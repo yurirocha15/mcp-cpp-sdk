@@ -23,10 +23,11 @@ The SDK follows the JSON-RPC 2.0 specification for error reporting. Standard err
 - ``-32602``: Invalid params
 - ``-32603``: Internal error
 
-Additionally, the SDK defines MCP-specific codes:
+Additionally, the SDK defines MCP-specific codes used throughout the library:
 
-- ``-32000``: Request cancelled
+- ``-32000``: Unauthorized
 - ``-32001``: Request timed out
+- ``-32800``: Request cancelled
 
 When implementing custom tools, you should prefer using standard error codes where they apply, or use codes in the range ``-32000`` to ``-32099`` for application-specific protocol errors.
 
@@ -35,7 +36,7 @@ Server-side Error Handling
 
 Server handlers (tools, resources, prompts) can report errors in two primary ways:
 
-1. **Throwing Exceptions**: Any ``std::exception`` thrown from a handler is automatically caught by the SDK and converted into a JSON-RPC ``Internal error (-32603)`` response. This is the safest way to handle unexpected conditions, as the SDK ensures the error is correctly serialized and the connection remains stable.
+1. **Throwing Exceptions**: Exceptions from typed or asynchronous handlers propagate as JSON-RPC ``Internal error (-32603)`` responses. The raw synchronous ``add_tool(name, description, schema, std::function<nlohmann::json(const nlohmann::json&)>)`` overload is different: it catches exceptions and converts them into tool results with ``isError: true``.
 2. **Returning Error Results**: For application-level errors (e.g., "File not found" or "Invalid input"), handlers can return a ``CallToolResult`` with the ``isError`` flag set to ``true``. This allows the client to distinguish between a technical failure (like a crash or timeout) and a logical error within the tool's execution.
 
 Choosing Between Exceptions and Error Results
@@ -69,7 +70,7 @@ Example: Returning an Error Result
 Implicit Exceptions
 ~~~~~~~~~~~~~~~~~~~
 
-It's important to be aware that some library calls might throw exceptions that you don't explicitly catch. For instance, ``nlohmann::json`` throws an exception if you try to access a non-existent key using ``at()``. The SDK will catch these and report them as internal errors, ensuring the server doesn't crash.
+It's important to be aware that some library calls might throw exceptions that you don't explicitly catch. For instance, ``nlohmann::json`` throws an exception if you try to access a non-existent key using ``at()``. In typed or asynchronous handlers, those exceptions propagate as JSON-RPC internal errors; in the raw synchronous JSON overload, they are wrapped into a tool error result instead.
 
 .. literalinclude:: ../../examples/features/error_handling.cpp
    :language: cpp
@@ -128,14 +129,15 @@ The SDK provides a built-in logging system that is essential for debugging and m
 .. code-block:: cpp
 
    server.add_tool("example", "...", schema,
-       [](const nlohmann::json& args, mcp::Context& ctx) -> Task<nlohmann::json> {
+       [](const nlohmann::json& args, mcp::Context& ctx) -> mcp::Task<nlohmann::json> {
            try {
                // ... work ...
            } catch (const std::exception& e) {
-               ctx.log_error("Tool failed: " + std::string(e.what()));
+               co_await ctx.log(mcp::LoggingLevel::eError,
+                                "Tool failed: " + std::string(e.what()));
                throw;
-           }
-       });
+            }
+        });
 
 By logging at the server level, you can aggregate errors across multiple clients and identify systemic issues. For more details on logging, see the :doc:`../concepts/context` guide.
 
