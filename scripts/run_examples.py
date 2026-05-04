@@ -6,6 +6,7 @@ Runs all non-interactive examples that are safe for CI automation.
 
 Examples that ARE run:
   - example-feature-*: Feature demonstration examples (all use loopback pattern)
+  - example-echo-websocket: WebSocket transport loopback
   - example-http-loopback: HTTP transport loopback
   - example-benchmark-*: Throughput measurement examples
 
@@ -15,7 +16,6 @@ Examples NOT run (require stdin or block indefinitely):
   - example-server-stdio: Server blocks waiting for stdio connection
   - example-server-simple: Server blocks waiting for stdio connection
   - example-debugger-server: Long-running HTTP server, blocks indefinitely
-  - example-echo-websocket: WebSocket transport hangs (server.run() returns immediately)
   - example-llama-mcp: Requires llama.cpp library
   - example-server-sampling: Requires LLM sampling connection
 """
@@ -39,6 +39,7 @@ def run_examples():
     # Find all example binaries (non-interactive, multiplatform examples)
     examples = sorted(
         list(build_dir.glob("example-feature-*")) +
+        list(build_dir.glob("example-echo-websocket")) +
         list(build_dir.glob("example-http-loopback"))
     )
     if not examples:
