@@ -7,6 +7,9 @@
 ///
 /// The convenience method is ideal for simple use cases where you don't need
 /// fine-grained control over the transport lifecycle.
+///
+/// @note This example uses pthread_kill() to deliver SIGINT to the server thread
+///       and is therefore POSIX-only (Linux / macOS). It will not compile on Windows.
 
 #include <mcp/client.hpp>
 #include <mcp/server.hpp>

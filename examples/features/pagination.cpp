@@ -57,8 +57,11 @@ int main() {
 
             server.add_tool(
                 tool_name, description, tool_schema, [i](const nlohmann::json& args) -> nlohmann::json {
-                    return {{"result", "Tool " + std::to_string(i) +
-                                           " executed with: " + args.at("value").get<std::string>()}};
+                    std::string text = "Tool " + std::to_string(i) +
+                                       " executed with: " + args.at("value").get<std::string>();
+                    return {{"content",
+                             nlohmann::json::array(
+                                 {nlohmann::json{{"type", "text"}, {"text", std::move(text)}}})}};
                 });
         }
 

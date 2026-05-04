@@ -199,7 +199,7 @@ done
 - `server.run_stdio()` convenience method
 
 **Key APIs:**
-- `mcp::detail::graceful_shutdown()`
+- `mcp::graceful_shutdown()`
 - `mcp::detail::trigger_shutdown_signal()`
 - `Server::run_stdio()`
 
@@ -283,7 +283,7 @@ Async tool handlers with Context:
 
 ```cpp
 server.add_tool("my_tool", "Description", schema,
-    [](const nlohmann::json& args, mcp::Context& ctx) -> mcp::Task<nlohmann::json> {
+    [](mcp::Context& ctx, const nlohmann::json& args) -> mcp::Task<nlohmann::json> {
         ctx.log_info("Starting work...");
 
         if (ctx.is_cancelled()) {

@@ -183,7 +183,12 @@ void demo_transport_factory() {
 
                 Server s({"factory-demo", "1.0"}, {});
                 s.add_tool("ping", "", {},
-                           [](const nlohmann::json&) { return nlohmann::json{{"pong", true}}; });
+                           [](const nlohmann::json&) {
+                               return nlohmann::json{
+                                   {"content",
+                                    nlohmann::json::array(
+                                        {nlohmann::json{{"type", "text"}, {"text", "pong"}}})}};
+                           });
 
                 asio::co_spawn(io_ctx, s.run(server_t, io_ctx.get_executor()), asio::detached);
 
