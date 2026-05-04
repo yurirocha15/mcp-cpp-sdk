@@ -8,7 +8,7 @@ directory.
 Overview
 --------
 
-The SDK provides seven comprehensive examples:
+The SDK provides seven core examples plus 12 specialized feature examples:
 
 1. **server_stdio** - Full-featured MCP server over stdio
 2. **client_stdio** - MCP client demonstrating all client operations
@@ -17,6 +17,46 @@ The SDK provides seven comprehensive examples:
 5. **http_loopback** - HTTP transport loopback demo
 6. **llama_server** - llama.cpp MCP adapter
 7. **debugger_server** - LLDB debugger MCP server
+
+Feature Examples
+----------------
+
+The ``examples/features/`` directory contains 12 specialized examples, each
+demonstrating a specific MCP capability using the in-process loopback pattern
+for fast, deterministic testing.
+
+1. **progress_cancellation** - Real-time progress updates and request cancellation
+2. **notifications_subscriptions** - Server-to-client notifications and subscription handling
+3. **middleware** - Intercepting and processing requests via a middleware chain
+4. **completions** - Argument completion suggestions for tools
+5. **pagination** - Handling large lists via cursor-based pagination
+6. **elicitation** - Server-initiated information requests (input forms)
+7. **roots** - Declaring and discovering client-side root URIs
+8. **error_handling** - Robust error patterns and exception management
+9. **transport_memory** - Using in-memory transports for testing and modularity
+10. **graceful_shutdown** - Clean exit patterns and signal handling
+11. **http_server_convenience** - Simplified HTTP server setup via ``Server::run_http()``
+12. **oauth_flow** - Full OAuth 2.0 authentication flow (PKCE, token refresh)
+
+These examples are non-interactive and designed to be run as part of a
+test suite or to understand specific API patterns.
+
+Benchmarks
+----------
+
+Performance-focused examples demonstrating the efficiency of different transport
+layers under load. These are quick teaching benchmarks that run locally and in
+CI; for sustained multi-service load testing, use the separate ``benchmark/``
+suite.
+
+1. **benchmark_stdio** - Measures roundtrip latency and throughput over the in-memory stdio-equivalent transport
+2. **benchmark_http** - Performance analysis of the HTTP transport layer
+3. **benchmark_websocket** - Benchmarking WebSocket communication throughput
+
+Each benchmark performs a fixed number of iterations and reports total time,
+average latency, and calls per second. The current examples run 1000 iterations
+for the memory and HTTP transports, and 50 iterations for the WebSocket
+transport so the example remains fast and deterministic in automation.
 
 Each example is fully functional and can be used as a starting point for your
 own MCP applications.
@@ -50,8 +90,8 @@ This is the most comprehensive example, showing virtually every SDK feature.
 
 .. code-block:: bash
 
-   make build
-   ./build/example-server-stdio
+   python scripts/build.py --examples
+   ./build/release/example-server-stdio
 
 client_stdio
 ------------
@@ -81,8 +121,8 @@ A complete MCP client implementation demonstrating:
 
 .. code-block:: bash
 
-   make build
-   ./build/example-client-stdio
+   python scripts/build.py --examples
+   ./build/release/example-client-stdio
 
 server_with_sampling
 --------------------
@@ -109,8 +149,8 @@ enabling bidirectional communication patterns.
 
 .. code-block:: bash
 
-   make build
-   ./build/example-server-sampling
+   python scripts/build.py --examples
+   ./build/release/example-server-sampling
 
 echo_websocket
 --------------
@@ -138,8 +178,8 @@ MCP communication.
 
 .. code-block:: bash
 
-   make build
-   ./build/example-echo-websocket
+   python scripts/build.py --examples
+   ./build/release/example-echo-websocket
 
 http_loopback
 -------------
@@ -165,8 +205,8 @@ MCP communication with standard headers.
 
 .. code-block:: bash
 
-   make build
-   ./build/example-http-loopback
+   python scripts/build.py --examples
+   ./build/release/example-http-loopback
 
 llama_server
 ------------
@@ -192,10 +232,10 @@ a fully compliant MCP server.
 
 .. code-block:: bash
 
-   make build
-   ./build/example-llama-mcp
+   python scripts/build.py --examples
+   ./build/release/example-llama-mcp
    # or with HTTP transport:
-   ./build/example-llama-mcp --transport=http
+   ./build/release/example-llama-mcp --transport=http
 
 debugger_server
 ---------------
@@ -223,7 +263,7 @@ integration with system-level debugging tools.
 .. code-block:: bash
 
    cmake -DBUILD_LLDB_EXAMPLE=ON -B build && cmake --build build
-   ./build/example-debugger-server
+   ./build/release/example-debugger-server
 
 Note: Requires ``-DBUILD_LLDB_EXAMPLE=ON`` and LLDB development libraries installed.
 
@@ -234,13 +274,13 @@ To build all examples at once:
 
 .. code-block:: bash
 
-   # Using make (recommended)
-   make build
+   # Using build script (recommended)
+   python scripts/build.py --examples
 
    # Or using CMake directly
-   cmake --build build --target all
+   cmake -DBUILD_EXAMPLES=ON -B build && cmake --build build
 
-   # Note: The debugger example is OFF by default and requires:
+   # Note: The debugger example is OFF by default:
    # cmake -DBUILD_LLDB_EXAMPLE=ON -B build && cmake --build build
 
 All example binaries will be located in ``build/``.

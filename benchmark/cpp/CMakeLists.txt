@@ -9,20 +9,22 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-fdiagnostics-color=always)
 endif()
 
-find_package(Boost REQUIRED COMPONENTS headers system)
-find_package(nlohmann_json REQUIRED)
-find_package(OpenSSL REQUIRED)
-
-set(MCP_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/include")
-if(NOT EXISTS "${MCP_INCLUDE_DIR}/mcp")
-  set(MCP_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/../../include")
+set(MCP_ROOT_DIR "${CMAKE_SOURCE_DIR}")
+if(NOT EXISTS "${MCP_ROOT_DIR}/include/mcp"
+   OR NOT EXISTS "${MCP_ROOT_DIR}/src/version.cpp")
+  set(MCP_ROOT_DIR "${CMAKE_SOURCE_DIR}/../..")
 endif()
 
+set(BUILD_TESTING
+    OFF
+    CACHE BOOL "Disable root tests for benchmark build" FORCE)
+set(BUILD_EXAMPLES
+    OFF
+    CACHE BOOL "Disable root examples for benchmark build" FORCE)
+add_subdirectory("${MCP_ROOT_DIR}" "${CMAKE_BINARY_DIR}/mcp-cpp-sdk-root")
+
 add_executable(benchmark-server benchmark_server.cpp)
-target_link_libraries(
-  benchmark-server PRIVATE Boost::headers Boost::system
-                           nlohmann_json::nlohmann_json OpenSSL::Crypto)
-target_include_directories(benchmark-server PRIVATE ${MCP_INCLUDE_DIR})
+target_link_libraries(benchmark-server PRIVATE mcp-cpp-sdk)
 
 if(CMAKE_BUILD_TYPE MATCHES Release)
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

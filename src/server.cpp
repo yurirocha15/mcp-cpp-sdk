@@ -317,7 +317,17 @@ void Server::dispatch_response(const nlohmann::json& json_msg) {
 
 Task<void> Server::handle_initialize(const nlohmann::json& json_msg) {
     InitializeResult init_result;
-    init_result.protocolVersion = std::string(g_LATEST_PROTOCOL_VERSION);
+    std::string negotiated_protocol_version = std::string(g_LATEST_PROTOCOL_VERSION);
+    if (json_msg.contains("params") && json_msg.at("params").is_object()) {
+        const auto& params = json_msg.at("params");
+        if (params.contains("protocolVersion") && params.at("protocolVersion").is_string()) {
+            const auto requested_protocol_version = params.at("protocolVersion").get<std::string>();
+            negotiated_protocol_version =
+                std::string(negotiate_protocol_version(requested_protocol_version));
+        }
+    }
+
+    init_result.protocolVersion = std::move(negotiated_protocol_version);
     init_result.capabilities = impl_->capabilities;
     init_result.serverInfo = impl_->server_info;
 

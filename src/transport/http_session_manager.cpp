@@ -54,6 +54,7 @@ struct PendingResult {
 
 struct SessionRuntime {
     std::string session_id;
+    std::string negotiated_protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
 
     std::shared_ptr<ITransport> client_transport;
     MemoryTransport* client_transport_ptr{nullptr};
@@ -87,6 +88,24 @@ inline std::string generate_session_id() {
 inline bool is_initialize_request(const nlohmann::json& request_json) {
     return request_json.is_object() && request_json.contains("method") &&
            request_json.at("method").get<std::string>() == "initialize";
+}
+
+inline std::optional<std::string> initialize_protocol_version(const nlohmann::json& request_json) {
+    if (!request_json.is_object() || !request_json.contains("params") ||
+        !request_json.at("params").is_object()) {
+        return std::nullopt;
+    }
+
+    const auto& params = request_json.at("params");
+    if (!params.contains("protocolVersion") || !params.at("protocolVersion").is_string()) {
+        return std::nullopt;
+    }
+
+    return params.at("protocolVersion").get<std::string>();
+}
+
+inline std::string_view protocol_header_value(const StringRequest::const_iterator& header_it) {
+    return std::string_view(header_it->value().data(), header_it->value().size());
 }
 
 inline StringResponse make_json_response(const StringRequest& request, http::status status_code,
@@ -406,17 +425,19 @@ struct StreamableHttpSessionManager::Impl {
     }
 
     Task<StringResponse> handle_post(const StringRequest& request) {
-        const auto protocol_header_it = request.find("MCP-Protocol-Version");
-        if (protocol_header_it == request.end() ||
-            protocol_header_it->value() != g_LATEST_PROTOCOL_VERSION) {
-            co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
-                                                              "Invalid MCP-Protocol-Version header");
-        }
-
         const auto request_json = nlohmann::json::parse(request.body(), nullptr, false);
         if (request_json.is_discarded() || !request_json.is_object()) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid JSON-RPC payload");
+        }
+
+        const auto protocol_header_it = request.find("MCP-Protocol-Version");
+        const bool is_initialize = detail_session_mgr::is_initialize_request(request_json);
+        if (is_initialize && protocol_header_it != request.end() &&
+            !is_supported_protocol_version(
+                detail_session_mgr::protocol_header_value(protocol_header_it))) {
+            co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
+                                                              "Invalid MCP-Protocol-Version header");
         }
 
         auto session_var = resolve_session_for_post(request, request_json);
@@ -424,6 +445,21 @@ struct StreamableHttpSessionManager::Impl {
             co_return std::get<StringResponse>(session_var);
         }
         auto* session = std::get<detail_session_mgr::SessionRuntime*>(session_var);
+
+        if (!is_initialize) {
+            if (protocol_header_it != request.end() &&
+                detail_session_mgr::protocol_header_value(protocol_header_it) !=
+                    session->negotiated_protocol_version) {
+                co_return detail_session_mgr::make_error_response(
+                    request, http::status::bad_request, "Invalid MCP-Protocol-Version header");
+            }
+        } else {
+            const auto requested_protocol_version =
+                detail_session_mgr::initialize_protocol_version(request_json)
+                    .value_or(std::string(g_LATEST_PROTOCOL_VERSION));
+            session->negotiated_protocol_version =
+                std::string(negotiate_protocol_version(requested_protocol_version));
+        }
 
         if (session == nullptr || session->client_transport_ptr == nullptr) {
             co_return detail_session_mgr::make_error_response(
@@ -473,13 +509,6 @@ struct StreamableHttpSessionManager::Impl {
     }
 
     Task<StringResponse> handle_delete(const StringRequest& request) {
-        const auto protocol_header_it = request.find("MCP-Protocol-Version");
-        if (protocol_header_it == request.end() ||
-            protocol_header_it->value() != g_LATEST_PROTOCOL_VERSION) {
-            co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
-                                                              "Invalid MCP-Protocol-Version header");
-        }
-
         const auto session_header_it = request.find("Mcp-Session-Id");
         if (session_header_it == request.end()) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
@@ -491,6 +520,14 @@ struct StreamableHttpSessionManager::Impl {
         if (session == nullptr) {
             co_return detail_session_mgr::make_jsonrpc_error_response(
                 request, http::status::not_found, g_INVALID_REQUEST, "Session not found");
+        }
+
+        const auto protocol_header_it = request.find("MCP-Protocol-Version");
+        if (protocol_header_it != request.end() &&
+            detail_session_mgr::protocol_header_value(protocol_header_it) !=
+                session->negotiated_protocol_version) {
+            co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
+                                                              "Invalid MCP-Protocol-Version header");
         }
 
         destroy_session(session_id_value);
@@ -498,13 +535,6 @@ struct StreamableHttpSessionManager::Impl {
     }
 
     Task<StringResponse> handle_get(const StringRequest& request) {
-        const auto protocol_header_it = request.find("MCP-Protocol-Version");
-        if (protocol_header_it == request.end() ||
-            protocol_header_it->value() != g_LATEST_PROTOCOL_VERSION) {
-            co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
-                                                              "Invalid MCP-Protocol-Version header");
-        }
-
         const auto session_header_it = request.find("Mcp-Session-Id");
         if (session_header_it == request.end()) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
@@ -516,6 +546,14 @@ struct StreamableHttpSessionManager::Impl {
         if (session == nullptr) {
             co_return detail_session_mgr::make_jsonrpc_error_response(
                 request, http::status::not_found, g_INVALID_REQUEST, "Session not found");
+        }
+
+        const auto protocol_header_it = request.find("MCP-Protocol-Version");
+        if (protocol_header_it != request.end() &&
+            detail_session_mgr::protocol_header_value(protocol_header_it) !=
+                session->negotiated_protocol_version) {
+            co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
+                                                              "Invalid MCP-Protocol-Version header");
         }
 
         const auto last_event_id_it = request.find("Last-Event-ID");

@@ -1,5 +1,5 @@
-#include <mcp/detail/signal.hpp>
 #include <mcp/server.hpp>
+#include <mcp/signal.hpp>
 #include <mcp/transport/http_server.hpp>
 
 #include <boost/asio/co_spawn.hpp>
@@ -28,7 +28,7 @@ void Server::run_http(const std::string& host, uint16_t port) {
         if (ec == boost::asio::error::operation_aborted) {
             return;
         }
-        watchdog = detail::graceful_shutdown(io_ctx, transport);
+        watchdog = graceful_shutdown(io_ctx, transport);
     });
 
     boost::asio::co_spawn(io_ctx, transport->listen(), boost::asio::detached);

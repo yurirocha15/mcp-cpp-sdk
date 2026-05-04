@@ -9,6 +9,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 
 namespace {
@@ -32,10 +33,10 @@ struct RawResponse {
 
 /// Fire a single HTTP request and return the response.
 /// Must be called inside a coroutine on the same io_context.
-mcp::Task<RawResponse> raw_request(const asio::any_io_executor& executor, unsigned short port,
-                                   http::verb method, const std::string& target,
-                                   const std::string& body = {}, const std::string& session_id = {},
-                                   const std::string& protocol_version = {}) {
+mcp::Task<RawResponse> raw_request(
+    const asio::any_io_executor& executor, unsigned short port, http::verb method,
+    const std::string& target, const std::string& body = {}, const std::string& session_id = {},
+    std::optional<std::string> protocol_version = std::string(mcp::g_LATEST_PROTOCOL_VERSION)) {
     beast::tcp_stream stream(executor);
     auto resolver = asio::ip::tcp::resolver(executor);
     auto endpoints =
@@ -47,10 +48,8 @@ mcp::Task<RawResponse> raw_request(const asio::any_io_executor& executor, unsign
     request.set(http::field::content_type, "application/json");
     request.set(http::field::accept, "application/json");
 
-    if (!protocol_version.empty()) {
-        request.set("MCP-Protocol-Version", protocol_version);
-    } else {
-        request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    if (protocol_version.has_value()) {
+        request.set("MCP-Protocol-Version", *protocol_version);
     }
 
     if (!session_id.empty()) {
@@ -111,17 +110,20 @@ mcp::StreamableHttpSessionManager::ServerFactory make_echo_server_factory() {
 }
 
 /// Send an initialize request and return the raw response (contains session ID).
-mcp::Task<RawResponse> do_initialize(const asio::any_io_executor& executor, unsigned short port,
-                                     int id = 1) {
+mcp::Task<RawResponse> do_initialize(
+    const asio::any_io_executor& executor, unsigned short port, int id = 1,
+    std::string protocol_version = std::string(mcp::g_LATEST_PROTOCOL_VERSION),
+    std::optional<std::string> header_protocol_version = std::string(mcp::g_LATEST_PROTOCOL_VERSION)) {
     json init_request = {{"jsonrpc", "2.0"},
                          {"method", "initialize"},
                          {"params",
-                          {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                          {{"protocolVersion", std::move(protocol_version)},
                            {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
                            {"capabilities", json::object()}}},
                          {"id", id}};
 
-    co_return co_await raw_request(executor, port, http::verb::post, "/mcp", init_request.dump());
+    co_return co_await raw_request(executor, port, http::verb::post, "/mcp", init_request.dump(), {},
+                                   std::move(header_protocol_version));
 }
 
 }  // namespace
@@ -164,6 +166,98 @@ TEST_F(SessionManagerTest, InitializeCreatesSession) {
     auto body = json::parse(init_response.body);
     EXPECT_TRUE(body.contains("result"));
     EXPECT_EQ(body["result"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+}
+
+TEST_F(SessionManagerTest, InitializeNegotiatesOlderSupportedProtocolVersion) {
+    const unsigned short port = 19092;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse init_response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            init_response =
+                co_await do_initialize(io_ctx_.get_executor(), port, 1, "2025-06-18", std::nullopt);
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(init_response.status, 200);
+    auto body = json::parse(init_response.body);
+    EXPECT_EQ(body["result"]["protocolVersion"], "2025-06-18");
+}
+
+TEST_F(SessionManagerTest, SubsequentRequestsUseNegotiatedProtocolVersion) {
+    const unsigned short port = 19093;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse init_response;
+    RawResponse tool_response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            init_response =
+                co_await do_initialize(io_ctx_.get_executor(), port, 1, "2025-06-18", std::nullopt);
+
+            json request = {{"jsonrpc", "2.0"},
+                            {"method", "tools/call"},
+                            {"id", 2},
+                            {"params", {{"name", "echo"}, {"arguments", {{"message", "test"}}}}}};
+            tool_response =
+                co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                     request.dump(), init_response.session_id, "2025-06-18");
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(init_response.status, 200);
+    EXPECT_EQ(tool_response.status, 200);
+}
+
+TEST_F(SessionManagerTest, SubsequentRequestsAllowMissingNegotiatedProtocolHeader) {
+    const unsigned short port = 19094;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse init_response;
+    RawResponse tool_response;
+    RawResponse delete_response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            init_response =
+                co_await do_initialize(io_ctx_.get_executor(), port, 1, "2025-06-18", std::nullopt);
+
+            json request = {{"jsonrpc", "2.0"},
+                            {"method", "tools/call"},
+                            {"id", 2},
+                            {"params", {{"name", "echo"}, {"arguments", {{"message", "test"}}}}}};
+            tool_response =
+                co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                     request.dump(), init_response.session_id, std::nullopt);
+            delete_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_,
+                                                   "/mcp", {}, init_response.session_id, std::nullopt);
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(init_response.status, 200);
+    EXPECT_EQ(tool_response.status, 200);
+    EXPECT_EQ(delete_response.status, 200);
 }
 
 // ---------------------------------------------------------------------------
