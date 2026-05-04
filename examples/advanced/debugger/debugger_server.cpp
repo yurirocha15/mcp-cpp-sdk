@@ -136,22 +136,34 @@ class SBProcess {
     bool IsValid() const { return true; }
     unsigned long long GetProcessID() const { return 0; }
     StateType GetState() const { return eStateStopped; }
+    unsigned int GetStopID() const { return 0; }
     SBError Continue() { return {}; }
     unsigned int GetNumThreads() const { return 0; }
     SBThread GetThreadAtIndex(unsigned int) const { return {}; }
+    static StateType GetStateFromEvent(const class SBEvent&) { return eStateStopped; }
 };
 class SBLaunchInfo {
    public:
     explicit SBLaunchInfo(const char* const*) {}
     void SetLaunchFlags(unsigned int) {}
+    void SetListener(const class SBListener&) {}
 };
 class SBAttachInfo {
    public:
     explicit SBAttachInfo(pid_t) {}
+    void SetListener(const class SBListener&) {}
+};
+class SBEvent {
+   public:
+    SBEvent() = default;
 };
 class SBListener {
    public:
+    SBListener() = default;
+    explicit SBListener(const char*) {}
     bool IsValid() const { return true; }
+    bool GetNextEvent(SBEvent&) { return false; }
+    bool WaitForEvent(unsigned int, SBEvent&) { return false; }
 };
 class SBTarget {
    public:
