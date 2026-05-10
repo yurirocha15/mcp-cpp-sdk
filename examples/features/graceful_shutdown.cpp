@@ -6,8 +6,8 @@
 /// - Manual transport pattern (not run_stdio convenience)
 /// - Timer-based auto-exit for CI/testing
 
-#include <mcp/server.hpp>
-#include <mcp/signal.hpp>
+#include <mcp/core/signal.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/stdio.hpp>
 
 #include <boost/asio/co_spawn.hpp>

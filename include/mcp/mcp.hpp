@@ -4,9 +4,9 @@
 // For advanced usage with direct transport or executor access,
 // include individual headers like mcp/transport/stdio.hpp.
 
-#include <mcp/concepts.hpp>
-#include <mcp/export.hpp>
-#include <mcp/protocol.hpp>
-#include <mcp/runtime.hpp>
-#include <mcp/server.hpp>
-#include <mcp/transport_factory.hpp>
+#include <mcp/core/concepts.hpp>
+#include <mcp/core/export.hpp>
+#include <mcp/core/runtime.hpp>
+#include <mcp/protocol/protocol.hpp>
+#include <mcp/server/server.hpp>
+#include <mcp/transport/transport_factory.hpp>

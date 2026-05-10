@@ -1,9 +1,9 @@
 #pragma once
 
-#include <mcp/constants.hpp>
-#include <mcp/protocol.hpp>
-#include <mcp/transport.hpp>
+#include <mcp/core/constants.hpp>
+#include <mcp/protocol/protocol.hpp>
 #include <mcp/transport/http_types.hpp>
+#include <mcp/transport/transport.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <cstddef>
@@ -13,7 +13,6 @@
 #include <optional>
 #include <string>
 #include <utility>
-#include <vector>
 
 namespace mcp {
 
@@ -165,6 +164,16 @@ class HttpServerTransport final : public ITransport {
      * @return A const reference to the transport's in-memory event store.
      */
     [[nodiscard]] const EventStore& event_store() const;
+
+    /**
+     * @brief Enable or disable JSON-only responses.
+     *
+     * When enabled, HTTP POST responses always use `application/json` and
+     * outbound responses are not copied into the SSE replay event store.
+     *
+     * @param json_only True to bypass SSE framing and event storage.
+     */
+    void set_json_only(bool json_only);
 
     /**
      * @brief Read the next queued JSON-RPC message from HTTP POST bodies.

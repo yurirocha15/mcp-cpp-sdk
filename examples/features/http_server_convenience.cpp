@@ -11,8 +11,8 @@
 /// @note This example raises ``SIGINT`` from the main thread so ``run_http()`` can
 ///       execute its built-in graceful-shutdown path on all supported platforms.
 
-#include <mcp/client.hpp>
-#include <mcp/server.hpp>
+#include <mcp/client/client.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/http_client.hpp>
 
 #include <boost/asio/co_spawn.hpp>

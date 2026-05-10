@@ -114,14 +114,14 @@ Place tests in ``test/`` directory, mirroring the library surface area:
 
 .. code-block:: bash
 
-   include/mcp/server.hpp  →  test/server_core_test.cpp
-   include/mcp/client.hpp  →  test/client_core_test.cpp
+   include/mcp/server/server.hpp  →  test/server/server_core_test.cpp
+   include/mcp/client/client.hpp  →  test/client/client_core_test.cpp
 
 Example test structure:
 
 .. code-block:: cpp
 
-   #include <mcp/server.hpp>
+   #include <mcp/server/server.hpp>
    #include <gtest/gtest.h>
 
    TEST(ServerTest, AddToolRegistersCorrectly) {

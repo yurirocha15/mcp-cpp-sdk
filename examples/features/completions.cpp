@@ -7,7 +7,7 @@
 /// - A client that calls complete() to get argument completion suggestions
 /// - The completion flow: client sends partial argument, server returns suggestions
 
-#include <mcp/client.hpp>
+#include <mcp/client/client.hpp>
 #include <mcp/mcp.hpp>
 #include <mcp/transport/memory.hpp>
 

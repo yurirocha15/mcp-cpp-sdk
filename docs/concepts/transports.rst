@@ -64,7 +64,7 @@ Clients can connect to a stdio-based server by providing the executor to the
 
 .. code-block:: cpp
 
-   #include <mcp/client.hpp>
+   #include <mcp/client/client.hpp>
    #include <mcp/transport/stdio.hpp>
 
    boost::asio::co_spawn(executor, [&]() -> mcp::Task<void> {
@@ -211,7 +211,7 @@ All you need to do is inherit from `mcp::ITransport` and implement three methods
 
 .. code-block:: cpp
 
-   #include <mcp/transport.hpp>
+   #include <mcp/transport/transport.hpp>
 
    class MyCustomTransport : public mcp::ITransport {
    public:

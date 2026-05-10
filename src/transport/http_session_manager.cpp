@@ -1,4 +1,4 @@
-#include <mcp/constants.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 #include <mcp/transport/memory.hpp>
 
@@ -16,7 +16,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
 #include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -105,7 +104,7 @@ inline std::optional<std::string> initialize_protocol_version(const nlohmann::js
 }
 
 inline std::string_view protocol_header_value(const StringRequest::const_iterator& header_it) {
-    return std::string_view(header_it->value().data(), header_it->value().size());
+    return {header_it->value().data(), header_it->value().size()};
 }
 
 inline StringResponse make_json_response(const StringRequest& request, http::status status_code,
@@ -187,12 +186,14 @@ struct StreamableHttpSessionManager::Impl {
     std::string host;
     unsigned short port;
     boost::asio::any_io_executor executor;
+    boost::asio::any_io_executor tool_executor_;
     boost::asio::strand<boost::asio::any_io_executor> strand;
     boost::asio::ip::tcp::acceptor acceptor;
 
     StreamableHttpSessionManager::ServerFactory factory;
     StreamableHttpSessionManager::CustomRequestHandler custom_handler;
     std::size_t event_store_capacity;
+    bool json_only_{false};
 
     std::atomic<bool> closed{false};
     SessionMap sessions;
@@ -248,10 +249,13 @@ struct StreamableHttpSessionManager::Impl {
         auto server = factory(executor);
         std::shared_ptr<ITransport> server_transport = server_mem;
 
+        // Use tool_executor_ if set, otherwise fall back to executor
+        auto server_exec = tool_executor_ ? tool_executor_ : executor;
+
         boost::asio::co_spawn(
-            executor,
+            server_exec,
             [srv = std::move(server), transport = std::move(server_transport),
-             exec = executor]() mutable -> Task<void> {
+             exec = server_exec]() mutable -> Task<void> {
                 co_await srv->run(std::move(transport), exec);
             },
             boost::asio::detached);
@@ -411,7 +415,7 @@ struct StreamableHttpSessionManager::Impl {
             accept_it != request.end() &&
             std::string_view(accept_it->value()).find("text/event-stream") != std::string_view::npos;
 
-        if (client_accepts_sse && result.event_id.has_value()) {
+        if (!json_only_ && client_accepts_sse && result.event_id.has_value()) {
             auto response =
                 detail_session_mgr::make_sse_response(request, *result.event_id, *result.response_body);
             response.set("Mcp-Session-Id", session->session_id);
@@ -493,10 +497,11 @@ struct StreamableHttpSessionManager::Impl {
         auto* session_ptr = session;
         boost::asio::co_spawn(
             strand,
-            [this, session_ptr]() -> Task<void> {
+            [this, session_ptr, request_id_key]() -> Task<void> {
                 try {
                     auto response_str = co_await session_ptr->client_transport_ptr->read_message();
-                    co_await dispatch_response_to_pending(session_ptr, std::move(response_str));
+                    co_await dispatch_response_to_pending(session_ptr, std::move(response_str),
+                                                          json_only_, request_id_key);
                 } catch (...) {
                     for (auto& [key, pending] : session_ptr->pending_responses) {
                         (void)pending.ready_timer->cancel();
@@ -573,28 +578,41 @@ struct StreamableHttpSessionManager::Impl {
     }
 
     static Task<void> dispatch_response_to_pending(detail_session_mgr::SessionRuntime* session,
-                                                   std::string response_str) {
-        const auto response_json = nlohmann::json::parse(response_str, nullptr, false);
-        if (response_json.is_discarded() || !response_json.is_object()) {
-            co_return;
+                                                   std::string response_str, bool json_only,
+                                                   const std::string& request_id_key) {
+        if (!json_only) {
+            // Non-json_only mode: parse response and validate id matches
+            const auto response_json = nlohmann::json::parse(response_str, nullptr, false);
+            if (response_json.is_discarded() || !response_json.is_object()) {
+                co_return;
+            }
+
+            auto event_id = session->event_store.append(response_str);
+
+            if (!response_json.contains("id") || response_json.at("id").dump() != request_id_key) {
+                co_return;
+            }
+
+            auto pending_it = session->pending_responses.find(request_id_key);
+            if (pending_it == session->pending_responses.end()) {
+                co_return;
+            }
+
+            pending_it->second.response_body = std::move(response_str);
+            pending_it->second.event_id = std::move(event_id);
+            pending_it->second.response_ready = true;
+            (void)pending_it->second.ready_timer->cancel();
+        } else {
+            // json_only mode: skip parsing, use request_id_key directly
+            auto pending_it = session->pending_responses.find(request_id_key);
+            if (pending_it == session->pending_responses.end()) {
+                co_return;
+            }
+
+            pending_it->second.response_body = std::move(response_str);
+            pending_it->second.response_ready = true;
+            (void)pending_it->second.ready_timer->cancel();
         }
-
-        auto event_id = session->event_store.append(response_str);
-
-        if (!response_json.contains("id")) {
-            co_return;
-        }
-
-        const auto request_id_key = response_json.at("id").dump();
-        auto pending_it = session->pending_responses.find(request_id_key);
-        if (pending_it == session->pending_responses.end()) {
-            co_return;
-        }
-
-        pending_it->second.response_body = std::move(response_str);
-        pending_it->second.event_id = std::move(event_id);
-        pending_it->second.response_ready = true;
-        (void)pending_it->second.ready_timer->cancel();
     }
 
     static detail_session_mgr::PendingResult consume_pending_response(
@@ -635,6 +653,12 @@ void StreamableHttpSessionManager::set_custom_request_handler(CustomRequestHandl
 }
 
 std::size_t StreamableHttpSessionManager::session_count() const { return impl_->sessions.size(); }
+
+void StreamableHttpSessionManager::set_json_only(bool json_only) { impl_->json_only_ = json_only; }
+
+void StreamableHttpSessionManager::set_tool_executor(const boost::asio::any_io_executor& exec) {
+    impl_->tool_executor_ = exec;
+}
 
 void StreamableHttpSessionManager::close() {
     if (impl_->closed.exchange(true, std::memory_order_acq_rel)) {

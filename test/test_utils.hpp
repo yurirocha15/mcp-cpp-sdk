@@ -1,6 +1,6 @@
 #pragma once
 
-#include "mcp/server.hpp"
+#include "mcp/server/server.hpp"
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>

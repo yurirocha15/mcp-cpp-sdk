@@ -1,6 +1,6 @@
 #pragma once
 
-#include <mcp/transport.hpp>
+#include <mcp/transport/transport.hpp>
 
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -52,6 +52,16 @@ class MemoryTransport final : public ITransport {
      * @throws std::runtime_error If the transport is closed.
      */
     Task<std::string> read_message() override {
+        // Fast path: check if message already available (on caller's executor)
+        if (!incoming_.empty()) {
+            auto msg = std::move(incoming_.front());
+            incoming_.pop();
+            co_return msg;
+        }
+
+        // Slow path: need to wait, so post to strand for safety
+        co_await boost::asio::post(strand_, boost::asio::use_awaitable);
+
         for (;;) {
             if (closed_) {
                 throw std::runtime_error("transport closed");

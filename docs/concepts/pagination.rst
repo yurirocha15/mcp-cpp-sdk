@@ -10,7 +10,7 @@ Server-side Configuration
 
 Servers can control the maximum number of items returned in a single list response by calling ``set_page_size()``.
 
-.. literalinclude:: ../../include/mcp/server.hpp
+.. literalinclude:: ../../include/mcp/server/server.hpp
    :language: cpp
    :lines: 263-268
 
@@ -64,7 +64,7 @@ Implementation Details
 
 Internal pagination logic uses the ``paginate`` helper and ``PaginationSlice`` structure:
 
-.. literalinclude:: ../../include/mcp/server.hpp
+.. literalinclude:: ../../include/mcp/server/server.hpp
    :language: cpp
    :lines: 449-455
 

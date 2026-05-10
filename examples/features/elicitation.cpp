@@ -8,8 +8,8 @@
 /// - The client returning ElicitResult with action=accept and form values
 /// - The server using the elicited values to complete the tool execution
 
-#include <mcp/client.hpp>
-#include <mcp/server.hpp>
+#include <mcp/client/client.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
 
 #include <boost/asio/co_spawn.hpp>
