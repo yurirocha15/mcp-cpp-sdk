@@ -66,6 +66,8 @@ docs/_build/
 
 # Benchmark build artifacts
 benchmark/cpp/build/
+benchmark/cpp/build-*/
+benchmark/benchmark-mcp-servers-v2/
 
 # Generated files
 compile_commands.json

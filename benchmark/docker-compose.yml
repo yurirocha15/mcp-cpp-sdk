@@ -18,7 +18,7 @@ services:
       - mcp-network
 
   api-service:
-    build: ./api-service
+    build: ./benchmark-mcp-servers-v2/api-service
     container_name: mcp-api-service
     ports:
       - "8100:8100"
@@ -36,14 +36,15 @@ services:
       - mcp-network
 
   redis-seeder:
-    build: ./infra/redis
+    build: ./benchmark-mcp-servers-v2/infra/redis
     container_name: mcp-redis-seeder
     profiles: ["seeder"]
     depends_on:
       redis:
         condition: service_healthy
     environment:
-      - REDIS_URL=redis://redis:6379
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
     networks:
       - mcp-network
 
@@ -75,8 +76,11 @@ services:
     networks:
       - mcp-network
 
+  # Upstream servers for comparison
   python-server:
-    build: ./python
+    build:
+      context: ./benchmark-mcp-servers-v2/python-server
+      dockerfile: Dockerfile
     container_name: mcp-python-server
     ports:
       - "8081:8081"
@@ -94,7 +98,7 @@ services:
       api-service:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8081/health"]
+      test: ["CMD", "python", "-c", "import urllib.request,json; urllib.request.urlopen(urllib.request.Request('http://localhost:8081/mcp',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'health','version':'1.0'}}}).encode(),headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream'}),timeout=5)"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -102,7 +106,9 @@ services:
       - mcp-network
 
   go-server:
-    build: ./go
+    build:
+      context: ./benchmark-mcp-servers-v2/go-server
+      dockerfile: Dockerfile
     container_name: mcp-go-server
     ports:
       - "8082:8082"
@@ -126,6 +132,36 @@ services:
       retries: 3
     networks:
       - mcp-network
+
+  rust-server:
+    build:
+      context: ./benchmark-mcp-servers-v2/rust-server
+      dockerfile: Dockerfile
+    container_name: mcp-rust-server
+    ports:
+      - "8083:8083"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - API_SERVICE_URL=http://api-service:8100
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8083/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - mcp-network
+
 
 networks:
   mcp-network:
