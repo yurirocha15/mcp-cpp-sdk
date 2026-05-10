@@ -11,9 +11,9 @@
 /// - make_auth_middleware() protecting MCP tools on the server side
 
 #include <mcp/auth/oauth.hpp>
-#include <mcp/client.hpp>
-#include <mcp/protocol.hpp>
-#include <mcp/server.hpp>
+#include <mcp/client/client.hpp>
+#include <mcp/protocol/protocol.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
 
 #include <boost/asio/co_spawn.hpp>

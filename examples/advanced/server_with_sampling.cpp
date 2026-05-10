@@ -1,7 +1,7 @@
 /// @file server_with_sampling.cpp
 /// @brief MCP server demonstrating reverse RPC via Context::sample_llm().
 
-#include <mcp/server.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/stdio.hpp>
 
 #include <boost/asio/co_spawn.hpp>

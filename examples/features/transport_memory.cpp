@@ -9,11 +9,11 @@
 /// - Server and client communication via MemoryTransport
 /// - Timer-based auto-exit pattern
 
-#include <mcp/client.hpp>
-#include <mcp/runtime.hpp>
-#include <mcp/server.hpp>
+#include <mcp/client/client.hpp>
+#include <mcp/core/runtime.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
-#include <mcp/transport_factory.hpp>
+#include <mcp/transport/transport_factory.hpp>
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>

@@ -2,7 +2,7 @@
 /// @brief MCP client over stdio demonstrating connect, list/call tools,
 ///   list/read resources, list templates, list/get prompts, complete, and notifications.
 
-#include <mcp/client.hpp>
+#include <mcp/client/client.hpp>
 #include <mcp/transport/stdio.hpp>
 
 #include <boost/asio/co_spawn.hpp>

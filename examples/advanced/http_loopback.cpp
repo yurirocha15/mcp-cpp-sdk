@@ -1,8 +1,8 @@
 /// @file http_loopback.cpp
 /// @brief Loopback HTTP example: in-process server + client over HTTP transport.
 
-#include <mcp/client.hpp>
-#include <mcp/server.hpp>
+#include <mcp/client/client.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/http_client.hpp>
 #include <mcp/transport/http_server.hpp>
 

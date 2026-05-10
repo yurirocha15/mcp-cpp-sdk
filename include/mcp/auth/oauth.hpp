@@ -1,11 +1,11 @@
 #pragma once
 
-#include <mcp/constants.hpp>
-#include <mcp/context.hpp>
-#include <mcp/core.hpp>
-#include <mcp/server.hpp>
-#include <mcp/transport.hpp>
+#include <mcp/core/constants.hpp>
+#include <mcp/core/context.hpp>
+#include <mcp/core/core.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/http_types.hpp>
+#include <mcp/transport/transport.hpp>
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>

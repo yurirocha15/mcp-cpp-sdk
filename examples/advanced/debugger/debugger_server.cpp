@@ -1,4 +1,4 @@
-#include <mcp/server.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/stdio.hpp>
 

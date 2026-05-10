@@ -173,7 +173,7 @@ Protocol Types
 All types support JSON serialization via nlohmann_json. Protocol types are
 organized into focused sub-headers (``capabilities.hpp``, ``content.hpp``,
 ``tools.hpp``, ``roots.hpp``, ``sampling.hpp``, ``elicitation.hpp``, etc.)
-included via the ``mcp/protocol.hpp`` umbrella.
+included via the ``mcp/protocol/protocol.hpp`` umbrella.
 
 Data Flow
 ---------

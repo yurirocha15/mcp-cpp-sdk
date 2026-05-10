@@ -7,7 +7,7 @@
 /// Multi-session: Uses the SDK's StreamableHttpSessionManager to route
 /// requests by Mcp-Session-Id to per-session Server+MemoryTransport pairs.
 
-#include <mcp/server.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 
 #include <boost/asio.hpp>

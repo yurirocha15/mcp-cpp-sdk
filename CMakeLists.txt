@@ -22,12 +22,12 @@ if(WIN32)
 endif()
 target_sources(
   mcp-cpp-sdk
-  PRIVATE src/version.cpp
-          src/runtime.cpp
-          src/server_stdio.cpp
-          src/server_http.cpp
-          src/server_tool.cpp
-          src/server.cpp
+  PRIVATE src/core/version.cpp
+          src/core/runtime.cpp
+          src/server/server_stdio.cpp
+          src/server/server_http.cpp
+          src/server/server_tool.cpp
+          src/server/server.cpp
           src/transport/stdio.cpp
           src/transport/http_server.cpp
           src/transport/http_client.cpp
@@ -55,39 +55,39 @@ if(BUILD_TESTING)
   find_package(GTest REQUIRED)
   enable_testing()
   set(TEST_SRCS
-      test/auth_integration_test.cpp
-      test/auth_oauth_test.cpp
-      test/client_core_test.cpp
-      test/client_features_test.cpp
-      test/client_notifications_test.cpp
-      test/concepts_test.cpp
-      test/core_test.cpp
-      test/protocol_test.cpp
-      test/roots_test.cpp
-      test/sampling_test.cpp
-      test/server_core_test.cpp
-      test/server_cancellation_test.cpp
-      test/server_elicitation_test.cpp
-      test/server_handlers_test.cpp
-      test/server_logging_test.cpp
-      test/server_middleware_test.cpp
-      test/server_progress_test.cpp
-      test/server_subscriptions_test.cpp
-      test/transport_test.cpp
-      test/transport_stdio_test.cpp
-      test/transport_ws_test.cpp
-      test/transport_http_test.cpp
-      test/transport_http_resumability_test.cpp
-      test/transport_http_session_manager_test.cpp
-      test/transport_memory_test.cpp
-      test/e2e_integration_test.cpp
-      test/e2e_features_test.cpp
-      test/runtime_test.cpp
-      test/server_stdio_test.cpp
-      test/server_http_test.cpp
-      test/server_tool_test.cpp
-      test/transport_factory_test.cpp
-      test/gcc11_sso_crash_test.cpp)
+      test/auth/auth_integration_test.cpp
+      test/auth/auth_oauth_test.cpp
+      test/client/client_core_test.cpp
+      test/client/client_features_test.cpp
+      test/client/client_notifications_test.cpp
+      test/core/concepts_test.cpp
+      test/core/core_test.cpp
+      test/core/protocol_test.cpp
+      test/server/roots_test.cpp
+      test/server/sampling_test.cpp
+      test/server/server_core_test.cpp
+      test/server/server_cancellation_test.cpp
+      test/server/server_elicitation_test.cpp
+      test/server/server_handlers_test.cpp
+      test/server/server_logging_test.cpp
+      test/server/server_middleware_test.cpp
+      test/server/server_progress_test.cpp
+      test/server/server_subscriptions_test.cpp
+      test/transport/transport_test.cpp
+      test/transport/transport_stdio_test.cpp
+      test/transport/transport_ws_test.cpp
+      test/transport/transport_http_test.cpp
+      test/transport/transport_http_resumability_test.cpp
+      test/transport/transport_http_session_manager_test.cpp
+      test/transport/transport_memory_test.cpp
+      test/e2e/e2e_integration_test.cpp
+      test/e2e/e2e_features_test.cpp
+      test/server/runtime_test.cpp
+      test/server/server_stdio_test.cpp
+      test/server/server_http_test.cpp
+      test/server/server_tool_test.cpp
+      test/transport/transport_factory_test.cpp
+      test/core/gcc11_sso_crash_test.cpp)
   add_executable(mcp-sdk-tests ${TEST_SRCS})
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
 

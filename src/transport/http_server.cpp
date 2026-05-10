@@ -112,7 +112,7 @@ struct HttpServerTransport::Impl {
     }
 
     static std::string_view header_value(const StringRequest::const_iterator& header_it) {
-        return std::string_view(header_it->value().data(), header_it->value().size());
+        return {header_it->value().data(), header_it->value().size()};
     }
 
     static std::string generate_session_id() {
@@ -400,7 +400,7 @@ struct HttpServerTransport::Impl {
             accept_it != request.end() &&
             std::string_view(accept_it->value()).find("text/event-stream") != std::string_view::npos;
 
-        if (client_accepts_sse && pending_result.event_id.has_value()) {
+        if (!json_only_ && client_accepts_sse && pending_result.event_id.has_value()) {
             auto response =
                 make_sse_response(request, *pending_result.event_id, *pending_result.response_body);
             if (pending_result.session_header.has_value()) {
@@ -529,6 +529,7 @@ struct HttpServerTransport::Impl {
     std::unordered_set<std::string> allowed_origins;
 
     EventStore event_store;
+    bool json_only_{false};
 };
 
 HttpServerTransport::HttpServerTransport(const boost::asio::any_io_executor& executor, std::string host,
@@ -545,6 +546,8 @@ HttpServerTransport::~HttpServerTransport() {
 }
 
 const EventStore& HttpServerTransport::event_store() const { return impl_->event_store; }
+
+void HttpServerTransport::set_json_only(bool json_only) { impl_->json_only_ = json_only; }
 
 Task<std::string> HttpServerTransport::read_message() {
     auto& state = *impl_->state;
@@ -583,7 +586,10 @@ Task<void> HttpServerTransport::write_message(std::string_view message) {
         co_return;
     }
 
-    auto event_id = impl_->event_store.append(msg);
+    std::optional<std::string> event_id;
+    if (!impl_->json_only_) {
+        event_id = impl_->event_store.append(msg);
+    }
 
     if (!response_json.contains("id")) {
         co_return;

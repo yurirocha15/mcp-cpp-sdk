@@ -1,8 +1,8 @@
 /// @file echo_websocket.cpp
 /// @brief Loopback WebSocket example: in-process server + client over TCP.
 
-#include <mcp/client.hpp>
-#include <mcp/server.hpp>
+#include <mcp/client/client.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/websocket.hpp>
 
 #include <boost/asio/co_spawn.hpp>

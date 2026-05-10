@@ -8,8 +8,8 @@
 /// - Graceful degradation and error recovery
 /// - Loopback pattern with MemoryTransport for in-process communication
 
-#include <mcp/client.hpp>
-#include <mcp/server.hpp>
+#include <mcp/client/client.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
 
 #include <boost/asio/co_spawn.hpp>

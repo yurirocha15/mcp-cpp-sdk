@@ -56,7 +56,7 @@ A typical loopback test follows these steps:
 
 Here is a simplified example of this pattern from our integration test suite:
 
-.. literalinclude:: ../../test/e2e_integration_test.cpp
+.. literalinclude:: ../../test/e2e/e2e_integration_test.cpp
    :language: cpp
    :lines: 42-75
 

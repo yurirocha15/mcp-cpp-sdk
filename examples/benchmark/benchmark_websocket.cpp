@@ -8,8 +8,8 @@
 /// - WebSocket client connection with WebSocketClientTransport
 /// - Measuring roundtrip latency for tool calls
 
-#include <mcp/client.hpp>
-#include <mcp/server.hpp>
+#include <mcp/client/client.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/websocket.hpp>
 
 #include <boost/asio/co_spawn.hpp>

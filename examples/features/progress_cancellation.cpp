@@ -7,8 +7,8 @@
 /// - A client that sends a cancellation request
 /// - The tool handler checking ctx.is_cancelled() and exiting early
 
-#include <mcp/client.hpp>
-#include <mcp/server.hpp>
+#include <mcp/client/client.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
 
 #include <boost/asio/co_spawn.hpp>

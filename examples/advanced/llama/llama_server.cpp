@@ -1,7 +1,7 @@
 /// @file llama_server.cpp
 /// @brief MCP server adapter for llama.cpp llama-server, with stdio and HTTP transport.
 
-#include <mcp/server.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/stdio.hpp>
 

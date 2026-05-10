@@ -1,7 +1,7 @@
 #pragma once
 
-#include <mcp/protocol.hpp>
-#include <mcp/transport.hpp>
+#include <mcp/protocol/protocol.hpp>
+#include <mcp/transport/transport.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <memory>
