@@ -65,27 +65,27 @@ def run_examples():
             )
 
             if result.returncode == 0:
-                print("✓ PASS")
+                print("PASS")
                 passed += 1
             else:
-                print(f"✗ FAIL (exit code {result.returncode})")
+                print(f"FAIL (exit code {result.returncode})")
                 failed += 1
 
         except subprocess.TimeoutExpired:
-            print("✗ TIMEOUT")
+            print("TIMEOUT")
             failed += 1
         except Exception as e:
-            print(f"✗ ERROR: {e}")
+            print(f"ERROR: {e}")
             failed += 1
 
     print(f"\n{'='*50}")
     print(f"Results: {passed} passed, {failed} failed")
 
     if failed > 0:
-        print("\n❌ Some examples failed!")
+        print("\nSome examples failed!")
         return 1
     else:
-        print("\n✅ All examples passed!")
+        print("\nAll examples passed!")
         return 0
 
 def run_benchmarks():
@@ -102,16 +102,16 @@ def run_benchmarks():
         try:
             result = subprocess.run([str(exe)], capture_output=True, timeout=30, text=True)
             if result.returncode == 0:
-                print("✓ PASS")
+                print("PASS")
                 passed += 1
             else:
-                print(f"✗ FAIL (exit code {result.returncode})")
+                print(f"FAIL (exit code {result.returncode})")
                 failed += 1
         except subprocess.TimeoutExpired:
-            print("✗ TIMEOUT")
+            print("TIMEOUT")
             failed += 1
         except Exception as e:
-            print(f"✗ ERROR: {e}")
+            print(f"ERROR: {e}")
             failed += 1
     return 1 if failed > 0 else 0
 
