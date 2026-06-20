@@ -69,10 +69,12 @@ def run_examples():
                 passed += 1
             else:
                 print(f"FAIL (exit code {result.returncode})")
+                print_process_output(result)
                 failed += 1
 
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
             print("TIMEOUT")
+            print_timeout_output(e)
             failed += 1
         except Exception as e:
             print(f"ERROR: {e}")
@@ -106,14 +108,34 @@ def run_benchmarks():
                 passed += 1
             else:
                 print(f"FAIL (exit code {result.returncode})")
+                print_process_output(result)
                 failed += 1
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
             print("TIMEOUT")
+            print_timeout_output(e)
             failed += 1
         except Exception as e:
             print(f"ERROR: {e}")
             failed += 1
     return 1 if failed > 0 else 0
+
+def print_process_output(result):
+    if result.stdout:
+        print("--- stdout ---")
+        print(result.stdout.rstrip())
+    if result.stderr:
+        print("--- stderr ---")
+        print(result.stderr.rstrip())
+
+def print_timeout_output(error):
+    stdout = error.stdout.decode() if isinstance(error.stdout, bytes) else error.stdout
+    stderr = error.stderr.decode() if isinstance(error.stderr, bytes) else error.stderr
+    if stdout:
+        print("--- stdout ---")
+        print(stdout.rstrip())
+    if stderr:
+        print("--- stderr ---")
+        print(stderr.rstrip())
 
 if __name__ == "__main__":
     exit_code = run_examples()
