@@ -1,9 +1,9 @@
 # Benchmark Results
 
-This file keeps only the benchmark records relevant to the current performance PR:
+This file keeps the benchmark records by run date:
 
-- Pre-PR baseline full comparison: `benchmark/results/20260509_122305/`
-- Latest successful post-PR C++ benchmark: `benchmark/results/20260620_220910/`
+- `20260509_122305`: full Rust, C++, Go, and Python comparison
+- `20260620_220910`: C++ three-run verification
 
 ## Test Profile
 
@@ -16,9 +16,9 @@ This file keeps only the benchmark records relevant to the current performance P
 | **Infrastructure** | Same upstream API service and Redis seeder, Docker Compose |
 | **Host** | AMD Ryzen 9 9900X, 32 GB RAM, Ubuntu kernel 6.17.0-20-generic |
 
-## Pre-PR Baseline
+## 20260509_122305
 
-Baseline results from `benchmark/results/20260509_122305/`.
+Results from `benchmark/results/20260509_122305/`.
 
 | Server | RPS | p50 (ms) | p99 (ms) | Error Rate | Memory |
 |---|---:|---:|---:|---:|---:|
@@ -27,9 +27,9 @@ Baseline results from `benchmark/results/20260509_122305/`.
 | Go | 5,349 | 0.34 | 31.45 | 0% | 12.2 MB |
 | Python | 867 | 16.65 | 109.14 | 0% | 250.7 MB |
 
-## Latest Post-PR C++ Benchmark
+## 20260620_220910
 
-Post-PR C++-only verification from `benchmark/results/20260620_220910/`.
+C++-only verification from `benchmark/results/20260620_220910/`.
 
 | Run | RPS |
 |---:|---:|
@@ -49,4 +49,4 @@ Post-PR C++-only verification from `benchmark/results/20260620_220910/`.
 | p99 | 2.69 ms |
 | Error rate | 0% |
 
-Compared with the pre-PR C++ baseline, the latest median C++ run improved from **5,665 RPS** to **7,025.13 RPS** under the same benchmark profile.
+Compared with the `20260509_122305` C++ result, the `20260620_220910` median C++ run improved from **5,665 RPS** to **7,025.13 RPS** under the same benchmark profile.

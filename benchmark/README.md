@@ -232,10 +232,10 @@ docker compose --profile seeder up redis-seeder
 
 See [RESULTS.md](RESULTS.md) for the retained benchmark records:
 
-- Pre-PR baseline full comparison: `benchmark/results/20260509_122305/`
-- Latest successful post-PR C++ benchmark: `benchmark/results/20260620_220910/`
+- `20260509_122305`: full Rust, C++, Go, and Python comparison
+- `20260620_220910`: C++ three-run verification
 
-The latest post-PR C++ benchmark was run three times by `run.sh cpp`; the median run achieved **7,025.13 RPS** with **0.22% CV** and **0% errors**.
+The `20260620_220910` C++ benchmark was run three times by `run.sh cpp`; the median run achieved **7,025.13 RPS** with **0.22% CV** and **0% errors**.
 
 ### Fair Comparison Status
 
