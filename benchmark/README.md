@@ -232,14 +232,14 @@ docker compose --profile seeder up redis-seeder
 
 See [RESULTS.md](RESULTS.md) for the retained benchmark records:
 
-- `20260509_122305`: full Rust, C++, Go, and Python comparison
+- `20260405_205033`: C++, Go, and Python comparison
 - `20260620_220910`: C++ three-run verification
 
-The `20260620_220910` C++ benchmark was run three times by `run.sh cpp`; the median run achieved **7,025.13 RPS** with **0.22% CV** and **0% errors**.
+The `20260620_220910` C++ benchmark was run three times by `run.sh cpp`; the median run achieved **7,025.13 RPS** with **0.22% CV**, **0% errors**, **6.92 MB average memory**, and **8.15 MB max memory**.
 
 ### Fair Comparison Status
 
-The current results represent a strict apples-to-apples comparison across Rust, C++, Go, and Python implementations.
+The `20260405_205033` results compare the retained C++, Go, and Python artifacts. The `20260620_220910` results verify the C++ implementation across three runs.
 
 1. **Identical Infrastructure**: All servers use the same upstream API service, Redis seeder, and Docker resource limits.
 2. **Methodology Parity**: The k6 benchmark script matches upstream methodology exactly.
