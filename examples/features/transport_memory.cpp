@@ -173,6 +173,18 @@ void demo_transport_factory() {
         std::cout << "  - factory.create_stdio() → stdio transport\n";
         std::cout << "  - factory.create_http_client(url) → HTTP transport\n\n";
 
+        // Declare the server before io_ctx so io_ctx's destructor runs first
+        // (reverse construction order), ensuring Server outlives all detached coroutines.
+        Server s({"factory-demo", "1.0"}, {});
+        s.add_tool<nlohmann::json, mcp::CallToolResult>(
+            "ping", "", {}, [](const nlohmann::json&) {
+                mcp::CallToolResult result;
+                mcp::TextContent content;
+                content.text = "pong";
+                result.content.emplace_back(std::move(content));
+                return result;
+            });
+
         asio::io_context io_ctx;
         bool coroutine_ran = false;
 
@@ -180,16 +192,6 @@ void demo_transport_factory() {
             io_ctx,
             [&]() -> Task<void> {
                 auto [server_t, client_t] = create_memory_transport_pair(io_ctx.get_executor());
-
-                Server s({"factory-demo", "1.0"}, {});
-                s.add_tool<nlohmann::json, mcp::CallToolResult>(
-                    "ping", "", {}, [](const nlohmann::json&) {
-                        mcp::CallToolResult result;
-                        mcp::TextContent content;
-                        content.text = "pong";
-                        result.content.emplace_back(std::move(content));
-                        return result;
-                    });
 
                 asio::co_spawn(io_ctx, s.run(server_t, io_ctx.get_executor()), asio::detached);
 

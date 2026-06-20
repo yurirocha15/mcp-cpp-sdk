@@ -41,8 +41,8 @@ Available log levels (from most to least severe):
 
    #include <mcp/mcp.hpp>
 
-   server.add_tool("debug_tool", "Tool with logging", schema,
-                   [](const nlohmann::json& args, mcp::Context& ctx) -> mcp::Task<nlohmann::json> {
+   server.add_tool<nlohmann::json, nlohmann::json>("debug_tool", "Tool with logging", schema,
+                   [](mcp::Context& ctx, nlohmann::json args) -> mcp::Task<nlohmann::json> {
                        // Direct level helpers
                        co_await ctx.log_info("Executing debug tool...");
 

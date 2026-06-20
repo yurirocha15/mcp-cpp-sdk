@@ -281,8 +281,8 @@ Examples such as ``http_server_convenience.cpp`` and ``graceful_shutdown.cpp`` d
 Async tool handlers with Context:
 
 ```cpp
-server.add_tool("my_tool", "Description", schema,
-    [](const nlohmann::json& args, mcp::Context& ctx) -> mcp::Task<nlohmann::json> {
+server.add_tool<nlohmann::json, nlohmann::json>("my_tool", "Description", schema,
+    [](mcp::Context& ctx, nlohmann::json args) -> mcp::Task<nlohmann::json> {
         co_await ctx.log_info("Starting work...");
 
         if (ctx.is_cancelled()) {
