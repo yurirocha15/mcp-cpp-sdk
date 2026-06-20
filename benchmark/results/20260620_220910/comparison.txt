@@ -1,0 +1,6 @@
+Benchmark comparison
+Results: /home/yuri/workspace/mcp-cpp-sdk/benchmark/results/20260620_220910
+
+Server     Requests     RPS        CV%      p50(ms)      p95(ms)      p99(ms)      ErrorRate
+---------- ------------ ---------- -------- ------------ ------------ ------------ ------------
+cpp        2283376      7025.13    0.22%    0.68         1.92         2.69         0.0000

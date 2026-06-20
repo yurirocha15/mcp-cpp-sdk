@@ -107,6 +107,21 @@ class StreamableHttpSessionManager {
     void set_json_only(bool json_only);
 
     /**
+     * @brief Enable or disable stateless direct JSON handling.
+     *
+     * When enabled, POST request/response messages are dispatched directly to a
+     * Server instance without creating `Mcp-Session-Id` sessions, MemoryTransport
+     * pairs, pending-response timers, SSE event stores, GET streams, or DELETE
+     * teardown. Responses are always `application/json`.
+     *
+     * This mode is opt-in and leaves the default stateful Streamable HTTP
+     * behavior unchanged.
+     *
+     * @param enabled True to use stateless direct JSON handling.
+     */
+    void set_stateless_json_mode(bool enabled);
+
+    /**
      * @brief Set a separate executor for tool handlers.
      *
      * When set, tool handlers will run on this executor instead of the HTTP I/O executor.

@@ -279,6 +279,20 @@ class Server {
                                       const std::optional<nlohmann::json>& params);
 
     /**
+     * @brief Invoke a tool directly by name with the provided arguments.
+     *
+     * Bypasses the JSON-RPC message loop and calls the tool handler directly.
+     * Intended for high-performance json_only mode where transport overhead
+     * is unnecessary.
+     *
+     * @param tool_name The name of the tool to invoke.
+     * @param args The arguments to pass to the tool.
+     * @return A task that resolves to the tool result JSON.
+     * @throws std::runtime_error If the tool is not found.
+     */
+    Task<nlohmann::json> invoke_tool(const std::string& tool_name, const nlohmann::json& args);
+
+    /**
      * @brief Start the server session loop on the given transport.
      *
      * Runs until the transport is closed or an error occurs.
@@ -324,7 +338,18 @@ class Server {
      *
      * @param json_msg The parsed JSON-RPC message.
      */
-    void dispatch(nlohmann::json json_msg);
+    Task<void> dispatch(nlohmann::json json_msg);
+
+    /**
+     * @brief Dispatch a parsed JSON-RPC request and return its serialized response.
+     *
+     * Used by stateless HTTP JSON mode to avoid creating a transport-backed
+     * server session for request/response messages.
+     *
+     * @param json_msg The parsed JSON-RPC request object.
+     * @return A task that resolves to the serialized JSON-RPC response.
+     */
+    Task<std::string> dispatch_request_direct(nlohmann::json json_msg);
 
     /**
      * @brief Check whether the server has been initialized.
@@ -405,37 +430,57 @@ class Server {
      */
     Task<void> dispatch_request(nlohmann::json json_msg);
 
+    Task<std::string> dispatch_request_wire(nlohmann::json json_msg);
+
     void dispatch_notification(const nlohmann::json& json_msg);
 
     void dispatch_response(const nlohmann::json& json_msg);
 
     Task<void> handle_initialize(const nlohmann::json& json_msg);
+    Task<std::string> handle_initialize_wire(const nlohmann::json& json_msg);
 
     Task<void> handle_shutdown(const nlohmann::json& json_msg);
+    Task<std::string> handle_shutdown_wire(const nlohmann::json& json_msg);
 
     Task<void> handle_ping(const nlohmann::json& json_msg);
+    Task<std::string> handle_ping_wire(const nlohmann::json& json_msg);
 
     Task<void> handle_tools_call(const nlohmann::json& json_msg);
+    Task<std::string> handle_tools_call_wire(const nlohmann::json& json_msg);
 
     Task<void> handle_tools_list(const nlohmann::json& json_msg);
+    Task<std::string> handle_tools_list_wire(const nlohmann::json& json_msg);
 
     Task<void> handle_resources_list(const nlohmann::json& json_msg);
+    Task<std::string> handle_resources_list_wire(const nlohmann::json& json_msg);
 
     Task<void> handle_resources_read(const nlohmann::json& json_msg);
+    Task<std::string> handle_resources_read_wire(const nlohmann::json& json_msg);
 
     Task<void> handle_resource_templates_list(const nlohmann::json& json_msg);
+    Task<std::string> handle_resource_templates_list_wire(const nlohmann::json& json_msg);
 
     Task<void> handle_subscribe(const nlohmann::json& json_msg);
+    Task<std::string> handle_subscribe_wire(const nlohmann::json& json_msg);
 
     Task<void> handle_unsubscribe(const nlohmann::json& json_msg);
+    Task<std::string> handle_unsubscribe_wire(const nlohmann::json& json_msg);
 
     Task<void> handle_prompts_list(const nlohmann::json& json_msg);
+    Task<std::string> handle_prompts_list_wire(const nlohmann::json& json_msg);
 
     Task<void> handle_prompts_get(const nlohmann::json& json_msg);
+    Task<std::string> handle_prompts_get_wire(const nlohmann::json& json_msg);
 
     Task<void> handle_set_level(const nlohmann::json& json_msg);
+    Task<std::string> handle_set_level_wire(const nlohmann::json& json_msg);
 
     Task<void> handle_complete(const nlohmann::json& json_msg);
+    Task<std::string> handle_complete_wire(const nlohmann::json& json_msg);
+
+    Task<nlohmann::json> invoke_tool_impl(CallToolParams params,
+                                          std::shared_ptr<std::atomic<bool>> cancelled,
+                                          std::optional<ProgressToken> progress_token);
 
     // [gcc11-sso: wire-builders] DO NOT convert to Task<T>.
     static std::string make_result_wire(const RequestId& id, nlohmann::json result);

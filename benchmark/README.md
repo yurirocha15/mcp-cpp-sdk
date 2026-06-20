@@ -1,15 +1,16 @@
 # MCP Benchmark — TM Dev Lab v2
 
-Performance comparison of C++, Python, and Go MCP server implementations under identical I/O-bound workloads (Redis + HTTP).
+Performance comparison of C++, Python, Go and Rust MCP server implementations under identical I/O-bound workloads (Redis + HTTP).
 
 Methodology mirrors [TM Dev Lab v2](https://github.com/thiagomendes/benchmark-mcp-servers-v2).
+The Python, Go, and Rust servers — as well as the API service, Redis seeder, and k6 script — are sourced directly from that upstream repo (pinned to commit `8a9a5f8e`).
 
 ---
 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) with Compose v2 (`docker compose`)
-- `python3` and `jq` (for orchestration and results parsing)
+- `python3`, `jq`, and `git` (for orchestration, results parsing, and cloning upstream)
 
 > k6 runs inside a Docker container (`grafana/k6`) — no host installation needed.
 
@@ -20,7 +21,7 @@ Methodology mirrors [TM Dev Lab v2](https://github.com/thiagomendes/benchmark-mc
 ```bash
 cd benchmark/
 
-# Benchmark all three servers (builds, seeds Redis, warms up, runs k6)
+# Benchmark all four servers (builds, seeds Redis, warms up, runs k6)
 ./run.sh
 
 # Benchmark specific servers
@@ -30,14 +31,18 @@ cd benchmark/
 ```
 
 `run.sh` handles everything end-to-end:
-1. Starts Redis + API service
-2. Seeds Redis with 130k keys (carts, history, popularity, rate limits)
-3. For each selected server: resets Redis, starts only that server, warms up, runs k6, collects Docker stats
-4. Prints a comparison table and saves results to `benchmark/results/<timestamp>/`
+1. Clones the upstream benchmark repo (once, pinned to commit `8a9a5f8e`) into `benchmark/benchmark-mcp-servers-v2/`
+2. Starts Redis + API service
+3. Seeds Redis with 130k keys (carts, history, popularity, rate limits)
+4. For each selected server: resets Redis, starts only that server, warms up, runs k6 **3 times**, picks the median run
+5. Collects Docker CPU/memory/network stats during the test
+6. Prints a comparison table and saves results to `benchmark/results/<timestamp>/`
 
 Results per server:
-- `<server>/k6_summary.json` — full k6 metrics
-- `<server>/k6_console.log` — k6 terminal output
+- `<server>/k6_summary.json` — canonical (median) k6 metrics
+- `<server>/k6_summary_run{1,2,3}.json` — raw results from each of the 3 k6 runs
+- `<server>/k6_multi_run_stats.json` — per-run RPS and coefficient of variation %
+- `<server>/k6_console_run{1,2,3}.log` — k6 terminal output per run
 - `<server>/stats.json` — CPU/memory/network samples during the test
 - `comparison.txt` — side-by-side RPS, latency percentiles, error rates
 
@@ -61,14 +66,17 @@ graph TD
         CPP["C++ MCP :8080"]
         Python["Python MCP :8081"]
         Go["Go MCP :8082"]
+        Rust["Rust MCP :8083"]
     end
 
     Redis --- CPP
     Redis --- Python
     Redis --- Go
+    Redis --- Rust
     API --- CPP
     API --- Python
     API --- Go
+    API --- Rust
 ```
 
 Each MCP server exposes the same three tools:
@@ -77,7 +85,7 @@ Each MCP server exposes the same three tools:
 |---|---|
 | `search_products` | Parallel: HTTP product search + Redis `ZREVRANGE` (popularity) |
 | `get_user_cart` | Sequential Redis `HGETALL` (cart), then parallel: HTTP product lookup + Redis `LRANGE` (history) |
-| `checkout` | All parallel: HTTP cart total + Redis `INCR` (rate limit) + `RPUSH` (history) + `ZADD` (popularity) |
+| `checkout` | Parallel: HTTP cart total + Redis `INCR` (rate limit), then sequential `RPUSH` + `ZINCRBY` |
 
 ---
 
@@ -90,8 +98,9 @@ Each MCP server exposes the same three tools:
 | C++ MCP | 8080 | MCP + `/health` on same port (Streamable HTTP) |
 | Python MCP | 8081 | MCP + `/health` on same port |
 | Go MCP | 8082 | MCP + `/health` on same port |
+| Rust MCP | 8083 | MCP + `/health` on same port |
 
-> All three servers expose MCP and health endpoints on the same port.
+> All four servers expose MCP and health endpoints on the same port.
 
 ---
 
@@ -106,7 +115,7 @@ go build -o benchmark-client .
 # Test a single server
 ./benchmark-client -url http://localhost:8080/mcp -name cpp
 
-# Compare all three servers
+# Compare all four servers
 ./benchmark-client -compare
 ```
 
@@ -115,6 +124,12 @@ Output is JSON to stdout (machine-readable) and a summary to stderr.
 ---
 
 ## Manual Operations
+
+> **Note:** `docker-compose.yml` builds the Python/Go/Rust servers, API service, and Redis seeder from the upstream clone at `benchmark/benchmark-mcp-servers-v2/`. Run `./run.sh` once first to ensure the clone exists, or clone manually:
+> ```bash
+> git clone https://github.com/thiagomendes/benchmark-mcp-servers-v2.git benchmark/benchmark-mcp-servers-v2
+> cd benchmark/benchmark-mcp-servers-v2 && git checkout 8a9a5f8ef505f46b6079072ef4603304ca672e33
+> ```
 
 ### Start individual servers
 
@@ -131,6 +146,9 @@ docker compose up redis api-service python-server
 
 # Just Redis + API + Go
 docker compose up redis api-service go-server
+
+# Just Redis + API + Rust
+docker compose up redis api-service rust-server
 ```
 
 ### Seed Redis manually
@@ -191,6 +209,8 @@ docker compose down --rmi all --volumes
 
 ## Troubleshooting
 
+**Upstream clone is missing** — if you see build errors like `unable to prepare context: path not found`, the upstream repo hasn't been cloned yet. Run `./run.sh` once to auto-clone it, or clone manually (see [Manual Operations](#manual-operations)).
+
 **C++ server build is slow** — the first build compiles the full SDK via Conan inside Docker. Subsequent builds use the Docker layer cache. Expect 3–5 minutes on first run.
 
 **`healthy` never appears for cpp-server** — the healthcheck pings port 8080. If it isn't reachable, the server process likely failed during startup. Check logs:
@@ -210,4 +230,17 @@ docker compose --profile seeder up redis-seeder
 
 ## Results
 
-See [RESULTS.md](RESULTS.md) for full benchmark results including throughput, latency percentiles, per-tool breakdowns, resource usage, and charts.
+See [RESULTS.md](RESULTS.md) for the retained benchmark records:
+
+- Pre-PR baseline full comparison: `benchmark/results/20260509_122305/`
+- Latest successful post-PR C++ benchmark: `benchmark/results/20260620_220910/`
+
+The latest post-PR C++ benchmark was run three times by `run.sh cpp`; the median run achieved **7,025.13 RPS** with **0.22% CV** and **0% errors**.
+
+### Fair Comparison Status
+
+The current results represent a strict apples-to-apples comparison across Rust, C++, Go, and Python implementations.
+
+1. **Identical Infrastructure**: All servers use the same upstream API service, Redis seeder, and Docker resource limits.
+2. **Methodology Parity**: The k6 benchmark script matches upstream methodology exactly.
+3. **Hardware Consistency**: All tests run on the same hardware (AMD Ryzen 9 9900X).
