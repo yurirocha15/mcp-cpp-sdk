@@ -76,10 +76,6 @@ void demo_memory_transport() {
         std::cout << "[Main] Client transport: " << client_transport.get() << "\n";
         std::cout << "[Main] Transports are bidirectionally connected\n\n";
 
-        // Fallback for CI if the demo fails to complete naturally.
-        asio::steady_timer exit_timer(io_ctx.get_executor());
-        exit_timer.expires_after(std::chrono::seconds(2));
-
         // ========== SERVER COROUTINE ==========
         asio::co_spawn(
             io_ctx,
@@ -131,30 +127,21 @@ void demo_memory_transport() {
                     }
 
                     std::cout << "\n[Client] Shutting down\n";
-                    co_await client.send_request("shutdown", std::nullopt);
-                    client.close();
-                    exit_timer.cancel();
                 } catch (const std::exception& e) {
                     std::cerr << "[Client] Fatal error: " << e.what() << '\n';
-                    io_ctx.stop();
                 }
             },
             asio::detached);
 
         // ========== AUTO-EXIT TIMER ==========
+        asio::steady_timer exit_timer(io_ctx.get_executor());
+        exit_timer.expires_after(std::chrono::seconds(2));
+
         asio::co_spawn(
             io_ctx,
             [&]() -> Task<void> {
-                try {
-                    co_await exit_timer.async_wait(asio::use_awaitable);
-                } catch (const boost::system::system_error& err) {
-                    if (err.code() == boost::asio::error::operation_aborted) {
-                        co_return;
-                    }
-                    throw;
-                }
+                co_await exit_timer.async_wait(asio::use_awaitable);
                 std::cout << "\n[Main] Auto-exit timer triggered\n";
-                server_transport->close();
                 io_ctx.stop();
             },
             asio::detached);
@@ -215,9 +202,8 @@ void demo_transport_factory() {
                 co_await c.call_tool("ping", nlohmann::json{});
                 std::cout << "[Demo] Tool call succeeded via MemoryTransport\n";
 
-                co_await c.send_request("shutdown", std::nullopt);
-                c.close();
                 coroutine_ran = true;
+                io_ctx.stop();
             },
             asio::detached);
 
