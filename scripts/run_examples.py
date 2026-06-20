@@ -23,6 +23,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+def is_example_executable(path):
+    if not path.is_file():
+        return False
+    if sys.platform == "win32":
+        return path.suffix.lower() == ".exe"
+    return path.stat().st_mode & 0o111 != 0
+
 def run_examples():
     build_dir = Path("build/release")
 
@@ -42,6 +49,7 @@ def run_examples():
         list(build_dir.glob("example-echo-websocket")) +
         list(build_dir.glob("example-http-loopback"))
     )
+    examples = [exe for exe in examples if is_example_executable(exe)]
     if not examples:
         print("No example binaries found!")
         return 1
@@ -92,7 +100,7 @@ def run_examples():
 
 def run_benchmarks():
     build_dir = Path("build/release")
-    benchmarks = sorted(build_dir.glob("example-benchmark-*"))
+    benchmarks = sorted(exe for exe in build_dir.glob("example-benchmark-*") if is_example_executable(exe))
     if not benchmarks:
         return 0
     print(f"\nRunning {len(benchmarks)} benchmarks (30s timeout)...\n")

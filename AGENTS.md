@@ -11,5 +11,6 @@ Rules:
 ## CI guardrails
 
 - Keep example runner status output ASCII-only. Windows GitHub runners can use legacy console encodings such as cp1252, so Unicode symbols in `scripts/run_examples.py` can fail before examples finish.
+- When discovering example binaries on Windows, run only `.exe` files. MSVC can emit `.exe.manifest` sidecars next to examples, and trying to execute those manifests fails with `WinError 193`.
 - Treat `examples/features/transport_memory.cpp` as compiler-sensitive on Ubuntu 22/GCC 11. Prefer direct `ITransport::write_message()` / `read_message()` memory-pair demos in that file; do not add ad-hoc full `Client`/`Server` shutdown, close, or timer teardown paths there without proving Ubuntu 22 and Windows CI.
 - Use `hendrikmuhs/ccache-action@v1.2` in GitHub Actions. The broad `@v1` tag targets deprecated Node.js 20 and emits runner warnings.
