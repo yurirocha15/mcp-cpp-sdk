@@ -52,7 +52,7 @@ int main() {
 ### 3. Create a Minimal Client
 
 ```cpp
-#include <mcp/client.hpp>
+#include <mcp/client/client.hpp>
 #include <mcp/transport/stdio.hpp>
 
 boost::asio::co_spawn(executor, [&]() -> mcp::Task<void> {

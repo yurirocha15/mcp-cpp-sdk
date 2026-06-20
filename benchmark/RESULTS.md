@@ -2,7 +2,7 @@
 
 This file keeps the benchmark records by run date:
 
-- `20260509_122305`: full Rust, C++, Go, and Python comparison
+- `20260405_205033`: C++, Go, and Python comparison
 - `20260620_220910`: C++ three-run verification
 
 ## Test Profile
@@ -16,16 +16,15 @@ This file keeps the benchmark records by run date:
 | **Infrastructure** | Same upstream API service and Redis seeder, Docker Compose |
 | **Host** | AMD Ryzen 9 9900X, 32 GB RAM, Ubuntu kernel 6.17.0-20-generic |
 
-## 20260509_122305
+## 20260405_205033
 
-Results from `benchmark/results/20260509_122305/`.
+Results from `benchmark/results/20260405_205033/`.
 
-| Server | RPS | p50 (ms) | p99 (ms) | Error Rate | Memory |
-|---|---:|---:|---:|---:|---:|
-| Rust | 7,344 | 0.16 | 2.17 | 0% | 12.6 MB |
-| C++ | 5,665 | 0.48 | 5.90 | 0% | 3.4 MB |
-| Go | 5,349 | 0.34 | 31.45 | 0% | 12.2 MB |
-| Python | 867 | 16.65 | 109.14 | 0% | 250.7 MB |
+| Server | RPS | p50 (ms) | p99 (ms) | Error Rate | Avg Memory | Max Memory |
+|---|---:|---:|---:|---:|---:|---:|
+| C++ | 12,191.61 | 0.31 | 5.55 | 0% | 11.34 MB | 13.07 MB |
+| Go | 9,154.28 | 0.36 | 36.06 | 0% | 21.38 MB | 24.52 MB |
+| Python | 904.33 | 18.17 | 190.20 | 0% | 58.09 MB | 61.86 MB |
 
 ## 20260620_220910
 
@@ -48,5 +47,7 @@ C++-only verification from `benchmark/results/20260620_220910/`.
 | p95 | 1.92 ms |
 | p99 | 2.69 ms |
 | Error rate | 0% |
+| Avg memory | 6.92 MB |
+| Max memory | 8.15 MB |
 
-Compared with the `20260509_122305` C++ result, the `20260620_220910` median C++ run improved from **5,665 RPS** to **7,025.13 RPS** under the same benchmark profile.
+Compared with the `20260405_205033` C++ result, the `20260620_220910` median C++ run used less Docker-reported memory: average memory decreased from **11.34 MB** to **6.92 MB**, and max memory decreased from **13.07 MB** to **8.15 MB**.
