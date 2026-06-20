@@ -131,12 +131,12 @@ void demo_memory_transport() {
                     }
 
                     std::cout << "\n[Client] Shutting down\n";
-                    transport->close();
+                    co_await client.send_request("shutdown", std::nullopt);
+                    client.close();
                     exit_timer.cancel();
                 } catch (const std::exception& e) {
                     std::cerr << "[Client] Fatal error: " << e.what() << '\n';
-                    transport->close();
-                    exit_timer.cancel();
+                    io_ctx.stop();
                 }
             },
             asio::detached);
@@ -215,8 +215,9 @@ void demo_transport_factory() {
                 co_await c.call_tool("ping", nlohmann::json{});
                 std::cout << "[Demo] Tool call succeeded via MemoryTransport\n";
 
+                co_await c.send_request("shutdown", std::nullopt);
+                c.close();
                 coroutine_ran = true;
-                client_t->close();
             },
             asio::detached);
 
