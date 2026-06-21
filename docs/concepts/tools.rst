@@ -36,7 +36,9 @@ The simplest way to register a tool is with a synchronous handler that takes
                    [](const nlohmann::json& args) -> nlohmann::json {
                        double a = args.at("a").get<double>();
                        double b = args.at("b").get<double>();
-                       return {{"result", a + b}};
+                       std::string text = "Result: " + std::to_string(a + b);
+                       return {{"content", nlohmann::json::array(
+                           {nlohmann::json{{"type", "text"}, {"text", std::move(text)}}})}};
                    });
 
 Typed Handlers
@@ -145,9 +147,10 @@ In addition to the input schema, you can provide an optional `outputSchema`.
 This allows clients to understand the structure of the data returned by the
 tool, enabling better integration with typed systems or UI rendering.
 
-When an `outputSchema` is provided, the SDK can use it to validate that your
-tool's output conforms to the expected format before sending it back to the
-client.
+When an ``outputSchema`` is provided, the SDK includes it in the tool definition sent to clients.
+The schema is advertised as ``outputSchema`` in the tool's metadata, enabling clients to understand
+the structure of the tool's output. Note that the SDK does not validate handler output against this
+schema at runtime — it is advisory for clients.
 
 .. code-block:: cpp
 
