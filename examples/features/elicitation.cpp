@@ -87,15 +87,14 @@ int main() {
                         co_return make_result("Accepted: task=" + task +
                                              " info=" + result.content->dump());
                     }
+                    co_return make_result("Accepted: task=" + task + " (no form data)");
                 } else if (result.action == ElicitAction::eDecline) {
                     std::cout << "Tool: User declined the form\n";
                     co_return make_result("Declined: task=" + task);
-                } else if (result.action == ElicitAction::eCancel) {
+                } else {
                     std::cout << "Tool: User cancelled the form\n";
                     co_return make_result("Cancelled: task=" + task);
                 }
-
-                co_return make_result("Error: unexpected elicitation result for task=" + task);
             });
 
         // ========== TRANSPORT & RUN ==========
