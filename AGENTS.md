@@ -8,6 +8,11 @@ Rules:
 - For cross-module "how does X relate to Y" questions, prefer `graphify query "<question>"`, `graphify path "<A>" "<B>"`, or `graphify explain "<concept>"` over grep — these traverse the graph's EXTRACTED + INFERRED edges instead of scanning files
 - After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
 
+## Commit messages
+
+- Use conventional commit format for every commit subject, matching `docs/contributing.rst`: `feat:`, `fix:`, `docs:`, `style:`, `refactor:`, `perf:`, `test:`, `build:`, `ci:`, or `chore:` followed by an imperative summary under 80 characters.
+- Before pushing, check branch commit subjects with `git log --format='%s' <base>..HEAD` and reword any non-conforming commits.
+
 ## CI guardrails
 
 - Keep example runner status output ASCII-only. Windows GitHub runners can use legacy console encodings such as cp1252, so Unicode symbols in `scripts/run_examples.py` can fail before examples finish.
