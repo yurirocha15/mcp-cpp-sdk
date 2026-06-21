@@ -25,6 +25,14 @@ class HttpTransportTest : public ::testing::Test {
     asio::io_context io_ctx_;
 };
 
+TEST_F(HttpTransportTest, PortReturnsEphemeralPortWhenBoundToZero) {
+    mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 0);
+
+    EXPECT_GT(server_transport.port(), 0);
+
+    server_transport.close();
+}
+
 TEST_F(HttpTransportTest, SendMessageServerReceives) {
     mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18080);
 

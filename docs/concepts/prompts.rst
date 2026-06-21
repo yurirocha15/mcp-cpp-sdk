@@ -147,7 +147,7 @@ provides access to logging, progress reporting, and cancellation checks.
    server.add_prompt<GetPromptRequestParams, GetPromptResult>(
        metadata,
        [](mcp::Context& ctx, GetPromptRequestParams params) -> mcp::Task<GetPromptResult> {
-           ctx.log_info("Generating prompt for " + params.name);
+           co_await ctx.log_info("Generating prompt for " + params.name);
            if (ctx.is_cancelled()) {
                throw std::runtime_error("Request cancelled");
            }

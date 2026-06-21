@@ -104,22 +104,11 @@ Each MCP server exposes the same three tools:
 
 ---
 
-## Go Test Client (correctness verification)
+## Correctness Verification
 
-Verify tool responses before load testing:
-
-```bash
-cd benchmark/client/
-go build -o benchmark-client .
-
-# Test a single server
-./benchmark-client -url http://localhost:8080/mcp -name cpp
-
-# Compare all four servers
-./benchmark-client -compare
-```
-
-Output is JSON to stdout (machine-readable) and a summary to stderr.
+`run.sh` uses the pinned upstream k6 script for both load generation and response
+validation. Each k6 run checks `initialize`, `tools/list`, and all benchmark
+tool responses before writing the retained summary files.
 
 ---
 

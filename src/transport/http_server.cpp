@@ -547,6 +547,15 @@ HttpServerTransport::~HttpServerTransport() {
 
 const EventStore& HttpServerTransport::event_store() const { return impl_->event_store; }
 
+unsigned short HttpServerTransport::port() const {
+    boost::system::error_code ec;
+    const auto endpoint = impl_->acceptor.local_endpoint(ec);
+    if (ec) {
+        throw std::runtime_error("Failed to query HTTP acceptor endpoint: " + ec.message());
+    }
+    return endpoint.port();
+}
+
 void HttpServerTransport::set_json_only(bool json_only) { impl_->json_only_ = json_only; }
 
 Task<std::string> HttpServerTransport::read_message() {

@@ -166,6 +166,14 @@ class HttpServerTransport final : public ITransport {
     [[nodiscard]] const EventStore& event_store() const;
 
     /**
+     * @brief Get the local port currently bound by the HTTP acceptor.
+     *
+     * This is useful when the transport is constructed with port 0 and the
+     * operating system assigns an ephemeral port.
+     */
+    [[nodiscard]] unsigned short port() const;
+
+    /**
      * @brief Enable or disable JSON-only responses.
      *
      * When enabled, HTTP POST responses always use `application/json` and
