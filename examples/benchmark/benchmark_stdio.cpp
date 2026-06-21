@@ -123,8 +123,11 @@ int main() {
                     std::cout << std::string(70, '=') << "\n\n";
 
                     std::cout << "[Client] Shutting down\n";
+                    client.close();
+                    io_ctx.stop();
                 } catch (const std::exception& e) {
                     std::cerr << "[Client] Error: " << e.what() << '\n';
+                    io_ctx.stop();
                 }
             },
             asio::detached);

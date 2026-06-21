@@ -117,7 +117,7 @@ WebSocket Transport
 
 For full-duplex, bidirectional communication over the network,
 ``WebSocketServerTransport`` and ``WebSocketClientTransport``
-is the ideal choice. Unlike HTTP, which often requires polling or long-running
+are the ideal choices. Unlike HTTP, which often requires polling or long-running
 streams for bidirectional data, WebSockets provide a native persistent connection.
 
 .. code-block:: cpp
@@ -146,7 +146,7 @@ both ends of the transport are correctly linked.
 
 .. literalinclude:: ../../examples/features/transport_memory.cpp
    :language: cpp
-   :lines: 74-80
+   :lines: 32-39
    :dedent: 8
 
 Usage in Integration Tests
@@ -157,7 +157,7 @@ transports, your server and client code remain identical to production.
 
 .. literalinclude:: ../../examples/features/transport_memory.cpp
    :language: cpp
-   :lines: 82-89
+   :lines: 43-66
    :dedent: 8
 
 For more information on writing effective tests, see the :doc:`/guides/testing` guide.
@@ -171,8 +171,8 @@ further simplifies transport creation by binding them to a specific runtime.
 
 .. literalinclude:: ../../examples/features/transport_memory.cpp
    :language: cpp
-   :lines: 172-194
-   :dedent: 8
+   :lines: 88-99
+   :dedent: 4
 
 Choosing the Right Transport
 ----------------------------

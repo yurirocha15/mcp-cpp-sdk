@@ -33,13 +33,11 @@ int main() {
 
         const int NUM_ITERATIONS = 1000;
         const std::string HOST = "127.0.0.1";
-        const int PORT = 18200;
 
         std::cout << "\n" << std::string(70, '=') << "\n";
         std::cout << "HTTP Transport Benchmark\n";
         std::cout << std::string(70, '=') << "\n";
         std::cout << "Iterations: " << NUM_ITERATIONS << "\n";
-        std::cout << "Server: " << HOST << ":" << PORT << "\n\n";
 
         asio::io_context io_ctx;
 
@@ -69,8 +67,10 @@ int main() {
 
         // ========== SERVER COROUTINE ==========
         auto http_server_transport =
-            std::make_shared<HttpServerTransport>(io_ctx.get_executor(), HOST, PORT);
+            std::make_shared<HttpServerTransport>(io_ctx.get_executor(), HOST, 0);
         auto* http_transport_ptr = http_server_transport.get();
+        const auto port = http_server_transport->port();
+        std::cout << "Server: " << HOST << ":" << port << "\n\n";
 
         asio::co_spawn(
             io_ctx,
@@ -81,7 +81,7 @@ int main() {
                     asio::steady_timer startup_delay(io_ctx.get_executor());
                     startup_delay.expires_after(std::chrono::milliseconds(100));
                     co_await startup_delay.async_wait(asio::use_awaitable);
-                    std::cout << "[Server] HTTP server listening on " << HOST << ":" << PORT << "\n";
+                    std::cout << "[Server] HTTP server listening on " << HOST << ":" << port << "\n";
                     co_await server.run(transport, io_ctx.get_executor());
                 } catch (const std::exception& e) {
                     std::cerr << "[Server] Error: " << e.what() << '\n';
@@ -103,11 +103,11 @@ int main() {
                     client_info.name = "http-benchmark-client";
                     client_info.version = "1.0.0";
 
-                    std::string url = "http://" + HOST + ":" + std::to_string(PORT) + "/mcp";
+                    std::string url = "http://" + HOST + ":" + std::to_string(port) + "/mcp";
                     auto http_client =
                         std::make_shared<HttpClientTransport>(io_ctx.get_executor(), url);
 
-                    Client client(std::move(http_client), io_ctx.get_executor());
+                    Client client(http_client, io_ctx.get_executor());
 
                     auto init_result = co_await client.connect(client_info, ClientCapabilities{});
                     std::cout << "[Client] Connected to: " << init_result.serverInfo.name << "\n\n";
@@ -158,8 +158,13 @@ int main() {
                     std::cout << std::string(70, '=') << "\n\n";
 
                     std::cout << "[Client] Shutting down\n";
+                    client.close();
+                    http_transport_ptr->close();
+                    io_ctx.stop();
                 } catch (const std::exception& e) {
                     std::cerr << "[Client] Error: " << e.what() << '\n';
+                    http_transport_ptr->close();
+                    io_ctx.stop();
                 }
             },
             asio::detached);

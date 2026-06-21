@@ -159,7 +159,8 @@ echo_websocket
 
 In-process loopback demonstration using **WebSocket transport** over TCP:
 
-* **WebSocket transport**: Using ``WebSocketTransport`` instead of stdio
+* **WebSocket transport**: Using ``WebSocketServerTransport`` and
+  ``WebSocketClientTransport`` instead of stdio
 * **Server + Client**: Both running in the same process
 * **TCP acceptor**: Server listens on localhost port
 * **Echo tool**: Simple echo tool that returns its input
