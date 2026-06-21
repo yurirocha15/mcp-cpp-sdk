@@ -98,7 +98,7 @@ done
 
 **Run:** `./build/release/example-feature-completions`
 
-**Expected output:** Completion suggestions for tool arguments
+**Expected output:** Completion suggestions for prompt arguments
 
 ---
 

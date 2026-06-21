@@ -73,23 +73,29 @@ int main() {
 
                 std::cout << "Tool: Received elicitation result\n";
 
+                auto make_result = [](const std::string& text) {
+                    return nlohmann::json{
+                        {"content",
+                         nlohmann::json::array(
+                             {nlohmann::json{{"type", "text"}, {"text", text}}})}};
+                };
+
                 if (result.action == ElicitAction::eAccept) {
                     std::cout << "Tool: User accepted the form\n";
                     if (result.content) {
                         std::cout << "Tool: Form data: " << result.content->dump() << "\n";
-                        co_return nlohmann::json{
-                            {"status", "success"}, {"task", task}, {"user_info", *result.content}};
+                        co_return make_result("Accepted: task=" + task +
+                                             " info=" + result.content->dump());
                     }
                 } else if (result.action == ElicitAction::eDecline) {
                     std::cout << "Tool: User declined the form\n";
-                    co_return nlohmann::json{{"status", "declined"}, {"task", task}};
+                    co_return make_result("Declined: task=" + task);
                 } else if (result.action == ElicitAction::eCancel) {
                     std::cout << "Tool: User cancelled the form\n";
-                    co_return nlohmann::json{{"status", "cancelled"}, {"task", task}};
+                    co_return make_result("Cancelled: task=" + task);
                 }
 
-                co_return nlohmann::json{
-                    {"status", "error"}, {"task", task}, {"message", "Unexpected elicitation result"}};
+                co_return make_result("Error: unexpected elicitation result for task=" + task);
             });
 
         // ========== TRANSPORT & RUN ==========

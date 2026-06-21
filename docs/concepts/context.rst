@@ -135,22 +135,34 @@ The server sends a ``sampling/createMessage`` request back to the client. The cl
 
 .. code-block:: cpp
 
-   server.add_tool("generate_summary", "Requests text from LLM", schema,
-                   [](const nlohmann::json& args, mcp::Context& ctx) -> mcp::Task<nlohmann::json> {
+   server.add_tool<nlohmann::json, nlohmann::json>("generate_summary", "Requests text from LLM", schema,
+                   [](mcp::Context& ctx, nlohmann::json args) -> mcp::Task<nlohmann::json> {
+                       mcp::SamplingMessage msg;
+                       msg.role = mcp::Role::eUser;
+                       msg.content = mcp::SamplingMessageContentBlock{
+                           mcp::TextContent{.text = "Summarize this: " + args["text"].get<std::string>()}};
+
                        mcp::CreateMessageRequestParams params;
-                       params.messages.push_back({
-                           .role = "user",
-                           .content = mcp::TextContent{.text = "Summarize this: " + args["text"].get<std::string>()}
-                       });
+                       params.messages.push_back(std::move(msg));
                        params.maxTokens = 100;
 
                        try {
                            auto result = co_await ctx.sample_llm(params);
-                           co_return nlohmann::json{{"summary", result.content.text}};
+                           std::string summary;
+                           if (auto* block = std::get_if<mcp::SamplingMessageContentBlock>(&result.content)) {
+                               if (auto* tc = std::get_if<mcp::TextContent>(block)) {
+                                   summary = tc->text;
+                               }
+                           }
+                           co_return nlohmann::json{
+                               {"content", nlohmann::json::array(
+                                   {nlohmann::json{{"type", "text"}, {"text", summary}}})}};
                        } catch (const std::exception& e) {
                            co_await ctx.log(mcp::LoggingLevel::eError,
                                             "Sampling failed: " + std::string(e.what()));
-                           co_return nlohmann::json{{"error", "Failed to sample LLM"}};
+                           co_return nlohmann::json{
+                               {"content", nlohmann::json::array(
+                                   {nlohmann::json{{"type", "text"}, {"text", "Sampling failed"}}})}};
                        }
                    });
 

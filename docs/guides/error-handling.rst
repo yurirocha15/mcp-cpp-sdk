@@ -128,8 +128,8 @@ The SDK provides a built-in logging system that is essential for debugging and m
 
 .. code-block:: cpp
 
-   server.add_tool("example", "...", schema,
-       [](const nlohmann::json& args, mcp::Context& ctx) -> mcp::Task<nlohmann::json> {
+   server.add_tool<nlohmann::json, nlohmann::json>("example", "...", schema,
+       [](mcp::Context& ctx, nlohmann::json args) -> mcp::Task<nlohmann::json> {
            try {
                // ... work ...
            } catch (const std::exception& e) {
