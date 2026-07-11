@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mcp/core/constants.hpp>
+#include <mcp/core/export.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/transport/http_types.hpp>
 #include <mcp/transport/transport.hpp>
@@ -137,7 +138,7 @@ class EventStore {
  * outbound responses back to their matching HTTP requests. Supports SSE
  * replay via an in-memory event store.
  */
-class HttpServerTransport final : public ITransport {
+class MCP_API HttpServerTransport final : public ITransport {
    public:
     /**
      * @brief Construct an HTTP server transport bound to a host and port.

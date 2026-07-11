@@ -1,11 +1,13 @@
 #pragma once
 
+#include <mcp/core/export.hpp>
+
 #include <memory>
 
 namespace mcp {
 
 /// Manages the asynchronous I/O event loop used by transports and servers.
-class Runtime {
+class MCP_API Runtime {
    public:
     Runtime();
     ~Runtime();

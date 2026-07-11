@@ -10,6 +10,7 @@
 #include <mcp/core/concepts.hpp>
 #include <mcp/core/context.hpp>
 #include <mcp/core/core.hpp>
+#include <mcp/core/export.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/transport/transport.hpp>
 
@@ -132,7 +133,7 @@ TypeErasedHandler wrap_handler(Fn fn) {
  * flow, as well as tool, resource, and prompt handler registration.
  * Creates a Context per request for handler use.
  */
-class Server {
+class MCP_API Server {
    public:
     /**
      * @brief Construct a Server.

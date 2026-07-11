@@ -1,0 +1,70 @@
+{
+    "debian/control.in": [
+        "MAINTAINER"
+    ],
+    "debian/copyright.in": [
+        "COPYRIGHT"
+    ],
+    "debian/changelog.in": [
+        "DEBIAN_VERSION",
+        "DEBIAN_DISTRIBUTION",
+        "MAINTAINER",
+        "RFC2822_DATE"
+    ],
+    "debian/rules.in": [],
+    "debian/not-installed.in": [],
+    "debian/source/format.in": [],
+    "debian/libmcp-cpp-sdk0.2.install.in": [],
+    "debian/libmcp-cpp-sdk-dev.install.in": [],
+    "debian/libmcp-cpp-sdk-static-dev.install.in": [],
+    "rpm/mcp-cpp-sdk.spec.in": [
+        "RPM_VERSION",
+        "RPM_RELEASE",
+        "RPM_CHANGELOG_DATE",
+        "SOURCE_URL",
+        "SOURCE_SHA256"
+    ],
+    "aur/PKGBUILD.in": [
+        "VERSION",
+        "PKGREL",
+        "SOURCE_URL",
+        "SOURCE_SHA256",
+        "SOURCE_SIGNATURE_URL",
+        "PRIMARY_FINGERPRINT",
+        "ARTIFACT_SUBKEY_FINGERPRINT"
+    ],
+    "homebrew/mcp-cpp-sdk.rb.in": [
+        "VERSION",
+        "SOURCE_URL",
+        "SOURCE_SHA256"
+    ],
+    "chocolatey/mcp-cpp-sdk.nuspec.in": [
+        "VERSION",
+        "AUTHORS",
+        "OWNERS",
+        "SUMMARY",
+        "DESCRIPTION",
+        "PROJECT_URL",
+        "PACKAGE_SOURCE_URL",
+        "COPYRIGHT",
+        "TAGS"
+    ],
+    "chocolatey/chocolateyinstall.ps1.in": [
+        "VERSION",
+        "ARCHIVE_URL",
+        "ARCHIVE_SHA256"
+    ],
+    "chocolatey/chocolateyuninstall.ps1.in": [],
+    "conan-center/config.yml.in": [
+        "VERSION"
+    ],
+    "conan-center/all/conandata.yml.in": [
+        "VERSION",
+        "SOURCE_URL",
+        "SOURCE_SHA256"
+    ],
+    "conan-center/all/conanfile.py.in": [],
+    "conan-center/all/test_package/conanfile.py.in": [],
+    "conan-center/all/test_package/CMakeLists.txt.in": [],
+    "conan-center/all/test_package/test_package.cpp.in": []
+}

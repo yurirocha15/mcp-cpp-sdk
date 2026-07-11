@@ -1,0 +1,81 @@
+Name:           mcp-cpp-sdk
+Version:        @RPM_VERSION@
+Release:        @RPM_RELEASE@%{?dist}
+Summary:        Model Context Protocol C++ SDK
+License:        Apache-2.0
+URL:            https://github.com/yurirocha15/mcp-cpp-sdk
+Source0:        @SOURCE_URL@
+# Canonical Source0 SHA-256: @SOURCE_SHA256@
+
+BuildRequires:  cmake >= 3.20
+BuildRequires:  gcc-c++ >= 11
+BuildRequires:  ninja-build
+BuildRequires:  boost-devel >= 1.74
+BuildRequires:  gtest-devel
+BuildRequires:  json-devel >= 3.10.5
+BuildRequires:  openssl-devel >= 3.0
+BuildRequires:  pkgconfig
+BuildRequires:  zlib-devel
+
+%description
+A C++20 implementation of the Model Context Protocol for clients and servers.
+
+%package -n mcp-cpp-sdk0.2-libs
+Summary: Shared library for mcp-cpp-sdk
+
+%description -n mcp-cpp-sdk0.2-libs
+Runtime shared library for mcp-cpp-sdk.
+
+%package devel
+Summary: Development files for mcp-cpp-sdk
+Requires: mcp-cpp-sdk0.2-libs%{?_isa} = %{version}-%{release}
+Requires: boost-devel >= 1.74
+Requires: json-devel >= 3.10.5
+Requires: openssl-devel >= 3.0
+
+%description devel
+Headers, shared-library link metadata, CMake configuration, and pkg-config data.
+
+%package static
+Summary: Static library for mcp-cpp-sdk
+Requires: %{name}-devel%{?_isa} = %{version}-%{release}
+Requires: zlib-devel
+
+%description static
+Static library and private dependency metadata for explicit static consumers.
+
+%prep
+%autosetup
+
+%build
+%cmake -G Ninja -DMCP_CPP_SDK_BUILD_SHARED=ON -DMCP_CPP_SDK_BUILD_STATIC=ON -DBUILD_TESTING=ON -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo
+%cmake_build
+
+%check
+%ctest --output-on-failure
+
+%install
+%cmake_install
+rm -rf %{buildroot}%{_licensedir}/mcp-cpp-sdk
+
+%files -n mcp-cpp-sdk0.2-libs
+%license LICENSE
+%{_libdir}/libmcp-cpp-sdk.so.0.2*
+
+%files devel
+%{_includedir}/mcp/
+%{_libdir}/libmcp-cpp-sdk.so
+%{_libdir}/cmake/mcp-cpp-sdk/mcp-cpp-sdk-config.cmake
+%{_libdir}/cmake/mcp-cpp-sdk/mcp-cpp-sdk-config-version.cmake
+%{_libdir}/cmake/mcp-cpp-sdk/mcp-cpp-sdk-shared-targets*.cmake
+%{_libdir}/pkgconfig/mcp-cpp-sdk.pc
+%{_libdir}/pkgconfig/mcp-cpp-sdk-shared.pc
+
+%files static
+%{_libdir}/libmcp-cpp-sdk-static.a
+%{_libdir}/cmake/mcp-cpp-sdk/mcp-cpp-sdk-static-targets*.cmake
+%{_libdir}/pkgconfig/mcp-cpp-sdk-static.pc
+
+%changelog
+* @RPM_CHANGELOG_DATE@ mcp-cpp-sdk maintainers <releases@users.noreply.github.com> - @RPM_VERSION@-@RPM_RELEASE@
+- Release mcp-cpp-sdk @RPM_VERSION@.

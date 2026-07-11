@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>mcp-cpp-sdk</id>
+    <version>@VERSION@</version>
+    <title>mcp-cpp-sdk</title>
+    <authors>@AUTHORS@</authors>
+    <owners>@OWNERS@</owners>
+    <summary>@SUMMARY@</summary>
+    <description>@DESCRIPTION@</description>
+    <projectUrl>@PROJECT_URL@</projectUrl>
+    <projectSourceUrl>@PACKAGE_SOURCE_URL@</projectSourceUrl>
+    <packageSourceUrl>@PACKAGE_SOURCE_URL@</packageSourceUrl>
+    <license type="expression">Apache-2.0</license>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <copyright>@COPYRIGHT@</copyright>
+    <tags>@TAGS@</tags>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+    <file src="LICENSE.txt" target="LICENSE.txt" />
+    <file src="VERIFICATION.txt" target="VERIFICATION.txt" />
+  </files>
+</package>

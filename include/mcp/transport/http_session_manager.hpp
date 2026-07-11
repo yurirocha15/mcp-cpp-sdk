@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mcp/core/constants.hpp>
+#include <mcp/core/export.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/transport.hpp>
@@ -50,7 +51,7 @@ namespace mcp {
  * io_ctx.run();
  * @endcode
  */
-class StreamableHttpSessionManager {
+class MCP_API StreamableHttpSessionManager {
    public:
     /// Callback that creates a configured Server instance for a new session.
     using ServerFactory = std::function<std::unique_ptr<Server>(const boost::asio::any_io_executor&)>;

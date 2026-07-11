@@ -1,0 +1,14 @@
+$ErrorActionPreference = 'Stop'
+$version = '@VERSION@'
+$toolsDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$installDir = Join-Path (Get-ToolsLocation) 'mcp-cpp-sdk'
+
+$archive = Join-Path $toolsDir "mcp-cpp-sdk-$version-windows-x64-v143-md.zip"
+Get-ChocolateyWebFile -PackageName 'mcp-cpp-sdk' -FileFullPath $archive `
+  -Url64bit '@ARCHIVE_URL@' -Checksum64 '@ARCHIVE_SHA256@' -ChecksumType64 'sha256'
+Get-ChocolateyUnzip -FileFullPath $archive -Destination $installDir -PackageName 'mcp-cpp-sdk'
+Remove-Item -LiteralPath $archive -Force
+Install-ChocolateyEnvironmentVariable `
+  -VariableName 'MCP_CPP_SDK_ROOT' `
+  -VariableValue $installDir `
+  -VariableType Machine

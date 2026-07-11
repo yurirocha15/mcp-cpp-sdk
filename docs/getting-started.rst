@@ -9,7 +9,7 @@ Prerequisites
 
 Before installing mcp-cpp-sdk, ensure you have the following:
 
-* **C++20 compiler**: GCC 10+, Clang 12+, or MSVC 2019+
+* **C++20 compiler**: GCC 11+, Clang 14+, AppleClang 15+, or MSVC 2022
 * **CMake**: Version 3.20 or higher
 * **Boost**: Recent version with Asio and Beast support (managed via Conan for source builds)
 * **nlohmann_json**: Installed automatically for source builds via Conan
@@ -18,6 +18,11 @@ Before installing mcp-cpp-sdk, ensure you have the following:
 
 Installation
 ------------
+
+See :doc:`installation` for package-manager commands, supported platforms,
+shared/static target selection, verification, and uninstall instructions.  A
+package route is usable only after its release record marks that route
+``LIVE``; until then, build from a reviewed source revision.
 
 Using Conan (Recommended)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -44,11 +49,12 @@ Add mcp-cpp-sdk to your CMakeLists.txt:
    FetchContent_Declare(
      mcp-cpp-sdk
      GIT_REPOSITORY https://github.com/yurirocha15/mcp-cpp-sdk.git
-     GIT_TAG main
+     # Replace with a verified release tag or full 40-character commit.
+     GIT_TAG <verified-tag-or-commit>
    )
    FetchContent_MakeAvailable(mcp-cpp-sdk)
 
-   target_link_libraries(your_target PRIVATE mcp-cpp-sdk)
+   target_link_libraries(your_target PRIVATE mcp::sdk)
 
 Using Git Submodule
 ^^^^^^^^^^^^^^^^^^^
@@ -65,7 +71,7 @@ Then in your CMakeLists.txt:
 .. code-block:: cmake
 
    add_subdirectory(third_party/mcp-cpp-sdk)
-   target_link_libraries(your_target PRIVATE mcp-cpp-sdk)
+   target_link_libraries(your_target PRIVATE mcp::sdk)
 
 Building from Source
 --------------------

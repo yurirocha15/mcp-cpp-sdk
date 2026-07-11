@@ -75,7 +75,7 @@ def run(*args, extra_env=None, **kwargs):
 
 def ensure_conan_profile():
     result = subprocess.run(
-        ["conan", "profile", "show", "default"],
+        ["conan", "profile", "path", "default"],
         capture_output=True,
         check=False
     )
@@ -85,17 +85,22 @@ def ensure_conan_profile():
         print("[+] Conan profile created")
 
 
-def conan_install(output_folder, jobs, build_type="Release"):
+def conan_install(output_folder, jobs, cppstd, build_type="Release"):
     ensure_conan_profile()
     run(
         "conan", "install", ".",
         f"--output-folder={output_folder}",
         "--build=missing",
-        "-s", "compiler.cppstd=20",
+        "-s", f"compiler.cppstd={cppstd}",
         "-s", f"build_type={build_type}",
         "-c", "tools.cmake.cmaketoolchain:generator=Ninja",
         "-c", f"tools.build:jobs={jobs}",
     )
+    generators = Path(output_folder) / "build" / build_type / "generators"
+    toolchain = generators / "conan_toolchain.cmake"
+    if not toolchain.is_file():
+        raise FileNotFoundError(f"Conan did not generate {toolchain}")
+    return generators
 
 
 def compiler_launcher():
@@ -105,10 +110,9 @@ def compiler_launcher():
     return None
 
 
-def cmake_configure(build_dir, build_type, *extra_args):
+def cmake_configure(build_dir, build_type, toolchain, *extra_args):
     ensure_cmake_in_path()
     setup_msvc_env()
-    toolchain = f"{build_dir}/conan_toolchain.cmake"
     launcher_args = []
     launcher = compiler_launcher()
     if launcher:
@@ -116,7 +120,7 @@ def cmake_configure(build_dir, build_type, *extra_args):
                          f"-DCMAKE_CXX_COMPILER_LAUNCHER={launcher}"]
     run(
         "cmake", "-B", build_dir,
-        f"-DCMAKE_TOOLCHAIN_FILE={toolchain}",
+        f"-DCMAKE_TOOLCHAIN_FILE={toolchain.resolve()}",
         f"-DCMAKE_BUILD_TYPE={build_type}",
         "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
         "-G", "Ninja",
@@ -129,14 +133,15 @@ def cmake_build(build_dir, jobs):
     run("cmake", "--build", build_dir, f"-j{jobs}")
 
 
-def write_user_presets(build_dir):
-    presets_file = Path(build_dir) / "CMakePresets.json"
+def write_user_presets(generators_dir):
+    presets_file = Path(generators_dir) / "CMakePresets.json"
     if presets_file.exists():
+        include_path = presets_file.resolve().relative_to(Path.cwd().resolve())
         Path("CMakeUserPresets.json").write_text(
             json.dumps({
                 "version": 4,
                 "vendor": {"conan": {}},
-                "include": [str(presets_file)],
+                "include": [str(include_path)],
             })
         )
 
@@ -149,8 +154,11 @@ examples:
   python scripts/build.py --debug --test           debug build + run tests
   python scripts/build.py --sanitize --test        ASan/UBSan build + run tests
   python scripts/build.py --coverage --test        gcov build + run tests + report
-  python scripts/build.py --no-examples --test     skip examples, run tests
-  python scripts/build.py --sanitize --no-examples --test
+  python scripts/build.py --test                   skip examples, run tests
+  python scripts/build.py --sanitize --test        sanitized tests, no examples
+  python scripts/build.py --linkage shared --test  build/test only shared SDK
+  python scripts/build.py --linkage static --test  build/test only static SDK
+  python scripts/build.py --cppstd 23 --test        build/test a C++23 consumer
   python scripts/build.py --docs                   build documentation
   python scripts/build.py --clean                  remove all build artifacts
 """
@@ -172,6 +180,18 @@ def main():
                         help="Build and run tests")
     parser.add_argument("--examples", action="store_true",
                         help="Build example programs")
+    parser.add_argument(
+        "--linkage",
+        choices=("both", "shared", "static"),
+        default="both",
+        help="SDK library variants to build (default: both)",
+    )
+    parser.add_argument(
+        "--cppstd",
+        choices=("20", "23"),
+        default="20",
+        help="C++ language standard used by Conan and CMake (default: 20)",
+    )
     parser.add_argument("--docs", action="store_true",
                         help="Build documentation")
     parser.add_argument("--clean", action="store_true",
@@ -190,27 +210,41 @@ def main():
     build_type = "Debug" if is_debug else "Release"
 
     if args.sanitize:
-        build_dir = "build/sanitize"
+        build_name = "sanitize"
     elif args.coverage:
-        build_dir = "build/coverage"
+        build_name = "coverage"
     elif is_debug:
-        build_dir = "build/debug"
+        build_name = "debug"
     else:
-        build_dir = "build/release"
+        build_name = "release"
+    if args.cppstd != "20":
+        build_name += f"-cxx{args.cppstd}"
+    build_dir = f"build/{build_name}"
 
     extra_cmake = [
         f"-DBUILD_TESTING={'ON' if args.test else 'OFF'}",
         f"-DBUILD_EXAMPLES={'ON' if args.examples else 'OFF'}",
+        f"-DBUILD_DOCS={'ON' if args.docs else 'OFF'}",
+        f"-DMCP_CPP_SDK_BUILD_SHARED={'ON' if args.linkage in ('both', 'shared') else 'OFF'}",
+        f"-DMCP_CPP_SDK_BUILD_STATIC={'ON' if args.linkage in ('both', 'static') else 'OFF'}",
+        f"-DMCP_CPP_SDK_DEFAULT_LINKAGE={'static' if args.linkage == 'static' else 'shared'}",
     ]
     if args.sanitize:
         extra_cmake.append("-DENABLE_SANITIZERS=ON")
     if args.coverage:
         extra_cmake.append("-DENABLE_COVERAGE=ON")
 
-    conan_install(build_dir, args.jobs, build_type)
-    cmake_configure(build_dir, build_type, *extra_cmake)
+    generators_dir = conan_install(
+        build_dir, args.jobs, args.cppstd, build_type
+    )
+    cmake_configure(
+        build_dir,
+        build_type,
+        generators_dir / "conan_toolchain.cmake",
+        *extra_cmake,
+    )
     cmake_build(build_dir, args.jobs)
-    write_user_presets(build_dir)
+    write_user_presets(generators_dir)
 
     if args.test:
         test_jobs = args.jobs
@@ -233,7 +267,10 @@ def main():
             print("[+] Doxygen XML generated")
         except subprocess.CalledProcessError:
             print("[!] Doxygen not available, building Sphinx docs without API reference")
-        run("sphinx-build", "-b", "html", "docs", "build/docs/html")
+        run(
+            "sphinx-build", "-W", "--keep-going", "-b", "html",
+            "docs", "build/docs/html",
+        )
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ A modern C++20 implementation of the Model Context Protocol (MCP), enabling seam
 ## Why mcp-cpp-sdk?
 
 - **Modern C++20**: Asynchronous first, leveraging coroutines (via Boost.Asio) for high-performance I/O.
+- **Shared or Static**: The same public API is available through explicit CMake targets for either linkage model.
 - **Type-Safe Protocol**: Strong typing for all MCP messages using `nlohmann/json`.
 - **Flexible Transports**: Native support for Stdio, WebSocket, and Streamable HTTP.
 - **Full Specification**: Complete implementation of the latest MCP protocol (2025-11-25).
@@ -17,6 +18,8 @@ A modern C++20 implementation of the Model Context Protocol (MCP), enabling seam
 
 ### 1. Installation
 
+Package-manager routes are documented in [the installation guide](docs/installation.rst). A route is supported only after the matching GitHub Release record marks it `LIVE`; an upload or open registry PR alone is not availability proof.
+
 The easiest way to use the SDK is via CMake's `FetchContent`:
 
 ```cmake
@@ -24,11 +27,12 @@ include(FetchContent)
 FetchContent_Declare(
     mcp-cpp-sdk
     GIT_REPOSITORY https://github.com/yurirocha15/mcp-cpp-sdk.git
-    GIT_TAG main
+    # Replace with a verified release tag or full 40-character commit.
+    GIT_TAG <verified-tag-or-commit>
 )
 FetchContent_MakeAvailable(mcp-cpp-sdk)
 
-target_link_libraries(your_target PRIVATE mcp-cpp-sdk)
+target_link_libraries(your_target PRIVATE mcp::sdk)
 ```
 
 ### 2. Create a Minimal Server
@@ -128,6 +132,8 @@ python scripts/build.py --examples --test
 | `--debug` | Build in debug mode |
 | `--test` | Build and run unit tests |
 | `--examples` | Build example applications |
+| `--linkage {both,shared,static}` | Select which SDK linkage variants to build |
+| `--cppstd {20,23}` | Select the C++ consumer standard (default: C++20) |
 | `--sanitize` | Build with ASan/UBSan (Linux/macOS) |
 | `--docs` | Generate local Doxygen + Sphinx documentation |
 | `--clean` | Clean build artifacts |

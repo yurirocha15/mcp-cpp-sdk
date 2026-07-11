@@ -1,0 +1,43 @@
+class McpCppSdk < Formula
+  desc "Model Context Protocol C++ SDK"
+  homepage "https://github.com/yurirocha15/mcp-cpp-sdk"
+  url "@SOURCE_URL@"
+  sha256 "@SOURCE_SHA256@"
+  version "@VERSION@"
+  license "Apache-2.0"
+
+  depends_on "boost"
+  depends_on "cmake" => :build
+  depends_on "googletest" => :build
+  depends_on "ninja" => :build
+  depends_on "nlohmann-json"
+  depends_on "openssl@3"
+
+  def install
+    args = std_cmake_args + %w[
+      -DMCP_CPP_SDK_BUILD_SHARED=ON
+      -DMCP_CPP_SDK_BUILD_STATIC=ON
+      -DBUILD_TESTING=ON
+      -DBUILD_EXAMPLES=OFF
+      -DBUILD_DOCS=OFF
+    ]
+    system "cmake", "-S", ".", "-B", "build", "-G", "Ninja", *args
+    system "cmake", "--build", "build"
+    system "ctest", "--test-dir", "build", "--output-on-failure"
+    system "cmake", "--install", "build"
+  end
+
+  test do
+    (testpath/"CMakeLists.txt").write <<~CMAKE
+      cmake_minimum_required(VERSION 3.20)
+      project(mcp_cpp_sdk_consumer LANGUAGES CXX)
+      find_package(mcp-cpp-sdk CONFIG REQUIRED COMPONENTS shared)
+      add_executable(consumer main.cpp)
+      target_link_libraries(consumer PRIVATE mcp::sdk_shared)
+    CMAKE
+    (testpath/"main.cpp").write "#include <mcp/mcp.hpp>\nint main() { return 0; }\n"
+    system "cmake", "-S", ".", "-B", "build", "-DCMAKE_PREFIX_PATH=#{prefix}"
+    system "cmake", "--build", "build"
+    system "./build/consumer"
+  end
+end

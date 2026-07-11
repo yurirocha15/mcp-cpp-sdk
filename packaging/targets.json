@@ -1,0 +1,101 @@
+{
+    "schema_version": 1,
+    "apt": [
+        {
+            "distribution": "ubuntu",
+            "release": "jammy",
+            "architectures": [
+                "amd64",
+                "arm64"
+            ]
+        },
+        {
+            "distribution": "ubuntu",
+            "release": "noble",
+            "architectures": [
+                "amd64",
+                "arm64"
+            ]
+        },
+        {
+            "distribution": "ubuntu",
+            "release": "resolute",
+            "architectures": [
+                "amd64",
+                "arm64"
+            ]
+        },
+        {
+            "distribution": "debian",
+            "release": "bookworm",
+            "architectures": [
+                "amd64",
+                "arm64"
+            ]
+        },
+        {
+            "distribution": "debian",
+            "release": "trixie",
+            "architectures": [
+                "amd64",
+                "arm64"
+            ]
+        }
+    ],
+    "rpm": [
+        {
+            "distribution": "fedora",
+            "release": "43",
+            "architectures": [
+                "x86_64",
+                "aarch64"
+            ]
+        },
+        {
+            "distribution": "fedora",
+            "release": "44",
+            "architectures": [
+                "x86_64",
+                "aarch64"
+            ]
+        },
+        {
+            "distribution": "el",
+            "release": "9",
+            "architectures": [
+                "x86_64",
+                "aarch64"
+            ]
+        },
+        {
+            "distribution": "el",
+            "release": "10",
+            "architectures": [
+                "x86_64",
+                "aarch64"
+            ]
+        }
+    ],
+    "aur": {
+        "package_base": "mcp-cpp-sdk",
+        "architectures": [
+            "x86_64",
+            "aarch64"
+        ]
+    },
+    "homebrew": {
+        "tap": "yurirocha15/mcp-cpp-sdk",
+        "bottle_tags": [
+            "arm64_sequoia",
+            "sequoia",
+            "x86_64_linux",
+            "arm64_linux"
+        ]
+    },
+    "chocolatey": {
+        "package_id": "mcp-cpp-sdk",
+        "architecture": "x86_64",
+        "toolset": "v143",
+        "runtime": "MD"
+    }
+}

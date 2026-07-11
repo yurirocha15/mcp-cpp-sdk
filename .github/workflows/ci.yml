@@ -6,30 +6,42 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Build (${{ matrix.os }}, C++${{ matrix.cppstd }}, ${{ matrix.linkage }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-22.04, windows-latest, macos-latest]
+        include:
+          - {os: ubuntu-24.04, cppstd: '20', linkage: both}
+          - {os: ubuntu-22.04, cppstd: '20', linkage: both}
+          - {os: windows-latest, cppstd: '20', linkage: both}
+          - {os: macos-latest, cppstd: '20', linkage: both}
+          - {os: ubuntu-24.04, cppstd: '20', linkage: static}
+          - {os: ubuntu-24.04, cppstd: '23', linkage: both}
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        persist-credentials: false
 
     - name: Set up Python
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
       with:
         python-version: '3.12'
 
     - name: Install CMake
-      uses: jwlawson/actions-setup-cmake@v2
+      uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
       with:
         cmake-version: '3.25'
 
     - name: Setup MSVC
       if: runner.os == 'Windows'
-      uses: ilammy/msvc-dev-cmd@v1
+      uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
 
     - name: Set Conan Home
       if: runner.os == 'Windows'
@@ -39,26 +51,28 @@ jobs:
       shell: bash
 
     - name: Cache Conan packages
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: |
           ~/.conan2/p
           C:/.c/p
-        key: ${{ matrix.os }}-conan-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
-        restore-keys: ${{ matrix.os }}-conan-
+        key: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-conan-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
+        restore-keys: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-conan-
 
     - name: Install Dependencies
       run: python scripts/init.py
 
     - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@v1.2
+      uses: hendrikmuhs/ccache-action@e42e6681d2906409c5dde4a315af6214eaa890ee # v1.2
       with:
-        key: ${{ matrix.os }}-ccache-${{ github.ref }}
-        restore-keys: ${{ matrix.os }}-ccache-
+        key: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-${{ matrix.linkage }}-ccache-${{ github.ref }}
+        restore-keys: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-${{ matrix.linkage }}-ccache-
         max-size: 500M
 
     - name: Build and Test
-      run: python scripts/build.py --examples --test
+      run: >-
+        python scripts/build.py --examples --test
+        --cppstd ${{ matrix.cppstd }} --linkage ${{ matrix.linkage }}
 
     - name: Run Examples
       run: python scripts/run_examples.py
@@ -67,20 +81,22 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        persist-credentials: false
 
     - name: Set up Python
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
       with:
         python-version: '3.12'
 
     - name: Install CMake
-      uses: jwlawson/actions-setup-cmake@v2
+      uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
       with:
         cmake-version: '3.25'
 
     - name: Cache Conan packages
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: ~/.conan2/p
         key: ubuntu-24.04-conan-sanitize-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
@@ -90,7 +106,7 @@ jobs:
       run: python scripts/init.py
 
     - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@v1.2
+      uses: hendrikmuhs/ccache-action@e42e6681d2906409c5dde4a315af6214eaa890ee # v1.2
       with:
         key: ubuntu-24.04-sanitize-ccache-${{ github.ref }}
         restore-keys: ubuntu-24.04-sanitize-ccache-
@@ -98,3 +114,79 @@ jobs:
 
     - name: Build and Test with Sanitizers
       run: python scripts/build.py --sanitize --test
+
+  release-safety:
+    name: Release safety contracts
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        persist-credentials: false
+
+    - name: Set up Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: '3.12'
+
+    - name: Validate source release policy
+      run: |
+        python3 scripts/check_release_workflow.py
+        PYTHONPATH=scripts python3 -m unittest -v \
+          scripts.test_release_dispatch_contract \
+          scripts.test_release_workflow_policy
+
+    - name: Validate release artifacts and package templates
+      run: |
+        python3 -m unittest discover -s test/release -p 'test_*.py' -v
+        python3 -m unittest discover -s bootstrap/tests -p 'test_*.py' -v
+
+    - name: Validate isolated publisher repositories
+      run: |
+        (cd bootstrap/conan-release-control && python3 -m unittest -v)
+        (cd bootstrap/homebrew-tap && python3 -m unittest -v)
+        (cd bootstrap/chocolatey-publisher && python3 -m unittest -v)
+
+    - name: Compile release Python without executing it
+      run: >-
+        python3 -m compileall -q
+        release scripts test/release bootstrap
+
+  conan-package:
+    name: Conan package (shared=${{ matrix.shared }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shared: ['False', 'True']
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        persist-credentials: false
+
+    - name: Set up Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: '3.12'
+
+    - name: Install CMake
+      uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
+      with:
+        cmake-version: '3.25'
+
+    - name: Cache Conan packages
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: ~/.conan2/p
+        key: ubuntu-24.04-conan-package-${{ matrix.shared }}-${{ hashFiles('conanfile.py', 'test_package/**') }}
+        restore-keys: ubuntu-24.04-conan-package-${{ matrix.shared }}-
+
+    - name: Install dependencies
+      run: python3 scripts/init.py
+
+    - name: Create and consume the Conan package
+      run: >-
+        conan create . --test-folder=test_package --build=missing
+        -s compiler.cppstd=20
+        -o "mcp-cpp-sdk/*:shared=${{ matrix.shared }}"

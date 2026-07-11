@@ -1,0 +1,93 @@
+import os
+
+from conan import ConanFile
+from conan.tools.build import check_min_cppstd
+from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain, cmake_layout
+from conan.tools.files import copy, get
+
+
+class McpCppSdkConan(ConanFile):
+    name = "mcp-cpp-sdk"
+    package_type = "library"
+    license = "Apache-2.0"
+    url = "https://github.com/yurirocha15/mcp-cpp-sdk"
+    homepage = "https://github.com/yurirocha15/mcp-cpp-sdk"
+    description = "C++20 Model Context Protocol SDK"
+    topics = ("mcp", "model-context-protocol", "cpp20")
+    settings = "os", "arch", "compiler", "build_type"
+    options = {"shared": [True, False], "fPIC": [True, False]}
+    default_options = {"shared": False, "fPIC": True}
+
+    def requirements(self):
+        self.requires(
+            "boost/1.86.0", transitive_headers=True, transitive_libs=True
+        )
+        self.requires("nlohmann_json/3.12.0", transitive_headers=True)
+        self.requires(
+            "openssl/3.6.1", transitive_headers=True, transitive_libs=True
+        )
+
+    def config_options(self):
+        if self.settings.os == "Windows":
+            self.options.rm_safe("fPIC")
+
+    def configure(self):
+        if self.options.shared:
+            self.options.rm_safe("fPIC")
+
+    def validate(self):
+        check_min_cppstd(self, "20")
+
+    def source(self):
+        get(self, **self.conan_data["sources"][str(self.version)], strip_root=True)
+
+    def layout(self):
+        cmake_layout(self, src_folder="src")
+
+    def generate(self):
+        CMakeDeps(self).generate()
+        toolchain = CMakeToolchain(self)
+        toolchain.variables["BUILD_TESTING"] = False
+        toolchain.variables["BUILD_EXAMPLES"] = False
+        toolchain.variables["BUILD_DOCS"] = False
+        toolchain.variables["MCP_CPP_SDK_BUILD_SHARED"] = bool(self.options.shared)
+        toolchain.variables["MCP_CPP_SDK_BUILD_STATIC"] = not bool(self.options.shared)
+        toolchain.variables["MCP_CPP_SDK_STATIC_PIC"] = bool(
+            self.options.get_safe("fPIC", False)
+        )
+        toolchain.variables["MCP_CPP_SDK_DEFAULT_LINKAGE"] = (
+            "shared" if self.options.shared else "static"
+        )
+        if self.options.get_safe("fPIC") is not None:
+            toolchain.variables["CMAKE_POSITION_INDEPENDENT_CODE"] = bool(
+                self.options.fPIC
+            )
+        toolchain.generate()
+
+    def build(self):
+        cmake = CMake(self)
+        cmake.configure()
+        cmake.build()
+
+    def package(self):
+        cmake = CMake(self)
+        cmake.install()
+        copy(
+            self,
+            "LICENSE",
+            src=self.source_folder,
+            dst=os.path.join(self.package_folder, "licenses"),
+        )
+
+    def package_info(self):
+        self.cpp_info.libs = [
+            "mcp-cpp-sdk" if self.options.shared else "mcp-cpp-sdk-static"
+        ]
+        self.cpp_info.requires = [
+            "boost::headers",
+            "nlohmann_json::nlohmann_json",
+            "openssl::crypto",
+        ]
+        self.cpp_info.defines.append("MCP_DLL" if self.options.shared else "MCP_STATIC")
+        self.cpp_info.set_property("cmake_file_name", "mcp-cpp-sdk")
+        self.cpp_info.set_property("cmake_target_name", "mcp::sdk")

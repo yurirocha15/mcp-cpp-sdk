@@ -1,0 +1,7 @@
+usr/include/mcp/
+usr/lib/*/libmcp-cpp-sdk.so
+usr/lib/*/cmake/mcp-cpp-sdk/mcp-cpp-sdk-config.cmake
+usr/lib/*/cmake/mcp-cpp-sdk/mcp-cpp-sdk-config-version.cmake
+usr/lib/*/cmake/mcp-cpp-sdk/mcp-cpp-sdk-shared-targets*.cmake
+usr/lib/*/pkgconfig/mcp-cpp-sdk.pc
+usr/lib/*/pkgconfig/mcp-cpp-sdk-shared.pc

@@ -1,0 +1,412 @@
+name: conan-center-pr
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: Canonical stable source tag
+        required: true
+        type: string
+      source_commit_sha:
+        description: Exact source commit
+        required: true
+        type: string
+      github_release_id:
+        description: Immutable GitHub release numeric ID
+        required: true
+        type: string
+      source_workflow_run_id:
+        description: Successful source release workflow run ID
+        required: true
+        type: string
+      release_manifest_sha256:
+        description: Signed release manifest SHA-256
+        required: true
+        type: string
+      fork_branch:
+        description: Exact reviewed Conan recipe branch
+        required: true
+        type: string
+      fork_head_sha:
+        description: Exact reviewed fork head
+        required: true
+        type: string
+      recipe_tree_sha256:
+        description: Canonical reviewed recipe tree digest
+        required: true
+        type: string
+      request_uuid:
+        description: Unique canonical request UUID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conan-center-pr-${{ inputs.source_tag }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: independently verify release and recipe
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.workflow_ref == 'yurirocha15/mcp-cpp-sdk-release-control/.github/workflows/conan-center-pr.yml@refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      source_tag: ${{ steps.validate.outputs.source_tag }}
+      source_commit_sha: ${{ steps.validate.outputs.source_commit_sha }}
+      fork_branch: ${{ steps.validate.outputs.fork_branch }}
+      fork_head_sha: ${{ steps.validate.outputs.fork_head_sha }}
+      request_uuid: ${{ steps.validate.outputs.request_uuid }}
+    steps:
+      - name: Checkout protected broker controls only
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Validate exact dispatch schema
+        id: validate
+        env:
+          DISPATCH_JSON: >-
+            {"source_tag":${{ toJSON(inputs.source_tag) }},"source_commit_sha":${{ toJSON(inputs.source_commit_sha) }},"github_release_id":${{ toJSON(inputs.github_release_id) }},"source_workflow_run_id":${{ toJSON(inputs.source_workflow_run_id) }},"release_manifest_sha256":${{ toJSON(inputs.release_manifest_sha256) }},"fork_branch":${{ toJSON(inputs.fork_branch) }},"fork_head_sha":${{ toJSON(inputs.fork_head_sha) }},"recipe_tree_sha256":${{ toJSON(inputs.recipe_tree_sha256) }},"request_uuid":${{ toJSON(inputs.request_uuid) }}}
+        run: python3 -I -S publisher/validate_dispatch.py
+
+      - name: Verify fixed source repository, immutable release, and source run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.validate.outputs.source_tag }}
+          COMMIT: ${{ steps.validate.outputs.source_commit_sha }}
+          RELEASE_ID: ${{ inputs.github_release_id }}
+          SOURCE_RUN_ID: ${{ inputs.source_workflow_run_id }}
+          SOURCE_REPOSITORY_ID: ${{ vars.SOURCE_REPOSITORY_ID }}
+          SOURCE_OWNER_ID: ${{ vars.SOURCE_OWNER_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api /repos/yurirocha15/mcp-cpp-sdk --jq '.id|tostring')" = "$SOURCE_REPOSITORY_ID"
+          test "$(gh api /repos/yurirocha15/mcp-cpp-sdk --jq '.owner.id|tostring')" = "$SOURCE_OWNER_ID"
+          release_json="$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "/repos/yurirocha15/mcp-cpp-sdk/releases/tags/$TAG")"
+          test "$(jq -r '.id|tostring' <<<"$release_json")" = "$RELEASE_ID"
+          test "$(jq -r '.draft' <<<"$release_json")" = false
+          test "$(jq -r '.prerelease' <<<"$release_json")" = false
+          test "$(jq -r '.immutable' <<<"$release_json")" = true
+          run_json=''
+          for _ in $(seq 1 30); do
+            run_json="$(gh api "/repos/yurirocha15/mcp-cpp-sdk/actions/runs/$SOURCE_RUN_ID")"
+            status="$(jq -r '.status' <<<"$run_json")"
+            if [[ "$status" == completed ]]; then
+              break
+            fi
+            [[ "$status" == in_progress || "$status" == queued ]]
+            sleep 10
+          done
+          test "$(jq -r '.event' <<<"$run_json")" = workflow_dispatch
+          test "$(jq -r '.conclusion' <<<"$run_json")" = success
+          test "$(jq -r '.head_sha' <<<"$run_json")" = "$COMMIT"
+          test "$(jq -r '.head_branch' <<<"$run_json")" = main
+          test "$(jq -r '.path' <<<"$run_json")" = .github/workflows/release.yml
+          test "$(jq -r '.repository.id|tostring' <<<"$run_json")" = "$SOURCE_REPOSITORY_ID"
+
+      - name: Fetch signed tag without source checkout
+        env:
+          TAG: ${{ steps.validate.outputs.source_tag }}
+          COMMIT: ${{ steps.validate.outputs.source_commit_sha }}
+          PRIMARY_FINGERPRINT: ${{ vars.SOURCE_SIGNING_PRIMARY_FINGERPRINT }}
+          TAG_FINGERPRINT: ${{ vars.SOURCE_TAG_SIGNING_SUBKEY_FINGERPRINT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gpg --batch --import keys/release-signing-key.asc
+          git init --bare source.git
+          git -C source.git fetch --no-tags --depth=1 https://github.com/yurirocha15/mcp-cpp-sdk.git "refs/tags/$TAG:refs/tags/$TAG"
+          git -C source.git fetch --no-tags https://github.com/yurirocha15/mcp-cpp-sdk.git "refs/heads/main:refs/heads/main"
+          test "$(git -C source.git cat-file -t "$TAG")" = tag
+          git -C source.git verify-tag --raw "$TAG" 2>verify-tag.status
+          test "$(git -C source.git rev-list -n1 "$TAG")" = "$COMMIT"
+          git -C source.git merge-base --is-ancestor "$COMMIT" refs/heads/main
+          python3 -I -S publisher/verify_git_status.py verify-tag.status "$TAG_FINGERPRINT" "$PRIMARY_FINGERPRINT"
+
+      - name: Download and verify immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.validate.outputs.source_tag }}
+          COMMIT: ${{ steps.validate.outputs.source_commit_sha }}
+          MANIFEST_SHA256: ${{ inputs.release_manifest_sha256 }}
+          PRIMARY_FINGERPRINT: ${{ vars.SOURCE_SIGNING_PRIMARY_FINGERPRINT }}
+          ARTIFACT_FINGERPRINT: ${{ vars.SOURCE_ARTIFACT_SIGNING_SUBKEY_FINGERPRINT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir release-assets
+          gh release download "$TAG" --repo yurirocha15/mcp-cpp-sdk --dir release-assets
+          python3 -I -S publisher/verify_release_bundle.py \
+            --directory release-assets --tag "$TAG" --commit "$COMMIT" \
+            --manifest-sha256 "$MANIFEST_SHA256" \
+            --primary-fingerprint "$PRIMARY_FINGERPRINT" \
+            --artifact-fingerprint "$ARTIFACT_FINGERPRINT" \
+            --public-key keys/release-signing-key.asc
+
+      - name: Verify exact fork head and recipe-only tree
+        env:
+          BRANCH: ${{ steps.validate.outputs.fork_branch }}
+          HEAD_SHA: ${{ steps.validate.outputs.fork_head_sha }}
+          TREE_SHA256: ${{ inputs.recipe_tree_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init --bare recipe.git
+          git -C recipe.git fetch --no-tags https://github.com/yurirocha15/conan-center-index.git "$HEAD_SHA"
+          test "$(git -C recipe.git rev-parse FETCH_HEAD)" = "$HEAD_SHA"
+          git -C recipe.git fetch --no-tags https://github.com/conan-io/conan-center-index.git \
+            "refs/heads/master:refs/heads/upstream-master"
+          git -C recipe.git diff --no-renames --name-status refs/heads/upstream-master..."$HEAD_SHA" >recipe.diff
+          test -s recipe.diff
+          awk '{print $NF}' recipe.diff | grep -Ev '^recipes/mcp-cpp-sdk/' && exit 2 || true
+          git -C recipe.git archive --format=tar --prefix=recipe/ "$HEAD_SHA:recipes/mcp-cpp-sdk" >recipe.tar
+          test "$(sha256sum recipe.tar | cut -d' ' -f1)" = "$TREE_SHA256"
+          mkdir recipe-tree
+          tar --extract --file recipe.tar --directory recipe-tree --no-same-owner --no-same-permissions
+          version="${{ steps.validate.outputs.source_tag }}"
+          version="${version#v}"
+          source_name="mcp-cpp-sdk-${version}.tar.gz"
+          source_sha="$(jq -r --arg name "$source_name" '.payloads[] | select(.name == $name) | .sha256' release-assets/release-manifest.json)"
+          test "${#source_sha}" = 64
+          source_url="https://github.com/yurirocha15/mcp-cpp-sdk/releases/download/${{ steps.validate.outputs.source_tag }}/$source_name"
+          python3 -I -S publisher/verify_recipe_tree.py recipe-tree/recipe "$version" "$source_url" "$source_sha" \
+            release-assets/release-manifest.json
+
+      - name: Emit complete public pre-approval summary
+        env:
+          TAG: ${{ steps.validate.outputs.source_tag }}
+          COMMIT: ${{ steps.validate.outputs.source_commit_sha }}
+          BRANCH: ${{ steps.validate.outputs.fork_branch }}
+          HEAD_SHA: ${{ steps.validate.outputs.fork_head_sha }}
+          REQUEST_UUID: ${{ steps.validate.outputs.request_uuid }}
+          PACKAGE_REQUEST_ISSUE: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE }}
+          RELEASE_ID: ${{ inputs.github_release_id }}
+          SOURCE_RUN_ID: ${{ inputs.source_workflow_run_id }}
+          MANIFEST_SHA256: ${{ inputs.release_manifest_sha256 }}
+          RECIPE_TREE_SHA256: ${{ inputs.recipe_tree_sha256 }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PACKAGE_REQUEST_ISSUE" =~ ^[1-9][0-9]*$ ]]
+          existing="$(gh api --method GET '/repos/conan-io/conan-center-index/pulls' \
+            -f state=all -f head="yurirocha15:$BRANCH" -f base=master -f per_page=100 -f page=1)"
+          test "$(jq 'length' <<<"$existing")" -le 1
+          {
+            echo '## Approved ConanCenter operation'
+            echo
+            echo "- Source: $TAG at $COMMIT"
+            echo "- Immutable release ID: $RELEASE_ID"
+            echo "- Source workflow run: $SOURCE_RUN_ID"
+            echo "- Release manifest SHA-256: $MANIFEST_SHA256"
+            echo "- Recipe tree SHA-256: $RECIPE_TREE_SHA256"
+            echo "- Head: yurirocha15:$BRANCH at $HEAD_SHA"
+            echo '- Base: conan-io/conan-center-index:master'
+            echo "- Existing exact pull count: $(jq 'length' <<<"$existing")"
+            echo "- Title: [mcp-cpp-sdk] Add version ${TAG#v}"
+            echo "- Issue closure: Fixes #$PACKAGE_REQUEST_ISSUE"
+            echo "- Request: $REQUEST_UUID"
+            echo
+            echo '### Complete allow-listed recipe diff'
+            echo '```text'
+            cat recipe.diff
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: open exact upstream ConanCenter pull request
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: conan-center-pr
+    permissions:
+      contents: read
+    steps:
+      - name: Fixed-route PAT client
+        env:
+          CONAN_CENTER_PR_BOT_PAT: ${{ secrets.CONAN_CENTER_PR_BOT_PAT }}
+          SOURCE_TAG: ${{ needs.verify.outputs.source_tag }}
+          SOURCE_COMMIT_SHA: ${{ needs.verify.outputs.source_commit_sha }}
+          FORK_BRANCH: ${{ needs.verify.outputs.fork_branch }}
+          FORK_HEAD_SHA: ${{ needs.verify.outputs.fork_head_sha }}
+          REQUEST_UUID: ${{ needs.verify.outputs.request_uuid }}
+          BOT_USER_ID: ${{ vars.CONAN_CENTER_PR_BOT_USER_ID }}
+          PACKAGE_REQUEST_ISSUE: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE }}
+        shell: bash
+        run: |
+          python3 -I -S <<'PY'
+          # PAT_CLIENT_BEGIN
+          import http.client
+          import json
+          import os
+          import re
+          import sys
+          import urllib.parse
+
+          API_HOST = "api.github.com"
+          BOT_LOGIN = "mcp-cpp-sdk-release-bot"
+          BOT_USER_ID = os.environ["BOT_USER_ID"]
+          FORK_REPOSITORY = "yurirocha15/conan-center-index"
+          UPSTREAM_REPOSITORY = "conan-io/conan-center-index"
+          BASE_BRANCH = "master"
+          PACKAGE_REQUEST_ISSUE = os.environ["PACKAGE_REQUEST_ISSUE"]
+          MAX_RESPONSE_BYTES = 65536
+          TIMEOUT_SECONDS = 15
+          TOKEN = os.environ.pop("CONAN_CENTER_PR_BOT_PAT")
+
+          for name in tuple(os.environ):
+              if name.lower() in {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}:
+                  os.environ.pop(name, None)
+
+          def fail(operation, message, request_id="missing"):
+              print(f"{operation}: {message}; request_id={request_id}", file=sys.stderr)
+              raise SystemExit(2)
+
+          def request(operation, method, path, expected, body=None):
+              connection = http.client.HTTPSConnection(API_HOST, timeout=TIMEOUT_SECONDS)
+              headers = {
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {TOKEN}",
+                  "User-Agent": "mcp-cpp-sdk-release-control/1",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              }
+              encoded = None if body is None else json.dumps(body, separators=(",", ":")).encode()
+              if encoded is not None:
+                  headers["Content-Type"] = "application/json"
+                  headers["Content-Length"] = str(len(encoded))
+              try:
+                  connection.request(method, path, body=encoded, headers=headers)
+                  response = connection.getresponse()
+                  request_id = response.getheader("X-GitHub-Request-Id", "missing")
+                  if 300 <= response.status < 400:
+                      fail(operation, "redirect rejected", request_id)
+                  data = response.read(MAX_RESPONSE_BYTES + 1)
+                  if len(data) > MAX_RESPONSE_BYTES:
+                      fail(operation, "response exceeds limit", request_id)
+                  if response.status not in expected:
+                      fail(operation, f"unexpected HTTP status class {response.status // 100}xx", request_id)
+                  value = json.loads(data)
+                  return value, response, request_id
+              except (OSError, http.client.HTTPException, json.JSONDecodeError) as error:
+                  fail(operation, type(error).__name__)
+              finally:
+                  connection.close()
+
+          tag = os.environ["SOURCE_TAG"]
+          commit = os.environ["SOURCE_COMMIT_SHA"]
+          branch = os.environ["FORK_BRANCH"]
+          head_sha = os.environ["FORK_HEAD_SHA"]
+          request_uuid = os.environ["REQUEST_UUID"]
+          if re.fullmatch(r"[1-9][0-9]*", BOT_USER_ID) is None:
+              fail("validate-config", "invalid machine user ID")
+          if re.fullmatch(r"[1-9][0-9]*", PACKAGE_REQUEST_ISSUE) is None:
+              fail("validate-config", "invalid package request issue")
+          tag_match = re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag)
+          if tag_match is None or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+              fail("validate-input", "invalid tag or commit")
+          expected_branch = f"package/mcp-cpp-sdk-{tag[1:]}"
+          recovery = re.fullmatch(re.escape(expected_branch) + r"-r[1-9][0-9]*", branch)
+          if branch != expected_branch and recovery is None:
+              fail("validate-input", "invalid branch")
+          if re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
+              fail("validate-input", "invalid head")
+          if re.fullmatch(r"[0-9a-f-]{36}", request_uuid) is None:
+              fail("validate-input", "invalid request UUID")
+
+          user, user_response, _ = request("get-user", "GET", "/user", {200})
+          if not isinstance(user, dict) or user.get("login") != BOT_LOGIN or str(user.get("id")) != BOT_USER_ID:
+              fail("get-user", "machine identity mismatch")
+          scopes = {scope.strip() for scope in (user_response.getheader("X-OAuth-Scopes") or "").split(",") if scope.strip()}
+          if scopes != {"public_repo"}:
+              fail("get-user", "PAT scope mismatch")
+
+          fork, _, _ = request("get-fork", "GET", "/repos/yurirocha15/conan-center-index", {200})
+          upstream, _, _ = request("get-upstream", "GET", "/repos/conan-io/conan-center-index", {200})
+          if fork.get("full_name") != FORK_REPOSITORY or upstream.get("full_name") != UPSTREAM_REPOSITORY:
+              fail("repository-identity", "repository identity mismatch")
+          for label, repository in (("fork", fork), ("upstream", upstream)):
+              permissions = repository.get("permissions")
+              if not isinstance(permissions, dict) or permissions.get("push") is not False or permissions.get("admin") is not False:
+                  fail("repository-authority", f"machine user has unexpected {label} write authority")
+
+          encoded_branch = urllib.parse.quote(branch, safe="")
+          branch_data, _, _ = request(
+              "get-branch", "GET", f"/repos/yurirocha15/conan-center-index/branches/{encoded_branch}", {200}
+          )
+          if branch_data.get("commit", {}).get("sha") != head_sha:
+              fail("get-branch", "fork head changed")
+
+          query = urllib.parse.urlencode(
+              (("state", "all"), ("head", f"yurirocha15:{branch}"), ("base", BASE_BRANCH), ("per_page", "100"), ("page", "1"))
+          )
+          pulls, response, _ = request(
+              "find-pulls", "GET", f"/repos/conan-io/conan-center-index/pulls?{query}", {200}
+          )
+          if 'rel="next"' in (response.getheader("Link") or ""):
+              fail("find-pulls", "pagination rejected")
+          if not isinstance(pulls, list):
+              fail("find-pulls", "response schema mismatch")
+          exact = [
+              pull for pull in pulls
+              if isinstance(pull, dict)
+              and pull.get("head", {}).get("label") == f"yurirocha15:{branch}"
+              and pull.get("base", {}).get("ref") == BASE_BRANCH
+              and pull.get("base", {}).get("repo", {}).get("full_name") == UPSTREAM_REPOSITORY
+          ]
+          if len(exact) > 1:
+              fail("find-pulls", "ambiguous pull request identity")
+          if exact:
+              pull = exact[0]
+              if pull.get("state") == "open" or pull.get("merged_at") is not None:
+                  print(f"identical pull request already exists: {pull.get('html_url')}")
+                  raise SystemExit(0)
+              fail("find-pulls", "matching pull request is closed and unmerged")
+
+          if recovery is not None:
+              original_query = urllib.parse.urlencode(
+                  (("state", "all"), ("head", f"yurirocha15:{expected_branch}"), ("base", BASE_BRANCH), ("per_page", "100"), ("page", "1"))
+              )
+              original, original_response, _ = request(
+                  "find-original-pull",
+                  "GET",
+                  f"/repos/conan-io/conan-center-index/pulls?{original_query}",
+                  {200},
+              )
+              if 'rel="next"' in (original_response.getheader("Link") or "") or not isinstance(original, list):
+                  fail("find-original-pull", "pagination or schema rejected")
+              original_exact = [
+                  pull for pull in original
+                  if isinstance(pull, dict)
+                  and pull.get("head", {}).get("label") == f"yurirocha15:{expected_branch}"
+                  and pull.get("base", {}).get("ref") == BASE_BRANCH
+              ]
+              if len(original_exact) != 1:
+                  fail("find-original-pull", "recovery requires one predecessor pull")
+              predecessor = original_exact[0]
+              if predecessor.get("state") != "closed" or predecessor.get("merged_at") is not None:
+                  fail("find-original-pull", "predecessor is not closed-unmerged")
+
+          body = {
+              "title": f"[mcp-cpp-sdk] Add version {tag[1:]}",
+              "head": f"yurirocha15:{branch}",
+              "base": BASE_BRANCH,
+              "body": f"Add mcp-cpp-sdk {tag[1:]}.\n\nFixes #{PACKAGE_REQUEST_ISSUE}\n\nSource commit: {commit}\nRequest: {request_uuid}",
+              "maintainer_can_modify": False,
+          }
+          created, _, _ = request("create-pull", "POST", "/repos/conan-io/conan-center-index/pulls", {201}, body)
+          if not isinstance(created, dict) or created.get("head", {}).get("sha") != head_sha:
+              fail("create-pull", "created pull response mismatch")
+          print(f"created pull request: {created.get('html_url')}")
+          # PAT_CLIENT_END
+          PY

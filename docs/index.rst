@@ -3,7 +3,7 @@ mcp-cpp-sdk
 
 A modern C++20 Model Context Protocol SDK.
 
-The mcp-cpp-sdk provides a header-only, coroutine-based implementation of the
+The mcp-cpp-sdk provides a compiled, coroutine-based implementation of the
 Model Context Protocol (MCP), enabling seamless integration between AI models
 and context providers. Built on Boost.Asio for async I/O and using modern C++20
 features, this SDK offers a clean, type-safe API for building MCP servers and clients.
@@ -11,7 +11,7 @@ features, this SDK offers a clean, type-safe API for building MCP servers and cl
 Features
 --------
 
-* **Header-only**: Easy integration, no separate compilation required
+* **Shared or static linkage**: Install and link the variant that fits your application
 * **Modern C++20**: Leverages coroutines, concepts, and ranges
 * **Flexible transports**: stdio, WebSocket, Streamable HTTP, and custom transport support
 * **Type-safe**: Strong typing with JSON serialization via nlohmann_json
@@ -32,6 +32,7 @@ Quick Links
    :caption: Getting Started
 
    Overview <self>
+   installation
    getting-started
    examples
 
