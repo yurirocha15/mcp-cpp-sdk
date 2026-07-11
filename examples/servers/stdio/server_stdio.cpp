@@ -2,7 +2,7 @@
 /// @brief Full-featured MCP server over stdio showing all 4 handler signatures,
 ///   custom JsonSerializable types, resources, templates, prompts, and context logging.
 
-#include <mcp/server.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/stdio.hpp>
 
 #include <boost/asio/co_spawn.hpp>

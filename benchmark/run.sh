@@ -4,6 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 RESULTS_DIR="$SCRIPT_DIR/results/$(date +%Y%m%d_%H%M%S)"
+UPSTREAM_BENCHMARK_DIR="$SCRIPT_DIR/benchmark-mcp-servers-v2"
+UPSTREAM_BENCHMARK_REPO="https://github.com/thiagomendes/benchmark-mcp-servers-v2.git"
+UPSTREAM_BENCHMARK_COMMIT="8a9a5f8ef505f46b6079072ef4603304ca672e33"
+UPSTREAM_K6_SCRIPT="$UPSTREAM_BENCHMARK_DIR/benchmark/benchmark.js"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -31,24 +35,28 @@ declare -A SERVICE_NAME=(
     [cpp]="cpp-server"
     [python]="python-server"
     [go]="go-server"
+    [rust]="rust-server"
 )
 
 declare -A CONTAINER_NAME=(
     [cpp]="mcp-cpp-server"
     [python]="mcp-python-server"
     [go]="mcp-go-server"
+    [rust]="mcp-rust-server"
 )
 
 declare -A MCP_URL=(
     [cpp]="http://localhost:8080/mcp"
     [python]="http://localhost:8081/mcp"
     [go]="http://localhost:8082/mcp"
+    [rust]="http://localhost:8083/mcp"
 )
 
 declare -A HEALTH_URL=(
     [cpp]="http://localhost:8080/health"
     [python]="http://localhost:8081/health"
     [go]="http://localhost:8082/health"
+    [rust]="http://localhost:8083/health"
 )
 
 stats_pid=""
@@ -66,12 +74,69 @@ trap cleanup_on_exit EXIT
 usage() {
     cat <<'USAGE'
 Usage:
-  ./run.sh                  # benchmark cpp, python, go
-  ./run.sh all              # benchmark cpp, python, go
+  ./run.sh                  # benchmark cpp, python, go, rust
+  ./run.sh all              # benchmark cpp, python, go, rust
   ./run.sh cpp              # benchmark only cpp
   ./run.sh cpp python       # benchmark selected servers
   ./run.sh cpp,python       # benchmark selected servers (comma-separated)
 USAGE
+}
+
+ensure_upstream_benchmark_servers() {
+    command -v git >/dev/null || { error "git not found (required to clone upstream benchmark servers)"; return 1; }
+
+    if [[ ! -d "$UPSTREAM_BENCHMARK_DIR/.git" ]]; then
+        if [[ -e "$UPSTREAM_BENCHMARK_DIR" ]]; then
+            error "Expected clone target exists but is not a git repo: $UPSTREAM_BENCHMARK_DIR"
+            error "Please remove it or convert it into a valid clone of $UPSTREAM_BENCHMARK_REPO"
+            return 1
+        fi
+
+        info "Cloning upstream benchmark servers to $UPSTREAM_BENCHMARK_DIR"
+        git clone "$UPSTREAM_BENCHMARK_REPO" "$UPSTREAM_BENCHMARK_DIR"
+        ok "Upstream benchmark servers cloned"
+    fi
+
+    if [[ -n "$(git -C "$UPSTREAM_BENCHMARK_DIR" status --porcelain --untracked-files=no)" ]]; then
+        error "Upstream benchmark repo has local modifications: $UPSTREAM_BENCHMARK_DIR"
+        error "Please clean it before running benchmark to keep pinned reproducibility"
+        return 1
+    fi
+
+    info "Pinning upstream benchmark repo to commit $UPSTREAM_BENCHMARK_COMMIT"
+    git -C "$UPSTREAM_BENCHMARK_DIR" fetch --depth 1 origin "$UPSTREAM_BENCHMARK_COMMIT"
+    git -C "$UPSTREAM_BENCHMARK_DIR" checkout --detach "$UPSTREAM_BENCHMARK_COMMIT"
+
+    local current_commit
+    current_commit="$(git -C "$UPSTREAM_BENCHMARK_DIR" rev-parse HEAD)"
+    if [[ "$current_commit" != "$UPSTREAM_BENCHMARK_COMMIT" ]]; then
+        error "Failed to pin upstream benchmark repo to expected commit"
+        error "Current: $current_commit"
+        error "Expected: $UPSTREAM_BENCHMARK_COMMIT"
+        return 1
+    fi
+
+    local required_paths=(
+        "$UPSTREAM_BENCHMARK_DIR/api-service"
+        "$UPSTREAM_BENCHMARK_DIR/infra/redis"
+        "$UPSTREAM_BENCHMARK_DIR/benchmark"
+        "$UPSTREAM_BENCHMARK_DIR/python-server"
+        "$UPSTREAM_BENCHMARK_DIR/go-server"
+        "$UPSTREAM_BENCHMARK_DIR/rust-server"
+    )
+    for p in "${required_paths[@]}"; do
+        if [[ ! -d "$p" ]]; then
+            error "Missing required upstream path after checkout: $p"
+            return 1
+        fi
+    done
+
+    if [[ ! -f "$UPSTREAM_K6_SCRIPT" ]]; then
+        error "Missing required upstream k6 script: $UPSTREAM_K6_SCRIPT"
+        return 1
+    fi
+
+    ok "Using upstream benchmark servers repo pinned at $UPSTREAM_BENCHMARK_COMMIT"
 }
 
 wait_for_http() {
@@ -174,9 +239,9 @@ run_warmup() {
 
 selected_servers=()
 if [[ "$#" -eq 0 ]]; then
-    selected_servers=(cpp python go)
+    selected_servers=(cpp python go rust)
 elif [[ "$#" -eq 1 && "$1" == "all" ]]; then
-    selected_servers=(cpp python go)
+    selected_servers=(cpp python go rust)
 elif [[ "$#" -eq 1 && "$1" == *","* ]]; then
     IFS=',' read -r -a selected_servers <<< "$1"
 else
@@ -185,13 +250,13 @@ fi
 
 for server in "${selected_servers[@]}"; do
     case "$server" in
-        cpp|python|go) ;;
+        cpp|python|go|rust) ;;
         -h|--help)
             usage
             exit 0
             ;;
         *)
-            error "Unknown server '$server'. Allowed: cpp, python, go, all"
+            error "Unknown server '$server'. Allowed: cpp, python, go, rust, all"
             usage
             exit 1
             ;;
@@ -204,6 +269,7 @@ info "Step 1/6: Pre-flight checks"
 docker compose version >/dev/null || { error "docker compose not found"; exit 1; }
 command -v python3 >/dev/null    || { error "python3 not found"; exit 1; }
 command -v jq >/dev/null         || { error "jq not found"; exit 1; }
+ensure_upstream_benchmark_servers || exit 1
 ok "Pre-flight checks passed"
 
 info "Step 2/6: Start infrastructure"
@@ -245,7 +311,7 @@ for server_name in "${selected_servers[@]}"; do
     ok "[$server_name] Redis reset/reseed done"
 
     info "[$server_name] Stop all MCP servers"
-    docker compose -f "$SCRIPT_DIR/docker-compose.yml" stop cpp-server python-server go-server >/dev/null
+    docker compose -f "$SCRIPT_DIR/docker-compose.yml" stop cpp-server python-server go-server rust-server>/dev/null
 
     info "[$server_name] Start target server: $service_name"
     docker compose -f "$SCRIPT_DIR/docker-compose.yml" up -d "$service_name"
@@ -278,7 +344,7 @@ for server_name in "${selected_servers[@]}"; do
         docker run --rm \
             --network host \
             --user "$(id -u):$(id -g)" \
-            -v "$SCRIPT_DIR/k6:/scripts:ro" \
+            -v "$UPSTREAM_BENCHMARK_DIR/benchmark:/scripts:ro" \
             -v "$server_results:/results" \
             -e SERVER_URL="$mcp_url" \
             -e SERVER_NAME="$server_name" \
@@ -287,53 +353,8 @@ for server_name in "${selected_servers[@]}"; do
             2>&1 | tee "$server_results/k6_console_run${run_idx}.log"
     done
 
-    # Pick the median run by RPS and symlink as the canonical k6_summary.json
-    python3 -c "
-import json, sys, os, math
-
-results_dir = sys.argv[1]
-n = int(sys.argv[2])
-
-runs = []
-for i in range(1, n + 1):
-    path = os.path.join(results_dir, f'k6_summary_run{i}.json')
-    with open(path) as f:
-        data = json.load(f)
-    rps = data['metrics']['http_reqs']['values']['rate']
-    runs.append((rps, i, path))
-
-runs.sort(key=lambda x: x[0])
-median_idx = len(runs) // 2
-median_rps, median_run, median_path = runs[median_idx]
-
-# Compute CV% (coefficient of variation)
-rps_values = [r[0] for r in runs]
-mean_rps = sum(rps_values) / len(rps_values)
-if mean_rps > 0:
-    variance = sum((v - mean_rps) ** 2 for v in rps_values) / len(rps_values)
-    std_dev = math.sqrt(variance)
-    cv_pct = (std_dev / mean_rps) * 100
-else:
-    cv_pct = 0.0
-
-# Copy median run as canonical summary
-import shutil
-canonical = os.path.join(results_dir, 'k6_summary.json')
-shutil.copy2(median_path, canonical)
-
-# Write CV% and per-run RPS to a stats file
-stats = {
-    'runs': [{'run': r[1], 'rps': r[0]} for r in sorted(runs, key=lambda x: x[1])],
-    'median_run': median_run,
-    'median_rps': median_rps,
-    'mean_rps': mean_rps,
-    'cv_pct': round(cv_pct, 2)
-}
-with open(os.path.join(results_dir, 'k6_multi_run_stats.json'), 'w') as f:
-    json.dump(stats, f, indent=2)
-
-print(f'Median run: {median_run} (RPS={median_rps:.2f}), CV%={cv_pct:.2f}%')
-" "$server_results" "$K6_RUNS"
+    # Pick the median run by RPS and select as the canonical k6_summary.json
+    python3 "$SCRIPT_DIR/select_median_run.py" "$server_results" "$K6_RUNS"
 
     info "[$server_name] Stop stats collector"
     if kill -0 "$stats_pid" 2>/dev/null; then
@@ -362,12 +383,12 @@ comparison_file="$RESULTS_DIR/comparison.txt"
             continue
         fi
 
-        requests="$(jq -r '.metrics.http_reqs.values.count // 0' "$summary")"
-        rps="$(jq -r '.metrics.http_reqs.values.rate // 0' "$summary")"
-        p50="$(jq -r '.metrics.http_req_duration.values.med // 0' "$summary")"
-        p95="$(jq -r '.metrics.http_req_duration.values["p(95)"] // 0' "$summary")"
-        p99="$(jq -r '.metrics.http_req_duration.values["p(99)"] // 0' "$summary")"
-        err_rate="$(jq -r '.metrics.http_req_failed.values.rate // 0' "$summary")"
+        requests="$(jq -r '.mcp.total_mcp_requests // 0' "$summary")"
+        rps="$(jq -r '.http.rps // 0' "$summary")"
+        p50="$(jq -r '.http.latency.p50 // 0' "$summary")"
+        p95="$(jq -r '.http.latency.p95 // 0' "$summary")"
+        p99="$(jq -r '.http.latency.p99 // 0' "$summary")"
+        err_rate="$(jq -r '.mcp.error_rate // 0' "$summary")"
 
         cv_pct="N/A"
         if [[ -f "$multi_stats" ]]; then

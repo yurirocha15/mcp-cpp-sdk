@@ -114,7 +114,7 @@ Transport Abstraction
 Built-in implementations:
 
 * **StdioTransport**: Reads from stdin, writes to stdout (common for AI tools)
-* **WebSocketTransport**: Communicates over WebSocket (Boost.Beast)
+* **WebSocketServerTransport / WebSocketClientTransport**: Communicate over WebSocket (Boost.Beast)
 * **HttpClientTransport**: Sends MCP messages to a Streamable HTTP endpoint
 * **HttpServerTransport**: Exposes a single-session Streamable HTTP endpoint
 
@@ -173,7 +173,7 @@ Protocol Types
 All types support JSON serialization via nlohmann_json. Protocol types are
 organized into focused sub-headers (``capabilities.hpp``, ``content.hpp``,
 ``tools.hpp``, ``roots.hpp``, ``sampling.hpp``, ``elicitation.hpp``, etc.)
-included via the ``mcp/protocol.hpp`` umbrella.
+included via the ``mcp/protocol/protocol.hpp`` umbrella.
 
 Data Flow
 ---------

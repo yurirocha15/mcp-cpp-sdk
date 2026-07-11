@@ -4,10 +4,10 @@
 /// Implements three I/O-bound tools with parallel HTTP + Redis operations.
 /// Uses Boost.Beast for HTTP and an async Redis client with connection pooling.
 ///
-/// Multi-session: Uses the SDK's StreamableHttpSessionManager to route
-/// requests by Mcp-Session-Id to per-session Server+MemoryTransport pairs.
+/// Stateless JSON: uses the SDK's direct Streamable HTTP path to avoid
+/// per-session MemoryTransport and DELETE cleanup overhead during the benchmark.
 
-#include <mcp/server.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 
 #include <boost/asio.hpp>
@@ -27,6 +27,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <variant>
 #include <vector>
 
@@ -35,6 +36,16 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 
 namespace benchmark {
+
+std::string short_error(std::string message) {
+    constexpr std::size_t max_len = 512;
+    if (message.size() <= max_len) {
+        return message;
+    }
+    message.resize(max_len);
+    message += "...";
+    return message;
+}
 
 // ============================================================================
 // Data structures and JSON serialization
@@ -225,10 +236,7 @@ class RedisPool {
     mcp::Task<RespValue> execute(std::vector<std::string> cmd) {
         auto socket = co_await acquire();
         try {
-            std::string request = "*" + std::to_string(cmd.size()) + "\r\n";
-            for (const auto& arg : cmd) {
-                request += "$" + std::to_string(arg.size()) + "\r\n" + arg + "\r\n";
-            }
+            std::string request = encode_command(cmd);
 
             co_await asio::async_write(*socket, asio::buffer(request), asio::use_awaitable);
 
@@ -240,6 +248,31 @@ class RedisPool {
             co_return result;
         } catch (...) {
             co_return RespValue{nullptr};
+        }
+    }
+
+    mcp::Task<std::vector<RespValue>> execute_pipeline(std::vector<std::vector<std::string>> cmds) {
+        auto socket = co_await acquire();
+        try {
+            std::string request;
+            for (const auto& cmd : cmds) {
+                request += encode_command(cmd);
+            }
+
+            co_await asio::async_write(*socket, asio::buffer(request), asio::use_awaitable);
+
+            std::string buf_storage;
+            auto buf = asio::dynamic_buffer(buf_storage);
+            std::vector<RespValue> replies;
+            replies.reserve(cmds.size());
+            for (std::size_t i = 0; i < cmds.size(); ++i) {
+                replies.push_back(co_await resp_parse(*socket, buf_storage, buf));
+            }
+
+            release(std::move(socket));
+            co_return replies;
+        } catch (...) {
+            co_return std::vector<RespValue>{};
         }
     }
 
@@ -291,7 +324,41 @@ class RedisPool {
         return execute_void({"ZINCRBY", key, std::to_string(increment), member});
     }
 
+    mcp::Task<int64_t> checkout_pipeline(std::string rate_key, std::string history_key,
+                                         std::string order_entry, std::string popular_member) {
+        auto socket = co_await acquire();
+        try {
+            std::string request;
+            request += encode_command({"INCR", rate_key});
+            request += encode_command({"RPUSH", history_key, order_entry});
+            request += encode_command({"ZINCRBY", "bench:popular", "1", popular_member});
+
+            co_await asio::async_write(*socket, asio::buffer(request), asio::use_awaitable);
+
+            std::string buf_storage;
+            auto buf = asio::dynamic_buffer(buf_storage);
+            auto rate_reply = co_await resp_parse(*socket, buf_storage, buf);
+            (void)co_await resp_parse(*socket, buf_storage, buf);
+            (void)co_await resp_parse(*socket, buf_storage, buf);
+
+            release(std::move(socket));
+            if (rate_reply.is_integer()) {
+                co_return rate_reply.as_integer();
+            }
+        } catch (...) {
+        }
+        co_return 0;
+    }
+
    private:
+    static std::string encode_command(const std::vector<std::string>& cmd) {
+        std::string request = "*" + std::to_string(cmd.size()) + "\r\n";
+        for (const auto& arg : cmd) {
+            request += "$" + std::to_string(arg.size()) + "\r\n" + arg + "\r\n";
+        }
+        return request;
+    }
+
     mcp::Task<std::unique_ptr<asio::ip::tcp::socket>> acquire() {
         auto pooled = try_acquire_from_pool();
         if (pooled) {
@@ -350,74 +417,114 @@ class RedisPool {
 
 class HttpClient {
    public:
-    HttpClient(asio::any_io_executor executor, std::string host, std::string port)
+    HttpClient(asio::any_io_executor executor, std::string host, std::string port,
+               std::size_t pool_size = 50)
         : executor_(std::move(executor)),
           host_(std::move(host)),
           port_(std::move(port)),
-          resolver_(executor_) {}
+          pool_size_(pool_size) {}
 
-    mcp::Task<nlohmann::json> get(const std::string& target) {
+    mcp::Task<nlohmann::json> get(std::string target) {
         try {
-            auto results = co_await resolver_.async_resolve(host_, port_, asio::use_awaitable);
-
-            beast::tcp_stream stream(executor_);
-            stream.expires_after(std::chrono::seconds(10));
-            co_await stream.async_connect(results, asio::use_awaitable);
+            auto conn = co_await acquire();
+            conn->stream.expires_after(std::chrono::seconds(10));
 
             http::request<http::string_body> req{http::verb::get, target, 11};
             req.set(http::field::host, host_);
-            req.set(http::field::connection, "close");
-            co_await http::async_write(stream, req, asio::use_awaitable);
+            req.keep_alive(true);
+            co_await http::async_write(conn->stream, req, asio::use_awaitable);
 
-            beast::flat_buffer buffer;
             http::response<http::string_body> res;
-            co_await http::async_read(stream, buffer, res, asio::use_awaitable);
+            co_await http::async_read(conn->stream, conn->buffer, res, asio::use_awaitable);
 
-            beast::error_code ec;
-            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+            auto result = nlohmann::json::parse(res.body());
+            release(std::move(conn), res.keep_alive());
 
-            co_return nlohmann::json::parse(res.body());
+            co_return result;
         } catch (const std::exception& e) {
-            std::cerr << "HTTP GET error (" << target << "): " << e.what() << std::endl;
-            co_return nlohmann::json{{"error", e.what()}};
+            auto message = short_error(e.what());
+            std::cerr << "HTTP GET error (" << target << "): " << message << std::endl;
+            co_return nlohmann::json{{"error", std::move(message)}};
         }
     }
 
-    mcp::Task<nlohmann::json> post(const std::string& target, const nlohmann::json& body) {
+    mcp::Task<nlohmann::json> post(std::string target, nlohmann::json body) {
         try {
-            auto results = co_await resolver_.async_resolve(host_, port_, asio::use_awaitable);
-
-            beast::tcp_stream stream(executor_);
-            stream.expires_after(std::chrono::seconds(10));
-            co_await stream.async_connect(results, asio::use_awaitable);
+            auto conn = co_await acquire();
+            conn->stream.expires_after(std::chrono::seconds(10));
 
             http::request<http::string_body> req{http::verb::post, target, 11};
             req.set(http::field::host, host_);
             req.set(http::field::content_type, "application/json");
-            req.set(http::field::connection, "close");
+            req.keep_alive(true);
             req.body() = body.dump();
             req.prepare_payload();
-            co_await http::async_write(stream, req, asio::use_awaitable);
+            co_await http::async_write(conn->stream, req, asio::use_awaitable);
 
-            beast::flat_buffer buffer;
             http::response<http::string_body> res;
-            co_await http::async_read(stream, buffer, res, asio::use_awaitable);
+            co_await http::async_read(conn->stream, conn->buffer, res, asio::use_awaitable);
 
-            beast::error_code ec;
-            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+            auto result = nlohmann::json::parse(res.body());
+            release(std::move(conn), res.keep_alive());
 
-            co_return nlohmann::json::parse(res.body());
+            co_return result;
         } catch (const std::exception& e) {
-            std::cerr << "HTTP POST error (" << target << "): " << e.what() << std::endl;
-            co_return nlohmann::json{{"error", e.what()}};
+            auto message = short_error(e.what());
+            std::cerr << "HTTP POST error (" << target << "): " << message << std::endl;
+            co_return nlohmann::json{{"error", std::move(message)}};
         }
     }
 
    private:
+    struct Connection {
+        explicit Connection(asio::any_io_executor executor) : stream(std::move(executor)) {}
+
+        beast::tcp_stream stream;
+        beast::flat_buffer buffer;
+    };
+
+    mcp::Task<std::unique_ptr<Connection>> acquire() {
+        auto pooled = try_acquire_from_pool();
+        if (pooled) {
+            co_return std::move(pooled);
+        }
+
+        auto conn = std::make_unique<Connection>(executor_);
+        asio::ip::tcp::resolver resolver(executor_);
+        auto results = co_await resolver.async_resolve(host_, port_, asio::use_awaitable);
+        co_await conn->stream.async_connect(results, asio::use_awaitable);
+        beast::error_code ec;
+        conn->stream.socket().set_option(asio::ip::tcp::no_delay(true), ec);
+        co_return conn;
+    }
+
+    void release(std::unique_ptr<Connection> conn, bool keep_alive) {
+        if (!conn || !keep_alive || !conn->stream.socket().is_open()) {
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (pool_.size() < pool_size_) {
+            pool_.push_back(std::move(conn));
+        }
+    }
+
+    std::unique_ptr<Connection> try_acquire_from_pool() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!pool_.empty()) {
+            auto conn = std::move(pool_.front());
+            pool_.pop_front();
+            return conn;
+        }
+        return nullptr;
+    }
+
     asio::any_io_executor executor_;
     std::string host_;
     std::string port_;
-    asio::ip::tcp::resolver resolver_;
+    std::size_t pool_size_;
+    std::mutex mutex_;
+    std::deque<std::unique_ptr<Connection>> pool_;
 };
 
 // ============================================================================
@@ -441,15 +548,26 @@ static std::unique_ptr<RedisPool> g_redis_pool;
 // Tool handlers
 // ============================================================================
 
-mcp::Task<nlohmann::json> handle_search_products(const SearchProductsArgs& args) {
+mcp::CallToolResult make_tool_result(nlohmann::json payload, bool is_error = false) {
+    mcp::CallToolResult result;
+    result.isError = is_error;
+    result.structuredContent = payload;
+    result.content.push_back(mcp::TextContent{.text = payload.dump()});
+    return result;
+}
+
+mcp::Task<mcp::CallToolResult> handle_search_products(const SearchProductsArgs& args) {
     try {
+        auto executor = co_await asio::this_coro::executor;
         std::string query = "/products/search?category=" + args.category +
                             "&min_price=" + std::to_string(args.min_price) +
                             "&max_price=" + std::to_string(args.max_price) +
                             "&limit=" + std::to_string(args.limit);
 
+        auto popular_task = asio::co_spawn(executor, g_redis_pool->zrevrange("bench:popular", 0, 9),
+                                           asio::use_awaitable);
         auto search_data = co_await g_http_client->get(query);
-        auto popular_raw = co_await g_redis_pool->zrevrange("bench:popular", 0, 9);
+        auto popular_raw = co_await std::move(popular_task);
 
         std::vector<int> top10_ids;
         std::map<int, int> top10_rank;
@@ -471,19 +589,20 @@ mcp::Task<nlohmann::json> handle_search_products(const SearchProductsArgs& args)
             }
         }
 
-        co_return nlohmann::json{{"category", args.category},
-                                 {"total_found", search_data.value("total_found", 0)},
-                                 {"products", products},
-                                 {"top10_popular_ids", top10_ids},
-                                 {"server_type", "cpp"}};
+        co_return make_tool_result(nlohmann::json{{"category", args.category},
+                                                  {"total_found", search_data.value("total_found", 0)},
+                                                  {"products", products},
+                                                  {"top10_popular_ids", top10_ids},
+                                                  {"server_type", "cpp"}});
     } catch (const std::exception& e) {
         std::cerr << "search_products error: " << e.what() << std::endl;
-        co_return nlohmann::json{{"error", e.what()}};
+        co_return make_tool_result(nlohmann::json{{"error", e.what()}}, true);
     }
 }
 
-mcp::Task<nlohmann::json> handle_get_user_cart(const GetUserCartArgs& args) {
+mcp::Task<mcp::CallToolResult> handle_get_user_cart(const GetUserCartArgs& args) {
     try {
+        auto executor = co_await asio::this_coro::executor;
         std::string cart_key = "bench:cart:" + args.user_id;
         std::string history_key = "bench:history:" + args.user_id;
 
@@ -501,16 +620,21 @@ mcp::Task<nlohmann::json> handle_get_user_cart(const GetUserCartArgs& args) {
             }
         }
 
+        auto history_task =
+            asio::co_spawn(executor, g_redis_pool->lrange(history_key, 0, 4), asio::use_awaitable);
         auto product_data =
             co_await g_http_client->get("/products/" + std::to_string(first_product_id));
-        auto history_raw = co_await g_redis_pool->lrange(history_key, 0, 4);
+        (void)product_data;
+        auto history_raw = co_await std::move(history_task);
 
         nlohmann::json recent_history = nlohmann::json::array();
         for (const auto& entry : history_raw) {
             try {
                 recent_history.push_back(nlohmann::json::parse(entry));
             } catch (...) {
-                recent_history.push_back(nlohmann::json{{"raw", entry}});
+                nlohmann::json raw_entry;
+                raw_entry["raw"] = entry;
+                recent_history.push_back(std::move(raw_entry));
             }
         }
 
@@ -522,20 +646,21 @@ mcp::Task<nlohmann::json> handle_get_user_cart(const GetUserCartArgs& args) {
             }
         }
 
-        co_return nlohmann::json{
+        co_return make_tool_result(nlohmann::json{
             {"user_id", args.user_id},
             {"cart",
              {{"items", items}, {"item_count", items.size()}, {"estimated_total", estimated_total}}},
             {"recent_history", recent_history},
-            {"server_type", "cpp"}};
+            {"server_type", "cpp"}});
     } catch (const std::exception& e) {
         std::cerr << "get_user_cart error: " << e.what() << std::endl;
-        co_return nlohmann::json{{"error", e.what()}};
+        co_return make_tool_result(nlohmann::json{{"error", e.what()}}, true);
     }
 }
 
-mcp::Task<nlohmann::json> handle_checkout(const CheckoutArgs& args) {
+mcp::Task<mcp::CallToolResult> handle_checkout(const CheckoutArgs& args) {
     try {
+        auto executor = co_await asio::this_coro::executor;
         int user_num = 42;
         auto pos = args.user_id.rfind('-');
         if (pos != std::string::npos) {
@@ -555,26 +680,31 @@ mcp::Task<nlohmann::json> handle_checkout(const CheckoutArgs& args) {
         std::string order_str = order_entry.dump();
         std::string popular_member = "product:" + std::to_string(product_id);
 
-        auto calc_data = co_await g_http_client->post("/cart/calculate", calc_payload);
-        auto rate_count = co_await g_redis_pool->incr(rate_key);
+        auto redis_task = asio::co_spawn(
+            executor, g_redis_pool->checkout_pipeline(rate_key, history_key, order_str, popular_member),
+            asio::use_awaitable);
+        auto calc_task = asio::co_spawn(executor, g_http_client->post("/cart/calculate", calc_payload),
+                                        asio::use_awaitable);
 
-        co_await g_redis_pool->rpush(history_key, order_str);
-        co_await g_redis_pool->zincrby("bench:popular", 1.0, popular_member);
+        auto calc_data = co_await std::move(calc_task);
+        auto rate_count = co_await std::move(redis_task);
 
         std::string order_id =
             calc_data.value("order_id", "ORD-" + args.user_id + "-" + std::to_string(now));
         double total = calc_data.value("total", 0.0);
 
-        co_return nlohmann::json{{"order_id", order_id},
-                                 {"user_id", args.user_id},
-                                 {"total", total},
-                                 {"items_count", args.items.size()},
-                                 {"rate_limit_count", rate_count},
-                                 {"status", "confirmed"},
-                                 {"server_type", "cpp"}};
+        nlohmann::json result;
+        result["order_id"] = order_id;
+        result["user_id"] = args.user_id;
+        result["total"] = total;
+        result["items_count"] = args.items.size();
+        result["rate_limit_count"] = rate_count;
+        result["status"] = "confirmed";
+        result["server_type"] = "cpp";
+        co_return make_tool_result(std::move(result));
     } catch (const std::exception& e) {
         std::cerr << "checkout error: " << e.what() << std::endl;
-        co_return nlohmann::json{{"error", e.what()}};
+        co_return make_tool_result(nlohmann::json{{"error", e.what()}}, true);
     }
 }
 
@@ -600,7 +730,7 @@ static std::unique_ptr<Server> create_server_with_tools(const boost::asio::any_i
                                       {"max_price", {{"type", "number"}, {"default", 500.0}}},
                                       {"limit", {{"type", "integer"}, {"default", 10}}}}}};
 
-    server->add_tool<SearchProductsArgs, nlohmann::json>(
+    server->add_tool<SearchProductsArgs, mcp::CallToolResult>(
         "search_products", "Search products by category and price range, merged with popularity data",
         std::move(search_schema), handle_search_products);
 
@@ -608,9 +738,9 @@ static std::unique_ptr<Server> create_server_with_tools(const boost::asio::any_i
         {"type", "object"},
         {"properties", {{"user_id", {{"type", "string"}, {"default", "user-00042"}}}}}};
 
-    server->add_tool<GetUserCartArgs, nlohmann::json>("get_user_cart",
-                                                      "Get user cart details with recent order history",
-                                                      std::move(cart_schema), handle_get_user_cart);
+    server->add_tool<GetUserCartArgs, mcp::CallToolResult>(
+        "get_user_cart", "Get user cart details with recent order history", std::move(cart_schema),
+        handle_get_user_cart);
 
     nlohmann::json checkout_schema = {
         {"type", "object"},
@@ -624,7 +754,7 @@ static std::unique_ptr<Server> create_server_with_tools(const boost::asio::any_i
                {{"product_id", {{"type", "integer"}}}, {"quantity", {{"type", "integer"}}}}},
               {"required", nlohmann::json::array({"product_id", "quantity"})}}}}}}}};
 
-    server->add_tool<CheckoutArgs, nlohmann::json>(
+    server->add_tool<CheckoutArgs, mcp::CallToolResult>(
         "checkout", "Process checkout: calculate total, update rate limit, record history",
         std::move(checkout_schema), handle_checkout);
 
@@ -671,11 +801,12 @@ int main() {
 
     asio::io_context io_ctx;
 
-    g_http_client = std::make_unique<HttpClient>(io_ctx.get_executor(), api_host, api_port);
-    g_redis_pool = std::make_unique<RedisPool>(io_ctx.get_executor(), redis_host, redis_port, 20);
+    g_http_client = std::make_unique<HttpClient>(io_ctx.get_executor(), api_host, api_port, 50);
+    g_redis_pool = std::make_unique<RedisPool>(io_ctx.get_executor(), redis_host, redis_port, 100);
 
     StreamableHttpSessionManager manager(io_ctx.get_executor(), "0.0.0.0", mcp_port,
                                          create_server_with_tools);
+    manager.set_stateless_json_mode(true);
 
     manager.set_custom_request_handler(
         [](const boost::beast::http::request<boost::beast::http::string_body>& req)
@@ -695,12 +826,26 @@ int main() {
 
     std::cout << "C++ MCP Benchmark Server starting (multi-session)..." << std::endl;
 
+    // Create work guard to keep io_context alive
+    auto work_guard = asio::make_work_guard(io_ctx);
+
     asio::co_spawn(io_ctx, manager.listen(), asio::detached);
 
     std::cout << "C++ MCP server listening on http://0.0.0.0:" << mcp_port << "/mcp" << std::endl;
     std::cout << "Health endpoint on http://0.0.0.0:" << mcp_port << "/health" << std::endl;
     std::cout << "Registered tools: search_products, get_user_cart, checkout" << std::endl;
 
-    io_ctx.run();
+    std::cout << "C++ MCP server starting with 2 threads..." << std::endl;
+
+    // Run io_context on 2 threads
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 2; ++i) {
+        threads.emplace_back([&io_ctx]() { io_ctx.run(); });
+    }
+
+    for (auto& t : threads) {
+        t.join();
+    }
+
     return 0;
 }

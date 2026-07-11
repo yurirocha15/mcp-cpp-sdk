@@ -105,6 +105,16 @@ struct HttpServerTransport::Impl {
         return result_node.is_object() && result_node.contains("protocolVersion");
     }
 
+    static bool is_initialize_request(const nlohmann::json& request_json) {
+        return request_json.is_object() && request_json.contains("method") &&
+               request_json.at("method").is_string() &&
+               request_json.at("method").get<std::string>() == "initialize";
+    }
+
+    static std::string_view header_value(const StringRequest::const_iterator& header_it) {
+        return {header_it->value().data(), header_it->value().size()};
+    }
+
     static std::string generate_session_id() {
         std::random_device random_device;
         std::mt19937 generator(random_device());
@@ -288,10 +298,27 @@ struct HttpServerTransport::Impl {
         co_return;
     }
 
-    static std::optional<StringResponse> check_protocol_version(const StringRequest& request) {
+    std::optional<StringResponse> check_protocol_version(const StringRequest& request,
+                                                         const nlohmann::json& request_json) const {
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
+        const bool is_initialize = is_initialize_request(request_json);
+        if (is_initialize) {
+            if (protocol_header_it == request.end()) {
+                return std::nullopt;
+            }
+            if (is_supported_protocol_version(header_value(protocol_header_it))) {
+                return std::nullopt;
+            }
+            return make_error_response(request, http::status::bad_request,
+                                       "Invalid MCP-Protocol-Version header");
+        }
+
         if (protocol_header_it == request.end() ||
-            protocol_header_it->value() != g_LATEST_PROTOCOL_VERSION) {
+            header_value(protocol_header_it) == negotiated_protocol_version) {
+            return std::nullopt;
+        }
+
+        if (!is_initialize) {
             return make_error_response(request, http::status::bad_request,
                                        "Invalid MCP-Protocol-Version header");
         }
@@ -307,7 +334,13 @@ struct HttpServerTransport::Impl {
     }
 
     Task<StringResponse> handle_post(const StringRequest& request) {
-        if (auto error = check_protocol_version(request)) {
+        const auto request_json = nlohmann::json::parse(request.body(), nullptr, false);
+        if (request_json.is_discarded() || !request_json.is_object()) {
+            co_return make_error_response(request, http::status::bad_request,
+                                          "Invalid JSON-RPC payload");
+        }
+
+        if (auto error = check_protocol_version(request, request_json)) {
             co_return std::move(*error);
         }
         if (auto error = check_origin(request)) {
@@ -318,12 +351,6 @@ struct HttpServerTransport::Impl {
         if (!session_check.ok) {
             co_return make_error_response(request, http::status::bad_request,
                                           session_check.error_message);
-        }
-
-        const auto request_json = nlohmann::json::parse(request.body(), nullptr, false);
-        if (request_json.is_discarded() || !request_json.is_object()) {
-            co_return make_error_response(request, http::status::bad_request,
-                                          "Invalid JSON-RPC payload");
         }
 
         const bool has_request_id = request_json.contains("id");
@@ -373,7 +400,7 @@ struct HttpServerTransport::Impl {
             accept_it != request.end() &&
             std::string_view(accept_it->value()).find("text/event-stream") != std::string_view::npos;
 
-        if (client_accepts_sse && pending_result.event_id.has_value()) {
+        if (!json_only_ && client_accepts_sse && pending_result.event_id.has_value()) {
             auto response =
                 make_sse_response(request, *pending_result.event_id, *pending_result.response_body);
             if (pending_result.session_header.has_value()) {
@@ -390,7 +417,8 @@ struct HttpServerTransport::Impl {
     }
 
     Task<StringResponse> handle_delete(const StringRequest& request) {
-        if (auto error = check_protocol_version(request)) {
+        const nlohmann::json request_json = {"method", "delete"};
+        if (auto error = check_protocol_version(request, request_json)) {
             co_return std::move(*error);
         }
         if (auto error = check_origin(request)) {
@@ -408,7 +436,8 @@ struct HttpServerTransport::Impl {
     }
 
     Task<StringResponse> handle_get(const StringRequest& request) {
-        if (auto error = check_protocol_version(request)) {
+        const nlohmann::json request_json = {"method", "get"};
+        if (auto error = check_protocol_version(request, request_json)) {
             co_return std::move(*error);
         }
 
@@ -493,12 +522,14 @@ struct HttpServerTransport::Impl {
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
     std::optional<std::string> session_id;
+    std::string negotiated_protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
     bool session_active{false};
 
     bool allow_all_origins{true};
     std::unordered_set<std::string> allowed_origins;
 
     EventStore event_store;
+    bool json_only_{false};
 };
 
 HttpServerTransport::HttpServerTransport(const boost::asio::any_io_executor& executor, std::string host,
@@ -515,6 +546,17 @@ HttpServerTransport::~HttpServerTransport() {
 }
 
 const EventStore& HttpServerTransport::event_store() const { return impl_->event_store; }
+
+unsigned short HttpServerTransport::port() const {
+    boost::system::error_code ec;
+    const auto endpoint = impl_->acceptor.local_endpoint(ec);
+    if (ec) {
+        throw std::runtime_error("Failed to query HTTP acceptor endpoint: " + ec.message());
+    }
+    return endpoint.port();
+}
+
+void HttpServerTransport::set_json_only(bool json_only) { impl_->json_only_ = json_only; }
 
 Task<std::string> HttpServerTransport::read_message() {
     auto& state = *impl_->state;
@@ -553,7 +595,10 @@ Task<void> HttpServerTransport::write_message(std::string_view message) {
         co_return;
     }
 
-    auto event_id = impl_->event_store.append(msg);
+    std::optional<std::string> event_id;
+    if (!impl_->json_only_) {
+        event_id = impl_->event_store.append(msg);
+    }
 
     if (!response_json.contains("id")) {
         co_return;
@@ -570,8 +615,12 @@ Task<void> HttpServerTransport::write_message(std::string_view message) {
     pending_it->second.response_ready = true;
 
     if (Impl::is_initialize_result_response(response_json)) {
+        const auto& result = response_json.at("result");
         if (!impl_->session_id.has_value()) {
             impl_->session_id = Impl::generate_session_id();
+        }
+        if (result.contains("protocolVersion") && result.at("protocolVersion").is_string()) {
+            impl_->negotiated_protocol_version = result.at("protocolVersion").get<std::string>();
         }
         pending_it->second.session_header = impl_->session_id;
         impl_->session_active = true;
@@ -597,6 +646,7 @@ void HttpServerTransport::close() {
         impl_->pending_responses.clear();
 
         impl_->session_id.reset();
+        impl_->negotiated_protocol_version = std::string(g_LATEST_PROTOCOL_VERSION);
         impl_->session_active = false;
     });
 

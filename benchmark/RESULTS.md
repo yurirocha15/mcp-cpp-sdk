@@ -1,65 +1,53 @@
 # Benchmark Results
 
-Benchmark run: 50 VUs, 5-minute sustained load, 60s warmup excluded. All three servers achieved **0% error rate**.
+This file keeps the benchmark records by run date:
 
-## Test Environment
+- `20260405_205033`: C++, Go, and Python comparison
+- `20260620_220910`: C++ three-run verification
+
+## Test Profile
 
 | | |
 |---|---|
-| **CPU** | AMD Ryzen 9 9900X — 12 cores / 24 threads, 5.66 GHz max boost |
-| **RAM** | 32 GB DDR5 |
-| **OS** | Ubuntu (kernel 6.17.0-20-generic) |
-| **Docker limits** | 2 CPUs, 2 GB RAM per server container |
+| **Workload** | TM Dev Lab v2 MCP benchmark: Redis + HTTP I/O-bound tools |
+| **Load** | 50 VUs, 15s ramp-up, 5m sustained load, 10s ramp-down |
+| **Warmup** | 60s warmup excluded from metrics |
+| **Repetition** | `run.sh` executes 3 k6 runs and selects the median by RPS |
+| **Infrastructure** | Same upstream API service and Redis seeder, Docker Compose |
+| **Host** | AMD Ryzen 9 9900X, 32 GB RAM, Ubuntu kernel 6.17.0-20-generic |
 
-## Throughput & Latency
+## 20260405_205033
 
-| Server | Total Requests | RPS | p50 (ms) | p95 (ms) | p99 (ms) |
-|---|---|---|---|---|---|
-| **C++** | 3,962,896 | **12,191** | 0.31 | 3.09 | 5.55 |
-| **Go** | 2,975,472 | 9,154 | 0.36 | 4.83 | 36.06 |
-| **Python** | 293,930 | 904 | 18.17 | 162.41 | 190.20 |
+Results from `benchmark/results/20260405_205033/`.
 
-C++ handled **13.5x more requests than Python** and **1.33x more than Go** under identical conditions.
+| Server | RPS | p50 (ms) | p99 (ms) | Error Rate | Avg Memory | Max Memory |
+|---|---:|---:|---:|---:|---:|---:|
+| C++ | 12,191.61 | 0.31 | 5.55 | 0% | 11.34 MB | 13.07 MB |
+| Go | 9,154.28 | 0.36 | 36.06 | 0% | 21.38 MB | 24.52 MB |
+| Python | 904.33 | 18.17 | 190.20 | 0% | 58.09 MB | 61.86 MB |
 
-## Per-Tool Average Latency (ms)
+## 20260620_220910
 
-| Tool | C++ | Go | Python |
-|---|---|---|---|
-| `search_products` | 2.65 | 5.82 | 109.4 |
-| `get_user_cart` | 2.75 | 3.86 | 162.8 |
-| `checkout` | 1.81 | 2.98 | 114.1 |
+C++-only verification from `benchmark/results/20260620_220910/`.
 
-## Resource Usage (during sustained load)
+| Run | RPS |
+|---:|---:|
+| 1 | 6,995.45 |
+| 2 | 7,025.13 |
+| 3 | 7,031.65 |
 
-| Server | CPU (of 2.0 limit) | Memory (steady-state) |
-|---|---|---|
-| **C++** | ~75% | ~12 MB |
-| **Go** | ~200% | ~23 MB |
-| **Python** | ~100% | ~60 MB |
+| Metric | Value |
+|---|---:|
+| Median run | 2 |
+| Median RPS | 7,025.13 |
+| Mean RPS | 7,017.41 |
+| CV | 0.22% |
+| Requests | 2,283,376 |
+| p50 | 0.68 ms |
+| p95 | 1.92 ms |
+| p99 | 2.69 ms |
+| Error rate | 0% |
+| Avg memory | 6.92 MB |
+| Max memory | 8.15 MB |
 
-```mermaid
----
-config:
-  xyChart:
-    xAxis:
-      label: Server
-    yAxis:
-      label: Requests per Second
----
-xychart-beta
-    x-axis ["C++" , "Go" , "Python"]
-    y-axis "Requests per Second" 0 --> 13000
-    bar [12191, 9154, 904]
-```
-
-## Full Tool Cycle Iterations
-
-Each iteration = `tools/list` → `search_products` → `get_user_cart` → `checkout` (4 HTTP round-trips per cycle).
-
-| Server | Iterations | Iterations/sec |
-|---|---|---|
-| **C++** | 247,681 | 762 |
-| **Go** | 185,967 | 572 |
-| **Python** | 29,393 | 90 |
-
-> Raw results are in `benchmark/results/` — each run is timestamped and contains `k6_summary.json`, `stats.json`, and `comparison.txt` per server.
+Compared with the `20260405_205033` C++ result, the `20260620_220910` median C++ run used less Docker-reported memory: average memory decreased from **11.34 MB** to **6.92 MB**, and max memory decreased from **13.07 MB** to **8.15 MB**.

@@ -2,7 +2,7 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <iostream>
-#include <mcp/client.hpp>
+#include <mcp/client/client.hpp>
 #include <mcp/transport/stdio.hpp>
 #include <string>
 

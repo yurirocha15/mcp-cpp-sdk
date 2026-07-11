@@ -1,11 +1,13 @@
 #pragma once
 
-#include <mcp/transport.hpp>
+#include <mcp/transport/transport.hpp>
 
 #include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
+
+#include <nlohmann/json.hpp>
 
 #include <chrono>
 #include <memory>
@@ -14,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 
 namespace mcp {
 
@@ -52,14 +55,18 @@ class MemoryTransport final : public ITransport {
      * @throws std::runtime_error If the transport is closed.
      */
     Task<std::string> read_message() override {
+        if (strand_.running_in_this_thread() && !closed_ && !incoming_.empty()) {
+            co_return pop_message_as_string();
+        }
+
+        co_await boost::asio::post(strand_, boost::asio::use_awaitable);
+
         for (;;) {
             if (closed_) {
                 throw std::runtime_error("transport closed");
             }
             if (!incoming_.empty()) {
-                auto msg = std::move(incoming_.front());
-                incoming_.pop();
-                co_return msg;
+                co_return pop_message_as_string();
             }
             timer_.expires_at(std::chrono::steady_clock::time_point::max());
             try {
@@ -70,6 +77,47 @@ class MemoryTransport final : public ITransport {
                 }
             }
         }
+    }
+
+    Task<nlohmann::json> read_json() {
+        if (strand_.running_in_this_thread() && !closed_ && !incoming_.empty()) {
+            co_return pop_message_as_json();
+        }
+
+        co_await boost::asio::post(strand_, boost::asio::use_awaitable);
+
+        for (;;) {
+            if (closed_) {
+                throw std::runtime_error("transport closed");
+            }
+            if (!incoming_.empty()) {
+                co_return pop_message_as_json();
+            }
+            timer_.expires_at(std::chrono::steady_clock::time_point::max());
+            try {
+                co_await timer_.async_wait(boost::asio::use_awaitable);
+            } catch (const boost::system::system_error& err) {
+                if (err.code() != boost::asio::error::operation_aborted) {
+                    throw;
+                }
+            }
+        }
+    }
+
+    Task<void> write_json(nlohmann::json message) {
+        co_await boost::asio::post(strand_, boost::asio::use_awaitable);
+        if (closed_) {
+            throw std::runtime_error("transport closed");
+        }
+        auto peer = peer_.lock();
+        if (!peer) {
+            throw std::runtime_error("peer transport not set");
+        }
+        boost::asio::post(peer->strand_, [peer, msg = std::move(message)]() mutable {
+            peer->incoming_.emplace(std::move(msg));
+            peer->timer_.cancel();
+        });
+        co_return;
     }
 
     /**
@@ -91,7 +139,7 @@ class MemoryTransport final : public ITransport {
         }
         // Post message to peer's strand
         boost::asio::post(peer->strand_, [peer, msg = std::string(message)]() mutable {
-            peer->incoming_.push(std::move(msg));
+            peer->incoming_.emplace(std::move(msg));
             peer->timer_.cancel();
         });
     }
@@ -120,9 +168,29 @@ class MemoryTransport final : public ITransport {
     void set_peer(const std::shared_ptr<MemoryTransport>& peer) { peer_ = peer; }
 
    private:
+    using MemoryMessage = std::variant<std::string, nlohmann::json>;
+
+    std::string pop_message_as_string() {
+        auto message = std::move(incoming_.front());
+        incoming_.pop();
+        if (auto* raw = std::get_if<std::string>(&message)) {
+            return std::move(*raw);
+        }
+        return std::get<nlohmann::json>(message).dump();
+    }
+
+    nlohmann::json pop_message_as_json() {
+        auto message = std::move(incoming_.front());
+        incoming_.pop();
+        if (auto* json = std::get_if<nlohmann::json>(&message)) {
+            return std::move(*json);
+        }
+        return nlohmann::json::parse(std::get<std::string>(message));
+    }
+
     boost::asio::strand<boost::asio::any_io_executor> strand_;
     boost::asio::steady_timer timer_;
-    std::queue<std::string> incoming_;
+    std::queue<MemoryMessage> incoming_;
     std::weak_ptr<MemoryTransport> peer_;
     bool closed_ = false;
 };

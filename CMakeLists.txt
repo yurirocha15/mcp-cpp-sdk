@@ -22,12 +22,12 @@ if(WIN32)
 endif()
 target_sources(
   mcp-cpp-sdk
-  PRIVATE src/version.cpp
-          src/runtime.cpp
-          src/server_stdio.cpp
-          src/server_http.cpp
-          src/server_tool.cpp
-          src/server.cpp
+  PRIVATE src/core/version.cpp
+          src/core/runtime.cpp
+          src/server/server_stdio.cpp
+          src/server/server_http.cpp
+          src/server/server_tool.cpp
+          src/server/server.cpp
           src/transport/stdio.cpp
           src/transport/http_server.cpp
           src/transport/http_client.cpp
@@ -55,38 +55,39 @@ if(BUILD_TESTING)
   find_package(GTest REQUIRED)
   enable_testing()
   set(TEST_SRCS
-      test/auth_integration_test.cpp
-      test/auth_oauth_test.cpp
-      test/client_core_test.cpp
-      test/client_features_test.cpp
-      test/client_notifications_test.cpp
-      test/concepts_test.cpp
-      test/core_test.cpp
-      test/protocol_test.cpp
-      test/roots_test.cpp
-      test/sampling_test.cpp
-      test/server_core_test.cpp
-      test/server_cancellation_test.cpp
-      test/server_elicitation_test.cpp
-      test/server_handlers_test.cpp
-      test/server_logging_test.cpp
-      test/server_middleware_test.cpp
-      test/server_progress_test.cpp
-      test/server_subscriptions_test.cpp
-      test/transport_test.cpp
-      test/transport_stdio_test.cpp
-      test/transport_ws_test.cpp
-      test/transport_http_test.cpp
-      test/transport_http_resumability_test.cpp
-      test/transport_http_session_manager_test.cpp
-      test/transport_memory_test.cpp
-      test/e2e_integration_test.cpp
-      test/runtime_test.cpp
-      test/server_stdio_test.cpp
-      test/server_http_test.cpp
-      test/server_tool_test.cpp
-      test/transport_factory_test.cpp
-      test/gcc11_sso_crash_test.cpp)
+      test/auth/auth_integration_test.cpp
+      test/auth/auth_oauth_test.cpp
+      test/client/client_core_test.cpp
+      test/client/client_features_test.cpp
+      test/client/client_notifications_test.cpp
+      test/core/concepts_test.cpp
+      test/core/core_test.cpp
+      test/core/protocol_test.cpp
+      test/server/roots_test.cpp
+      test/server/sampling_test.cpp
+      test/server/server_core_test.cpp
+      test/server/server_cancellation_test.cpp
+      test/server/server_elicitation_test.cpp
+      test/server/server_handlers_test.cpp
+      test/server/server_logging_test.cpp
+      test/server/server_middleware_test.cpp
+      test/server/server_progress_test.cpp
+      test/server/server_subscriptions_test.cpp
+      test/transport/transport_test.cpp
+      test/transport/transport_stdio_test.cpp
+      test/transport/transport_ws_test.cpp
+      test/transport/transport_http_test.cpp
+      test/transport/transport_http_resumability_test.cpp
+      test/transport/transport_http_session_manager_test.cpp
+      test/transport/transport_memory_test.cpp
+      test/e2e/e2e_integration_test.cpp
+      test/e2e/e2e_features_test.cpp
+      test/server/runtime_test.cpp
+      test/server/server_stdio_test.cpp
+      test/server/server_http_test.cpp
+      test/server/server_tool_test.cpp
+      test/transport/transport_factory_test.cpp
+      test/core/gcc11_sso_crash_test.cpp)
   add_executable(mcp-sdk-tests ${TEST_SRCS})
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
 
@@ -145,29 +146,80 @@ if(BUILD_EXAMPLES)
 
   add_executable(example-llama-mcp examples/advanced/llama/llama_server.cpp)
   target_link_libraries(example-llama-mcp PRIVATE mcp-cpp-sdk)
-endif()
 
-option(BUILD_LLDB_EXAMPLE
-       "Build LLDB debugger MCP server example (requires liblldb)" OFF)
-if(BUILD_LLDB_EXAMPLE)
-  find_package(LLDB CONFIG QUIET)
-  if(NOT LLDB_FOUND)
-    find_library(LLDB_LIB lldb)
-    find_path(LLDB_INCLUDE_DIR lldb/API/LLDB.h)
-    if(NOT LLDB_LIB OR NOT LLDB_INCLUDE_DIR)
-      message(
-        FATAL_ERROR
-          "LLDB development libraries not found. Install liblldb-dev/llvm.")
-    endif()
-  endif()
+  # Feature examples
+  add_executable(example-feature-progress-cancellation
+                 examples/features/progress_cancellation.cpp)
+  target_link_libraries(example-feature-progress-cancellation
+                        PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-notifications-subscriptions
+                 examples/features/notifications_subscriptions.cpp)
+  target_link_libraries(example-feature-notifications-subscriptions
+                        PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-middleware examples/features/middleware.cpp)
+  target_link_libraries(example-feature-middleware PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-completions examples/features/completions.cpp)
+  target_link_libraries(example-feature-completions PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-pagination examples/features/pagination.cpp)
+  target_link_libraries(example-feature-pagination PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-elicitation examples/features/elicitation.cpp)
+  target_link_libraries(example-feature-elicitation PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-roots examples/features/roots.cpp)
+  target_link_libraries(example-feature-roots PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-error-handling
+                 examples/features/error_handling.cpp)
+  target_link_libraries(example-feature-error-handling PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-transport-memory
+                 examples/features/transport_memory.cpp)
+  target_link_libraries(example-feature-transport-memory PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-graceful-shutdown
+                 examples/features/graceful_shutdown.cpp)
+  target_link_libraries(example-feature-graceful-shutdown PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-http-server-convenience
+                 examples/features/http_server_convenience.cpp)
+  target_link_libraries(example-feature-http-server-convenience
+                        PRIVATE mcp-cpp-sdk)
+
+  # Benchmark targets
+  add_executable(example-benchmark-stdio examples/benchmark/benchmark_stdio.cpp)
+  target_link_libraries(example-benchmark-stdio PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-benchmark-http examples/benchmark/benchmark_http.cpp)
+  target_link_libraries(example-benchmark-http PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-benchmark-websocket
+                 examples/benchmark/benchmark_websocket.cpp)
+  target_link_libraries(example-benchmark-websocket PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-oauth-flow examples/features/oauth_flow.cpp)
+  target_link_libraries(example-feature-oauth-flow PRIVATE mcp-cpp-sdk)
+
+  # LLDB debugger example (links LLDB when available, uses stubs otherwise)
   add_executable(example-debugger-server
                  examples/advanced/debugger/debugger_server.cpp)
+  find_package(LLDB CONFIG QUIET)
+  if(NOT LLDB_FOUND)
+    find_library(LLDB_LIB NAMES lldb liblldb)
+    find_path(LLDB_INCLUDE_DIR lldb/API/LLDB.h)
+  endif()
   if(LLDB_FOUND)
     target_link_libraries(example-debugger-server PRIVATE mcp-cpp-sdk lldb)
-  else()
+  elseif(LLDB_LIB AND LLDB_INCLUDE_DIR)
     target_include_directories(example-debugger-server
                                PRIVATE ${LLDB_INCLUDE_DIR}/..)
     target_link_libraries(example-debugger-server PRIVATE mcp-cpp-sdk
                                                           ${LLDB_LIB})
+  else()
+    target_link_libraries(example-debugger-server PRIVATE mcp-cpp-sdk)
   endif()
 endif()

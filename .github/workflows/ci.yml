@@ -51,14 +51,17 @@ jobs:
       run: python scripts/init.py
 
     - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@v1
+      uses: hendrikmuhs/ccache-action@v1.2
       with:
         key: ${{ matrix.os }}-ccache-${{ github.ref }}
         restore-keys: ${{ matrix.os }}-ccache-
         max-size: 500M
 
     - name: Build and Test
-      run: python scripts/build.py --test
+      run: python scripts/build.py --examples --test
+
+    - name: Run Examples
+      run: python scripts/run_examples.py
 
   sanitize:
     runs-on: ubuntu-24.04
@@ -87,7 +90,7 @@ jobs:
       run: python scripts/init.py
 
     - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@v1
+      uses: hendrikmuhs/ccache-action@v1.2
       with:
         key: ubuntu-24.04-sanitize-ccache-${{ github.ref }}
         restore-keys: ubuntu-24.04-sanitize-ccache-

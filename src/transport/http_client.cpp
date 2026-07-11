@@ -1,4 +1,4 @@
-#include <mcp/constants.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/transport/http_client.hpp>
 #include <mcp/transport/http_types.hpp>
 

@@ -128,7 +128,7 @@ with other async work — you can wire up the transport manually:
 
 .. code-block:: cpp
 
-   #include <mcp/server.hpp>
+   #include <mcp/server/server.hpp>
    #include <mcp/transport/stdio.hpp>
    #include <boost/asio/co_spawn.hpp>
    #include <boost/asio/detached.hpp>
@@ -175,7 +175,7 @@ Here's a minimal MCP client that connects to a server and calls a tool:
 
 .. code-block:: cpp
 
-   #include <mcp/client.hpp>
+   #include <mcp/client/client.hpp>
    #include <mcp/transport/stdio.hpp>
    #include <boost/asio/co_spawn.hpp>
    #include <boost/asio/detached.hpp>

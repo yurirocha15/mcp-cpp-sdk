@@ -1,9 +1,9 @@
 #pragma once
 
-#include <mcp/constants.hpp>
-#include <mcp/server.hpp>
-#include <mcp/transport.hpp>
+#include <mcp/core/constants.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/http_server.hpp>
+#include <mcp/transport/transport.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/beast/http.hpp>
@@ -95,6 +95,42 @@ class StreamableHttpSessionManager {
      * @return The number of live MCP sessions currently managed by this endpoint.
      */
     [[nodiscard]] std::size_t session_count() const;
+
+    /**
+     * @brief Enable or disable JSON-only responses for managed sessions.
+     *
+     * When enabled, POST responses always use `application/json` and session
+     * replay events are not stored.
+     *
+     * @param json_only True to bypass SSE framing and replay storage.
+     */
+    void set_json_only(bool json_only);
+
+    /**
+     * @brief Enable or disable stateless direct JSON handling.
+     *
+     * When enabled, POST request/response messages are dispatched directly to a
+     * Server instance without creating `Mcp-Session-Id` sessions, MemoryTransport
+     * pairs, pending-response timers, SSE event stores, GET streams, or DELETE
+     * teardown. Responses are always `application/json`.
+     *
+     * This mode is opt-in and leaves the default stateful Streamable HTTP
+     * behavior unchanged.
+     *
+     * @param enabled True to use stateless direct JSON handling.
+     */
+    void set_stateless_json_mode(bool enabled);
+
+    /**
+     * @brief Set a separate executor for tool handlers.
+     *
+     * When set, tool handlers will run on this executor instead of the HTTP I/O executor.
+     * This allows parallel tool execution independent of HTTP request handling.
+     * If not set, tool handlers fall back to the HTTP executor (backward compatible).
+     *
+     * @param exec The executor to use for tool execution.
+     */
+    void set_tool_executor(const boost::asio::any_io_executor& exec);
 
     /**
      * @brief Close the manager and all sessions.
