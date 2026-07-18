@@ -82,6 +82,14 @@ class ReleaseWorkflowPolicyTest(unittest.TestCase):
         blocks["aur"] = [line.replace("Verify fixed anchor handoff", "Trust downloaded files") for line in blocks["aur"]]
         self.assert_policy_error(lambda: policy.check_publication_invariants(blocks, self.text))
 
+    def test_rejects_aur_without_passphrase_protection(self) -> None:
+        blocks = self.mutated_blocks("SSH_ASKPASS_REQUIRE=force", "SSH_ASKPASS_REQUIRE=never")
+        self.assert_policy_error(lambda: policy.check_publication_invariants(blocks, self.text))
+
+    def test_rejects_aur_without_batch_mode(self) -> None:
+        blocks = self.mutated_blocks("BatchMode=yes", "BatchMode=no")
+        self.assert_policy_error(lambda: policy.check_publication_invariants(blocks, self.text))
+
     def test_rejects_unpinned_cloudsmith_cli(self) -> None:
         mutated = self.text.replace('cli-version: "1.19.0"', 'cli-version: "latest"', 1)
         blocks = policy.job_blocks(mutated.splitlines())
