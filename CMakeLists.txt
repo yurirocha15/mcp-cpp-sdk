@@ -196,6 +196,9 @@ if(BUILD_TESTING)
     string(CONCAT MCP_CPP_SDK_PC_JSON_INCLUDES "$<JOIN:"
                   "$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,"
                   "INTERFACE_INCLUDE_DIRECTORIES>" ",|>")
+    string(CONCAT MCP_CPP_SDK_PC_TEST_LINK_OPTIONS "$<JOIN:"
+                  "$<TARGET_PROPERTY:mcp-cpp-sdk-static,"
+                  "INTERFACE_LINK_OPTIONS>" ",|>")
     set(MCP_CPP_SDK_PC_TEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests")
     set(MCP_CPP_SDK_PC_TEST_SCRIPT
         "${MCP_CPP_SDK_PC_TEST_DIR}/verify-pkgconfig-static-consumer.cmake")
@@ -208,6 +211,7 @@ if(BUILD_TESTING)
         "-DMCP_CPP_SDK_INSTALL_LIBDIR=${CMAKE_INSTALL_LIBDIR}"
         "-DMCP_CPP_SDK_BOOST_INCLUDE_DIRS=${MCP_CPP_SDK_PC_BOOST_INCLUDES}"
         "-DMCP_CPP_SDK_NLOHMANN_INCLUDE_DIRS=${MCP_CPP_SDK_PC_JSON_INCLUDES}"
+        "-DMCP_CPP_SDK_TEST_LINK_OPTIONS=${MCP_CPP_SDK_PC_TEST_LINK_OPTIONS}"
         -P "${MCP_CPP_SDK_PC_TEST_SCRIPT}")
   endif()
   set(TEST_SRCS

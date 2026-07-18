@@ -78,6 +78,9 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 separate_arguments(_pkg_config_arguments UNIX_COMMAND "${pkg_config_flags}")
+if(DEFINED MCP_CPP_SDK_TEST_LINK_OPTIONS)
+  string(REPLACE "|" ";" _test_link_options "${MCP_CPP_SDK_TEST_LINK_OPTIONS}")
+endif()
 set(_compile_arguments "-std=c++20")
 foreach(include_dir IN LISTS _boost_include_dirs)
   list(APPEND _compile_arguments "-I${include_dir}")
@@ -85,6 +88,7 @@ endforeach()
 list(APPEND _compile_arguments "${MCP_CPP_SDK_TEST_SOURCE}")
 list(APPEND _compile_arguments ${_pkg_config_arguments} "-o"
      "${_test_executable}")
+list(APPEND _compile_arguments ${_test_link_options})
 
 execute_process(
   COMMAND "${MCP_CPP_SDK_CXX_COMPILER}" ${_compile_arguments}
