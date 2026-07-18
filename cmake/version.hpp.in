@@ -1,0 +1,17 @@
+#pragma once
+
+#include <string>
+#include <string_view>
+
+#include <mcp/core/export.hpp>
+
+namespace mcp {
+
+inline constexpr std::string_view g_VERSION = "@MCP_CPP_SDK_VERSION_FULL@";
+inline constexpr int g_VERSION_MAJOR = @MCP_CPP_SDK_VERSION_MAJOR@;
+inline constexpr int g_VERSION_MINOR = @MCP_CPP_SDK_VERSION_MINOR@;
+inline constexpr int g_VERSION_PATCH = @MCP_CPP_SDK_VERSION_PATCH@;
+
+[[nodiscard]] MCP_API std::string version();
+
+}  // namespace mcp

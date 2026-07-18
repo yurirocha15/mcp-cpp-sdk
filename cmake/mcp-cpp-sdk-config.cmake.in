@@ -1,0 +1,50 @@
+@PACKAGE_INIT@
+
+if(POLICY CMP0167)
+  cmake_policy(SET CMP0167 NEW)
+endif()
+
+include(CMakeFindDependencyMacro)
+find_dependency(Boost 1.74 REQUIRED)
+find_dependency(nlohmann_json 3.10.5 CONFIG REQUIRED)
+find_dependency(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+
+set(MCP_CPP_SDK_VERSION_FULL "@MCP_CPP_SDK_VERSION_FULL@")
+set(MCP_CPP_SDK_HAS_SHARED FALSE)
+set(MCP_CPP_SDK_HAS_STATIC FALSE)
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/mcp-cpp-sdk-shared-targets.cmake")
+  include("${CMAKE_CURRENT_LIST_DIR}/mcp-cpp-sdk-shared-targets.cmake")
+  set(MCP_CPP_SDK_HAS_SHARED TRUE)
+endif()
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/mcp-cpp-sdk-static-targets.cmake")
+  include("${CMAKE_CURRENT_LIST_DIR}/mcp-cpp-sdk-static-targets.cmake")
+  set(MCP_CPP_SDK_HAS_STATIC TRUE)
+endif()
+set(mcp-cpp-sdk_shared_FOUND ${MCP_CPP_SDK_HAS_SHARED})
+set(mcp-cpp-sdk_static_FOUND ${MCP_CPP_SDK_HAS_STATIC})
+
+foreach(component IN LISTS mcp-cpp-sdk_FIND_COMPONENTS)
+  if(NOT component MATCHES "^(shared|static)$")
+    set(mcp-cpp-sdk_${component}_FOUND FALSE)
+  endif()
+endforeach()
+
+if(NOT TARGET mcp::sdk)
+  set(_mcp_cpp_sdk_linkage "@MCP_CPP_SDK_DEFAULT_LINKAGE@")
+  if("static" IN_LIST mcp-cpp-sdk_FIND_COMPONENTS
+     AND NOT "shared" IN_LIST mcp-cpp-sdk_FIND_COMPONENTS)
+    set(_mcp_cpp_sdk_linkage static)
+  elseif("shared" IN_LIST mcp-cpp-sdk_FIND_COMPONENTS
+         AND NOT "static" IN_LIST mcp-cpp-sdk_FIND_COMPONENTS)
+    set(_mcp_cpp_sdk_linkage shared)
+  endif()
+
+  if(TARGET mcp::sdk_${_mcp_cpp_sdk_linkage})
+    add_library(mcp::sdk INTERFACE IMPORTED)
+    set_property(TARGET mcp::sdk PROPERTY INTERFACE_LINK_LIBRARIES
+                                          mcp::sdk_${_mcp_cpp_sdk_linkage})
+  endif()
+  unset(_mcp_cpp_sdk_linkage)
+endif()
+
+check_required_components(mcp-cpp-sdk)

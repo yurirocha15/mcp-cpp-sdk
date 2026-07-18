@@ -1,0 +1,14 @@
+/.github/workflows/ @yurirocha15
+/.github/actions/ @yurirocha15
+/.github/actionlint.yaml @yurirocha15
+/release/ @yurirocha15
+/packaging/ @yurirocha15
+/bootstrap/ @yurirocha15
+/scripts/check_release_workflow.py @yurirocha15
+/scripts/release_dispatch_contract.py @yurirocha15
+/keys/ @yurirocha15
+/VERSION @yurirocha15
+/CHANGELOG.md @yurirocha15
+/CMakeLists.txt @yurirocha15
+/cmake/ @yurirocha15
+/conanfile.py @yurirocha15

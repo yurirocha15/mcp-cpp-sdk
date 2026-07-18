@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/export.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
@@ -18,7 +19,7 @@ namespace mcp {
  * Use inside a server accept loop: accept a TCP socket, pass it here,
  * then use read_message() / write_message() for MCP message exchange.
  */
-class WebSocketServerTransport final : public ITransport {
+class MCP_API WebSocketServerTransport final : public ITransport {
    public:
     /**
      * @brief Construct from an accepted TCP socket.
@@ -64,7 +65,7 @@ class WebSocketServerTransport final : public ITransport {
  * Connects to a WebSocket server and provides read_message() / write_message()
  * for MCP message exchange.
  */
-class WebSocketClientTransport final : public ITransport {
+class MCP_API WebSocketClientTransport final : public ITransport {
    public:
     /**
      * @brief Construct a WebSocket client transport.

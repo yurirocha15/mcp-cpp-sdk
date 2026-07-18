@@ -143,7 +143,7 @@ Containerization provides a consistent environment for your MCP server, making i
 
    # Production stage
    FROM debian:bookworm-slim
-   RUN apt-get update && apt-get install -y libboost-system-dev && \
+   RUN apt-get update && apt-get install -y libboost-dev && \
        rm -rf /var/lib/apt/lists/*
 
    # Create a non-root user

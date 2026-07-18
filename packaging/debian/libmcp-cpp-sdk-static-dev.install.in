@@ -1,0 +1,3 @@
+usr/lib/*/libmcp-cpp-sdk-static.a
+usr/lib/*/cmake/mcp-cpp-sdk/mcp-cpp-sdk-static-targets*.cmake
+usr/lib/*/pkgconfig/mcp-cpp-sdk-static.pc

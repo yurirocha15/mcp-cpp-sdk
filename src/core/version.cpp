@@ -1,7 +1,7 @@
-#include <string>
+#include <mcp/core/version.hpp>
 
 namespace mcp {
 
-std::string version() { return "0.1.0"; }
+std::string version() { return std::string(g_VERSION); }
 
 }  // namespace mcp

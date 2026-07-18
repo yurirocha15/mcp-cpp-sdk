@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/export.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/transport/transport.hpp>
 
@@ -15,7 +16,7 @@ namespace mcp {
  * Sends JSON-RPC messages via HTTP POST to an MCP Streamable HTTP endpoint.
  * Supports both `application/json` and `text/event-stream` response content types.
  */
-class HttpClientTransport final : public ITransport {
+class MCP_API HttpClientTransport final : public ITransport {
    public:
     /**
      * @brief Construct an HTTP client transport.

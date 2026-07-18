@@ -1,17 +1,28 @@
 # Configuration file for the Sphinx documentation builder.
 
 import os
+import re
 import sys
+from pathlib import Path
 
 # -- Project information -----------------------------------------------------
 project = 'mcp-cpp-sdk'
 copyright = '2026, MCP C++ SDK Contributors'
 author = 'MCP C++ SDK Contributors'
 
-# The short X.Y version
-version = '0.1'
-# The full version, including alpha/beta/rc tags
-release = '0.1.0'
+_version_text = (Path(__file__).resolve().parents[1] / 'VERSION').read_text().strip()
+_version_match = re.fullmatch(
+    r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
+    r'(?:-rc\.([1-9][0-9]*))?',
+    _version_text,
+)
+if _version_match is None:
+    raise RuntimeError(f'Invalid canonical VERSION: {_version_text!r}')
+
+# The short X.Y version and complete stable/RC SemVer come from the canonical
+# repository VERSION file.
+version = f'{_version_match.group(1)}.{_version_match.group(2)}'
+release = _version_text
 
 # -- General configuration ---------------------------------------------------
 

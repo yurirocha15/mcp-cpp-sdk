@@ -1,0 +1,13 @@
+prefix=${pcfiledir}/@MCP_CPP_SDK_PC_PREFIX_FROM_PCFILE@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: mcp-cpp-sdk
+Description: @MCP_CPP_SDK_PC_DESCRIPTION@
+Version: @MCP_CPP_SDK_VERSION_FULL@
+Requires: @MCP_CPP_SDK_PC_REQUIRES@
+Requires.private: @MCP_CPP_SDK_PC_REQUIRES_PRIVATE@
+Libs: -L${libdir} -l@MCP_CPP_SDK_PC_LIBRARY@
+Libs.private: @MCP_CPP_SDK_PC_LIBS_PRIVATE@
+Cflags: -I${includedir} @MCP_CPP_SDK_PC_CFLAGS@

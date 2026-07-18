@@ -1,6 +1,8 @@
 #pragma once
 
-#if defined(MCP_BUILD_DLL)
+#if defined(MCP_STATIC)
+#define MCP_API
+#elif defined(MCP_BUILD_DLL)
 #if defined(_WIN32)
 #define MCP_API __declspec(dllexport)
 #else

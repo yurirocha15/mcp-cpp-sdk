@@ -6,6 +6,6 @@
 
 namespace mcp::detail {
 
-boost::asio::any_io_executor get_executor(Runtime& runtime);
+MCP_API boost::asio::any_io_executor get_executor(Runtime& runtime);
 
 }  // namespace mcp::detail

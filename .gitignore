@@ -49,6 +49,7 @@ CMakeUserPresets.json
 
 # build folder
 /build
+/test_package/build/
 
 # conan cache
 /.conan2

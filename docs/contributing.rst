@@ -41,7 +41,7 @@ The SDK uses modern C++20 features:
 * **Coroutines**: Use ``co_await`` and ``co_return`` for async operations
 * **Concepts**: Define type requirements with concepts, not SFINAE
 * **Ranges**: Use range-based algorithms where appropriate
-* **Modules**: Not yet - header-only for now
+* **Modules**: Not currently used; the SDK has public headers and compiled sources
 
 Follow these guidelines:
 

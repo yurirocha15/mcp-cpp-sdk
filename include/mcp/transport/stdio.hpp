@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/export.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <iostream>
@@ -20,7 +21,7 @@ namespace mcp {
  * responses to an output stream. By default uses std::cin / std::cout,
  * but accepts arbitrary streams for testing.
  */
-class StdioTransport final : public ITransport {
+class MCP_API StdioTransport final : public ITransport {
    public:
     /**
      * @brief Construct a StdioTransport.

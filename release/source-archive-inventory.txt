@@ -1,0 +1,23 @@
+# Exact source-distribution allow-list. Directories use the only supported
+# recursive form, /**. Missing entries fail the archive build.
+VERSION
+CMakeLists.txt
+CHANGELOG.md
+LICENSE
+Makefile
+README.md
+SECURITY.md
+conanfile.py
+cmake/**
+docs/**
+examples/**
+include/**
+keys/release-signing-key.asc
+release/source-archive-inventory.txt
+release/verify_gnupg_status.py
+scripts/build.py
+scripts/init.py
+scripts/run_examples.py
+src/**
+test/**
+test_package/**
