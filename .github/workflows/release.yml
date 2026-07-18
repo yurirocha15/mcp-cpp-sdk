@@ -1497,16 +1497,28 @@ jobs:
         id: publish
         env:
           AUR_SSH_PRIVATE_KEY_B64: ${{ secrets.AUR_SSH_PRIVATE_KEY_B64 }}
+          AUR_SSH_KEY_PASSPHRASE: ${{ secrets.AUR_SSH_KEY_PASSPHRASE }}
           AUR_KNOWN_HOSTS: ${{ vars.AUR_KNOWN_HOSTS }}
           VERSION: ${{ needs.contract.outputs.version }}
           TAG: ${{ inputs.tag }}
         run: |
           install -d -m 700 "${HOME}/.ssh"
-          trap 'rm -f "${HOME}/.ssh/id_ed25519"' EXIT
+          umask 077
+          askpass="${RUNNER_TEMP}/aur-ssh-askpass"
+          trap 'ssh-agent -k >/dev/null 2>&1 || true; rm -f "${HOME}/.ssh/id_ed25519" "${HOME}/.ssh/known_hosts" "${askpass}"' EXIT
           printf '%s\n' "${AUR_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
           grep -E '^aur\.archlinux\.org[ ,]' "${HOME}/.ssh/known_hosts" >/dev/null
           printf '%s' "${AUR_SSH_PRIVATE_KEY_B64}" | base64 --decode > "${HOME}/.ssh/id_ed25519"
           chmod 600 "${HOME}/.ssh/id_ed25519"
+          test -n "${AUR_SSH_KEY_PASSPHRASE}"
+          printf '%s\n' '#!/bin/sh' 'printf "%s\\n" "${AUR_SSH_KEY_PASSPHRASE}"' > "${askpass}"
+          chmod 700 "${askpass}"
+          export SSH_ASKPASS="${askpass}" SSH_ASKPASS_REQUIRE=force DISPLAY=release
+          eval "$(ssh-agent -s)"
+          ssh-add "${HOME}/.ssh/id_ed25519" </dev/null
+          unset AUR_SSH_KEY_PASSPHRASE SSH_ASKPASS SSH_ASKPASS_REQUIRE DISPLAY
+          rm -f "${askpass}"
+          export GIT_SSH_COMMAND="ssh -F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${HOME}/.ssh/known_hosts"
           git clone --no-checkout ssh://aur@aur.archlinux.org/mcp-cpp-sdk.git aur-repository
           cd aur-repository
           git checkout HEAD -- . || true

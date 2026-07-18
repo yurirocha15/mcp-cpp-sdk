@@ -68,6 +68,7 @@ ALLOWED_SECRET_REFERENCES = {
     "secrets.RELEASE_GPG_PRIVATE_KEY_B64",
     "secrets.RELEASE_GPG_PASSPHRASE",
     "secrets.AUR_SSH_PRIVATE_KEY_B64",
+    "secrets.AUR_SSH_KEY_PASSPHRASE",
     "secrets.HOMEBREW_APP_PRIVATE_KEY",
     "secrets.CHOCOLATEY_APP_PRIVATE_KEY",
     "secrets.CONAN_BROKER_APP_PRIVATE_KEY",
@@ -287,6 +288,19 @@ def check_publication_invariants(blocks: dict[str, list[str]], text: str) -> Non
         block = "\n".join(blocks[job])
         if "github-anchor" not in block or "Verify fixed anchor handoff" not in block:
             raise PolicyError(f"publisher {job!r} is not bound to the verified GitHub anchor")
+    aur = "\n".join(blocks["aur"])
+    for fragment in (
+        "secrets.AUR_SSH_KEY_PASSPHRASE",
+        "SSH_ASKPASS_REQUIRE=force",
+        "ssh-add",
+        "BatchMode=yes",
+        "StrictHostKeyChecking=yes",
+        "UserKnownHostsFile=${HOME}/.ssh/known_hosts",
+    ):
+        if fragment not in aur:
+            raise PolicyError(f"AUR publisher is missing passphrase-protected SSH handling {fragment!r}")
+    if "ssh-keyscan" in aur or "StrictHostKeyChecking=no" in aur:
+        raise PolicyError("AUR publisher weakens SSH host-key verification")
     cloudsmith = "\n".join(blocks["publish-apt"] + blocks["publish-rpm"])
     if "cloudsmith-cli-action@159f1619275d5d3147f059c3cc110938ec221d16" not in cloudsmith:
         raise PolicyError("Cloudsmith action pin is missing")
