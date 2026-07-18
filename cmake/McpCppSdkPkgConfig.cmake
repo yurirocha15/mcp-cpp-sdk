@@ -8,7 +8,10 @@ function(mcp_cpp_sdk_pkgconfig_prefix_from_libdir output_variable
     )
   endif()
 
-  file(RELATIVE_PATH prefix_from_pcfile "/${install_libdir}/pkgconfig" "/")
+  set(synthetic_prefix "${CMAKE_CURRENT_BINARY_DIR}/pkgconfig-prefix")
+  set(synthetic_pcfile_dir "${synthetic_prefix}/${install_libdir}/pkgconfig")
+  file(RELATIVE_PATH prefix_from_pcfile "${synthetic_pcfile_dir}"
+       "${synthetic_prefix}")
   set(${output_variable}
       "${prefix_from_pcfile}"
       PARENT_SCOPE)
