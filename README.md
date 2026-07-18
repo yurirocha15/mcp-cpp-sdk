@@ -151,3 +151,12 @@ Please see the [CONTRIBUTING guide](docs/contributing.rst) for the full process.
 ## License
 
 Apache License 2.0 - see [LICENSE](LICENSE) for details.
+
+## Package Hosting
+
+[![OSS hosting by Cloudsmith](https://img.shields.io/badge/OSS%20hosting%20by-cloudsmith-blue?logo=cloudsmith&style=flat-square)](https://cloudsmith.com)
+
+Package repository hosting is graciously provided by [Cloudsmith](https://cloudsmith.com).
+Cloudsmith is the only fully hosted, cloud-native, universal package management solution that
+enables your organization to create, store and share packages in any format, to any place, with total
+confidence.
