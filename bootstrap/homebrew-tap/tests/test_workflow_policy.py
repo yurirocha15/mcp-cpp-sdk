@@ -14,6 +14,7 @@ FULL_SHA_ACTION = re.compile(r"uses:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([0-9a-
 class SecurityPolicyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.workflow = (WORKFLOWS / "publish-bottles.yml").read_text()
+        self.ci_workflow = (WORKFLOWS / "ci.yml").read_text()
         self.manifest = json.loads((ROOT / "repository-settings.json").read_text())
 
     def test_actions_are_full_sha_allowlisted(self) -> None:
@@ -35,6 +36,19 @@ class SecurityPolicyTests(unittest.TestCase):
             self.assertNotIn("cmake", job)
         self.assertNotIn("brew pr-upload", finalize)
         self.assertIn("needs: [verify, publish]", finalize)
+
+    def test_initial_tap_bootstrap_is_the_only_formula_audit_exception(self) -> None:
+        self.assertIn('formula=Formula/mcp-cpp-sdk.rb', self.ci_workflow)
+        self.assertIn(
+            '[[ "${GITHUB_EVENT_NAME}" == push && "${GITHUB_REF_NAME}" == main ]]',
+            self.ci_workflow,
+        )
+        self.assertIn(
+            '"${formula} is required outside the initial main bootstrap."',
+            self.ci_workflow,
+        )
+        self.assertIn('brew style "${formula}"', self.ci_workflow)
+        self.assertIn('brew audit --strict "${formula}"', self.ci_workflow)
 
 
 if __name__ == "__main__":

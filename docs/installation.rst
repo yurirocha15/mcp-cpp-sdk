@@ -137,7 +137,16 @@ Arch Linux and derivatives
 
 The AUR package base is ``mcp-cpp-sdk`` and produces shared and static split
 packages.  After the AUR route is ``LIVE``, inspect the ``PKGBUILD`` and verify
-the source signature before building:
+the source signature before building.  First import the exact public release
+key that is attached to the immutable GitHub Release, inspect its fingerprint,
+and compare it with ``validpgpkeys`` in the ``PKGBUILD``:
+
+.. code-block:: bash
+
+   curl --fail --location --remote-name \
+     https://github.com/yurirocha15/mcp-cpp-sdk/releases/download/v0.2.0/release-signing-key.asc
+   gpg --show-keys --with-fingerprint release-signing-key.asc
+   gpg --import release-signing-key.asc
 
 .. code-block:: bash
 
@@ -182,7 +191,6 @@ with ``choco uninstall mcp-cpp-sdk``.  A new shell receives
 
    cmake -S . -B build -DCMAKE_PREFIX_PATH="$env:MCP_CPP_SDK_ROOT"
 
-GitHub Release and source builds
 The Chocolatey package does not redistribute third-party development SDKs.
 Provide x64 MSVC-compatible Boost 1.74 or newer, nlohmann-json 3.10.5 or newer,
 and OpenSSL 3.x, then include their prefixes alongside
@@ -190,6 +198,7 @@ and OpenSSL 3.x, then include their prefixes alongside
 used to supply those dependencies.  Do not mix compiler toolsets or CRT
 linkages with the packaged MSVC 2022 dynamic-CRT binaries.
 
+GitHub Release and source builds
 --------------------------------
 
 Each stable GitHub Release provides deterministic source archives, detached
