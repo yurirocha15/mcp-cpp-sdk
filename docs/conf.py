@@ -11,7 +11,11 @@ copyright = '2026, MCP C++ SDK Contributors'
 author = 'MCP C++ SDK Contributors'
 
 _version_text = (Path(__file__).resolve().parents[1] / 'VERSION').read_text().strip()
-_version_match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?', _version_text)
+_version_match = re.fullmatch(
+    r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
+    r'(?:-rc\.([1-9][0-9]*))?',
+    _version_text,
+)
 if _version_match is None:
     raise RuntimeError(f'Invalid canonical VERSION: {_version_text!r}')
 

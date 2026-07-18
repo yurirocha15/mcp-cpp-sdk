@@ -177,11 +177,23 @@ option(BUILD_TESTING "Build tests" ON)
 if(BUILD_TESTING)
   find_package(GTest REQUIRED)
   enable_testing()
+  set(MCP_CPP_SDK_CMAKE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+  set(MCP_CPP_SDK_CONFIG_VERSION_TEMPLATE
+      "${MCP_CPP_SDK_CMAKE_DIR}/mcp-cpp-sdk-config-version.cmake.in")
+  set(MCP_CPP_SDK_CONFIG_VERSION_PRERELEASE_TEST
+      "${MCP_CPP_SDK_CMAKE_DIR}/tests/verify-config-version-prerelease.cmake")
+  string(CONCAT MCP_CPP_SDK_CONFIG_VERSION_TEMPLATE_ARGUMENT
+                "-DMCP_CPP_SDK_CONFIG_VERSION_TEMPLATE="
+                "${MCP_CPP_SDK_CONFIG_VERSION_TEMPLATE}")
   add_test(
     NAME packaging-pkgconfig-prefix
     COMMAND
       ${CMAKE_COMMAND} -P
       "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/verify-pkgconfig-prefix.cmake")
+  add_test(
+    NAME packaging-config-version-prerelease
+    COMMAND ${CMAKE_COMMAND} "${MCP_CPP_SDK_CONFIG_VERSION_TEMPLATE_ARGUMENT}"
+            -P "${MCP_CPP_SDK_CONFIG_VERSION_PRERELEASE_TEST}")
   find_program(MCP_CPP_SDK_PKG_CONFIG_EXECUTABLE pkg-config)
   if(MCP_CPP_SDK_BUILD_STATIC
      AND MCP_CPP_SDK_PKG_CONFIG_EXECUTABLE
