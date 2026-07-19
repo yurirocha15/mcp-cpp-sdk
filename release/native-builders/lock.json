@@ -1,0 +1,225 @@
+{
+    "schema_version": 1,
+    "targets": [
+        {
+            "architecture": "x86_64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "ubuntu:22.04",
+            "dockerfile": "release/native-builders/apt.Dockerfile",
+            "id": "ubuntu-jammy-amd64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "apt",
+            "runner": "ubuntu-24.04"
+        },
+        {
+            "architecture": "aarch64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "ubuntu:22.04",
+            "dockerfile": "release/native-builders/apt.Dockerfile",
+            "id": "ubuntu-jammy-arm64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "apt",
+            "runner": "ubuntu-24.04-arm"
+        },
+        {
+            "architecture": "x86_64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "ubuntu:24.04",
+            "dockerfile": "release/native-builders/apt.Dockerfile",
+            "id": "ubuntu-noble-amd64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "apt",
+            "runner": "ubuntu-24.04"
+        },
+        {
+            "architecture": "aarch64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "ubuntu:24.04",
+            "dockerfile": "release/native-builders/apt.Dockerfile",
+            "id": "ubuntu-noble-arm64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "apt",
+            "runner": "ubuntu-24.04-arm"
+        },
+        {
+            "architecture": "x86_64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "ubuntu:26.04",
+            "dockerfile": "release/native-builders/apt.Dockerfile",
+            "id": "ubuntu-resolute-amd64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "apt",
+            "runner": "ubuntu-24.04"
+        },
+        {
+            "architecture": "aarch64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "ubuntu:26.04",
+            "dockerfile": "release/native-builders/apt.Dockerfile",
+            "id": "ubuntu-resolute-arm64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "apt",
+            "runner": "ubuntu-24.04-arm"
+        },
+        {
+            "architecture": "x86_64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "debian:12",
+            "dockerfile": "release/native-builders/apt.Dockerfile",
+            "id": "debian-bookworm-amd64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "apt",
+            "runner": "ubuntu-24.04"
+        },
+        {
+            "architecture": "aarch64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "debian:12",
+            "dockerfile": "release/native-builders/apt.Dockerfile",
+            "id": "debian-bookworm-arm64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "apt",
+            "runner": "ubuntu-24.04-arm"
+        },
+        {
+            "architecture": "x86_64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "debian:13",
+            "dockerfile": "release/native-builders/apt.Dockerfile",
+            "id": "debian-trixie-amd64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "apt",
+            "runner": "ubuntu-24.04"
+        },
+        {
+            "architecture": "aarch64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "debian:13",
+            "dockerfile": "release/native-builders/apt.Dockerfile",
+            "id": "debian-trixie-arm64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "apt",
+            "runner": "ubuntu-24.04-arm"
+        },
+        {
+            "architecture": "x86_64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "fedora:43",
+            "dockerfile": "release/native-builders/fedora.Dockerfile",
+            "id": "fedora-43-x86_64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "rpm",
+            "runner": "ubuntu-24.04"
+        },
+        {
+            "architecture": "aarch64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "fedora:43",
+            "dockerfile": "release/native-builders/fedora.Dockerfile",
+            "id": "fedora-43-aarch64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "rpm",
+            "runner": "ubuntu-24.04-arm"
+        },
+        {
+            "architecture": "x86_64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "fedora:44",
+            "dockerfile": "release/native-builders/fedora.Dockerfile",
+            "id": "fedora-44-x86_64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "rpm",
+            "runner": "ubuntu-24.04"
+        },
+        {
+            "architecture": "aarch64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "fedora:44",
+            "dockerfile": "release/native-builders/fedora.Dockerfile",
+            "id": "fedora-44-aarch64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "rpm",
+            "runner": "ubuntu-24.04-arm"
+        },
+        {
+            "architecture": "x86_64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "almalinux:9.8",
+            "dockerfile": "release/native-builders/el.Dockerfile",
+            "id": "el-9-x86_64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "rpm",
+            "runner": "ubuntu-24.04"
+        },
+        {
+            "architecture": "aarch64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "almalinux:9.8",
+            "dockerfile": "release/native-builders/el.Dockerfile",
+            "id": "el-9-aarch64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "rpm",
+            "runner": "ubuntu-24.04-arm"
+        },
+        {
+            "architecture": "x86_64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "almalinux:10.2",
+            "dockerfile": "release/native-builders/el.Dockerfile",
+            "id": "el-10-x86_64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "rpm",
+            "runner": "ubuntu-24.04"
+        },
+        {
+            "architecture": "aarch64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "almalinux:10.2",
+            "dockerfile": "release/native-builders/el.Dockerfile",
+            "id": "el-10-aarch64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "rpm",
+            "runner": "ubuntu-24.04-arm"
+        },
+        {
+            "architecture": "x86_64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "archlinux:base",
+            "dockerfile": "release/native-builders/arch.Dockerfile",
+            "id": "aur-x86_64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "aur",
+            "runner": "ubuntu-24.04"
+        },
+        {
+            "architecture": "x86_64",
+            "base_digest": "UNRESOLVED",
+            "base_image": "ubuntu:24.04",
+            "dockerfile": "release/native-builders/conan.Dockerfile",
+            "id": "conan-linux-x86_64",
+            "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
+            "image_digest": "UNRESOLVED",
+            "kind": "conan",
+            "runner": "ubuntu-24.04"
+        }
+    ]
+}
