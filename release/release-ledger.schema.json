@@ -2,6 +2,8 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://github.com/yurirocha15/mcp-cpp-sdk/release/release-ledger.schema.json",
     "title": "mcp-cpp-sdk release ledger",
+    "description":
+        "Structural and publication-safety constraints for release-ledger snapshots. Consumers must additionally enforce that tag is exactly 'v' plus version; release.model.ReleaseLedger performs that cross-field semantic check.",
     "type": "object",
     "additionalProperties": false,
     "required": [
@@ -29,7 +31,10 @@
             "pattern": "^[0-9a-f]{40}$"
         },
         "release_manifest_sha256": {
-            "type": "string",
+            "type": [
+                "string",
+                "null"
+            ],
             "pattern": "^[0-9a-f]{64}$"
         },
         "results": {
@@ -46,40 +51,166 @@
             ],
             "properties": {
                 "github": {
-                    "$ref": "#/$defs/result"
+                    "$ref": "#/$defs/synchronous_result"
                 },
                 "conan2": {
-                    "$ref": "#/$defs/result"
+                    "$ref": "#/$defs/review_result"
                 },
                 "deb_apt": {
-                    "$ref": "#/$defs/result"
+                    "$ref": "#/$defs/synchronous_result"
                 },
                 "rpm": {
-                    "$ref": "#/$defs/result"
+                    "$ref": "#/$defs/synchronous_result"
                 },
                 "arch_aur": {
-                    "$ref": "#/$defs/result"
+                    "$ref": "#/$defs/synchronous_result"
                 },
                 "homebrew": {
-                    "$ref": "#/$defs/result"
+                    "$ref": "#/$defs/review_result"
                 },
                 "chocolatey": {
-                    "$ref": "#/$defs/result"
+                    "$ref": "#/$defs/moderation_result"
                 }
             }
         }
     },
+    "allOf": [
+        {
+            "if": {
+                "properties": {
+                    "version": {
+                        "pattern": "-rc\\."
+                    }
+                }
+            },
+            "then": {
+                "properties": {
+                    "results": {
+                        "properties": {
+                            "conan2": {
+                                "const": "NOT_SELECTED"
+                            },
+                            "deb_apt": {
+                                "const": "NOT_SELECTED"
+                            },
+                            "rpm": {
+                                "const": "NOT_SELECTED"
+                            },
+                            "arch_aur": {
+                                "const": "NOT_SELECTED"
+                            },
+                            "homebrew": {
+                                "const": "NOT_SELECTED"
+                            },
+                            "chocolatey": {
+                                "const": "NOT_SELECTED"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "if": {
+                "properties": {
+                    "results": {
+                        "properties": {
+                            "github": {
+                                "$ref": "#/$defs/public_result"
+                            }
+                        },
+                        "required": [
+                            "github"
+                        ]
+                    }
+                },
+                "required": [
+                    "results"
+                ]
+            },
+            "then": {
+                "properties": {
+                    "release_manifest_sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                    }
+                }
+            },
+            "else": {
+                "properties": {
+                    "results": {
+                        "properties": {
+                            "conan2": {
+                                "$ref": "#/$defs/non_public_result"
+                            },
+                            "deb_apt": {
+                                "$ref": "#/$defs/non_public_result"
+                            },
+                            "rpm": {
+                                "$ref": "#/$defs/non_public_result"
+                            },
+                            "arch_aur": {
+                                "$ref": "#/$defs/non_public_result"
+                            },
+                            "homebrew": {
+                                "$ref": "#/$defs/non_public_result"
+                            },
+                            "chocolatey": {
+                                "$ref": "#/$defs/non_public_result"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    ],
     "$defs": {
-        "result": {
+        "public_result": {
             "enum": [
                 "PUBLISHED",
+                "SKIPPED_ALREADY_IDENTICAL"
+            ]
+        },
+        "non_public_result": {
+            "enum": [
+                "NOT_SELECTED",
+                "BLOCKED_MANUAL_ACTION",
+                "FAILED",
+                "FIRST_USE_UNPROVEN"
+            ]
+        },
+        "synchronous_result": {
+            "enum": [
+                "NOT_SELECTED",
+                "PUBLISHED",
+                "BLOCKED_MANUAL_ACTION",
+                "FAILED",
+                "SKIPPED_ALREADY_IDENTICAL",
+                "FIRST_USE_UNPROVEN"
+            ]
+        },
+        "review_result": {
+            "enum": [
+                "NOT_SELECTED",
+                "PUBLISHED",
+                "DISPATCHED_PENDING_REVIEW",
                 "SUBMITTED_PENDING_REVIEW",
+                "BLOCKED_MANUAL_ACTION",
+                "FAILED",
+                "SKIPPED_ALREADY_IDENTICAL",
+                "FIRST_USE_UNPROVEN"
+            ]
+        },
+        "moderation_result": {
+            "enum": [
+                "NOT_SELECTED",
+                "PUBLISHED",
+                "DISPATCHED_PENDING_MODERATION",
                 "SUBMITTED_PENDING_MODERATION",
                 "BLOCKED_MANUAL_ACTION",
                 "FAILED",
                 "SKIPPED_ALREADY_IDENTICAL",
-                "FIRST_USE_UNPROVEN",
-                "LIVE"
+                "FIRST_USE_UNPROVEN"
             ]
         }
     }

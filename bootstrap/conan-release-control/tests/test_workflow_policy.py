@@ -41,22 +41,56 @@ class SecurityPolicyTests(unittest.TestCase):
     def test_pat_is_in_one_final_no_checkout_step(self) -> None:
         publish = self.workflow.split("\n  publish:\n", 1)[1]
         self.assertNotIn("actions/checkout", publish)
-        self.assertEqual(publish.count("      - name:"), 1)
+        self.assertEqual(publish.count("      - name:"), 3)
         self.assertEqual(publish.count("secrets.CONAN_CENTER_PR_BOT_PAT"), 1)
-        self.assertTrue(publish.rstrip().endswith("PY"))
+        self.assertTrue(
+            publish.rstrip().endswith("run: python3 -I -S publisher-client/create_pull.py")
+        )
+        secret = publish.index("secrets.CONAN_CENTER_PR_BOT_PAT")
+        self.assertLess(
+            publish.index("client_handoff.py --directory publisher-client"), secret
+        )
 
-    def test_inline_client_is_valid_stdlib_python(self) -> None:
-        source = self.workflow.split("# PAT_CLIENT_BEGIN\n", 1)[1].split("# PAT_CLIENT_END", 1)[0]
-        source = "\n".join(line[10:] if line.startswith("          ") else line for line in source.splitlines())
+    def test_extracted_client_is_valid_stdlib_python(self) -> None:
+        source = (ROOT / "publisher/create_pull.py").read_text()
         tree = ast.parse(source)
-        imports = {
-            alias.name.split(".")[0]
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.Import, ast.ImportFrom))
-            for alias in node.names
-        }
-        self.assertEqual(imports, {"http", "json", "os", "re", "sys", "urllib"})
+        imports = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imports.add(node.module.split(".")[0])
+        self.assertEqual(
+            imports,
+            {
+                "__future__",
+                "collections",
+                "dataclasses",
+                "http",
+                "importlib",
+                "json",
+                "os",
+                "pathlib",
+                "re",
+                "sys",
+                "types",
+                "urllib",
+                "uuid",
+            },
+        )
         self.assertIn('API_HOST = "api.github.com"', source)
+
+    def test_polling_issue_binding_and_handoff_are_bounded(self) -> None:
+        self.assertIn("timeout-minutes: 75", self.workflow)
+        self.assertIn("--timeout-seconds 3600", self.workflow)
+        self.assertNotIn("python3 -I -S <<", self.workflow)
+        self.assertIn("retention-days: 90", self.workflow)
+        self.assertIn("PACKAGE_REQUEST_ISSUE_BODY_SHA256", self.workflow)
+        client = (ROOT / "publisher/create_pull.py").read_text()
+        self.assertLess(
+            client.index('"recheck-package-request"'),
+            client.index('"create-pull"'),
+        )
 
 
 if __name__ == "__main__":

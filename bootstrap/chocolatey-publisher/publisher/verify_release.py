@@ -51,6 +51,10 @@ def verify(
     version = tag.removeprefix("v")
     if manifest.get("tag") != tag or manifest.get("version") != version or manifest.get("commit") != commit:
         raise ValueError("release manifest source identity mismatch")
+    if manifest.get("schema_version") != 2 or manifest.get("channel_capabilities") != [
+        "github", "conan2", "apt", "rpm", "aur", "homebrew", "chocolatey"
+    ]:
+        raise ValueError("release manifest does not authorize the complete stable channel set")
     signers = manifest.get("signers")
     if not isinstance(signers, dict):
         raise ValueError("release manifest signer map is missing")
@@ -154,8 +158,20 @@ def _verify_nupkg(
 
     archive_name = f"mcp-cpp-sdk-{version}-windows-x64-v143-md.zip"
     expected_url = f"https://github.com/yurirocha15/mcp-cpp-sdk/releases/download/{tag}/{archive_name}"
-    if expected_url not in install_script or "MCP_CPP_SDK_ROOT" not in install_script:
+    required_install_fragments = (
+        expected_url,
+        "MCP_CPP_SDK_ROOT",
+        '$stagingDir = "$installDir.installing"',
+        "Get-ChocolateyUnzip -FileFullPath $archive -Destination $stagingDir",
+        "Remove-Item -LiteralPath $installDir -Recurse -Force",
+        "Move-Item -LiteralPath $stagingDir -Destination $installDir",
+    )
+    if any(fragment not in install_script for fragment in required_install_fragments):
         raise ValueError("Chocolatey install script does not bind the immutable SDK archive")
+    if install_script.index("Get-ChocolateyUnzip") > install_script.index(
+        "Remove-Item -LiteralPath $installDir"
+    ):
+        raise ValueError("Chocolatey install script removes the SDK before staging succeeds")
     checksum = re.search(r"-Checksum64 '([0-9a-f]{64})'", install_script)
     if checksum is None or archive_name not in records or checksum.group(1) != records[archive_name]["sha256"]:
         raise ValueError("Chocolatey install checksum does not match the release manifest")

@@ -14,6 +14,8 @@ from uuid import UUID
 FIELDS = (
     "source_tag",
     "source_commit_sha",
+    "source_workflow_head_sha",
+    "provider_control_sha",
     "github_release_id",
     "source_workflow_run_id",
     "release_manifest_sha256",
@@ -48,7 +50,12 @@ def validate(value: object) -> dict[str, str]:
     recovery = re.compile(re.escape(expected_branch) + r"-r[1-9][0-9]*")
     if normalized["fork_branch"] != expected_branch and recovery.fullmatch(normalized["fork_branch"]) is None:
         raise ValueError("fork_branch does not match source_tag")
-    for field in ("source_commit_sha", "fork_head_sha"):
+    for field in (
+        "source_commit_sha",
+        "source_workflow_head_sha",
+        "provider_control_sha",
+        "fork_head_sha",
+    ):
         if SHA.fullmatch(normalized[field]) is None:
             raise ValueError(f"{field} is not a lowercase full commit SHA")
     for field in ("release_manifest_sha256", "recipe_tree_sha256"):

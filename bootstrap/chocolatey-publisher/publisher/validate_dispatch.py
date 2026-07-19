@@ -14,6 +14,8 @@ from uuid import UUID
 FIELDS = (
     "source_tag",
     "source_commit_sha",
+    "source_workflow_head_sha",
+    "provider_control_sha",
     "github_release_id",
     "source_workflow_run_id",
     "release_manifest_sha256",
@@ -38,8 +40,13 @@ def validate(value: object) -> dict[str, str]:
         result[field] = item
     if TAG.fullmatch(result["source_tag"]) is None:
         raise ValueError("source_tag is not a canonical stable tag")
-    if SHA.fullmatch(result["source_commit_sha"]) is None:
-        raise ValueError("source_commit_sha is not canonical")
+    for field in (
+        "source_commit_sha",
+        "source_workflow_head_sha",
+        "provider_control_sha",
+    ):
+        if SHA.fullmatch(result[field]) is None:
+            raise ValueError(f"{field} is not canonical")
     if DIGEST.fullmatch(result["release_manifest_sha256"]) is None:
         raise ValueError("release_manifest_sha256 is not canonical")
     for field in ("github_release_id", "source_workflow_run_id"):

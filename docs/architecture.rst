@@ -9,20 +9,24 @@ Design Principles
 
 The mcp-cpp-sdk is built on several core design principles:
 
-Compiled Static Library
-^^^^^^^^^^^^^^^^^^^^^^^^
+Compiled Shared and Static Libraries
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The SDK is a compiled static library (``libmcp-cpp-sdk.a``). Implementation
-details — including all Boost.Asio and Boost.Beast usage — are hidden behind
-PImpl boundaries in ``.cpp`` files. Only ``core.hpp`` retains a direct Boost
-include, because the ``Task<T>`` template alias must be visible at call sites.
+The SDK is available as both a compiled shared library and a compiled static
+library.  Both variants are built from the same implementation and expose the
+same public API.  Most implementation details are hidden behind PImpl
+boundaries in ``.cpp`` files.  The public API still exposes Boost through the
+``Task<T>`` alias and the public HTTP request/response aliases, so Boost and
+toolchain changes can affect consumer source and binary compatibility.
 
 This design:
 
-* Reduces consumer compile times — Boost headers are not parsed for every
-  translation unit that includes an SDK header
-* Isolates ABI-unstable Boost internals behind a stable C++ interface
-* Keeps public headers free of Boost types except ``Task<T>``
+* Reduces consumer compile work by moving most implementation-heavy Boost use
+  into compiled translation units
+* Keeps most ABI-sensitive implementation state behind controlled interfaces
+* Makes the remaining Boost-facing API and dependency requirement explicit
+* Lets consumers choose shared linkage for a reusable runtime or static
+  linkage for a self-contained binary
 
 RAII and Value Semantics
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -242,22 +246,33 @@ nlohmann_json is the most popular C++ JSON library:
 
 Alternative considered: RapidJSON - faster but more complex API.
 
-Why Compiled Static Library?
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Why Compiled Libraries?
+^^^^^^^^^^^^^^^^^^^^^^^
 
-Compiling the SDK as a static library reduces consumer build times:
+Compiling the SDK once, rather than exposing it as a header-only library,
+reduces consumer build times for either linkage model:
 
-* **Faster builds**: Boost headers are compiled once into the library, not
-  re-parsed in every consumer translation unit
-* **Encapsulation**: Boost.Asio and Boost.Beast internals stay behind PImpl
-  boundaries and do not leak into consumer headers
-* **Stable interface**: Public headers expose only standard C++ and
-  ``Task<T>`` (the one unavoidable Boost type)
-* **Unchanged link model**: Consumers still link a single ``mcp-cpp-sdk``
-  target — no change to CMake integration
+* **Faster builds**: Most implementation-heavy Boost code is compiled into the
+  library instead of repeated in consumer translation units
+* **Encapsulation**: Internal Boost.Asio and Boost.Beast state generally stays
+  behind PImpl boundaries
+* **Controlled interface**: The remaining Boost-facing aliases are deliberate
+  and documented rather than accidental implementation leakage
+* **Explicit linkage**: Consumers select ``mcp::sdk_shared`` or
+  ``mcp::sdk_static``; ``mcp::sdk`` remains the documented package default
 
 Tradeoff: Cross-boundary inlining is no longer possible for PImpl'd types,
 which is acceptable given that the hot paths are I/O-bound.
+
+Before 1.0, every stable release uses its full ``0.minor.patch`` value as the
+shared-library SOVERSION and Windows DLL suffix.  CMake version discovery is
+exact-only for 0.x, so a package update cannot silently claim binary
+compatibility that has not been validated across every platform and Boost
+toolchain family.  ABI evidence is still compared against the latest immutable
+stable release in the same ``0.minor`` series.  That comparison does not merge
+their loader identities: any detected ABI change needs an exact, reviewed
+policy entry, and a new ``0.minor`` series needs an explicit initial-baseline
+entry.
 
 Why Multiple Handler Signatures?
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -24,16 +24,21 @@ class ReleaseDispatchContractTest(unittest.TestCase):
     def validate(self, **overrides):
         arguments = {
             "tag": "v0.2.0",
-            "mode": "validate",
-            "targets_input": "all",
+            "operation": "validate-all",
+            "conan2": "false",
+            "apt": "false",
+            "rpm": "false",
+            "aur": "false",
+            "homebrew": "false",
+            "chocolatey": "false",
             "ledger_issue": "42",
-            "confirmation": "validate:v0.2.0:all:42",
+            "confirmation": "validate-all:v0.2.0:all:42",
             **TRUSTED_CONTEXT,
         }
         arguments.update(overrides)
         return validate_dispatch(**arguments)
 
-    def test_accepts_stable_all_targets(self) -> None:
+    def test_accepts_stable_all_channels(self) -> None:
         contract = self.validate()
         self.assertEqual(contract.release_kind, "stable")
         self.assertEqual(contract.version, "0.2.0")
@@ -41,57 +46,95 @@ class ReleaseDispatchContractTest(unittest.TestCase):
         self.assertEqual(contract.workflow_outputs()["target_apt"], "true")
         self.assertEqual(contract.workflow_outputs()["target_rpm"], "true")
 
-    def test_accepts_github_only_rc(self) -> None:
+    def test_accepts_github_only_release_candidate(self) -> None:
         contract = self.validate(
             tag="v0.2.0-rc.1",
-            targets_input="github",
-            confirmation="validate:v0.2.0-rc.1:github:42",
+            operation="validate-selected",
+            confirmation="validate-selected:v0.2.0-rc.1:github:42",
         )
         self.assertEqual(contract.release_kind, "rc")
-        self.assertEqual(contract.targets, ("github",))
+        self.assertEqual(contract.channels, ())
+        self.assertEqual(contract.selection_label, "github")
 
-    def test_accepts_canonical_partial_retry_targets(self) -> None:
+    def test_accepts_staged_channel_checkboxes(self) -> None:
         contract = self.validate(
-            mode="publish",
-            targets_input="apt,rpm,aur",
-            confirmation="publish:v0.2.0:apt,rpm,aur:42",
+            operation="publish-selected",
+            apt="true",
+            rpm="true",
+            confirmation="publish-selected:v0.2.0:github,apt,rpm:42",
         )
-        self.assertEqual(contract.targets, ("apt", "rpm", "aur"))
-        self.assertTrue(contract.retry)
+        self.assertEqual(contract.channels, ("apt", "rpm"))
+        self.assertEqual(contract.selection_label, "github,apt,rpm")
+        self.assertEqual(contract.workflow_outputs()["target_homebrew"], "false")
 
-    def test_full_stable_and_rc_publications_are_not_retries(self) -> None:
-        stable = self.validate(
-            mode="publish",
-            confirmation="publish:v0.2.0:all:42",
+    def test_accepts_github_only_stable_release(self) -> None:
+        contract = self.validate(
+            operation="publish-selected",
+            confirmation="publish-selected:v0.2.0:github:42",
         )
-        release_candidate = self.validate(
-            tag="v0.2.0-rc.1",
-            mode="publish",
-            targets_input="github",
-            confirmation="publish:v0.2.0-rc.1:github:42",
-        )
-        self.assertFalse(stable.retry)
-        self.assertFalse(release_candidate.retry)
+        self.assertEqual(contract.channels, ())
+        self.assertEqual(contract.workflow_outputs()["normalized_channels"], "")
+        self.assertFalse(contract.retry_authorized)
 
-    def test_rejects_rc_external_targets(self) -> None:
+    def test_accepts_explicit_retry_of_selected_pending_channel(self) -> None:
+        contract = self.validate(
+            operation="publish-retry-selected",
+            homebrew="true",
+            confirmation="publish-retry-selected:v0.2.0:github,homebrew:42",
+        )
+        self.assertEqual(contract.channels, ("homebrew",))
+        self.assertTrue(contract.retry_authorized)
+        self.assertEqual(contract.workflow_outputs()["retry_authorized"], "true")
+
+    def test_individual_checkboxes_are_normalized_in_canonical_order(self) -> None:
+        contract = self.validate(
+            operation="publish-selected",
+            conan2="true",
+            apt="true",
+            rpm="true",
+            aur="true",
+            homebrew="true",
+            chocolatey="true",
+            confirmation="publish-selected:v0.2.0:github,conan2,apt,rpm,aur,homebrew,chocolatey:42",
+        )
+        self.assertEqual(contract.channels, ("conan2", "apt", "rpm", "aur", "homebrew", "chocolatey"))
+
+    def test_rejects_rc_external_channels(self) -> None:
         with self.assertRaises(ContractError):
             self.validate(
                 tag="v0.2.0-rc.1",
-                confirmation="validate:v0.2.0-rc.1:all:42",
+                operation="validate-selected",
+                homebrew="true",
+                confirmation="validate-selected:v0.2.0-rc.1:github,homebrew:42",
             )
 
     def test_rejects_leading_zero_semver(self) -> None:
         with self.assertRaises(ContractError):
-            self.validate(tag="v0.02.0", confirmation="validate:v0.02.0:all:42")
+            self.validate(tag="v0.02.0", confirmation="validate-all:v0.02.0:all:42")
 
-    def test_rejects_duplicate_or_out_of_order_targets(self) -> None:
-        for targets in ("aur,github", "github,github", "github, apt"):
-            with self.subTest(targets=targets), self.assertRaises(ContractError):
-                self.validate(targets_input=targets)
+    def test_rejects_one_x_until_multi_platform_abi_policy_exists(self) -> None:
+        for tag in ("v1.0.0", "v1.0.0-rc.1"):
+            with self.subTest(tag=tag), self.assertRaisesRegex(
+                ContractError, "multi-platform ABI policy"
+            ):
+                self.validate(tag=tag, confirmation=f"validate-all:{tag}:all:42")
+
+    def test_rejects_noncanonical_boolean_values(self) -> None:
+        for value in ("True", "1", "", "false "):
+            with self.subTest(value=value), self.assertRaises(ContractError):
+                self.validate(apt=value)
+
+    def test_rejects_all_combined_with_individual_channels(self) -> None:
+        with self.assertRaises(ContractError):
+            self.validate(apt="true")
+
+    def test_rejects_unknown_operation(self) -> None:
+        with self.assertRaises(ContractError):
+            self.validate(operation="publish")
 
     def test_rejects_wrong_confirmation(self) -> None:
         with self.assertRaises(ContractError):
-            self.validate(confirmation="publish:v0.2.0:all:42")
+            self.validate(confirmation="publish-all:v0.2.0:all:42")
 
     def test_rejects_noncanonical_ledger_issue(self) -> None:
         for issue in ("", "0", "01", "1 2"):

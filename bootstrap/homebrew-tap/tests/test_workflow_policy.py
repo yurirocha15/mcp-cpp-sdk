@@ -37,18 +37,42 @@ class SecurityPolicyTests(unittest.TestCase):
         self.assertNotIn("brew pr-upload", finalize)
         self.assertIn("needs: [verify, publish]", finalize)
 
+    def test_contents_token_is_minted_only_after_upload_and_public_resolution(self) -> None:
+        publish = self.workflow.split("\n  publish:\n", 1)[1].split("\n  finalize:\n", 1)[0]
+        token = publish.index("Create repository-scoped publisher App token")
+        self.assertLess(publish.index("brew pr-upload"), token)
+        self.assertLess(publish.index("publisher/ghcr.py record"), token)
+        self.assertNotIn("<<'PY'", publish)
+        finalize = self.workflow.split("\n  finalize:\n", 1)[1]
+        final_token = finalize.index("Create repository-scoped publisher App token")
+        self.assertLess(finalize.index("publisher/ghcr.py verify"), final_token)
+        self.assertNotIn("<<'PY'", finalize)
+
+    def test_artifacts_and_reruns_are_attempt_bound(self) -> None:
+        for value in (
+            "bottle-${{ matrix.tag }}-${{ github.run_id }}-${{ github.run_attempt }}",
+            "publication-bundle-${{ github.run_id }}-${{ github.run_attempt }}",
+            "finalization-ledger-${{ github.run_id }}-${{ github.run_attempt }}",
+        ):
+            self.assertIn(value, self.workflow)
+        self.assertIn("--timeout-seconds 3600", self.workflow)
+        self.assertIn("timeout-minutes: 70", self.workflow)
+        self.assertIn("publisher/consumer_test.py", self.workflow)
+
     def test_initial_tap_bootstrap_is_the_only_formula_audit_exception(self) -> None:
-        self.assertIn('formula=Formula/mcp-cpp-sdk.rb', self.ci_workflow)
         self.assertIn(
-            '[[ "${GITHUB_EVENT_NAME}" == push && "${GITHUB_REF_NAME}" == main ]]',
+            "python3 -I -S publisher/formula_audit.py --formula Formula/mcp-cpp-sdk.rb",
             self.ci_workflow,
         )
-        self.assertIn(
-            '"${formula} is required outside the initial main bootstrap."',
-            self.ci_workflow,
-        )
-        self.assertIn('brew style "${formula}"', self.ci_workflow)
-        self.assertIn('brew audit --strict "${formula}"', self.ci_workflow)
+        self.assertNotIn("if [[", self.ci_workflow)
+        helper = (ROOT / "publisher/formula_audit.py").read_text(encoding="utf-8")
+        for fragment in (
+            'event_name == "push"',
+            'ref_name == "main"',
+            '("brew", "style", formula.as_posix())',
+            '("brew", "audit", "--strict", formula.as_posix())',
+        ):
+            self.assertIn(fragment, helper)
 
 
 if __name__ == "__main__":

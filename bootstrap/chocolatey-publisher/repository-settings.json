@@ -7,6 +7,7 @@
         "issues": true,
         "secret_scanning": true,
         "push_protection": true,
+        "immutable_releases": true,
         "retention_days": 30
     },
     "actions": {
@@ -35,24 +36,44 @@
             "secret-scan"
         ]
     },
+    "control_tag_ruleset": {
+        "tag": "release-control-v1",
+        "enforcement": "active",
+        "update_blocked": true,
+        "deletion_blocked": true,
+        "bypass_actors": []
+    },
+    "control_release": {
+        "tag": "release-control-v1",
+        "draft": false,
+        "prerelease": false,
+        "immutable": true,
+        "asset_inventory": []
+    },
     "environment": {
         "name": "chocolatey-publish",
         "required_reviewer_count": 1,
         "prevent_self_review": false,
         "administrator_bypass": false,
-        "deployment_branch": "main",
+        "deployment_tag": "release-control-v1",
         "secrets": [
             "CHOCOLATEY_API_KEY"
         ],
         "variables": []
     },
     "repository_variables": [
+        "CHOCOLATEY_SUBMISSION_AUTOMATION_LOGIN",
+        "CHOCOLATEY_SUBMISSION_AUTOMATION_USER_ID",
         "SOURCE_REPOSITORY_ID",
         "SOURCE_OWNER_ID",
         "SOURCE_SIGNING_PRIMARY_FINGERPRINT",
         "SOURCE_TAG_SIGNING_SUBKEY_FINGERPRINT",
         "SOURCE_ARTIFACT_SIGNING_SUBKEY_FINGERPRINT"
     ],
+    "workflow_constants": {
+        "chocolatey_cli_version": "2.7.3",
+        "chocolatey_cli_signer_thumbprint": "B009C875F4E10FFBC62B785BAF4FC4D6BC2D5711"
+    },
     "issue_contract": {
         "label": "chocolatey-submission"
     }

@@ -1,6 +1,6 @@
 name: Release
 
-run-name: "release ${{ inputs.tag }} (${{ inputs.mode }}; ${{ inputs.targets }})"
+run-name: "release ${{ inputs.tag }} (${{ inputs.operation }})"
 
 on:
   workflow_dispatch:
@@ -9,24 +9,52 @@ on:
         description: "Exact annotated release tag, for example v0.2.0"
         required: true
         type: string
-      mode:
-        description: "Validate without writes, or publish"
+      operation:
+        description: "Publish builds GitHub + complete stable bundle; checkboxes only gate external publishing"
         required: true
         type: choice
         options:
-          - validate
-          - publish
-      targets:
-        description: "all for a fresh stable release; canonical subsets are retries"
+          - validate-selected
+          - validate-all
+          - publish-selected
+          - publish-retry-selected
+          - publish-all
+      conan2:
+        description: "ConanCenter recipe PR"
         required: true
-        default: all
-        type: string
+        default: false
+        type: boolean
+      apt:
+        description: "Cloudsmith APT repositories"
+        required: true
+        default: false
+        type: boolean
+      rpm:
+        description: "Cloudsmith RPM repositories"
+        required: true
+        default: false
+        type: boolean
+      aur:
+        description: "Arch User Repository"
+        required: true
+        default: false
+        type: boolean
+      homebrew:
+        description: "Homebrew tap PR and bottles"
+        required: true
+        default: false
+        type: boolean
+      chocolatey:
+        description: "Chocolatey Community submission"
+        required: true
+        default: false
+        type: boolean
       ledger_issue:
         description: "Existing manually-created PREPARING release-ledger issue number"
         required: true
         type: string
       confirmation:
-        description: "Exact mode:tag:targets:ledger_issue confirmation"
+        description: "Exact operation:tag:github[,channels]:ledger_issue (or :all:)"
         required: true
         type: string
 
@@ -42,7 +70,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASE_ARTIFACT_RETENTION_DAYS: "1"
+  RELEASE_ARTIFACT_RETENTION_DAYS: "30"
 
 jobs:
   contract:
@@ -52,13 +80,14 @@ jobs:
     permissions:
       contents: read
     outputs:
+      operation: ${{ steps.contract.outputs.operation }}
       mode: ${{ steps.contract.outputs.mode }}
       version: ${{ steps.contract.outputs.version }}
       release_kind: ${{ steps.contract.outputs.release_kind }}
-      normalized_targets: ${{ steps.contract.outputs.normalized_targets }}
+      normalized_channels: ${{ steps.contract.outputs.normalized_channels }}
+      selection_label: ${{ steps.contract.outputs.selection_label }}
       ledger_issue: ${{ steps.contract.outputs.ledger_issue }}
-      retry: ${{ steps.contract.outputs.retry }}
-      target_github: ${{ steps.contract.outputs.target_github }}
+      retry_authorized: ${{ steps.contract.outputs.retry_authorized }}
       target_conan2: ${{ steps.contract.outputs.target_conan2 }}
       target_apt: ${{ steps.contract.outputs.target_apt }}
       target_rpm: ${{ steps.contract.outputs.target_rpm }}
@@ -75,8 +104,13 @@ jobs:
         id: contract
         env:
           DISPATCH_TAG: ${{ inputs.tag }}
-          DISPATCH_MODE: ${{ inputs.mode }}
-          DISPATCH_TARGETS: ${{ inputs.targets }}
+          DISPATCH_OPERATION: ${{ inputs.operation }}
+          DISPATCH_CONAN2: ${{ inputs.conan2 }}
+          DISPATCH_APT: ${{ inputs.apt }}
+          DISPATCH_RPM: ${{ inputs.rpm }}
+          DISPATCH_AUR: ${{ inputs.aur }}
+          DISPATCH_HOMEBREW: ${{ inputs.homebrew }}
+          DISPATCH_CHOCOLATEY: ${{ inputs.chocolatey }}
           DISPATCH_LEDGER_ISSUE: ${{ inputs.ledger_issue }}
           DISPATCH_CONFIRMATION: ${{ inputs.confirmation }}
           EVENT_NAME: ${{ github.event_name }}
@@ -107,15 +141,11 @@ jobs:
           python3 scripts/check_release_workflow.py
           PYTHONPATH=scripts python3 -m unittest -v \
             scripts/test_release_dispatch_contract.py \
+            scripts/test_release_workflow_ledger.py \
             scripts/test_release_workflow_policy.py
           python3 -m unittest discover -s test/release -p 'test_*.py' -v
-      - name: Run actionlint when preinstalled
-        run: |
-          if command -v actionlint >/dev/null 2>&1; then
-            actionlint -no-color -ignore 'label ".*" is unknown' .github/workflows/release.yml
-          else
-            echo "actionlint is unavailable; offline policy checks completed"
-          fi
+      - name: Lint all GitHub Actions workflows
+        run: scripts/release/lint_workflows.sh
 
   repository-readiness:
     name: Validate tagged release identity
@@ -128,107 +158,56 @@ jobs:
       contents: read
     outputs:
       commit: ${{ steps.readiness.outputs.commit }}
+      tag_object_sha: ${{ steps.readiness.outputs.tag_object_sha }}
       source_date_epoch: ${{ steps.readiness.outputs.source_date_epoch }}
+      anchor_exists: ${{ steps.anchor.outputs.anchor_exists }}
+      apt_matrix: ${{ steps.readiness.outputs.apt_matrix }}
+      rpm_matrix: ${{ steps.readiness.outputs.rpm_matrix }}
+      aur_builder: ${{ steps.readiness.outputs.aur_builder }}
+      conan_builder: ${{ steps.readiness.outputs.conan_builder }}
     steps:
       - name: Checkout source and tags
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Probe the exact immutable release anchor
+        id: anchor
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          value="$(python3 -I -S scripts/run_release_tool.py release.github_publication \
+            probe-existing-release --repository "${REPOSITORY}" \
+            --repository-id "${REPOSITORY_ID}" --tag "${TAG}")"
+          [[ "${value}" == true || "${value}" == false ]]
+          echo "anchor_exists=${value}" >>"${GITHUB_OUTPUT}"
       - name: Verify version, annotated tag, signature, and changelog
         id: readiness
         env:
           DISPATCH_TAG: ${{ inputs.tag }}
           DISPATCH_VERSION: ${{ needs.contract.outputs.version }}
+          DISPATCH_HEAD_SHA: ${{ github.sha }}
+          ANCHOR_EXISTS: ${{ steps.anchor.outputs.anchor_exists }}
           PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
           TAG_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_TAG_SUBKEY_FINGERPRINT }}
           ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
-        run: |
-          python3 -I -S <<'PY'
-          from datetime import date
-          import os
-          import re
-          import subprocess
-          import tempfile
-          from pathlib import Path
-
-          def git(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-              return subprocess.run(
-                  ["git", *arguments], check=check, text=True,
-                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-              )
-
-          tag = os.environ["DISPATCH_TAG"]
-          version = os.environ["DISPATCH_VERSION"]
-          object_type = git("cat-file", "-t", f"refs/tags/{tag}", check=False)
-          if object_type.returncode != 0 or object_type.stdout.strip() != "tag":
-              raise SystemExit("release requires an existing annotated tag")
-          commit = git("rev-list", "-n", "1", f"refs/tags/{tag}").stdout.strip()
-          if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
-              raise SystemExit("tag did not resolve to one commit")
-          if git("merge-base", "--is-ancestor", commit, "origin/main", check=False).returncode:
-              raise SystemExit("tag commit is not reachable from origin/main")
-          tagged_version = git("show", f"{commit}:VERSION", check=False)
-          if tagged_version.returncode or tagged_version.stdout.strip() != version:
-              raise SystemExit("VERSION in the tagged tree does not match the tag")
-          changelog = git("show", f"{commit}:CHANGELOG.md", check=False)
-          heading = re.compile(
-              rf"(?m)^## \[{re.escape(version)}\] - ([0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}})$"
-          )
-          match = heading.search(changelog.stdout) if changelog.returncode == 0 else None
-          if match is None:
-              raise SystemExit("tagged CHANGELOG.md lacks an exact dated version heading")
-          try:
-              release_date = date.fromisoformat(match.group(1))
-          except ValueError as error:
-              raise SystemExit("tagged CHANGELOG.md contains an invalid release date") from error
-          if release_date > date.today():
-              raise SystemExit("tagged CHANGELOG.md release date is in the future")
-
-          key_path = Path("keys/release-signing-key.asc")
-          fingerprints = {
-              "primary": os.environ["PRIMARY_FINGERPRINT"],
-              "tag": os.environ["TAG_SUBKEY_FINGERPRINT"],
-              "artifact": os.environ["ARTIFACT_SUBKEY_FINGERPRINT"],
-          }
-          if not key_path.is_file():
-              raise SystemExit("trusted release public key is missing")
-          if any(re.fullmatch(r"[0-9A-F]{40}|[0-9A-F]{64}", value) is None for value in fingerprints.values()):
-              raise SystemExit("release fingerprint variables are missing or invalid")
-          if len(set(fingerprints.values())) != 3:
-              raise SystemExit("release fingerprint roles must be distinct")
-          with tempfile.TemporaryDirectory() as home:
-              environment = {**os.environ, "GNUPGHOME": home}
-              shown = subprocess.run(
-                  ["gpg", "--batch", "--with-colons", "--import-options", "show-only", "--import", str(key_path)],
-                  check=True, text=True, stdout=subprocess.PIPE, env=environment,
-              ).stdout.splitlines()
-              actual = {line.split(":")[9] for line in shown if line.startswith("fpr:")}
-              if actual != set(fingerprints.values()):
-                  raise SystemExit("public key fingerprints do not exactly match configured roles")
-              subprocess.run(["gpg", "--batch", "--import", str(key_path)], check=True, env=environment)
-              status = subprocess.run(
-                  ["git", "verify-tag", "--raw", tag], check=False, text=True,
-                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=environment,
-              )
-              if status.returncode:
-                  raise SystemExit("annotated tag signature verification failed")
-              status_path = Path(home) / "tag.status"
-              status_path.write_text(status.stdout, encoding="utf-8")
-              subprocess.run(
-                  ["python3", "-I", "-S", "release/verify_gnupg_status.py", "--status", str(status_path),
-                   "--signing-fingerprint", fingerprints["tag"], "--primary-fingerprint", fingerprints["primary"]],
-                  check=True,
-              )
-
-          epoch = git("show", "-s", "--format=%ct", commit).stdout.strip()
-          if re.fullmatch(r"[1-9][0-9]*", epoch) is None:
-              raise SystemExit("tag commit timestamp is invalid")
-          output = Path(os.environ["GITHUB_OUTPUT"])
-          with output.open("a", encoding="utf-8") as stream:
-              stream.write(f"commit={commit}\nsource_date_epoch={epoch}\n")
-          PY
-
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.repository_readiness
+          --tag "${DISPATCH_TAG}" --version "${DISPATCH_VERSION}"
+          --dispatch-head-sha "${DISPATCH_HEAD_SHA}"
+          --anchor-exists "${ANCHOR_EXISTS}"
+          --primary-fingerprint "${PRIMARY_FINGERPRINT}"
+          --tag-fingerprint "${TAG_SUBKEY_FINGERPRINT}"
+          --artifact-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}"
+          --public-key keys/release-signing-key.asc
+          --trusted-signers release/trusted-release-signers.json
+          --native-targets packaging/native-targets.json
+          --native-builder-lock release/native-builders/lock.json
+          --target-catalog packaging/targets.json
+          --github-output "${GITHUB_OUTPUT}"
   ledger-readiness:
     name: Verify manual PREPARING ledger and anchor state
     needs:
@@ -241,57 +220,44 @@ jobs:
       issues: read
     outputs:
       anchor_exists: ${{ steps.ledger.outputs.anchor_exists }}
+      ledger_readiness_sha256: ${{ steps.ledger.outputs.ledger_readiness_sha256 }}
+      ledger_binding_sha256: ${{ steps.ledger.outputs.ledger_binding_sha256 }}
+      prior_manifest_sha256: ${{ steps.ledger.outputs.prior_manifest_sha256 }}
+      prior_snapshot_present: ${{ steps.ledger.outputs.prior_snapshot_present }}
     steps:
+      - name: Checkout protected ledger validator
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
       - name: Read and verify the ledger issue and existing release
         id: ledger
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
           TAG: ${{ inputs.tag }}
+          VERSION: ${{ needs.contract.outputs.version }}
+          COMMIT: ${{ needs.repository-readiness.outputs.commit }}
+          EXPECTED_ANCHOR_EXISTS: ${{ needs.repository-readiness.outputs.anchor_exists }}
           LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
           DISPATCH_MODE: ${{ needs.contract.outputs.mode }}
-          RELEASE_KIND: ${{ needs.contract.outputs.release_kind }}
-          IS_RETRY: ${{ needs.contract.outputs.retry }}
-        run: |
-          gh api "repos/${REPOSITORY}/issues/${LEDGER_ISSUE}" > issue.json
-          python3 -I -S <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          issue = json.loads(Path("issue.json").read_text(encoding="utf-8"))
-          tag = os.environ["TAG"]
-          expected_title = f"[release] {tag} PREPARING"
-          marker = f"<!-- release-ledger:v1 tag={tag} state=PREPARING -->"
-          if issue.get("pull_request") is not None or issue.get("state") != "open":
-              raise SystemExit("ledger must be an open issue, not a pull request")
-          if issue.get("title") != expected_title or marker not in (issue.get("body") or ""):
-              raise SystemExit("ledger title or PREPARING marker is not exact")
-          if issue.get("author_association") not in {"OWNER", "MEMBER", "COLLABORATOR"}:
-              raise SystemExit("ledger was not created by a trusted repository participant")
-          labels = {item.get("name") for item in issue.get("labels", [])}
-          if "release-ledger" not in labels:
-              raise SystemExit("ledger issue requires the release-ledger label")
-          PY
-          anchor_exists=false
-          if gh release view "${TAG}" --repo "${REPOSITORY}" >/dev/null 2>&1; then
-            anchor_exists=true
-          fi
-          if [[ "${DISPATCH_MODE}" == publish ]]; then
-            if [[ "${IS_RETRY}" == true && "${anchor_exists}" != true ]]; then
-              echo "::error::A partial stable publication is a retry and requires an existing immutable GitHub release"
-              exit 1
-            fi
-            if [[ "${RELEASE_KIND}" == stable && "${IS_RETRY}" != true && "${anchor_exists}" == true ]]; then
-              echo "::error::A fresh stable publication requires no existing release; select a canonical target subset for retry"
-              exit 1
-            fi
-          fi
-          echo "anchor_exists=${anchor_exists}" >> "${GITHUB_OUTPUT}"
-
+          RETRY_AUTHORIZED: ${{ needs.contract.outputs.retry_authorized }}
+          SELECTED_CHANNELS: ${{ needs.contract.outputs.normalized_channels }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+        run: bash scripts/release/prepare_ledger.sh
+      - name: Preserve the exact ledger authorization record
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness.json
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
   immutability-gate:
-    name: Verify immutable Releases with an administration-read App
-    if: ${{ needs.contract.outputs.mode == 'publish' }}
+    name: Verify immutable Releases and protected annotated tags
     needs:
       - contract
       - repository-readiness
@@ -301,7 +267,31 @@ jobs:
     environment: release-admin-read
     permissions:
       contents: read
+      issues: read
     steps:
+      - name: Checkout protected current immutability policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Recheck ledger authorization before requesting credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
       - name: Create a repository-administration read token
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -311,44 +301,667 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-administration: read
-      - name: Require repository-level immutable Releases
+          permission-contents: read
+      - name: Require immutable Releases and a non-bypassable release-tag ruleset
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPOSITORY: ${{ github.repository }}
+          RULESET_ID: ${{ vars.RELEASE_TAG_RULESET_ID }}
+          RULESET_UPDATED_AT: ${{ vars.RELEASE_TAG_RULESET_UPDATED_AT }}
+          TAG: ${{ inputs.tag }}
+          TAG_OBJECT_SHA: ${{ needs.repository-readiness.outputs.tag_object_sha }}
+          COMMIT: ${{ needs.repository-readiness.outputs.commit }}
         run: |
+          [[ "${RULESET_ID}" =~ ^[1-9][0-9]*$ ]]
           gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/${REPOSITORY}/immutable-releases" > immutable-releases.json
-          python3 -I -S <<'PY'
-          import json
-          from pathlib import Path
+          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${REPOSITORY}/rulesets/${RULESET_ID}" > tag-ruleset.json
+          gh api "repos/${REPOSITORY}/git/ref/tags/${TAG}" > tag-ref.json
+          gh api "repos/${REPOSITORY}/git/tags/${TAG_OBJECT_SHA}" > tag-object.json
+          python3 -I -S scripts/run_release_tool.py release.repository_immutability \
+            --immutable-releases immutable-releases.json --ruleset tag-ruleset.json \
+            --tag-ref tag-ref.json --tag-object tag-object.json --ruleset-id "${RULESET_ID}" \
+            --ruleset-updated-at "${RULESET_UPDATED_AT}" --repository "${REPOSITORY}" \
+            --tag "${TAG}" --tag-object-sha "${TAG_OBJECT_SHA}" --commit "${COMMIT}"
 
-          value = json.loads(Path("immutable-releases.json").read_text(encoding="utf-8"))
-          if set(value) != {"enabled", "enforced_by_owner"}:
-              raise SystemExit("immutable Releases response schema is unexpected")
-          if value["enabled"] is not True or not isinstance(value["enforced_by_owner"], bool):
-              raise SystemExit("immutable Releases are not enabled")
-          PY
-
-  validation-complete:
-    name: Validation completed without publication
-    if: ${{ needs.contract.outputs.mode == 'validate' }}
+  existing-anchor-policy:
+    name: Load signed policy for an existing immutable anchor
     needs:
       - contract
       - repository-readiness
       - ledger-readiness
+      - immutability-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected current anchor verifier
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download and verify historical signed publication policy
+        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ needs.contract.outputs.version }}
+          COMMIT: ${{ needs.repository-readiness.outputs.commit }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          PRIOR_MANIFEST_SHA256: ${{ needs.ledger-readiness.outputs.prior_manifest_sha256 }}
+          REPOSITORY: ${{ github.repository }}
+          TAG_OBJECT_SHA: ${{ needs.repository-readiness.outputs.tag_object_sha }}
+          PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
+          TAG_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_TAG_SUBKEY_FINGERPRINT }}
+          ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.github_anchor download-and-verify
+          --directory existing-anchor --public-key keys/release-signing-key.asc
+          --trusted-signers release/trusted-release-signers.json
+          --tag "${TAG}" --version "${VERSION}" --commit "${COMMIT}"
+          --ledger-issue "${LEDGER_ISSUE}" --repository "${REPOSITORY}"
+          --tag-object-sha "${TAG_OBJECT_SHA}"
+          --primary-fingerprint "${PRIMARY_FINGERPRINT}"
+          --tag-fingerprint "${TAG_SUBKEY_FINGERPRINT}"
+          --artifact-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}"
+          --prior-manifest-sha256 "${PRIOR_MANIFEST_SHA256}"
+          --anchor-existed true --targets packaging/native-targets.json
+          --target-catalog packaging/targets.json
+          --native-builder-lock release/native-builders/lock.json
+          --conan-requirements packaging/conan-center/requirements.json
+          --github-output "${GITHUB_OUTPUT}"
+      - name: Preserve the historical signed policy handoff
+        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: existing-anchor/
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
+
+  fresh-provider-controls:
+    name: Bind every future provider control into a fresh anchor
+    needs:
+      - contract
+      - repository-readiness
+      - ledger-readiness
+      - immutability-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      homebrew_sha: ${{ steps.homebrew.outputs.control_sha }}
+      chocolatey_sha: ${{ steps.chocolatey.outputs.control_sha }}
+      conan_sha: ${{ steps.conan.outputs.control_sha }}
+    steps:
+      - name: Checkout protected current provider policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Bind immutable Homebrew control
+        if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+        id: homebrew
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.provider_preflight workflow
+          --owner "${{ vars.HOMEBREW_APP_OWNER }}"
+          --repository "${{ vars.HOMEBREW_APP_REPOSITORY }}"
+          --expected-repository-id "${{ vars.HOMEBREW_APP_REPOSITORY_ID }}"
+          --workflow "${{ vars.HOMEBREW_APP_WORKFLOW }}"
+          --controls packaging/provider-controls.json --provider homebrew
+          --github-output "${GITHUB_OUTPUT}"
+      - name: Bind immutable Chocolatey control
+        if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+        id: chocolatey
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.provider_preflight workflow
+          --owner "${{ vars.CHOCOLATEY_APP_OWNER }}"
+          --repository "${{ vars.CHOCOLATEY_APP_REPOSITORY }}"
+          --expected-repository-id "${{ vars.CHOCOLATEY_APP_REPOSITORY_ID }}"
+          --workflow "${{ vars.CHOCOLATEY_APP_WORKFLOW }}"
+          --controls packaging/provider-controls.json --provider chocolatey
+          --github-output "${GITHUB_OUTPUT}"
+      - name: Bind immutable Conan control
+        if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+        id: conan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.provider_preflight workflow
+          --owner "${{ vars.CONAN_BROKER_APP_OWNER }}"
+          --repository "${{ vars.CONAN_BROKER_APP_REPOSITORY }}"
+          --expected-repository-id "${{ vars.CONAN_BROKER_APP_REPOSITORY_ID }}"
+          --workflow "${{ vars.CONAN_BROKER_APP_WORKFLOW }}"
+          --controls packaging/provider-controls.json --provider conan
+          --github-output "${GITHUB_OUTPUT}"
+
+  preflight-cloudsmith:
+    name: Preflight selected Cloudsmith routes
+    if: ${{ needs.contract.outputs.target_apt == 'true' || needs.contract.outputs.target_rpm == 'true' }}
+    needs:
+      - contract
+      - repository-readiness
+      - ledger-readiness
+      - immutability-gate
+      - existing-anchor-policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release-cloudsmith
+    permissions:
+      contents: read
+      issues: read
+      id-token: write
+    steps:
+      - name: Checkout protected current provider policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Download historical signed publication policy
+        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: existing-anchor
+      - name: Recheck ledger authorization before requesting OIDC
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
+      - name: Bind current Cloudsmith coordinates to the signed anchor
+        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.publication_contract
+          --contract existing-anchor/release-publication-contract.json --name cloudsmith
+          --namespace "${{ vars.CLOUDSMITH_NAMESPACE }}"
+          --repository "${{ vars.CLOUDSMITH_REPOSITORY }}"
+          --preflight-username "${{ vars.CLOUDSMITH_PREFLIGHT_SERVICE_USERNAME }}"
+          --publish-username "${{ vars.CLOUDSMITH_PUBLISH_SERVICE_USERNAME }}"
+      - name: Authenticate the pinned Cloudsmith CLI without publishing
+        uses: cloudsmith-io/cloudsmith-cli-action@159f1619275d5d3147f059c3cc110938ec221d16 # v2.0.3
+        with:
+          cli-version: "1.19.0"
+          oidc-namespace: ${{ vars.CLOUDSMITH_OIDC_NAMESPACE }}
+          oidc-service-slug: ${{ vars.CLOUDSMITH_PREFLIGHT_OIDC_SERVICE_SLUG }}
+      - name: Verify the downloaded Cloudsmith CLI payload
+        run: bash scripts/release/verify_cloudsmith_cli.sh
+      - name: Verify exact Cloudsmith repository read access
+        env:
+          CLOUDSMITH_NAMESPACE: ${{ vars.CLOUDSMITH_NAMESPACE }}
+          CLOUDSMITH_REPOSITORY: ${{ vars.CLOUDSMITH_REPOSITORY }}
+          CLOUDSMITH_PREFLIGHT_USERNAME: ${{ vars.CLOUDSMITH_PREFLIGHT_SERVICE_USERNAME }}
+          TARGET_APT: ${{ needs.contract.outputs.target_apt }}
+          TARGET_RPM: ${{ needs.contract.outputs.target_rpm }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.cloudsmith_publish preflight
+          --namespace "${CLOUDSMITH_NAMESPACE}" --repository "${CLOUDSMITH_REPOSITORY}"
+          --expected-username "${CLOUDSMITH_PREFLIGHT_USERNAME}"
+          --apt-selected "${TARGET_APT}" --rpm-selected "${TARGET_RPM}"
+          --native-targets packaging/native-targets.json
+          --policy-source "${{ needs.ledger-readiness.outputs.anchor_exists == 'true' && 'embedded' || 'current' }}"
+          --signed-contract existing-anchor/release-publication-contract.json
+
+  preflight-aur:
+    name: Preflight selected AUR publisher
+    if: ${{ needs.contract.outputs.target_aur == 'true' }}
+    needs:
+      - contract
+      - repository-readiness
+      - ledger-readiness
+      - immutability-gate
+      - existing-anchor-policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release-aur
+    permissions:
+      contents: read
+      issues: read
+    env:
+      AUR_PACKAGE_BASE: mcp-cpp-sdk
+      AUR_CLONE_URL: ssh://aur@aur.archlinux.org/mcp-cpp-sdk.git
+    steps:
+      - name: Checkout protected current provider policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Download historical signed publication policy
+        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: existing-anchor
+      - name: Bind the AUR target to the signed anchor
+        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.publication_contract
+          --contract existing-anchor/release-publication-contract.json --name aur
+          --repository "${AUR_CLONE_URL}" --package-base "${AUR_PACKAGE_BASE}"
+          --architecture x86_64
+      - name: Recheck the selected release authorization
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
+      - name: Verify the exact public AUR repository without credentials
+        run: bash scripts/release/preflight_aur.sh
+      - name: Authenticate to the non-mutating AUR SSH help interface
+        env:
+          AUR_SSH_PRIVATE_KEY_B64: ${{ secrets.AUR_SSH_PRIVATE_KEY_B64 }}
+          AUR_SSH_KEY_PASSPHRASE: ${{ secrets.AUR_SSH_KEY_PASSPHRASE }}
+          AUR_KNOWN_HOSTS: ${{ vars.AUR_KNOWN_HOSTS }}
+        run: bash scripts/release/preflight_aur_auth.sh
+
+  preflight-homebrew:
+    name: Preflight selected Homebrew publisher
+    if: ${{ needs.contract.outputs.target_homebrew == 'true' }}
+    needs:
+      - contract
+      - repository-readiness
+      - ledger-readiness
+      - immutability-gate
+      - existing-anchor-policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release-homebrew
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      control_tag: ${{ steps.control.outputs.control_tag }}
+      control_sha: ${{ steps.control.outputs.control_sha }}
+    steps:
+      - name: Checkout protected current provider policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Download historical signed publication policy
+        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: existing-anchor
+      - name: Recheck ledger authorization before requesting credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
+      - name: Bind current Homebrew destination to the signed anchor
+        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.publication_contract
+          --contract existing-anchor/release-publication-contract.json --name homebrew
+          --repository "${{ vars.HOMEBREW_APP_OWNER }}/${{ vars.HOMEBREW_APP_REPOSITORY }}"
+          --repository-id "${{ vars.HOMEBREW_APP_REPOSITORY_ID }}"
+          --bot-login "${{ vars.HOMEBREW_APP_BOT_LOGIN }}"
+      - name: Create a read-only Homebrew App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+          owner: ${{ vars.HOMEBREW_APP_OWNER }}
+          repositories: ${{ vars.HOMEBREW_APP_REPOSITORY }}
+          permission-actions: read
+          permission-contents: read
+      - name: Verify exact Homebrew repository and active workflow
+        id: control
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_OWNER: ${{ vars.HOMEBREW_APP_OWNER }}
+          APP_REPOSITORY: ${{ vars.HOMEBREW_APP_REPOSITORY }}
+          EXPECTED_REPOSITORY_ID: ${{ vars.HOMEBREW_APP_REPOSITORY_ID }}
+          WORKFLOW: ${{ vars.HOMEBREW_APP_WORKFLOW }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.provider_preflight workflow
+          --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
+          --expected-repository-id "${EXPECTED_REPOSITORY_ID}" --workflow "${WORKFLOW}"
+          --controls packaging/provider-controls.json --provider homebrew
+          --policy-source "${{ needs.ledger-readiness.outputs.anchor_exists == 'true' && 'embedded' || 'current' }}"
+          --signed-contract existing-anchor/release-publication-contract.json
+          --github-output "${GITHUB_OUTPUT}"
+
+  preflight-chocolatey:
+    name: Preflight selected Chocolatey publisher
+    if: ${{ needs.contract.outputs.target_chocolatey == 'true' }}
+    needs:
+      - contract
+      - repository-readiness
+      - ledger-readiness
+      - immutability-gate
+      - existing-anchor-policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release-chocolatey
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      control_tag: ${{ steps.control.outputs.control_tag }}
+      control_sha: ${{ steps.control.outputs.control_sha }}
+    steps:
+      - name: Checkout protected current provider policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Download historical signed publication policy
+        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: existing-anchor
+      - name: Recheck ledger authorization before requesting credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
+      - name: Bind current Chocolatey destination to the signed anchor
+        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.publication_contract
+          --contract existing-anchor/release-publication-contract.json --name chocolatey
+          --repository "${{ vars.CHOCOLATEY_APP_OWNER }}/${{ vars.CHOCOLATEY_APP_REPOSITORY }}"
+          --repository-id "${{ vars.CHOCOLATEY_APP_REPOSITORY_ID }}"
+      - name: Create a read-only Chocolatey App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CHOCOLATEY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CHOCOLATEY_APP_PRIVATE_KEY }}
+          owner: ${{ vars.CHOCOLATEY_APP_OWNER }}
+          repositories: ${{ vars.CHOCOLATEY_APP_REPOSITORY }}
+          permission-actions: read
+          permission-contents: read
+      - name: Verify exact Chocolatey repository and active workflow
+        id: control
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_OWNER: ${{ vars.CHOCOLATEY_APP_OWNER }}
+          APP_REPOSITORY: ${{ vars.CHOCOLATEY_APP_REPOSITORY }}
+          EXPECTED_REPOSITORY_ID: ${{ vars.CHOCOLATEY_APP_REPOSITORY_ID }}
+          WORKFLOW: ${{ vars.CHOCOLATEY_APP_WORKFLOW }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.provider_preflight workflow
+          --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
+          --expected-repository-id "${EXPECTED_REPOSITORY_ID}" --workflow "${WORKFLOW}"
+          --controls packaging/provider-controls.json --provider chocolatey
+          --policy-source "${{ needs.ledger-readiness.outputs.anchor_exists == 'true' && 'embedded' || 'current' }}"
+          --signed-contract existing-anchor/release-publication-contract.json
+          --github-output "${GITHUB_OUTPUT}"
+
+  preflight-conan-fork:
+    name: Preflight selected ConanCenter recipe fork
+    if: ${{ needs.contract.outputs.target_conan2 == 'true' }}
+    needs:
+      - contract
+      - repository-readiness
+      - ledger-readiness
+      - immutability-gate
+      - existing-anchor-policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release-conan-recipe
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Checkout protected current provider policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Download historical signed publication policy
+        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: existing-anchor
+      - name: Recheck ledger authorization before requesting credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
+      - name: Bind current Conan fork destination to the signed anchor
+        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.publication_contract
+          --contract existing-anchor/release-publication-contract.json --name conan_fork
+          --repository "${{ vars.CONAN_RECIPE_APP_OWNER }}/${{ vars.CONAN_RECIPE_APP_REPOSITORY }}"
+          --repository-id "${{ vars.CONAN_RECIPE_APP_REPOSITORY_ID }}"
+          --upstream conan-io/conan-center-index
+      - name: Create a read-only Conan recipe-fork App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CONAN_RECIPE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CONAN_RECIPE_APP_PRIVATE_KEY }}
+          owner: ${{ vars.CONAN_RECIPE_APP_OWNER }}
+          repositories: ${{ vars.CONAN_RECIPE_APP_REPOSITORY }}
+          permission-contents: read
+      - name: Verify exact synchronized fork and dependency recipe availability
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_OWNER: ${{ vars.CONAN_RECIPE_APP_OWNER }}
+          APP_REPOSITORY: ${{ vars.CONAN_RECIPE_APP_REPOSITORY }}
+          EXPECTED_REPOSITORY_ID: ${{ vars.CONAN_RECIPE_APP_REPOSITORY_ID }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.provider_preflight conan-fork
+          --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
+          --expected-repository-id "${EXPECTED_REPOSITORY_ID}"
+          --requirements packaging/conan-center/requirements.json
+          --policy-source "${{ needs.ledger-readiness.outputs.anchor_exists == 'true' && 'embedded' || 'current' }}"
+          --signed-contract existing-anchor/release-publication-contract.json
+
+  preflight-conan-broker:
+    name: Preflight selected ConanCenter control workflow
+    if: ${{ needs.contract.outputs.target_conan2 == 'true' }}
+    needs:
+      - contract
+      - repository-readiness
+      - ledger-readiness
+      - immutability-gate
+      - existing-anchor-policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release-control-dispatch
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      control_tag: ${{ steps.control.outputs.control_tag }}
+      control_sha: ${{ steps.control.outputs.control_sha }}
+    steps:
+      - name: Checkout protected current provider policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Download historical signed publication policy
+        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: existing-anchor
+      - name: Recheck ledger authorization before requesting credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
+      - name: Bind current Conan control destination to the signed anchor
+        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.publication_contract
+          --contract existing-anchor/release-publication-contract.json --name conan_control
+          --repository "${{ vars.CONAN_BROKER_APP_OWNER }}/${{ vars.CONAN_BROKER_APP_REPOSITORY }}"
+          --repository-id "${{ vars.CONAN_BROKER_APP_REPOSITORY_ID }}"
+      - name: Create a read-only Conan control App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CONAN_BROKER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CONAN_BROKER_APP_PRIVATE_KEY }}
+          owner: ${{ vars.CONAN_BROKER_APP_OWNER }}
+          repositories: ${{ vars.CONAN_BROKER_APP_REPOSITORY }}
+          permission-actions: read
+          permission-contents: read
+      - name: Verify exact Conan control repository and active workflow
+        id: control
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_OWNER: ${{ vars.CONAN_BROKER_APP_OWNER }}
+          APP_REPOSITORY: ${{ vars.CONAN_BROKER_APP_REPOSITORY }}
+          EXPECTED_REPOSITORY_ID: ${{ vars.CONAN_BROKER_APP_REPOSITORY_ID }}
+          WORKFLOW: ${{ vars.CONAN_BROKER_APP_WORKFLOW }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.provider_preflight workflow
+          --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
+          --expected-repository-id "${EXPECTED_REPOSITORY_ID}" --workflow "${WORKFLOW}"
+          --controls packaging/provider-controls.json --provider conan
+          --policy-source "${{ needs.ledger-readiness.outputs.anchor_exists == 'true' && 'embedded' || 'current' }}"
+          --signed-contract existing-anchor/release-publication-contract.json
+          --github-output "${GITHUB_OUTPUT}"
+
+  provider-preflight-gate:
+    name: Require every selected read-only provider preflight
+    if: >-
+      ${{ always() && needs.contract.result == 'success' &&
+          needs.repository-readiness.result == 'success' &&
+          needs.ledger-readiness.result == 'success' &&
+          needs.immutability-gate.result == 'success' &&
+          needs.existing-anchor-policy.result == 'success' }}
+    needs:
+      - contract
+      - repository-readiness
+      - ledger-readiness
+      - immutability-gate
+      - existing-anchor-policy
+      - preflight-cloudsmith
+      - preflight-aur
+      - preflight-homebrew
+      - preflight-chocolatey
+      - preflight-conan-fork
+      - preflight-conan-broker
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - name: Report read-only completion
+      - name: Checkout protected current preflight gate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Require exact selected-success and unselected-skip results
         env:
-          RELEASE_TAG: ${{ inputs.tag }}
-          RELEASE_TARGETS: ${{ needs.contract.outputs.normalized_targets }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-        run: |
-          echo "Validated ${RELEASE_TAG}, targets ${RELEASE_TARGETS}, ledger #${LEDGER_ISSUE}."
-          echo "No release, issue, dispatch, package, deployment, or upload was created."
+          TARGET_CLOUDSMITH: ${{ needs.contract.outputs.target_apt == 'true' || needs.contract.outputs.target_rpm == 'true' }}
+          TARGET_AUR: ${{ needs.contract.outputs.target_aur }}
+          TARGET_HOMEBREW: ${{ needs.contract.outputs.target_homebrew }}
+          TARGET_CHOCOLATEY: ${{ needs.contract.outputs.target_chocolatey }}
+          TARGET_CONAN: ${{ needs.contract.outputs.target_conan2 }}
+          RESULT_CLOUDSMITH: ${{ needs.preflight-cloudsmith.result }}
+          RESULT_AUR: ${{ needs.preflight-aur.result }}
+          RESULT_HOMEBREW: ${{ needs.preflight-homebrew.result }}
+          RESULT_CHOCOLATEY: ${{ needs.preflight-chocolatey.result }}
+          RESULT_CONAN_FORK: ${{ needs.preflight-conan-fork.result }}
+          RESULT_CONAN_BROKER: ${{ needs.preflight-conan-broker.result }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.provider_preflight gate
+          --target-cloudsmith "${TARGET_CLOUDSMITH}" --result-cloudsmith "${RESULT_CLOUDSMITH}"
+          --target-aur "${TARGET_AUR}" --result-aur "${RESULT_AUR}"
+          --target-homebrew "${TARGET_HOMEBREW}" --result-homebrew "${RESULT_HOMEBREW}"
+          --target-chocolatey "${TARGET_CHOCOLATEY}" --result-chocolatey "${RESULT_CHOCOLATEY}"
+          --target-conan-fork "${TARGET_CONAN}" --result-conan-fork "${RESULT_CONAN_FORK}"
+          --target-conan-broker "${TARGET_CONAN}" --result-conan-broker "${RESULT_CONAN_BROKER}"
 
   publication-gate:
     name: Enforce the exact publication kill switch
@@ -358,19 +971,52 @@ jobs:
       - repository-readiness
       - ledger-readiness
       - immutability-gate
+      - provider-preflight-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
+      - name: Checkout protected current publication policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Require RELEASE_PUBLISHING_ENABLED
         env:
           RELEASE_PUBLISHING_ENABLED: ${{ vars.RELEASE_PUBLISHING_ENABLED }}
-        run: |
-          if [[ "${RELEASE_PUBLISHING_ENABLED}" != true ]]; then
-            echo "::error::RELEASE_PUBLISHING_ENABLED must be exactly true"
-            exit 1
-          fi
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.workflow_gate publishing
+          --enabled "${RELEASE_PUBLISHING_ENABLED}"
+
+  preparation-gate:
+    name: Admit validation or publication construction
+    if: ${{ always() && needs.contract.result == 'success' && needs.provider-preflight-gate.result == 'success' }}
+    needs:
+      - contract
+      - provider-preflight-gate
+      - publication-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact tagged job-result policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Require the exact mode-specific gates
+        env:
+          RELEASE_MODE: ${{ needs.contract.outputs.mode }}
+          PROVIDER_RESULT: ${{ needs.provider-preflight-gate.result }}
+          PUBLICATION_RESULT: ${{ needs.publication-gate.result }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.workflow_gate preparation
+          --mode "${RELEASE_MODE}" --provider-result "${PROVIDER_RESULT}"
+          --publication-result "${PUBLICATION_RESULT}"
 
   construct-core:
     name: Construct deterministic source and recipe artifacts
@@ -379,7 +1025,8 @@ jobs:
       - contract
       - repository-readiness
       - ledger-readiness
-      - publication-gate
+      - preparation-gate
+      - fresh-provider-controls
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -401,99 +1048,40 @@ jobs:
           PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
           TAG_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_TAG_SUBKEY_FINGERPRINT }}
           ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
-        run: |
-          rm -rf out
-          mkdir -p out
-          python3 -m release.cli source-archives \
-            --root . --inventory release/source-archive-inventory.txt \
-            --version "${VERSION}" --source-date-epoch "${SOURCE_DATE_EPOCH}" --output-dir out
-          python3 -m release.cli sbom \
-            --root . --inventory release/source-archive-inventory.txt \
-            --version "${VERSION}" --source-date-epoch "${SOURCE_DATE_EPOCH}" \
-            --namespace-base "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}" --output-dir out
-          cp keys/release-signing-key.asc out/release-signing-key.asc
-          python3 -I -S <<'PY'
-          import hashlib
-          import json
-          import os
-          import shutil
-          import subprocess
-          from pathlib import Path
-          import sys
-
-          sys.path.insert(0, ".")
-          from release.templates import render_file
-
-          out = Path("out")
-          version = os.environ["VERSION"]
-          tag = os.environ["TAG"]
-          repository = os.environ["GITHUB_REPOSITORY"]
-          tarball = out / f"mcp-cpp-sdk-{version}.tar.gz"
-          source_sha = hashlib.sha256(tarball.read_bytes()).hexdigest()
-          source_url = f"https://github.com/{repository}/releases/download/{tag}/{tarball.name}"
-          source_tree = subprocess.run(
-              ["git", "archive", "--format=tar", os.environ["COMMIT"]],
-              check=True, stdout=subprocess.PIPE,
-          ).stdout
-          metadata = {
-              "commit": os.environ["COMMIT"],
-              "source_date_epoch": int(os.environ["SOURCE_DATE_EPOCH"]),
-              "source_tree_sha256": hashlib.sha256(source_tree).hexdigest(),
-              "source_sha256": source_sha,
-          }
-          (out / "core-metadata.json").write_text(json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8")
-          (out / "RELEASE_NOTES.md").write_text(
-              f"mcp-cpp-sdk {version}\n\nSee CHANGELOG.md in the signed source archive.\n",
-              encoding="utf-8",
-          )
-          if os.environ["RELEASE_KIND"] == "stable":
-              render_file(Path("packaging/aur/PKGBUILD.in"), out / "aur-PKGBUILD", {
-                  "VERSION": version, "PKGREL": "1", "SOURCE_URL": source_url,
-                  "SOURCE_SHA256": source_sha,
-                  "SOURCE_SIGNATURE_URL": source_url + ".asc",
-                  "PRIMARY_FINGERPRINT": os.environ["PRIMARY_FINGERPRINT"],
-                  "ARTIFACT_SUBKEY_FINGERPRINT": os.environ["ARTIFACT_SUBKEY_FINGERPRINT"],
-              })
-              (out / "aur-SRCINFO").write_text(
-                  "pkgbase = mcp-cpp-sdk\n\tpkgdesc = Model Context Protocol C++ SDK\n"
-                  f"\tpkgver = {version}\n\tpkgrel = 1\n\turl = https://github.com/{repository}\n"
-                  "\tarch = x86_64\n\tarch = aarch64\n\tlicense = Apache-2.0\n"
-                  "\tmakedepends = boost>=1.74\n\tmakedepends = cmake>=3.20\n\tmakedepends = gtest\n\tmakedepends = ninja\n"
-                  "\tdepends = boost-libs>=1.74\n\tdepends = nlohmann-json>=3.10.5\n\tdepends = openssl>=3.0\n"
-                  "\toptions = !debug\n\toptions = staticlibs\n"
-                  f"\tsource = mcp-cpp-sdk-{version}.tar.gz::{source_url}\n"
-                  f"\tsource = mcp-cpp-sdk-{version}.tar.gz.asc::{source_url}.asc\n"
-                  f"\tvalidpgpkeys = {os.environ['PRIMARY_FINGERPRINT']}\n"
-                  f"\tsha256sums = {source_sha}\n\tsha256sums = SKIP\n"
-                  "\npkgname = mcp-cpp-sdk\n\npkgname = mcp-cpp-sdk-static\n\tdepends = mcp-cpp-sdk\n",
-                  encoding="utf-8",
-              )
-              render_file(Path("packaging/homebrew/mcp-cpp-sdk.rb.in"), out / "homebrew-mcp-cpp-sdk.rb", {
-                  "VERSION": version, "SOURCE_URL": source_url, "SOURCE_SHA256": source_sha,
-              })
-              render_file(
-                  Path("packaging/conan-center/config.yml.in"),
-                  out / "conan-recipe-config.yml",
-                  {"VERSION": version},
-              )
-              render_file(
-                  Path("packaging/conan-center/all/conandata.yml.in"),
-                  out / "conan-recipe-conandata.yml",
-                  {"VERSION": version, "SOURCE_URL": source_url, "SOURCE_SHA256": source_sha},
-              )
-              for source, destination in (
-                  ("packaging/conan-center/all/conanfile.py.in", "conan-recipe-conanfile.py"),
-                  ("packaging/conan-center/all/test_package/CMakeLists.txt.in", "conan-recipe-test-CMakeLists.txt"),
-                  ("packaging/conan-center/all/test_package/conanfile.py.in", "conan-recipe-test-conanfile.py"),
-                  ("packaging/conan-center/all/test_package/test_package.cpp.in", "conan-recipe-test-test_package.cpp"),
-              ):
-                  shutil.copyfile(source, out / destination)
-              (out / "conan-source.json").write_text(json.dumps({
-                  "recipe": "mcp-cpp-sdk", "version": version, "tag": tag,
-                  "commit": os.environ["COMMIT"], "source_url": source_url,
-                  "source_sha256": source_sha,
-              }, sort_keys=True) + "\n", encoding="utf-8")
-          PY
+          HOMEBREW_CONTROL_SHA: ${{ needs.fresh-provider-controls.outputs.homebrew_sha }}
+          CHOCOLATEY_CONTROL_SHA: ${{ needs.fresh-provider-controls.outputs.chocolatey_sha }}
+          CONAN_CONTROL_SHA: ${{ needs.fresh-provider-controls.outputs.conan_sha }}
+          CLOUDSMITH_NAMESPACE: ${{ vars.CLOUDSMITH_NAMESPACE }}
+          CLOUDSMITH_REPOSITORY: ${{ vars.CLOUDSMITH_REPOSITORY }}
+          CLOUDSMITH_PREFLIGHT_USERNAME: ${{ vars.CLOUDSMITH_PREFLIGHT_SERVICE_USERNAME }}
+          CLOUDSMITH_PUBLISH_USERNAME: ${{ vars.CLOUDSMITH_PUBLISH_SERVICE_USERNAME }}
+          HOMEBREW_REPOSITORY_ID: ${{ vars.HOMEBREW_APP_REPOSITORY_ID }}
+          HOMEBREW_BOT_LOGIN: ${{ vars.HOMEBREW_APP_BOT_LOGIN }}
+          CHOCOLATEY_REPOSITORY_ID: ${{ vars.CHOCOLATEY_APP_REPOSITORY_ID }}
+          CONAN_RECIPE_OWNER: ${{ vars.CONAN_RECIPE_APP_OWNER }}
+          CONAN_RECIPE_REPOSITORY: ${{ vars.CONAN_RECIPE_APP_REPOSITORY }}
+          CONAN_RECIPE_REPOSITORY_ID: ${{ vars.CONAN_RECIPE_APP_REPOSITORY_ID }}
+          CONAN_CONTROL_REPOSITORY_ID: ${{ vars.CONAN_BROKER_APP_REPOSITORY_ID }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.construct_core
+          --root . --output out --version "${VERSION}" --tag "${TAG}"
+          --commit "${COMMIT}" --source-date-epoch "${SOURCE_DATE_EPOCH}"
+          --release-kind "${RELEASE_KIND}" --repository "${GITHUB_REPOSITORY}"
+          --primary-fingerprint "${PRIMARY_FINGERPRINT}"
+          --artifact-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}"
+          --homebrew-control-commit "${HOMEBREW_CONTROL_SHA}"
+          --chocolatey-control-commit "${CHOCOLATEY_CONTROL_SHA}"
+          --conan-control-commit "${CONAN_CONTROL_SHA}"
+          --cloudsmith-namespace "${CLOUDSMITH_NAMESPACE}"
+          --cloudsmith-repository "${CLOUDSMITH_REPOSITORY}"
+          --cloudsmith-preflight-username "${CLOUDSMITH_PREFLIGHT_USERNAME}"
+          --cloudsmith-publish-username "${CLOUDSMITH_PUBLISH_USERNAME}"
+          --homebrew-repository-id "${HOMEBREW_REPOSITORY_ID}"
+          --homebrew-bot-login "${HOMEBREW_BOT_LOGIN}"
+          --chocolatey-repository-id "${CHOCOLATEY_REPOSITORY_ID}"
+          --conan-fork-repository "${CONAN_RECIPE_OWNER}/${CONAN_RECIPE_REPOSITORY}"
+          --conan-fork-repository-id "${CONAN_RECIPE_REPOSITORY_ID}"
+          --conan-control-repository-id "${CONAN_CONTROL_REPOSITORY_ID}"
       - name: Upload core artifact part
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -504,28 +1092,18 @@ jobs:
 
   build-apt:
     name: Build APT ${{ matrix.id }}
-    if: ${{ needs.contract.outputs.target_apt == 'true' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
       - ledger-readiness
-      - publication-gate
+      - preparation-gate
       - construct-core
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - {id: ubuntu-jammy-amd64, distribution: ubuntu, release: jammy, architecture: amd64, runner: release-ubuntu-jammy-amd64}
-          - {id: ubuntu-jammy-arm64, distribution: ubuntu, release: jammy, architecture: arm64, runner: release-ubuntu-jammy-arm64}
-          - {id: ubuntu-noble-amd64, distribution: ubuntu, release: noble, architecture: amd64, runner: release-ubuntu-noble-amd64}
-          - {id: ubuntu-noble-arm64, distribution: ubuntu, release: noble, architecture: arm64, runner: release-ubuntu-noble-arm64}
-          - {id: ubuntu-resolute-amd64, distribution: ubuntu, release: resolute, architecture: amd64, runner: release-ubuntu-resolute-amd64}
-          - {id: ubuntu-resolute-arm64, distribution: ubuntu, release: resolute, architecture: arm64, runner: release-ubuntu-resolute-arm64}
-          - {id: debian-bookworm-amd64, distribution: debian, release: bookworm, architecture: amd64, runner: release-debian-bookworm-amd64}
-          - {id: debian-bookworm-arm64, distribution: debian, release: bookworm, architecture: arm64, runner: release-debian-bookworm-arm64}
-          - {id: debian-trixie-amd64, distribution: debian, release: trixie, architecture: amd64, runner: release-debian-trixie-amd64}
-          - {id: debian-trixie-arm64, distribution: debian, release: trixie, architecture: arm64, runner: release-debian-trixie-arm64}
-    runs-on: [self-hosted, release, "${{ matrix.runner }}"]
+        include: ${{ fromJSON(needs.repository-readiness.outputs.apt_matrix) }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -544,65 +1122,16 @@ jobs:
           DISTRIBUTION: ${{ matrix.distribution }}
           ARCHITECTURE: ${{ matrix.architecture }}
           SOURCE_DATE_EPOCH: ${{ needs.repository-readiness.outputs.source_date_epoch }}
+          DEB_BUILD_OPTIONS: noautodbgsym
           DEBFULLNAME: mcp-cpp-sdk release automation
-          DEBEMAIL: releases@users.noreply.github.com
-        run: |
-          test "$(dpkg --print-architecture)" = "${ARCHITECTURE}"
-          rm -rf debian out
-          rm -f ../*.deb ../*.changes ../*.buildinfo
-          mkdir -p debian out
-          python3 -I -S <<'PY'
-          from datetime import datetime, timezone
-          import os
-          import shutil
-          from pathlib import Path
-          import sys
-
-          sys.path.insert(0, ".")
-          from release.model import SemVer
-          from release.templates import render_file
-
-          version = SemVer.parse(os.environ["VERSION"], stable_only=True)
-          source = Path("packaging/debian")
-          target = Path("debian")
-          for template in source.rglob("*.in"):
-              relative = template.relative_to(source)
-              output = target / Path(str(relative).removesuffix(".in"))
-              output.parent.mkdir(parents=True, exist_ok=True)
-              tokens = {}
-              if template.name == "control.in":
-                  tokens = {"MAINTAINER": "mcp-cpp-sdk maintainers <releases@users.noreply.github.com>"}
-              elif template.name == "copyright.in":
-                  tokens = {"COPYRIGHT": "mcp-cpp-sdk contributors"}
-              elif template.name == "changelog.in":
-                  tokens = {
-                      "DEBIAN_VERSION": version.debian_version,
-                      "DEBIAN_DISTRIBUTION": os.environ["RELEASE"],
-                      "MAINTAINER": "mcp-cpp-sdk maintainers <releases@users.noreply.github.com>",
-                      "RFC2822_DATE": datetime.fromtimestamp(
-                          int(os.environ["SOURCE_DATE_EPOCH"]), timezone.utc
-                      ).strftime("%a, %d %b %Y %H:%M:%S +0000"),
-                  }
-              render_file(template, output, tokens)
-              if template.name == "rules.in":
-                  output.chmod(0o755)
-          PY
-          dpkg-buildpackage --build=binary --no-sign
-          python3 -I -S <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          packages = sorted(Path("..").glob("*.deb"))
-          if not packages:
-              raise SystemExit("Debian build produced no .deb packages")
-          routes = []
-          for package in packages:
-              name = f"{os.environ['ROUTE_ID']}--{package.name}"
-              package.replace(Path("out") / name)
-              routes.append({"asset": name, "format": "apt", "distribution": os.environ["DISTRIBUTION"], "release": os.environ["RELEASE"]})
-          Path("out", f"route-{os.environ['ROUTE_ID']}.json").write_text(json.dumps(routes, sort_keys=True) + "\n", encoding="utf-8")
-          PY
+          DEBEMAIL: releases@yurirocha.com
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.native_builder run
+          --lock release/native-builders/lock.json --image "${{ matrix.builder_image }}"
+          --kind apt --version "${VERSION}" --target-id "${ROUTE_ID}"
+          --distribution "${DISTRIBUTION}" --release "${RELEASE}"
+          --architecture "${ARCHITECTURE}" --source-date-epoch "${SOURCE_DATE_EPOCH}"
+          --output out
       - name: Upload APT artifact part
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -613,26 +1142,18 @@ jobs:
 
   build-rpm:
     name: Build RPM ${{ matrix.id }}
-    if: ${{ needs.contract.outputs.target_rpm == 'true' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
       - ledger-readiness
-      - publication-gate
+      - preparation-gate
       - construct-core
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - {id: fedora-43-x86_64, distribution: fedora, release: "43", architecture: x86_64, runner: release-fedora-43-x86_64}
-          - {id: fedora-43-aarch64, distribution: fedora, release: "43", architecture: aarch64, runner: release-fedora-43-aarch64}
-          - {id: fedora-44-x86_64, distribution: fedora, release: "44", architecture: x86_64, runner: release-fedora-44-x86_64}
-          - {id: fedora-44-aarch64, distribution: fedora, release: "44", architecture: aarch64, runner: release-fedora-44-aarch64}
-          - {id: el-9-x86_64, distribution: el, release: "9", architecture: x86_64, runner: release-el-9-x86_64}
-          - {id: el-9-aarch64, distribution: el, release: "9", architecture: aarch64, runner: release-el-9-aarch64}
-          - {id: el-10-x86_64, distribution: el, release: "10", architecture: x86_64, runner: release-el-10-x86_64}
-          - {id: el-10-aarch64, distribution: el, release: "10", architecture: aarch64, runner: release-el-10-aarch64}
-    runs-on: [self-hosted, release, "${{ matrix.runner }}"]
+        include: ${{ fromJSON(needs.repository-readiness.outputs.rpm_matrix) }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -657,51 +1178,14 @@ jobs:
           RELEASE: ${{ matrix.release }}
           ARCHITECTURE: ${{ matrix.architecture }}
           SOURCE_DATE_EPOCH: ${{ needs.repository-readiness.outputs.source_date_epoch }}
-        run: |
-          test "$(uname -m)" = "${ARCHITECTURE}"
-          rm -rf rpmbuild out
-          mkdir -p rpmbuild/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS} out
-          cp "core/mcp-cpp-sdk-${VERSION}.tar.gz" rpmbuild/SOURCES/
-          python3 -I -S <<'PY'
-          from datetime import datetime, timezone
-          import hashlib
-          import os
-          from pathlib import Path
-          import sys
-
-          sys.path.insert(0, ".")
-          from release.model import SemVer
-          from release.templates import render_file
-
-          version = SemVer.parse(os.environ["VERSION"], stable_only=True)
-          rpm_version, rpm_release = version.rpm_version_release
-          archive = Path("core") / f"mcp-cpp-sdk-{version}.tar.gz"
-          render_file(Path("packaging/rpm/mcp-cpp-sdk.spec.in"), Path("rpmbuild/SPECS/mcp-cpp-sdk.spec"), {
-              "RPM_VERSION": rpm_version,
-              "RPM_RELEASE": rpm_release,
-              "RPM_CHANGELOG_DATE": datetime.fromtimestamp(
-                  int(os.environ["SOURCE_DATE_EPOCH"]), timezone.utc
-              ).strftime("%a %b %d %Y"),
-              "SOURCE_URL": f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{os.environ['TAG']}/{archive.name}",
-              "SOURCE_SHA256": hashlib.sha256(archive.read_bytes()).hexdigest(),
-          })
-          PY
-          rpmbuild --define "_topdir ${PWD}/rpmbuild" -ba rpmbuild/SPECS/mcp-cpp-sdk.spec
-          python3 -I -S <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          packages = sorted([*Path("rpmbuild/RPMS").rglob("*.rpm"), *Path("rpmbuild/SRPMS").glob("*.rpm")])
-          if not packages:
-              raise SystemExit("RPM build produced no packages")
-          routes = []
-          for package in packages:
-              name = f"{os.environ['ROUTE_ID']}--{package.name}"
-              package.replace(Path("out") / name)
-              routes.append({"asset": name, "format": "rpm", "distribution": os.environ["DISTRIBUTION"], "release": os.environ["RELEASE"]})
-          Path("out", f"route-{os.environ['ROUTE_ID']}.json").write_text(json.dumps(routes, sort_keys=True) + "\n", encoding="utf-8")
-          PY
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.native_builder run
+          --lock release/native-builders/lock.json --image "${{ matrix.builder_image }}"
+          --kind rpm --version "${VERSION}" --tag "${TAG}"
+          --repository "${GITHUB_REPOSITORY}" --target-id "${ROUTE_ID}"
+          --distribution "${DISTRIBUTION}"
+          --release "${RELEASE}" --architecture "${ARCHITECTURE}"
+          --source-date-epoch "${SOURCE_DATE_EPOCH}" --core core --output out
       - name: Upload RPM artifact part
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -712,14 +1196,14 @@ jobs:
 
   build-windows:
     name: Build signed-anchor Windows payload input
-    if: ${{ needs.contract.outputs.target_chocolatey == 'true' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
       - ledger-readiness
-      - publication-gate
+      - preparation-gate
       - construct-core
-    runs-on: [self-hosted, release, release-windows-x64-v143]
+    runs-on: windows-2022
     timeout-minutes: 60
     permissions:
       contents: read
@@ -733,47 +1217,153 @@ jobs:
           ref: ${{ needs.repository-readiness.outputs.commit }}
           fetch-depth: 1
           persist-credentials: false
+      - name: Set up the reviewed Python runtime
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: ${{ vars.WINDOWS_RELEASE_PYTHON_VERSION }}
+          check-latest: false
+      - name: Enter the installed x64 Visual Studio developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+      - name: Install the exact hash-locked Conan 2 client
+        env:
+          WINDOWS_RELEASE_CONAN_VERSION: ${{ vars.WINDOWS_RELEASE_CONAN_VERSION }}
+        run: >-
+          & ./scripts/release/install_windows_conan.ps1
+          -PythonPath (Get-Command python.exe -CommandType Application).Source
+          -ExpectedVersion $env:WINDOWS_RELEASE_CONAN_VERSION
+          -Requirements release/windows/conan-requirements.txt
+          -GitHubPath $env:GITHUB_PATH
       - name: Build and package the MSVC 2022 SDK
         env:
           VERSION: ${{ needs.contract.outputs.version }}
           TAG: ${{ inputs.tag }}
-        run: |
-          Remove-Item -Recurse -Force build,stage,out,chocolatey -ErrorAction SilentlyContinue
-          python scripts/init.py
-          python scripts/build.py --test
-          cmake --install build/release --prefix stage --config Release
-          New-Item -ItemType Directory -Force out | Out-Null
-          $archive = "out/mcp-cpp-sdk-$env:VERSION-windows-x64-v143-md.zip"
-          Compress-Archive -Path stage/* -DestinationPath $archive -CompressionLevel Optimal
-          $sha = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
-          $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/$(Split-Path -Leaf $archive)"
-          @{
-            VERSION = $env:VERSION
-            ARCHIVE_URL = $url
-            ARCHIVE_SHA256 = $sha
-          } | ConvertTo-Json -Compress | Set-Content -Encoding utf8 install-values.json
-          @{
-            VERSION = $env:VERSION
-            AUTHORS = "mcp-cpp-sdk contributors"
-            OWNERS = "mcp-cpp-sdk maintainers"
-            SUMMARY = "Model Context Protocol C++ SDK"
-            DESCRIPTION = "C++20 Model Context Protocol SDK development package."
-            PROJECT_URL = "https://github.com/$env:GITHUB_REPOSITORY"
-            PACKAGE_SOURCE_URL = "https://github.com/$env:GITHUB_REPOSITORY"
-            COPYRIGHT = "mcp-cpp-sdk contributors"
-            TAGS = "mcp cpp sdk development admin"
-          } | ConvertTo-Json -Compress | Set-Content -Encoding utf8 nuspec-values.json
-          python -m release.cli render --template packaging/chocolatey/chocolateyinstall.ps1.in --values install-values.json --output chocolatey/tools/chocolateyinstall.ps1
-          Copy-Item packaging/chocolatey/chocolateyuninstall.ps1.in chocolatey/tools/chocolateyuninstall.ps1
-          python -m release.cli render --template packaging/chocolatey/mcp-cpp-sdk.nuspec.in --values nuspec-values.json --output chocolatey/mcp-cpp-sdk.nuspec
-          Copy-Item LICENSE chocolatey/LICENSE.txt
-          "The archive SHA-256 is $sha and is bound by the immutable GitHub Release manifest." | Set-Content chocolatey/VERIFICATION.txt
-          choco pack chocolatey/mcp-cpp-sdk.nuspec --outputdirectory out --yes
+          WINDOWS_RELEASE_CMAKE_VERSION: ${{ vars.WINDOWS_RELEASE_CMAKE_VERSION }}
+          WINDOWS_RELEASE_CONAN_VERSION: ${{ vars.WINDOWS_RELEASE_CONAN_VERSION }}
+          WINDOWS_RELEASE_CHOCO_VERSION: ${{ vars.WINDOWS_RELEASE_CHOCO_VERSION }}
+          WINDOWS_RELEASE_PYTHON_VERSION: ${{ vars.WINDOWS_RELEASE_PYTHON_VERSION }}
+          WINDOWS_RELEASE_VCTOOLS_VERSION: ${{ vars.WINDOWS_RELEASE_VCTOOLS_VERSION }}
+          WINDOWS_RELEASE_MSC_VER: ${{ vars.WINDOWS_RELEASE_MSC_VER }}
+        run: >-
+          & ./scripts/release/build_windows.ps1
+          -Version $env:VERSION -Tag $env:TAG -Repository $env:GITHUB_REPOSITORY
+          -ExpectedCMakeVersion $env:WINDOWS_RELEASE_CMAKE_VERSION
+          -ExpectedConanVersion $env:WINDOWS_RELEASE_CONAN_VERSION
+          -ExpectedChocolateyVersion $env:WINDOWS_RELEASE_CHOCO_VERSION
+          -ExpectedPythonVersion $env:WINDOWS_RELEASE_PYTHON_VERSION
+          -ExpectedVCToolsVersion $env:WINDOWS_RELEASE_VCTOOLS_VERSION
+          -ExpectedMscVer ([int]$env:WINDOWS_RELEASE_MSC_VER)
       - name: Upload Windows artifact part
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
+
+  build-abi:
+    name: Build canonical ABI evidence and compare compatible lines
+    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    needs:
+      - contract
+      - repository-readiness
+      - ledger-readiness
+      - preparation-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the exact tagged ABI policy and source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.repository-readiness.outputs.commit }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Build the corpus in the digest-pinned offline builder
+        env:
+          ABI_BUILDER_IMAGE: ${{ vars.ABI_BUILDER_IMAGE }}
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ needs.repository-readiness.outputs.commit }}
+          SOURCE_DATE_EPOCH: ${{ needs.repository-readiness.outputs.source_date_epoch }}
+          ABI_IO: ${{ runner.temp }}/abi-${{ github.run_id }}-${{ github.run_attempt }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.abi_build container-build
+          --builder-image "${ABI_BUILDER_IMAGE}" --source . --io-directory "${ABI_IO}"
+          --tag "${TAG}" --commit "${COMMIT}" --source-date-epoch "${SOURCE_DATE_EPOCH}"
+      - name: Select the exact immutable ABI baseline
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          ABI_IO: ${{ runner.temp }}/abi-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          gh api --paginate --slurp -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${REPOSITORY}/releases?per_page=100" > "${ABI_IO}/releases.json"
+          python3 -I -S scripts/run_release_tool.py release.abi_policy select \
+            --tag "${TAG}" --catalog "${ABI_IO}/releases.json" \
+            --policy release/abi-policy.json --selection "${ABI_IO}/selection.json" \
+            --decision "${ABI_IO}/decision.json" --github-output "${GITHUB_OUTPUT}"
+      - name: Read and plan the baseline control assets
+        if: ${{ steps.baseline.outputs.has_baseline == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          BASELINE_RELEASE_ID: ${{ steps.baseline.outputs.baseline_release_id }}
+          ABI_IO: ${{ runner.temp }}/abi-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          gh api --paginate --slurp -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${REPOSITORY}/releases/${BASELINE_RELEASE_ID}/assets?per_page=100" \
+            > "${ABI_IO}/baseline-assets.json"
+          python3 -I -S scripts/run_release_tool.py release.abi_policy plan-downloads \
+            --selection "${ABI_IO}/selection.json" --assets "${ABI_IO}/baseline-assets.json" \
+            --output "${ABI_IO}/download-plan.json"
+      - name: Download and authenticate the exact baseline bundle
+        if: ${{ steps.baseline.outputs.has_baseline == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ABI_IO: ${{ runner.temp }}/abi-${{ github.run_id }}-${{ github.run_attempt }}
+          PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
+          TAG_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_TAG_SUBKEY_FINGERPRINT }}
+          ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
+        run: |
+          python3 -I -S scripts/run_release_tool.py release.abi_policy download \
+            --plan "${ABI_IO}/download-plan.json" --repository "${REPOSITORY}" \
+            --directory "${ABI_IO}/baseline"
+          python3 -I -S scripts/run_release_tool.py release.abi_policy verify-bundle \
+            --selection "${ABI_IO}/selection.json" --assets "${ABI_IO}/baseline-assets.json" \
+            --directory "${ABI_IO}/baseline" --public-key keys/release-signing-key.asc \
+            --primary-fingerprint "${PRIMARY_FINGERPRINT}" \
+            --tag-fingerprint "${TAG_SUBKEY_FINGERPRINT}" \
+            --artifact-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}" \
+            --output "${ABI_IO}/baseline-evidence.json"
+      - name: Compare with the exact builder-bound abidiff binary
+        if: ${{ steps.baseline.outputs.has_baseline == 'true' }}
+        env:
+          ABI_BUILDER_IMAGE: ${{ vars.ABI_BUILDER_IMAGE }}
+          ABI_IO: ${{ runner.temp }}/abi-${{ github.run_id }}-${{ github.run_attempt }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.abi_build container-compare
+          --builder-image "${ABI_BUILDER_IMAGE}" --source . --io-directory "${ABI_IO}"
+      - name: Upload canonical ABI artifact part
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-abi-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/abi-${{ github.run_id }}-${{ github.run_attempt }}/output/
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
+      - name: Preserve ABI identity, selection, and comparison evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-abi-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/abi-${{ github.run_id }}-${{ github.run_attempt }}/selection.json
+            ${{ runner.temp }}/abi-${{ github.run_id }}-${{ github.run_attempt }}/decision.json
+            ${{ runner.temp }}/abi-${{ github.run_id }}-${{ github.run_attempt }}/baseline-evidence.json
+            ${{ runner.temp }}/abi-${{ github.run_id }}-${{ github.run_attempt }}/evidence/
           if-no-files-found: error
           retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
 
@@ -783,7 +1373,8 @@ jobs:
       ${{ always() && needs.construct-core.result == 'success' &&
           (needs.build-apt.result == 'success' || needs.build-apt.result == 'skipped') &&
           (needs.build-rpm.result == 'success' || needs.build-rpm.result == 'skipped') &&
-          (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') }}
+          (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
+          (needs.build-abi.result == 'success' || needs.build-abi.result == 'skipped') }}
     needs:
       - contract
       - repository-readiness
@@ -792,15 +1383,16 @@ jobs:
       - build-apt
       - build-rpm
       - build-windows
+      - build-abi
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
     steps:
-      - name: Checkout release construction code
+      - name: Checkout protected current release construction code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.repository-readiness.outputs.commit }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Download core artifact part
@@ -809,24 +1401,30 @@ jobs:
           name: release-core-${{ github.run_id }}-${{ github.run_attempt }}
           path: parts
       - name: Download APT artifact parts
-        if: ${{ needs.contract.outputs.target_apt == 'true' }}
+        if: ${{ needs.contract.outputs.release_kind == 'stable' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: release-apt-*-${{ github.run_id }}-${{ github.run_attempt }}
           path: parts
           merge-multiple: true
       - name: Download RPM artifact parts
-        if: ${{ needs.contract.outputs.target_rpm == 'true' }}
+        if: ${{ needs.contract.outputs.release_kind == 'stable' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: release-rpm-*-${{ github.run_id }}-${{ github.run_attempt }}
           path: parts
           merge-multiple: true
       - name: Download Windows artifact part
-        if: ${{ needs.contract.outputs.target_chocolatey == 'true' }}
+        if: ${{ needs.contract.outputs.release_kind == 'stable' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: parts
+      - name: Download ABI artifact part
+        if: ${{ needs.contract.outputs.release_kind == 'stable' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-abi-${{ github.run_id }}-${{ github.run_attempt }}
           path: parts
       - name: Construct release manifest and unsigned checksum boundary
         env:
@@ -837,72 +1435,13 @@ jobs:
           PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
           TAG_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_TAG_SUBKEY_FINGERPRINT }}
           ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
-        run: |
-          rm -rf unsigned
-          python3 -I -S <<'PY'
-          import hashlib
-          import json
-          import os
-          from pathlib import Path
-          import shutil
-          import sys
-
-          sys.path.insert(0, ".")
-          from release.artifacts import ArtifactRecord, build_release_manifest, build_sha256sums, canonical_json_bytes
-          from release.model import SemVer
-
-          parts = Path("parts")
-          output = Path("unsigned")
-          output.mkdir()
-          internal = {"core-metadata.json"}
-          routes = []
-          for route_path in sorted(parts.glob("route-*.json")):
-              value = json.loads(route_path.read_text(encoding="utf-8"))
-              if not isinstance(value, list):
-                  raise SystemExit("route fragment must be a list")
-              routes.extend(value)
-              internal.add(route_path.name)
-          if routes:
-              (output / "cloudsmith-routes.json").write_text(json.dumps(routes, sort_keys=True) + "\n", encoding="utf-8")
-          for path in sorted(parts.iterdir()):
-              if path.is_file() and path.name not in internal and not path.name.startswith("route-"):
-                  destination = output / path.name
-                  if destination.exists():
-                      raise SystemExit(f"duplicate release asset name: {path.name}")
-                  shutil.copyfile(path, destination)
-          metadata = json.loads((parts / "core-metadata.json").read_text(encoding="utf-8"))
-          payloads = []
-          for path in sorted(output.iterdir()):
-              if path.name == "RELEASE_NOTES.md":
-                  continue
-              role = "publisher-input"
-              if path.name.endswith((".tar.gz", ".zip")):
-                  role = "source-or-binary-archive"
-              elif path.name.endswith((".deb", ".rpm", ".nupkg")):
-                  role = "native-package"
-              elif path.name.endswith((".spdx.json", ".cdx.json")):
-                  role = "sbom"
-              payloads.append(ArtifactRecord.from_path(path, role=role))
-          manifest = build_release_manifest(
-              version=SemVer.parse(os.environ["VERSION"]), tag=os.environ["TAG"], commit=os.environ["COMMIT"],
-              source_tree_sha256=metadata["source_tree_sha256"], ledger_issue_id=os.environ["LEDGER_ISSUE"],
-              ledger_issue_url=f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/issues/{os.environ['LEDGER_ISSUE']}",
-              primary_fingerprint=os.environ["PRIMARY_FINGERPRINT"],
-              tag_subkey_fingerprint=os.environ["TAG_SUBKEY_FINGERPRINT"],
-              artifact_subkey_fingerprint=os.environ["ARTIFACT_SUBKEY_FINGERPRINT"],
-              payloads=payloads,
-              dependency_closure=[
-                  {"name": "boost", "minimum": "1.74"},
-                  {"name": "nlohmann_json", "minimum": "3.10.5"},
-                  {"name": "openssl", "minimum": "3.0"},
-                  {"name": "zlib", "minimum": "1.2.11"},
-              ],
-              provenance_subjects=[{"name": record.name, "digest": {"sha256": record.sha256}} for record in payloads],
-          )
-          (output / "release-manifest.json").write_bytes(canonical_json_bytes(manifest))
-          checksum_inputs = [path for path in output.iterdir() if path.name not in {"RELEASE_NOTES.md"}]
-          (output / "UNSIGNED-SHA256SUMS").write_bytes(build_sha256sums(checksum_inputs))
-          PY
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.assemble_unsigned
+          --parts parts --output unsigned --version "${VERSION}" --tag "${TAG}"
+          --commit "${COMMIT}" --ledger-issue "${LEDGER_ISSUE}"
+          --repository "${GITHUB_REPOSITORY}" --primary-fingerprint "${PRIMARY_FINGERPRINT}"
+          --tag-subkey-fingerprint "${TAG_SUBKEY_FINGERPRINT}"
+          --artifact-subkey-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}"
       - name: Upload unsigned release bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -916,6 +1455,7 @@ jobs:
     if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
+      - repository-readiness
       - ledger-readiness
       - assemble-unsigned
     runs-on: ubuntu-24.04
@@ -923,49 +1463,44 @@ jobs:
     environment: release-signing
     permissions:
       contents: read
+      issues: read
     outputs:
       result: ${{ steps.result.outputs.result }}
     steps:
+      - name: Checkout protected current signing tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Download unsigned release bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
           path: signed
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Recheck ledger authorization before reading signing secrets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
       - name: Verify unsigned boundary and create detached signatures
         env:
           RELEASE_GPG_PRIVATE_KEY_B64: ${{ secrets.RELEASE_GPG_PRIVATE_KEY_B64 }}
           RELEASE_GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
           ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
-        run: |
-          cd signed
-          sha256sum --check UNSIGNED-SHA256SUMS
-          rm UNSIGNED-SHA256SUMS
-          export GNUPGHOME="${RUNNER_TEMP}/release-gnupg"
-          install -d -m 700 "${GNUPGHOME}"
-          printf '%s' "${RELEASE_GPG_PRIVATE_KEY_B64}" | base64 --decode > "${RUNNER_TEMP}/release-key.asc"
-          gpg --batch --import "${RUNNER_TEMP}/release-key.asc"
-          gpg --batch --with-colons --list-secret-keys "${ARTIFACT_SUBKEY_FINGERPRINT}!" | grep -F "${ARTIFACT_SUBKEY_FINGERPRINT}"
-          mapfile -t detached < <(find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name 'release-manifest.json' \) -printf '%f\n' | sort)
-          for asset in "${detached[@]}"; do
-            gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
-              --local-user "${ARTIFACT_SUBKEY_FINGERPRINT}!" --armor --detach-sign "${asset}" \
-              <<<"${RELEASE_GPG_PASSPHRASE}"
-          done
-          python3 -I -S <<'PY'
-          import hashlib
-          from pathlib import Path
-
-          excluded = {"RELEASE_NOTES.md", "SHA256SUMS", "SHA256SUMS.asc"}
-          paths = sorted(path for path in Path(".").iterdir() if path.is_file() and path.name not in excluded)
-          Path("SHA256SUMS").write_text(
-              "".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in paths),
-              encoding="ascii",
-          )
-          PY
-          gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
-            --local-user "${ARTIFACT_SUBKEY_FINGERPRINT}!" --armor --detach-sign SHA256SUMS \
-            <<<"${RELEASE_GPG_PASSPHRASE}"
-          rm -rf "${GNUPGHOME}" "${RUNNER_TEMP}/release-key.asc"
+        run: bash scripts/release/sign_release.sh signed
       - name: Upload signed release bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -977,87 +1512,297 @@ jobs:
         id: result
         run: echo 'result=SIGNED' >> "${GITHUB_OUTPUT}"
 
-  validate-aur-packages:
-    name: Validate AUR package (${{ matrix.architecture }})
-    if: ${{ needs.contract.outputs.target_aur == 'true' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+  candidate-gate:
+    name: Verify the complete signed candidate before publication
+    if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
+      - repository-readiness
       - ledger-readiness
       - signing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      manifest_sha256: ${{ steps.verify.outputs.manifest_sha256 }}
+    steps:
+      - name: Checkout protected current verification policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download the signed candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-signed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate
+      - name: Verify exact identity, inventory, checksums, and signatures
+        id: verify
+        env:
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ needs.repository-readiness.outputs.commit }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
+          TAG_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_TAG_SUBKEY_FINGERPRINT }}
+          ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
+        run: |
+          python3 -I -S scripts/run_release_tool.py release.verify_candidate \
+            --directory candidate --tag "${TAG}" --commit "${COMMIT}" \
+            --ledger-issue "${LEDGER_ISSUE}" --repository "${GITHUB_REPOSITORY}" \
+            --primary-fingerprint "${PRIMARY_FINGERPRINT}" \
+            --tag-fingerprint "${TAG_SUBKEY_FINGERPRINT}" \
+            --artifact-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}" \
+            --public-key keys/release-signing-key.asc --targets packaging/native-targets.json \
+            --target-catalog packaging/targets.json \
+            --native-builder-lock release/native-builders/lock.json \
+            --conan-requirements packaging/conan-center/requirements.json \
+            --release-notes included \
+            --github-output "${GITHUB_OUTPUT}"
+      - name: Upload the verified candidate handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate/
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
+
+  validate-homebrew-package:
+    name: Validate Homebrew package (${{ matrix.bottle_tag }})
+    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    needs:
+      - contract
+      - repository-readiness
+      - ledger-readiness
+      - candidate-gate
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {architecture: x86_64, runner: release-arch-x86_64}
-          - {architecture: aarch64, runner: release-arch-aarch64}
-    runs-on: [self-hosted, release, "${{ matrix.runner }}"]
+          - runner: macos-15-intel
+            bottle_tag: sequoia
+          - runner: macos-15
+            bottle_tag: arm64_sequoia
+          - runner: ubuntu-24.04
+            bottle_tag: x86_64_linux
+          - runner: ubuntu-24.04-arm
+            bottle_tag: arm64_linux
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
       contents: read
     steps:
+      - name: Configure Linuxbrew command path
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x /home/linuxbrew/.linuxbrew/bin/brew
+          echo /home/linuxbrew/.linuxbrew/bin >>"${GITHUB_PATH}"
+      - name: Checkout protected current package validation policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Download signed immutable-release candidate
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-signed-${{ github.run_id }}-${{ github.run_attempt }}
+          name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-assets
-      - name: Build, install, and consume both AUR split packages
+      - name: Audit, install, test, and consume the exact formula
         env:
-          ARCHITECTURE: ${{ matrix.architecture }}
           VERSION: ${{ needs.contract.outputs.version }}
+        shell: bash
+        run: >-
+          scripts/release/validate_homebrew_candidate.sh
+          "${VERSION}" release-assets
+          "${RUNNER_TEMP}/mcp-cpp-sdk-homebrew-validation"
+
+  validate-conan-linux:
+    name: Validate ConanCenter recipe (Linux shared and static)
+    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    needs:
+      - contract
+      - repository-readiness
+      - ledger-readiness
+      - candidate-gate
+    runs-on: ${{ fromJSON(needs.repository-readiness.outputs.conan_builder).runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected current Conan validation policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download signed immutable-release candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets
+      - name: Create and consume the exact recipe with both linkages
+        env:
+          VERSION: ${{ needs.contract.outputs.version }}
+          BUILDER_IMAGE: ${{ fromJSON(needs.repository-readiness.outputs.conan_builder).builder_image }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.native_builder run
+          --lock release/native-builders/lock.json --image "${BUILDER_IMAGE}"
+          --kind conan --target-id conan-linux-x86_64 --architecture x86_64
+          --version "${VERSION}" --assets release-assets --output conan-validation
+      - name: Upload exact Linux Conan validation evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: conan-validation-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: conan-validation/
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
+
+  validate-conan-windows:
+    name: Validate ConanCenter recipe (Windows shared and static)
+    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    needs:
+      - contract
+      - repository-readiness
+      - ledger-readiness
+      - candidate-gate
+    runs-on: windows-2022
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout protected current Conan validation policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up the reviewed Python runtime
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: ${{ vars.WINDOWS_RELEASE_PYTHON_VERSION }}
+          check-latest: false
+      - name: Enter the installed x64 Visual Studio developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+      - name: Install the exact hash-locked Conan 2 client
+        env:
+          WINDOWS_RELEASE_CONAN_VERSION: ${{ vars.WINDOWS_RELEASE_CONAN_VERSION }}
+        run: >-
+          & ./scripts/release/install_windows_conan.ps1
+          -PythonPath (Get-Command python.exe -CommandType Application).Source
+          -ExpectedVersion $env:WINDOWS_RELEASE_CONAN_VERSION
+          -Requirements release/windows/conan-requirements.txt
+          -GitHubPath $env:GITHUB_PATH
+      - name: Download signed immutable-release candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets
+      - name: Create and consume the exact recipe with both linkages
+        env:
+          VERSION: ${{ needs.contract.outputs.version }}
+          WINDOWS_RELEASE_CONAN_VERSION: ${{ vars.WINDOWS_RELEASE_CONAN_VERSION }}
+          WINDOWS_RELEASE_VCTOOLS_VERSION: ${{ vars.WINDOWS_RELEASE_VCTOOLS_VERSION }}
+          WINDOWS_RELEASE_MSC_VER: ${{ vars.WINDOWS_RELEASE_MSC_VER }}
         run: |
-          test "$(uname -m)" = "${ARCHITECTURE}"
-          rm -rf aur-check
-          mkdir aur-check
-          cp release-assets/aur-PKGBUILD aur-check/PKGBUILD
-          cp release-assets/aur-SRCINFO aur-check/.SRCINFO
-          cp "release-assets/mcp-cpp-sdk-${VERSION}.tar.gz" aur-check/
-          cp "release-assets/mcp-cpp-sdk-${VERSION}.tar.gz.asc" aur-check/
-          cp release-assets/release-signing-key.asc aur-check/
-          cd aur-check
-          export GNUPGHOME="${RUNNER_TEMP}/aur-validation-gnupg"
-          install -d -m 700 "${GNUPGHOME}"
-          trap 'rm -rf "${GNUPGHOME}"' EXIT
-          gpg --batch --import release-signing-key.asc
-          makepkg --printsrcinfo > generated.SRCINFO
-          cmp --silent .SRCINFO generated.SRCINFO
-          makepkg --verifysource --noconfirm
-          makepkg --cleanbuild --noconfirm
-          mapfile -t packages < <(makepkg --packagelist)
-          test "${#packages[@]}" = 2
-          for package in "${packages[@]}"; do
-            test -s "${package}"
-          done
-          sudo pacman -U --noconfirm "${packages[@]}"
-          mkdir consumer
-          python3 -I -S <<'PY'
-          from pathlib import Path
+          New-Item -ItemType Directory -Path conan-validation | Out-Null
+          & ./scripts/release/validate_conan_candidate.ps1 `
+            -Version $env:VERSION `
+            -CandidateDirectory release-assets `
+            -WorkDirectory "$env:RUNNER_TEMP/mcp-cpp-sdk-conan-candidate" `
+            -Evidence conan-validation/conan-validation-windows.json `
+            -ExpectedConanVersion $env:WINDOWS_RELEASE_CONAN_VERSION `
+            -ExpectedVCToolsVersion $env:WINDOWS_RELEASE_VCTOOLS_VERSION `
+            -ExpectedMscVer ([int]$env:WINDOWS_RELEASE_MSC_VER)
+      - name: Upload exact Windows Conan validation evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: conan-validation-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: conan-validation/
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
 
-          Path("consumer/CMakeLists.txt").write_text(
-              """cmake_minimum_required(VERSION 3.20)
-          project(mcp_cpp_sdk_aur_consumer LANGUAGES CXX)
-          find_package(mcp-cpp-sdk CONFIG REQUIRED COMPONENTS shared static)
-          add_executable(shared-consumer main.cpp)
-          target_link_libraries(shared-consumer PRIVATE mcp::sdk_shared)
-          add_executable(static-consumer main.cpp)
-          target_link_libraries(static-consumer PRIVATE mcp::sdk_static)
-          """,
-              encoding="utf-8",
-          )
-          Path("consumer/main.cpp").write_text(
-              "#include <mcp/mcp.hpp>\nint main() { return 0; }\n",
-              encoding="utf-8",
-          )
-          PY
-          cmake -S consumer -B consumer/build -G Ninja
-          cmake --build consumer/build
-          ./consumer/build/shared-consumer
-          ./consumer/build/static-consumer
-
-  aur-validation-gate:
-    name: Require native AUR validation when selected
+  package-validation-gate:
+    name: Require package-manager validation before a stable anchor
     if: ${{ always() }}
     needs:
       - contract
+      - ledger-readiness
+      - validate-homebrew-package
+      - validate-conan-linux
+      - validate-conan-windows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected current package-result policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Enforce every required package-manager result
+        env:
+          RELEASE_KIND: ${{ needs.contract.outputs.release_kind }}
+          ANCHOR_EXISTS: ${{ needs.ledger-readiness.outputs.anchor_exists }}
+          HOMEBREW_RESULT: ${{ needs.validate-homebrew-package.result }}
+          CONAN_LINUX_RESULT: ${{ needs.validate-conan-linux.result }}
+          CONAN_WINDOWS_RESULT: ${{ needs.validate-conan-windows.result }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.workflow_gate packages
+          --release-kind "${RELEASE_KIND}" --anchor-exists "${ANCHOR_EXISTS}"
+          --homebrew-result "${HOMEBREW_RESULT}"
+          --conan-linux-result "${CONAN_LINUX_RESULT}"
+          --conan-windows-result "${CONAN_WINDOWS_RESULT}"
+
+  validate-aur-packages:
+    name: Validate AUR package (x86_64)
+    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    needs:
+      - contract
+      - repository-readiness
+      - ledger-readiness
+      - candidate-gate
+    runs-on: ${{ fromJSON(needs.repository-readiness.outputs.aur_builder).runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected current validation policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download signed immutable-release candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets
+      - name: Build, install, and consume both AUR split packages
+        env:
+          VERSION: ${{ needs.contract.outputs.version }}
+          BUILDER_IMAGE: ${{ fromJSON(needs.repository-readiness.outputs.aur_builder).builder_image }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.native_builder run
+          --lock release/native-builders/lock.json --image "${BUILDER_IMAGE}"
+          --kind aur --target-id aur-x86_64 --architecture x86_64
+          --version "${VERSION}" --assets release-assets --output aur-validation
+  aur-validation-gate:
+    name: Require native AUR validation for every stable anchor
+    if: ${{ always() }}
+    needs:
+      - contract
+      - repository-readiness
       - ledger-readiness
       - validate-aur-packages
     runs-on: ubuntu-24.04
@@ -1065,43 +1810,121 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Checkout protected current AUR result policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Enforce selected-target validation result
         env:
-          TARGET_AUR: ${{ needs.contract.outputs.target_aur }}
+          RELEASE_KIND: ${{ needs.contract.outputs.release_kind }}
           ANCHOR_EXISTS: ${{ needs.ledger-readiness.outputs.anchor_exists }}
           VALIDATION_RESULT: ${{ needs.validate-aur-packages.result }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.workflow_gate aur
+          --release-kind "${RELEASE_KIND}" --anchor-exists "${ANCHOR_EXISTS}"
+          --validation-result "${VALIDATION_RESULT}"
+
+  validation-complete:
+    name: Validation completed without publication
+    if: ${{ always() && needs.contract.outputs.mode == 'validate' && needs.preparation-gate.result == 'success' }}
+    needs:
+      - contract
+      - ledger-readiness
+      - preparation-gate
+      - build-abi
+      - candidate-gate
+      - aur-validation-gate
+      - package-validation-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact tagged validation-result policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Require complete construction and signing validation
+        env:
+          ANCHOR_EXISTS: ${{ needs.ledger-readiness.outputs.anchor_exists }}
+          RELEASE_KIND: ${{ needs.contract.outputs.release_kind }}
+          CANDIDATE_RESULT: ${{ needs.candidate-gate.result }}
+          ABI_RESULT: ${{ needs.build-abi.result }}
+          AUR_GATE_RESULT: ${{ needs.aur-validation-gate.result }}
+          PACKAGE_GATE_RESULT: ${{ needs.package-validation-gate.result }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.workflow_gate validation
+          --anchor-exists "${ANCHOR_EXISTS}" --release-kind "${RELEASE_KIND}"
+          --candidate-result "${CANDIDATE_RESULT}" --abi-result "${ABI_RESULT}"
+          --aur-gate-result "${AUR_GATE_RESULT}"
+          --package-gate-result "${PACKAGE_GATE_RESULT}"
+      - name: Report read-only completion
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_CHANNELS: ${{ needs.contract.outputs.selection_label }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
         run: |
-          expected=skipped
-          if [[ "${TARGET_AUR}" == true && "${ANCHOR_EXISTS}" == false ]]; then
-            expected=success
-          fi
-          test "${VALIDATION_RESULT}" = "${expected}"
+          echo "Validated ${RELEASE_TAG}, channels ${RELEASE_CHANNELS}, ledger #${LEDGER_ISSUE}."
+          echo "No GitHub Release, issue mutation, attestation, downstream dispatch, package publication, or provider mutation occurred."
+          echo "Validation artifacts and protected-environment approvals remain internal to this workflow run."
 
   attestation:
     name: Attest signed release assets
-    if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.contract.outputs.mode == 'publish' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
     needs:
+      - contract
+      - repository-readiness
       - ledger-readiness
-      - signing
+      - candidate-gate
+      - aur-validation-gate
+      - package-validation-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release-github
     permissions:
       contents: read
+      issues: read
       id-token: write
       attestations: write
     outputs:
       result: ${{ steps.result.outputs.result }}
     steps:
+      - name: Checkout protected current attestation policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
       - name: Download signed release bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-signed-${{ github.run_id }}-${{ github.run_attempt }}
+          name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
           path: signed
       - name: Select published attestation subjects
         run: |
           mkdir subjects
           find signed -maxdepth 1 -type f ! -name RELEASE_NOTES.md -exec cp {} subjects/ \;
+      - name: Recheck ledger authorization before requesting OIDC
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
       - name: Create GitHub build provenance
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
@@ -1112,44 +1935,67 @@ jobs:
 
   github-release:
     name: Publish the immutable GitHub Release
-    if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.contract.outputs.mode == 'publish' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
       - ledger-readiness
-      - signing
+      - candidate-gate
       - attestation
       - aur-validation-gate
+      - package-validation-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: release-github
     permissions:
       contents: write
+      issues: read
     outputs:
       result: ${{ steps.result.outputs.result }}
     steps:
+      - name: Checkout protected current publication policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
       - name: Download signed release bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: release-signed-${{ github.run_id }}-${{ github.run_attempt }}
+          name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
           path: signed
+      - name: Recheck ledger authorization before creating a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
       - name: Create and publish release under repository immutability
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
           RELEASE_KIND: ${{ needs.contract.outputs.release_kind }}
           REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          TAG_OBJECT_SHA: ${{ needs.repository-readiness.outputs.tag_object_sha }}
+          COMMIT: ${{ needs.repository-readiness.outputs.commit }}
         run: |
-          if gh release view "${TAG}" --repo "${REPOSITORY}" >/dev/null 2>&1; then
-            echo "::error::Release appeared after preflight; refusing an ambiguous mutation"
-            exit 1
-          fi
-          mapfile -t assets < <(find signed -maxdepth 1 -type f ! -name RELEASE_NOTES.md -print | sort)
-          arguments=("${TAG}" "${assets[@]}" --repo "${REPOSITORY}" --verify-tag --title "mcp-cpp-sdk ${TAG}" --notes-file signed/RELEASE_NOTES.md)
-          if [[ "${RELEASE_KIND}" == rc ]]; then
-            arguments+=(--prerelease --latest=false)
-          fi
-          gh release create "${arguments[@]}"
+          python3 -I -S scripts/run_release_tool.py release.github_publication create-release \
+            --directory signed --repository "${REPOSITORY}" \
+            --repository-id "${REPOSITORY_ID}" --tag "${TAG}" \
+            --release-kind "${RELEASE_KIND}" --tag-object-sha "${TAG_OBJECT_SHA}" \
+            --commit "${COMMIT}"
       - name: Emit fixed GitHub publication result
         id: result
         run: echo 'result=PUBLISHED' >> "${GITHUB_OUTPUT}"
@@ -1165,6 +2011,7 @@ jobs:
       - ledger-readiness
       - publication-gate
       - github-release
+      - package-validation-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -1175,19 +2022,13 @@ jobs:
       result: ${{ steps.anchor.outputs.result }}
       bundle_digest: ${{ steps.upload.outputs.artifact-digest }}
     steps:
-      - name: Checkout public verification material
+      - name: Checkout protected current verification material
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.repository-readiness.outputs.commit }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Download release assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
-          REPOSITORY: ${{ github.repository }}
-        run: gh release download "${TAG}" --repo "${REPOSITORY}" --dir verified
-      - name: Verify immutable asset set, signatures, manifest, and release identity
+      - name: Download and verify immutable assets, signatures, and release identity
         id: anchor
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1195,98 +2036,29 @@ jobs:
           VERSION: ${{ needs.contract.outputs.version }}
           COMMIT: ${{ needs.repository-readiness.outputs.commit }}
           LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          RELEASE_KIND: ${{ needs.contract.outputs.release_kind }}
           ANCHOR_EXISTED: ${{ needs.ledger-readiness.outputs.anchor_exists }}
+          PRIOR_MANIFEST_SHA256: ${{ needs.ledger-readiness.outputs.prior_manifest_sha256 }}
           REPOSITORY: ${{ github.repository }}
+          TAG_OBJECT_SHA: ${{ needs.repository-readiness.outputs.tag_object_sha }}
           PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
           TAG_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_TAG_SUBKEY_FINGERPRINT }}
           ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
         run: |
-          gh release view "${TAG}" --repo "${REPOSITORY}" \
-            --json databaseId,isDraft,isImmutable,isPrerelease,tagName > release.json
-          gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/${REPOSITORY}/releases/tags/${TAG}" > release-api.json
-          export GNUPGHOME="${RUNNER_TEMP}/anchor-gnupg"
-          install -d -m 700 "${GNUPGHOME}"
-          gpg --batch --import keys/release-signing-key.asc
-          gpg --batch --no-auto-key-retrieve --status-fd 1 \
-            --verify verified/SHA256SUMS.asc verified/SHA256SUMS > checksum.status
-          python3 -I -S release/verify_gnupg_status.py --status checksum.status \
-            --signing-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}" \
-            --primary-fingerprint "${PRIMARY_FINGERPRINT}"
-          for signature in verified/release-manifest.json.asc verified/*.tar.gz.asc verified/*.zip.asc; do
-            [[ -f "${signature}" ]] || continue
-            asset="${signature%.asc}"
-            gpg --batch --no-auto-key-retrieve --status-fd 1 \
-              --verify "${signature}" "${asset}" > detached.status
-            python3 -I -S release/verify_gnupg_status.py --status detached.status \
-              --signing-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}" \
-              --primary-fingerprint "${PRIMARY_FINGERPRINT}"
-          done
-          (cd verified && sha256sum --check SHA256SUMS)
-          python3 -I -S <<'PY'
-          import hashlib
-          import json
-          import os
-          import re
-          from pathlib import Path
-
-          release = json.loads(Path("release.json").read_text(encoding="utf-8"))
-          api = json.loads(Path("release-api.json").read_text(encoding="utf-8"))
-          expected_prerelease = os.environ["RELEASE_KIND"] == "rc"
-          if release != {
-              "databaseId": release["databaseId"], "isDraft": False, "isImmutable": True,
-              "isPrerelease": expected_prerelease, "tagName": os.environ["TAG"],
-          } or not isinstance(release["databaseId"], int) or release["databaseId"] < 1:
-              raise SystemExit("GitHub release is not the exact published immutable anchor")
-          manifest_path = Path("verified/release-manifest.json")
-          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-          expected_signers = {
-              "primary_fingerprint": os.environ["PRIMARY_FINGERPRINT"],
-              "tag_subkey_fingerprint": os.environ["TAG_SUBKEY_FINGERPRINT"],
-              "artifact_subkey_fingerprint": os.environ["ARTIFACT_SUBKEY_FINGERPRINT"],
-          }
-          expected_ledger = {
-              "issue_id": os.environ["LEDGER_ISSUE"],
-              "issue_url": f"https://github.com/{os.environ['REPOSITORY']}/issues/{os.environ['LEDGER_ISSUE']}",
-          }
-          if (
-              manifest.get("tag") != os.environ["TAG"]
-              or manifest.get("version") != os.environ["VERSION"]
-              or manifest.get("commit") != os.environ["COMMIT"]
-              or manifest.get("release_ledger") != expected_ledger
-              or manifest.get("signers") != expected_signers
-          ):
-              raise SystemExit("release manifest does not match the dispatch identity")
-          if Path("verified/release-signing-key.asc").read_bytes() != Path("keys/release-signing-key.asc").read_bytes():
-              raise SystemExit("release verification key differs from the tagged public key")
-          local = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in Path("verified").iterdir() if path.is_file()}
-          remote = {}
-          for asset in api.get("assets", []):
-              digest = asset.get("digest")
-              name = asset.get("name")
-              if not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}", name) is None:
-                  raise SystemExit("release contains an unsafe asset name")
-              if not isinstance(digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
-                  raise SystemExit("release asset lacks a canonical server-side digest")
-              if name in remote:
-                  raise SystemExit("release contains duplicate asset names")
-              remote[name] = digest.removeprefix("sha256:")
-          if remote != local:
-              raise SystemExit("downloaded release assets do not match server-side SHA-256 digests")
-          manifest_sha = local["release-manifest.json"]
-          anchor = {
-              "schema_version": 1, "repository": os.environ["REPOSITORY"],
-              "release_id": str(release["databaseId"]), "tag": os.environ["TAG"],
-              "commit": os.environ["COMMIT"], "manifest_sha256": manifest_sha,
-          }
-          Path("verified/ANCHOR.json").write_text(json.dumps(anchor, sort_keys=True) + "\n", encoding="utf-8")
-          output = Path(os.environ["GITHUB_OUTPUT"])
-          result = "SKIPPED_ALREADY_IDENTICAL" if os.environ["ANCHOR_EXISTED"] == "true" else "PUBLISHED"
-          with output.open("a", encoding="utf-8") as stream:
-              stream.write(f"release_id={release['databaseId']}\nmanifest_sha256={manifest_sha}\nresult={result}\n")
-          PY
-          rm -rf "${GNUPGHOME}"
+          python3 -I -S scripts/run_release_tool.py release.github_anchor download-and-verify \
+            --directory verified --public-key keys/release-signing-key.asc \
+            --trusted-signers release/trusted-release-signers.json \
+            --tag "${TAG}" --version "${VERSION}" --commit "${COMMIT}" \
+            --ledger-issue "${LEDGER_ISSUE}" --repository "${REPOSITORY}" \
+            --tag-object-sha "${TAG_OBJECT_SHA}" \
+            --primary-fingerprint "${PRIMARY_FINGERPRINT}" \
+            --tag-fingerprint "${TAG_SUBKEY_FINGERPRINT}" \
+            --artifact-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}" \
+            --prior-manifest-sha256 "${PRIOR_MANIFEST_SHA256}" \
+            --anchor-existed "${ANCHOR_EXISTED}" \
+            --targets packaging/native-targets.json --target-catalog packaging/targets.json \
+            --native-builder-lock release/native-builders/lock.json \
+            --conan-requirements packaging/conan-center/requirements.json \
+            --github-output "${GITHUB_OUTPUT}"
       - name: Upload verified immutable release bundle
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1298,19 +2070,28 @@ jobs:
 
   publish-apt:
     name: Publish APT packages through Cloudsmith OIDC
-    if: ${{ needs.contract.outputs.target_apt == 'true' }}
+    if: ${{ needs.contract.outputs.mode == 'publish' && needs.contract.outputs.target_apt == 'true' }}
     needs:
       - contract
+      - repository-readiness
+      - ledger-readiness
       - github-anchor
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release-cloudsmith
     permissions:
       contents: read
+      issues: read
       id-token: write
     outputs:
       result: ${{ steps.publish.outputs.result }}
     steps:
+      - name: Checkout protected current publisher tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Download and verify immutable release bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1320,80 +2101,81 @@ jobs:
         env:
           EXPECTED_MANIFEST: ${{ needs.github-anchor.outputs.manifest_sha256 }}
           EXPECTED_TAG: ${{ inputs.tag }}
-        run: |
-          python3 -I -S <<'PY'
-          import json, os
-          from pathlib import Path
-          anchor = json.loads(Path("release-assets/ANCHOR.json").read_text(encoding="utf-8"))
-          if anchor.get("manifest_sha256") != os.environ["EXPECTED_MANIFEST"] or anchor.get("tag") != os.environ["EXPECTED_TAG"]:
-              raise SystemExit("verified artifact handoff does not match the immutable anchor")
-          PY
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.github_publication verify-handoff
+          --anchor release-assets/ANCHOR.json --tag "${EXPECTED_TAG}"
+          --manifest-sha256 "${EXPECTED_MANIFEST}"
+      - name: Bind Cloudsmith publication destination to the signed anchor
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.publication_contract
+          --contract release-assets/release-publication-contract.json --name cloudsmith
+          --namespace "${{ vars.CLOUDSMITH_NAMESPACE }}"
+          --repository "${{ vars.CLOUDSMITH_REPOSITORY }}"
+          --preflight-username "${{ vars.CLOUDSMITH_PREFLIGHT_SERVICE_USERNAME }}"
+          --publish-username "${{ vars.CLOUDSMITH_PUBLISH_SERVICE_USERNAME }}"
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Recheck ledger authorization before requesting Cloudsmith OIDC
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
       - name: Authenticate and install pinned Cloudsmith CLI
         uses: cloudsmith-io/cloudsmith-cli-action@159f1619275d5d3147f059c3cc110938ec221d16 # v2.0.3
         with:
           cli-version: "1.19.0"
           oidc-namespace: ${{ vars.CLOUDSMITH_OIDC_NAMESPACE }}
           oidc-service-slug: ${{ vars.CLOUDSMITH_OIDC_SERVICE_SLUG }}
+      - name: Verify the downloaded Cloudsmith CLI payload
+        run: bash scripts/release/verify_cloudsmith_cli.sh
       - name: Push or identically skip exact APT routes
         id: publish
         env:
           CLOUDSMITH_NAMESPACE: ${{ vars.CLOUDSMITH_NAMESPACE }}
           CLOUDSMITH_REPOSITORY: ${{ vars.CLOUDSMITH_REPOSITORY }}
-        run: |
-          python3 -I -S <<'PY'
-          import hashlib, json, os, re, subprocess
-          from pathlib import Path
-          namespace, repository = os.environ["CLOUDSMITH_NAMESPACE"], os.environ["CLOUDSMITH_REPOSITORY"]
-          if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", namespace) is None or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", repository) is None:
-              raise SystemExit("Cloudsmith coordinates are missing or invalid")
-          routes = json.loads(Path("release-assets/cloudsmith-routes.json").read_text(encoding="utf-8"))
-          selected = [route for route in routes if route.get("format") == "apt"]
-          if not selected:
-              raise SystemExit("immutable release has no APT routes")
-          published = False
-          for route in selected:
-              if set(route) != {"asset", "format", "distribution", "release"}:
-                  raise SystemExit("APT route schema mismatch")
-              if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}", route[key]) is None for key in ("asset", "distribution", "release")):
-                  raise SystemExit("APT route contains an unsafe coordinate")
-              path = Path("release-assets") / route["asset"]
-              digest = hashlib.sha256(path.read_bytes()).hexdigest()
-              query = f"filename:{route['asset']} AND format:deb AND distribution:{route['distribution']}/{route['release']}"
-              listing = subprocess.run(
-                  ["cloudsmith", "list", "packages", f"{namespace}/{repository}", "-F", "json", "--page-all", "-q", query],
-                  check=True, text=True, stdout=subprocess.PIPE,
-              )
-              payload = json.loads(listing.stdout)
-              if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-                  raise SystemExit("Cloudsmith returned an unexpected package-list schema")
-              exact = [item for item in payload["data"] if item.get("filename") == route["asset"]]
-              if len(exact) > 1:
-                  raise SystemExit("Cloudsmith contains an ambiguous duplicate APT identity")
-              if exact:
-                  if exact[0].get("checksum_sha256") != digest:
-                      raise SystemExit("Cloudsmith APT identity exists with a different SHA-256")
-                  continue
-              subprocess.run(["cloudsmith", "push", "deb", f"{namespace}/{repository}/{route['distribution']}/{route['release']}", str(path)], check=True)
-              published = True
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"result={'PUBLISHED' if published else 'SKIPPED_ALREADY_IDENTICAL'}\n")
-          PY
+          CLOUDSMITH_PUBLISH_SERVICE_USERNAME: ${{ vars.CLOUDSMITH_PUBLISH_SERVICE_USERNAME }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.cloudsmith_publish publish
+          --directory release-assets --routes release-assets/cloudsmith-routes.json
+          --format apt --namespace "${CLOUDSMITH_NAMESPACE}"
+          --repository "${CLOUDSMITH_REPOSITORY}"
+          --expected-username "${CLOUDSMITH_PUBLISH_SERVICE_USERNAME}"
+          --github-output "${GITHUB_OUTPUT}"
 
   publish-rpm:
     name: Publish RPM packages through Cloudsmith OIDC
-    if: ${{ needs.contract.outputs.target_rpm == 'true' }}
+    if: ${{ needs.contract.outputs.mode == 'publish' && needs.contract.outputs.target_rpm == 'true' }}
     needs:
       - contract
+      - repository-readiness
+      - ledger-readiness
       - github-anchor
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release-cloudsmith
     permissions:
       contents: read
+      issues: read
       id-token: write
     outputs:
       result: ${{ steps.publish.outputs.result }}
     steps:
+      - name: Checkout protected current publisher tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Download and verify immutable release bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1403,79 +2185,83 @@ jobs:
         env:
           EXPECTED_MANIFEST: ${{ needs.github-anchor.outputs.manifest_sha256 }}
           EXPECTED_TAG: ${{ inputs.tag }}
-        run: |
-          python3 -I -S <<'PY'
-          import json, os
-          from pathlib import Path
-          anchor = json.loads(Path("release-assets/ANCHOR.json").read_text(encoding="utf-8"))
-          if anchor.get("manifest_sha256") != os.environ["EXPECTED_MANIFEST"] or anchor.get("tag") != os.environ["EXPECTED_TAG"]:
-              raise SystemExit("verified artifact handoff does not match the immutable anchor")
-          PY
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.github_publication verify-handoff
+          --anchor release-assets/ANCHOR.json --tag "${EXPECTED_TAG}"
+          --manifest-sha256 "${EXPECTED_MANIFEST}"
+      - name: Bind Cloudsmith publication destination to the signed anchor
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.publication_contract
+          --contract release-assets/release-publication-contract.json --name cloudsmith
+          --namespace "${{ vars.CLOUDSMITH_NAMESPACE }}"
+          --repository "${{ vars.CLOUDSMITH_REPOSITORY }}"
+          --preflight-username "${{ vars.CLOUDSMITH_PREFLIGHT_SERVICE_USERNAME }}"
+          --publish-username "${{ vars.CLOUDSMITH_PUBLISH_SERVICE_USERNAME }}"
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Recheck ledger authorization before requesting Cloudsmith OIDC
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
       - name: Authenticate and install pinned Cloudsmith CLI
         uses: cloudsmith-io/cloudsmith-cli-action@159f1619275d5d3147f059c3cc110938ec221d16 # v2.0.3
         with:
           cli-version: "1.19.0"
           oidc-namespace: ${{ vars.CLOUDSMITH_OIDC_NAMESPACE }}
           oidc-service-slug: ${{ vars.CLOUDSMITH_OIDC_SERVICE_SLUG }}
+      - name: Verify the downloaded Cloudsmith CLI payload
+        run: bash scripts/release/verify_cloudsmith_cli.sh
       - name: Push or identically skip exact RPM routes
         id: publish
         env:
           CLOUDSMITH_NAMESPACE: ${{ vars.CLOUDSMITH_NAMESPACE }}
           CLOUDSMITH_REPOSITORY: ${{ vars.CLOUDSMITH_REPOSITORY }}
-        run: |
-          python3 -I -S <<'PY'
-          import hashlib, json, os, re, subprocess
-          from pathlib import Path
-          namespace, repository = os.environ["CLOUDSMITH_NAMESPACE"], os.environ["CLOUDSMITH_REPOSITORY"]
-          if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", namespace) is None or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", repository) is None:
-              raise SystemExit("Cloudsmith coordinates are missing or invalid")
-          routes = json.loads(Path("release-assets/cloudsmith-routes.json").read_text(encoding="utf-8"))
-          selected = [route for route in routes if route.get("format") == "rpm"]
-          if not selected:
-              raise SystemExit("immutable release has no RPM routes")
-          published = False
-          for route in selected:
-              if set(route) != {"asset", "format", "distribution", "release"}:
-                  raise SystemExit("RPM route schema mismatch")
-              if any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}", route[key]) is None for key in ("asset", "distribution", "release")):
-                  raise SystemExit("RPM route contains an unsafe coordinate")
-              path = Path("release-assets") / route["asset"]
-              digest = hashlib.sha256(path.read_bytes()).hexdigest()
-              query = f"filename:{route['asset']} AND format:rpm AND distribution:{route['distribution']}/{route['release']}"
-              listing = subprocess.run(
-                  ["cloudsmith", "list", "packages", f"{namespace}/{repository}", "-F", "json", "--page-all", "-q", query],
-                  check=True, text=True, stdout=subprocess.PIPE,
-              )
-              payload = json.loads(listing.stdout)
-              if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-                  raise SystemExit("Cloudsmith returned an unexpected package-list schema")
-              exact = [item for item in payload["data"] if item.get("filename") == route["asset"]]
-              if len(exact) > 1:
-                  raise SystemExit("Cloudsmith contains an ambiguous duplicate RPM identity")
-              if exact:
-                  if exact[0].get("checksum_sha256") != digest:
-                      raise SystemExit("Cloudsmith RPM identity exists with a different SHA-256")
-                  continue
-              subprocess.run(["cloudsmith", "push", "rpm", f"{namespace}/{repository}/{route['distribution']}/{route['release']}", str(path)], check=True)
-              published = True
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"result={'PUBLISHED' if published else 'SKIPPED_ALREADY_IDENTICAL'}\n")
-          PY
+          CLOUDSMITH_PUBLISH_SERVICE_USERNAME: ${{ vars.CLOUDSMITH_PUBLISH_SERVICE_USERNAME }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.cloudsmith_publish publish
+          --directory release-assets --routes release-assets/cloudsmith-routes.json
+          --format rpm --namespace "${CLOUDSMITH_NAMESPACE}"
+          --repository "${CLOUDSMITH_REPOSITORY}"
+          --expected-username "${CLOUDSMITH_PUBLISH_SERVICE_USERNAME}"
+          --github-output "${GITHUB_OUTPUT}"
 
   aur:
     name: Publish the AUR source package
-    if: ${{ needs.contract.outputs.target_aur == 'true' }}
+    if: ${{ needs.contract.outputs.mode == 'publish' && needs.contract.outputs.target_aur == 'true' }}
     needs:
       - contract
+      - repository-readiness
+      - ledger-readiness
       - github-anchor
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: release-aur
     permissions:
       contents: read
+      issues: read
+    env:
+      AUR_PACKAGE_BASE: mcp-cpp-sdk
+      AUR_CLONE_URL: ssh://aur@aur.archlinux.org/mcp-cpp-sdk.git
     outputs:
       result: ${{ steps.publish.outputs.result }}
     steps:
+      - name: Checkout protected current publisher tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Download and verify immutable release bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1485,14 +2271,33 @@ jobs:
         env:
           EXPECTED_MANIFEST: ${{ needs.github-anchor.outputs.manifest_sha256 }}
           EXPECTED_TAG: ${{ inputs.tag }}
-        run: |
-          python3 -I -S <<'PY'
-          import json, os
-          from pathlib import Path
-          anchor = json.loads(Path("release-assets/ANCHOR.json").read_text(encoding="utf-8"))
-          if anchor.get("manifest_sha256") != os.environ["EXPECTED_MANIFEST"] or anchor.get("tag") != os.environ["EXPECTED_TAG"]:
-              raise SystemExit("verified artifact handoff does not match the immutable anchor")
-          PY
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.github_publication verify-handoff
+          --anchor release-assets/ANCHOR.json --tag "${EXPECTED_TAG}"
+          --manifest-sha256 "${EXPECTED_MANIFEST}"
+      - name: Bind the AUR target to the signed anchor
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.publication_contract
+          --contract release-assets/release-publication-contract.json --name aur
+          --repository "${AUR_CLONE_URL}" --package-base "${AUR_PACKAGE_BASE}"
+          --architecture x86_64
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Recheck ledger authorization before reading AUR credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
       - name: Publish exact reviewed AUR metadata
         id: publish
         env:
@@ -1501,77 +2306,32 @@ jobs:
           AUR_KNOWN_HOSTS: ${{ vars.AUR_KNOWN_HOSTS }}
           VERSION: ${{ needs.contract.outputs.version }}
           TAG: ${{ inputs.tag }}
-        run: |
-          install -d -m 700 "${HOME}/.ssh"
-          umask 077
-          askpass="${RUNNER_TEMP}/aur-ssh-askpass"
-          trap 'ssh-agent -k >/dev/null 2>&1 || true; rm -f "${HOME}/.ssh/id_ed25519" "${HOME}/.ssh/known_hosts" "${askpass}"' EXIT
-          printf '%s\n' "${AUR_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
-          grep -E '^aur\.archlinux\.org[ ,]' "${HOME}/.ssh/known_hosts" >/dev/null
-          printf '%s' "${AUR_SSH_PRIVATE_KEY_B64}" | base64 --decode > "${HOME}/.ssh/id_ed25519"
-          chmod 600 "${HOME}/.ssh/id_ed25519"
-          test -n "${AUR_SSH_KEY_PASSPHRASE}"
-          printf '%s\n' '#!/bin/sh' 'printf "%s\\n" "${AUR_SSH_KEY_PASSPHRASE}"' > "${askpass}"
-          chmod 700 "${askpass}"
-          export SSH_ASKPASS="${askpass}" SSH_ASKPASS_REQUIRE=force DISPLAY=release
-          eval "$(ssh-agent -s)"
-          ssh-add "${HOME}/.ssh/id_ed25519" </dev/null
-          unset AUR_SSH_KEY_PASSPHRASE SSH_ASKPASS SSH_ASKPASS_REQUIRE DISPLAY
-          rm -f "${askpass}"
-          export GIT_SSH_COMMAND="ssh -F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${HOME}/.ssh/known_hosts"
-          git clone --no-checkout ssh://aur@aur.archlinux.org/mcp-cpp-sdk.git aur-repository
-          cd aur-repository
-          git checkout HEAD -- . || true
-          python3 -I -S <<'PY'
-          import os
-          from pathlib import Path
-          import re
-
-          package_build = Path("PKGBUILD")
-          if package_build.is_file():
-              match = re.search(
-                  r"(?m)^pkgver=([0-9]+)\.([0-9]+)\.([0-9]+)$",
-                  package_build.read_text(encoding="utf-8"),
-              )
-              if match is None:
-                  raise SystemExit("existing AUR pkgver is missing or noncanonical")
-              remote = tuple(int(part) for part in match.groups())
-              target = tuple(int(part) for part in os.environ["VERSION"].split("."))
-              if remote > target:
-                  raise SystemExit("refusing to replace a newer AUR package version")
-          PY
-          if [[ -f PKGBUILD ]] && grep -Fx "pkgver=${VERSION}" PKGBUILD >/dev/null; then
-            if cmp -s PKGBUILD ../release-assets/aur-PKGBUILD && cmp -s .SRCINFO ../release-assets/aur-SRCINFO; then
-              echo 'result=SKIPPED_ALREADY_IDENTICAL' >> "${GITHUB_OUTPUT}"
-              exit 0
-            fi
-            echo "::error::AUR already contains this version with different metadata"
-            exit 1
-          fi
-          install -m 644 ../release-assets/aur-PKGBUILD PKGBUILD
-          install -m 644 ../release-assets/aur-SRCINFO .SRCINFO
-          git config user.name mcp-cpp-sdk-release
-          git config user.email releases@users.noreply.github.com
-          git add -- PKGBUILD .SRCINFO
-          git commit -m "mcp-cpp-sdk ${TAG}"
-          git push origin HEAD:master
-          echo 'result=PUBLISHED' >> "${GITHUB_OUTPUT}"
-
+        run: bash scripts/release/publish_aur.sh
   homebrew:
     name: Dispatch the Homebrew App publisher
-    if: ${{ needs.contract.outputs.target_homebrew == 'true' }}
+    if: ${{ needs.contract.outputs.mode == 'publish' && needs.contract.outputs.target_homebrew == 'true' }}
     needs:
       - contract
       - repository-readiness
+      - ledger-readiness
       - github-anchor
+      - preflight-homebrew
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release-homebrew
     permissions:
       contents: read
+      issues: read
     outputs:
       result: ${{ steps.result.outputs.result }}
+      downstream_run_id: ${{ steps.dispatch.outputs.downstream_workflow_run_id }}
     steps:
+      - name: Checkout protected current Homebrew dispatcher tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Download and verify immutable release bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1581,14 +2341,34 @@ jobs:
         env:
           EXPECTED_MANIFEST: ${{ needs.github-anchor.outputs.manifest_sha256 }}
           EXPECTED_TAG: ${{ inputs.tag }}
-        run: |
-          python3 -I -S <<'PY'
-          import json, os
-          from pathlib import Path
-          anchor = json.loads(Path("release-assets/ANCHOR.json").read_text(encoding="utf-8"))
-          if anchor.get("manifest_sha256") != os.environ["EXPECTED_MANIFEST"] or anchor.get("tag") != os.environ["EXPECTED_TAG"]:
-              raise SystemExit("verified artifact handoff does not match the immutable anchor")
-          PY
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.github_publication verify-handoff
+          --anchor release-assets/ANCHOR.json --tag "${EXPECTED_TAG}"
+          --manifest-sha256 "${EXPECTED_MANIFEST}"
+      - name: Bind Homebrew publication destination to the signed anchor
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.publication_contract
+          --contract release-assets/release-publication-contract.json --name homebrew
+          --repository "${{ vars.HOMEBREW_APP_OWNER }}/${{ vars.HOMEBREW_APP_REPOSITORY }}"
+          --repository-id "${{ vars.HOMEBREW_APP_REPOSITORY_ID }}"
+          --bot-login "${{ vars.HOMEBREW_APP_BOT_LOGIN }}"
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Recheck ledger authorization before requesting credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
       - name: Create least-privilege Homebrew App token
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -1607,107 +2387,75 @@ jobs:
           APP_OWNER: ${{ vars.HOMEBREW_APP_OWNER }}
           APP_REPOSITORY: ${{ vars.HOMEBREW_APP_REPOSITORY }}
           EXPECTED_REPOSITORY_ID: ${{ vars.HOMEBREW_APP_REPOSITORY_ID }}
+          EXPECTED_BOT_LOGIN: ${{ vars.HOMEBREW_APP_BOT_LOGIN }}
           TAG: ${{ inputs.tag }}
-        run: |
-          target="${APP_OWNER}/${APP_REPOSITORY}"
-          [[ "${target}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
-          [[ "${EXPECTED_REPOSITORY_ID}" =~ ^[1-9][0-9]*$ ]]
-          repository="$(gh api "repos/${target}")"
-          test "$(jq -r '.id|tostring' <<<"${repository}")" = "${EXPECTED_REPOSITORY_ID}"
-          test "$(jq -r '.full_name' <<<"${repository}")" = "${target}"
-          test "$(jq -r '.default_branch' <<<"${repository}")" = main
-
-          formula=release-assets/homebrew-mcp-cpp-sdk.rb
-          test -s "${formula}"
-          branch="release/mcp-cpp-sdk-${TAG}"
-          refs="$(gh api "repos/${target}/git/matching-refs/heads/${branch}")"
-          exact_count="$(jq --arg ref "refs/heads/${branch}" '[.[] | select(.ref == $ref)] | length' <<<"${refs}")"
-          if [[ "${exact_count}" == 0 ]]; then
-            base_commit="$(gh api "repos/${target}/git/ref/heads/main" --jq '.object.sha')"
-            base_tree="$(gh api "repos/${target}/git/commits/${base_commit}" --jq '.tree.sha')"
-            content="$(base64 -w0 "${formula}")"
-            blob="$(gh api --method POST "repos/${target}/git/blobs" \
-              -f content="${content}" -f encoding=base64 --jq .sha)"
-            tree="$(jq -n --arg base "${base_tree}" --arg blob "${blob}" \
-              '{base_tree:$base,tree:[{path:"Formula/mcp-cpp-sdk.rb",mode:"100644",type:"blob",sha:$blob}]}' |
-              gh api --method POST "repos/${target}/git/trees" --input - --jq .sha)"
-            head="$(jq -n --arg message "release: prepare ${TAG}" --arg tree "${tree}" --arg parent "${base_commit}" \
-              '{message:$message,tree:$tree,parents:[$parent]}' |
-              gh api --method POST "repos/${target}/git/commits" --input - --jq .sha)"
-            gh api --method POST "repos/${target}/git/refs" \
-              -f ref="refs/heads/${branch}" -f sha="${head}" >/dev/null
-          elif [[ "${exact_count}" == 1 ]]; then
-            head="$(jq -r --arg ref "refs/heads/${branch}" '.[] | select(.ref == $ref) | .object.sha' <<<"${refs}")"
-            gh api "repos/${target}/contents/Formula/mcp-cpp-sdk.rb?ref=${branch}" --jq .content |
-              tr -d '\n' | base64 --decode > remote-formula.rb
-            cmp --silent "${formula}" remote-formula.rb
-          else
-            echo "::error::Ambiguous Homebrew formula branch identity"
-            exit 1
-          fi
-
-          changed="$(gh api "repos/${target}/compare/main...${head}" --jq '.files[].filename')"
-          test "${changed}" = Formula/mcp-cpp-sdk.rb
-          pulls="$(gh api --method GET "repos/${target}/pulls" \
-            -f state=all -f head="${APP_OWNER}:${branch}" -f base=main -f per_page=100)"
-          test "$(jq 'length' <<<"${pulls}")" -le 1
-          if [[ "$(jq 'length' <<<"${pulls}")" == 0 ]]; then
-            pull="$(gh api --method POST "repos/${target}/pulls" \
-              -f title="mcp-cpp-sdk ${TAG}" -f head="${branch}" -f base=main \
-              -f body="Prepare the immutable ${TAG} source for trusted bottle construction.")"
-          else
-            pull="$(jq '.[0]' <<<"${pulls}")"
-          fi
-          test "$(jq -r '.state' <<<"${pull}")" = open
-          test "$(jq -r '.head.sha' <<<"${pull}")" = "${head}"
-          test "$(jq -r '.user.type' <<<"${pull}")" = Bot
-          {
-            echo "formula_pr_number=$(jq -r '.number' <<<"${pull}")"
-            echo "formula_branch=${branch}"
-            echo "formula_head_sha=${head}"
-          } >> "${GITHUB_OUTPUT}"
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.homebrew_formula
+          --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
+          --expected-repository-id "${EXPECTED_REPOSITORY_ID}" --tag "${TAG}"
+          --formula release-assets/homebrew-mcp-cpp-sdk.rb
+          --expected-bot-login "${EXPECTED_BOT_LOGIN}" --github-output "${GITHUB_OUTPUT}"
       - name: Dispatch fixed Homebrew publisher workflow
+        id: dispatch
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           APP_OWNER: ${{ vars.HOMEBREW_APP_OWNER }}
           APP_REPOSITORY: ${{ vars.HOMEBREW_APP_REPOSITORY }}
+          EXPECTED_REPOSITORY_ID: ${{ vars.HOMEBREW_APP_REPOSITORY_ID }}
           WORKFLOW: ${{ vars.HOMEBREW_APP_WORKFLOW }}
           TAG: ${{ inputs.tag }}
           COMMIT: ${{ needs.repository-readiness.outputs.commit }}
+          SOURCE_WORKFLOW_HEAD_SHA: ${{ github.sha }}
+          PROVIDER_CONTROL_TAG: ${{ needs.preflight-homebrew.outputs.control_tag }}
+          PROVIDER_CONTROL_SHA: ${{ needs.preflight-homebrew.outputs.control_sha }}
           RELEASE_ID: ${{ needs.github-anchor.outputs.release_id }}
           MANIFEST_SHA256: ${{ needs.github-anchor.outputs.manifest_sha256 }}
           FORMULA_PR_NUMBER: ${{ steps.formula.outputs.formula_pr_number }}
           FORMULA_BRANCH: ${{ steps.formula.outputs.formula_branch }}
           FORMULA_HEAD_SHA: ${{ steps.formula.outputs.formula_head_sha }}
-        run: |
-          [[ "${APP_OWNER}/${APP_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
-          [[ "${WORKFLOW}" =~ ^[A-Za-z0-9_.-]+\.ya?ml$ ]]
-          request_uuid="$(python3 -I -S -c 'import os,uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, os.environ["GITHUB_REPOSITORY"]+":"+os.environ["TAG"]+":"+os.environ["MANIFEST_SHA256"]+":homebrew"))')"
-          gh api --method POST "repos/${APP_OWNER}/${APP_REPOSITORY}/actions/workflows/${WORKFLOW}/dispatches" \
-            -f ref=main -f "inputs[source_tag]=${TAG}" -f "inputs[source_commit_sha]=${COMMIT}" \
-            -f "inputs[github_release_id]=${RELEASE_ID}" -f "inputs[source_workflow_run_id]=${GITHUB_RUN_ID}" \
-            -f "inputs[release_manifest_sha256]=${MANIFEST_SHA256}" \
-            -f "inputs[formula_pr_number]=${FORMULA_PR_NUMBER}" -f "inputs[formula_branch]=${FORMULA_BRANCH}" \
-            -f "inputs[formula_head_sha]=${FORMULA_HEAD_SHA}" -f "inputs[request_uuid]=${request_uuid}"
-      - name: Emit fixed Homebrew submission result
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.github_provider homebrew
+          --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
+          --expected-repository-id "${EXPECTED_REPOSITORY_ID}" --workflow "${WORKFLOW}"
+          --source-repository "${GITHUB_REPOSITORY}" --source-tag "${TAG}"
+          --source-commit-sha "${COMMIT}" --github-release-id "${RELEASE_ID}"
+          --source-workflow-head-sha "${SOURCE_WORKFLOW_HEAD_SHA}"
+          --provider-control-tag "${PROVIDER_CONTROL_TAG}"
+          --provider-control-sha "${PROVIDER_CONTROL_SHA}"
+          --source-workflow-run-id "${GITHUB_RUN_ID}"
+          --release-manifest-sha256 "${MANIFEST_SHA256}"
+          --formula-pr-number "${FORMULA_PR_NUMBER}" --formula-branch "${FORMULA_BRANCH}"
+          --formula-head-sha "${FORMULA_HEAD_SHA}"
+          --github-output "${GITHUB_OUTPUT}"
+      - name: Emit fixed Homebrew dispatch result
         id: result
-        run: echo 'result=SUBMITTED_PENDING_REVIEW' >> "${GITHUB_OUTPUT}"
+        run: echo 'result=DISPATCHED_PENDING_REVIEW' >> "${GITHUB_OUTPUT}"
 
   chocolatey:
     name: Dispatch the Chocolatey App publisher
-    if: ${{ needs.contract.outputs.target_chocolatey == 'true' }}
+    if: ${{ needs.contract.outputs.mode == 'publish' && needs.contract.outputs.target_chocolatey == 'true' }}
     needs:
       - contract
       - repository-readiness
+      - ledger-readiness
       - github-anchor
+      - preflight-chocolatey
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release-chocolatey
     permissions:
       contents: read
+      issues: read
     outputs:
       result: ${{ steps.result.outputs.result }}
+      downstream_run_id: ${{ steps.dispatch.outputs.downstream_workflow_run_id }}
     steps:
+      - name: Checkout protected current Chocolatey dispatcher tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Download and verify immutable release bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1717,14 +2465,33 @@ jobs:
         env:
           EXPECTED_MANIFEST: ${{ needs.github-anchor.outputs.manifest_sha256 }}
           EXPECTED_TAG: ${{ inputs.tag }}
-        run: |
-          python3 -I -S <<'PY'
-          import json, os
-          from pathlib import Path
-          anchor = json.loads(Path("release-assets/ANCHOR.json").read_text(encoding="utf-8"))
-          if anchor.get("manifest_sha256") != os.environ["EXPECTED_MANIFEST"] or anchor.get("tag") != os.environ["EXPECTED_TAG"]:
-              raise SystemExit("verified artifact handoff does not match the immutable anchor")
-          PY
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.github_publication verify-handoff
+          --anchor release-assets/ANCHOR.json --tag "${EXPECTED_TAG}"
+          --manifest-sha256 "${EXPECTED_MANIFEST}"
+      - name: Bind Chocolatey publication destination to the signed anchor
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.publication_contract
+          --contract release-assets/release-publication-contract.json --name chocolatey
+          --repository "${{ vars.CHOCOLATEY_APP_OWNER }}/${{ vars.CHOCOLATEY_APP_REPOSITORY }}"
+          --repository-id "${{ vars.CHOCOLATEY_APP_REPOSITORY_ID }}"
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Recheck ledger authorization before requesting credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
       - name: Create least-privilege Chocolatey App token
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -1736,6 +2503,7 @@ jobs:
           permission-actions: write
           permission-contents: read
       - name: Dispatch fixed Chocolatey publisher workflow
+        id: dispatch
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           APP_OWNER: ${{ vars.CHOCOLATEY_APP_OWNER }}
@@ -1744,41 +2512,54 @@ jobs:
           WORKFLOW: ${{ vars.CHOCOLATEY_APP_WORKFLOW }}
           TAG: ${{ inputs.tag }}
           COMMIT: ${{ needs.repository-readiness.outputs.commit }}
+          SOURCE_WORKFLOW_HEAD_SHA: ${{ github.sha }}
+          PROVIDER_CONTROL_TAG: ${{ needs.preflight-chocolatey.outputs.control_tag }}
+          PROVIDER_CONTROL_SHA: ${{ needs.preflight-chocolatey.outputs.control_sha }}
           RELEASE_ID: ${{ needs.github-anchor.outputs.release_id }}
           MANIFEST_SHA256: ${{ needs.github-anchor.outputs.manifest_sha256 }}
-        run: |
-          [[ "${APP_OWNER}/${APP_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
-          [[ "${EXPECTED_REPOSITORY_ID}" =~ ^[1-9][0-9]*$ ]]
-          [[ "${WORKFLOW}" =~ ^[A-Za-z0-9_.-]+\.ya?ml$ ]]
-          repository="$(gh api "repos/${APP_OWNER}/${APP_REPOSITORY}")"
-          test "$(jq -r '.id|tostring' <<<"${repository}")" = "${EXPECTED_REPOSITORY_ID}"
-          test "$(jq -r '.full_name' <<<"${repository}")" = "${APP_OWNER}/${APP_REPOSITORY}"
-          test "$(jq -r '.default_branch' <<<"${repository}")" = main
-          request_uuid="$(python3 -I -S -c 'import os,uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, os.environ["GITHUB_REPOSITORY"]+":"+os.environ["TAG"]+":"+os.environ["MANIFEST_SHA256"]+":chocolatey"))')"
-          gh api --method POST "repos/${APP_OWNER}/${APP_REPOSITORY}/actions/workflows/${WORKFLOW}/dispatches" \
-            -f ref=main -f "inputs[source_tag]=${TAG}" -f "inputs[source_commit_sha]=${COMMIT}" \
-            -f "inputs[github_release_id]=${RELEASE_ID}" -f "inputs[source_workflow_run_id]=${GITHUB_RUN_ID}" \
-            -f "inputs[release_manifest_sha256]=${MANIFEST_SHA256}" -f "inputs[request_uuid]=${request_uuid}"
-      - name: Emit fixed Chocolatey submission result
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.github_provider chocolatey
+          --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
+          --expected-repository-id "${EXPECTED_REPOSITORY_ID}" --workflow "${WORKFLOW}"
+          --source-repository "${GITHUB_REPOSITORY}" --source-tag "${TAG}"
+          --source-commit-sha "${COMMIT}" --github-release-id "${RELEASE_ID}"
+          --source-workflow-head-sha "${SOURCE_WORKFLOW_HEAD_SHA}"
+          --provider-control-tag "${PROVIDER_CONTROL_TAG}"
+          --provider-control-sha "${PROVIDER_CONTROL_SHA}"
+          --source-workflow-run-id "${GITHUB_RUN_ID}"
+          --release-manifest-sha256 "${MANIFEST_SHA256}"
+          --github-output "${GITHUB_OUTPUT}"
+      - name: Emit fixed Chocolatey dispatch result
         id: result
-        run: echo 'result=SUBMITTED_PENDING_MODERATION' >> "${GITHUB_OUTPUT}"
+        run: echo 'result=DISPATCHED_PENDING_MODERATION' >> "${GITHUB_OUTPUT}"
 
   conan-recipe:
     name: Publish the exact ConanCenter recipe branch
-    if: ${{ needs.contract.outputs.target_conan2 == 'true' }}
+    if: ${{ needs.contract.outputs.mode == 'publish' && needs.contract.outputs.target_conan2 == 'true' }}
     needs:
       - contract
+      - repository-readiness
+      - ledger-readiness
       - github-anchor
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: release-conan-recipe
     permissions:
       contents: read
+      issues: read
     outputs:
+      state: ${{ steps.merge.outputs.state }}
+      fork_base: ${{ steps.merge.outputs.fork_base }}
       branch: ${{ steps.recipe.outputs.branch }}
       head_sha: ${{ steps.recipe.outputs.head_sha }}
       tree_sha256: ${{ steps.recipe.outputs.tree_sha256 }}
     steps:
+      - name: Checkout protected current release tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Download the verified immutable release bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1788,16 +2569,47 @@ jobs:
         env:
           EXPECTED_MANIFEST: ${{ needs.github-anchor.outputs.manifest_sha256 }}
           EXPECTED_TAG: ${{ inputs.tag }}
-        run: |
-          python3 -I -S <<'PY'
-          import json, os
-          from pathlib import Path
-          anchor = json.loads(Path("release-assets/ANCHOR.json").read_text(encoding="utf-8"))
-          if anchor.get("manifest_sha256") != os.environ["EXPECTED_MANIFEST"] or anchor.get("tag") != os.environ["EXPECTED_TAG"]:
-              raise SystemExit("verified artifact handoff does not match the immutable anchor")
-          PY
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.github_publication verify-handoff
+          --anchor release-assets/ANCHOR.json --tag "${EXPECTED_TAG}"
+          --manifest-sha256 "${EXPECTED_MANIFEST}"
+      - name: Bind Conan fork destination to the signed anchor
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.publication_contract
+          --contract release-assets/release-publication-contract.json --name conan_fork
+          --repository "${{ vars.CONAN_RECIPE_APP_OWNER }}/${{ vars.CONAN_RECIPE_APP_REPOSITORY }}"
+          --repository-id "${{ vars.CONAN_RECIPE_APP_REPOSITORY_ID }}"
+          --upstream conan-io/conan-center-index
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Merge the signed version entry with the exact upstream recipe
+        id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_OWNER: ${{ vars.CONAN_RECIPE_APP_OWNER }}
+          APP_REPOSITORY: ${{ vars.CONAN_RECIPE_APP_REPOSITORY }}
+          EXPECTED_REPOSITORY_ID: ${{ vars.CONAN_RECIPE_APP_REPOSITORY_ID }}
+          VERSION: ${{ needs.contract.outputs.version }}
+        run: bash scripts/release/prepare_conan_recipe.sh
+      - name: Recheck ledger authorization before requesting fork credentials
+        if: ${{ steps.merge.outputs.state == 'prepared' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
       - name: Create a fork-scoped recipe App token
         id: app
+        if: ${{ steps.merge.outputs.state == 'prepared' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.CONAN_RECIPE_APP_CLIENT_ID }}
@@ -1807,103 +2619,41 @@ jobs:
           permission-contents: write
       - name: Create or verify the recipe-only fork branch
         id: recipe
+        if: ${{ steps.merge.outputs.state == 'prepared' }}
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           APP_OWNER: ${{ vars.CONAN_RECIPE_APP_OWNER }}
           APP_REPOSITORY: ${{ vars.CONAN_RECIPE_APP_REPOSITORY }}
           EXPECTED_REPOSITORY_ID: ${{ vars.CONAN_RECIPE_APP_REPOSITORY_ID }}
           VERSION: ${{ needs.contract.outputs.version }}
-        run: |
-          target="${APP_OWNER}/${APP_REPOSITORY}"
-          [[ "${target}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
-          [[ "${EXPECTED_REPOSITORY_ID}" =~ ^[1-9][0-9]*$ ]]
-          repository="$(gh api "repos/${target}")"
-          test "$(jq -r '.id|tostring' <<<"${repository}")" = "${EXPECTED_REPOSITORY_ID}"
-          test "$(jq -r '.full_name' <<<"${repository}")" = "${target}"
-          test "$(jq -r '.fork,.parent.full_name,.default_branch' <<<"${repository}")" = $'true\nconan-io/conan-center-index\nmaster'
-          fork_base="$(gh api "repos/${target}/git/ref/heads/master" --jq '.object.sha')"
-          upstream_base="$(gh api 'repos/conan-io/conan-center-index/git/ref/heads/master' --jq '.object.sha')"
-          test "${fork_base}" = "${upstream_base}"
-
-          declare -A recipe_files=(
-            [recipes/mcp-cpp-sdk/config.yml]=conan-recipe-config.yml
-            [recipes/mcp-cpp-sdk/all/conandata.yml]=conan-recipe-conandata.yml
-            [recipes/mcp-cpp-sdk/all/conanfile.py]=conan-recipe-conanfile.py
-            [recipes/mcp-cpp-sdk/all/test_package/CMakeLists.txt]=conan-recipe-test-CMakeLists.txt
-            [recipes/mcp-cpp-sdk/all/test_package/conanfile.py]=conan-recipe-test-conanfile.py
-            [recipes/mcp-cpp-sdk/all/test_package/test_package.cpp]=conan-recipe-test-test_package.cpp
-          )
-          for asset in "${recipe_files[@]}"; do
-            test -s "release-assets/${asset}"
-          done
-
-          branch="package/mcp-cpp-sdk-${VERSION}"
-          refs="$(gh api "repos/${target}/git/matching-refs/heads/${branch}")"
-          exact_count="$(jq --arg ref "refs/heads/${branch}" '[.[] | select(.ref == $ref)] | length' <<<"${refs}")"
-          if [[ "${exact_count}" == 0 ]]; then
-            base_tree="$(gh api "repos/${target}/git/commits/${fork_base}" --jq '.tree.sha')"
-            tree_entries='[]'
-            while IFS= read -r path; do
-              asset="${recipe_files[${path}]}"
-              content="$(base64 -w0 "release-assets/${asset}")"
-              blob="$(gh api --method POST "repos/${target}/git/blobs" \
-                -f content="${content}" -f encoding=base64 --jq .sha)"
-              tree_entries="$(jq --arg path "${path}" --arg blob "${blob}" \
-                '. + [{path:$path,mode:"100644",type:"blob",sha:$blob}]' <<<"${tree_entries}")"
-            done < <(printf '%s\n' "${!recipe_files[@]}" | sort)
-            tree="$(jq -n --arg base "${base_tree}" --argjson entries "${tree_entries}" \
-              '{base_tree:$base,tree:$entries}' |
-              gh api --method POST "repos/${target}/git/trees" --input - --jq .sha)"
-            head="$(jq -n --arg message "mcp-cpp-sdk ${VERSION}" --arg tree "${tree}" --arg parent "${fork_base}" \
-              '{message:$message,tree:$tree,parents:[$parent]}' |
-              gh api --method POST "repos/${target}/git/commits" --input - --jq .sha)"
-            gh api --method POST "repos/${target}/git/refs" \
-              -f ref="refs/heads/${branch}" -f sha="${head}" >/dev/null
-          elif [[ "${exact_count}" == 1 ]]; then
-            head="$(jq -r --arg ref "refs/heads/${branch}" '.[] | select(.ref == $ref) | .object.sha' <<<"${refs}")"
-            while IFS= read -r path; do
-              asset="${recipe_files[${path}]}"
-              gh api "repos/${target}/contents/${path}?ref=${branch}" --jq .content |
-                tr -d '\n' | base64 --decode > remote-recipe-file
-              cmp --silent "release-assets/${asset}" remote-recipe-file
-            done < <(printf '%s\n' "${!recipe_files[@]}" | sort)
-          else
-            echo "::error::Ambiguous Conan recipe branch identity"
-            exit 1
-          fi
-
-          gh api "repos/${target}/compare/master...${head}" --jq '.files[].filename' | sort > changed-files.txt
-          printf '%s\n' "${!recipe_files[@]}" | sort > expected-files.txt
-          cmp --silent expected-files.txt changed-files.txt
-          git init --bare recipe.git
-          git -C recipe.git fetch --no-tags --depth=1 "https://github.com/${target}.git" \
-            "refs/heads/${branch}:refs/heads/recipe"
-          test "$(git -C recipe.git rev-parse refs/heads/recipe)" = "${head}"
-          git -C recipe.git archive --format=tar --prefix=recipe/ \
-            "refs/heads/recipe:recipes/mcp-cpp-sdk" > recipe.tar
-          tree_sha256="$(sha256sum recipe.tar | cut -d' ' -f1)"
-          {
-            echo "branch=${branch}"
-            echo "head_sha=${head}"
-            echo "tree_sha256=${tree_sha256}"
-          } >> "${GITHUB_OUTPUT}"
-
+          FORK_BASE: ${{ steps.merge.outputs.fork_base }}
+        run: bash scripts/release/publish_conan_recipe.sh
   conan:
     name: Dispatch the ConanCenter release-control App
-    if: ${{ needs.contract.outputs.target_conan2 == 'true' }}
+    if: ${{ needs.contract.outputs.mode == 'publish' && needs.contract.outputs.target_conan2 == 'true' }}
     needs:
       - contract
       - repository-readiness
+      - ledger-readiness
       - github-anchor
       - conan-recipe
+      - preflight-conan-broker
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release-control-dispatch
     permissions:
       contents: read
+      issues: read
     outputs:
       result: ${{ steps.result.outputs.result }}
+      downstream_run_id: ${{ steps.dispatch.outputs.downstream_workflow_run_id }}
     steps:
+      - name: Checkout protected current Conan dispatcher tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
       - name: Download and verify immutable release bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1913,16 +2663,37 @@ jobs:
         env:
           EXPECTED_MANIFEST: ${{ needs.github-anchor.outputs.manifest_sha256 }}
           EXPECTED_TAG: ${{ inputs.tag }}
-        run: |
-          python3 -I -S <<'PY'
-          import json, os
-          from pathlib import Path
-          anchor = json.loads(Path("release-assets/ANCHOR.json").read_text(encoding="utf-8"))
-          if anchor.get("manifest_sha256") != os.environ["EXPECTED_MANIFEST"] or anchor.get("tag") != os.environ["EXPECTED_TAG"]:
-              raise SystemExit("verified artifact handoff does not match the immutable anchor")
-          PY
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.github_publication verify-handoff
+          --anchor release-assets/ANCHOR.json --tag "${EXPECTED_TAG}"
+          --manifest-sha256 "${EXPECTED_MANIFEST}"
+      - name: Bind Conan control destination to the signed anchor
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.publication_contract
+          --contract release-assets/release-publication-contract.json --name conan_control
+          --repository "${{ vars.CONAN_BROKER_APP_OWNER }}/${{ vars.CONAN_BROKER_APP_REPOSITORY }}"
+          --repository-id "${{ vars.CONAN_BROKER_APP_REPOSITORY_ID }}"
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Recheck ledger authorization before requesting control credentials
+        if: ${{ needs.conan-recipe.outputs.state == 'prepared' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
       - name: Create least-privilege Conan release-control App token
         id: app
+        if: ${{ needs.conan-recipe.outputs.state == 'prepared' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.CONAN_BROKER_APP_CLIENT_ID }}
@@ -1932,6 +2703,8 @@ jobs:
           permission-actions: write
           permission-contents: read
       - name: Dispatch fixed Conan release-control workflow
+        id: dispatch
+        if: ${{ needs.conan-recipe.outputs.state == 'prepared' }}
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           APP_OWNER: ${{ vars.CONAN_BROKER_APP_OWNER }}
@@ -1940,32 +2713,38 @@ jobs:
           WORKFLOW: ${{ vars.CONAN_BROKER_APP_WORKFLOW }}
           TAG: ${{ inputs.tag }}
           COMMIT: ${{ needs.repository-readiness.outputs.commit }}
+          SOURCE_WORKFLOW_HEAD_SHA: ${{ github.sha }}
+          PROVIDER_CONTROL_TAG: ${{ needs.preflight-conan-broker.outputs.control_tag }}
+          PROVIDER_CONTROL_SHA: ${{ needs.preflight-conan-broker.outputs.control_sha }}
           RELEASE_ID: ${{ needs.github-anchor.outputs.release_id }}
           MANIFEST_SHA256: ${{ needs.github-anchor.outputs.manifest_sha256 }}
           FORK_BRANCH: ${{ needs.conan-recipe.outputs.branch }}
           FORK_HEAD_SHA: ${{ needs.conan-recipe.outputs.head_sha }}
           RECIPE_TREE_SHA256: ${{ needs.conan-recipe.outputs.tree_sha256 }}
-        run: |
-          [[ "${APP_OWNER}/${APP_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
-          [[ "${EXPECTED_REPOSITORY_ID}" =~ ^[1-9][0-9]*$ ]]
-          [[ "${WORKFLOW}" =~ ^[A-Za-z0-9_.-]+\.ya?ml$ ]]
-          repository="$(gh api "repos/${APP_OWNER}/${APP_REPOSITORY}")"
-          test "$(jq -r '.id|tostring' <<<"${repository}")" = "${EXPECTED_REPOSITORY_ID}"
-          test "$(jq -r '.full_name' <<<"${repository}")" = "${APP_OWNER}/${APP_REPOSITORY}"
-          test "$(jq -r '.default_branch' <<<"${repository}")" = main
-          request_uuid="$(python3 -I -S -c 'import os,uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, os.environ["GITHUB_REPOSITORY"]+":"+os.environ["TAG"]+":"+os.environ["MANIFEST_SHA256"]+":conan2"))')"
-          gh api --method POST "repos/${APP_OWNER}/${APP_REPOSITORY}/actions/workflows/${WORKFLOW}/dispatches" \
-            -f ref=main -f "inputs[source_tag]=${TAG}" -f "inputs[source_commit_sha]=${COMMIT}" \
-            -f "inputs[github_release_id]=${RELEASE_ID}" -f "inputs[source_workflow_run_id]=${GITHUB_RUN_ID}" \
-            -f "inputs[release_manifest_sha256]=${MANIFEST_SHA256}" -f "inputs[fork_branch]=${FORK_BRANCH}" \
-            -f "inputs[fork_head_sha]=${FORK_HEAD_SHA}" -f "inputs[recipe_tree_sha256]=${RECIPE_TREE_SHA256}" \
-            -f "inputs[request_uuid]=${request_uuid}"
-      - name: Emit fixed Conan submission result
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.github_provider conan2
+          --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
+          --expected-repository-id "${EXPECTED_REPOSITORY_ID}" --workflow "${WORKFLOW}"
+          --source-repository "${GITHUB_REPOSITORY}" --source-tag "${TAG}"
+          --source-commit-sha "${COMMIT}" --github-release-id "${RELEASE_ID}"
+          --source-workflow-head-sha "${SOURCE_WORKFLOW_HEAD_SHA}"
+          --provider-control-tag "${PROVIDER_CONTROL_TAG}"
+          --provider-control-sha "${PROVIDER_CONTROL_SHA}"
+          --source-workflow-run-id "${GITHUB_RUN_ID}"
+          --release-manifest-sha256 "${MANIFEST_SHA256}"
+          --fork-branch "${FORK_BRANCH}" --fork-head-sha "${FORK_HEAD_SHA}"
+          --recipe-tree-sha256 "${RECIPE_TREE_SHA256}"
+          --github-output "${GITHUB_OUTPUT}"
+      - name: Emit fixed Conan dispatch result
         id: result
-        run: echo 'result=SUBMITTED_PENDING_REVIEW' >> "${GITHUB_OUTPUT}"
+        env:
+          RECIPE_STATE: ${{ needs.conan-recipe.outputs.state }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.workflow_gate conan-result
+          --state "${RECIPE_STATE}" --github-output "${GITHUB_OUTPUT}"
 
   ledger-coordinator:
-    name: Update the sole release ledger
+    name: Append the bot-authenticated release ledger
     if: ${{ always() && needs.contract.result == 'success' && needs.ledger-readiness.result == 'success' && needs.contract.outputs.mode == 'publish' }}
     needs:
       - contract
@@ -1984,23 +2763,51 @@ jobs:
       - conan
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    environment: release-github
+    environment: release-ledger
     permissions:
       contents: read
-      issues: write
+      issues: read
     steps:
-      - name: Produce a sanitized complete ledger snapshot
+      - name: Checkout protected current ledger tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download the exact ledger authorization record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ledger-readiness
+      - name: Recheck ledger authorization before requesting ledger credentials
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          TAG: ${{ inputs.tag }}
-          VERSION: ${{ needs.contract.outputs.version }}
-          COMMIT: ${{ needs.repository-readiness.outputs.commit }}
           LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+        run: bash scripts/release/recheck_ledger.sh
+      - name: Create the ledger-only GitHub App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_LEDGER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_LEDGER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-issues: write
+      - name: Construct the complete canonical observation set
+        env:
+          CHANNELS: ${{ needs.contract.outputs.normalized_channels }}
           MANIFEST_SHA256: ${{ needs.github-anchor.outputs.manifest_sha256 }}
-          TARGETS: ${{ needs.contract.outputs.normalized_targets }}
           GITHUB_JOB_RESULT: ${{ needs.github-anchor.result }}
           GITHUB_RESULT: ${{ needs.github-anchor.outputs.result }}
+          CONAN_JOB_RESULT: ${{ needs.conan.result }}
+          CONAN_RESULT: ${{ needs.conan.outputs.result }}
           APT_JOB_RESULT: ${{ needs.publish-apt.result }}
           APT_RESULT: ${{ needs.publish-apt.outputs.result }}
           RPM_JOB_RESULT: ${{ needs.publish-rpm.result }}
@@ -2011,74 +2818,26 @@ jobs:
           HOMEBREW_RESULT: ${{ needs.homebrew.outputs.result }}
           CHOCOLATEY_JOB_RESULT: ${{ needs.chocolatey.result }}
           CHOCOLATEY_RESULT: ${{ needs.chocolatey.outputs.result }}
-          CONAN_JOB_RESULT: ${{ needs.conan.result }}
-          CONAN_RESULT: ${{ needs.conan.outputs.result }}
-        run: |
-          gh api "repos/${REPOSITORY}/issues/${LEDGER_ISSUE}" --jq .body > previous-body.txt
-          python3 -I -S <<'PY'
-          import json
-          import os
-          import re
-          from pathlib import Path
-
-          destinations = {
-              "github": ("github", "GITHUB"),
-              "conan2": ("conan2", "CONAN"),
-              "deb_apt": ("apt", "APT"),
-              "rpm": ("rpm", "RPM"),
-              "arch_aur": ("aur", "AUR"),
-              "homebrew": ("homebrew", "HOMEBREW"),
-              "chocolatey": ("chocolatey", "CHOCOLATEY"),
-          }
-          allowed = {
-              "PUBLISHED", "SUBMITTED_PENDING_REVIEW", "SUBMITTED_PENDING_MODERATION",
-              "BLOCKED_MANUAL_ACTION", "FAILED", "SKIPPED_ALREADY_IDENTICAL", "FIRST_USE_UNPROVEN", "LIVE",
-          }
-          previous = Path("previous-body.txt").read_text(encoding="utf-8")
-          match = re.search(r"<!-- release-ledger-json\n(\{.*?\})\nrelease-ledger-json -->", previous, re.DOTALL)
-          results = {name: "FIRST_USE_UNPROVEN" for name in destinations}
-          prior_manifest = None
-          if match:
-              prior = json.loads(match.group(1))
-              if prior.get("tag") != os.environ["TAG"] or prior.get("source_commit_sha") != os.environ["COMMIT"]:
-                  raise SystemExit("existing ledger identity conflicts with this dispatch")
-              prior_results = prior.get("results")
-              if not isinstance(prior_results, dict) or set(prior_results) != set(destinations):
-                  raise SystemExit("existing ledger results are malformed")
-              if any(value not in allowed for value in prior_results.values()):
-                  raise SystemExit("existing ledger contains an unknown result")
-              results.update(prior_results)
-              prior_manifest = prior.get("release_manifest_sha256")
-          selected = set(os.environ["TARGETS"].split(","))
-          for destination, (target, prefix) in destinations.items():
-              if target not in selected and destination != "github":
-                  continue
-              job_result = os.environ.get(f"{prefix}_JOB_RESULT", "")
-              result = os.environ.get(f"{prefix}_RESULT", "")
-              if job_result == "success" and result in allowed:
-                  results[destination] = result
-              elif target in selected or destination == "github":
-                  results[destination] = "FAILED"
-          manifest = os.environ["MANIFEST_SHA256"]
-          if re.fullmatch(r"[0-9a-f]{64}", manifest) is None:
-              prior_is_valid = isinstance(prior_manifest, str) and re.fullmatch(
-                  r"[0-9a-f]{64}", prior_manifest
-              )
-              manifest = prior_manifest if prior_is_valid else "0" * 64
-          ledger = {
-              "schema_version": 1, "version": os.environ["VERSION"], "tag": os.environ["TAG"],
-              "source_commit_sha": os.environ["COMMIT"], "release_manifest_sha256": manifest,
-              "results": results,
-          }
-          marker = f"<!-- release-ledger:v1 tag={os.environ['TAG']} state=PREPARING -->"
-          state = "FAILED" if any(results[dest] == "FAILED" for dest in destinations) else "PUBLISHED_OR_PENDING"
-          body = (
-              f"{marker}\n\nRelease publication state: **{state}**\n\n"
-              f"Workflow run: https://github.com/{os.environ['REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}\n\n"
-              "<!-- release-ledger-json\n" + json.dumps(ledger, sort_keys=True, separators=(",", ":"))
-              + "\nrelease-ledger-json -->\n"
-          )
-          Path("ledger-body.md").write_text(body, encoding="utf-8")
-          PY
-          gh issue edit "${LEDGER_ISSUE}" --repo "${REPOSITORY}" \
-            --title "[release] ${TAG} PREPARING" --body-file ledger-body.md
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.ledger_updates
+          --channels "${CHANNELS}" --manifest-sha256 "${MANIFEST_SHA256}" --output ledger-updates.json
+          --github-conclusion "${GITHUB_JOB_RESULT}" --github-result "${GITHUB_RESULT}"
+          --conan2-conclusion "${CONAN_JOB_RESULT}" --conan2-result "${CONAN_RESULT}"
+          --deb-apt-conclusion "${APT_JOB_RESULT}" --deb-apt-result "${APT_RESULT}"
+          --rpm-conclusion "${RPM_JOB_RESULT}" --rpm-result "${RPM_RESULT}"
+          --arch-aur-conclusion "${AUR_JOB_RESULT}" --arch-aur-result "${AUR_RESULT}"
+          --homebrew-conclusion "${HOMEBREW_JOB_RESULT}" --homebrew-result "${HOMEBREW_RESULT}"
+          --chocolatey-conclusion "${CHOCOLATEY_JOB_RESULT}" --chocolatey-result "${CHOCOLATEY_RESULT}"
+      - name: Recheck and append exactly one ledger snapshot
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPOSITORY: ${{ github.repository }}
+          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
+          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
+          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
+          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
+          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
+          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
+          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
+          LEDGER_UPDATES_FILE: ledger-updates.json
+        run: bash scripts/release/append_ledger.sh

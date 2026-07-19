@@ -7,6 +7,7 @@
         "packages_public_after_first_upload": true,
         "secret_scanning": true,
         "push_protection": true,
+        "immutable_releases": true,
         "retention_days": 90
     },
     "actions": {
@@ -19,7 +20,7 @@
             "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
             "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
             "actions/create-github-app-token": "bcd2ba49218906704ab6c1aa796996da409d3eb1",
-            "actions/attest": "a1948c3f048ba23858d222213b7c278aabede763"
+            "actions/attest": "f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6"
         },
         "allowed_workflows": {
             "ci.yml": [
@@ -47,13 +48,27 @@
             "trusted-bottle-policy"
         ]
     },
+    "control_tag_ruleset": {
+        "tag": "release-control-v1",
+        "enforcement": "active",
+        "update_blocked": true,
+        "deletion_blocked": true,
+        "bypass_actors": []
+    },
+    "control_release": {
+        "tag": "release-control-v1",
+        "draft": false,
+        "prerelease": false,
+        "immutable": true,
+        "asset_inventory": []
+    },
     "environments": [
         {
             "name": "homebrew-publish",
             "required_reviewer_count": 1,
             "prevent_self_review": false,
             "administrator_bypass": false,
-            "deployment_branch": "main",
+            "deployment_tag": "release-control-v1",
             "secrets": [
                 "HOMEBREW_APP_PRIVATE_KEY"
             ],
@@ -66,7 +81,7 @@
             "required_reviewer_count": 1,
             "prevent_self_review": false,
             "administrator_bypass": false,
-            "deployment_branch": "main",
+            "deployment_tag": "release-control-v1",
             "secrets": [
                 "HOMEBREW_APP_PRIVATE_KEY"
             ],
@@ -96,8 +111,11 @@
         "formula_branch": "release/mcp-cpp-sdk-vX.Y.Z",
         "formula_path": "Formula/mcp-cpp-sdk.rb",
         "same_original_run_required": true,
+        "artifact_names_bind_run_and_attempt": true,
+        "same_run_partial_rerun_recovery": true,
         "new_dispatch_cannot_finalize": true,
         "finalizer_rebuilds_or_reuploads": false,
-        "anonymous_ghcr_digest_check_required": true
+        "contents_token_minted_after_upload_and_public_checks": true,
+        "anonymous_ghcr_tag_manifest_and_bottle_digest_check_required": true
     }
 }

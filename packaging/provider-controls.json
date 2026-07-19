@@ -1,0 +1,135 @@
+{
+    "schema_version": 1,
+    "providers": {
+        "homebrew": {
+            "repository": "yurirocha15/homebrew-mcp-cpp-sdk",
+            "control_tag": "release-control-v1",
+            "files": {
+                ".github/CODEOWNERS": "bootstrap/homebrew-tap/.github/CODEOWNERS",
+                ".github/workflows/ci.yml": "bootstrap/homebrew-tap/.github/workflows/ci.yml",
+                ".github/workflows/publish-bottles.yml":
+                    "bootstrap/homebrew-tap/.github/workflows/publish-bottles.yml",
+                ".gitignore": "bootstrap/homebrew-tap/.gitignore",
+                "README.md": "bootstrap/homebrew-tap/README.md",
+                "publisher/__init__.py": "bootstrap/homebrew-tap/publisher/__init__.py",
+                "publisher/bottle_handoff.py": "bootstrap/homebrew-tap/publisher/bottle_handoff.py",
+                "publisher/consumer_test.py": "bootstrap/homebrew-tap/publisher/consumer_test.py",
+                "publisher/formula_audit.py": "bootstrap/homebrew-tap/publisher/formula_audit.py",
+                "publisher/formula_branch.py": "bootstrap/homebrew-tap/publisher/formula_branch.py",
+                "publisher/ghcr.py": "bootstrap/homebrew-tap/publisher/ghcr.py",
+                "publisher/publication.py": "bootstrap/homebrew-tap/publisher/publication.py",
+                "publisher/source_run.py": "bootstrap/homebrew-tap/publisher/source_run.py",
+                "publisher/validate_dispatch.py":
+                    "bootstrap/homebrew-tap/publisher/validate_dispatch.py",
+                "publisher/verify_git_status.py":
+                    "bootstrap/homebrew-tap/publisher/verify_git_status.py",
+                "publisher/verify_handoffs.py": "bootstrap/homebrew-tap/publisher/verify_handoffs.py",
+                "publisher/verify_source_release.py":
+                    "bootstrap/homebrew-tap/publisher/verify_source_release.py",
+                "repository-settings.json": "bootstrap/homebrew-tap/repository-settings.json",
+                "tests/__init__.py": "bootstrap/homebrew-tap/tests/__init__.py",
+                "tests/test_publishers.py": "bootstrap/homebrew-tap/tests/test_publishers.py",
+                "tests/test_workflow_policy.py": "bootstrap/homebrew-tap/tests/test_workflow_policy.py"
+            },
+            "exact_directories": [
+                ".",
+                ".github",
+                ".github/workflows",
+                "publisher",
+                "tests"
+            ]
+        },
+        "chocolatey": {
+            "repository": "yurirocha15/mcp-cpp-sdk-chocolatey-publisher",
+            "control_tag": "release-control-v1",
+            "files": {
+                ".github/CODEOWNERS": "bootstrap/chocolatey-publisher/.github/CODEOWNERS",
+                ".github/workflows/ci.yml": "bootstrap/chocolatey-publisher/.github/workflows/ci.yml",
+                ".github/workflows/publish.yml":
+                    "bootstrap/chocolatey-publisher/.github/workflows/publish.yml",
+                ".gitignore": "bootstrap/chocolatey-publisher/.gitignore",
+                "README.md": "bootstrap/chocolatey-publisher/README.md",
+                "keys/README.md": "bootstrap/chocolatey-publisher/keys/README.md",
+                "keys/release-signing-key.asc": "keys/release-signing-key.asc",
+                "publisher/__init__.py": "bootstrap/chocolatey-publisher/publisher/__init__.py",
+                "publisher/claim_controller.py":
+                    "bootstrap/chocolatey-publisher/publisher/claim_controller.py",
+                "publisher/handoff.py": "bootstrap/chocolatey-publisher/publisher/handoff.py",
+                "publisher/push_package.ps1":
+                    "bootstrap/chocolatey-publisher/publisher/push_package.ps1",
+                "publisher/scan_repository_secrets.py":
+                    "bootstrap/chocolatey-publisher/publisher/scan_repository_secrets.py",
+                "publisher/source_run.py": "bootstrap/chocolatey-publisher/publisher/source_run.py",
+                "publisher/submission_claim.py":
+                    "bootstrap/chocolatey-publisher/publisher/submission_claim.py",
+                "publisher/validate_dispatch.py":
+                    "bootstrap/chocolatey-publisher/publisher/validate_dispatch.py",
+                "publisher/verify_git_status.py":
+                    "bootstrap/chocolatey-publisher/publisher/verify_git_status.py",
+                "publisher/verify_release.py":
+                    "bootstrap/chocolatey-publisher/publisher/verify_release.py",
+                "repository-settings.json": "bootstrap/chocolatey-publisher/repository-settings.json",
+                "tests/__init__.py": "bootstrap/chocolatey-publisher/tests/__init__.py",
+                "tests/test_claim_controller.py":
+                    "bootstrap/chocolatey-publisher/tests/test_claim_controller.py",
+                "tests/test_handoff.py": "bootstrap/chocolatey-publisher/tests/test_handoff.py",
+                "tests/test_publisher.py": "bootstrap/chocolatey-publisher/tests/test_publisher.py",
+                "tests/test_submission_claim.py":
+                    "bootstrap/chocolatey-publisher/tests/test_submission_claim.py"
+            },
+            "exact_directories": [
+                ".",
+                ".github",
+                ".github/workflows",
+                "keys",
+                "publisher",
+                "tests"
+            ]
+        },
+        "conan": {
+            "repository": "yurirocha15/mcp-cpp-sdk-release-control",
+            "control_tag": "release-control-v1",
+            "files": {
+                ".github/CODEOWNERS": "bootstrap/conan-release-control/.github/CODEOWNERS",
+                ".github/workflows/ci.yml": "bootstrap/conan-release-control/.github/workflows/ci.yml",
+                ".github/workflows/conan-center-pr.yml":
+                    "bootstrap/conan-release-control/.github/workflows/conan-center-pr.yml",
+                ".gitignore": "bootstrap/conan-release-control/.gitignore",
+                "README.md": "bootstrap/conan-release-control/README.md",
+                "keys/README.md": "bootstrap/conan-release-control/keys/README.md",
+                "keys/release-signing-key.asc": "keys/release-signing-key.asc",
+                "publisher/__init__.py": "bootstrap/conan-release-control/publisher/__init__.py",
+                "publisher/approval.py": "bootstrap/conan-release-control/publisher/approval.py",
+                "publisher/client_handoff.py":
+                    "bootstrap/conan-release-control/publisher/client_handoff.py",
+                "publisher/create_pull.py": "bootstrap/conan-release-control/publisher/create_pull.py",
+                "publisher/package_request.py":
+                    "bootstrap/conan-release-control/publisher/package_request.py",
+                "publisher/scan_repository_secrets.py":
+                    "bootstrap/conan-release-control/publisher/scan_repository_secrets.py",
+                "publisher/source_run.py": "bootstrap/conan-release-control/publisher/source_run.py",
+                "publisher/validate_dispatch.py":
+                    "bootstrap/conan-release-control/publisher/validate_dispatch.py",
+                "publisher/verify_git_status.py":
+                    "bootstrap/conan-release-control/publisher/verify_git_status.py",
+                "publisher/verify_recipe_tree.py":
+                    "bootstrap/conan-release-control/publisher/verify_recipe_tree.py",
+                "publisher/verify_release_bundle.py":
+                    "bootstrap/conan-release-control/publisher/verify_release_bundle.py",
+                "repository-settings.json": "bootstrap/conan-release-control/repository-settings.json",
+                "tests/__init__.py": "bootstrap/conan-release-control/tests/__init__.py",
+                "tests/test_publishers.py": "bootstrap/conan-release-control/tests/test_publishers.py",
+                "tests/test_workflow_policy.py":
+                    "bootstrap/conan-release-control/tests/test_workflow_policy.py"
+            },
+            "exact_directories": [
+                ".",
+                ".github",
+                ".github/workflows",
+                "keys",
+                "publisher",
+                "tests"
+            ]
+        }
+    }
+}

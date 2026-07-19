@@ -20,9 +20,12 @@ Installation
 ------------
 
 See :doc:`installation` for package-manager commands, supported platforms,
-shared/static target selection, verification, and uninstall instructions.  A
-package route is usable only after its release record marks that route
-``LIVE``; until then, build from a reviewed source revision.
+shared/static target selection, verification, and uninstall instructions.
+GitHub, Cloudsmith (APT/RPM), and AUR publication is read back before the
+release ledger records ``PUBLISHED``.  ConanCenter, Homebrew, and Chocolatey
+remain pending during provider review or moderation.  Install only after the
+requested version appears at the destination; until then, build from a
+reviewed source revision.
 
 Using Conan (Recommended)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^

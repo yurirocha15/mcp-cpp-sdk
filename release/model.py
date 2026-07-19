@@ -69,6 +69,11 @@ class SemVer:
         return f"{self.major}.{self.minor}.{self.patch}"
 
     @property
+    def abi_version(self) -> str:
+        """Return the CMake SOVERSION used in native package identities."""
+        return self.core if self.major == 0 else str(self.major)
+
+    @property
     def tag(self) -> str:
         return f"v{self}"
 
@@ -161,14 +166,16 @@ class DispatchRequest:
 
 
 class DestinationResult(str, Enum):
+    NOT_SELECTED = "NOT_SELECTED"
     PUBLISHED = "PUBLISHED"
+    DISPATCHED_PENDING_REVIEW = "DISPATCHED_PENDING_REVIEW"
+    DISPATCHED_PENDING_MODERATION = "DISPATCHED_PENDING_MODERATION"
     SUBMITTED_PENDING_REVIEW = "SUBMITTED_PENDING_REVIEW"
     SUBMITTED_PENDING_MODERATION = "SUBMITTED_PENDING_MODERATION"
     BLOCKED_MANUAL_ACTION = "BLOCKED_MANUAL_ACTION"
     FAILED = "FAILED"
     SKIPPED_ALREADY_IDENTICAL = "SKIPPED_ALREADY_IDENTICAL"
     FIRST_USE_UNPROVEN = "FIRST_USE_UNPROVEN"
-    LIVE = "LIVE"
 
 
 RELEASE_DESTINATIONS = (
@@ -189,7 +196,7 @@ class ReleaseLedger:
     version: SemVer
     tag: str
     source_commit_sha: str
-    release_manifest_sha256: str
+    release_manifest_sha256: str | None
     results: Mapping[str, DestinationResult]
 
     @classmethod
@@ -203,7 +210,11 @@ class ReleaseLedger:
         if value["tag"] != version.tag:
             raise ValidationError("ledger tag and version disagree")
         DispatchRequest._require_match("source_commit_sha", value["source_commit_sha"], _SHA_RE)
-        DispatchRequest._require_match("release_manifest_sha256", value["release_manifest_sha256"], _DIGEST_RE)
+        manifest_digest = value["release_manifest_sha256"]
+        if manifest_digest is not None:
+            if not isinstance(manifest_digest, str):
+                raise ValidationError("release_manifest_sha256 must be a digest or null")
+            DispatchRequest._require_match("release_manifest_sha256", manifest_digest, _DIGEST_RE)
         raw_results = value["results"]
         if not isinstance(raw_results, Mapping) or set(raw_results) != set(RELEASE_DESTINATIONS):
             raise ValidationError("ledger must contain every release destination exactly once")
@@ -211,23 +222,47 @@ class ReleaseLedger:
             results = {name: DestinationResult(raw_results[name]) for name in RELEASE_DESTINATIONS}
         except (TypeError, ValueError) as error:
             raise ValidationError("ledger contains an unknown destination result") from error
+        synchronous = {
+            DestinationResult.NOT_SELECTED,
+            DestinationResult.PUBLISHED,
+            DestinationResult.BLOCKED_MANUAL_ACTION,
+            DestinationResult.FAILED,
+            DestinationResult.SKIPPED_ALREADY_IDENTICAL,
+            DestinationResult.FIRST_USE_UNPROVEN,
+        }
+        review = synchronous | {
+            DestinationResult.DISPATCHED_PENDING_REVIEW,
+            DestinationResult.SUBMITTED_PENDING_REVIEW,
+        }
+        moderation = synchronous | {
+            DestinationResult.DISPATCHED_PENDING_MODERATION,
+            DestinationResult.SUBMITTED_PENDING_MODERATION,
+        }
+        allowed_by_destination = {
+            "github": synchronous,
+            "conan2": review,
+            "deb_apt": synchronous,
+            "rpm": synchronous,
+            "arch_aur": synchronous,
+            "homebrew": review,
+            "chocolatey": moderation,
+        }
+        if any(results[name] not in allowed_by_destination[name] for name in RELEASE_DESTINATIONS):
+            raise ValidationError("ledger result is invalid for its destination")
         if version.is_prerelease:
-            downstream = [name for name in RELEASE_DESTINATIONS if name != "github"]
-            forbidden = {
-                DestinationResult.PUBLISHED,
-                DestinationResult.SUBMITTED_PENDING_REVIEW,
-                DestinationResult.SUBMITTED_PENDING_MODERATION,
-                DestinationResult.SKIPPED_ALREADY_IDENTICAL,
-                DestinationResult.LIVE,
-            }
-            if any(results[name] in forbidden for name in downstream):
-                raise ValidationError("prereleases cannot be published to downstream channels")
+            if any(
+                results[name] is not DestinationResult.NOT_SELECTED
+                for name in RELEASE_DESTINATIONS
+                if name != "github"
+            ):
+                raise ValidationError("prereleases require NOT_SELECTED for every downstream channel")
         public_anchor = {
             DestinationResult.PUBLISHED,
             DestinationResult.SKIPPED_ALREADY_IDENTICAL,
-            DestinationResult.LIVE,
         }
         downstream_public = public_anchor | {
+            DestinationResult.DISPATCHED_PENDING_REVIEW,
+            DestinationResult.DISPATCHED_PENDING_MODERATION,
             DestinationResult.SUBMITTED_PENDING_REVIEW,
             DestinationResult.SUBMITTED_PENDING_MODERATION,
         }
@@ -235,7 +270,9 @@ class ReleaseLedger:
             results[name] in downstream_public for name in RELEASE_DESTINATIONS if name != "github"
         ):
             raise ValidationError("downstream publication requires an immutable GitHub release anchor")
-        return cls(version, value["tag"], value["source_commit_sha"], value["release_manifest_sha256"], results)
+        if results["github"] in public_anchor and manifest_digest is None:
+            raise ValidationError("an immutable GitHub anchor requires a manifest digest")
+        return cls(version, value["tag"], value["source_commit_sha"], manifest_digest, results)
 
     def to_mapping(self) -> dict[str, Any]:
         return {

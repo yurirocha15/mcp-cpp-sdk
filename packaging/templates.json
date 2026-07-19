@@ -1,5 +1,6 @@
 {
     "debian/control.in": [
+        "ABI_VERSION",
         "MAINTAINER"
     ],
     "debian/copyright.in": [
@@ -14,10 +15,13 @@
     "debian/rules.in": [],
     "debian/not-installed.in": [],
     "debian/source/format.in": [],
-    "debian/libmcp-cpp-sdk0.2.install.in": [],
+    "debian/libmcp-cpp-sdk.install.in": [
+        "ABI_VERSION"
+    ],
     "debian/libmcp-cpp-sdk-dev.install.in": [],
     "debian/libmcp-cpp-sdk-static-dev.install.in": [],
     "rpm/mcp-cpp-sdk.spec.in": [
+        "ABI_VERSION",
         "RPM_VERSION",
         "RPM_RELEASE",
         "RPM_CHANGELOG_DATE",
@@ -55,15 +59,19 @@
         "ARCHIVE_SHA256"
     ],
     "chocolatey/chocolateyuninstall.ps1.in": [],
-    "conan-center/config.yml.in": [
+    "conan-center/config-entry.json.in": [
         "VERSION"
     ],
-    "conan-center/all/conandata.yml.in": [
+    "conan-center/all/conandata-entry.json.in": [
         "VERSION",
         "SOURCE_URL",
         "SOURCE_SHA256"
     ],
-    "conan-center/all/conanfile.py.in": [],
+    "conan-center/all/conanfile.py.in": [
+        "BOOST_REFERENCE",
+        "NLOHMANN_JSON_REFERENCE",
+        "OPENSSL_REFERENCE"
+    ],
     "conan-center/all/test_package/conanfile.py.in": [],
     "conan-center/all/test_package/CMakeLists.txt.in": [],
     "conan-center/all/test_package/test_package.cpp.in": []

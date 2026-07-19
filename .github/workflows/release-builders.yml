@@ -1,0 +1,203 @@
+name: Release builder bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Reviewed bootstrap stage
+        required: true
+        type: choice
+        options:
+          - resolve-bases
+          - build-images
+      confirmation:
+        description: Type the exact confirmation documented in the local operator guide
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-builder-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Validate protected bootstrap request
+    if: ${{ github.repository_id == '101740085' && github.actor_id == '4281771' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Checkout exact protected main commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Validate stage state and emit hosted-runner matrix
+        id: plan
+        env:
+          STAGE: ${{ inputs.stage }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          matrix="$(python3 -I -S scripts/run_release_tool.py release.native_builder_bootstrap matrix \
+            --lock release/native-builders/lock.json \
+            --stage "${STAGE}" --confirmation "${CONFIRMATION}")"
+          printf 'matrix=%s\n' "${matrix}" >>"${GITHUB_OUTPUT}"
+
+  resolve-base:
+    name: Resolve base ${{ matrix.id }}
+    if: ${{ inputs.stage == 'resolve-bases' }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact protected main commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Resolve exact native platform manifest
+        env:
+          TARGET_ID: ${{ matrix.id }}
+        run: |
+          mkdir evidence
+          python3 -I -S scripts/run_release_tool.py release.native_builder_bootstrap resolve-base \
+            --lock release/native-builders/lock.json --target-id "${TARGET_ID}" \
+            --evidence "evidence/${TARGET_ID}.json"
+      - name: Upload base digest evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: builder-base-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+  propose-base-lock:
+    name: Propose reviewed base lock
+    if: ${{ inputs.stage == 'resolve-bases' }}
+    needs:
+      - plan
+      - resolve-base
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout exact protected main commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download complete base evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: builder-base-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence
+          merge-multiple: true
+      - name: Merge evidence into a proposed lock
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.native_builder_bootstrap merge
+          --lock release/native-builders/lock.json --stage base
+          --evidence-directory evidence --output proposed-native-builder-lock.json
+      - name: Upload proposed base lock
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proposed-native-builder-base-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          path: proposed-native-builder-lock.json
+          if-no-files-found: error
+          retention-days: 7
+
+  build-image:
+    name: Publish builder ${{ matrix.id }}
+    if: ${{ inputs.stage == 'build-images' }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    environment: release-builder-bootstrap
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout exact protected main commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Authenticate only to the GitHub container registry
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "${GHCR_TOKEN}" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+      - name: Build, publish, and read back exact builder manifest
+        env:
+          TARGET_ID: ${{ matrix.id }}
+        run: |
+          mkdir evidence
+          python3 -I -S scripts/run_release_tool.py release.native_builder_bootstrap build-image \
+            --lock release/native-builders/lock.json --target-id "${TARGET_ID}" \
+            --source-commit "${GITHUB_SHA}" --source . \
+            --evidence "evidence/${TARGET_ID}.json"
+      - name: Remove registry credentials from the runner
+        if: ${{ always() }}
+        run: docker logout ghcr.io
+      - name: Upload builder image evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: builder-image-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+  propose-image-lock:
+    name: Propose reviewed image lock
+    if: ${{ inputs.stage == 'build-images' }}
+    needs:
+      - plan
+      - build-image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout exact protected main commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download complete image evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: builder-image-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence
+          merge-multiple: true
+      - name: Merge evidence into a proposed lock
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.native_builder_bootstrap merge
+          --lock release/native-builders/lock.json --stage image
+          --evidence-directory evidence --source-commit "${GITHUB_SHA}"
+          --output proposed-native-builder-lock.json
+      - name: Upload proposed image lock
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proposed-native-builder-image-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          path: proposed-native-builder-lock.json
+          if-no-files-found: error
+          retention-days: 7
