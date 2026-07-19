@@ -47,7 +47,7 @@ jobs:
       if: runner.os == 'Windows'
       run: |
         mkdir -p C:\.c
-        echo "CONAN_HOME=C:\.c" >> $GITHUB_ENV
+        echo "CONAN_HOME=C:\.c" >> "$GITHUB_ENV"
       shell: bash
 
     - name: Parse release PowerShell
