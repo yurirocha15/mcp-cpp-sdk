@@ -8,33 +8,7 @@ import runpy
 import sys
 
 
-_ALLOWED_MODULES = frozenset(
-    {
-        "release.assemble_unsigned",
-        "release.aur_preflight",
-        "release.aur_ssh",
-        "release.aur_validation",
-        "release.cloudsmith_publish",
-        "release.conan_validation",
-        "release.aur_publish",
-        "release.construct_core",
-        "release.github_publication",
-        "release.github_anchor",
-        "release.github_provider",
-        "release.loopback_archive",
-        "release.native_build",
-        "release.native_builder",
-        "release.native_builder_bootstrap",
-        "release.package_validation",
-        "release.provider_preflight",
-        "release.publication_contract",
-        "release.repository_readiness",
-        "release.signing",
-        "release.verify_candidate",
-        "release.verify_gnupg_status",
-        "release.workflow_gate",
-    }
-)
+_ALLOWED_MODULES = frozenset({"release.native_builder_bootstrap"})
 
 
 def main() -> int:
