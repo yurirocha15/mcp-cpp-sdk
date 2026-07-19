@@ -15,7 +15,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - A manually dispatched, fail-closed release pipeline for GitHub Release,
   ConanCenter contribution, APT/DEB, RPM, AUR, Homebrew, and Chocolatey.
 - Deterministic source assets, checksums, signatures, SBOMs, provenance, and
-  release-ledger support.
+  immutable release-anchor verification.
 
 ### Changed
 

@@ -20,6 +20,7 @@ import shutil
 import subprocess
 from typing import Any
 
+from .build_identity import CURRENT_NATIVE_TARGET_IDS
 from .model import ValidationError
 
 
@@ -27,25 +28,7 @@ _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _IMAGE = re.compile(r"ghcr\.io/yurirocha15/mcp-cpp-sdk-release-builders")
 _TARGET_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _UNRESOLVED = "UNRESOLVED"
-_EXPECTED_IDS = (
-    "ubuntu-jammy-amd64",
-    "ubuntu-jammy-arm64",
-    "ubuntu-noble-amd64",
-    "ubuntu-noble-arm64",
-    "ubuntu-resolute-amd64",
-    "ubuntu-resolute-arm64",
-    "debian-bookworm-amd64",
-    "debian-bookworm-arm64",
-    "debian-trixie-amd64",
-    "debian-trixie-arm64",
-    "fedora-43-x86_64",
-    "fedora-43-aarch64",
-    "fedora-44-x86_64",
-    "fedora-44-aarch64",
-    "el-9-x86_64",
-    "el-9-aarch64",
-    "el-10-x86_64",
-    "el-10-aarch64",
+_EXPECTED_IDS = CURRENT_NATIVE_TARGET_IDS + (
     "aur-x86_64",
     "conan-linux-x86_64",
 )

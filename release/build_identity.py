@@ -86,73 +86,6 @@ class AurTarget:
         }
 
 
-_APT_ARCHITECTURES = {
-    "amd64": "x86_64",
-    "arm64": "aarch64",
-}
-
-
-def _apt_targets() -> dict[str, AptTarget]:
-    releases = (
-        ("ubuntu", "jammy", "22.04"),
-        ("ubuntu", "noble", "24.04"),
-        ("ubuntu", "resolute", "26.04"),
-        ("debian", "bookworm", "12"),
-        ("debian", "trixie", "13"),
-    )
-    return {
-        f"{distribution}-{codename}-{architecture}": AptTarget(
-            distribution=distribution,
-            version_id=version_id,
-            codename=codename,
-            dpkg_architecture=architecture,
-            uname_machine=uname_machine,
-        )
-        for distribution, codename, version_id in releases
-        for architecture, uname_machine in _APT_ARCHITECTURES.items()
-    }
-
-
-APT_TARGETS: Mapping[str, AptTarget] = MappingProxyType(_apt_targets())
-
-
-def _rpm_targets() -> dict[str, RpmTarget]:
-    targets: dict[str, RpmTarget] = {}
-    for release in ("43", "44"):
-        for architecture in ("x86_64", "aarch64"):
-            targets[f"fedora-{release}-{architecture}"] = RpmTarget(
-                distribution="fedora",
-                release=release,
-                architecture=architecture,
-                uname_machine=architecture,
-                builder_os_id="fedora",
-                builder_os_version_id=release,
-                rpm_fedora=release,
-                rpm_rhel="",
-                rpm_dist=f".fc{release}",
-            )
-    for release, builder_version in (("9", "9.8"), ("10", "10.2")):
-        for architecture in ("x86_64", "aarch64"):
-            targets[f"el-{release}-{architecture}"] = RpmTarget(
-                distribution="el",
-                release=release,
-                architecture=architecture,
-                uname_machine=architecture,
-                builder_os_id="almalinux",
-                builder_os_version_id=builder_version,
-                rpm_fedora="",
-                rpm_rhel=release,
-                rpm_dist=f".el{release}",
-            )
-    return targets
-
-
-RPM_TARGETS: Mapping[str, RpmTarget] = MappingProxyType(_rpm_targets())
-
-AUR_TARGETS: Mapping[str, AurTarget] = MappingProxyType(
-    {"x86_64": AurTarget("x86_64", "x86_64")}
-)
-
 WINDOWS_TARGET_ID = "windows-x64-v143-md"
 WINDOWS_CACHE_EXPECTATIONS: Mapping[str, str] = MappingProxyType(
     {
@@ -163,29 +96,6 @@ WINDOWS_CACHE_EXPECTATIONS: Mapping[str, str] = MappingProxyType(
     }
 )
 
-_NATIVE_BASE_FIELDS = frozenset(
-    {"architecture", "distribution", "format", "id", "release", "runner"}
-)
-_NATIVE_APT_FIELDS = _NATIVE_BASE_FIELDS | frozenset(
-    {
-        "builder_dpkg_architecture",
-        "builder_os_id",
-        "builder_os_version_codename",
-        "builder_os_version_id",
-        "builder_uname_machine",
-    }
-)
-_NATIVE_RPM_FIELDS = _NATIVE_BASE_FIELDS | frozenset(
-    {
-        "builder_os_id",
-        "builder_os_version_id",
-        "builder_rpm_architecture",
-        "builder_rpm_dist",
-        "builder_rpm_fedora",
-        "builder_rpm_rhel",
-        "builder_uname_machine",
-    }
-)
 _TARGET_CATALOG_FIELDS = frozenset(
     {"schema_version", "apt", "rpm", "aur", "homebrew", "chocolatey"}
 )
@@ -217,21 +127,10 @@ _TARGET_RPM_FIELDS = frozenset(
 _TARGET_RPM_ARCH_FIELDS = frozenset(
     {"architecture", "builder_rpm_architecture", "builder_uname_machine"}
 )
-_EXPECTED_PROVIDER_TARGETS = {
-    "aur": {
-        "package_base": "mcp-cpp-sdk",
-        "architectures": ["x86_64"],
-    },
-    "homebrew": {
-        "tap": "yurirocha15/homebrew-mcp-cpp-sdk",
-        "bottle_tags": ["sequoia", "arm64_sequoia", "x86_64_linux", "arm64_linux"],
-    },
-    "chocolatey": {
-        "package_id": "mcp-cpp-sdk",
-        "architecture": "x86_64",
-        "toolset": "v143",
-        "runtime": "MD",
-    },
+_PROVIDER_FIELDS = {
+    "aur": frozenset({"package_base", "architectures"}),
+    "homebrew": frozenset({"tap", "bottle_tags"}),
+    "chocolatey": frozenset({"package_id", "architecture", "toolset", "runtime"}),
 }
 _EMPTY_RPM_FIELDS = frozenset({"builder_rpm_fedora", "builder_rpm_rhel"})
 _WINDOWS_FACT_FIELDS = frozenset(
@@ -343,47 +242,6 @@ def _verified_result(kind: str, target_id: str, facts: Mapping[str, str], eviden
     }
 
 
-def expected_native_target_projection() -> tuple[dict[str, str], ...]:
-    """Return the canonical flat projection of every reviewed native target."""
-
-    projected: list[dict[str, str]] = []
-    for target_id, target in APT_TARGETS.items():
-        projected.append(
-            {
-                "architecture": target.dpkg_architecture,
-                "builder_dpkg_architecture": target.dpkg_architecture,
-                "builder_os_id": target.distribution,
-                "builder_os_version_codename": target.codename,
-                "builder_os_version_id": target.version_id,
-                "builder_uname_machine": target.uname_machine,
-                "distribution": target.distribution,
-                "format": "apt",
-                "id": target_id,
-                "release": target.codename,
-                "runner": "ubuntu-24.04-arm" if target.uname_machine == "aarch64" else "ubuntu-24.04",
-            }
-        )
-    for target_id, target in RPM_TARGETS.items():
-        projected.append(
-            {
-                "architecture": target.architecture,
-                "builder_os_id": target.builder_os_id,
-                "builder_os_version_id": target.builder_os_version_id,
-                "builder_rpm_architecture": target.architecture,
-                "builder_rpm_dist": target.rpm_dist,
-                "builder_rpm_fedora": target.rpm_fedora,
-                "builder_rpm_rhel": target.rpm_rhel,
-                "builder_uname_machine": target.uname_machine,
-                "distribution": target.distribution,
-                "format": "rpm",
-                "id": target_id,
-                "release": target.release,
-                "runner": "ubuntu-24.04-arm" if target.uname_machine == "aarch64" else "ubuntu-24.04",
-            }
-        )
-    return tuple(projected)
-
-
 def _require_list(name: str, value: object) -> list[Any]:
     if not isinstance(value, list):
         raise BuildIdentityError(f"{name} must be a JSON array")
@@ -413,12 +271,17 @@ def _catalog_projection(document: object) -> tuple[dict[str, str], ...]:
     catalog = _require_exact_fields("target catalog", document, _TARGET_CATALOG_FIELDS)
     if type(catalog["schema_version"]) is not int or catalog["schema_version"] != 2:
         raise BuildIdentityError("target catalog schema_version must be exactly 2")
-    for provider, expected in _EXPECTED_PROVIDER_TARGETS.items():
-        actual = catalog[provider]
-        if not isinstance(actual, Mapping) or dict(actual) != expected:
-            raise BuildIdentityError(
-                f"target catalog {provider} identity does not match reviewed release policy"
-            )
+    for provider, fields in _PROVIDER_FIELDS.items():
+        value = _require_exact_fields(f"target catalog {provider}", catalog[provider], fields)
+        for field, item in value.items():
+            if isinstance(item, list):
+                normalized = [_require_string(f"target catalog {provider}.{field}", entry) for entry in item]
+                if not normalized or len(normalized) != len(set(normalized)):
+                    raise BuildIdentityError(
+                        f"target catalog {provider}.{field} must be a non-empty unique list"
+                    )
+            else:
+                _require_string(f"target catalog {provider}.{field}", item)
 
     projected: list[dict[str, str]] = []
     for index, raw_group in enumerate(_require_list("target catalog apt", catalog["apt"])):
@@ -500,75 +363,15 @@ def _catalog_projection(document: object) -> tuple[dict[str, str], ...]:
                     ),
                 }
             )
+    identifiers = [target["id"] for target in projected]
+    if (
+        len(projected) != 18
+        or sum(target["format"] == "apt" for target in projected) != 10
+        or sum(target["format"] == "rpm" for target in projected) != 8
+        or len(identifiers) != len(set(identifiers))
+    ):
+        raise BuildIdentityError("target catalog must contain 10 unique APT and 8 unique RPM targets")
     return tuple(projected)
-
-
-def _native_projection(document: object) -> tuple[dict[str, str], ...]:
-    raw_targets = _require_list("native target catalog", document)
-    targets: list[dict[str, str]] = []
-    for index, raw_target in enumerate(raw_targets):
-        name = f"native target catalog[{index}]"
-        if not isinstance(raw_target, Mapping):
-            raise BuildIdentityError(f"{name} must be a mapping")
-        target_format = raw_target.get("format")
-        if target_format == "apt":
-            fields = _NATIVE_APT_FIELDS
-            allow_empty = frozenset()
-        elif target_format == "rpm":
-            fields = _NATIVE_RPM_FIELDS
-            allow_empty = _EMPTY_RPM_FIELDS
-        else:
-            raise BuildIdentityError(f"{name}.format must be exactly 'apt' or 'rpm'")
-        targets.append(_normalized_record(name, raw_target, fields, allow_empty=allow_empty))
-    return tuple(targets)
-
-
-def _target_index(name: str, targets: Sequence[Mapping[str, str]]) -> dict[str, Mapping[str, str]]:
-    indexed: dict[str, Mapping[str, str]] = {}
-    for target in targets:
-        target_id = target["id"]
-        if target_id in indexed:
-            raise BuildIdentityError(f"{name} contains duplicate target ID: {target_id}")
-        indexed[target_id] = target
-    return indexed
-
-
-def _require_equivalent(
-    name: str,
-    actual: Sequence[Mapping[str, str]],
-    expected: Sequence[Mapping[str, str]],
-) -> None:
-    actual_by_id = _target_index(name, actual)
-    expected_by_id = _target_index("internal target table", expected)
-    if set(actual_by_id) != set(expected_by_id):
-        missing = sorted(set(expected_by_id) - set(actual_by_id))
-        extra = sorted(set(actual_by_id) - set(expected_by_id))
-        raise BuildIdentityError(f"{name} target IDs mismatch; missing={missing}, extra={extra}")
-    for target_id in sorted(expected_by_id):
-        observed = actual_by_id[target_id]
-        required = expected_by_id[target_id]
-        if observed != required:
-            differing = sorted(
-                field
-                for field in set(observed) | set(required)
-                if observed.get(field) != required.get(field)
-            )
-            raise BuildIdentityError(f"{name} target {target_id} differs in fields: {differing}")
-
-
-def validate_target_projection(
-    native_document: object,
-    target_catalog_document: object,
-) -> tuple[dict[str, str], ...]:
-    """Prove both target files are exact, equivalent projections of reviewed data."""
-
-    expected = expected_native_target_projection()
-    catalog_projection = _catalog_projection(target_catalog_document)
-    native_projection = _native_projection(native_document)
-    _require_equivalent("target catalog projection", catalog_projection, expected)
-    _require_equivalent("native target catalog", native_projection, expected)
-    _require_equivalent("native/catalog equivalence", native_projection, catalog_projection)
-    return expected
 
 
 def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -602,14 +405,60 @@ def _load_strict_json(path: Path) -> object:
 
 
 def load_and_validate_target_projection(
-    native_targets_path: Path,
     target_catalog_path: Path,
 ) -> tuple[dict[str, str], ...]:
-    """Load both checked-in JSON files strictly and validate their equivalence."""
+    """Load the single checked-in package target catalog strictly."""
 
-    native_document = _load_strict_json(native_targets_path)
-    catalog_document = _load_strict_json(target_catalog_path)
-    return validate_target_projection(native_document, catalog_document)
+    return _catalog_projection(_load_strict_json(target_catalog_path))
+
+
+def _target_maps(
+    document: object,
+    projection: Sequence[Mapping[str, str]],
+) -> tuple[Mapping[str, AptTarget], Mapping[str, RpmTarget], Mapping[str, AurTarget]]:
+    catalog = _require_exact_fields("target catalog", document, _TARGET_CATALOG_FIELDS)
+    apt: dict[str, AptTarget] = {}
+    rpm: dict[str, RpmTarget] = {}
+    for target in projection:
+        if target["format"] == "apt":
+            apt[target["id"]] = AptTarget(
+                distribution=target["builder_os_id"],
+                version_id=target["builder_os_version_id"],
+                codename=target["builder_os_version_codename"],
+                dpkg_architecture=target["builder_dpkg_architecture"],
+                uname_machine=target["builder_uname_machine"],
+            )
+        else:
+            rpm[target["id"]] = RpmTarget(
+                distribution=target["distribution"],
+                release=target["release"],
+                architecture=target["builder_rpm_architecture"],
+                uname_machine=target["builder_uname_machine"],
+                builder_os_id=target["builder_os_id"],
+                builder_os_version_id=target["builder_os_version_id"],
+                rpm_fedora=target["builder_rpm_fedora"],
+                rpm_rhel=target["builder_rpm_rhel"],
+                rpm_dist=target["builder_rpm_dist"],
+            )
+    aur_value = _require_exact_fields(
+        "target catalog aur", catalog["aur"], _PROVIDER_FIELDS["aur"]
+    )
+    architectures = _require_list("target catalog aur.architectures", aur_value["architectures"])
+    aur = {
+        architecture: AurTarget(architecture, architecture)
+        for architecture in architectures
+        if isinstance(architecture, str)
+    }
+    return MappingProxyType(apt), MappingProxyType(rpm), MappingProxyType(aur)
+
+
+_TARGET_CATALOG_PATH = Path(__file__).resolve().parent.parent / "packaging/targets.json"
+_TARGET_CATALOG_DOCUMENT = _load_strict_json(_TARGET_CATALOG_PATH)
+_TARGET_PROJECTION = _catalog_projection(_TARGET_CATALOG_DOCUMENT)
+CURRENT_NATIVE_TARGET_IDS = tuple(target["id"] for target in _TARGET_PROJECTION)
+APT_TARGETS, RPM_TARGETS, AUR_TARGETS = _target_maps(
+    _TARGET_CATALOG_DOCUMENT, _TARGET_PROJECTION
+)
 
 
 def validate_apt_build_identity(target_id: str, facts: Mapping[str, object]) -> dict[str, object]:
@@ -798,14 +647,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Validate checked-in target files for workflow and local preflight use."""
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--native-targets", required=True, type=Path)
     parser.add_argument("--targets", required=True, type=Path)
     arguments = parser.parse_args(argv)
     try:
-        targets = load_and_validate_target_projection(
-            arguments.native_targets,
-            arguments.targets,
-        )
+        targets = load_and_validate_target_projection(arguments.targets)
     except BuildIdentityError as error:
         print(f"target projection validation failed: {error}", file=sys.stderr)
         return 1

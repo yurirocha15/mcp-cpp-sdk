@@ -44,16 +44,13 @@ class GitHubAnchorOrchestrationTests(unittest.TestCase):
             tag="v0.2.0",
             version="0.2.0",
             commit="2" * 40,
-            ledger_issue="17",
             repository="yurirocha15/mcp-cpp-sdk",
             tag_object_sha="1" * 40,
             primary_fingerprint="32F4760A898CAA62344F81B078DDAF6A80105366",
             tag_fingerprint="C017D850B03960E8EF1951EC680119C224E973B1",
             artifact_fingerprint="AC02DB2D7C09871E31DB352042C5770080B00549",
-            prior_manifest_sha256="",
             anchor_existed="false",
-            targets=root / "native-targets.json",
-            target_catalog=root / "targets.json",
+            targets=root / "targets.json",
             native_builder_lock=root / "native-builder-lock.json",
             conan_requirements=root / "requirements.json",
             github_output=root / "github-output",
@@ -114,7 +111,8 @@ class GitHubAnchorOrchestrationTests(unittest.TestCase):
                 download_and_verify_anchor(args)
             live_tag.assert_not_called()
 
-    @mock.patch("release.github_anchor.verify_anchor")
+    @mock.patch("release.github_anchor.server_asset_digests")
+    @mock.patch("release.github_anchor._file_digests")
     @mock.patch("release.github_anchor.verify_candidate")
     @mock.patch("release.github_anchor._release_metadata")
     @mock.patch("release.github_anchor._download_release")
@@ -125,12 +123,14 @@ class GitHubAnchorOrchestrationTests(unittest.TestCase):
         download,
         metadata,
         candidate,
-        anchor,
+        file_digests,
+        server_digests,
     ):
         digest = "d" * 64
         metadata.return_value = self.metadata()
         candidate.return_value = digest
-        anchor.return_value = (9, digest)
+        file_digests.return_value = {"release-manifest.json": digest}
+        server_digests.return_value = {"release-manifest.json": digest}
         with tempfile.TemporaryDirectory() as directory:
             args = self.arguments(Path(directory))
             download.side_effect = lambda **values: values["directory"].mkdir()
@@ -147,9 +147,20 @@ class GitHubAnchorOrchestrationTests(unittest.TestCase):
                 tag=args.tag,
             )
             candidate.assert_called_once()
-            anchor.assert_called_once()
+            self.assertEqual(
+                json.loads((args.directory / "ANCHOR.json").read_text(encoding="utf-8")),
+                {
+                    "schema_version": 1,
+                    "repository": args.repository,
+                    "release_id": "9",
+                    "tag": args.tag,
+                    "commit": args.commit,
+                    "manifest_sha256": digest,
+                },
+            )
 
-    @mock.patch("release.github_anchor.verify_anchor")
+    @mock.patch("release.github_anchor.server_asset_digests")
+    @mock.patch("release.github_anchor._file_digests")
     @mock.patch("release.github_anchor.verify_historical_candidate_v2")
     @mock.patch("release.github_anchor.verify_candidate")
     @mock.patch("release.github_anchor._release_metadata")
@@ -162,13 +173,15 @@ class GitHubAnchorOrchestrationTests(unittest.TestCase):
         metadata,
         candidate,
         historical,
-        anchor,
+        file_digests,
+        server_digests,
     ):
         digest = "d" * 64
         metadata.return_value = self.metadata()
         candidate.return_value = digest
         historical.return_value = digest
-        anchor.return_value = (9, digest)
+        file_digests.return_value = {"release-manifest.json": digest}
+        server_digests.return_value = {"release-manifest.json": digest}
         with tempfile.TemporaryDirectory() as directory:
             args = self.arguments(Path(directory))
             args.anchor_existed = "true"
@@ -204,7 +217,14 @@ class GitHubAnchorOrchestrationTests(unittest.TestCase):
                 args.directory / "release-signing-key.asc",
             )
 
-    @mock.patch("release.github_anchor.verify_anchor", return_value=(9, "e" * 64))
+    @mock.patch(
+        "release.github_anchor.server_asset_digests",
+        return_value={"release-manifest.json": "e" * 64},
+    )
+    @mock.patch(
+        "release.github_anchor._file_digests",
+        return_value={"release-manifest.json": "e" * 64},
+    )
     @mock.patch("release.github_anchor.verify_candidate", return_value="d" * 64)
     @mock.patch("release.github_anchor._release_metadata")
     @mock.patch("release.github_anchor._download_release")
@@ -215,7 +235,8 @@ class GitHubAnchorOrchestrationTests(unittest.TestCase):
         download,
         metadata,
         _candidate,
-        _anchor,
+        _file_digests,
+        _server_digests,
     ):
         with tempfile.TemporaryDirectory() as directory:
             metadata.return_value = self.metadata()

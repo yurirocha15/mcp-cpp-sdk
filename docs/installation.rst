@@ -8,8 +8,8 @@ The release pipeline prepares GitHub Release, Conan 2, APT/DEB, RPM, AUR,
 Homebrew, and Chocolatey outputs.  The GitHub, Cloudsmith (APT/RPM), and AUR
 publishers query the exact public object and record ``PUBLISHED`` only after
 its identity matches the release.  ConanCenter, Homebrew, and Chocolatey are
-provider-controlled review or moderation routes; their ledger entries remain
-pending until the destination accepts the release.
+provider-controlled review or moderation routes and remain pending until the
+destination accepts the release.
 
 AppImage and Snap are not release routes for this project because the SDK is a
 C++ library rather than a standalone application.  Use a native development
@@ -18,8 +18,8 @@ package, Conan 2, Homebrew, Chocolatey, or a verified source archive instead.
 A package-manager route is installable only after the requested version
 appears at that route's public provider.  Before the first stable release, or
 while a submission is pending, use a reviewed source revision.  Do not infer
-availability from this page, an uploaded file, a pending ledger entry, or an
-open package-repository pull request.
+availability from this page, an uploaded file, or an open package-repository
+pull request.
 
 Supported baseline
 ------------------
@@ -95,8 +95,8 @@ in ConanCenter's public package index:
 
 Use ``shared=False`` for the static package ID.  Pin the version and retain the
 generated lockfile when reproducibility matters.  ConanCenter review may finish
-after the GitHub Release; a pending ledger entry or open recipe pull request is
-not an installable route.
+after the GitHub Release; an open recipe pull request is not an installable
+route.
 
 APT / DEB
 ---------
@@ -203,8 +203,8 @@ Homebrew
 --------
 
 Homebrew publication is a provider-controlled handoff.  Install only after the
-requested formula version appears in the destination tap; a pending ledger
-entry or open formula pull request is not installable:
+requested formula version appears in the destination tap; an open formula pull
+request is not installable:
 
 .. code-block:: bash
 

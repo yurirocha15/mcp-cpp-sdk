@@ -406,7 +406,7 @@ class ProviderPreflightTests(unittest.TestCase):
                 "image": "ghcr.io/yurirocha15/mcp-cpp-sdk-release-builders",
                 "image_digest": f"sha256:{'9' * 64}",
             }
-            for target in load_native_targets(root / "packaging/native-targets.json")
+            for target in load_native_targets(root / "packaging/targets.json")
         )
         with mock.patch(
             "release.publication_contract.load_builder_lock", return_value=builders

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -18,11 +19,10 @@ EXTERNAL_CHANNELS = (
     "chocolatey",
 )
 OPERATIONS = {
-    "validate-selected": ("validate", False, False),
-    "validate-all": ("validate", True, False),
-    "publish-selected": ("publish", False, False),
-    "publish-retry-selected": ("publish", False, True),
-    "publish-all": ("publish", True, False),
+    "validate-selected": ("validate", False),
+    "validate-all": ("validate", True),
+    "publish-selected": ("publish", False),
+    "publish-all": ("publish", True),
 }
 NUMERIC_IDENTIFIER = r"(?:0|[1-9][0-9]*)"
 STABLE_TAG = re.compile(
@@ -46,10 +46,13 @@ class DispatchContract:
     release_kind: str
     channels: tuple[str, ...]
     selection_label: str
-    ledger_issue: str
-    retry_authorized: bool
 
     def workflow_outputs(self) -> dict[str, str]:
+        cloudsmith_formats = [
+            {"format": channel}
+            for channel in ("apt", "rpm")
+            if channel in self.channels
+        ]
         outputs = {
             "operation": self.operation,
             "mode": self.mode,
@@ -57,8 +60,9 @@ class DispatchContract:
             "release_kind": self.release_kind,
             "normalized_channels": ",".join(self.channels),
             "selection_label": self.selection_label,
-            "ledger_issue": self.ledger_issue,
-            "retry_authorized": str(self.retry_authorized).lower(),
+            "cloudsmith_matrix": json.dumps(
+                cloudsmith_formats, separators=(",", ":")
+            ),
         }
         outputs.update(
             (f"target_{channel}", "true" if channel in self.channels else "false")
@@ -123,7 +127,6 @@ def validate_dispatch(
     aur: str,
     homebrew: str,
     chocolatey: str,
-    ledger_issue: str,
     confirmation: str,
     event_name: str,
     workflow_ref: str,
@@ -153,7 +156,7 @@ def validate_dispatch(
         if actual != expected:
             raise ContractError(f"unexpected {label}")
     try:
-        mode, publish_all, retry_authorized = OPERATIONS[operation]
+        mode, publish_all = OPERATIONS[operation]
     except KeyError as error:
         raise ContractError("operation is not an allowed release action") from error
 
@@ -171,11 +174,9 @@ def validate_dispatch(
     )
     if release_kind == "rc" and channels:
         raise ContractError("RC releases cannot select third-party channels")
-    if not re.fullmatch(r"[1-9][0-9]*", ledger_issue):
-        raise ContractError("ledger_issue must be a positive canonical decimal")
-    expected_confirmation = f"{operation}:{tag}:{selection_label}:{ledger_issue}"
+    expected_confirmation = f"{operation}:{tag}:{selection_label}"
     if confirmation != expected_confirmation:
-        raise ContractError("confirmation must exactly bind operation:tag:channels:ledger_issue")
+        raise ContractError("confirmation must exactly bind operation:tag:channels")
     return DispatchContract(
         operation,
         mode,
@@ -183,8 +184,6 @@ def validate_dispatch(
         release_kind,
         channels,
         selection_label,
-        ledger_issue,
-        retry_authorized,
     )
 
 
@@ -198,7 +197,6 @@ def main() -> int:
         aur=os.environ["DISPATCH_AUR"],
         homebrew=os.environ["DISPATCH_HOMEBREW"],
         chocolatey=os.environ["DISPATCH_CHOCOLATEY"],
-        ledger_issue=os.environ["DISPATCH_LEDGER_ISSUE"],
         confirmation=os.environ["DISPATCH_CONFIRMATION"],
         event_name=os.environ["EVENT_NAME"],
         workflow_ref=os.environ["WORKFLOW_REF"],

@@ -8,7 +8,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-from release.build_identity import APT_TARGETS, validate_apt_build_identity
+from release.build_identity import (
+    APT_TARGETS,
+    load_and_validate_target_projection,
+    validate_apt_build_identity,
+)
 from release.aur_package_installer import validate_arguments as validate_aur_install_arguments
 from release.model import ValidationError
 from release.native_build import privileged_command
@@ -62,7 +66,7 @@ class NativeBuilderLockTests(unittest.TestCase):
             builders = load_builder_lock(
                 self.write(self.resolved_document(), root), require_resolved=True
             )
-            native = json.loads((ROOT / "packaging/native-targets.json").read_text(encoding="utf-8"))
+            native = load_and_validate_target_projection(ROOT / "packaging/targets.json")
             matrix, aur, conan = bind_build_matrices(native, builders)
         self.assertEqual(len(matrix), 18)
         self.assertEqual(aur["id"], "aur-x86_64")

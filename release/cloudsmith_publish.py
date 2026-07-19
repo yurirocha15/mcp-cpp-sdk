@@ -371,7 +371,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         subparser.add_argument("--namespace", required=True)
         subparser.add_argument("--repository", required=True)
         subparser.add_argument("--expected-username", required=True)
-        subparser.add_argument("--native-targets", type=Path, required=True)
+        subparser.add_argument("--targets", type=Path, required=True)
         subparser.add_argument("--apt-selected", choices=("true", "false"), required=True)
         subparser.add_argument("--rpm-selected", choices=("true", "false"), required=True)
         subparser.add_argument("--signed-contract", type=Path)
@@ -406,7 +406,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if selected == "true"
                 ),
                 native_targets=(
-                    args.native_targets if args.policy_source == "current" else None
+                    args.targets if args.policy_source == "current" else None
                 ),
                 embedded_targets=(
                     load_publication_contract(args.signed_contract).native_targets

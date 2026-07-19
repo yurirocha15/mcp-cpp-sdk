@@ -35,10 +35,10 @@ from .abi_baseline import (
     DIGEST,
     MANIFEST_FIELDS,
     RemoteAsset,
-    Version,
     _flatten_pages,
     _payload_records,
     select_baseline,
+    version_from_tag,
 )
 from .abi_build import (
     ABI_BUILD_TUPLE,
@@ -115,7 +115,7 @@ def load_policy(value: object) -> dict[str, object]:
     initial: list[dict[str, str]] = []
     for raw in raw_initial:
         entry = _exact_mapping(raw, _INITIAL_FIELDS, "initial ABI baseline")
-        version = Version.from_tag(entry["tag"], stable_only=True)
+        version = version_from_tag(entry["tag"], stable_only=True)
         if entry["abi_line"] != version.comparison_series:
             raise AbiReleasePolicyError(
                 "initial ABI baseline tag and comparison series disagree"
@@ -138,8 +138,8 @@ def load_policy(value: object) -> dict[str, object]:
         identifier = entry["id"]
         if not isinstance(identifier, str) or _EXCEPTION_ID.fullmatch(identifier) is None:
             raise AbiReleasePolicyError("ABI exception ID is malformed")
-        baseline = Version.from_tag(entry["baseline_tag"], stable_only=True)
-        candidate = Version.from_tag(entry["candidate_tag"], stable_only=True)
+        baseline = version_from_tag(entry["baseline_tag"], stable_only=True)
+        candidate = version_from_tag(entry["candidate_tag"], stable_only=True)
         if (
             entry["abi_line"] != baseline.comparison_series
             or candidate.comparison_series != baseline.comparison_series
@@ -303,7 +303,7 @@ def download_planned_assets(
         raise AbiReleasePolicyError("ABI baseline repository identity is unexpected")
     if plan["schema_version"] != 1 or type(plan["release_id"]) is not int or plan["release_id"] < 1:
         raise AbiReleasePolicyError("ABI baseline download plan identity is malformed")
-    Version.from_tag(plan["tag"], stable_only=True)
+    version_from_tag(plan["tag"], stable_only=True)
     raw_assets = plan["assets"]
     if not isinstance(raw_assets, list) or not raw_assets:
         raise AbiReleasePolicyError("ABI baseline download plan has no assets")

@@ -15,7 +15,6 @@ import stat
 import tarfile
 import tempfile
 from typing import Any, Iterable, Sequence
-from urllib.parse import urlsplit
 import zipfile
 
 from .model import SemVer, ValidationError
@@ -69,26 +68,6 @@ ROUTE_FIELDS = frozenset(
         "build_tuple",
         "identity_asset",
     }
-)
-EXPECTED_NATIVE_TARGET_IDS = (
-    "ubuntu-jammy-amd64",
-    "ubuntu-jammy-arm64",
-    "ubuntu-noble-amd64",
-    "ubuntu-noble-arm64",
-    "ubuntu-resolute-amd64",
-    "ubuntu-resolute-arm64",
-    "debian-bookworm-amd64",
-    "debian-bookworm-arm64",
-    "debian-trixie-amd64",
-    "debian-trixie-arm64",
-    "fedora-43-x86_64",
-    "fedora-43-aarch64",
-    "fedora-44-x86_64",
-    "fedora-44-aarch64",
-    "el-9-x86_64",
-    "el-9-aarch64",
-    "el-10-x86_64",
-    "el-10-aarch64",
 )
 ABI_BUILD_TUPLE = "ubuntu-noble-amd64-gcc13-libstdcxx-abigail2.4"
 ABI_BUILD_IDENTITY_NAME = f"build-identity-{ABI_BUILD_TUPLE}.json"
@@ -440,13 +419,20 @@ class NativeRoute:
 
 
 def load_native_targets(path: Path) -> tuple[NativeTarget, ...]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, list) or not value:
-        raise ValidationError("native target inventory must be a non-empty list")
+    from .build_identity import (
+        CURRENT_NATIVE_TARGET_IDS,
+        BuildIdentityError,
+        load_and_validate_target_projection,
+    )
+
+    try:
+        value = load_and_validate_target_projection(path)
+    except BuildIdentityError as error:
+        raise ValidationError(f"native target inventory is invalid: {error}") from error
     targets = tuple(NativeTarget.from_mapping(item) for item in value)
     if len({target.id for target in targets}) != len(targets):
         raise ValidationError("native target inventory contains duplicate IDs")
-    if tuple(target.id for target in targets) != EXPECTED_NATIVE_TARGET_IDS:
+    if tuple(target.id for target in targets) != CURRENT_NATIVE_TARGET_IDS:
         raise ValidationError("native target inventory is incomplete or noncanonical")
     return targets
 
@@ -621,8 +607,6 @@ def build_release_manifest(
     tag: str,
     commit: str,
     source_tree_sha256: str,
-    ledger_issue_id: str,
-    ledger_issue_url: str,
     primary_fingerprint: str,
     tag_subkey_fingerprint: str,
     artifact_subkey_fingerprint: str,
@@ -636,18 +620,6 @@ def build_release_manifest(
         raise ValidationError("manifest tag and version disagree")
     _require_hex("commit", commit, 40, lowercase=True)
     _require_hex("source_tree_sha256", source_tree_sha256, 64, lowercase=True)
-    if not ledger_issue_id.isdecimal() or ledger_issue_id.startswith("0"):
-        raise ValidationError("ledger issue ID must be a positive canonical decimal")
-    parsed_issue_url = urlsplit(ledger_issue_url)
-    expected_path = f"/yurirocha15/mcp-cpp-sdk/issues/{ledger_issue_id}"
-    if (
-        parsed_issue_url.scheme != "https"
-        or parsed_issue_url.netloc != "github.com"
-        or parsed_issue_url.path != expected_path
-        or parsed_issue_url.query
-        or parsed_issue_url.fragment
-    ):
-        raise ValidationError("ledger issue URL is not the expected canonical GitHub URL")
     for name, fingerprint in (
         ("primary_fingerprint", primary_fingerprint),
         ("tag_subkey_fingerprint", tag_subkey_fingerprint),
@@ -677,7 +649,6 @@ def build_release_manifest(
         "tag": tag,
         "commit": commit,
         "source_tree_sha256": source_tree_sha256,
-        "release_ledger": {"issue_id": ledger_issue_id, "issue_url": ledger_issue_url},
         "signers": {
             "primary_fingerprint": primary_fingerprint,
             "tag_subkey_fingerprint": tag_subkey_fingerprint,

@@ -25,7 +25,6 @@ REQUIRED_FRAGMENTS = (
     "function Stop-LoopbackArchiveServer",
     "function Invoke-ChocolateyCandidateValidation",
     "$sourceVersion -cne $Version",
-    "$sourceVersion -cne $Version",
     "$versionMatch.Groups['major'].Value -eq '0'",
     "$abiVersion = if",
     "$versionCore",
@@ -72,7 +71,8 @@ REQUIRED_FRAGMENTS = (
     "LIBCMTD?",
     "MSVCRTD",
     "shared_compile_flags = @('/MD', '/O2', '/DNDEBUG')",
-    "validate_windows_build_identity(facts, expected_abi_version=abi_version)",
+    "scripts/release/collect_build_identity.py",
+    "'--kind', 'windows'",
     "build-identity-windows-x64-v143-md.json",
     "mcp-cpp-sdk-$Version-windows-x64-v143-md.zip",
     'mcp-cpp-sdk.$Version.nupkg',
@@ -82,8 +82,6 @@ REQUIRED_FRAGMENTS = (
     "'install', 'mcp-cpp-sdk'",
     "'uninstall', 'mcp-cpp-sdk'",
     "[EnvironmentVariableTarget]::Machine",
-    "-Linkage 'shared'",
-    "-Linkage 'static'",
 )
 
 FORBIDDEN_PATTERNS = (
@@ -140,7 +138,7 @@ class WindowsReleaseScriptContractTests(unittest.TestCase):
             "$actualVCToolsVersion -cne $ExpectedVCToolsVersion",
             "-DMCP_CPP_SDK_BUILD_STATIC=ON",
             "-Linkage 'shared'",
-            "validate_windows_build_identity(facts, expected_abi_version=abi_version)",
+            "scripts/release/collect_build_identity.py",
         ):
             with self.subTest(fragment=fragment), self.assertRaises(AssertionError):
                 validate_script_contract(self.script.replace(fragment, ""))

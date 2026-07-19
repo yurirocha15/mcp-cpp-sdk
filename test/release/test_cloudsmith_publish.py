@@ -236,7 +236,7 @@ class CloudsmithPublisherTest(unittest.TestCase):
             "mcp-cpp-sdk",
             expected_username="release-validator",
             formats=("apt", "rpm"),
-            native_targets=ROOT / "packaging/native-targets.json",
+            native_targets=ROOT / "packaging/targets.json",
             run=self.preflight_response,
         )
 
@@ -247,7 +247,7 @@ class CloudsmithPublisherTest(unittest.TestCase):
                 "mcp-cpp-sdk",
                 expected_username="release-validator",
                 formats=("apt", "rpm"),
-                native_targets=ROOT / "packaging/native-targets.json",
+                native_targets=ROOT / "packaging/targets.json",
                 run=lambda arguments: self.preflight_response(arguments, omit_noble=True),
             )
         with self.assertRaises(CloudsmithPublishError):
@@ -256,7 +256,7 @@ class CloudsmithPublisherTest(unittest.TestCase):
                 "mcp-cpp-sdk",
                 expected_username="different-validator",
                 formats=("apt", "rpm"),
-                native_targets=ROOT / "packaging/native-targets.json",
+                native_targets=ROOT / "packaging/targets.json",
                 run=self.preflight_response,
             )
 
@@ -274,7 +274,7 @@ class CloudsmithPublisherTest(unittest.TestCase):
             "mcp-cpp-sdk",
             expected_username="release-validator",
             formats=("apt",),
-            native_targets=ROOT / "packaging/native-targets.json",
+            native_targets=ROOT / "packaging/targets.json",
             run=apt_only,
         )
         self.assertNotIn(
@@ -286,7 +286,7 @@ class CloudsmithPublisherTest(unittest.TestCase):
                 "mcp-cpp-sdk",
                 expected_username="release-validator",
                 formats=(),
-                native_targets=ROOT / "packaging/native-targets.json",
+                native_targets=ROOT / "packaging/targets.json",
                 run=apt_only,
             )
 

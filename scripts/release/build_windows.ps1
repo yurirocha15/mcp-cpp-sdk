@@ -877,27 +877,10 @@ int main() { std::cout << _MSC_VER << " " << sizeof(void*) << "\n"; }
 
     $identityName = 'build-identity-windows-x64-v143-md.json'
     $identityPath = Join-Path $repoRoot "out/$identityName"
-    $identityCode = @'
-import json
-import pathlib
-import sys
-
-sys.path.insert(0, ".")
-from release.build_identity import validate_windows_build_identity
-
-facts_path = pathlib.Path(sys.argv[1])
-output_path = pathlib.Path(sys.argv[2])
-abi_version = sys.argv[3]
-facts = json.loads(facts_path.read_text(encoding="utf-8"))
-identity = validate_windows_build_identity(facts, expected_abi_version=abi_version)
-output_path.write_text(
-    json.dumps(identity, sort_keys=True, separators=(",", ":")) + "\n",
-    encoding="utf-8",
-)
-'@
     Invoke-CheckedCommand -FilePath $python -Arguments @(
-        '-I', '-S', '-c', $identityCode,
-        $factsPath, $identityPath, $abiVersion
+        '-I', '-S', 'scripts/release/collect_build_identity.py',
+        '--kind', 'windows', '--facts', $factsPath,
+        '--abi-version', $abiVersion, '--output', $identityPath
     ) -FailureMessage 'Windows build identity validation failed'
 
     $archiveName = "mcp-cpp-sdk-$Version-windows-x64-v143-md.zip"

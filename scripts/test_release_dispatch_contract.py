@@ -31,8 +31,7 @@ class ReleaseDispatchContractTest(unittest.TestCase):
             "aur": "false",
             "homebrew": "false",
             "chocolatey": "false",
-            "ledger_issue": "42",
-            "confirmation": "validate-all:v0.2.0:all:42",
+            "confirmation": "validate-all:v0.2.0:all",
             **TRUSTED_CONTEXT,
         }
         arguments.update(overrides)
@@ -45,12 +44,16 @@ class ReleaseDispatchContractTest(unittest.TestCase):
         self.assertEqual(contract.workflow_outputs()["target_conan2"], "true")
         self.assertEqual(contract.workflow_outputs()["target_apt"], "true")
         self.assertEqual(contract.workflow_outputs()["target_rpm"], "true")
+        self.assertEqual(
+            contract.workflow_outputs()["cloudsmith_matrix"],
+            '[{"format":"apt"},{"format":"rpm"}]',
+        )
 
     def test_accepts_github_only_release_candidate(self) -> None:
         contract = self.validate(
             tag="v0.2.0-rc.1",
             operation="validate-selected",
-            confirmation="validate-selected:v0.2.0-rc.1:github:42",
+            confirmation="validate-selected:v0.2.0-rc.1:github",
         )
         self.assertEqual(contract.release_kind, "rc")
         self.assertEqual(contract.channels, ())
@@ -61,30 +64,23 @@ class ReleaseDispatchContractTest(unittest.TestCase):
             operation="publish-selected",
             apt="true",
             rpm="true",
-            confirmation="publish-selected:v0.2.0:github,apt,rpm:42",
+            confirmation="publish-selected:v0.2.0:github,apt,rpm",
         )
         self.assertEqual(contract.channels, ("apt", "rpm"))
         self.assertEqual(contract.selection_label, "github,apt,rpm")
         self.assertEqual(contract.workflow_outputs()["target_homebrew"], "false")
+        self.assertEqual(
+            contract.workflow_outputs()["cloudsmith_matrix"],
+            '[{"format":"apt"},{"format":"rpm"}]',
+        )
 
     def test_accepts_github_only_stable_release(self) -> None:
         contract = self.validate(
             operation="publish-selected",
-            confirmation="publish-selected:v0.2.0:github:42",
+            confirmation="publish-selected:v0.2.0:github",
         )
         self.assertEqual(contract.channels, ())
         self.assertEqual(contract.workflow_outputs()["normalized_channels"], "")
-        self.assertFalse(contract.retry_authorized)
-
-    def test_accepts_explicit_retry_of_selected_pending_channel(self) -> None:
-        contract = self.validate(
-            operation="publish-retry-selected",
-            homebrew="true",
-            confirmation="publish-retry-selected:v0.2.0:github,homebrew:42",
-        )
-        self.assertEqual(contract.channels, ("homebrew",))
-        self.assertTrue(contract.retry_authorized)
-        self.assertEqual(contract.workflow_outputs()["retry_authorized"], "true")
 
     def test_individual_checkboxes_are_normalized_in_canonical_order(self) -> None:
         contract = self.validate(
@@ -95,7 +91,7 @@ class ReleaseDispatchContractTest(unittest.TestCase):
             aur="true",
             homebrew="true",
             chocolatey="true",
-            confirmation="publish-selected:v0.2.0:github,conan2,apt,rpm,aur,homebrew,chocolatey:42",
+            confirmation="publish-selected:v0.2.0:github,conan2,apt,rpm,aur,homebrew,chocolatey",
         )
         self.assertEqual(contract.channels, ("conan2", "apt", "rpm", "aur", "homebrew", "chocolatey"))
 
@@ -105,19 +101,19 @@ class ReleaseDispatchContractTest(unittest.TestCase):
                 tag="v0.2.0-rc.1",
                 operation="validate-selected",
                 homebrew="true",
-                confirmation="validate-selected:v0.2.0-rc.1:github,homebrew:42",
+                confirmation="validate-selected:v0.2.0-rc.1:github,homebrew",
             )
 
     def test_rejects_leading_zero_semver(self) -> None:
         with self.assertRaises(ContractError):
-            self.validate(tag="v0.02.0", confirmation="validate-all:v0.02.0:all:42")
+            self.validate(tag="v0.02.0", confirmation="validate-all:v0.02.0:all")
 
     def test_rejects_one_x_until_multi_platform_abi_policy_exists(self) -> None:
         for tag in ("v1.0.0", "v1.0.0-rc.1"):
             with self.subTest(tag=tag), self.assertRaisesRegex(
                 ContractError, "multi-platform ABI policy"
             ):
-                self.validate(tag=tag, confirmation=f"validate-all:{tag}:all:42")
+                self.validate(tag=tag, confirmation=f"validate-all:{tag}:all")
 
     def test_rejects_noncanonical_boolean_values(self) -> None:
         for value in ("True", "1", "", "false "):
@@ -134,12 +130,7 @@ class ReleaseDispatchContractTest(unittest.TestCase):
 
     def test_rejects_wrong_confirmation(self) -> None:
         with self.assertRaises(ContractError):
-            self.validate(confirmation="publish-all:v0.2.0:all:42")
-
-    def test_rejects_noncanonical_ledger_issue(self) -> None:
-        for issue in ("", "0", "01", "1 2"):
-            with self.subTest(issue=issue), self.assertRaises(ContractError):
-                self.validate(ledger_issue=issue)
+            self.validate(confirmation="publish-all:v0.2.0:all")
 
     def test_rejects_non_main_workflow_ref(self) -> None:
         with self.assertRaises(ContractError):

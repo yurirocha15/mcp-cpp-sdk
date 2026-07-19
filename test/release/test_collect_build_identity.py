@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -62,6 +63,22 @@ class CollectBuildIdentityTest(unittest.TestCase):
         ), mock.patch.object(collector, "command", side_effect=lambda *args: outputs[args]):
             with self.assertRaises(Exception):
                 collector.collect("rpm", "el-9-x86_64")
+
+    def test_windows_collection_delegates_canonical_facts_to_the_validator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            facts = Path(directory) / "facts.json"
+            facts.write_text(json.dumps({"compiler_id": "MSVC"}), encoding="utf-8")
+            expected = {"schema_version": 2, "target_id": "windows-x64-v143-md"}
+            with mock.patch.object(
+                collector,
+                "validate_windows_build_identity",
+                return_value=expected,
+            ) as validate:
+                self.assertEqual(collector.collect_windows(facts, "0.2.0"), expected)
+            validate.assert_called_once_with(
+                {"compiler_id": "MSVC"},
+                expected_abi_version="0.2.0",
+            )
 
 
 if __name__ == "__main__":

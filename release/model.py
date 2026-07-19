@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 import re
 from typing import Any, Mapping
 from uuid import UUID
@@ -72,6 +71,22 @@ class SemVer:
     def abi_version(self) -> str:
         """Return the CMake SOVERSION used in native package identities."""
         return self.core if self.major == 0 else str(self.major)
+
+    @property
+    def loader_identity(self) -> str:
+        """Return the shared-library loader/package identity."""
+        return self.abi_version
+
+    @property
+    def comparison_series(self) -> str:
+        """Return the stable-release series used for ABI comparisons."""
+        return f"0.{self.minor}" if self.major == 0 else str(self.major)
+
+    @property
+    def stable_key(self) -> tuple[int, int, int]:
+        if self.is_prerelease:
+            raise ValidationError("a release candidate has no stable ordering key")
+        return self.major, self.minor, self.patch
 
     @property
     def tag(self) -> str:
@@ -163,123 +178,3 @@ class DispatchRequest:
     def _require_match(field: str, value: str, pattern: re.Pattern[str]) -> None:
         if pattern.fullmatch(value) is None:
             raise ValidationError(f"{field} is not canonical")
-
-
-class DestinationResult(str, Enum):
-    NOT_SELECTED = "NOT_SELECTED"
-    PUBLISHED = "PUBLISHED"
-    DISPATCHED_PENDING_REVIEW = "DISPATCHED_PENDING_REVIEW"
-    DISPATCHED_PENDING_MODERATION = "DISPATCHED_PENDING_MODERATION"
-    SUBMITTED_PENDING_REVIEW = "SUBMITTED_PENDING_REVIEW"
-    SUBMITTED_PENDING_MODERATION = "SUBMITTED_PENDING_MODERATION"
-    BLOCKED_MANUAL_ACTION = "BLOCKED_MANUAL_ACTION"
-    FAILED = "FAILED"
-    SKIPPED_ALREADY_IDENTICAL = "SKIPPED_ALREADY_IDENTICAL"
-    FIRST_USE_UNPROVEN = "FIRST_USE_UNPROVEN"
-
-
-RELEASE_DESTINATIONS = (
-    "github",
-    "conan2",
-    "deb_apt",
-    "rpm",
-    "arch_aur",
-    "homebrew",
-    "chocolatey",
-)
-
-
-@dataclass(frozen=True)
-class ReleaseLedger:
-    """A strict snapshot of the externally visible release state."""
-
-    version: SemVer
-    tag: str
-    source_commit_sha: str
-    release_manifest_sha256: str | None
-    results: Mapping[str, DestinationResult]
-
-    @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "ReleaseLedger":
-        expected = {"schema_version", "version", "tag", "source_commit_sha", "release_manifest_sha256", "results"}
-        if not isinstance(value, Mapping) or set(value) != expected:
-            raise ValidationError("ledger fields do not match schema version 1")
-        if value["schema_version"] != 1:
-            raise ValidationError("unsupported ledger schema version")
-        version = SemVer.parse(value["version"])
-        if value["tag"] != version.tag:
-            raise ValidationError("ledger tag and version disagree")
-        DispatchRequest._require_match("source_commit_sha", value["source_commit_sha"], _SHA_RE)
-        manifest_digest = value["release_manifest_sha256"]
-        if manifest_digest is not None:
-            if not isinstance(manifest_digest, str):
-                raise ValidationError("release_manifest_sha256 must be a digest or null")
-            DispatchRequest._require_match("release_manifest_sha256", manifest_digest, _DIGEST_RE)
-        raw_results = value["results"]
-        if not isinstance(raw_results, Mapping) or set(raw_results) != set(RELEASE_DESTINATIONS):
-            raise ValidationError("ledger must contain every release destination exactly once")
-        try:
-            results = {name: DestinationResult(raw_results[name]) for name in RELEASE_DESTINATIONS}
-        except (TypeError, ValueError) as error:
-            raise ValidationError("ledger contains an unknown destination result") from error
-        synchronous = {
-            DestinationResult.NOT_SELECTED,
-            DestinationResult.PUBLISHED,
-            DestinationResult.BLOCKED_MANUAL_ACTION,
-            DestinationResult.FAILED,
-            DestinationResult.SKIPPED_ALREADY_IDENTICAL,
-            DestinationResult.FIRST_USE_UNPROVEN,
-        }
-        review = synchronous | {
-            DestinationResult.DISPATCHED_PENDING_REVIEW,
-            DestinationResult.SUBMITTED_PENDING_REVIEW,
-        }
-        moderation = synchronous | {
-            DestinationResult.DISPATCHED_PENDING_MODERATION,
-            DestinationResult.SUBMITTED_PENDING_MODERATION,
-        }
-        allowed_by_destination = {
-            "github": synchronous,
-            "conan2": review,
-            "deb_apt": synchronous,
-            "rpm": synchronous,
-            "arch_aur": synchronous,
-            "homebrew": review,
-            "chocolatey": moderation,
-        }
-        if any(results[name] not in allowed_by_destination[name] for name in RELEASE_DESTINATIONS):
-            raise ValidationError("ledger result is invalid for its destination")
-        if version.is_prerelease:
-            if any(
-                results[name] is not DestinationResult.NOT_SELECTED
-                for name in RELEASE_DESTINATIONS
-                if name != "github"
-            ):
-                raise ValidationError("prereleases require NOT_SELECTED for every downstream channel")
-        public_anchor = {
-            DestinationResult.PUBLISHED,
-            DestinationResult.SKIPPED_ALREADY_IDENTICAL,
-        }
-        downstream_public = public_anchor | {
-            DestinationResult.DISPATCHED_PENDING_REVIEW,
-            DestinationResult.DISPATCHED_PENDING_MODERATION,
-            DestinationResult.SUBMITTED_PENDING_REVIEW,
-            DestinationResult.SUBMITTED_PENDING_MODERATION,
-        }
-        if results["github"] not in public_anchor and any(
-            results[name] in downstream_public for name in RELEASE_DESTINATIONS if name != "github"
-        ):
-            raise ValidationError("downstream publication requires an immutable GitHub release anchor")
-        if results["github"] in public_anchor and manifest_digest is None:
-            raise ValidationError("an immutable GitHub anchor requires a manifest digest")
-        return cls(version, value["tag"], value["source_commit_sha"], manifest_digest, results)
-
-    def to_mapping(self) -> dict[str, Any]:
-        return {
-            "schema_version": 1,
-            "version": str(self.version),
-            "tag": self.tag,
-            "source_commit_sha": self.source_commit_sha,
-            "release_manifest_sha256": self.release_manifest_sha256,
-            "results": {name: self.results[name].value for name in RELEASE_DESTINATIONS},
-        }

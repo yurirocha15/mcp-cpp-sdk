@@ -55,7 +55,6 @@ MANIFEST_FIELDS = {
     "tag",
     "commit",
     "source_tree_sha256",
-    "release_ledger",
     "signers",
     "channel_capabilities",
     "payloads",
@@ -165,14 +164,11 @@ def verify_candidate(
     *,
     tag: str,
     commit: str,
-    ledger_issue: str,
-    repository: str,
     primary_fingerprint: str,
     tag_fingerprint: str,
     artifact_fingerprint: str,
     public_key: Path,
     targets_path: Path,
-    target_catalog_path: Path,
     native_builder_lock_path: Path,
     conan_requirements_path: Path,
     include_release_notes: bool,
@@ -181,10 +177,6 @@ def verify_candidate(
     version = SemVer.from_tag(tag)
     if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
         raise ValidationError("candidate commit is malformed")
-    if not ledger_issue.isdecimal() or ledger_issue.startswith("0"):
-        raise ValidationError("candidate ledger issue is malformed")
-    if repository != "yurirocha15/mcp-cpp-sdk":
-        raise ValidationError("candidate repository identity is unexpected")
     fingerprints = (primary_fingerprint, tag_fingerprint, artifact_fingerprint)
     if any(FINGERPRINT.fullmatch(value) is None for value in fingerprints) or len(set(fingerprints)) != 3:
         raise ValidationError("candidate signer fingerprints are malformed or duplicated")
@@ -202,10 +194,6 @@ def verify_candidate(
         "tag_subkey_fingerprint": tag_fingerprint,
         "artifact_subkey_fingerprint": artifact_fingerprint,
     }
-    expected_ledger = {
-        "issue_id": ledger_issue,
-        "issue_url": f"https://github.com/{repository}/issues/{ledger_issue}",
-    }
     if (
         not isinstance(manifest, dict)
         or set(manifest) != MANIFEST_FIELDS
@@ -216,7 +204,6 @@ def verify_candidate(
         or manifest.get("commit") != commit
         or not isinstance(manifest.get("source_tree_sha256"), str)
         or DIGEST.fullmatch(manifest["source_tree_sha256"]) is None
-        or manifest.get("release_ledger") != expected_ledger
         or manifest.get("signers") != expected_signers
         or manifest.get("channel_capabilities") != expected_capabilities
         or (
@@ -250,7 +237,7 @@ def verify_candidate(
     else:
         targets = contract.native_targets
         if policy_source == "current":
-            load_and_validate_target_projection(targets_path, target_catalog_path)
+            load_and_validate_target_projection(targets_path)
             current_targets = load_native_targets(targets_path)
             if tuple(target.to_mapping() for target in targets) != tuple(
                 target.to_mapping() for target in current_targets
@@ -388,14 +375,11 @@ def main() -> int:
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--commit", required=True)
-    parser.add_argument("--ledger-issue", required=True)
-    parser.add_argument("--repository", required=True)
     parser.add_argument("--primary-fingerprint", required=True)
     parser.add_argument("--tag-fingerprint", required=True)
     parser.add_argument("--artifact-fingerprint", required=True)
     parser.add_argument("--public-key", type=Path, required=True)
     parser.add_argument("--targets", type=Path, required=True)
-    parser.add_argument("--target-catalog", type=Path, required=True)
     parser.add_argument("--native-builder-lock", type=Path, required=True)
     parser.add_argument("--conan-requirements", type=Path, required=True)
     parser.add_argument("--release-notes", choices=("included", "excluded"), required=True)
@@ -407,14 +391,11 @@ def main() -> int:
             args.directory,
             tag=args.tag,
             commit=args.commit,
-            ledger_issue=args.ledger_issue,
-            repository=args.repository,
             primary_fingerprint=args.primary_fingerprint,
             tag_fingerprint=args.tag_fingerprint,
             artifact_fingerprint=args.artifact_fingerprint,
             public_key=args.public_key,
             targets_path=args.targets,
-            target_catalog_path=args.target_catalog,
             native_builder_lock_path=args.native_builder_lock,
             conan_requirements_path=args.conan_requirements,
             include_release_notes=args.release_notes == "included",

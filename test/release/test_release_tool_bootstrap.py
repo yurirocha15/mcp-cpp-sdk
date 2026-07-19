@@ -14,14 +14,13 @@ class ReleaseToolBootstrapTests(unittest.TestCase):
     def test_every_allowed_module_imports_under_isolated_python(self) -> None:
         modules = (
             "release.cloudsmith_publish",
+            "release.conan_fork",
             "release.aur_publish",
             "release.construct_core",
             "release.github_publication",
             "release.github_anchor",
             "release.github_provider",
             "release.homebrew_formula",
-            "release.ledger",
-            "release.ledger_updates",
             "release.native_build",
             "release.provider_preflight",
             "release.repository_immutability",

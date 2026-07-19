@@ -77,8 +77,6 @@ class AssembleUnsignedTests(unittest.TestCase):
             version_text=self.version,
             tag=f"v{self.version}",
             commit=self.commit,
-            ledger_issue="1",
-            repository="yurirocha15/mcp-cpp-sdk",
             primary_fingerprint=PRIMARY,
             tag_subkey_fingerprint=TAG_SUBKEY,
             artifact_subkey_fingerprint=ARTIFACT,

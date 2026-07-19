@@ -22,7 +22,7 @@ import subprocess
 from typing import Any, Mapping, Sequence
 import xml.etree.ElementTree as ET
 
-from .abi_baseline import AbiPolicyError, BaselineSelection, DIGEST, Version
+from .abi_baseline import AbiPolicyError, BaselineSelection, DIGEST, version_from_tag
 from .artifacts import ABI_BUILD_IDENTITY_NAME as ABI_IDENTITY_NAME, ABI_BUILD_TUPLE
 
 
@@ -179,7 +179,7 @@ def validate_build_identity(value: object) -> dict[str, object]:
 
     source = _exact_mapping(identity["source"], _SOURCE_FIELDS, "ABI source identity")
     try:
-        version = Version.from_tag(source["tag"], stable_only=True)
+        version = version_from_tag(source["tag"], stable_only=True)
     except AbiPolicyError as error:
         raise AbiBuildError(f"ABI source tag is invalid: {error}") from error
     if not isinstance(source["commit"], str) or _COMMIT.fullmatch(source["commit"]) is None:
@@ -324,8 +324,8 @@ def require_compatible_environments(baseline: object, candidate: object) -> tupl
             "baseline and candidate ABI corpora use different compiler, runtime, dependency, or tool identities"
         )
     try:
-        baseline_version = Version.from_tag(baseline_identity["source"]["tag"], stable_only=True)
-        candidate_version = Version.from_tag(candidate_identity["source"]["tag"], stable_only=True)
+        baseline_version = version_from_tag(baseline_identity["source"]["tag"], stable_only=True)
+        candidate_version = version_from_tag(candidate_identity["source"]["tag"], stable_only=True)
     except AbiPolicyError as error:
         raise AbiBuildError(f"ABI source version is invalid: {error}") from error
     if baseline_version.comparison_series != candidate_version.comparison_series:
@@ -683,7 +683,7 @@ def build_corpus(
     """Perform the canonical shared build and return corpus/identity paths."""
 
     try:
-        version = Version.from_tag(tag, stable_only=True)
+        version = version_from_tag(tag, stable_only=True)
     except AbiPolicyError as error:
         raise AbiBuildError(f"ABI build tag is invalid: {error}") from error
     if _COMMIT.fullmatch(commit) is None:
@@ -985,7 +985,7 @@ def build_in_pinned_container(
         timeout=3600,
     )
     output = io_directory / "output"
-    version = Version.from_tag(tag, stable_only=True)
+    version = version_from_tag(tag, stable_only=True)
     corpus = output / f"mcp-cpp-sdk-{version.core}-{ABI_BUILD_TUPLE}.abi.xml"
     identity = output / ABI_IDENTITY_NAME
     validate_candidate_pair(identity, corpus, tag=tag, commit=commit)

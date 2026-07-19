@@ -154,8 +154,6 @@ def assemble_unsigned(
     version_text: str,
     tag: str,
     commit: str,
-    ledger_issue: str,
-    repository: str,
     primary_fingerprint: str,
     tag_subkey_fingerprint: str,
     artifact_subkey_fingerprint: str,
@@ -239,7 +237,7 @@ def assemble_unsigned(
         {"name": record.name, "digest": {"sha256": record.sha256}}
         for record in sorted(payloads, key=lambda record: record.name)
     ]
-    targets = load_native_targets(root / "packaging/native-targets.json")
+    targets = load_native_targets(root / "packaging/targets.json")
     validate_candidate_inventory(
         version=version,
         payloads=payloads,
@@ -252,8 +250,6 @@ def assemble_unsigned(
         tag=tag,
         commit=commit,
         source_tree_sha256=str(metadata["source_tree_sha256"]),
-        ledger_issue_id=ledger_issue,
-        ledger_issue_url=f"https://github.com/{repository}/issues/{ledger_issue}",
         primary_fingerprint=primary_fingerprint,
         tag_subkey_fingerprint=tag_subkey_fingerprint,
         artifact_subkey_fingerprint=artifact_subkey_fingerprint,
@@ -282,8 +278,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--commit", required=True)
-    parser.add_argument("--ledger-issue", required=True)
-    parser.add_argument("--repository", required=True)
     parser.add_argument("--primary-fingerprint", required=True)
     parser.add_argument("--tag-subkey-fingerprint", required=True)
     parser.add_argument("--artifact-subkey-fingerprint", required=True)
@@ -300,8 +294,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             version_text=args.version,
             tag=args.tag,
             commit=args.commit,
-            ledger_issue=args.ledger_issue,
-            repository=args.repository,
             primary_fingerprint=args.primary_fingerprint,
             tag_subkey_fingerprint=args.tag_subkey_fingerprint,
             artifact_subkey_fingerprint=args.artifact_subkey_fingerprint,

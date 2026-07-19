@@ -21,7 +21,7 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}")
 _MANIFEST_V2_FIELDS = frozenset(
     {
         "schema_version", "package", "version", "tag", "commit",
-        "source_tree_sha256", "release_ledger", "signers",
+        "source_tree_sha256", "signers",
         "channel_capabilities", "payloads", "dependency_closure",
         "conan_requirements", "provenance_subjects",
     }
@@ -149,8 +149,6 @@ def verify_historical_candidate_v2(
     *,
     tag: str,
     commit: str,
-    ledger_issue: str,
-    repository: str,
     signers: Mapping[str, str],
     public_key: Path,
 ) -> str:
@@ -160,10 +158,6 @@ def verify_historical_candidate_v2(
     manifest_path = directory / "release-manifest.json"
     manifest = _json(manifest_path)
     capabilities = ["github"] if version.is_prerelease else list(_STABLE_CAPABILITIES_V2)
-    expected_ledger = {
-        "issue_id": ledger_issue,
-        "issue_url": f"https://github.com/{repository}/issues/{ledger_issue}",
-    }
     if (
         not isinstance(manifest, Mapping)
         or set(manifest) != _MANIFEST_V2_FIELDS
@@ -174,7 +168,6 @@ def verify_historical_candidate_v2(
         or manifest.get("commit") != commit
         or not isinstance(manifest.get("source_tree_sha256"), str)
         or _DIGEST.fullmatch(str(manifest["source_tree_sha256"])) is None
-        or manifest.get("release_ledger") != expected_ledger
         or manifest.get("signers") != dict(signers)
         or manifest.get("channel_capabilities") != capabilities
     ):

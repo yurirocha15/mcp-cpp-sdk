@@ -36,9 +36,7 @@ from release.build_identity import (
     validate_windows_build_identity,
 )
 from release.model import (
-    RELEASE_DESTINATIONS,
     DispatchRequest,
-    ReleaseLedger,
     SemVer,
     ValidationError,
 )
@@ -157,158 +155,6 @@ class DispatchTests(unittest.TestCase):
                 DispatchRequest.from_mapping(request)
 
 
-class LedgerTests(unittest.TestCase):
-    def ledger(self, version: str = "0.2.0") -> dict[str, object]:
-        return {
-            "schema_version": 1,
-            "version": version,
-            "tag": f"v{version}",
-            "source_commit_sha": ZERO_SHA,
-            "release_manifest_sha256": ONE_DIGEST,
-            "results": {
-                "github": "PUBLISHED",
-                "conan2": "DISPATCHED_PENDING_REVIEW",
-                "deb_apt": "PUBLISHED",
-                "rpm": "PUBLISHED",
-                "arch_aur": "PUBLISHED",
-                "homebrew": "DISPATCHED_PENDING_REVIEW",
-                "chocolatey": "DISPATCHED_PENDING_MODERATION",
-            },
-        }
-
-    def test_round_trips_complete_ledger(self) -> None:
-        ledger = ReleaseLedger.from_mapping(self.ledger())
-        self.assertEqual(ledger.to_mapping(), self.ledger())
-
-    def test_tag_must_equal_v_prefixed_version(self) -> None:
-        value = self.ledger()
-        value["tag"] = "v0.2.1"
-        with self.assertRaises(ValidationError):
-            ReleaseLedger.from_mapping(value)
-
-    def test_public_schema_encodes_anchor_and_prerelease_safety_constraints(self) -> None:
-        schema = json.loads(
-            Path("release/release-ledger.schema.json").read_text(encoding="utf-8")
-        )
-        self.assertIn("tag is exactly 'v' plus version", schema["description"])
-        self.assertEqual(
-            set(schema["$defs"]["public_result"]["enum"]),
-            {"PUBLISHED", "SKIPPED_ALREADY_IDENTICAL"},
-        )
-        self.assertEqual(
-            set(schema["$defs"]["non_public_result"]["enum"]),
-            {"NOT_SELECTED", "BLOCKED_MANUAL_ACTION", "FAILED", "FIRST_USE_UNPROVEN"},
-        )
-        anchor_rule = schema["allOf"][1]
-        self.assertEqual(
-            anchor_rule["then"]["properties"]["release_manifest_sha256"],
-            {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        )
-        downstream = {
-            "conan2", "deb_apt", "rpm", "arch_aur", "homebrew", "chocolatey"
-        }
-        self.assertEqual(
-            anchor_rule["else"]["properties"]["results"]["properties"],
-            {
-                name: {"$ref": "#/$defs/non_public_result"}
-                for name in downstream
-            },
-        )
-        rc_results = schema["allOf"][0]["then"]["properties"]["results"]["properties"]
-        self.assertEqual(
-            rc_results,
-            {name: {"const": "NOT_SELECTED"} for name in downstream},
-        )
-
-        for result_definition in (
-            "public_result",
-            "non_public_result",
-            "synchronous_result",
-            "review_result",
-            "moderation_result",
-        ):
-            with self.subTest(result_definition=result_definition):
-                self.assertNotIn("LIVE", schema["$defs"][result_definition]["enum"])
-
-        published_without_digest = self.ledger()
-        published_without_digest["release_manifest_sha256"] = None
-        downstream_without_anchor = self.ledger()
-        downstream_without_anchor["results"]["github"] = "FAILED"  # type: ignore[index]
-        rc_with_downstream = self.ledger("0.2.0-rc.1")
-        for value in (published_without_digest, downstream_without_anchor, rc_with_downstream):
-            with self.subTest(tag=value["tag"]), self.assertRaises(ValidationError):
-                ReleaseLedger.from_mapping(value)
-
-    def test_rc_cannot_claim_downstream_publication(self) -> None:
-        with self.assertRaises(ValidationError):
-            ReleaseLedger.from_mapping(self.ledger("0.2.0-rc.1"))
-
-    def test_rejects_removed_live_result_for_every_destination(self) -> None:
-        for destination in RELEASE_DESTINATIONS:
-            value = self.ledger()
-            value["results"][destination] = "LIVE"  # type: ignore[index]
-            with self.subTest(destination=destination), self.assertRaises(ValidationError):
-                ReleaseLedger.from_mapping(value)
-
-    def test_downstream_publication_requires_github_anchor(self) -> None:
-        value = self.ledger()
-        value["results"]["github"] = "FAILED"  # type: ignore[index]
-        with self.assertRaises(ValidationError):
-            ReleaseLedger.from_mapping(value)
-
-    def test_failed_pre_anchor_ledger_allows_null_manifest(self) -> None:
-        value = self.ledger()
-        value["release_manifest_sha256"] = None
-        value["results"] = {
-            "github": "FAILED",
-            "conan2": "NOT_SELECTED",
-            "deb_apt": "NOT_SELECTED",
-            "rpm": "NOT_SELECTED",
-            "arch_aur": "NOT_SELECTED",
-            "homebrew": "NOT_SELECTED",
-            "chocolatey": "NOT_SELECTED",
-        }
-        self.assertEqual(ReleaseLedger.from_mapping(value).to_mapping(), value)
-
-    def test_published_anchor_requires_manifest_digest(self) -> None:
-        value = self.ledger()
-        value["release_manifest_sha256"] = None
-        with self.assertRaises(ValidationError):
-            ReleaseLedger.from_mapping(value)
-
-    def test_rc_accepts_not_selected_downstream_channels(self) -> None:
-        value = self.ledger("0.2.0-rc.1")
-        value["results"] = {
-            name: "PUBLISHED" if name == "github" else "NOT_SELECTED"
-            for name in value["results"]  # type: ignore[union-attr]
-        }
-        self.assertEqual(ReleaseLedger.from_mapping(value).to_mapping(), value)
-
-    def test_destination_specific_pending_states_are_enforced(self) -> None:
-        for destination, result in (
-            ("github", "DISPATCHED_PENDING_REVIEW"),
-            ("deb_apt", "DISPATCHED_PENDING_REVIEW"),
-            ("rpm", "SUBMITTED_PENDING_MODERATION"),
-            ("arch_aur", "DISPATCHED_PENDING_MODERATION"),
-            ("homebrew", "DISPATCHED_PENDING_MODERATION"),
-            ("chocolatey", "DISPATCHED_PENDING_REVIEW"),
-        ):
-            value = self.ledger()
-            value["results"][destination] = result  # type: ignore[index]
-            with self.subTest(destination=destination, result=result), self.assertRaises(ValidationError):
-                ReleaseLedger.from_mapping(value)
-
-    def test_rc_rejects_even_failed_downstream_state(self) -> None:
-        value = self.ledger("0.2.0-rc.1")
-        value["results"] = {
-            name: "PUBLISHED" if name == "github" else "NOT_SELECTED"
-            for name in value["results"]  # type: ignore[union-attr]
-        }
-        value["results"]["deb_apt"] = "FAILED"  # type: ignore[index]
-        with self.assertRaises(ValidationError):
-            ReleaseLedger.from_mapping(value)
-
-
 class ArtifactTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -370,8 +216,6 @@ class ArtifactTests(unittest.TestCase):
             tag="v0.2.0",
             commit=ZERO_SHA,
             source_tree_sha256=ONE_DIGEST,
-            ledger_issue_id="1",
-            ledger_issue_url="https://github.com/yurirocha15/mcp-cpp-sdk/issues/1",
             primary_fingerprint=PRIMARY,
             tag_subkey_fingerprint="C" * 40,
             artifact_subkey_fingerprint=SUBKEY,
@@ -396,8 +240,6 @@ class ArtifactTests(unittest.TestCase):
             "tag": "v0.2.0",
             "commit": ZERO_SHA,
             "source_tree_sha256": ONE_DIGEST,
-            "ledger_issue_id": "1",
-            "ledger_issue_url": "https://github.com/yurirocha15/mcp-cpp-sdk/issues/1",
             "primary_fingerprint": PRIMARY,
             "tag_subkey_fingerprint": "C" * 40,
             "artifact_subkey_fingerprint": SUBKEY,
@@ -412,7 +254,7 @@ class ArtifactTests(unittest.TestCase):
     @staticmethod
     def candidate_inventory(version: SemVer):
         root = Path(__file__).resolve().parents[2]
-        targets = load_native_targets(root / "packaging/native-targets.json")
+        targets = load_native_targets(root / "packaging/targets.json")
         prefix = f"mcp-cpp-sdk-{version}"
         roles = {
             f"{prefix}.tar.gz": "source-or-binary-archive",
@@ -676,8 +518,6 @@ class ArtifactTests(unittest.TestCase):
             tag=version.tag,
             commit=ZERO_SHA,
             source_tree_sha256=ONE_DIGEST,
-            ledger_issue_id="1",
-            ledger_issue_url="https://github.com/yurirocha15/mcp-cpp-sdk/issues/1",
             primary_fingerprint=PRIMARY,
             tag_subkey_fingerprint="C" * 40,
             artifact_subkey_fingerprint=SUBKEY,
@@ -711,14 +551,11 @@ class ArtifactTests(unittest.TestCase):
                 directory,
                 tag="v0.2.0",
                 commit=ZERO_SHA,
-                ledger_issue="1",
-                repository="yurirocha15/mcp-cpp-sdk",
                 primary_fingerprint=PRIMARY,
                 tag_fingerprint="C" * 40,
                 artifact_fingerprint=SUBKEY,
                 public_key=trusted_key,
-                targets_path=Path(__file__).resolve().parents[2] / "packaging/native-targets.json",
-                target_catalog_path=Path(__file__).resolve().parents[2] / "packaging/targets.json",
+                targets_path=Path(__file__).resolve().parents[2] / "packaging/targets.json",
                 native_builder_lock_path=self.builder_lock,
                 conan_requirements_path=(
                     Path(__file__).resolve().parents[2]
@@ -740,14 +577,12 @@ class ArtifactTests(unittest.TestCase):
             mock.patch.object(historical_anchor.subprocess, "run", return_value=imported),
             mock.patch.object(historical_anchor, "_verify_signature"),
             mock.patch.object(candidate_verifier, "MANIFEST_FIELDS", {"future"}),
-            mock.patch("release.artifacts.EXPECTED_NATIVE_TARGET_IDS", ("future",)),
+            mock.patch("release.build_identity.CURRENT_NATIVE_TARGET_IDS", ("future",)),
         ):
             digest = historical_anchor.verify_historical_candidate_v2(
                 anchor,
                 tag="v0.2.0",
                 commit=ZERO_SHA,
-                ledger_issue="1",
-                repository="yurirocha15/mcp-cpp-sdk",
                 signers={
                     "primary_fingerprint": PRIMARY,
                     "tag_subkey_fingerprint": "C" * 40,
@@ -785,11 +620,10 @@ class ArtifactTests(unittest.TestCase):
             output = Path(directory) / "output"
             arguments = [
                 "verify_candidate.py", "--directory", directory, "--tag", "v0.2.0",
-                "--commit", ZERO_SHA, "--ledger-issue", "1", "--repository", "yurirocha15/mcp-cpp-sdk",
+                "--commit", ZERO_SHA,
                 "--primary-fingerprint", PRIMARY, "--tag-fingerprint", "C" * 40,
                 "--artifact-fingerprint", SUBKEY, "--public-key", "key.asc",
                 "--targets", "targets.json", "--conan-requirements", "requirements.json",
-                "--target-catalog", "target-catalog.json",
                 "--native-builder-lock", "native-builder-lock.json",
                 "--release-notes", "excluded",
                 "--github-output", str(output),

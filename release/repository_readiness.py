@@ -181,14 +181,12 @@ def validate_repository(args: argparse.Namespace) -> dict[str, str]:
         "artifact_fingerprint": selected_signer.artifact_subkey_fingerprint,
     }
     if args.anchor_exists == "false":
-        targets = load_and_validate_target_projection(args.native_targets, args.target_catalog)
+        targets = load_and_validate_target_projection(args.targets)
         builders = load_builder_lock(args.native_builder_lock, require_resolved=True)
         bound_targets, aur_builder, conan_builder = bind_build_matrices(targets, builders)
-        for package_format in ("apt", "rpm"):
-            matrix = [target for target in bound_targets if target["format"] == package_format]
-            result[f"{package_format}_matrix"] = json.dumps(
-                matrix, sort_keys=True, separators=(",", ":")
-            )
+        result["native_matrix"] = json.dumps(
+            bound_targets, sort_keys=True, separators=(",", ":")
+        )
         result["aur_builder"] = json.dumps(
             aur_builder, sort_keys=True, separators=(",", ":")
         )
@@ -198,8 +196,7 @@ def validate_repository(args: argparse.Namespace) -> dict[str, str]:
     else:
         result.update(
             {
-                "apt_matrix": "[]",
-                "rpm_matrix": "[]",
+                "native_matrix": "[]",
                 "aur_builder": '{"builder_image":"unused","runner":"ubuntu-24.04"}',
                 "conan_builder": '{"builder_image":"unused","runner":"ubuntu-24.04"}',
             }
@@ -218,9 +215,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--artifact-fingerprint", required=True)
     parser.add_argument("--public-key", type=Path, required=True)
     parser.add_argument("--trusted-signers", type=Path, required=True)
-    parser.add_argument("--native-targets", type=Path, required=True)
+    parser.add_argument("--targets", type=Path, required=True)
     parser.add_argument("--native-builder-lock", type=Path, required=True)
-    parser.add_argument("--target-catalog", type=Path, required=True)
     parser.add_argument("--github-output", type=Path, required=True)
     return parser
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import json
 from pathlib import Path
 import tempfile
@@ -11,9 +10,7 @@ from release.build_identity import (
     AUR_TARGETS,
     RPM_TARGETS,
     BuildIdentityError,
-    expected_native_target_projection,
     load_and_validate_target_projection,
-    validate_target_projection,
     validate_apt_build_identity,
     validate_aur_build_identity,
     validate_rpm_build_identity,
@@ -180,178 +177,27 @@ class AurBuildIdentityTests(unittest.TestCase):
                 validate_aur_build_identity("x86_64", facts)
 
 
-class TargetProjectionTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.native_path = ROOT / "packaging/native-targets.json"
-        cls.catalog_path = ROOT / "packaging/targets.json"
-        cls.native = json.loads(cls.native_path.read_text(encoding="utf-8"))
-        cls.catalog = json.loads(cls.catalog_path.read_text(encoding="utf-8"))
+class TargetCatalogTests(unittest.TestCase):
+    def test_checked_in_catalog_is_the_only_native_target_source(self) -> None:
+        path = ROOT / "packaging/targets.json"
+        targets = load_and_validate_target_projection(path)
+        self.assertEqual(sum(target["format"] == "apt" for target in targets), 10)
+        self.assertEqual(sum(target["format"] == "rpm" for target in targets), 8)
+        self.assertFalse((ROOT / "packaging/native-targets.json").exists())
 
-    @staticmethod
-    def mutated(value: str) -> str:
-        return "unexpected" if value == "" else f"{value}-mutated"
-
-    def assert_projection_rejected(self, native: object, catalog: object) -> None:
-        with self.assertRaises(BuildIdentityError):
-            validate_target_projection(native, catalog)
-
-    def test_checked_in_files_are_exact_canonical_equivalent_projections(self) -> None:
-        expected = expected_native_target_projection()
-        self.assertEqual(self.native, list(expected))
-        self.assertEqual(
-            load_and_validate_target_projection(self.native_path, self.catalog_path),
-            expected,
-        )
-        self.assertEqual(len(expected), 18)
-
-    def test_semantically_equivalent_array_reordering_is_accepted(self) -> None:
-        native = list(reversed(deepcopy(self.native)))
-        catalog = deepcopy(self.catalog)
-        catalog["apt"].reverse()
-        catalog["rpm"].reverse()
-        for section in ("apt", "rpm"):
-            for group in catalog[section]:
-                group["architectures"].reverse()
-        self.assertEqual(len(validate_target_projection(native, catalog)), 18)
-
-    def test_rejects_every_mutated_or_missing_native_target_field(self) -> None:
-        for index, record in enumerate(self.native):
-            for field, value in record.items():
-                mutated = deepcopy(self.native)
-                mutated[index][field] = self.mutated(value)
-                with self.subTest(index=index, field=field, operation="mutate"):
-                    self.assert_projection_rejected(mutated, self.catalog)
-
-                missing = deepcopy(self.native)
-                del missing[index][field]
-                with self.subTest(index=index, field=field, operation="delete"):
-                    self.assert_projection_rejected(missing, self.catalog)
-
-    def test_rejects_native_extra_duplicate_missing_and_unknown_format_targets(self) -> None:
-        extra_field = deepcopy(self.native)
-        extra_field[0]["unreviewed"] = "value"
-        duplicate = deepcopy(self.native)
-        duplicate.append(deepcopy(duplicate[0]))
-        missing_target = deepcopy(self.native)
-        missing_target.pop()
-        unknown_format = deepcopy(self.native)
-        unknown_format[0]["format"] = "unknown"
-        for name, native in (
-            ("extra field", extra_field),
-            ("duplicate", duplicate),
-            ("missing target", missing_target),
-            ("unknown format", unknown_format),
-        ):
-            with self.subTest(name=name):
-                self.assert_projection_rejected(native, self.catalog)
-
-    def test_rejects_every_mutated_or_missing_grouped_catalog_field(self) -> None:
-        for section in ("apt", "rpm"):
-            for group_index, group in enumerate(self.catalog[section]):
-                for field, value in group.items():
-                    if field == "architectures":
-                        continue
-                    mutated = deepcopy(self.catalog)
-                    mutated[section][group_index][field] = self.mutated(value)
-                    with self.subTest(section=section, group=group_index, field=field, operation="mutate"):
-                        self.assert_projection_rejected(self.native, mutated)
-
-                    missing = deepcopy(self.catalog)
-                    del missing[section][group_index][field]
-                    with self.subTest(section=section, group=group_index, field=field, operation="delete"):
-                        self.assert_projection_rejected(self.native, missing)
-
-    def test_rejects_every_mutated_or_missing_catalog_architecture_field(self) -> None:
-        for section in ("apt", "rpm"):
-            for group_index, group in enumerate(self.catalog[section]):
-                for arch_index, architecture in enumerate(group["architectures"]):
-                    for field, value in architecture.items():
-                        mutated = deepcopy(self.catalog)
-                        mutated[section][group_index]["architectures"][arch_index][field] = self.mutated(value)
-                        with self.subTest(
-                            section=section,
-                            group=group_index,
-                            architecture=arch_index,
-                            field=field,
-                            operation="mutate",
-                        ):
-                            self.assert_projection_rejected(self.native, mutated)
-
-                        missing = deepcopy(self.catalog)
-                        del missing[section][group_index]["architectures"][arch_index][field]
-                        with self.subTest(
-                            section=section,
-                            group=group_index,
-                            architecture=arch_index,
-                            field=field,
-                            operation="delete",
-                        ):
-                            self.assert_projection_rejected(self.native, missing)
-
-    def test_rejects_catalog_schema_collection_and_duplicate_mutations(self) -> None:
-        wrong_version = {**deepcopy(self.catalog), "schema_version": 1}
-        extra_top = {**deepcopy(self.catalog), "unreviewed": {}}
-        missing_top = deepcopy(self.catalog)
-        del missing_top["rpm"]
-        empty_architectures = deepcopy(self.catalog)
-        empty_architectures["apt"][0]["architectures"] = []
-        duplicate_architecture = deepcopy(self.catalog)
-        duplicate_architecture["rpm"][0]["architectures"].append(
-            deepcopy(duplicate_architecture["rpm"][0]["architectures"][0])
-        )
-        extra_group_field = deepcopy(self.catalog)
-        extra_group_field["apt"][0]["unreviewed"] = "value"
-        extra_arch_field = deepcopy(self.catalog)
-        extra_arch_field["rpm"][0]["architectures"][0]["unreviewed"] = "value"
-        for name, catalog in (
-            ("schema version", wrong_version),
-            ("extra top field", extra_top),
-            ("missing top field", missing_top),
-            ("empty architecture list", empty_architectures),
-            ("duplicate architecture", duplicate_architecture),
-            ("extra group field", extra_group_field),
-            ("extra architecture field", extra_arch_field),
-        ):
-            with self.subTest(name=name):
-                self.assert_projection_rejected(self.native, catalog)
-
-    def test_rejects_any_reviewed_provider_identity_drift(self) -> None:
-        for section in ("aur", "homebrew", "chocolatey"):
-            for field, value in self.catalog[section].items():
-                mutated = deepcopy(self.catalog)
-                if isinstance(value, list):
-                    mutated[section][field] = (
-                        list(reversed(value)) if len(value) > 1 else [*value, "unreviewed"]
-                    )
-                else:
-                    mutated[section][field] = self.mutated(value)
-                with self.subTest(section=section, field=field, operation="mutate"):
-                    self.assert_projection_rejected(self.native, mutated)
-
-                missing = deepcopy(self.catalog)
-                del missing[section][field]
-                with self.subTest(section=section, field=field, operation="delete"):
-                    self.assert_projection_rejected(self.native, missing)
-
-            extra = deepcopy(self.catalog)
-            extra[section]["unreviewed"] = "value"
-            with self.subTest(section=section, operation="extra"):
-                self.assert_projection_rejected(self.native, extra)
-
-    def test_rejects_coordinated_wrong_mutation_in_both_files(self) -> None:
-        native = deepcopy(self.native)
-        catalog = deepcopy(self.catalog)
-        native[14]["builder_os_version_id"] = "9.7"
-        catalog["rpm"][2]["builder_os_version_id"] = "9.7"
-        self.assert_projection_rejected(native, catalog)
-
-    def test_strict_file_loader_rejects_duplicate_json_keys(self) -> None:
+    def test_strict_loader_rejects_duplicate_keys_and_incomplete_matrix(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            duplicate = Path(directory) / "native.json"
+            duplicate = Path(directory) / "duplicate.json"
             duplicate.write_text('{"same":1,"same":2}\n', encoding="utf-8")
             with self.assertRaises(BuildIdentityError):
-                load_and_validate_target_projection(duplicate, self.catalog_path)
+                load_and_validate_target_projection(duplicate)
+
+            catalog = json.loads((ROOT / "packaging/targets.json").read_text(encoding="utf-8"))
+            catalog["apt"].pop()
+            incomplete = Path(directory) / "incomplete.json"
+            incomplete.write_text(json.dumps(catalog), encoding="utf-8")
+            with self.assertRaises(BuildIdentityError):
+                load_and_validate_target_projection(incomplete)
 
 
 class WindowsBuildIdentityTests(unittest.TestCase):

@@ -243,7 +243,7 @@ def build_publication_contract(
         "dispatch_schema_version": 1,
         "native_targets": [
             target.to_mapping()
-            for target in load_native_targets(root / "packaging/native-targets.json")
+            for target in load_native_targets(root / "packaging/targets.json")
         ],
         "native_builders": [
             {

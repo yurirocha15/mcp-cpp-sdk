@@ -650,7 +650,6 @@ class BaselineBundleTests(unittest.TestCase):
             "tag": "v1.2.1",
             "commit": "1" * 40,
             "source_tree_sha256": "2" * 64,
-            "release_ledger": {"issue_id": "1", "issue_url": "https://example.invalid/1"},
             "signers": SIGNERS,
             "channel_capabilities": [
                 "github",

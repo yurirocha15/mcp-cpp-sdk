@@ -20,6 +20,7 @@ from release.build_identity import (  # noqa: E402
     validate_apt_build_identity,
     validate_aur_build_identity,
     validate_rpm_build_identity,
+    validate_windows_build_identity,
 )
 from release.native_builder import bind_container_identity  # noqa: E402
 from release.model import ValidationError  # noqa: E402
@@ -95,20 +96,34 @@ def collect(kind: str, target: str) -> dict[str, object]:
     )
 
 
-def main() -> int:
+def collect_windows(facts_path: Path, abi_version: str) -> dict[str, object]:
+    facts = json.loads(facts_path.read_text(encoding="utf-8"))
+    return validate_windows_build_identity(facts, expected_abi_version=abi_version)
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--kind", choices=("apt", "rpm", "aur"), required=True)
-    parser.add_argument("--target", required=True)
+    parser.add_argument("--kind", choices=("apt", "rpm", "aur", "windows"), required=True)
+    parser.add_argument("--target")
+    parser.add_argument("--facts", type=Path)
+    parser.add_argument("--abi-version")
     parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
-        identity = collect(args.kind, args.target)
+        if args.kind == "windows":
+            if args.target is not None or args.facts is None or args.abi_version is None:
+                raise CollectionError("Windows identity requires --facts and --abi-version only")
+            identity = collect_windows(args.facts, args.abi_version)
+        else:
+            if args.target is None or args.facts is not None or args.abi_version is not None:
+                raise CollectionError("native identity requires --target only")
+            identity = collect(args.kind, args.target)
         args.output.write_text(
             json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n",
             encoding="ascii",
         )
     except (
-        BuildIdentityError, CollectionError, OSError, UnicodeError, ValidationError,
+        BuildIdentityError, CollectionError, json.JSONDecodeError, OSError, UnicodeError, ValidationError,
         subprocess.SubprocessError,
     ) as error:
         print(f"collect-build-identity: {error}", file=sys.stderr)

@@ -17,7 +17,6 @@ on:
           - validate-selected
           - validate-all
           - publish-selected
-          - publish-retry-selected
           - publish-all
       conan2:
         description: "ConanCenter recipe PR"
@@ -49,12 +48,8 @@ on:
         required: true
         default: false
         type: boolean
-      ledger_issue:
-        description: "Existing manually-created PREPARING release-ledger issue number"
-        required: true
-        type: string
       confirmation:
-        description: "Exact operation:tag:github[,channels]:ledger_issue (or :all:)"
+        description: "Exact operation:tag:github[,channels] (or operation:tag:all)"
         required: true
         type: string
 
@@ -86,8 +81,7 @@ jobs:
       release_kind: ${{ steps.contract.outputs.release_kind }}
       normalized_channels: ${{ steps.contract.outputs.normalized_channels }}
       selection_label: ${{ steps.contract.outputs.selection_label }}
-      ledger_issue: ${{ steps.contract.outputs.ledger_issue }}
-      retry_authorized: ${{ steps.contract.outputs.retry_authorized }}
+      cloudsmith_matrix: ${{ steps.contract.outputs.cloudsmith_matrix }}
       target_conan2: ${{ steps.contract.outputs.target_conan2 }}
       target_apt: ${{ steps.contract.outputs.target_apt }}
       target_rpm: ${{ steps.contract.outputs.target_rpm }}
@@ -111,7 +105,6 @@ jobs:
           DISPATCH_AUR: ${{ inputs.aur }}
           DISPATCH_HOMEBREW: ${{ inputs.homebrew }}
           DISPATCH_CHOCOLATEY: ${{ inputs.chocolatey }}
-          DISPATCH_LEDGER_ISSUE: ${{ inputs.ledger_issue }}
           DISPATCH_CONFIRMATION: ${{ inputs.confirmation }}
           EVENT_NAME: ${{ github.event_name }}
           WORKFLOW_REF: ${{ github.ref }}
@@ -141,7 +134,6 @@ jobs:
           python3 scripts/check_release_workflow.py
           PYTHONPATH=scripts python3 -m unittest -v \
             scripts/test_release_dispatch_contract.py \
-            scripts/test_release_workflow_ledger.py \
             scripts/test_release_workflow_policy.py
           python3 -m unittest discover -s test/release -p 'test_*.py' -v
       - name: Lint all GitHub Actions workflows
@@ -161,8 +153,7 @@ jobs:
       tag_object_sha: ${{ steps.readiness.outputs.tag_object_sha }}
       source_date_epoch: ${{ steps.readiness.outputs.source_date_epoch }}
       anchor_exists: ${{ steps.anchor.outputs.anchor_exists }}
-      apt_matrix: ${{ steps.readiness.outputs.apt_matrix }}
-      rpm_matrix: ${{ steps.readiness.outputs.rpm_matrix }}
+      native_matrix: ${{ steps.readiness.outputs.native_matrix }}
       aur_builder: ${{ steps.readiness.outputs.aur_builder }}
       conan_builder: ${{ steps.readiness.outputs.conan_builder }}
     steps:
@@ -204,70 +195,19 @@ jobs:
           --artifact-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}"
           --public-key keys/release-signing-key.asc
           --trusted-signers release/trusted-release-signers.json
-          --native-targets packaging/native-targets.json
+          --targets packaging/targets.json
           --native-builder-lock release/native-builders/lock.json
-          --target-catalog packaging/targets.json
           --github-output "${GITHUB_OUTPUT}"
-  ledger-readiness:
-    name: Verify manual PREPARING ledger and anchor state
-    needs:
-      - contract
-      - repository-readiness
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      issues: read
-    outputs:
-      anchor_exists: ${{ steps.ledger.outputs.anchor_exists }}
-      ledger_readiness_sha256: ${{ steps.ledger.outputs.ledger_readiness_sha256 }}
-      ledger_binding_sha256: ${{ steps.ledger.outputs.ledger_binding_sha256 }}
-      prior_manifest_sha256: ${{ steps.ledger.outputs.prior_manifest_sha256 }}
-      prior_snapshot_present: ${{ steps.ledger.outputs.prior_snapshot_present }}
-    steps:
-      - name: Checkout protected ledger validator
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Read and verify the ledger issue and existing release
-        id: ledger
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          REPOSITORY_ID: ${{ github.repository_id }}
-          TAG: ${{ inputs.tag }}
-          VERSION: ${{ needs.contract.outputs.version }}
-          COMMIT: ${{ needs.repository-readiness.outputs.commit }}
-          EXPECTED_ANCHOR_EXISTS: ${{ needs.repository-readiness.outputs.anchor_exists }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          DISPATCH_MODE: ${{ needs.contract.outputs.mode }}
-          RETRY_AUTHORIZED: ${{ needs.contract.outputs.retry_authorized }}
-          SELECTED_CHANNELS: ${{ needs.contract.outputs.normalized_channels }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-        run: bash scripts/release/prepare_ledger.sh
-      - name: Preserve the exact ledger authorization record
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness.json
-          if-no-files-found: error
-          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
   immutability-gate:
     name: Verify immutable Releases and protected annotated tags
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release-admin-read
     permissions:
       contents: read
-      issues: read
     steps:
       - name: Checkout protected current immutability policy
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -275,23 +215,6 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
-      - name: Recheck ledger authorization before requesting credentials
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
       - name: Create a repository-administration read token
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -330,7 +253,6 @@ jobs:
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - immutability-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -344,14 +266,12 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Download and verify historical signed publication policy
-        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
           VERSION: ${{ needs.contract.outputs.version }}
           COMMIT: ${{ needs.repository-readiness.outputs.commit }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          PRIOR_MANIFEST_SHA256: ${{ needs.ledger-readiness.outputs.prior_manifest_sha256 }}
           REPOSITORY: ${{ github.repository }}
           TAG_OBJECT_SHA: ${{ needs.repository-readiness.outputs.tag_object_sha }}
           PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
@@ -362,19 +282,17 @@ jobs:
           --directory existing-anchor --public-key keys/release-signing-key.asc
           --trusted-signers release/trusted-release-signers.json
           --tag "${TAG}" --version "${VERSION}" --commit "${COMMIT}"
-          --ledger-issue "${LEDGER_ISSUE}" --repository "${REPOSITORY}"
+          --repository "${REPOSITORY}"
           --tag-object-sha "${TAG_OBJECT_SHA}"
           --primary-fingerprint "${PRIMARY_FINGERPRINT}"
           --tag-fingerprint "${TAG_SUBKEY_FINGERPRINT}"
           --artifact-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}"
-          --prior-manifest-sha256 "${PRIOR_MANIFEST_SHA256}"
-          --anchor-existed true --targets packaging/native-targets.json
-          --target-catalog packaging/targets.json
+          --anchor-existed true --targets packaging/targets.json
           --native-builder-lock release/native-builders/lock.json
           --conan-requirements packaging/conan-center/requirements.json
           --github-output "${GITHUB_OUTPUT}"
       - name: Preserve the historical signed policy handoff
-        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
@@ -387,7 +305,6 @@ jobs:
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - immutability-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -405,7 +322,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Bind immutable Homebrew control
-        if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+        if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.repository-readiness.outputs.anchor_exists == 'false' }}
         id: homebrew
         env:
           GH_TOKEN: ${{ github.token }}
@@ -418,7 +335,7 @@ jobs:
           --controls packaging/provider-controls.json --provider homebrew
           --github-output "${GITHUB_OUTPUT}"
       - name: Bind immutable Chocolatey control
-        if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+        if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.repository-readiness.outputs.anchor_exists == 'false' }}
         id: chocolatey
         env:
           GH_TOKEN: ${{ github.token }}
@@ -431,7 +348,7 @@ jobs:
           --controls packaging/provider-controls.json --provider chocolatey
           --github-output "${GITHUB_OUTPUT}"
       - name: Bind immutable Conan control
-        if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+        if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.repository-readiness.outputs.anchor_exists == 'false' }}
         id: conan
         env:
           GH_TOKEN: ${{ github.token }}
@@ -450,7 +367,6 @@ jobs:
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - immutability-gate
       - existing-anchor-policy
     runs-on: ubuntu-24.04
@@ -458,7 +374,6 @@ jobs:
     environment: release-cloudsmith
     permissions:
       contents: read
-      issues: read
       id-token: write
     steps:
       - name: Checkout protected current provider policy
@@ -467,31 +382,14 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
       - name: Download historical signed publication policy
-        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
           path: existing-anchor
-      - name: Recheck ledger authorization before requesting OIDC
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
       - name: Bind current Cloudsmith coordinates to the signed anchor
-        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
         run: >-
           python3 -I -S scripts/run_release_tool.py release.publication_contract
           --contract existing-anchor/release-publication-contract.json --name cloudsmith
@@ -519,8 +417,8 @@ jobs:
           --namespace "${CLOUDSMITH_NAMESPACE}" --repository "${CLOUDSMITH_REPOSITORY}"
           --expected-username "${CLOUDSMITH_PREFLIGHT_USERNAME}"
           --apt-selected "${TARGET_APT}" --rpm-selected "${TARGET_RPM}"
-          --native-targets packaging/native-targets.json
-          --policy-source "${{ needs.ledger-readiness.outputs.anchor_exists == 'true' && 'embedded' || 'current' }}"
+          --targets packaging/targets.json
+          --policy-source "${{ needs.repository-readiness.outputs.anchor_exists == 'true' && 'embedded' || 'current' }}"
           --signed-contract existing-anchor/release-publication-contract.json
 
   preflight-aur:
@@ -529,7 +427,6 @@ jobs:
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - immutability-gate
       - existing-anchor-policy
     runs-on: ubuntu-24.04
@@ -537,7 +434,6 @@ jobs:
     environment: release-aur
     permissions:
       contents: read
-      issues: read
     env:
       AUR_PACKAGE_BASE: mcp-cpp-sdk
       AUR_CLONE_URL: ssh://aur@aur.archlinux.org/mcp-cpp-sdk.git
@@ -548,36 +444,19 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
       - name: Download historical signed publication policy
-        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
           path: existing-anchor
       - name: Bind the AUR target to the signed anchor
-        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
         run: >-
           python3 -I -S scripts/run_release_tool.py release.publication_contract
           --contract existing-anchor/release-publication-contract.json --name aur
           --repository "${AUR_CLONE_URL}" --package-base "${AUR_PACKAGE_BASE}"
           --architecture x86_64
-      - name: Recheck the selected release authorization
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
       - name: Verify the exact public AUR repository without credentials
         run: bash scripts/release/preflight_aur.sh
       - name: Authenticate to the non-mutating AUR SSH help interface
@@ -593,7 +472,6 @@ jobs:
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - immutability-gate
       - existing-anchor-policy
     runs-on: ubuntu-24.04
@@ -601,7 +479,6 @@ jobs:
     environment: release-homebrew
     permissions:
       contents: read
-      issues: read
     outputs:
       control_tag: ${{ steps.control.outputs.control_tag }}
       control_sha: ${{ steps.control.outputs.control_sha }}
@@ -612,31 +489,14 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
       - name: Download historical signed publication policy
-        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
           path: existing-anchor
-      - name: Recheck ledger authorization before requesting credentials
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
       - name: Bind current Homebrew destination to the signed anchor
-        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
         run: >-
           python3 -I -S scripts/run_release_tool.py release.publication_contract
           --contract existing-anchor/release-publication-contract.json --name homebrew
@@ -666,7 +526,7 @@ jobs:
           --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
           --expected-repository-id "${EXPECTED_REPOSITORY_ID}" --workflow "${WORKFLOW}"
           --controls packaging/provider-controls.json --provider homebrew
-          --policy-source "${{ needs.ledger-readiness.outputs.anchor_exists == 'true' && 'embedded' || 'current' }}"
+          --policy-source "${{ needs.repository-readiness.outputs.anchor_exists == 'true' && 'embedded' || 'current' }}"
           --signed-contract existing-anchor/release-publication-contract.json
           --github-output "${GITHUB_OUTPUT}"
 
@@ -676,7 +536,6 @@ jobs:
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - immutability-gate
       - existing-anchor-policy
     runs-on: ubuntu-24.04
@@ -684,7 +543,6 @@ jobs:
     environment: release-chocolatey
     permissions:
       contents: read
-      issues: read
     outputs:
       control_tag: ${{ steps.control.outputs.control_tag }}
       control_sha: ${{ steps.control.outputs.control_sha }}
@@ -695,31 +553,14 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
       - name: Download historical signed publication policy
-        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
           path: existing-anchor
-      - name: Recheck ledger authorization before requesting credentials
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
       - name: Bind current Chocolatey destination to the signed anchor
-        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
         run: >-
           python3 -I -S scripts/run_release_tool.py release.publication_contract
           --contract existing-anchor/release-publication-contract.json --name chocolatey
@@ -748,7 +589,7 @@ jobs:
           --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
           --expected-repository-id "${EXPECTED_REPOSITORY_ID}" --workflow "${WORKFLOW}"
           --controls packaging/provider-controls.json --provider chocolatey
-          --policy-source "${{ needs.ledger-readiness.outputs.anchor_exists == 'true' && 'embedded' || 'current' }}"
+          --policy-source "${{ needs.repository-readiness.outputs.anchor_exists == 'true' && 'embedded' || 'current' }}"
           --signed-contract existing-anchor/release-publication-contract.json
           --github-output "${GITHUB_OUTPUT}"
 
@@ -758,7 +599,6 @@ jobs:
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - immutability-gate
       - existing-anchor-policy
     runs-on: ubuntu-24.04
@@ -766,7 +606,6 @@ jobs:
     environment: release-conan-recipe
     permissions:
       contents: read
-      issues: read
     steps:
       - name: Checkout protected current provider policy
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -774,31 +613,14 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
       - name: Download historical signed publication policy
-        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
           path: existing-anchor
-      - name: Recheck ledger authorization before requesting credentials
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
       - name: Bind current Conan fork destination to the signed anchor
-        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
         run: >-
           python3 -I -S scripts/run_release_tool.py release.publication_contract
           --contract existing-anchor/release-publication-contract.json --name conan_fork
@@ -825,7 +647,7 @@ jobs:
           --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
           --expected-repository-id "${EXPECTED_REPOSITORY_ID}"
           --requirements packaging/conan-center/requirements.json
-          --policy-source "${{ needs.ledger-readiness.outputs.anchor_exists == 'true' && 'embedded' || 'current' }}"
+          --policy-source "${{ needs.repository-readiness.outputs.anchor_exists == 'true' && 'embedded' || 'current' }}"
           --signed-contract existing-anchor/release-publication-contract.json
 
   preflight-conan-broker:
@@ -834,7 +656,6 @@ jobs:
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - immutability-gate
       - existing-anchor-policy
     runs-on: ubuntu-24.04
@@ -842,7 +663,6 @@ jobs:
     environment: release-control-dispatch
     permissions:
       contents: read
-      issues: read
     outputs:
       control_tag: ${{ steps.control.outputs.control_tag }}
       control_sha: ${{ steps.control.outputs.control_sha }}
@@ -853,31 +673,14 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
       - name: Download historical signed publication policy
-        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
           path: existing-anchor
-      - name: Recheck ledger authorization before requesting credentials
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
       - name: Bind current Conan control destination to the signed anchor
-        if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'true' }}
+        if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
         run: >-
           python3 -I -S scripts/run_release_tool.py release.publication_contract
           --contract existing-anchor/release-publication-contract.json --name conan_control
@@ -906,22 +709,20 @@ jobs:
           --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
           --expected-repository-id "${EXPECTED_REPOSITORY_ID}" --workflow "${WORKFLOW}"
           --controls packaging/provider-controls.json --provider conan
-          --policy-source "${{ needs.ledger-readiness.outputs.anchor_exists == 'true' && 'embedded' || 'current' }}"
+          --policy-source "${{ needs.repository-readiness.outputs.anchor_exists == 'true' && 'embedded' || 'current' }}"
           --signed-contract existing-anchor/release-publication-contract.json
           --github-output "${GITHUB_OUTPUT}"
 
-  provider-preflight-gate:
-    name: Require every selected read-only provider preflight
+  preparation-gate:
+    name: Admit validation or publication construction
     if: >-
       ${{ always() && needs.contract.result == 'success' &&
           needs.repository-readiness.result == 'success' &&
-          needs.ledger-readiness.result == 'success' &&
           needs.immutability-gate.result == 'success' &&
           needs.existing-anchor-policy.result == 'success' }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - immutability-gate
       - existing-anchor-policy
       - preflight-cloudsmith
@@ -962,69 +763,20 @@ jobs:
           --target-chocolatey "${TARGET_CHOCOLATEY}" --result-chocolatey "${RESULT_CHOCOLATEY}"
           --target-conan-fork "${TARGET_CONAN}" --result-conan-fork "${RESULT_CONAN_FORK}"
           --target-conan-broker "${TARGET_CONAN}" --result-conan-broker "${RESULT_CONAN_BROKER}"
-
-  publication-gate:
-    name: Enforce the exact publication kill switch
-    if: ${{ needs.contract.outputs.mode == 'publish' }}
-    needs:
-      - contract
-      - repository-readiness
-      - ledger-readiness
-      - immutability-gate
-      - provider-preflight-gate
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout protected current publication policy
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
       - name: Require RELEASE_PUBLISHING_ENABLED
+        if: ${{ needs.contract.outputs.mode == 'publish' }}
         env:
           RELEASE_PUBLISHING_ENABLED: ${{ vars.RELEASE_PUBLISHING_ENABLED }}
         run: >-
           python3 -I -S scripts/run_release_tool.py release.workflow_gate publishing
           --enabled "${RELEASE_PUBLISHING_ENABLED}"
 
-  preparation-gate:
-    name: Admit validation or publication construction
-    if: ${{ always() && needs.contract.result == 'success' && needs.provider-preflight-gate.result == 'success' }}
-    needs:
-      - contract
-      - provider-preflight-gate
-      - publication-gate
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout exact tagged job-result policy
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Require the exact mode-specific gates
-        env:
-          RELEASE_MODE: ${{ needs.contract.outputs.mode }}
-          PROVIDER_RESULT: ${{ needs.provider-preflight-gate.result }}
-          PUBLICATION_RESULT: ${{ needs.publication-gate.result }}
-        run: >-
-          python3 -I -S scripts/run_release_tool.py release.workflow_gate preparation
-          --mode "${RELEASE_MODE}" --provider-result "${PROVIDER_RESULT}"
-          --publication-result "${PUBLICATION_RESULT}"
-
   construct-core:
     name: Construct deterministic source and recipe artifacts
-    if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.repository-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - preparation-gate
       - fresh-provider-controls
     runs-on: ubuntu-24.04
@@ -1090,19 +842,18 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
 
-  build-apt:
-    name: Build APT ${{ matrix.id }}
-    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+  build-native:
+    name: Build ${{ matrix.format }} ${{ matrix.id }}
+    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.repository-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - preparation-gate
       - construct-core
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.repository-readiness.outputs.apt_matrix) }}
+        include: ${{ fromJSON(needs.repository-readiness.outputs.native_matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
@@ -1114,65 +865,17 @@ jobs:
           ref: ${{ needs.repository-readiness.outputs.commit }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Build native Debian packages
-        env:
-          VERSION: ${{ needs.contract.outputs.version }}
-          RELEASE: ${{ matrix.release }}
-          ROUTE_ID: ${{ matrix.id }}
-          DISTRIBUTION: ${{ matrix.distribution }}
-          ARCHITECTURE: ${{ matrix.architecture }}
-          SOURCE_DATE_EPOCH: ${{ needs.repository-readiness.outputs.source_date_epoch }}
-          DEB_BUILD_OPTIONS: noautodbgsym
-          DEBFULLNAME: mcp-cpp-sdk release automation
-          DEBEMAIL: releases@yurirocha.com
-        run: >-
-          python3 -I -S scripts/run_release_tool.py release.native_builder run
-          --lock release/native-builders/lock.json --image "${{ matrix.builder_image }}"
-          --kind apt --version "${VERSION}" --target-id "${ROUTE_ID}"
-          --distribution "${DISTRIBUTION}" --release "${RELEASE}"
-          --architecture "${ARCHITECTURE}" --source-date-epoch "${SOURCE_DATE_EPOCH}"
-          --output out
-      - name: Upload APT artifact part
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-apt-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/
-          if-no-files-found: error
-          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
-
-  build-rpm:
-    name: Build RPM ${{ matrix.id }}
-    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
-    needs:
-      - contract
-      - repository-readiness
-      - ledger-readiness
-      - preparation-gate
-      - construct-core
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.repository-readiness.outputs.rpm_matrix) }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout exact tagged commit
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ needs.repository-readiness.outputs.commit }}
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Download canonical source archive
+      - name: Download canonical source archive for RPM construction
+        if: ${{ matrix.format == 'rpm' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-core-${{ github.run_id }}-${{ github.run_attempt }}
           path: core
-      - name: Build native RPM packages
+      - name: Build native package
         env:
           VERSION: ${{ needs.contract.outputs.version }}
           TAG: ${{ inputs.tag }}
+          FORMAT: ${{ matrix.format }}
           ROUTE_ID: ${{ matrix.id }}
           DISTRIBUTION: ${{ matrix.distribution }}
           RELEASE: ${{ matrix.release }}
@@ -1181,26 +884,25 @@ jobs:
         run: >-
           python3 -I -S scripts/run_release_tool.py release.native_builder run
           --lock release/native-builders/lock.json --image "${{ matrix.builder_image }}"
-          --kind rpm --version "${VERSION}" --tag "${TAG}"
+          --kind "${FORMAT}" --version "${VERSION}" --tag "${TAG}"
           --repository "${GITHUB_REPOSITORY}" --target-id "${ROUTE_ID}"
           --distribution "${DISTRIBUTION}"
           --release "${RELEASE}" --architecture "${ARCHITECTURE}"
           --source-date-epoch "${SOURCE_DATE_EPOCH}" --core core --output out
-      - name: Upload RPM artifact part
+      - name: Upload native package artifact part
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-rpm-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: release-${{ matrix.format }}-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/
           if-no-files-found: error
           retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
 
   build-windows:
     name: Build signed-anchor Windows payload input
-    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.repository-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - preparation-gate
       - construct-core
     runs-on: windows-2022
@@ -1264,11 +966,10 @@ jobs:
 
   build-abi:
     name: Build canonical ABI evidence and compare compatible lines
-    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.repository-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - preparation-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -1371,17 +1072,14 @@ jobs:
     name: Assemble and bind unsigned release payloads
     if: >-
       ${{ always() && needs.construct-core.result == 'success' &&
-          (needs.build-apt.result == 'success' || needs.build-apt.result == 'skipped') &&
-          (needs.build-rpm.result == 'success' || needs.build-rpm.result == 'skipped') &&
+          (needs.build-native.result == 'success' || needs.build-native.result == 'skipped') &&
           (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
           (needs.build-abi.result == 'success' || needs.build-abi.result == 'skipped') }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - construct-core
-      - build-apt
-      - build-rpm
+      - build-native
       - build-windows
       - build-abi
     runs-on: ubuntu-24.04
@@ -1431,15 +1129,13 @@ jobs:
           VERSION: ${{ needs.contract.outputs.version }}
           TAG: ${{ inputs.tag }}
           COMMIT: ${{ needs.repository-readiness.outputs.commit }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
           PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
           TAG_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_TAG_SUBKEY_FINGERPRINT }}
           ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
         run: >-
           python3 -I -S scripts/run_release_tool.py release.assemble_unsigned
           --parts parts --output unsigned --version "${VERSION}" --tag "${TAG}"
-          --commit "${COMMIT}" --ledger-issue "${LEDGER_ISSUE}"
-          --repository "${GITHUB_REPOSITORY}" --primary-fingerprint "${PRIMARY_FINGERPRINT}"
+          --commit "${COMMIT}" --primary-fingerprint "${PRIMARY_FINGERPRINT}"
           --tag-subkey-fingerprint "${TAG_SUBKEY_FINGERPRINT}"
           --artifact-subkey-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}"
       - name: Upload unsigned release bundle
@@ -1452,18 +1148,16 @@ jobs:
 
   signing:
     name: Sign the assembled release payloads
-    if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.repository-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - assemble-unsigned
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release-signing
     permissions:
       contents: read
-      issues: read
     outputs:
       result: ${{ steps.result.outputs.result }}
     steps:
@@ -1478,23 +1172,6 @@ jobs:
         with:
           name: release-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
           path: signed
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
-      - name: Recheck ledger authorization before reading signing secrets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
       - name: Verify unsigned boundary and create detached signatures
         env:
           RELEASE_GPG_PRIVATE_KEY_B64: ${{ secrets.RELEASE_GPG_PRIVATE_KEY_B64 }}
@@ -1514,11 +1191,10 @@ jobs:
 
   candidate-gate:
     name: Verify the complete signed candidate before publication
-    if: ${{ needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.repository-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - signing
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -1543,19 +1219,16 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
           COMMIT: ${{ needs.repository-readiness.outputs.commit }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
           PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
           TAG_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_TAG_SUBKEY_FINGERPRINT }}
           ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
         run: |
           python3 -I -S scripts/run_release_tool.py release.verify_candidate \
             --directory candidate --tag "${TAG}" --commit "${COMMIT}" \
-            --ledger-issue "${LEDGER_ISSUE}" --repository "${GITHUB_REPOSITORY}" \
             --primary-fingerprint "${PRIMARY_FINGERPRINT}" \
             --tag-fingerprint "${TAG_SUBKEY_FINGERPRINT}" \
             --artifact-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}" \
-            --public-key keys/release-signing-key.asc --targets packaging/native-targets.json \
-            --target-catalog packaging/targets.json \
+            --public-key keys/release-signing-key.asc --targets packaging/targets.json \
             --native-builder-lock release/native-builders/lock.json \
             --conan-requirements packaging/conan-center/requirements.json \
             --release-notes included \
@@ -1570,11 +1243,10 @@ jobs:
 
   validate-homebrew-package:
     name: Validate Homebrew package (${{ matrix.bottle_tag }})
-    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.repository-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - candidate-gate
     strategy:
       fail-fast: false
@@ -1622,11 +1294,10 @@ jobs:
 
   validate-conan-linux:
     name: Validate ConanCenter recipe (Linux shared and static)
-    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.repository-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - candidate-gate
     runs-on: ${{ fromJSON(needs.repository-readiness.outputs.conan_builder).runner }}
     timeout-minutes: 90
@@ -1663,11 +1334,10 @@ jobs:
 
   validate-conan-windows:
     name: Validate ConanCenter recipe (Windows shared and static)
-    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.repository-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - candidate-gate
     runs-on: windows-2022
     timeout-minutes: 90
@@ -1735,10 +1405,11 @@ jobs:
     if: ${{ always() }}
     needs:
       - contract
-      - ledger-readiness
+      - repository-readiness
       - validate-homebrew-package
       - validate-conan-linux
       - validate-conan-windows
+      - validate-aur-packages
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -1753,24 +1424,25 @@ jobs:
       - name: Enforce every required package-manager result
         env:
           RELEASE_KIND: ${{ needs.contract.outputs.release_kind }}
-          ANCHOR_EXISTS: ${{ needs.ledger-readiness.outputs.anchor_exists }}
+          ANCHOR_EXISTS: ${{ needs.repository-readiness.outputs.anchor_exists }}
           HOMEBREW_RESULT: ${{ needs.validate-homebrew-package.result }}
           CONAN_LINUX_RESULT: ${{ needs.validate-conan-linux.result }}
           CONAN_WINDOWS_RESULT: ${{ needs.validate-conan-windows.result }}
+          AUR_RESULT: ${{ needs.validate-aur-packages.result }}
         run: >-
           python3 -I -S scripts/run_release_tool.py release.workflow_gate packages
           --release-kind "${RELEASE_KIND}" --anchor-exists "${ANCHOR_EXISTS}"
           --homebrew-result "${HOMEBREW_RESULT}"
           --conan-linux-result "${CONAN_LINUX_RESULT}"
           --conan-windows-result "${CONAN_WINDOWS_RESULT}"
+          --aur-result "${AUR_RESULT}"
 
   validate-aur-packages:
     name: Validate AUR package (x86_64)
-    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.contract.outputs.release_kind == 'stable' && needs.repository-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - candidate-gate
     runs-on: ${{ fromJSON(needs.repository-readiness.outputs.aur_builder).runner }}
     timeout-minutes: 60
@@ -1797,45 +1469,16 @@ jobs:
           --lock release/native-builders/lock.json --image "${BUILDER_IMAGE}"
           --kind aur --target-id aur-x86_64 --architecture x86_64
           --version "${VERSION}" --assets release-assets --output aur-validation
-  aur-validation-gate:
-    name: Require native AUR validation for every stable anchor
-    if: ${{ always() }}
-    needs:
-      - contract
-      - repository-readiness
-      - ledger-readiness
-      - validate-aur-packages
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout protected current AUR result policy
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Enforce selected-target validation result
-        env:
-          RELEASE_KIND: ${{ needs.contract.outputs.release_kind }}
-          ANCHOR_EXISTS: ${{ needs.ledger-readiness.outputs.anchor_exists }}
-          VALIDATION_RESULT: ${{ needs.validate-aur-packages.result }}
-        run: >-
-          python3 -I -S scripts/run_release_tool.py release.workflow_gate aur
-          --release-kind "${RELEASE_KIND}" --anchor-exists "${ANCHOR_EXISTS}"
-          --validation-result "${VALIDATION_RESULT}"
 
   validation-complete:
     name: Validation completed without publication
     if: ${{ always() && needs.contract.outputs.mode == 'validate' && needs.preparation-gate.result == 'success' }}
     needs:
       - contract
-      - ledger-readiness
+      - repository-readiness
       - preparation-gate
       - build-abi
       - candidate-gate
-      - aur-validation-gate
       - package-validation-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -1850,44 +1493,38 @@ jobs:
           persist-credentials: false
       - name: Require complete construction and signing validation
         env:
-          ANCHOR_EXISTS: ${{ needs.ledger-readiness.outputs.anchor_exists }}
+          ANCHOR_EXISTS: ${{ needs.repository-readiness.outputs.anchor_exists }}
           RELEASE_KIND: ${{ needs.contract.outputs.release_kind }}
           CANDIDATE_RESULT: ${{ needs.candidate-gate.result }}
           ABI_RESULT: ${{ needs.build-abi.result }}
-          AUR_GATE_RESULT: ${{ needs.aur-validation-gate.result }}
           PACKAGE_GATE_RESULT: ${{ needs.package-validation-gate.result }}
         run: >-
           python3 -I -S scripts/run_release_tool.py release.workflow_gate validation
           --anchor-exists "${ANCHOR_EXISTS}" --release-kind "${RELEASE_KIND}"
           --candidate-result "${CANDIDATE_RESULT}" --abi-result "${ABI_RESULT}"
-          --aur-gate-result "${AUR_GATE_RESULT}"
           --package-gate-result "${PACKAGE_GATE_RESULT}"
       - name: Report read-only completion
         env:
           RELEASE_TAG: ${{ inputs.tag }}
           RELEASE_CHANNELS: ${{ needs.contract.outputs.selection_label }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
         run: |
-          echo "Validated ${RELEASE_TAG}, channels ${RELEASE_CHANNELS}, ledger #${LEDGER_ISSUE}."
-          echo "No GitHub Release, issue mutation, attestation, downstream dispatch, package publication, or provider mutation occurred."
+          echo "Validated ${RELEASE_TAG}, channels ${RELEASE_CHANNELS}."
+          echo "No GitHub Release, attestation, downstream dispatch, package publication, or provider mutation occurred."
           echo "Validation artifacts and protected-environment approvals remain internal to this workflow run."
 
   attestation:
     name: Attest signed release assets
-    if: ${{ needs.contract.outputs.mode == 'publish' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.contract.outputs.mode == 'publish' && needs.repository-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - candidate-gate
-      - aur-validation-gate
       - package-validation-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: release-github
     permissions:
       contents: read
-      issues: read
       id-token: write
       attestations: write
     outputs:
@@ -1899,11 +1536,6 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
       - name: Download signed release bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1913,18 +1545,6 @@ jobs:
         run: |
           mkdir subjects
           find signed -maxdepth 1 -type f ! -name RELEASE_NOTES.md -exec cp {} subjects/ \;
-      - name: Recheck ledger authorization before requesting OIDC
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
       - name: Create GitHub build provenance
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
@@ -1935,21 +1555,18 @@ jobs:
 
   github-release:
     name: Publish the immutable GitHub Release
-    if: ${{ needs.contract.outputs.mode == 'publish' && needs.ledger-readiness.outputs.anchor_exists == 'false' }}
+    if: ${{ needs.contract.outputs.mode == 'publish' && needs.repository-readiness.outputs.anchor_exists == 'false' }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - candidate-gate
       - attestation
-      - aur-validation-gate
       - package-validation-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: release-github
     permissions:
       contents: write
-      issues: read
     outputs:
       result: ${{ steps.result.outputs.result }}
     steps:
@@ -1959,28 +1576,11 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
       - name: Download signed release bundle
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
           path: signed
-      - name: Recheck ledger authorization before creating a release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
       - name: Create and publish release under repository immutability
         env:
           GH_TOKEN: ${{ github.token }}
@@ -2003,13 +1603,12 @@ jobs:
   github-anchor:
     name: Verify and export the immutable GitHub anchor
     if: >-
-      ${{ always() && needs.publication-gate.result == 'success' &&
-          (needs.ledger-readiness.outputs.anchor_exists == 'true' || needs.github-release.result == 'success') }}
+      ${{ always() && needs.preparation-gate.result == 'success' &&
+          (needs.repository-readiness.outputs.anchor_exists == 'true' || needs.github-release.result == 'success') }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
-      - publication-gate
+      - preparation-gate
       - github-release
       - package-validation-gate
     runs-on: ubuntu-24.04
@@ -2035,9 +1634,7 @@ jobs:
           TAG: ${{ inputs.tag }}
           VERSION: ${{ needs.contract.outputs.version }}
           COMMIT: ${{ needs.repository-readiness.outputs.commit }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          ANCHOR_EXISTED: ${{ needs.ledger-readiness.outputs.anchor_exists }}
-          PRIOR_MANIFEST_SHA256: ${{ needs.ledger-readiness.outputs.prior_manifest_sha256 }}
+          ANCHOR_EXISTED: ${{ needs.repository-readiness.outputs.anchor_exists }}
           REPOSITORY: ${{ github.repository }}
           TAG_OBJECT_SHA: ${{ needs.repository-readiness.outputs.tag_object_sha }}
           PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
@@ -2048,14 +1645,13 @@ jobs:
             --directory verified --public-key keys/release-signing-key.asc \
             --trusted-signers release/trusted-release-signers.json \
             --tag "${TAG}" --version "${VERSION}" --commit "${COMMIT}" \
-            --ledger-issue "${LEDGER_ISSUE}" --repository "${REPOSITORY}" \
+            --repository "${REPOSITORY}" \
             --tag-object-sha "${TAG_OBJECT_SHA}" \
             --primary-fingerprint "${PRIMARY_FINGERPRINT}" \
             --tag-fingerprint "${TAG_SUBKEY_FINGERPRINT}" \
             --artifact-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}" \
-            --prior-manifest-sha256 "${PRIOR_MANIFEST_SHA256}" \
             --anchor-existed "${ANCHOR_EXISTED}" \
-            --targets packaging/native-targets.json --target-catalog packaging/targets.json \
+            --targets packaging/targets.json \
             --native-builder-lock release/native-builders/lock.json \
             --conan-requirements packaging/conan-center/requirements.json \
             --github-output "${GITHUB_OUTPUT}"
@@ -2068,23 +1664,23 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
 
-  publish-apt:
-    name: Publish APT packages through Cloudsmith OIDC
-    if: ${{ needs.contract.outputs.mode == 'publish' && needs.contract.outputs.target_apt == 'true' }}
+  publish-cloudsmith:
+    name: Publish ${{ matrix.format }} packages through Cloudsmith OIDC
+    if: ${{ needs.contract.outputs.mode == 'publish' && (needs.contract.outputs.target_apt == 'true' || needs.contract.outputs.target_rpm == 'true') }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - github-anchor
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.contract.outputs.cloudsmith_matrix) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release-cloudsmith
     permissions:
       contents: read
-      issues: read
       id-token: write
-    outputs:
-      result: ${{ steps.publish.outputs.result }}
     steps:
       - name: Checkout protected current publisher tooling
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -2113,23 +1709,6 @@ jobs:
           --repository "${{ vars.CLOUDSMITH_REPOSITORY }}"
           --preflight-username "${{ vars.CLOUDSMITH_PREFLIGHT_SERVICE_USERNAME }}"
           --publish-username "${{ vars.CLOUDSMITH_PUBLISH_SERVICE_USERNAME }}"
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
-      - name: Recheck ledger authorization before requesting Cloudsmith OIDC
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
       - name: Authenticate and install pinned Cloudsmith CLI
         uses: cloudsmith-io/cloudsmith-cli-action@159f1619275d5d3147f059c3cc110938ec221d16 # v2.0.3
         with:
@@ -2138,7 +1717,7 @@ jobs:
           oidc-service-slug: ${{ vars.CLOUDSMITH_OIDC_SERVICE_SLUG }}
       - name: Verify the downloaded Cloudsmith CLI payload
         run: bash scripts/release/verify_cloudsmith_cli.sh
-      - name: Push or identically skip exact APT routes
+      - name: Push or identically skip exact routes
         id: publish
         env:
           CLOUDSMITH_NAMESPACE: ${{ vars.CLOUDSMITH_NAMESPACE }}
@@ -2147,91 +1726,7 @@ jobs:
         run: >-
           python3 -I -S scripts/run_release_tool.py release.cloudsmith_publish publish
           --directory release-assets --routes release-assets/cloudsmith-routes.json
-          --format apt --namespace "${CLOUDSMITH_NAMESPACE}"
-          --repository "${CLOUDSMITH_REPOSITORY}"
-          --expected-username "${CLOUDSMITH_PUBLISH_SERVICE_USERNAME}"
-          --github-output "${GITHUB_OUTPUT}"
-
-  publish-rpm:
-    name: Publish RPM packages through Cloudsmith OIDC
-    if: ${{ needs.contract.outputs.mode == 'publish' && needs.contract.outputs.target_rpm == 'true' }}
-    needs:
-      - contract
-      - repository-readiness
-      - ledger-readiness
-      - github-anchor
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    environment: release-cloudsmith
-    permissions:
-      contents: read
-      issues: read
-      id-token: write
-    outputs:
-      result: ${{ steps.publish.outputs.result }}
-    steps:
-      - name: Checkout protected current publisher tooling
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Download and verify immutable release bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-verified-${{ github.run_id }}-${{ github.run_attempt }}
-          path: release-assets
-      - name: Verify fixed anchor handoff
-        env:
-          EXPECTED_MANIFEST: ${{ needs.github-anchor.outputs.manifest_sha256 }}
-          EXPECTED_TAG: ${{ inputs.tag }}
-        run: >-
-          python3 -I -S scripts/run_release_tool.py release.github_publication verify-handoff
-          --anchor release-assets/ANCHOR.json --tag "${EXPECTED_TAG}"
-          --manifest-sha256 "${EXPECTED_MANIFEST}"
-      - name: Bind Cloudsmith publication destination to the signed anchor
-        run: >-
-          python3 -I -S scripts/run_release_tool.py release.publication_contract
-          --contract release-assets/release-publication-contract.json --name cloudsmith
-          --namespace "${{ vars.CLOUDSMITH_NAMESPACE }}"
-          --repository "${{ vars.CLOUDSMITH_REPOSITORY }}"
-          --preflight-username "${{ vars.CLOUDSMITH_PREFLIGHT_SERVICE_USERNAME }}"
-          --publish-username "${{ vars.CLOUDSMITH_PUBLISH_SERVICE_USERNAME }}"
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
-      - name: Recheck ledger authorization before requesting Cloudsmith OIDC
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
-      - name: Authenticate and install pinned Cloudsmith CLI
-        uses: cloudsmith-io/cloudsmith-cli-action@159f1619275d5d3147f059c3cc110938ec221d16 # v2.0.3
-        with:
-          cli-version: "1.19.0"
-          oidc-namespace: ${{ vars.CLOUDSMITH_OIDC_NAMESPACE }}
-          oidc-service-slug: ${{ vars.CLOUDSMITH_OIDC_SERVICE_SLUG }}
-      - name: Verify the downloaded Cloudsmith CLI payload
-        run: bash scripts/release/verify_cloudsmith_cli.sh
-      - name: Push or identically skip exact RPM routes
-        id: publish
-        env:
-          CLOUDSMITH_NAMESPACE: ${{ vars.CLOUDSMITH_NAMESPACE }}
-          CLOUDSMITH_REPOSITORY: ${{ vars.CLOUDSMITH_REPOSITORY }}
-          CLOUDSMITH_PUBLISH_SERVICE_USERNAME: ${{ vars.CLOUDSMITH_PUBLISH_SERVICE_USERNAME }}
-        run: >-
-          python3 -I -S scripts/run_release_tool.py release.cloudsmith_publish publish
-          --directory release-assets --routes release-assets/cloudsmith-routes.json
-          --format rpm --namespace "${CLOUDSMITH_NAMESPACE}"
+          --format "${{ matrix.format }}" --namespace "${CLOUDSMITH_NAMESPACE}"
           --repository "${CLOUDSMITH_REPOSITORY}"
           --expected-username "${CLOUDSMITH_PUBLISH_SERVICE_USERNAME}"
           --github-output "${GITHUB_OUTPUT}"
@@ -2242,14 +1737,12 @@ jobs:
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - github-anchor
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: release-aur
     permissions:
       contents: read
-      issues: read
     env:
       AUR_PACKAGE_BASE: mcp-cpp-sdk
       AUR_CLONE_URL: ssh://aur@aur.archlinux.org/mcp-cpp-sdk.git
@@ -2281,23 +1774,6 @@ jobs:
           --contract release-assets/release-publication-contract.json --name aur
           --repository "${AUR_CLONE_URL}" --package-base "${AUR_PACKAGE_BASE}"
           --architecture x86_64
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
-      - name: Recheck ledger authorization before reading AUR credentials
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
       - name: Publish exact reviewed AUR metadata
         id: publish
         env:
@@ -2313,7 +1789,6 @@ jobs:
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - github-anchor
       - preflight-homebrew
     runs-on: ubuntu-24.04
@@ -2321,7 +1796,6 @@ jobs:
     environment: release-homebrew
     permissions:
       contents: read
-      issues: read
     outputs:
       result: ${{ steps.result.outputs.result }}
       downstream_run_id: ${{ steps.dispatch.outputs.downstream_workflow_run_id }}
@@ -2352,23 +1826,6 @@ jobs:
           --repository "${{ vars.HOMEBREW_APP_OWNER }}/${{ vars.HOMEBREW_APP_REPOSITORY }}"
           --repository-id "${{ vars.HOMEBREW_APP_REPOSITORY_ID }}"
           --bot-login "${{ vars.HOMEBREW_APP_BOT_LOGIN }}"
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
-      - name: Recheck ledger authorization before requesting credentials
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
       - name: Create least-privilege Homebrew App token
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -2437,7 +1894,6 @@ jobs:
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - github-anchor
       - preflight-chocolatey
     runs-on: ubuntu-24.04
@@ -2445,7 +1901,6 @@ jobs:
     environment: release-chocolatey
     permissions:
       contents: read
-      issues: read
     outputs:
       result: ${{ steps.result.outputs.result }}
       downstream_run_id: ${{ steps.dispatch.outputs.downstream_workflow_run_id }}
@@ -2475,23 +1930,6 @@ jobs:
           --contract release-assets/release-publication-contract.json --name chocolatey
           --repository "${{ vars.CHOCOLATEY_APP_OWNER }}/${{ vars.CHOCOLATEY_APP_REPOSITORY }}"
           --repository-id "${{ vars.CHOCOLATEY_APP_REPOSITORY_ID }}"
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
-      - name: Recheck ledger authorization before requesting credentials
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
       - name: Create least-privilege Chocolatey App token
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -2539,14 +1977,12 @@ jobs:
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - github-anchor
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: release-conan-recipe
     permissions:
       contents: read
-      issues: read
     outputs:
       state: ${{ steps.merge.outputs.state }}
       fork_base: ${{ steps.merge.outputs.fork_base }}
@@ -2580,11 +2016,6 @@ jobs:
           --repository "${{ vars.CONAN_RECIPE_APP_OWNER }}/${{ vars.CONAN_RECIPE_APP_REPOSITORY }}"
           --repository-id "${{ vars.CONAN_RECIPE_APP_REPOSITORY_ID }}"
           --upstream conan-io/conan-center-index
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
       - name: Merge the signed version entry with the exact upstream recipe
         id: merge
         env:
@@ -2593,20 +2024,12 @@ jobs:
           APP_REPOSITORY: ${{ vars.CONAN_RECIPE_APP_REPOSITORY }}
           EXPECTED_REPOSITORY_ID: ${{ vars.CONAN_RECIPE_APP_REPOSITORY_ID }}
           VERSION: ${{ needs.contract.outputs.version }}
-        run: bash scripts/release/prepare_conan_recipe.sh
-      - name: Recheck ledger authorization before requesting fork credentials
-        if: ${{ steps.merge.outputs.state == 'prepared' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.conan_fork prepare
+          --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
+          --repository-id "${EXPECTED_REPOSITORY_ID}" --version "${VERSION}"
+          --release-assets release-assets --output-root merged-recipe
+          --result merge-plan.json --github-output "${GITHUB_OUTPUT}"
       - name: Create a fork-scoped recipe App token
         id: app
         if: ${{ steps.merge.outputs.state == 'prepared' }}
@@ -2627,14 +2050,18 @@ jobs:
           EXPECTED_REPOSITORY_ID: ${{ vars.CONAN_RECIPE_APP_REPOSITORY_ID }}
           VERSION: ${{ needs.contract.outputs.version }}
           FORK_BASE: ${{ steps.merge.outputs.fork_base }}
-        run: bash scripts/release/publish_conan_recipe.sh
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.conan_fork publish
+          --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
+          --repository-id "${EXPECTED_REPOSITORY_ID}" --version "${VERSION}"
+          --fork-base "${FORK_BASE}" --recipe-root merged-recipe
+          --github-output "${GITHUB_OUTPUT}"
   conan:
     name: Dispatch the ConanCenter release-control App
     if: ${{ needs.contract.outputs.mode == 'publish' && needs.contract.outputs.target_conan2 == 'true' }}
     needs:
       - contract
       - repository-readiness
-      - ledger-readiness
       - github-anchor
       - conan-recipe
       - preflight-conan-broker
@@ -2643,7 +2070,6 @@ jobs:
     environment: release-control-dispatch
     permissions:
       contents: read
-      issues: read
     outputs:
       result: ${{ steps.result.outputs.result }}
       downstream_run_id: ${{ steps.dispatch.outputs.downstream_workflow_run_id }}
@@ -2673,24 +2099,6 @@ jobs:
           --contract release-assets/release-publication-contract.json --name conan_control
           --repository "${{ vars.CONAN_BROKER_APP_OWNER }}/${{ vars.CONAN_BROKER_APP_REPOSITORY }}"
           --repository-id "${{ vars.CONAN_BROKER_APP_REPOSITORY_ID }}"
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
-      - name: Recheck ledger authorization before requesting control credentials
-        if: ${{ needs.conan-recipe.outputs.state == 'prepared' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
       - name: Create least-privilege Conan release-control App token
         id: app
         if: ${{ needs.conan-recipe.outputs.state == 'prepared' }}
@@ -2742,102 +2150,3 @@ jobs:
         run: >-
           python3 -I -S scripts/run_release_tool.py release.workflow_gate conan-result
           --state "${RECIPE_STATE}" --github-output "${GITHUB_OUTPUT}"
-
-  ledger-coordinator:
-    name: Append the bot-authenticated release ledger
-    if: ${{ always() && needs.contract.result == 'success' && needs.ledger-readiness.result == 'success' && needs.contract.outputs.mode == 'publish' }}
-    needs:
-      - contract
-      - repository-readiness
-      - ledger-readiness
-      - publication-gate
-      - signing
-      - attestation
-      - github-release
-      - github-anchor
-      - publish-apt
-      - publish-rpm
-      - aur
-      - homebrew
-      - chocolatey
-      - conan
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    environment: release-ledger
-    permissions:
-      contents: read
-      issues: read
-    steps:
-      - name: Checkout protected current ledger tooling
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Download the exact ledger authorization record
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-ledger-readiness-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ledger-readiness
-      - name: Recheck ledger authorization before requesting ledger credentials
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-        run: bash scripts/release/recheck_ledger.sh
-      - name: Create the ledger-only GitHub App token
-        id: app
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.RELEASE_LEDGER_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_LEDGER_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-issues: write
-      - name: Construct the complete canonical observation set
-        env:
-          CHANNELS: ${{ needs.contract.outputs.normalized_channels }}
-          MANIFEST_SHA256: ${{ needs.github-anchor.outputs.manifest_sha256 }}
-          GITHUB_JOB_RESULT: ${{ needs.github-anchor.result }}
-          GITHUB_RESULT: ${{ needs.github-anchor.outputs.result }}
-          CONAN_JOB_RESULT: ${{ needs.conan.result }}
-          CONAN_RESULT: ${{ needs.conan.outputs.result }}
-          APT_JOB_RESULT: ${{ needs.publish-apt.result }}
-          APT_RESULT: ${{ needs.publish-apt.outputs.result }}
-          RPM_JOB_RESULT: ${{ needs.publish-rpm.result }}
-          RPM_RESULT: ${{ needs.publish-rpm.outputs.result }}
-          AUR_JOB_RESULT: ${{ needs.aur.result }}
-          AUR_RESULT: ${{ needs.aur.outputs.result }}
-          HOMEBREW_JOB_RESULT: ${{ needs.homebrew.result }}
-          HOMEBREW_RESULT: ${{ needs.homebrew.outputs.result }}
-          CHOCOLATEY_JOB_RESULT: ${{ needs.chocolatey.result }}
-          CHOCOLATEY_RESULT: ${{ needs.chocolatey.outputs.result }}
-        run: >-
-          python3 -I -S scripts/run_release_tool.py release.ledger_updates
-          --channels "${CHANNELS}" --manifest-sha256 "${MANIFEST_SHA256}" --output ledger-updates.json
-          --github-conclusion "${GITHUB_JOB_RESULT}" --github-result "${GITHUB_RESULT}"
-          --conan2-conclusion "${CONAN_JOB_RESULT}" --conan2-result "${CONAN_RESULT}"
-          --deb-apt-conclusion "${APT_JOB_RESULT}" --deb-apt-result "${APT_RESULT}"
-          --rpm-conclusion "${RPM_JOB_RESULT}" --rpm-result "${RPM_RESULT}"
-          --arch-aur-conclusion "${AUR_JOB_RESULT}" --arch-aur-result "${AUR_RESULT}"
-          --homebrew-conclusion "${HOMEBREW_JOB_RESULT}" --homebrew-result "${HOMEBREW_RESULT}"
-          --chocolatey-conclusion "${CHOCOLATEY_JOB_RESULT}" --chocolatey-result "${CHOCOLATEY_RESULT}"
-      - name: Recheck and append exactly one ledger snapshot
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          REPOSITORY: ${{ github.repository }}
-          LEDGER_ISSUE: ${{ needs.contract.outputs.ledger_issue }}
-          REPOSITORY_OWNER_ID: ${{ github.repository_owner_id }}
-          LEDGER_BOT_ID: ${{ vars.RELEASE_LEDGER_BOT_ID }}
-          LEDGER_BOT_LOGIN: ${{ vars.RELEASE_LEDGER_BOT_LOGIN }}
-          LEDGER_BOT_ASSOCIATION: ${{ vars.RELEASE_LEDGER_BOT_ASSOCIATION }}
-          LEDGER_READINESS_SHA256: ${{ needs.ledger-readiness.outputs.ledger_readiness_sha256 }}
-          LEDGER_READINESS_FILE: ledger-readiness/ledger-readiness.json
-          LEDGER_UPDATES_FILE: ledger-updates.json
-        run: bash scripts/release/append_ledger.sh
