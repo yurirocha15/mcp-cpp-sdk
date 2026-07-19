@@ -1,13 +1,18 @@
-if(NOT DEFINED MCP_CPP_SDK_CONFIG_VERSION_TEMPLATE)
-  message(FATAL_ERROR "config-version prerelease test is missing its template")
+if(NOT DEFINED MCP_CPP_SDK_CONFIG_VERSION_TEMPLATE
+   OR NOT DEFINED MCP_CPP_SDK_CONFIG_VERSION_TEST_OUTPUT_DIR)
+  message(
+    FATAL_ERROR "prerelease test requires its template and output directory")
 endif()
+
+file(MAKE_DIRECTORY "${MCP_CPP_SDK_CONFIG_VERSION_TEST_OUTPUT_DIR}")
 
 set(MCP_CPP_SDK_VERSION_FULL "0.2.0-rc.1")
 set(MCP_CPP_SDK_VERSION_PRERELEASE "-rc.1")
 set(MCP_CPP_SDK_VERSION_MAJOR 0)
 set(MCP_CPP_SDK_VERSION_MINOR 2)
 set(MCP_CPP_SDK_VERSION_CORE "0.2.0")
-set(CONFIG_VERSION_FILE "${CMAKE_CURRENT_BINARY_DIR}/config-version-rc.cmake")
+set(CONFIG_VERSION_FILE
+    "${MCP_CPP_SDK_CONFIG_VERSION_TEST_OUTPUT_DIR}/config-version-rc.cmake")
 configure_file("${MCP_CPP_SDK_CONFIG_VERSION_TEMPLATE}"
                "${CONFIG_VERSION_FILE}" @ONLY)
 
