@@ -70,8 +70,10 @@ elseif(MCP_CPP_SDK_DEFAULT_LINKAGE STREQUAL "static"
 endif()
 
 if(MCP_CPP_SDK_VERSION_MAJOR EQUAL 0)
-  set(MCP_CPP_SDK_SOVERSION
-      "${MCP_CPP_SDK_VERSION_MAJOR}.${MCP_CPP_SDK_VERSION_MINOR}")
+  # SemVer 0.x does not promise binary compatibility between releases.  Give
+  # every stable 0.x release its own loader identity so an old consumer can
+  # never silently load a different patch-level ABI.
+  set(MCP_CPP_SDK_SOVERSION "${MCP_CPP_SDK_VERSION_CORE}")
 else()
   set(MCP_CPP_SDK_SOVERSION "${MCP_CPP_SDK_VERSION_MAJOR}")
 endif()
@@ -182,9 +184,23 @@ if(BUILD_TESTING)
       "${MCP_CPP_SDK_CMAKE_DIR}/mcp-cpp-sdk-config-version.cmake.in")
   set(MCP_CPP_SDK_CONFIG_VERSION_PRERELEASE_TEST
       "${MCP_CPP_SDK_CMAKE_DIR}/tests/verify-config-version-prerelease.cmake")
+  set(MCP_CPP_SDK_CONFIG_VERSION_STABLE_TEST
+      "${MCP_CPP_SDK_CMAKE_DIR}/tests/verify-config-version-stable.cmake")
   string(CONCAT MCP_CPP_SDK_CONFIG_VERSION_TEMPLATE_ARGUMENT
                 "-DMCP_CPP_SDK_CONFIG_VERSION_TEMPLATE="
                 "${MCP_CPP_SDK_CONFIG_VERSION_TEMPLATE}")
+  set(MCP_CPP_SDK_CONFIG_VERSION_TEST_OUTPUT_ROOT
+      "${CMAKE_CURRENT_BINARY_DIR}/cmake-config-version-tests")
+  set(MCP_CPP_SDK_CONFIG_VERSION_PRERELEASE_OUTPUT
+      "${MCP_CPP_SDK_CONFIG_VERSION_TEST_OUTPUT_ROOT}/prerelease")
+  set(MCP_CPP_SDK_CONFIG_VERSION_STABLE_OUTPUT
+      "${MCP_CPP_SDK_CONFIG_VERSION_TEST_OUTPUT_ROOT}/stable")
+  string(CONCAT MCP_CPP_SDK_CONFIG_VERSION_PRERELEASE_OUTPUT_ARGUMENT
+                "-DMCP_CPP_SDK_CONFIG_VERSION_TEST_OUTPUT_DIR="
+                "${MCP_CPP_SDK_CONFIG_VERSION_PRERELEASE_OUTPUT}")
+  string(CONCAT MCP_CPP_SDK_CONFIG_VERSION_STABLE_OUTPUT_ARGUMENT
+                "-DMCP_CPP_SDK_CONFIG_VERSION_TEST_OUTPUT_DIR="
+                "${MCP_CPP_SDK_CONFIG_VERSION_STABLE_OUTPUT}")
   add_test(
     NAME packaging-pkgconfig-prefix
     COMMAND
@@ -192,8 +208,16 @@ if(BUILD_TESTING)
       "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/verify-pkgconfig-prefix.cmake")
   add_test(
     NAME packaging-config-version-prerelease
-    COMMAND ${CMAKE_COMMAND} "${MCP_CPP_SDK_CONFIG_VERSION_TEMPLATE_ARGUMENT}"
-            -P "${MCP_CPP_SDK_CONFIG_VERSION_PRERELEASE_TEST}")
+    COMMAND
+      ${CMAKE_COMMAND} "${MCP_CPP_SDK_CONFIG_VERSION_TEMPLATE_ARGUMENT}"
+      "${MCP_CPP_SDK_CONFIG_VERSION_PRERELEASE_OUTPUT_ARGUMENT}" -P
+      "${MCP_CPP_SDK_CONFIG_VERSION_PRERELEASE_TEST}")
+  add_test(
+    NAME packaging-config-version-stable
+    COMMAND
+      ${CMAKE_COMMAND} "${MCP_CPP_SDK_CONFIG_VERSION_TEMPLATE_ARGUMENT}"
+      "${MCP_CPP_SDK_CONFIG_VERSION_STABLE_OUTPUT_ARGUMENT}" -P
+      "${MCP_CPP_SDK_CONFIG_VERSION_STABLE_TEST}")
   find_program(MCP_CPP_SDK_PKG_CONFIG_EXECUTABLE pkg-config)
   if(MCP_CPP_SDK_BUILD_STATIC
      AND MCP_CPP_SDK_PKG_CONFIG_EXECUTABLE

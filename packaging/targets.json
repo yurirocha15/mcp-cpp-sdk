@@ -1,44 +1,99 @@
 {
-    "schema_version": 1,
+    "schema_version": 2,
     "apt": [
         {
             "distribution": "ubuntu",
             "release": "jammy",
+            "builder_os_id": "ubuntu",
+            "builder_os_version_id": "22.04",
+            "builder_os_version_codename": "jammy",
             "architectures": [
-                "amd64",
-                "arm64"
+                {
+                    "architecture": "amd64",
+                    "builder_dpkg_architecture": "amd64",
+                    "builder_uname_machine": "x86_64"
+                },
+                {
+                    "architecture": "arm64",
+                    "builder_dpkg_architecture": "arm64",
+                    "builder_uname_machine": "aarch64"
+                }
             ]
         },
         {
             "distribution": "ubuntu",
             "release": "noble",
+            "builder_os_id": "ubuntu",
+            "builder_os_version_id": "24.04",
+            "builder_os_version_codename": "noble",
             "architectures": [
-                "amd64",
-                "arm64"
+                {
+                    "architecture": "amd64",
+                    "builder_dpkg_architecture": "amd64",
+                    "builder_uname_machine": "x86_64"
+                },
+                {
+                    "architecture": "arm64",
+                    "builder_dpkg_architecture": "arm64",
+                    "builder_uname_machine": "aarch64"
+                }
             ]
         },
         {
             "distribution": "ubuntu",
             "release": "resolute",
+            "builder_os_id": "ubuntu",
+            "builder_os_version_id": "26.04",
+            "builder_os_version_codename": "resolute",
             "architectures": [
-                "amd64",
-                "arm64"
+                {
+                    "architecture": "amd64",
+                    "builder_dpkg_architecture": "amd64",
+                    "builder_uname_machine": "x86_64"
+                },
+                {
+                    "architecture": "arm64",
+                    "builder_dpkg_architecture": "arm64",
+                    "builder_uname_machine": "aarch64"
+                }
             ]
         },
         {
             "distribution": "debian",
             "release": "bookworm",
+            "builder_os_id": "debian",
+            "builder_os_version_id": "12",
+            "builder_os_version_codename": "bookworm",
             "architectures": [
-                "amd64",
-                "arm64"
+                {
+                    "architecture": "amd64",
+                    "builder_dpkg_architecture": "amd64",
+                    "builder_uname_machine": "x86_64"
+                },
+                {
+                    "architecture": "arm64",
+                    "builder_dpkg_architecture": "arm64",
+                    "builder_uname_machine": "aarch64"
+                }
             ]
         },
         {
             "distribution": "debian",
             "release": "trixie",
+            "builder_os_id": "debian",
+            "builder_os_version_id": "13",
+            "builder_os_version_codename": "trixie",
             "architectures": [
-                "amd64",
-                "arm64"
+                {
+                    "architecture": "amd64",
+                    "builder_dpkg_architecture": "amd64",
+                    "builder_uname_machine": "x86_64"
+                },
+                {
+                    "architecture": "arm64",
+                    "builder_dpkg_architecture": "arm64",
+                    "builder_uname_machine": "aarch64"
+                }
             ]
         }
     ],
@@ -46,48 +101,99 @@
         {
             "distribution": "fedora",
             "release": "43",
+            "builder_os_id": "fedora",
+            "builder_os_version_id": "43",
+            "builder_rpm_fedora": "43",
+            "builder_rpm_rhel": "",
+            "builder_rpm_dist": ".fc43",
             "architectures": [
-                "x86_64",
-                "aarch64"
+                {
+                    "architecture": "x86_64",
+                    "builder_rpm_architecture": "x86_64",
+                    "builder_uname_machine": "x86_64"
+                },
+                {
+                    "architecture": "aarch64",
+                    "builder_rpm_architecture": "aarch64",
+                    "builder_uname_machine": "aarch64"
+                }
             ]
         },
         {
             "distribution": "fedora",
             "release": "44",
+            "builder_os_id": "fedora",
+            "builder_os_version_id": "44",
+            "builder_rpm_fedora": "44",
+            "builder_rpm_rhel": "",
+            "builder_rpm_dist": ".fc44",
             "architectures": [
-                "x86_64",
-                "aarch64"
+                {
+                    "architecture": "x86_64",
+                    "builder_rpm_architecture": "x86_64",
+                    "builder_uname_machine": "x86_64"
+                },
+                {
+                    "architecture": "aarch64",
+                    "builder_rpm_architecture": "aarch64",
+                    "builder_uname_machine": "aarch64"
+                }
             ]
         },
         {
             "distribution": "el",
             "release": "9",
+            "builder_os_id": "almalinux",
+            "builder_os_version_id": "9.8",
+            "builder_rpm_fedora": "",
+            "builder_rpm_rhel": "9",
+            "builder_rpm_dist": ".el9",
             "architectures": [
-                "x86_64",
-                "aarch64"
+                {
+                    "architecture": "x86_64",
+                    "builder_rpm_architecture": "x86_64",
+                    "builder_uname_machine": "x86_64"
+                },
+                {
+                    "architecture": "aarch64",
+                    "builder_rpm_architecture": "aarch64",
+                    "builder_uname_machine": "aarch64"
+                }
             ]
         },
         {
             "distribution": "el",
             "release": "10",
+            "builder_os_id": "almalinux",
+            "builder_os_version_id": "10.2",
+            "builder_rpm_fedora": "",
+            "builder_rpm_rhel": "10",
+            "builder_rpm_dist": ".el10",
             "architectures": [
-                "x86_64",
-                "aarch64"
+                {
+                    "architecture": "x86_64",
+                    "builder_rpm_architecture": "x86_64",
+                    "builder_uname_machine": "x86_64"
+                },
+                {
+                    "architecture": "aarch64",
+                    "builder_rpm_architecture": "aarch64",
+                    "builder_uname_machine": "aarch64"
+                }
             ]
         }
     ],
     "aur": {
         "package_base": "mcp-cpp-sdk",
         "architectures": [
-            "x86_64",
-            "aarch64"
+            "x86_64"
         ]
     },
     "homebrew": {
-        "tap": "yurirocha15/mcp-cpp-sdk",
+        "tap": "yurirocha15/homebrew-mcp-cpp-sdk",
         "bottle_tags": [
-            "arm64_sequoia",
             "sequoia",
+            "arm64_sequoia",
             "x86_64_linux",
             "arm64_linux"
         ]

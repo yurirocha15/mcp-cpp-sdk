@@ -1,0 +1,14 @@
+{
+    "schema_version": 1,
+    "active_signer_id": "release-key-2026-07",
+    "signers": [
+        {
+            "id": "release-key-2026-07",
+            "public_key": "keys/release-signing-key.asc",
+            "public_key_sha256": "0324fbf883687904635ad2f2f94a20e6d21e260a4ef5f43170f35a1312ccf21c",
+            "primary_fingerprint": "32F4760A898CAA62344F81B078DDAF6A80105366",
+            "tag_subkey_fingerprint": "C017D850B03960E8EF1951EC680119C224E973B1",
+            "artifact_subkey_fingerprint": "AC02DB2D7C09871E31DB352042C5770080B00549"
+        }
+    ]
+}

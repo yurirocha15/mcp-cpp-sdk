@@ -42,6 +42,10 @@ def verify(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("tag") != tag or manifest.get("commit") != commit:
         raise ValueError("manifest tag or commit mismatch")
+    if manifest.get("schema_version") != 2 or manifest.get("channel_capabilities") != [
+        "github", "conan2", "apt", "rpm", "aur", "homebrew", "chocolatey"
+    ]:
+        raise ValueError("manifest does not authorize the complete stable channel set")
     signers = manifest.get("signers")
     if not isinstance(signers, dict):
         raise ValueError("manifest signer object is missing")

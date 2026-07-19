@@ -29,18 +29,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Audit formula or permit the initial empty tap
-        run: |
-          formula=Formula/mcp-cpp-sdk.rb
-          if [[ ! -f "${formula}" ]]; then
-            if [[ "${GITHUB_EVENT_NAME}" == push && "${GITHUB_REF_NAME}" == main ]]; then
-              echo "Initial tap bootstrap: formula publication is release-controlled."
-              exit 0
-            fi
-            echo "${formula} is required outside the initial main bootstrap." >&2
-            exit 1
-          fi
-          brew style "${formula}"
-          brew audit --strict "${formula}"
+        run: python3 -I -S publisher/formula_audit.py --formula Formula/mcp-cpp-sdk.rb
 
   trusted-bottle-policy:
     name: trusted-bottle-policy

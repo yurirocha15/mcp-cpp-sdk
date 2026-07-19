@@ -1,0 +1,1 @@
+{"build_tuple":"ubuntu-noble-amd64-gcc13-libstdcxx-abigail2.4","exceptions":[],"initial_baselines":[{"abi_line":"0.2","rationale":"Record canonical ABI evidence for stable 0.2.0; pre-1.0 releases use exact binary identities.","tag":"v0.2.0"}],"schema_version":1}

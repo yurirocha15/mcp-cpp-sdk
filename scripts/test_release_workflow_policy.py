@@ -1,124 +1,170 @@
 #!/usr/bin/env python3
-"""Mutation tests for the offline release-workflow policy checker."""
+"""Mutation tests for the small release-workflow policy boundary."""
 
 from __future__ import annotations
 
-import unittest
 from pathlib import Path
-from typing import Callable
+import tempfile
+import unittest
 
 import check_release_workflow as policy
+from workflow_yaml import WorkflowYamlError, validate_workflow_yaml, validate_workflows, workflow_paths
 
 
-class ReleaseWorkflowPolicyTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.text = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
-        cls.lines = cls.text.splitlines()
-        cls.blocks = policy.job_blocks(cls.lines)
+ROOT = Path(__file__).resolve().parents[1]
+WORKFLOW = ROOT / ".github/workflows/release.yml"
 
-    def assert_policy_error(self, callback: Callable[[], object]) -> None:
+
+class ReleaseWorkflowPolicyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.text = WORKFLOW.read_text(encoding="utf-8")
+        self.lines = self.text.splitlines()
+        self.blocks = policy.job_blocks(self.lines)
+
+    def assert_policy_error(self, callback) -> None:
         with self.assertRaises(policy.PolicyError):
             callback()
 
-    def mutated_blocks(self, old: str, new: str, count: int = 1) -> dict[str, list[str]]:
-        mutated = self.text.replace(old, new, count)
-        self.assertNotEqual(mutated, self.text)
-        return policy.job_blocks(mutated.splitlines())
+    def mutated_blocks(self) -> dict[str, list[str]]:
+        return {name: list(block) for name, block in self.blocks.items()}
 
     def test_current_workflow_passes(self) -> None:
         self.assertEqual(policy.main(), 0)
 
-    def test_rejects_extra_trigger(self) -> None:
-        mutated = self.text.replace("  workflow_dispatch:\n", "  workflow_dispatch:\n  schedule:\n", 1)
-        self.assert_policy_error(lambda: policy.check_trigger(mutated.splitlines()))
+    def test_duplicate_key_validation_covers_every_workflow(self) -> None:
+        validate_workflows(workflow_paths(ROOT))
+        with self.assertRaises(WorkflowYamlError):
+            validate_workflow_yaml("jobs:\n  release:\n    permissions:\n      contents: read\n      contents: write\n")
+        with self.assertRaises(WorkflowYamlError):
+            validate_workflow_yaml("steps:\n  - uses: actions/checkout@abc\n    with:\n      ref: one\n      ref: two\n")
+
+    def test_rejects_extra_trigger_or_dispatch_input(self) -> None:
+        lines = list(self.lines)
+        lines.insert(lines.index("permissions:"), "  schedule:")
+        self.assert_policy_error(lambda: policy.check_trigger_and_dispatch(lines, "\n".join(lines)))
+        lines = [line for line in self.lines if line.strip() != "confirmation:"]
+        self.assert_policy_error(lambda: policy.check_trigger_and_dispatch(lines, "\n".join(lines)))
 
     def test_rejects_floating_or_unknown_action(self) -> None:
-        floating = self.text.replace(policy.ACTION_ALLOWLIST["actions/checkout"], "v4", 1)
-        self.assert_policy_error(lambda: policy.check_action_pins(floating.splitlines()))
-        unknown = self.text.replace("actions/checkout@", "example/checkout@", 1)
-        self.assert_policy_error(lambda: policy.check_action_pins(unknown.splitlines()))
+        for replacement in ("actions/checkout@v7", "unknown/action@" + "a" * 40):
+            lines = [
+                line.replace(
+                    "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+                    replacement,
+                    1,
+                )
+                for line in self.lines
+            ]
+            self.assert_policy_error(lambda lines=lines: policy.check_action_pins(lines))
 
-    def test_rejects_second_issues_writer(self) -> None:
-        blocks = self.mutated_blocks(
-            "    permissions:\n      contents: read\n      id-token: write\n",
-            "    permissions:\n      contents: read\n      id-token: write\n      issues: write\n",
+    def test_rejects_job_inventory_or_permission_changes(self) -> None:
+        blocks = self.mutated_blocks()
+        del blocks["candidate-gate"]
+        self.assert_policy_error(lambda: policy.check_job_security(blocks))
+        blocks = self.mutated_blocks()
+        blocks["github-release"] = [
+            line.replace("contents: write", "contents: read")
+            for line in blocks["github-release"]
+        ]
+        self.assert_policy_error(lambda: policy.check_job_security(blocks))
+
+    def test_rejects_missing_environment_or_unprotected_secret(self) -> None:
+        blocks = self.mutated_blocks()
+        blocks["signing"] = [line for line in blocks["signing"] if "environment:" not in line]
+        self.assert_policy_error(lambda: policy.check_job_security(blocks))
+        blocks = self.mutated_blocks()
+        blocks["policy"].append("        TOKEN: ${{ secrets.RELEASE_GPG_PASSPHRASE }}")
+        self.assert_policy_error(lambda: policy.check_job_security(blocks))
+
+    def test_rejects_unknown_secret_or_persisted_checkout_credentials(self) -> None:
+        blocks = self.mutated_blocks()
+        blocks["signing"].append("        TOKEN: ${{ secrets.UNKNOWN_RELEASE_TOKEN }}")
+        self.assert_policy_error(lambda: policy.check_job_security(blocks))
+        blocks = self.mutated_blocks()
+        blocks["signing"] = [
+            line.replace("persist-credentials: false", "persist-credentials: true")
+            for line in blocks["signing"]
+        ]
+        self.assert_policy_error(lambda: policy.check_job_security(blocks))
+
+    def test_rejects_privileged_checkout_not_pinned_to_dispatch_sha(self) -> None:
+        blocks = self.mutated_blocks()
+        blocks["homebrew"] = [
+            line.replace("ref: ${{ github.sha }}", "ref: main")
+            for line in blocks["homebrew"]
+        ]
+        self.assert_policy_error(lambda: policy.check_job_security(blocks))
+
+    def test_rejects_publisher_checkbox_or_anchor_bypass(self) -> None:
+        blocks = self.mutated_blocks()
+        blocks["homebrew"] = [
+            line.replace("needs.contract.outputs.target_homebrew == 'true'", "true")
+            for line in blocks["homebrew"]
+        ]
+        self.assert_policy_error(lambda: policy.check_job_graph(blocks, self.text))
+        blocks = self.mutated_blocks()
+        blocks["homebrew"] = [line for line in blocks["homebrew"] if "github-anchor" not in line]
+        self.assert_policy_error(lambda: policy.check_job_graph(blocks, self.text))
+
+    def test_rejects_preflight_or_publication_kill_switch_bypass(self) -> None:
+        blocks = self.mutated_blocks()
+        blocks["preflight-aur"] = [
+            line.replace("needs.contract.outputs.target_aur == 'true'", "true")
+            for line in blocks["preflight-aur"]
+        ]
+        self.assert_policy_error(lambda: policy.check_job_graph(blocks, self.text))
+        blocks = self.mutated_blocks()
+        blocks["preparation-gate"] = [
+            line.replace("release.workflow_gate publishing", "release.workflow_gate bypass")
+            for line in blocks["preparation-gate"]
+        ]
+        self.assert_policy_error(lambda: policy.check_job_graph(blocks, self.text))
+
+    def test_rejects_selected_only_build_or_validation(self) -> None:
+        blocks = self.mutated_blocks()
+        blocks["build-native"] = [
+            line.replace(
+                "needs.contract.outputs.release_kind == 'stable'",
+                "needs.contract.outputs.target_apt == 'true'",
+            )
+            for line in blocks["build-native"]
+        ]
+        self.assert_policy_error(lambda: policy.check_job_graph(blocks, self.text))
+        blocks = self.mutated_blocks()
+        blocks["validate-conan-linux"] = [
+            line.replace("candidate-gate", "preparation-gate")
+            for line in blocks["validate-conan-linux"]
+        ]
+        self.assert_policy_error(lambda: policy.check_job_graph(blocks, self.text))
+
+    def test_rejects_package_or_github_anchor_gate_bypass(self) -> None:
+        blocks = self.mutated_blocks()
+        blocks["package-validation-gate"] = [
+            line.replace("--aur-result", "--skip-result")
+            for line in blocks["package-validation-gate"]
+        ]
+        self.assert_policy_error(lambda: policy.check_job_graph(blocks, self.text))
+        blocks = self.mutated_blocks()
+        blocks["github-release"] = [
+            line for line in blocks["github-release"] if "package-validation-gate" not in line
+        ]
+        self.assert_policy_error(lambda: policy.check_job_graph(blocks, self.text))
+
+    def test_rejects_return_of_mutable_issue_ledger(self) -> None:
+        self.assert_policy_error(
+            lambda: policy.check_job_graph(self.blocks, self.text + "\nledger-coordinator:")
         )
-        self.assert_policy_error(lambda: policy.check_permissions(blocks))
 
-    def test_rejects_privileged_checkout_or_source_execution(self) -> None:
-        for fragment in (
-            "      - uses: actions/checkout@" + policy.ACTION_ALLOWLIST["actions/checkout"],
-            "        run: python3 scripts/build.py",
-            "        run: cmake --build build",
-        ):
-            with self.subTest(fragment=fragment):
-                blocks = {name: list(block) for name, block in self.blocks.items()}
-                blocks["aur"].append(fragment)
-                self.assert_policy_error(lambda blocks=blocks: policy.check_privileged_jobs(blocks))
-
-    def test_rejects_secret_outside_environment_or_unknown_secret(self) -> None:
-        blocks = {name: list(block) for name, block in self.blocks.items()}
-        blocks["construct-core"].append("          BAD: ${{ secrets.BAD }}")
-        self.assert_policy_error(lambda: policy.check_secret_scope(blocks))
-        blocks = {name: list(block) for name, block in self.blocks.items()}
-        blocks["signing"].append("          BAD: ${{ secrets.BAD }}")
-        self.assert_policy_error(lambda: policy.check_secret_scope(blocks))
-
-    def test_rejects_disabled_or_ambiguous_kill_switch(self) -> None:
-        blocks = self.mutated_blocks(
-            'if [[ "${RELEASE_PUBLISHING_ENABLED}" != true ]]',
-            'if [[ -z "${RELEASE_PUBLISHING_ENABLED}" ]]',
+    def test_rejects_inline_python_or_missing_policy_hook(self) -> None:
+        self.assert_policy_error(
+            lambda: policy.check_delegation_and_ci(self.blocks, self.text + "\npython3 - <<'PY'")
         )
-        mutated = self.text.replace(
-            'if [[ "${RELEASE_PUBLISHING_ENABLED}" != true ]]',
-            'if [[ -z "${RELEASE_PUBLISHING_ENABLED}" ]]',
-            1,
-        )
-        self.assert_policy_error(lambda: policy.check_publication_invariants(blocks, mutated))
-
-    def test_rejects_publisher_without_anchor_handoff(self) -> None:
-        blocks = {name: list(block) for name, block in self.blocks.items()}
-        blocks["aur"] = [line.replace("Verify fixed anchor handoff", "Trust downloaded files") for line in blocks["aur"]]
-        self.assert_policy_error(lambda: policy.check_publication_invariants(blocks, self.text))
-
-    def test_rejects_aur_without_passphrase_protection(self) -> None:
-        blocks = self.mutated_blocks("SSH_ASKPASS_REQUIRE=force", "SSH_ASKPASS_REQUIRE=never")
-        self.assert_policy_error(lambda: policy.check_publication_invariants(blocks, self.text))
-
-    def test_rejects_aur_without_batch_mode(self) -> None:
-        blocks = self.mutated_blocks("BatchMode=yes", "BatchMode=no")
-        self.assert_policy_error(lambda: policy.check_publication_invariants(blocks, self.text))
-
-    def test_rejects_unpinned_cloudsmith_cli(self) -> None:
-        mutated = self.text.replace('cli-version: "1.19.0"', 'cli-version: "latest"', 1)
-        blocks = policy.job_blocks(mutated.splitlines())
-        self.assert_policy_error(lambda: policy.check_publication_invariants(blocks, mutated))
-
-    def test_rejects_immutability_gate_without_admin_read(self) -> None:
-        mutated = self.text.replace("permission-administration: read", "permission-contents: read", 1)
-        blocks = policy.job_blocks(mutated.splitlines())
-        self.assert_policy_error(lambda: policy.check_publication_invariants(blocks, mutated))
-
-    def test_rejects_live_result_claim(self) -> None:
-        blocks = {name: list(block) for name, block in self.blocks.items()}
-        blocks["aur"].append("        run: echo 'result=LIVE' >> \"${GITHUB_OUTPUT}\"")
-        self.assert_policy_error(lambda: policy.check_fixed_outputs(blocks))
-
-    def test_rejects_persisted_checkout_credentials(self) -> None:
-        mutated = self.text.replace("persist-credentials: false", "persist-credentials: true", 1)
-        blocks = policy.job_blocks(mutated.splitlines())
-        self.assert_policy_error(lambda: policy.check_checkout_safety(mutated.splitlines(), blocks))
-
-    def test_rejects_hardcoded_numeric_repository_id(self) -> None:
-        contract = Path(policy.CONTRACT_PATH).read_text(encoding="utf-8")
-        self.assertIsNone(
-            __import__("re").search(r'EXPECTED_(?:REPOSITORY|OWNER)_ID\s*=\s*"[0-9]+"', contract)
-        )
-
-    def test_rejects_invalid_embedded_python(self) -> None:
-        mutated = self.text.replace("          from datetime import date", "          from datetime import", 1)
-        self.assert_policy_error(lambda: policy.check_embedded_python(mutated.splitlines()))
+        blocks = self.mutated_blocks()
+        blocks["policy"] = [
+            line.replace("scripts/check_release_workflow.py", "true")
+            for line in blocks["policy"]
+        ]
+        self.assert_policy_error(lambda: policy.check_delegation_and_ci(blocks, self.text))
 
 
 if __name__ == "__main__":

@@ -13,6 +13,20 @@ Each `repository-settings.json` is a public, value-free policy contract; manual
 provisioning values and evidence are intentionally maintained outside tracked
 source. Never copy `bootstrap/tests/` into an external repository.
 
+Each publisher snapshot is activated by an asset-free immutable GitHub Release
+on its lightweight `release-control-v1` tag. The source preflight resolves that
+tag, proves release immutability, verifies every reviewed control byte, and
+dispatches the exact tag. A publisher's credential-free first job independently
+requires the same tag, commit SHA, and tagged workflow identity.
+
+Activation order is fixed: merge the reviewed snapshot to protected `main`,
+record that full commit SHA, enable repository release immutability, create an
+asset-free non-prerelease Release whose lightweight `release-control-v1` tag
+targets that exact SHA, verify the public Release reports `immutable: true` and
+the tag ref still resolves directly to the SHA, then restrict publisher
+environments to that exact tag. Never move or reuse the tag for new controls;
+publish a newly reviewed `release-control-vN` snapshot instead.
+
 Run all structural tests from the source repository root:
 
 ```sh

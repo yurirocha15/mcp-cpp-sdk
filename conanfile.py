@@ -63,7 +63,7 @@ class McpCppSdkConan(ConanFile):
         )
         self.requires("nlohmann_json/3.12.0", transitive_headers=True)
         self.requires(
-            "openssl/3.6.1", transitive_headers=True, transitive_libs=True
+            "openssl/3.6.3", transitive_headers=True, transitive_libs=True
         )
 
     def build_requirements(self):

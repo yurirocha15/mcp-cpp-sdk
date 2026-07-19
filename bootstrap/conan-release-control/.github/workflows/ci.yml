@@ -49,7 +49,4 @@ jobs:
         with:
           persist-credentials: false
       - name: Reject private keys and token-shaped assignments
-        shell: bash
-        run: |
-          set -euo pipefail
-          ! grep -RIE --exclude-dir=.git -- 'BEGIN (RSA |EC |OPENSSH |PGP )?PRIVATE KEY|gh[pousr]_[A-Za-z0-9_]{20,}|CONAN_CENTER_PR_BOT_PA[T]=' .
+        run: python3 -I -S publisher/scan_repository_secrets.py .

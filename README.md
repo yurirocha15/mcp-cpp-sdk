@@ -18,7 +18,12 @@ A modern C++20 implementation of the Model Context Protocol (MCP), enabling seam
 
 ### 1. Installation
 
-Package-manager routes are documented in [the installation guide](docs/installation.rst). A route is supported only after the matching GitHub Release record marks it `LIVE`; an upload or open registry PR alone is not availability proof.
+Package-manager routes are documented in [the installation guide](docs/installation.rst). The GitHub, Cloudsmith (APT/RPM), and AUR jobs read the exact published object back before reporting success. ConanCenter, Homebrew, and Chocolatey remain pending while their provider review or moderation is outstanding. Install only after the requested version appears at the destination; an upload or open registry PR is not availability proof.
+
+Versions `0.x.y` are stable releases unless suffixed with `-rc.N`, but each
+pre-1.0 release has a distinct binary identity. Rebuild or relink consumers
+when changing 0.x versions; see the installation guide for exact CMake and
+runtime-package names.
 
 The easiest way to use the SDK is via CMake's `FetchContent`:
 

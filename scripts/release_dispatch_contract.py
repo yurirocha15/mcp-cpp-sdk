@@ -3,14 +3,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 
-ALLOWED_TARGETS = (
-    "github",
+EXTERNAL_CHANNELS = (
     "conan2",
     "apt",
     "rpm",
@@ -18,6 +18,12 @@ ALLOWED_TARGETS = (
     "homebrew",
     "chocolatey",
 )
+OPERATIONS = {
+    "validate-selected": ("validate", False),
+    "validate-all": ("validate", True),
+    "publish-selected": ("publish", False),
+    "publish-all": ("publish", True),
+}
 NUMERIC_IDENTIFIER = r"(?:0|[1-9][0-9]*)"
 STABLE_TAG = re.compile(
     rf"^v({NUMERIC_IDENTIFIER})\.({NUMERIC_IDENTIFIER})\.({NUMERIC_IDENTIFIER})$"
@@ -34,25 +40,33 @@ class ContractError(ValueError):
 
 @dataclass(frozen=True)
 class DispatchContract:
+    operation: str
     mode: str
     version: str
     release_kind: str
-    targets: tuple[str, ...]
-    ledger_issue: str
-    retry: bool
+    channels: tuple[str, ...]
+    selection_label: str
 
     def workflow_outputs(self) -> dict[str, str]:
+        cloudsmith_formats = [
+            {"format": channel}
+            for channel in ("apt", "rpm")
+            if channel in self.channels
+        ]
         outputs = {
+            "operation": self.operation,
             "mode": self.mode,
             "version": self.version,
             "release_kind": self.release_kind,
-            "normalized_targets": ",".join(self.targets),
-            "ledger_issue": self.ledger_issue,
-            "retry": str(self.retry).lower(),
+            "normalized_channels": ",".join(self.channels),
+            "selection_label": self.selection_label,
+            "cloudsmith_matrix": json.dumps(
+                cloudsmith_formats, separators=(",", ":")
+            ),
         }
         outputs.update(
-            (f"target_{target}", "true" if target in self.targets else "false")
-            for target in ALLOWED_TARGETS
+            (f"target_{channel}", "true" if channel in self.channels else "false")
+            for channel in EXTERNAL_CHANNELS
         )
         return outputs
 
@@ -63,35 +77,56 @@ def parse_release_identity(tag: str) -> tuple[str, str]:
     )
     if len(tag) > 64 or has_invalid_character:
         raise ContractError("tag contains invalid characters")
-    if STABLE_TAG.fullmatch(tag):
+    stable_match = STABLE_TAG.fullmatch(tag)
+    if stable_match:
+        if int(stable_match.group(1)) >= 1:
+            raise ContractError(
+                "1.x releases require a reviewed multi-platform ABI policy before dispatch"
+            )
         return tag[1:], "stable"
-    if RC_TAG.fullmatch(tag):
+    rc_match = RC_TAG.fullmatch(tag)
+    if rc_match:
+        if int(rc_match.group(1)) >= 1:
+            raise ContractError(
+                "1.x release candidates require a reviewed multi-platform ABI policy before dispatch"
+            )
         return tag[1:], "rc"
     raise ContractError("tag is not canonical stable or RC SemVer")
 
 
-def parse_targets(targets_input: str) -> tuple[str, ...]:
-    if targets_input == "all":
-        return ALLOWED_TARGETS
-    targets = tuple(targets_input.split(","))
-    if not targets or any(not target for target in targets):
-        raise ContractError("targets must not contain empty entries")
-    if len(targets) != len(set(targets)):
-        raise ContractError("targets must not contain duplicates")
-    if set(targets) - set(ALLOWED_TARGETS):
-        raise ContractError("targets contain an unknown destination")
-    canonical_targets = tuple(target for target in ALLOWED_TARGETS if target in targets)
-    if targets != canonical_targets:
-        raise ContractError("targets must use canonical order without whitespace")
-    return targets
+def parse_boolean(name: str, value: str) -> bool:
+    if value not in {"true", "false"}:
+        raise ContractError(f"{name} must be exactly true or false")
+    return value == "true"
+
+
+def parse_channel_selection(
+    *, publish_all: bool, channel_inputs: dict[str, str]
+) -> tuple[tuple[str, ...], str]:
+    if set(channel_inputs) != set(EXTERNAL_CHANNELS):
+        raise ContractError("channel checkbox inventory is incomplete")
+    selected = tuple(
+        channel
+        for channel in EXTERNAL_CHANNELS
+        if parse_boolean(channel, channel_inputs[channel])
+    )
+    if publish_all and selected:
+        raise ContractError("an all-channel operation cannot be combined with individual channels")
+    if publish_all:
+        return EXTERNAL_CHANNELS, "all"
+    return selected, ",".join(("github", *selected))
 
 
 def validate_dispatch(
     *,
     tag: str,
-    mode: str,
-    targets_input: str,
-    ledger_issue: str,
+    operation: str,
+    conan2: str,
+    apt: str,
+    rpm: str,
+    aur: str,
+    homebrew: str,
+    chocolatey: str,
     confirmation: str,
     event_name: str,
     workflow_ref: str,
@@ -120,28 +155,48 @@ def validate_dispatch(
     for actual, expected, label in trusted_identity:
         if actual != expected:
             raise ContractError(f"unexpected {label}")
-    if mode not in {"validate", "publish"}:
-        raise ContractError("mode must be validate or publish")
+    try:
+        mode, publish_all = OPERATIONS[operation]
+    except KeyError as error:
+        raise ContractError("operation is not an allowed release action") from error
 
     version, release_kind = parse_release_identity(tag)
-    targets = parse_targets(targets_input)
-    if release_kind == "rc" and targets != ("github",):
-        raise ContractError("RC releases are GitHub-only")
-    if not re.fullmatch(r"[1-9][0-9]*", ledger_issue):
-        raise ContractError("ledger_issue must be a positive canonical decimal")
-    expected_confirmation = f"{mode}:{tag}:{targets_input}:{ledger_issue}"
+    channels, selection_label = parse_channel_selection(
+        publish_all=publish_all,
+        channel_inputs={
+            "conan2": conan2,
+            "apt": apt,
+            "rpm": rpm,
+            "aur": aur,
+            "homebrew": homebrew,
+            "chocolatey": chocolatey,
+        },
+    )
+    if release_kind == "rc" and channels:
+        raise ContractError("RC releases cannot select third-party channels")
+    expected_confirmation = f"{operation}:{tag}:{selection_label}"
     if confirmation != expected_confirmation:
-        raise ContractError("confirmation must exactly bind mode:tag:targets:ledger_issue")
-    retry = mode == "publish" and release_kind == "stable" and targets_input != "all"
-    return DispatchContract(mode, version, release_kind, targets, ledger_issue, retry)
+        raise ContractError("confirmation must exactly bind operation:tag:channels")
+    return DispatchContract(
+        operation,
+        mode,
+        version,
+        release_kind,
+        channels,
+        selection_label,
+    )
 
 
 def main() -> int:
     contract = validate_dispatch(
         tag=os.environ["DISPATCH_TAG"],
-        mode=os.environ["DISPATCH_MODE"],
-        targets_input=os.environ["DISPATCH_TARGETS"],
-        ledger_issue=os.environ["DISPATCH_LEDGER_ISSUE"],
+        operation=os.environ["DISPATCH_OPERATION"],
+        conan2=os.environ["DISPATCH_CONAN2"],
+        apt=os.environ["DISPATCH_APT"],
+        rpm=os.environ["DISPATCH_RPM"],
+        aur=os.environ["DISPATCH_AUR"],
+        homebrew=os.environ["DISPATCH_HOMEBREW"],
+        chocolatey=os.environ["DISPATCH_CHOCOLATEY"],
         confirmation=os.environ["DISPATCH_CONFIRMATION"],
         event_name=os.environ["EVENT_NAME"],
         workflow_ref=os.environ["WORKFLOW_REF"],

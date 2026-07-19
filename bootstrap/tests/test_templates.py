@@ -61,6 +61,47 @@ def embedded_python(text: str) -> list[str]:
 
 
 class ManifestTests(unittest.TestCase):
+    def test_publisher_controls_are_immutable_release_tags(self) -> None:
+        for root in (BROKER, TAP, CHOCO):
+            manifest = json.loads((root / "repository-settings.json").read_text())
+            self.assertIs(manifest["repository"]["immutable_releases"], True)
+            self.assertEqual(
+                manifest["control_tag_ruleset"],
+                {
+                    "tag": "release-control-v1",
+                    "enforcement": "active",
+                    "update_blocked": True,
+                    "deletion_blocked": True,
+                    "bypass_actors": [],
+                },
+            )
+            self.assertEqual(
+                manifest["control_release"],
+                {
+                    "tag": "release-control-v1",
+                    "draft": False,
+                    "prerelease": False,
+                    "immutable": True,
+                    "asset_inventory": [],
+                },
+            )
+            environments = manifest.get("environments", [manifest.get("environment")])
+            for environment in environments:
+                self.assertEqual(environment["deployment_tag"], "release-control-v1")
+                self.assertNotIn("deployment_branch", environment)
+
+    def test_publishers_require_complete_stable_channel_capabilities(self) -> None:
+        for verifier in (
+            BROKER / "publisher/verify_release_bundle.py",
+            TAP / "publisher/verify_source_release.py",
+            CHOCO / "publisher/verify_release.py",
+        ):
+            text = verifier.read_text(encoding="utf-8")
+            self.assertIn('manifest.get("schema_version") != 2', text)
+            self.assertIn('manifest.get("channel_capabilities")', text)
+            for channel in ("github", "conan2", "apt", "rpm", "aur", "homebrew", "chocolatey"):
+                self.assertIn(f'"{channel}"', text)
+
     def test_manifests_are_value_free_public_contracts(self) -> None:
         for root in (BROKER, TAP, CHOCO):
             manifest = json.loads((root / "repository-settings.json").read_text(encoding="utf-8"))
@@ -91,7 +132,7 @@ class ActionPinTests(unittest.TestCase):
         "actions/create-github-app-token": "bcd2ba49218906704ab6c1aa796996da409d3eb1",
         "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
         "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-        "actions/attest": "a1948c3f048ba23858d222213b7c278aabede763",
+        "actions/attest": "f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6",
     }
 
     def test_every_action_reference_is_a_full_allowed_sha(self) -> None:
@@ -111,7 +152,8 @@ class ActionPinTests(unittest.TestCase):
     def test_node24_action_pins_and_client_id_contract_are_fixed(self) -> None:
         broker = json.loads((BROKER / "repository-settings.json").read_text())
         tap = json.loads((TAP / "repository-settings.json").read_text())
-        self.assertEqual(broker["actions"]["allowed_actions"]["actions/checkout"], self.NODE24_PINS["actions/checkout"])
+        for action in ("actions/checkout", "actions/upload-artifact", "actions/download-artifact"):
+            self.assertEqual(broker["actions"]["allowed_actions"][action], self.NODE24_PINS[action])
         for action, sha in self.NODE24_PINS.items():
             self.assertEqual(tap["actions"]["allowed_actions"][action], sha)
         choco = json.loads((CHOCO / "repository-settings.json").read_text())
@@ -121,20 +163,65 @@ class ActionPinTests(unittest.TestCase):
         self.assertIn("client-id: ${{ vars.HOMEBREW_APP_CLIENT_ID }}", workflow)
         self.assertNotIn("app-id:", workflow)
 
-    def test_embedded_publisher_python_compiles(self) -> None:
+    def test_workflows_contain_no_embedded_python(self) -> None:
         count = 0
         for root in (BROKER, TAP, CHOCO):
             for workflow in (root / ".github/workflows").glob("*.yml"):
                 for source in embedded_python(workflow.read_text(encoding="utf-8")):
                     ast.parse(source, filename=str(workflow))
                     count += 1
-        self.assertGreater(count, 0)
+        self.assertEqual(count, 0)
+
+    def test_workflows_delegate_parsing_and_control_flow_to_tested_modules(self) -> None:
+        forbidden = (
+            "python3 -I -S <<",
+            "\n          if [[",
+            "\n          for ",
+            "\n          while ",
+            "\n          case ",
+        )
+        for root in (BROKER, TAP, CHOCO):
+            for workflow in (root / ".github/workflows").glob("*.yml"):
+                text = workflow.read_text(encoding="utf-8")
+                for fragment in forbidden:
+                    with self.subTest(workflow=workflow, fragment=fragment):
+                        self.assertNotIn(fragment, text)
+                self.assertNotRegex(
+                    text,
+                    r"(?m)^\s*(?:jq|awk|grep|find|sed)(?:\s|$)",
+                    str(workflow),
+                )
+
+    def test_control_context_checks_are_unconditional_and_credential_free(self) -> None:
+        cases = (
+            (BROKER, "conan-center-pr.yml", "yurirocha15/mcp-cpp-sdk-release-control"),
+            (TAP, "publish-bottles.yml", "yurirocha15/homebrew-mcp-cpp-sdk"),
+            (CHOCO, "publish.yml", "yurirocha15/mcp-cpp-sdk-chocolatey-publisher"),
+        )
+        for root, workflow_name, repository in cases:
+            workflow = (root / ".github/workflows" / workflow_name).read_text()
+            control = workflow.split("\n  control:\n", 1)[1].split("\n  verify:\n", 1)[0]
+            self.assertNotIn("\n    if:", control)
+            self.assertIn("permissions: {}", control)
+            self.assertNotIn("secrets.", control)
+            self.assertNotIn("actions/checkout", control)
+            self.assertIn('test "$GITHUB_REF" = refs/tags/release-control-v1', control)
+            self.assertIn('test "$GITHUB_SHA" = "$EXPECTED_CONTROL_SHA"', control)
+            self.assertIn(
+                f"{repository}/.github/workflows/{workflow_name}@refs/tags/release-control-v1",
+                control,
+            )
+            verify = workflow.split("\n  verify:\n", 1)[1]
+            self.assertTrue(verify.startswith("    name:"))
+            self.assertIn("    needs: control\n", verify)
 
 
 class BrokerTests(unittest.TestCase):
     EXPECTED_INPUTS = (
         "source_tag",
         "source_commit_sha",
+        "source_workflow_head_sha",
+        "provider_control_sha",
         "github_release_id",
         "source_workflow_run_id",
         "release_manifest_sha256",
@@ -149,43 +236,75 @@ class BrokerTests(unittest.TestCase):
 
     def test_dispatch_contract_is_exact(self) -> None:
         self.assertEqual(workflow_inputs(self.workflow), self.EXPECTED_INPUTS)
-        self.assertIn("github.ref == 'refs/heads/main'", self.workflow)
-        self.assertIn("conan-center-pr.yml@refs/heads/main", self.workflow)
+        self.assertIn('test "$GITHUB_REF" = refs/tags/release-control-v1', self.workflow)
+        self.assertIn('test "$GITHUB_SHA" = "$EXPECTED_CONTROL_SHA"', self.workflow)
+        self.assertIn("conan-center-pr.yml@refs/tags/release-control-v1", self.workflow)
 
-    def test_pat_job_has_one_last_step_and_no_checkout(self) -> None:
+    def test_pat_job_has_one_last_secret_step_and_no_checkout(self) -> None:
         publish = self.workflow.split("\n  publish:\n", 1)[1]
         self.assertNotIn("actions/checkout", publish)
         self.assertEqual(publish.count("CONAN_CENTER_PR_BOT_PAT: ${{ secrets.CONAN_CENTER_PR_BOT_PAT }}"), 1)
-        self.assertEqual(publish.count("      - name:"), 1)
-        self.assertTrue(publish.rstrip().endswith("PY"))
+        self.assertEqual(publish.count("      - name:"), 3)
+        self.assertTrue(
+            publish.rstrip().endswith("run: python3 -I -S publisher-client/create_pull.py")
+        )
+        self.assertLess(
+            publish.index("client_handoff.py --directory publisher-client"),
+            publish.index("secrets.CONAN_CENTER_PR_BOT_PAT"),
+        )
 
-    def test_inline_pat_client_has_fixed_stdlib_routes(self) -> None:
-        source = self.workflow.split("# PAT_CLIENT_BEGIN\n", 1)[1].split("# PAT_CLIENT_END", 1)[0]
-        source = "\n".join(line[10:] if line.startswith("          ") else line for line in source.splitlines())
+    def test_extracted_pat_client_has_fixed_stdlib_routes(self) -> None:
+        source = (BROKER / "publisher/create_pull.py").read_text()
         tree = ast.parse(source)
-        imported = {
-            alias.name.split(".")[0]
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.Import, ast.ImportFrom))
-            for alias in node.names
-        }
-        self.assertEqual(imported, {"http", "json", "os", "re", "sys", "urllib"})
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        self.assertEqual(
+            imported,
+            {
+                "__future__",
+                "collections",
+                "dataclasses",
+                "http",
+                "importlib",
+                "json",
+                "os",
+                "pathlib",
+                "re",
+                "sys",
+                "types",
+                "urllib",
+                "uuid",
+            },
+        )
         for literal in (
             'API_HOST = "api.github.com"',
             '"/user"',
-            '"/repos/yurirocha15/conan-center-index"',
-            '"/repos/conan-io/conan-center-index"',
-            '"/repos/conan-io/conan-center-index/pulls"',
+            'package_request.FORK',
+            'package_request.UPSTREAM',
+            '"create-pull"',
         ):
             self.assertIn(literal, source)
         self.assertNotIn("requests", source)
         self.assertNotIn("subprocess", source)
+
+    def test_source_poll_issue_binding_and_handoff_are_bounded(self) -> None:
+        self.assertIn("timeout-minutes: 75", self.workflow)
+        self.assertIn("--timeout-seconds 3600", self.workflow)
+        self.assertIn("retention-days: 90", self.workflow)
+        self.assertIn("PACKAGE_REQUEST_ISSUE_BODY_SHA256", self.workflow)
+        self.assertNotIn("python3 -I -S <<", self.workflow)
 
     def test_dispatch_validator_rejects_extra_and_rc(self) -> None:
         module = load_module("broker_validate", BROKER / "publisher/validate_dispatch.py")
         request = {
             "source_tag": "v0.2.0",
             "source_commit_sha": "0" * 40,
+            "source_workflow_head_sha": "4" * 40,
+            "provider_control_sha": "5" * 40,
             "github_release_id": "1",
             "source_workflow_run_id": "2",
             "release_manifest_sha256": "1" * 64,
@@ -204,6 +323,8 @@ class HomebrewTests(unittest.TestCase):
     EXPECTED_INPUTS = (
         "source_tag",
         "source_commit_sha",
+        "source_workflow_head_sha",
+        "provider_control_sha",
         "github_release_id",
         "source_workflow_run_id",
         "release_manifest_sha256",
@@ -219,8 +340,9 @@ class HomebrewTests(unittest.TestCase):
     def test_dispatch_contract_is_exact(self) -> None:
         self.assertEqual(workflow_inputs(self.workflow), self.EXPECTED_INPUTS)
         self.assertNotIn("      run_id:\n", self.workflow.split("    inputs:\n", 1)[1].split("\npermissions:", 1)[0])
-        self.assertIn("github.ref == 'refs/heads/main'", self.workflow)
-        self.assertIn("publish-bottles.yml@refs/heads/main", self.workflow)
+        self.assertIn('test "$GITHUB_REF" = refs/tags/release-control-v1', self.workflow)
+        self.assertIn('test "$GITHUB_SHA" = "$EXPECTED_CONTROL_SHA"', self.workflow)
+        self.assertIn("publish-bottles.yml@refs/tags/release-control-v1", self.workflow)
 
     def test_secret_jobs_do_not_checkout_or_build(self) -> None:
         publish = self.workflow.split("\n  publish:\n", 1)[1].split("\n  finalize:\n", 1)[0]
@@ -236,14 +358,18 @@ class HomebrewTests(unittest.TestCase):
         finalizer = self.workflow.split("\n  finalize:\n", 1)[1]
         self.assertIn("needs: [verify, publish]", finalizer)
         self.assertIn("environment: homebrew-finalize", finalizer)
-        self.assertIn('test "$(jq -r \'.run_id\' "$ledger")" = "$RUN_ID"', finalizer)
-        self.assertIn('test "$(jq -r \'.bottled_head_sha\' "$ledger")" = "$EXPECTED_HEAD"', finalizer)
-        self.assertIn('-f merge_method=squash -f sha="$EXPECTED_HEAD"', finalizer)
+        self.assertIn("publication.py verify-finalization", finalizer)
+        self.assertIn('--run-id "$RUN_ID"', finalizer)
+        self.assertIn('--publish-attempt "$EXPECTED_PUBLISH_ATTEMPT"', finalizer)
+        self.assertIn('--expected-head "$EXPECTED_HEAD"', finalizer)
+        self.assertNotIn("jq -r", finalizer)
+        self.assertIn('formula_branch.py merge --pr "$PR"', finalizer)
+        self.assertIn('--expected-head "$EXPECTED_HEAD"', finalizer)
 
     def test_handoff_rejects_wrong_run_and_digest(self) -> None:
         module = load_module("handoff_verify", TAP / "publisher/verify_handoffs.py")
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "bottle-tag"
+            root = Path(directory) / "bottle-tag-10-1"
             root.mkdir()
             bottle = root / "bottle.tar.gz"
             metadata = root / "bottle.json"
@@ -261,8 +387,11 @@ class HomebrewTests(unittest.TestCase):
                 )
             )
 
+            formula = root / "mcp-cpp-sdk.rb"
+            formula.write_text("formula\n")
             value = {
-                "schema_version": 1,
+                "schema_version": 2,
+                "artifact_name": "bottle-tag-10-1",
                 "run_id": "10",
                 "run_attempt": "1",
                 "bottle_tag": "tag",
@@ -270,6 +399,8 @@ class HomebrewTests(unittest.TestCase):
                 "bottle_sha256": bottle_digest,
                 "json_file": metadata.name,
                 "json_sha256": hashlib.sha256(metadata.read_bytes()).hexdigest(),
+                "formula_file": formula.name,
+                "formula_sha256": hashlib.sha256(formula.read_bytes()).hexdigest(),
             }
             (root / "handoff.json").write_text(json.dumps(value))
             self.assertEqual(len(module.verify(Path(directory), "10", "1")["bottles"]), 1)

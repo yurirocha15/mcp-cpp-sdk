@@ -17,7 +17,7 @@ from .artifacts import (
     canonical_json_bytes,
     write_atomic,
 )
-from .model import DispatchRequest, ReleaseLedger, SemVer, ValidationError
+from .model import DispatchRequest, SemVer, ValidationError
 from .templates import render_file
 
 
@@ -39,9 +39,6 @@ def _parser() -> argparse.ArgumentParser:
 
     dispatch = subcommands.add_parser("validate-dispatch")
     dispatch.add_argument("request", type=Path)
-
-    ledger = subcommands.add_parser("validate-ledger")
-    ledger.add_argument("ledger", type=Path)
 
     archives = subcommands.add_parser("source-archives")
     archives.add_argument("--root", type=Path, required=True)
@@ -82,9 +79,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "validate-dispatch":
             request = DispatchRequest.from_mapping(_json_object(args.request))
             print(json.dumps(request.__dict__, sort_keys=True))
-        elif args.command == "validate-ledger":
-            ledger = ReleaseLedger.from_mapping(_json_object(args.ledger))
-            print(canonical_json_bytes(ledger.to_mapping()).decode(), end="")
         elif args.command == "source-archives":
             paths = build_source_archives(
                 root=args.root,

@@ -14,6 +14,8 @@ from uuid import UUID
 FIELDS = (
     "source_tag",
     "source_commit_sha",
+    "source_workflow_head_sha",
+    "provider_control_sha",
     "github_release_id",
     "source_workflow_run_id",
     "release_manifest_sha256",
@@ -44,7 +46,12 @@ def validate(value: object) -> dict[str, str]:
     expected_branch = f"release/mcp-cpp-sdk-{result['source_tag']}"
     if result["formula_branch"] != expected_branch:
         raise ValueError("formula_branch does not match source_tag")
-    for field in ("source_commit_sha", "formula_head_sha"):
+    for field in (
+        "source_commit_sha",
+        "source_workflow_head_sha",
+        "provider_control_sha",
+        "formula_head_sha",
+    ):
         if SHA.fullmatch(result[field]) is None:
             raise ValueError(f"{field} is not a lowercase full commit SHA")
     if DIGEST.fullmatch(result["release_manifest_sha256"]) is None:
