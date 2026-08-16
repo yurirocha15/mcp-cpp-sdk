@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -298,6 +299,8 @@ struct ClientCapabilities {
     std::optional<RootsCapability> roots;        ///< Support for roots/list requests.
     std::optional<SamplingCapability> sampling;  ///< Support for sampling/createMessage requests.
     std::optional<TasksCapability> tasks;        ///< Support for task lifecycle endpoints.
+    std::optional<std::map<std::string, nlohmann::json>>
+        extensions;  ///< Extension capability negotiation, keyed by extension name.
 };
 
 inline void to_json(nlohmann::json& j, const ClientCapabilities::ElicitationCapability& cap) {
@@ -445,6 +448,9 @@ inline void to_json(nlohmann::json& j, const ClientCapabilities& cap) {
     if (cap.tasks) {
         j["tasks"] = *cap.tasks;
     }
+    if (cap.extensions) {
+        j["extensions"] = *cap.extensions;
+    }
 }
 
 inline void from_json(const nlohmann::json& j, ClientCapabilities& cap) {
@@ -462,6 +468,9 @@ inline void from_json(const nlohmann::json& j, ClientCapabilities& cap) {
     }
     if (j.contains("tasks")) {
         cap.tasks = j.at("tasks").get<ClientCapabilities::TasksCapability>();
+    }
+    if (j.contains("extensions")) {
+        cap.extensions = j.at("extensions").get<std::map<std::string, nlohmann::json>>();
     }
 }
 
@@ -528,6 +537,8 @@ struct ServerCapabilities {
     std::optional<ResourcesCapability> resources;  ///< Support for resource endpoints.
     std::optional<TasksCapability> tasks;          ///< Support for task lifecycle endpoints.
     std::optional<ToolsCapability> tools;          ///< Support for tool endpoints.
+    std::optional<std::map<std::string, nlohmann::json>>
+        extensions;  ///< Extension capability negotiation, keyed by extension name.
 };
 
 inline void to_json(nlohmann::json& j, const ServerCapabilities::PromptsCapability& cap) {
@@ -652,6 +663,9 @@ inline void to_json(nlohmann::json& j, const ServerCapabilities& cap) {
     if (cap.tools) {
         j["tools"] = *cap.tools;
     }
+    if (cap.extensions) {
+        j["extensions"] = *cap.extensions;
+    }
 }
 
 inline void from_json(const nlohmann::json& j, ServerCapabilities& cap) {
@@ -675,6 +689,9 @@ inline void from_json(const nlohmann::json& j, ServerCapabilities& cap) {
     }
     if (j.contains("tools")) {
         cap.tools = j.at("tools").get<ServerCapabilities::ToolsCapability>();
+    }
+    if (j.contains("extensions")) {
+        cap.extensions = j.at("extensions").get<std::map<std::string, nlohmann::json>>();
     }
 }
 
