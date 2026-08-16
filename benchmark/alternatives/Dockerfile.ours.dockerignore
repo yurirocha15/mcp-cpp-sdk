@@ -1,0 +1,14 @@
+*
+!CMakeLists.txt
+!VERSION
+!LICENSE
+!cmake/
+!cmake/**
+!include/
+!include/**
+!src/
+!src/**
+!benchmark/
+benchmark/*
+!benchmark/alternatives/
+!benchmark/alternatives/**
