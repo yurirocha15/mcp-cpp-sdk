@@ -212,15 +212,14 @@ MCP_API CallToolResult make_tool_error_result(std::string message);
 /**
  * @brief Create a successful tool result containing structured output.
  *
- * The structured value must be a JSON object, as required by MCP. A JSON
- * serialization is also emitted as text for clients that do not consume
- * structuredContent.
+ * structuredContent accepts any JSON value (object, array, string, number,
+ * boolean, or null), per MCP SEP-2106. A JSON serialization is also emitted
+ * as text for clients that do not consume structuredContent.
  *
  * @param structured_content Structured tool output.
  * @param text Optional human-readable representation. When omitted, the
  *             structured value is serialized as JSON.
  * @return A protocol-valid CallToolResult.
- * @throws std::invalid_argument If structured_content is not a JSON object.
  */
 MCP_API CallToolResult make_tool_structured_result(nlohmann::json structured_content,
                                                    std::optional<std::string> text = std::nullopt);
