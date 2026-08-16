@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -490,9 +491,15 @@ TEST_F(MemoryTransportTest, ConcurrentCloseWakesReadersOnRunningThreadPool) {
     for (int index = 0; index < reader_count; ++index) {
         boost::asio::co_spawn(
             io_context,
-            [transport_a, &started, &close_errors, &unexpected_completions,
+            [transport_a, &started, &close_errors, &unexpected_completions, &started_mutex,
              &started_condition]() -> mcp::Task<void> {
-                started.fetch_add(1, std::memory_order_release);
+                {
+                    // The increment must happen under the mutex: notifying while the
+                    // waiter is between its predicate check and blocking would
+                    // otherwise be lost and the main thread would wait forever.
+                    std::lock_guard lock(started_mutex);
+                    started.fetch_add(1, std::memory_order_release);
+                }
                 started_condition.notify_one();
                 try {
                     (void)co_await transport_a->read_message();
@@ -514,10 +521,12 @@ TEST_F(MemoryTransportTest, ConcurrentCloseWakesReadersOnRunningThreadPool) {
         workers.emplace_back([&io_context]() { io_context.run(); });
     }
 
+    bool all_readers_started = false;
     {
         std::unique_lock lock(started_mutex);
-        started_condition.wait(
-            lock, [&started]() { return started.load(std::memory_order_acquire) == reader_count; });
+        all_readers_started = started_condition.wait_for(lock, std::chrono::seconds(30), [&started]() {
+            return started.load(std::memory_order_acquire) == reader_count;
+        });
     }
 
     std::vector<std::thread> closers;
@@ -535,6 +544,7 @@ TEST_F(MemoryTransportTest, ConcurrentCloseWakesReadersOnRunningThreadPool) {
         worker.join();
     }
 
+    ASSERT_TRUE(all_readers_started) << "watchdog: readers did not all start within 30s";
     EXPECT_EQ(close_errors.load(std::memory_order_acquire), reader_count);
     EXPECT_EQ(unexpected_completions.load(std::memory_order_acquire), 0);
 }
