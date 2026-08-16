@@ -247,6 +247,7 @@ if(BUILD_TESTING)
       test/client/client_core_test.cpp
       test/client/client_features_test.cpp
       test/client/client_notifications_test.cpp
+      test/core/capabilities_extensions_test.cpp
       test/core/concepts_test.cpp
       test/core/core_test.cpp
       test/core/protocol_test.cpp
