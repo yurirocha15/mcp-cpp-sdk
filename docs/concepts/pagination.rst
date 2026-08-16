@@ -10,9 +10,11 @@ Server-side Configuration
 
 Servers can control the maximum number of items returned in a single list response by calling ``set_page_size()``.
 
-.. literalinclude:: ../../include/mcp/server/server.hpp
-   :language: cpp
-   :lines: 263-268
+.. code-block:: cpp
+
+   // Return at most 100 entries from each tools/list, resources/list,
+   // resources/templates/list, or prompts/list request.
+   server.set_page_size(100);
 
 When ``set_page_size`` is set to a non-zero value, any list request (e.g., ``tools/list``, ``resources/list``) that exceeds this limit will automatically be paginated. The server will return a ``nextCursor`` in the result, which the client can use to fetch the next page.
 
@@ -62,11 +64,8 @@ The SDK handles the complexity of slicing the data and generating cursors automa
 Implementation Details
 ----------------------
 
-Internal pagination logic uses the ``paginate`` helper and ``PaginationSlice`` structure:
-
-.. literalinclude:: ../../include/mcp/server/server.hpp
-   :language: cpp
-   :lines: 449-455
+Internal pagination logic validates the cursor, calculates the current slice,
+and returns an opaque next cursor only when another page remains.
 
 The process of pagination is fully transparent to the server developer once ``set_page_size()`` is called. The SDK internal dispatch logic detects when a list request arrives, calculates the appropriate slice of items based on the provided cursor (or lack thereof), and constructs the response with the ``nextCursor`` if more items remain. This ensures that even as the number of tools or resources grows, the memory footprint and network payload per request remain stable.
 

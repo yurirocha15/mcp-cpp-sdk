@@ -231,7 +231,7 @@ done
 ### 12. OAuth Flow (`oauth_flow.cpp`)
 
 **What it demonstrates:**
-- Full OAuth flow with mock auth server
+- Loopback OAuth building blocks with a mock authorization server
 - `OAuthAuthenticator` with `InMemoryTokenStore`
 - `OAuthClientTransport` for token injection
 - Token refresh on auth failures
@@ -284,16 +284,16 @@ Examples such as ``http_server_convenience.cpp`` and ``graceful_shutdown.cpp`` d
 Async tool handlers with Context:
 
 ```cpp
-server.add_tool<nlohmann::json, nlohmann::json>("my_tool", "Description", schema,
-    [](mcp::Context& ctx, nlohmann::json args) -> mcp::Task<nlohmann::json> {
+server.add_tool<nlohmann::json, mcp::CallToolResult>("my_tool", "Description", schema,
+    [](mcp::Context& ctx, nlohmann::json args) -> mcp::Task<mcp::CallToolResult> {
         co_await ctx.log_info("Starting work...");
 
         if (ctx.is_cancelled()) {
-            co_return make_error_result("Cancelled");
+            co_return mcp::make_tool_error_result("Cancelled");
         }
 
         co_await ctx.report_progress(50, 100);
-        co_return make_success_result("Done");
+        co_return mcp::make_tool_text_result("Done");
     });
 ```
 

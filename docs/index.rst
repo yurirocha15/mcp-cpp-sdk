@@ -16,8 +16,9 @@ Features
 * **Flexible transports**: stdio, WebSocket, Streamable HTTP, and custom transport support
 * **Type-safe**: Strong typing with JSON serialization via nlohmann_json
 * **Async-first**: Built on Boost.Asio for high-performance I/O
-* **Full MCP support**: Tools, resources, prompts, sampling, roots, progress, and notifications
-* **Authentication-ready**: OAuth 2.1 helpers and authenticated client transport support
+* **Broad MCP surface**: Tools, resources, prompts, sampling, roots, progress, and notifications
+* **Measured conformance**: Pinned official suites with explicit expected-failure evidence
+* **Authentication building blocks**: Experimental OAuth helpers and HTTP bearer validation
 
 Quick Links
 -----------

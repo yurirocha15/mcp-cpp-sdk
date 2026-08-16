@@ -8,22 +8,24 @@ directory.
 Overview
 --------
 
-The SDK provides seven core examples plus 12 specialized feature examples:
+The SDK builds nine core examples plus 12 specialized feature examples:
 
 1. **server_stdio** - Full-featured MCP server over stdio
-2. **client_stdio** - MCP client demonstrating all client operations
-3. **server_with_sampling** - Server with reverse RPC (sampling)
-4. **echo_websocket** - WebSocket transport example
-5. **http_loopback** - HTTP transport loopback demo
-6. **llama_server** - llama.cpp MCP adapter
-7. **debugger_server** - LLDB debugger MCP server
+2. **server_simple** - Minimal MCP server over stdio
+3. **client_stdio** - MCP client demonstrating representative server operations
+4. **interactive_client** - Interactive stdio client
+5. **server_with_sampling** - Server with reverse RPC (sampling)
+6. **echo_websocket** - WebSocket transport example
+7. **http_loopback** - HTTP transport loopback demo
+8. **llama_server** - llama.cpp MCP adapter
+9. **debugger_server** - LLDB debugger MCP server (uses stubs when LLDB is unavailable)
 
 Feature Examples
 ----------------
 
-The ``examples/features/`` directory contains 12 specialized examples, each
-demonstrating a specific MCP capability using the in-process loopback pattern
-for fast, deterministic testing.
+The ``examples/features/`` directory contains 12 specialized examples. They use
+small, self-contained setups to demonstrate individual capabilities; some use
+in-memory loopback and others exercise local network transports.
 
 1. **progress_cancellation** - Real-time progress updates and request cancellation
 2. **notifications_subscriptions** - Server-to-client notifications and subscription handling
@@ -36,7 +38,7 @@ for fast, deterministic testing.
 9. **transport_memory** - Using in-memory transports for testing and modularity
 10. **graceful_shutdown** - Clean exit patterns and signal handling
 11. **http_server_convenience** - Simplified HTTP server setup via ``Server::run_http()``
-12. **oauth_flow** - Full OAuth 2.0 authentication flow (PKCE, token refresh)
+12. **oauth_flow** - Loopback OAuth building blocks (discovery, PKCE, exchange, refresh)
 
 These examples are non-interactive and designed to be run as part of a
 test suite or to understand specific API patterns.
@@ -44,10 +46,9 @@ test suite or to understand specific API patterns.
 Benchmarks
 ----------
 
-Performance-focused examples demonstrating the efficiency of different transport
-layers under load. These are quick teaching benchmarks that run locally and in
-CI; for sustained multi-service load testing, use the separate ``benchmark/``
-suite.
+These examples exercise different transport paths and report measurements from
+the local run. They are teaching benchmarks that run locally and in CI; for
+sustained multi-service load testing, use the separate ``benchmark/`` suite.
 
 1. **benchmark_stdio** - Measures roundtrip latency and throughput over the in-memory stdio-equivalent transport
 2. **benchmark_http** - Performance analysis of the HTTP transport layer
@@ -56,10 +57,11 @@ suite.
 Each benchmark performs a fixed number of iterations and reports total time,
 average latency, and calls per second. The current examples run 1000 iterations
 for the memory and HTTP transports, and 50 iterations for the WebSocket
-transport so the example remains fast and deterministic in automation.
+transport to keep the automated run bounded.
 
-Each example is fully functional and can be used as a starting point for your
-own MCP applications.
+Use the example closest to your integration as an API reference, then add the
+deployment-specific validation, security, and error handling your application
+requires.
 
 server_stdio
 ------------
@@ -70,19 +72,19 @@ A complete MCP server implementation demonstrating:
 
 * **All 4 handler signatures**: Async with context, async without context, sync with context, sync without context
 * **Custom types**: JsonSerializable structs with to_json/from_json
-* **Tools**: Mathematical operations (add, multiply) with typed parameters
-* **Resources**: Static and dynamic resource handlers
-* **Resource Templates**: URI templates with variable substitution
+* **Tools**: Typed add/greet handlers and JSON echo/uppercase handlers
+* **Resources**: A typed static resource handler
+* **Resource Templates**: Metadata registration for a URI template
 * **Prompts**: Example prompt with arguments
 * **Context logging**: Using ``Context::log_info()`` and other log levels
 
-This is the most comprehensive example, showing virtually every SDK feature.
+This example combines the main server registration patterns in one program.
 
 **Key patterns demonstrated**:
 
 * Type-safe tool handlers with custom input/output types
 * Resource listing and reading
-* Resource template URI expansion
+* Resource template metadata listing
 * Prompt registration and retrieval
 * Structured logging via Context
 
@@ -98,24 +100,22 @@ client_stdio
 
 **Location**: ``examples/clients/stdio/client_stdio.cpp``
 
-A complete MCP client implementation demonstrating:
+A stdio MCP client demonstrating:
 
 * **Connection**: Initialize handshake with server capabilities
 * **Tools**: List available tools, call tools with typed arguments
 * **Resources**: List resources, read resource contents
-* **Resource Templates**: List templates, expand URIs
+* **Resource Templates**: List template metadata
 * **Prompts**: List prompts, get prompt with arguments
 * **Completion**: Request completion suggestions
 * **Notifications**: Send notifications to server
-* **Graceful shutdown**: Proper connection close
 
 **Key patterns demonstrated**:
 
 * Client initialization and capability negotiation
 * Calling server methods with typed parameters
 * Handling server responses
-* Error handling with try/catch
-* Clean resource cleanup
+* Handling typed content variants in server responses
 
 **Build and run**:
 
@@ -140,10 +140,10 @@ enabling bidirectional communication patterns.
 
 **Key patterns demonstrated**:
 
-* Declaring sampling capability in ServerCapabilities
+* Relying on the connected client to advertise its sampling capability
 * Using ``Context::sample_llm()`` for reverse RPC
 * Awaiting client responses within a tool handler
-* Structured error handling for sampling failures
+* Reading text content from the sampling response
 
 **Build and run**:
 
@@ -220,8 +220,8 @@ MCP adapter for llama.cpp's ``llama-server`` (chat, completion, embedding):
 * **Dual transport support**: Runtime selection between stdio and HTTP transports
 * **CLI argument parsing**: Comprehensive configuration via command line flags
 
-This example demonstrates how to wrap an existing external service into
-a fully compliant MCP server.
+This example demonstrates how to wrap an existing external service in an MCP
+server with stdio and HTTP deployment options.
 
 **Key patterns demonstrated**:
 

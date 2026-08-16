@@ -5,6 +5,8 @@ import re
 import sys
 from pathlib import Path
 
+from docutils.parsers.rst import Directive, directives
+
 # -- Project information -----------------------------------------------------
 project = 'mcp-cpp-sdk'
 copyright = '2026, MCP C++ SDK Contributors'
@@ -63,8 +65,6 @@ templates_path = ['_templates']
 # directories to ignore when looking for source files.
 # Exclude API reference pages when Doxygen XML is not available.
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
-if not _has_doxygen:
-    exclude_patterns.append('api')
 
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = 'sphinx'
@@ -102,3 +102,23 @@ html_css_files = [
 
 # Output file base name for HTML help builder.
 htmlhelp_basename = 'mcp-cpp-sdkdoc'
+
+
+class _UnavailableDoxygenDirective(Directive):
+    """Keep the API overview buildable when Doxygen XML is unavailable."""
+
+    required_arguments = 1
+    option_spec = {
+        'members': directives.flag,
+        'undoc-members': directives.flag,
+    }
+
+    def run(self):
+        return []
+
+
+def setup(app):
+    """Install inert Doxygen directives for the documented fallback build."""
+    if not _has_doxygen:
+        for name in ('doxygenclass', 'doxygenstruct', 'doxygentypedef'):
+            app.add_directive(name, _UnavailableDoxygenDirective)

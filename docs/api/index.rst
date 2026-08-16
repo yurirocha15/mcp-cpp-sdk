@@ -105,9 +105,10 @@ Task<T>
 Protocol Types
 --------------
 
-The SDK includes comprehensive protocol and supporting types for all MCP
-messages. They are available through the complete generated index below,
-which avoids duplicating the class-level API sections above.
+The SDK includes typed protocol and supporting types for its implemented MCP
+surface. They are available through the generated index below, which avoids
+duplicating the class-level API sections above. The pinned conformance results,
+not this index, are the source of truth for current protocol coverage.
 
 RequestId
 ^^^^^^^^^
