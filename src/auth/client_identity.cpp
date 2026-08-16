@@ -176,6 +176,13 @@ ClientIdentityDecision select_client_identity(const ClientIdentityConfig& config
     // Injected credentials are terminal. Falling back to registration here would swap the client
     // the application chose for one the authorization server minted, without telling anybody.
     if (config.pre_registered && !config.pre_registered->client_id.empty()) {
+        // Credentials that name their issuer are bound to it: presenting the secret the application
+        // holds for one authorization server to a different one is credential misbinding, and the
+        // terminal rule above means the answer is "no identity", never a silent registration.
+        const auto& expected_issuer = config.pre_registered->issuer;
+        if (!expected_issuer.empty() && expected_issuer != server.issuer) {
+            return ClientIdentityDecision::unavailable;
+        }
         return ClientIdentityDecision::use_pre_registered;
     }
 
