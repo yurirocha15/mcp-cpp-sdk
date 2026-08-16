@@ -43,6 +43,10 @@ nlohmann::json make_tool_call_request(std::string_view id, const std::string& to
             {"params", {{"name", tool_name}, {"arguments", args}}}};
 }
 
+nlohmann::json make_initialized_notification() {
+    return {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
+}
+
 nlohmann::json greet_schema() {
     return {
         {"type", "object"},
@@ -119,6 +123,7 @@ TEST_F(ServerHttpTest, RunHttpInitializesAndResponds) {
         session_id = std::string(session_it->value());
     }
 
+    static_cast<void>(send_json_rpc(stream, make_initialized_notification(), session_id));
     auto tool_resp =
         send_json_rpc(stream, make_tool_call_request("2", "greet", {{"name", "HTTP"}}), session_id);
     auto tool_json = nlohmann::json::parse(tool_resp.body());
@@ -135,7 +140,7 @@ TEST_F(ServerHttpTest, RunHttpInitializesAndResponds) {
 
     EXPECT_EQ(tool_json["id"], "2");
     ASSERT_TRUE(tool_json.contains("result"));
-    EXPECT_EQ(tool_json["result"]["greeting"], "Hello, HTTP");
+    EXPECT_EQ(tool_json["result"]["structuredContent"]["greeting"], "Hello, HTTP");
 }
 
 TEST_F(ServerHttpTest, RunHttpInvalidAddressThrows) {

@@ -60,6 +60,7 @@ TEST_F(ServerLoggingTest, SetLevelChangesServerLogLevel) {
     });
 
     raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json set_level_req;
     set_level_req["jsonrpc"] = "2.0";
@@ -115,6 +116,7 @@ TEST_F(ServerLoggingTest, LogFilteredByLevel) {
     });
 
     raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
 
     // Set level to Warning (filters out Info and Debug)
     nlohmann::json set_level_req;
@@ -185,6 +187,7 @@ TEST_F(ServerLoggingTest, LogWithLoggerField) {
     });
 
     raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";
@@ -240,6 +243,7 @@ TEST_F(ServerLoggingTest, ListChangedNotificationsSent) {
     });
 
     raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";

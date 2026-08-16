@@ -59,6 +59,28 @@ class ServerHandlersTest : public ::testing::Test {
                   }(),
                   std::move(caps)) {}
     };
+
+    std::vector<nlohmann::json> run_request(ServerSetup& setup, nlohmann::json request) {
+        std::vector<nlohmann::json> responses;
+        setup.raw_transport->set_on_write([&responses, &setup](std::string_view message) {
+            responses.push_back(nlohmann::json::parse(message));
+            if (responses.size() == 2) {
+                setup.raw_transport->close();
+            }
+        });
+        setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+        setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+        setup.raw_transport->enqueue_message(request.dump());
+
+        boost::asio::co_spawn(
+            io_ctx_,
+            [&]() -> mcp::Task<void> {
+                co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+            },
+            boost::asio::detached);
+        io_ctx_.run();
+        return responses;
+    }
 };
 
 TEST_F(ServerHandlersTest, SyncToolCallReturnsResult) {
@@ -84,6 +106,7 @@ TEST_F(ServerHandlersTest, SyncToolCallReturnsResult) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";
@@ -110,7 +133,8 @@ TEST_F(ServerHandlersTest, SyncToolCallReturnsResult) {
     auto& tool_response = responses[1];
     EXPECT_EQ(tool_response["id"], "2");
     ASSERT_TRUE(tool_response.contains("result"));
-    EXPECT_EQ(tool_response["result"]["sum"], 7);
+    EXPECT_EQ(tool_response["result"]["structuredContent"]["sum"], 7);
+    EXPECT_EQ(tool_response["result"]["content"][0]["type"], "text");
 }
 
 TEST_F(ServerHandlersTest, AsyncToolCallReturnsResult) {
@@ -135,6 +159,7 @@ TEST_F(ServerHandlersTest, AsyncToolCallReturnsResult) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";
@@ -159,7 +184,58 @@ TEST_F(ServerHandlersTest, AsyncToolCallReturnsResult) {
     auto& tool_response = responses[1];
     EXPECT_EQ(tool_response["id"], "2");
     ASSERT_TRUE(tool_response.contains("result"));
-    EXPECT_EQ(tool_response["result"]["sum"], 30);
+    EXPECT_EQ(tool_response["result"]["structuredContent"]["sum"], 30);
+}
+
+TEST_F(ServerHandlersTest, DomainObjectWithContentFieldIsStillNormalized) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool<nlohmann::json, nlohmann::json>(
+        "domain-content", "Returns a domain object", nlohmann::json{{"type", "object"}},
+        [](nlohmann::json) {
+            return nlohmann::json{{"content", "not an MCP content array"}, {"answer", 42}};
+        });
+
+    auto responses = run_request(
+        setup, nlohmann::json{
+                   {"jsonrpc", "2.0"},
+                   {"id", "2"},
+                   {"method", "tools/call"},
+                   {"params", {{"name", "domain-content"}, {"arguments", nlohmann::json::object()}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    const auto& result = responses[1]["result"];
+    EXPECT_EQ(result["structuredContent"]["content"], "not an MCP content array");
+    EXPECT_EQ(result["structuredContent"]["answer"], 42);
+    ASSERT_TRUE(result["content"].is_array());
+    EXPECT_EQ(result["content"][0]["type"], "text");
+}
+
+TEST_F(ServerHandlersTest, TypedHandlerExceptionBecomesProtocolToolError) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool<nlohmann::json, nlohmann::json>(
+        "typed-failure", "Always fails", nlohmann::json{{"type", "object"}},
+        [](nlohmann::json) -> nlohmann::json { throw std::runtime_error("typed failure"); });
+
+    auto responses = run_request(
+        setup, nlohmann::json{
+                   {"jsonrpc", "2.0"},
+                   {"id", "2"},
+                   {"method", "tools/call"},
+                   {"params", {{"name", "typed-failure"}, {"arguments", nlohmann::json::object()}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    const auto& result = responses[1]["result"];
+    EXPECT_TRUE(result["isError"].get<bool>());
+    ASSERT_TRUE(result["content"].is_array());
+    EXPECT_EQ(result["content"][0]["type"], "text");
+    EXPECT_NE(result["content"][0]["text"].get<std::string>().find("typed failure"), std::string::npos);
+    EXPECT_FALSE(result.contains("structuredContent"));
 }
 
 TEST_F(ServerHandlersTest, ToolWithContextLogsMessage) {
@@ -186,6 +262,7 @@ TEST_F(ServerHandlersTest, ToolWithContextLogsMessage) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";
@@ -218,7 +295,7 @@ TEST_F(ServerHandlersTest, ToolWithContextLogsMessage) {
     auto& tool_response = responses[2];
     EXPECT_EQ(tool_response["id"], "2");
     ASSERT_TRUE(tool_response.contains("result"));
-    EXPECT_EQ(tool_response["result"]["sum"], 11);
+    EXPECT_EQ(tool_response["result"]["structuredContent"]["sum"], 11);
 }
 
 TEST_F(ServerHandlersTest, ToolsListReturnsRegisteredTools) {
@@ -244,6 +321,7 @@ TEST_F(ServerHandlersTest, ToolsListReturnsRegisteredTools) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json list_req;
     list_req["jsonrpc"] = "2.0";
@@ -304,6 +382,7 @@ TEST_F(ServerHandlersTest, ResourcesReadReturnsContent) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json read_req;
     read_req["jsonrpc"] = "2.0";
@@ -359,6 +438,7 @@ TEST_F(ServerHandlersTest, ResourcesListReturnsRegisteredResources) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json list_req;
     list_req["jsonrpc"] = "2.0";
@@ -407,6 +487,7 @@ TEST_F(ServerHandlersTest, ResourceTemplatesListReturnsRegisteredTemplates) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json list_req;
     list_req["jsonrpc"] = "2.0";
@@ -430,6 +511,189 @@ TEST_F(ServerHandlersTest, ResourceTemplatesListReturnsRegisteredTemplates) {
     ASSERT_EQ(templates.size(), 1);
     EXPECT_EQ(templates[0]["uriTemplate"], "file:///{path}");
     EXPECT_EQ(templates[0]["name"], "file-access");
+}
+
+TEST_F(ServerHandlersTest, ResourceTemplateHandlerServesMatchingUri) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::ResourceTemplate tmpl;
+    tmpl.uriTemplate = "file:///{name}";
+    tmpl.name = "files";
+    setup.server.add_resource_template<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        tmpl, [](mcp::ReadResourceRequestParams params) -> mcp::ReadResourceResult {
+            mcp::TextResourceContents content;
+            content.uri = params.uri;
+            content.text = "template content";
+            mcp::ReadResourceResult result;
+            result.contents.emplace_back(std::move(content));
+            return result;
+        });
+
+    auto responses = run_request(setup, nlohmann::json{{"jsonrpc", "2.0"},
+                                                       {"id", "2"},
+                                                       {"method", "resources/read"},
+                                                       {"params", {{"uri", "file:///notes.txt"}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1]["result"]["contents"][0]["uri"], "file:///notes.txt");
+    EXPECT_EQ(responses[1]["result"]["contents"][0]["text"], "template content");
+}
+
+TEST_F(ServerHandlersTest, ExactResourceTakesPrecedenceOverTemplate) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::ResourceTemplate tmpl;
+    tmpl.uriTemplate = "file:///{name}";
+    tmpl.name = "files";
+    setup.server.add_resource_template<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        tmpl, [](mcp::ReadResourceRequestParams params) -> mcp::ReadResourceResult {
+            mcp::TextResourceContents content;
+            content.uri = params.uri;
+            content.text = "template";
+            mcp::ReadResourceResult result;
+            result.contents.emplace_back(std::move(content));
+            return result;
+        });
+
+    mcp::Resource exact;
+    exact.uri = "file:///exact.txt";
+    exact.name = "exact";
+    setup.server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        exact, [](mcp::ReadResourceRequestParams params) -> mcp::ReadResourceResult {
+            mcp::TextResourceContents content;
+            content.uri = params.uri;
+            content.text = "exact";
+            mcp::ReadResourceResult result;
+            result.contents.emplace_back(std::move(content));
+            return result;
+        });
+
+    auto responses = run_request(setup, nlohmann::json{{"jsonrpc", "2.0"},
+                                                       {"id", "2"},
+                                                       {"method", "resources/read"},
+                                                       {"params", {{"uri", "file:///exact.txt"}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1]["result"]["contents"][0]["text"], "exact");
+}
+
+TEST_F(ServerHandlersTest, ResourceTemplateRegistrationRejectsDuplicateAndEquivalentPatterns) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::ResourceTemplate first;
+    first.uriTemplate = "file:///{path}";
+    first.name = "first";
+    setup.server.add_resource_template(first);
+
+    auto duplicate = first;
+    duplicate.name = "duplicate";
+    EXPECT_THROW(setup.server.add_resource_template(duplicate), std::invalid_argument);
+
+    mcp::ResourceTemplate equivalent;
+    equivalent.uriTemplate = "file:///{name}";
+    equivalent.name = "equivalent";
+    EXPECT_THROW(setup.server.add_resource_template(equivalent), std::invalid_argument);
+
+    mcp::ResourceTemplate malformed;
+    malformed.uriTemplate = "file:///{path";
+    malformed.name = "malformed";
+    EXPECT_THROW(setup.server.add_resource_template(malformed), std::invalid_argument);
+}
+
+TEST_F(ServerHandlersTest, AmbiguousResourceTemplateMatchReturnsInvalidParams) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    auto register_template = [&setup](std::string uri_template, std::string name) {
+        mcp::ResourceTemplate tmpl;
+        tmpl.uriTemplate = std::move(uri_template);
+        tmpl.name = std::move(name);
+        setup.server.add_resource_template<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+            tmpl, [](mcp::ReadResourceRequestParams) { return mcp::ReadResourceResult{}; });
+    };
+    register_template("file:///{+path}", "all-files");
+    register_template("file:///fixed/{name}", "fixed-files");
+
+    auto responses =
+        run_request(setup, nlohmann::json{{"jsonrpc", "2.0"},
+                                          {"id", "2"},
+                                          {"method", "resources/read"},
+                                          {"params", {{"uri", "file:///fixed/item.txt"}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_NE(responses[1]["error"]["message"].get<std::string>().find("Ambiguous"), std::string::npos);
+}
+
+TEST_F(ServerHandlersTest, MetadataOnlyTemplateDoesNotBlockHandledTemplate) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::ResourceTemplate metadata_only;
+    metadata_only.uriTemplate = "file:///{+path}";
+    metadata_only.name = "all-files";
+    setup.server.add_resource_template(metadata_only);
+
+    mcp::ResourceTemplate handled;
+    handled.uriTemplate = "file:///fixed/{name}";
+    handled.name = "fixed-files";
+    setup.server.add_resource_template<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        handled, [](mcp::ReadResourceRequestParams params) {
+            mcp::TextResourceContents content;
+            content.uri = params.uri;
+            content.text = "handled";
+            mcp::ReadResourceResult result;
+            result.contents.emplace_back(std::move(content));
+            return result;
+        });
+
+    auto responses =
+        run_request(setup, nlohmann::json{{"jsonrpc", "2.0"},
+                                          {"id", "2"},
+                                          {"method", "resources/read"},
+                                          {"params", {{"uri", "file:///fixed/item.txt"}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1]["result"]["contents"][0]["text"], "handled");
+}
+
+TEST_F(ServerHandlersTest, DuplicateNamedRegistrationsAreRejected) {
+    ServerSetup setup(io_ctx_, mcp::ServerCapabilities{});
+
+    auto tool_handler = [](nlohmann::json) { return nlohmann::json::object(); };
+    setup.server.add_tool<nlohmann::json, nlohmann::json>(
+        "duplicate", "first", nlohmann::json{{"type", "object"}}, tool_handler);
+    EXPECT_THROW((setup.server.add_tool<nlohmann::json, nlohmann::json>(
+                     "duplicate", "second", nlohmann::json{{"type", "object"}}, tool_handler)),
+                 std::invalid_argument);
+
+    mcp::Resource resource;
+    resource.uri = "file:///duplicate";
+    resource.name = "first";
+    auto resource_handler = [](mcp::ReadResourceRequestParams) { return mcp::ReadResourceResult{}; };
+    setup.server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        resource, resource_handler);
+    resource.name = "second";
+    EXPECT_THROW((setup.server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+                     resource, resource_handler)),
+                 std::invalid_argument);
+
+    mcp::Prompt prompt;
+    prompt.name = "duplicate";
+    auto prompt_handler = [](mcp::GetPromptRequestParams) { return mcp::GetPromptResult{}; };
+    setup.server.add_prompt<mcp::GetPromptRequestParams, mcp::GetPromptResult>(prompt, prompt_handler);
+    prompt.description = "second";
+    EXPECT_THROW((setup.server.add_prompt<mcp::GetPromptRequestParams, mcp::GetPromptResult>(
+                     prompt, prompt_handler)),
+                 std::invalid_argument);
 }
 
 TEST_F(ServerHandlersTest, PromptsGetReturnsPromptMessages) {
@@ -479,6 +743,7 @@ TEST_F(ServerHandlersTest, PromptsGetReturnsPromptMessages) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json get_req;
     get_req["jsonrpc"] = "2.0";
@@ -532,6 +797,7 @@ TEST_F(ServerHandlersTest, PromptsListReturnsRegisteredPrompts) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json list_req;
     list_req["jsonrpc"] = "2.0";
@@ -573,6 +839,7 @@ TEST_F(ServerHandlersTest, UnknownToolReturnsError) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";
@@ -629,6 +896,7 @@ TEST_F(ServerHandlersTest, ToolsListPaginationFirstPage) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json list_req;
     list_req["jsonrpc"] = "2.0";
@@ -679,6 +947,7 @@ TEST_F(ServerHandlersTest, ToolsListPaginationWithCursor) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json list_req;
     list_req["jsonrpc"] = "2.0";
@@ -729,6 +998,7 @@ TEST_F(ServerHandlersTest, ToolsListPaginationLastPage) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json list_req;
     list_req["jsonrpc"] = "2.0";
@@ -776,6 +1046,7 @@ TEST_F(ServerHandlersTest, PaginationDisabledByDefault) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json list_req;
     list_req["jsonrpc"] = "2.0";
@@ -828,6 +1099,7 @@ TEST_F(ServerHandlersTest, ResourcesListPagination) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json list_req;
     list_req["jsonrpc"] = "2.0";
@@ -880,6 +1152,7 @@ TEST_F(ServerHandlersTest, ToolWithOutputSchemaIncludesStructuredContent) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";
@@ -900,12 +1173,39 @@ TEST_F(ServerHandlersTest, ToolWithOutputSchemaIncludesStructuredContent) {
 
     ASSERT_EQ(responses.size(), 2);
     auto& result = responses[1]["result"];
-    EXPECT_EQ(result["sum"], 30);
     ASSERT_TRUE(result.contains("structuredContent"));
     EXPECT_EQ(result["structuredContent"]["sum"], 30);
+    EXPECT_EQ(result["content"][0]["text"], R"({"sum":30})");
 }
 
-TEST_F(ServerHandlersTest, ToolWithoutOutputSchemaNoStructuredContent) {
+TEST_F(ServerHandlersTest, ToolWithOutputSchemaCanReturnAnErrorWithoutStructuredContent) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool<nlohmann::json, nlohmann::json>(
+        "failing_structured", "Fails before producing structured output",
+        nlohmann::json{{"type", "object"}}, nlohmann::json{{"type", "object"}},
+        [](const nlohmann::json&) -> nlohmann::json {
+            throw std::runtime_error("structured tool failed");
+        });
+
+    auto responses = run_request(
+        setup,
+        nlohmann::json{
+            {"jsonrpc", "2.0"},
+            {"id", "2"},
+            {"method", "tools/call"},
+            {"params", {{"name", "failing_structured"}, {"arguments", nlohmann::json::object()}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    const auto& result = responses[1]["result"];
+    EXPECT_TRUE(result["isError"].get<bool>());
+    EXPECT_FALSE(result.contains("structuredContent"));
+    EXPECT_EQ(result["content"][0]["text"], "structured tool failed");
+}
+
+TEST_F(ServerHandlersTest, ToolWithoutOutputSchemaStillReturnsStructuredContent) {
     mcp::ServerCapabilities caps;
     mcp::ServerCapabilities::ToolsCapability tools_cap;
     caps.tools = std::move(tools_cap);
@@ -925,6 +1225,7 @@ TEST_F(ServerHandlersTest, ToolWithoutOutputSchemaNoStructuredContent) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";
@@ -945,8 +1246,8 @@ TEST_F(ServerHandlersTest, ToolWithoutOutputSchemaNoStructuredContent) {
 
     ASSERT_EQ(responses.size(), 2);
     auto& result = responses[1]["result"];
-    EXPECT_EQ(result["sum"], 8);
-    EXPECT_FALSE(result.contains("structuredContent"));
+    EXPECT_EQ(result["structuredContent"]["sum"], 8);
+    EXPECT_EQ(result["content"][0]["type"], "text");
 }
 
 TEST_F(ServerHandlersTest, ToolsListIncludesOutputSchema) {
@@ -972,6 +1273,7 @@ TEST_F(ServerHandlersTest, ToolsListIncludesOutputSchema) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json list_req;
     list_req["jsonrpc"] = "2.0";
@@ -1022,6 +1324,7 @@ TEST_F(ServerHandlersTest, CompletionReturnsResults) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json complete_req;
     complete_req["jsonrpc"] = "2.0";
@@ -1066,13 +1369,14 @@ TEST_F(ServerHandlersTest, CompletionWithoutHandlerReturnsError) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json complete_req;
     complete_req["jsonrpc"] = "2.0";
     complete_req["id"] = "2";
     complete_req["method"] = "completion/complete";
     complete_req["params"] = nlohmann::json{{"ref", {{"type", "ref/prompt"}, {"name", "test"}}},
-                                            {"argument", {{"name", "arg", "value", "val"}}}};
+                                            {"argument", {{"name", "arg"}, {"value", "val"}}}};
     setup.raw_transport->enqueue_message(complete_req.dump());
 
     boost::asio::co_spawn(

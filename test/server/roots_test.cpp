@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -93,7 +94,7 @@ TEST_F(RootsTest, ServerRequestsRootsFromClient) {
             response_json["result"] = std::move(result_val);
 
             raw_transport->enqueue_message(response_json.dump());
-        } else if (json_msg.contains("result") && !json_msg.contains("method")) {
+        } else if (json_msg.contains("result") && json_msg.value("id", "") == "req-1") {
             raw_transport->close();
         }
     });
@@ -104,6 +105,8 @@ TEST_F(RootsTest, ServerRequestsRootsFromClient) {
     tool_call_request["method"] = "tools/call";
     tool_call_request["params"] = {{"name", "get_roots"}, {"arguments", {{"text", "go"}}}};
 
+    raw_transport->enqueue_message(make_initialize_request("init").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tool_call_request.dump());
 
     boost::asio::co_spawn(
@@ -112,12 +115,22 @@ TEST_F(RootsTest, ServerRequestsRootsFromClient) {
 
     io_ctx_.run();
 
-    ASSERT_GE(written_messages.size(), 2u);
+    ASSERT_GE(written_messages.size(), 3u);
 
-    auto roots_req = nlohmann::json::parse(written_messages[0]);
+    auto roots_message = std::ranges::find_if(written_messages, [](const std::string& message) {
+        return nlohmann::json::parse(message).value("method", "") == "roots/list";
+    });
+    ASSERT_NE(roots_message, written_messages.end());
+
+    auto tool_message = std::ranges::find_if(written_messages, [](const std::string& message) {
+        return nlohmann::json::parse(message).value("id", "") == "req-1";
+    });
+    ASSERT_NE(tool_message, written_messages.end());
+
+    auto roots_req = nlohmann::json::parse(*roots_message);
     EXPECT_EQ(roots_req["method"], "roots/list");
 
-    auto tool_response = nlohmann::json::parse(written_messages[1]);
+    auto tool_response = nlohmann::json::parse(*tool_message);
     EXPECT_EQ(tool_response["id"], "req-1");
     ASSERT_TRUE(tool_response.contains("result"));
     auto content_arr = tool_response["result"]["content"];
@@ -173,6 +186,8 @@ TEST_F(RootsTest, ClientSetRootsServesRootsList) {
         if (write_count == 1) {
             // First write is the initialize request from connect(); respond to it
             auto request_id = json_msg["id"].get<std::string>();
+            EXPECT_TRUE(json_msg["params"]["capabilities"].contains("roots"));
+            EXPECT_FALSE(json_msg["params"]["capabilities"]["roots"].contains("listChanged"));
 
             mcp::InitializeResult init_result;
             init_result.protocolVersion = std::string(mcp::g_LATEST_PROTOCOL_VERSION);
@@ -249,9 +264,6 @@ TEST_F(RootsTest, ClientSetRootsWithNotifySendsNotification) {
                 init_result.protocolVersion = std::string(mcp::g_LATEST_PROTOCOL_VERSION);
                 init_result.serverInfo.name = "test-server";
                 init_result.serverInfo.version = "1.0";
-                mcp::ServerCapabilities::ResourcesCapability res_cap;
-                res_cap.listChanged = true;
-                init_result.capabilities.resources = std::move(res_cap);
 
                 nlohmann::json response_json;
                 response_json["jsonrpc"] = "2.0";
@@ -273,7 +285,11 @@ TEST_F(RootsTest, ClientSetRootsWithNotifySendsNotification) {
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            co_await client.connect(std::move(client_info), mcp::ClientCapabilities{});
+            mcp::ClientCapabilities capabilities;
+            mcp::ClientCapabilities::RootsCapability roots_capability;
+            roots_capability.listChanged = true;
+            capabilities.roots = std::move(roots_capability);
+            co_await client.connect(std::move(client_info), capabilities);
             mcp::Root root;
             root.uri = "file:///updated/path";
             root.name = "updated";
