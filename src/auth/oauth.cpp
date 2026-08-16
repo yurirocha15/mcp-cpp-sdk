@@ -18,6 +18,7 @@
 #include <boost/system/error_code.hpp>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <exception>
 #include <iterator>
 #include <limits>
@@ -443,10 +444,18 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         return run_get(std::make_shared<Exchange>(shared_from_this(), strand, std::move(url)));
     }
 
-    Task<TokenResponse> post_token_request(std::string token_endpoint, const KeyValuePairList& params) {
+    Task<TokenResponse> post_token_request(std::string token_endpoint, const KeyValuePairList& params,
+                                           std::string authorization) {
         return run_post(
             std::make_shared<Exchange>(shared_from_this(), strand, std::move(token_endpoint)),
-            std::make_shared<std::string>(detail::build_form_body(params)));
+            std::make_shared<std::string>(detail::build_form_body(params)), std::move(authorization));
+    }
+
+    Task<nlohmann::json> post_json(std::string url, std::string body) {
+        auto label = "HTTP POST " + url;
+        return run_post_json(std::make_shared<Exchange>(shared_from_this(), strand, std::move(url)),
+                             std::make_shared<std::string>(std::move(body)), "application/json",
+                             std::move(label));
     }
 
     static Task<nlohmann::json> run_get(std::shared_ptr<Exchange> exchange) {
@@ -494,8 +503,13 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         co_return response_json;
     }
 
-    static Task<TokenResponse> run_post(std::shared_ptr<Exchange> exchange,
-                                        std::shared_ptr<std::string> form_body) {
+    /// One POST exchange returning the parsed JSON reply. Redirects are deliberately not followed:
+    /// replaying a token or registration body at a redirect target would hand its contents to
+    /// whatever the first hop nominated.
+    static Task<nlohmann::json> run_post_json(std::shared_ptr<Exchange> exchange,
+                                              std::shared_ptr<std::string> body,
+                                              std::string content_type, std::string failure_label,
+                                              std::string authorization = {}) {
         co_await net::post(exchange->strand, net::use_awaitable);
 
         enforce_url_policy(exchange->owner->policy, exchange->url);
@@ -505,14 +519,17 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         http::request<http::string_body> request(http::verb::post, exchange->parsed.path,
                                                  mcp::constants::g_http_version_11);
         request.set(http::field::host, exchange->parsed.host);
-        request.set(http::field::content_type, "application/x-www-form-urlencoded");
+        request.set(http::field::content_type, content_type);
         request.set(http::field::accept, "application/json");
-        request.body() = *form_body;
+        if (!authorization.empty()) {
+            request.set(http::field::authorization, authorization);
+        }
+        request.body() = *body;
         request.prepare_payload();
         co_await exchange_once(exchange, request);
 
         if (exchange->response().result_int() >= mcp::constants::g_http_bad_request) {
-            throw std::runtime_error("Token request failed with status " +
+            throw std::runtime_error(failure_label + " failed with status " +
                                      std::to_string(exchange->response().result_int()) + ": " +
                                      exchange->response().body());
         }
@@ -520,8 +537,17 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         exchange->body = exchange->response().body();
         auto response_json = nlohmann::json::parse(exchange->body, nullptr, false);
         if (response_json.is_discarded()) {
-            throw std::runtime_error("Failed to parse token response JSON");
+            throw std::runtime_error("Failed to parse JSON from " + exchange->url);
         }
+        co_return response_json;
+    }
+
+    static Task<TokenResponse> run_post(std::shared_ptr<Exchange> exchange,
+                                        std::shared_ptr<std::string> form_body,
+                                        std::string authorization) {
+        auto response_json = co_await run_post_json(std::move(exchange), std::move(form_body),
+                                                    "application/x-www-form-urlencoded",
+                                                    "Token request", std::move(authorization));
         co_return response_json.get<TokenResponse>();
     }
 
@@ -541,6 +567,32 @@ void OAuthHttpClient::set_host_resolver(HostResolver resolver) {
     impl_->host_resolver = std::move(resolver);
 }
 
+namespace {
+
+/// Place the client secret where the negotiated method says it belongs, and nowhere else.
+///
+/// @return The `Authorization` header value, empty when the secret does not travel in a header.
+std::string apply_client_authentication(const OAuthConfig& config, KeyValuePairList& params) {
+    const auto& method = config.token_endpoint_auth_method;
+    if (method && *method == "none") {
+        return {};
+    }
+    if (!config.client_secret) {
+        return {};
+    }
+    if (method && *method == "client_secret_basic") {
+        const auto credentials =
+            detail::url_encode(config.client_id) + ":" + detail::url_encode(*config.client_secret);
+        return "Basic " +
+               detail::base64_encode(reinterpret_cast<const unsigned char*>(credentials.data()),
+                                     credentials.size());
+    }
+    params.emplace_back("client_secret", *config.client_secret);
+    return {};
+}
+
+}  // namespace
+
 Task<TokenResponse> OAuthHttpClient::exchange_code(const OAuthConfig& config, const std::string& code,
                                                    const std::string& code_verifier) {
     KeyValuePairList params = {
@@ -548,13 +600,11 @@ Task<TokenResponse> OAuthHttpClient::exchange_code(const OAuthConfig& config, co
         {"redirect_uri", config.redirect_uri}, {"client_id", config.client_id},
         {"code_verifier", code_verifier},
     };
-    if (config.client_secret) {
-        params.emplace_back("client_secret", *config.client_secret);
-    }
+    auto authorization = apply_client_authentication(config, params);
     if (config.resource) {
         params.emplace_back("resource", *config.resource);
     }
-    return impl_->post_token_request(config.token_endpoint, params);
+    return impl_->post_token_request(config.token_endpoint, params, std::move(authorization));
 }
 
 Task<TokenResponse> OAuthHttpClient::refresh_token(const OAuthConfig& config,
@@ -564,16 +614,18 @@ Task<TokenResponse> OAuthHttpClient::refresh_token(const OAuthConfig& config,
         {"refresh_token", refresh_token},
         {"client_id", config.client_id},
     };
-    if (config.client_secret) {
-        params.emplace_back("client_secret", *config.client_secret);
-    }
+    auto authorization = apply_client_authentication(config, params);
     if (config.resource) {
         params.emplace_back("resource", *config.resource);
     }
-    return impl_->post_token_request(config.token_endpoint, params);
+    return impl_->post_token_request(config.token_endpoint, params, std::move(authorization));
 }
 
 Task<nlohmann::json> OAuthHttpClient::get_json(const std::string& url) { return impl_->get_json(url); }
+
+Task<nlohmann::json> OAuthHttpClient::post_json(const std::string& url, const nlohmann::json& body) {
+    return impl_->post_json(url, body.dump());
+}
 
 void from_json(const nlohmann::json& json, ProtectedResourceMetadata& metadata) {
     metadata.raw = json;
@@ -959,6 +1011,34 @@ std::string join_scopes(const std::vector<std::string>& scopes) {
     return joined;
 }
 
+/// Choose the token endpoint authentication method from what the server advertises.
+///
+/// A server that publishes the list has told the client which methods it will accept, so the
+/// client picks the strongest one it can actually satisfy rather than guessing. A server that
+/// publishes nothing leaves the decision unset, which keeps the pre-existing behaviour of sending
+/// the secret, when there is one, in the request body.
+std::optional<std::string> select_token_endpoint_auth_method(
+    const std::optional<std::vector<std::string>>& supported, bool has_client_secret) {
+    if (!supported || supported->empty()) {
+        return std::nullopt;
+    }
+    const auto advertises = [&supported](std::string_view method) {
+        return std::find(supported->begin(), supported->end(), method) != supported->end();
+    };
+    if (has_client_secret) {
+        if (advertises("client_secret_basic")) {
+            return "client_secret_basic";
+        }
+        if (advertises("client_secret_post")) {
+            return "client_secret_post";
+        }
+    }
+    if (advertises("none")) {
+        return "none";
+    }
+    return std::nullopt;
+}
+
 std::string append_query(const std::string& endpoint, const std::string& query) {
     if (query.empty()) {
         return endpoint;
@@ -975,6 +1055,10 @@ struct OAuthAuthorizationManager::Impl {
         BearerChallenge challenge;
         std::optional<ProtectedResourceMetadata> resource_metadata;
         std::optional<AuthServerMetadata> auth_metadata;
+        ClientIdentityServerFacts facts;
+        std::optional<OAuthClientInformation> stored_identity;
+        OAuthClientInformation identity;
+        nlohmann::json registration_response;
         AuthorizationRequest request;
         AuthorizationResponse response;
         OAuthConfig token_config;
@@ -994,6 +1078,18 @@ struct OAuthAuthorizationManager::Impl {
           http_client(std::make_shared<OAuthHttpClient>(executor)),
           config(std::move(authorization_config)),
           callback(std::move(authorization_callback)) {
+        // A bare `client_id` is the shorthand form of injected credentials, so the two spellings
+        // reach the same terminal decision instead of one of them quietly permitting registration.
+        if (!config.client_identity.pre_registered && !config.client_id.empty()) {
+            OAuthClientInformation injected;
+            injected.client_id = config.client_id;
+            injected.client_secret = config.client_secret;
+            injected.source = ClientIdentitySource::pre_registered;
+            config.client_identity.pre_registered = std::move(injected);
+        }
+        if (config.client_identity.metadata.redirect_uris.empty() && !config.redirect_uri.empty()) {
+            config.client_identity.metadata.redirect_uris.push_back(config.redirect_uri);
+        }
         http_client->set_metadata_policy(config.policy);
         if (config.host_resolver) {
             http_client->set_host_resolver(config.host_resolver);
@@ -1019,9 +1115,89 @@ struct OAuthAuthorizationManager::Impl {
         return std::nullopt;
     }
 
+    /// Record the four authorization-server facts client identity selection turns on.
+    static ClientIdentityServerFacts server_facts(const AuthServerMetadata& auth_server) {
+        ClientIdentityServerFacts facts;
+        facts.issuer = auth_server.issuer;
+        facts.client_id_metadata_document_supported =
+            auth_server.client_id_metadata_document_supported.value_or(false);
+        facts.registration_endpoint = auth_server.registration_endpoint;
+        if (auth_server.scopes_supported) {
+            facts.scopes_supported = *auth_server.scopes_supported;
+        }
+        return facts;
+    }
+
+    /// Load the credentials held for this issuer, discarding any entry that is not usable for it.
+    static std::optional<OAuthClientInformation> load_stored_identity(
+        const Impl& owner, const ClientIdentityServerFacts& facts) {
+        if (!owner.config.credential_store || facts.issuer.empty()) {
+            return std::nullopt;
+        }
+        auto stored = owner.config.credential_store->load(facts.issuer);
+        if (!stored) {
+            return std::nullopt;
+        }
+        // A stored entry that disagrees with its own key, or whose secret the server has already
+        // retired, is worse than no entry at all: presenting it would either misbind the
+        // credential or fail the exchange with a stale one.
+        const auto now = static_cast<std::int64_t>(std::time(nullptr));
+        if (stored->issuer != facts.issuer || stored->secret_expired(now)) {
+            return std::nullopt;
+        }
+        return stored;
+    }
+
+    static Task<OAuthClientInformation> resolve_identity(
+        std::shared_ptr<ChallengeOperation> operation) {
+        auto& owner = *operation->owner;
+        const auto decision = select_client_identity(owner.config.client_identity, operation->facts,
+                                                     operation->stored_identity);
+        switch (decision) {
+            case ClientIdentityDecision::use_pre_registered: {
+                auto identity = *owner.config.client_identity.pre_registered;
+                identity.source = ClientIdentitySource::pre_registered;
+                identity.issuer = operation->facts.issuer;
+                co_return identity;
+            }
+            case ClientIdentityDecision::use_client_id_metadata_document: {
+                // The document URL is the client identifier itself, so there is nothing to
+                // register and nothing to persist.
+                OAuthClientInformation identity;
+                identity.client_id = *owner.config.client_identity.client_metadata_url;
+                identity.issuer = operation->facts.issuer;
+                identity.source = ClientIdentitySource::client_id_metadata_document;
+                co_return identity;
+            }
+            case ClientIdentityDecision::reuse_stored_registration:
+                co_return *operation->stored_identity;
+            case ClientIdentityDecision::register_dynamically:
+                break;
+            case ClientIdentityDecision::unavailable:
+                throw std::runtime_error("No client identity is available for authorization server " +
+                                         operation->facts.issuer);
+        }
+
+        operation->registration_response = co_await owner.http_client->post_json(
+            *operation->facts.registration_endpoint,
+            build_registration_request(owner.config.client_identity.metadata, operation->facts));
+
+        auto registered = operation->registration_response.get<OAuthClientInformation>();
+        if (registered.client_id.empty()) {
+            throw std::runtime_error("Client registration response omitted client_id");
+        }
+        registered.issuer = operation->facts.issuer;
+        registered.source = ClientIdentitySource::dynamic_registration;
+        if (owner.config.credential_store) {
+            owner.config.credential_store->store(operation->facts.issuer, registered);
+        }
+        co_return registered;
+    }
+
     static AuthorizationRequest build_request(const Impl& owner, const BearerChallenge& challenge,
                                               const ProtectedResourceMetadata& resource,
-                                              const AuthServerMetadata& auth_server) {
+                                              const AuthServerMetadata& auth_server,
+                                              const OAuthClientInformation& identity) {
         const auto pkce = generate_pkce_pair();
 
         AuthorizationRequest request;
@@ -1033,7 +1209,7 @@ struct OAuthAuthorizationManager::Impl {
         request.issuer = auth_server.issuer;
         request.issuer_parameter_supported =
             auth_server.authorization_response_iss_parameter_supported.value_or(false);
-        request.client_id = owner.config.client_id;
+        request.client_id = identity.client_id;
         request.redirect_uri = owner.config.redirect_uri;
         request.scope = select_scope(owner, challenge, resource);
         request.resource = resource.resource.empty() ? owner.config.server_url : resource.resource;
@@ -1060,16 +1236,19 @@ struct OAuthAuthorizationManager::Impl {
     }
 
     static OAuthConfig build_token_config(const Impl& owner, const AuthServerMetadata& auth_server,
-                                          const AuthorizationRequest& request) {
+                                          const AuthorizationRequest& request,
+                                          const OAuthClientInformation& identity) {
         OAuthConfig token_config;
-        token_config.client_id = owner.config.client_id;
-        token_config.client_secret = owner.config.client_secret;
+        token_config.client_id = identity.client_id;
+        token_config.client_secret = identity.client_secret;
         token_config.token_endpoint = auth_server.token_endpoint;
         token_config.authorization_endpoint = auth_server.authorization_endpoint;
         token_config.revocation_endpoint = auth_server.revocation_endpoint;
         token_config.redirect_uri = owner.config.redirect_uri;
         token_config.scope = request.scope;
         token_config.resource = request.resource;
+        token_config.token_endpoint_auth_method = select_token_endpoint_auth_method(
+            auth_server.token_endpoint_auth_methods_supported, identity.client_secret.has_value());
         return token_config;
     }
 
@@ -1091,13 +1270,18 @@ struct OAuthAuthorizationManager::Impl {
                 "Authorization server metadata omitted an authorization or token endpoint");
         }
 
+        operation->facts = server_facts(*operation->auth_metadata);
+        operation->stored_identity = load_stored_identity(owner, operation->facts);
+        operation->identity = co_await resolve_identity(operation);
+
         operation->request = build_request(owner, operation->challenge, *operation->resource_metadata,
-                                           *operation->auth_metadata);
-        operation->token_config =
-            build_token_config(owner, *operation->auth_metadata, operation->request);
+                                           *operation->auth_metadata, operation->identity);
+        operation->token_config = build_token_config(owner, *operation->auth_metadata,
+                                                     operation->request, operation->identity);
         {
             std::lock_guard lock(owner.state_mutex);
             owner.last_request = operation->request;
+            owner.last_identity = operation->identity;
             owner.token_config = operation->token_config;
         }
 
@@ -1168,6 +1352,7 @@ struct OAuthAuthorizationManager::Impl {
     AuthorizationCallback callback;
     mutable std::mutex state_mutex;
     std::optional<AuthorizationRequest> last_request;
+    std::optional<OAuthClientInformation> last_identity;
     std::optional<OAuthConfig> token_config;
 };
 
@@ -1197,6 +1382,11 @@ Task<bool> OAuthAuthorizationManager::try_handle_challenge(const std::string& ww
 std::optional<AuthorizationRequest> OAuthAuthorizationManager::last_authorization_request() const {
     std::lock_guard lock(impl_->state_mutex);
     return impl_->last_request;
+}
+
+std::optional<OAuthClientInformation> OAuthAuthorizationManager::last_client_identity() const {
+    std::lock_guard lock(impl_->state_mutex);
+    return impl_->last_identity;
 }
 
 struct OAuthClientTransport::Impl {

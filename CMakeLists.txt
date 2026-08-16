@@ -89,6 +89,7 @@ set(MCP_CPP_SDK_SOURCES
     src/core/serialized_transport_writer.cpp
     src/protocol/tools.cpp
     src/auth/challenge.cpp
+    src/auth/client_identity.cpp
     src/auth/metadata_policy.cpp
     src/auth/oauth.cpp
     src/client/client.cpp
@@ -246,6 +247,7 @@ if(BUILD_TESTING)
   set(TEST_SRCS
       test/auth/auth_authorization_test.cpp
       test/auth/auth_challenge_test.cpp
+      test/auth/auth_client_identity_test.cpp
       test/auth/auth_integration_test.cpp
       test/auth/auth_oauth_test.cpp
       test/client/client_core_test.cpp
