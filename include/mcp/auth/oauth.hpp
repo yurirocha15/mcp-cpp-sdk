@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mcp/auth/challenge.hpp>
+#include <mcp/auth/client_identity.hpp>
 #include <mcp/auth/metadata_policy.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/core/context.hpp>
@@ -194,6 +195,11 @@ struct OAuthConfig {
     std::string redirect_uri;             ///< Redirect URI used during authorization code flow.
     std::optional<std::string> scope;     ///< Optional requested scope string.
     std::optional<std::string> resource;  ///< Optional resource or audience hint.
+    /// Client authentication method for the token endpoint, spelled as the authorization server
+    /// spells it in `token_endpoint_auth_methods_supported`. `client_secret_basic` puts the
+    /// credentials in the HTTP Basic header and nowhere else; `none` sends no secret at all;
+    /// anything else, including leaving this unset, puts the secret in the request body.
+    std::optional<std::string> token_endpoint_auth_method;
 };
 
 /**
@@ -271,6 +277,19 @@ class MCP_API OAuthHttpClient {
      * @return A task resolving to the parsed JSON body.
      */
     Task<nlohmann::json> get_json(const std::string& url);
+
+    /**
+     * @brief Post a JSON document to an OAuth endpoint and read the JSON reply.
+     *
+     * @param url HTTP URL to post to.
+     * @param body JSON request body.
+     * @return A task resolving to the parsed JSON response.
+     *
+     * @details Used for RFC 7591 dynamic client registration. The target is validated against the
+     * fetch policy exactly like every other request this client issues, and redirects are not
+     * followed for a POST.
+     */
+    Task<nlohmann::json> post_json(const std::string& url, const nlohmann::json& body);
 
    private:
     struct Impl;
@@ -500,12 +519,21 @@ using AuthorizationCallback = std::function<Task<AuthorizationResponse>(const Au
  */
 struct OAuthAuthorizationConfig {
     std::string server_url;  ///< MCP server URL that issued the challenge; also the token store key.
-    std::string client_id;   ///< Client identifier presented to the authorization server.
+    /// Client identifier presented to the authorization server. Setting it is shorthand for
+    /// injecting pre-registered credentials: it is treated exactly like
+    /// `client_identity.pre_registered` and therefore never falls back to registration.
+    std::string client_id;
     std::optional<std::string> client_secret;  ///< Optional confidential-client secret.
     std::string redirect_uri;                  ///< Redirect URI the authorization response returns to.
     /// Scope override. When set it wins over both the challenge scope and the resource metadata;
     /// when unset the challenge scope is preferred, then `scopes_supported`, then no scope at all.
     std::optional<std::string> scope;
+    /// Client identity inputs consulted when no `client_id` was supplied: a published client ID
+    /// metadata document URL, injected credentials, and the metadata used for registration.
+    ClientIdentityConfig client_identity;
+    /// Issuer-keyed storage for credentials obtained by dynamic registration. When unset, a
+    /// registration is performed per authorization attempt rather than reused.
+    std::shared_ptr<ClientCredentialStore> credential_store;
     MetadataFetchPolicy policy;  ///< Outbound-request policy for every discovery and token request.
     HostResolver host_resolver;  ///< Optional custom resolver; the system resolver is used when unset.
 };
@@ -568,6 +596,16 @@ class MCP_API OAuthAuthorizationManager : public Authenticator {
      * actually used, so applications can audit the binding an attempt was validated against.
      */
     [[nodiscard]] std::optional<AuthorizationRequest> last_authorization_request() const;
+
+    /**
+     * @brief Return the client identity used by the most recent authorization attempt.
+     *
+     * @return The identity, or `std::nullopt` when no attempt has resolved one.
+     *
+     * @details `source` records which path produced it, so an application can tell an injected
+     * credential from a metadata-document identifier from a dynamic registration.
+     */
+    [[nodiscard]] std::optional<OAuthClientInformation> last_client_identity() const;
 
    private:
     struct Impl;
