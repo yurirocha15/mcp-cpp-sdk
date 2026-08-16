@@ -3,6 +3,7 @@
 #include <mcp/core/export.hpp>
 
 #include <cstddef>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -64,6 +65,16 @@ struct MetadataFetchPolicy {
     /// Origins the application refuses. Consulted before `allowed_origins`, so a denied origin is
     /// refused even when it also appears in the allow list.
     std::vector<std::string> denied_origins;
+
+    /// Consulted only for an origin `allowed_origins` does not list; returning true admits it.
+    ///
+    /// An application generally cannot enumerate its authorization servers in advance, because a
+    /// protected resource names them in metadata at run time. Rather than force such an application
+    /// to abandon the allow list altogether, it may state the rule it would have written. The hook
+    /// can only widen: `denied_origins` is consulted first and still refuses, and the decision is
+    /// still made before host resolution, so an origin this hook rejects is never contacted. An
+    /// unset hook leaves the allow list as the only way in.
+    std::function<bool(const std::string& origin)> origin_allowance;
 
     /// Permit plain `http://` and loopback addresses. This is a narrow opt-out for loopback
     /// development and test fixtures only; it is never enabled implicitly and it does not relax
