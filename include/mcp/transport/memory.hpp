@@ -1,24 +1,24 @@
 #pragma once
 
+#include <mcp/core/export.hpp>
 #include <mcp/transport/transport.hpp>
 
-#include <boost/asio/post.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/strand.hpp>
-#include <boost/asio/use_awaitable.hpp>
+#include <nlohmann/json_fwd.hpp>
 
-#include <nlohmann/json.hpp>
-
-#include <chrono>
 #include <memory>
-#include <queue>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <variant>
+
+namespace boost::asio {
+class any_io_executor;
+}
 
 namespace mcp {
+
+namespace detail {
+struct MemoryTransportState;
+}
 
 /**
  * @brief In-memory transport implementation for testing.
@@ -27,172 +27,87 @@ namespace mcp {
  * written to one are available for reading on the other. This is useful
  * for testing MCP server/client interactions without real I/O.
  *
- * Thread-safety is achieved via boost::asio::strand (no mutexes needed).
- * The async pattern follows ScriptedTransport exactly: strand + timer + queue.
+ * Endpoint state is retained by pending operations, so destroying a
+ * MemoryTransport wrapper does not invalidate an in-flight read or write.
+ * Once the wrapper and its final in-flight operation are gone, the peer is
+ * closed and its pending readers are woken.
+ * Queue and pending-read state is serialized by an internal Boost.Asio strand.
+ * Concurrent reads use independent wake-up operations and do not cancel each other.
  *
  * @note Always create instances via create_memory_transport_pair(). Never
- *       construct MemoryTransport directly — the peer link would be unset.
+ *       construct MemoryTransport directly unless set_peer() is called before use.
  */
-class MemoryTransport final : public ITransport {
+class MCP_API MemoryTransport final : public ITransport {
    public:
     /**
      * @brief Constructs a MemoryTransport with the given executor.
      *
      * @param executor The executor for async operations.
      */
-    explicit MemoryTransport(const boost::asio::any_io_executor& executor)
-        : strand_(boost::asio::make_strand(executor)), timer_(strand_) {
-        timer_.expires_at(std::chrono::steady_clock::time_point::max());
-    }
+    explicit MemoryTransport(const boost::asio::any_io_executor& executor);
+    ~MemoryTransport() override;
+
+    MemoryTransport(const MemoryTransport&) = delete;
+    MemoryTransport& operator=(const MemoryTransport&) = delete;
+    MemoryTransport(MemoryTransport&&) = delete;
+    MemoryTransport& operator=(MemoryTransport&&) = delete;
 
     /**
      * @brief Reads the next message from the internal queue.
      *
-     * Suspends using a timer until a message is available or the transport is closed.
-     * Follows the exact pattern from ScriptedTransport.
+     * Suspends until a message is available or the transport is closed.
      *
      * @return A task yielding the next queued message.
      * @throws std::runtime_error If the transport is closed.
      */
-    Task<std::string> read_message() override {
-        if (strand_.running_in_this_thread() && !closed_ && !incoming_.empty()) {
-            co_return pop_message_as_string();
-        }
+    Task<std::string> read_message() override;
 
-        co_await boost::asio::post(strand_, boost::asio::use_awaitable);
+    /**
+     * @brief Reads and parses the next message as JSON.
+     *
+     * @return A task yielding the next queued JSON value.
+     * @throws std::runtime_error If the transport is closed.
+     */
+    Task<nlohmann::json> read_json();
 
-        for (;;) {
-            if (closed_) {
-                throw std::runtime_error("transport closed");
-            }
-            if (!incoming_.empty()) {
-                co_return pop_message_as_string();
-            }
-            timer_.expires_at(std::chrono::steady_clock::time_point::max());
-            try {
-                co_await timer_.async_wait(boost::asio::use_awaitable);
-            } catch (const boost::system::system_error& err) {
-                if (err.code() != boost::asio::error::operation_aborted) {
-                    throw;
-                }
-            }
-        }
-    }
-
-    Task<nlohmann::json> read_json() {
-        if (strand_.running_in_this_thread() && !closed_ && !incoming_.empty()) {
-            co_return pop_message_as_json();
-        }
-
-        co_await boost::asio::post(strand_, boost::asio::use_awaitable);
-
-        for (;;) {
-            if (closed_) {
-                throw std::runtime_error("transport closed");
-            }
-            if (!incoming_.empty()) {
-                co_return pop_message_as_json();
-            }
-            timer_.expires_at(std::chrono::steady_clock::time_point::max());
-            try {
-                co_await timer_.async_wait(boost::asio::use_awaitable);
-            } catch (const boost::system::system_error& err) {
-                if (err.code() != boost::asio::error::operation_aborted) {
-                    throw;
-                }
-            }
-        }
-    }
-
-    Task<void> write_json(nlohmann::json message) {
-        co_await boost::asio::post(strand_, boost::asio::use_awaitable);
-        if (closed_) {
-            throw std::runtime_error("transport closed");
-        }
-        auto peer = peer_.lock();
-        if (!peer) {
-            throw std::runtime_error("peer transport not set");
-        }
-        boost::asio::post(peer->strand_, [peer, msg = std::move(message)]() mutable {
-            peer->incoming_.emplace(std::move(msg));
-            peer->timer_.cancel();
-        });
-        co_return;
-    }
+    /**
+     * @brief Writes a JSON value to the peer's queue.
+     *
+     * @param message The JSON value to send.
+     * @return A task that completes when the peer queue has been updated.
+     * @throws std::runtime_error If either endpoint is closed or the peer is unavailable.
+     */
+    Task<void> write_json(nlohmann::json message);
 
     /**
      * @brief Writes a message to the peer's queue and wakes the peer.
      *
+     * The message bytes are copied before this function returns, so a caller may
+     * safely modify or destroy the storage behind @p message before awaiting the task.
+     *
      * @param message The message to send.
      * @return A task that completes when the peer queue has been updated.
-     * @throws std::runtime_error If the transport is closed or the peer is not set or has been
-     * destroyed.
+     * @throws std::runtime_error If either endpoint is closed or the peer is unavailable.
      */
-    Task<void> write_message(std::string_view message) override {
-        co_await boost::asio::post(strand_, boost::asio::use_awaitable);
-        if (closed_) {
-            throw std::runtime_error("transport closed");
-        }
-        auto peer = peer_.lock();
-        if (!peer) {
-            throw std::runtime_error("peer transport not set");
-        }
-        // Post message to peer's strand
-        boost::asio::post(peer->strand_, [peer, msg = std::string(message)]() mutable {
-            peer->incoming_.emplace(std::move(msg));
-            peer->timer_.cancel();
-        });
-    }
+    Task<void> write_message(std::string_view message) override;
 
     /**
-     * @brief Closes the transport and the peer.
+     * @brief Closes the transport and its peer.
      *
-     * Sets closed flag, cancels pending timers, and closes the peer transport.
+     * Safe to call concurrently and multiple times. Pending readers on both
+     * endpoints are woken and future reads and writes fail.
      */
-    void close() override {
-        if (closed_) {
-            return;
-        }
-        closed_ = true;
-        timer_.cancel();
-        if (auto peer = peer_.lock(); peer && !peer->closed_) {
-            peer->close();
-        }
-    }
+    void close() override;
 
     /**
      * @brief Sets the peer transport for bidirectional communication.
      *
-     * @param peer Shared pointer to the peer MemoryTransport.
+     * @param peer Shared pointer to the peer MemoryTransport, or null to unlink it.
      */
-    void set_peer(const std::shared_ptr<MemoryTransport>& peer) { peer_ = peer; }
+    void set_peer(const std::shared_ptr<MemoryTransport>& peer);
 
    private:
-    using MemoryMessage = std::variant<std::string, nlohmann::json>;
-
-    std::string pop_message_as_string() {
-        auto message = std::move(incoming_.front());
-        incoming_.pop();
-        if (auto* raw = std::get_if<std::string>(&message)) {
-            return std::move(*raw);
-        }
-        return std::get<nlohmann::json>(message).dump();
-    }
-
-    nlohmann::json pop_message_as_json() {
-        auto message = std::move(incoming_.front());
-        incoming_.pop();
-        if (auto* json = std::get_if<nlohmann::json>(&message)) {
-            return std::move(*json);
-        }
-        return nlohmann::json::parse(std::get<std::string>(message));
-    }
-
-    boost::asio::strand<boost::asio::any_io_executor> strand_;
-    boost::asio::steady_timer timer_;
-    std::queue<MemoryMessage> incoming_;
-    std::weak_ptr<MemoryTransport> peer_;
-    bool closed_ = false;
+    std::shared_ptr<detail::MemoryTransportState> state_;
 };
 
 /**
@@ -201,19 +116,13 @@ class MemoryTransport final : public ITransport {
  * Messages written to the first transport are readable on the second,
  * and vice versa. Both transports share the same executor.
  *
- * The peer relationship uses weak_ptr to avoid reference cycles; each
- * transport holds only a weak reference to the other.
+ * The peer relationship uses weak ownership to avoid reference cycles.
+ * Pending operations retain only the endpoint states they need.
  *
  * @param executor The executor for both transports.
  * @return A pair of connected transport instances that can exchange in-memory messages.
  */
-inline std::pair<std::shared_ptr<ITransport>, std::shared_ptr<ITransport>> create_memory_transport_pair(
-    const boost::asio::any_io_executor& executor) {
-    auto transport_a = std::make_shared<MemoryTransport>(executor);
-    auto transport_b = std::make_shared<MemoryTransport>(executor);
-    transport_a->set_peer(transport_b);
-    transport_b->set_peer(transport_a);
-    return {transport_a, transport_b};
-}
+MCP_API std::pair<std::shared_ptr<ITransport>, std::shared_ptr<ITransport>>
+create_memory_transport_pair(const boost::asio::any_io_executor& executor);
 
 }  // namespace mcp

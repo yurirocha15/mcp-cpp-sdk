@@ -427,8 +427,7 @@ auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
                 state->oauth_config, state->auth_code, state->pkce.code_verifier);
             state->authenticator->store_token(initial_token);
         }
-        std::cout << "[Client] Stored initial access token: "
-                  << state->authenticator->get_access_token() << "\n";
+        std::cout << "[Client] Stored initial access token (value redacted)\n";
 
         {
             auto oauth_transport = std::make_shared<mcp::auth::OAuthClientTransport>(
@@ -484,17 +483,9 @@ auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
             oauth_transport->close();
         }
 
-        std::cout << "[Client] Observed tokens on the server: ";
-        for (std::size_t i = 0; i < runtime.mock_oauth->observed_tokens().size(); ++i) {
-            if (i != 0) {
-                std::cout << " -> ";
-            }
-            std::cout << runtime.mock_oauth->observed_tokens()[i];
-        }
-        std::cout << '\n';
-
-        std::cout << "[Client] Refreshed access token in store: "
-                  << state->stored_after_refresh->access_token << '\n';
+        std::cout << "[Client] Server observed " << runtime.mock_oauth->observed_tokens().size()
+                  << " bearer-token attempts (values redacted)\n";
+        std::cout << "[Client] Refreshed access token is present in the store (value redacted)\n";
         std::cout << "[Client] OAuth flow completed successfully\n";
 
         runtime.mock_oauth->stop();
@@ -535,8 +526,8 @@ int main() {
         server.use(
             mcp::auth::make_auth_middleware([&mock_oauth](const std::string& token) -> Task<bool> {
                 const bool valid = mock_oauth.validate_token(token);
-                std::cout << "[Server] Validating token: " << token
-                          << (valid ? " (accepted)" : " (rejected)") << '\n';
+                std::cout << "[Server] Validating bearer token (value redacted): "
+                          << (valid ? "accepted" : "rejected") << '\n';
                 co_return valid;
             }));
 
@@ -545,11 +536,10 @@ int main() {
             json{{"type", "object"},
                  {"properties", {{"message", {{"type", "string"}}}}},
                  {"required", json::array({"message"})}},
-            [&mock_oauth](const json& args) -> CallToolResult {
+            [](const json& args) -> CallToolResult {
                 return make_text_result("Server handled '" + args.at("message").get<std::string>() +
-                                            "' using token " + mock_oauth.last_observed_token(),
-                                        std::nullopt,
-                                        json{{"tokenSeen", mock_oauth.last_observed_token()}});
+                                            "' with an authenticated request",
+                                        std::nullopt, json{{"authenticated", true}});
             });
 
         auto [server_base_transport, client_base_transport] =
