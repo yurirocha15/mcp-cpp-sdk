@@ -1296,6 +1296,24 @@ TEST(ProtocolTest, ErrorSerialization) {
     EXPECT_FALSE(deserialized2.data.has_value());
 }
 
+TEST(ProtocolTest, SpecReservedErrorCodesAreDistinctFromLegacyBand) {
+    EXPECT_EQ(mcp::g_HEADER_MISMATCH, -32020);
+    EXPECT_EQ(mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY, -32021);
+    EXPECT_EQ(mcp::g_UNSUPPORTED_PROTOCOL_VERSION, -32022);
+
+    EXPECT_NE(mcp::g_HEADER_MISMATCH, mcp::g_CONNECTION_CLOSED);
+
+    mcp::Error error;
+    error.code = mcp::g_UNSUPPORTED_PROTOCOL_VERSION;
+    error.message = "Unsupported protocol version";
+
+    nlohmann::json j = error;
+    EXPECT_EQ(j["code"], -32022);
+
+    auto deserialized = j.get<mcp::Error>();
+    EXPECT_EQ(deserialized.code, mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+}
+
 TEST(ProtocolTest, JSONRPCRequestSerialization) {
     mcp::JSONRPCRequest req;
     req.id = std::string("req-1");
