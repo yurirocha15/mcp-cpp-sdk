@@ -349,6 +349,35 @@ TEST_F(ServerHandlersTest, ToolsListReturnsRegisteredTools) {
     EXPECT_EQ(tools[0]["description"], "Adds two numbers");
 }
 
+TEST_F(ServerHandlersTest, ToolsListReturnsToolsInRegistrationOrder) {
+    mcp::ServerCapabilities caps;
+    mcp::ServerCapabilities::ToolsCapability tools_cap;
+    caps.tools = std::move(tools_cap);
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::Tool schema;
+    schema.inputSchema = nlohmann::json{{"type", "object"}};
+
+    for (const auto& name : {"charlie", "alpha", "bravo"}) {
+        mcp::Tool tool = schema;
+        tool.name = name;
+        setup.server.add_raw_tool(tool, [](const nlohmann::json&) -> nlohmann::json {
+            return mcp::make_tool_text_result("");
+        });
+    }
+
+    auto responses =
+        run_request(setup, nlohmann::json{{"jsonrpc", "2.0"}, {"id", "2"}, {"method", "tools/list"}});
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& tools = responses[1]["result"]["tools"];
+    ASSERT_EQ(tools.size(), 3);
+    EXPECT_EQ(tools[0]["name"], "charlie");
+    EXPECT_EQ(tools[1]["name"], "alpha");
+    EXPECT_EQ(tools[2]["name"], "bravo");
+}
+
 TEST_F(ServerHandlersTest, ResourcesReadReturnsContent) {
     mcp::ServerCapabilities caps;
     mcp::ServerCapabilities::ResourcesCapability resources_cap;
@@ -663,6 +692,42 @@ TEST_F(ServerHandlersTest, MetadataOnlyTemplateDoesNotBlockHandledTemplate) {
 
     ASSERT_EQ(responses.size(), 2);
     EXPECT_EQ(responses[1]["result"]["contents"][0]["text"], "handled");
+}
+
+TEST_F(ServerHandlersTest, UnknownResourceReturnsInvalidParams) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    auto responses =
+        run_request(setup, nlohmann::json{{"jsonrpc", "2.0"},
+                                          {"id", "2"},
+                                          {"method", "resources/read"},
+                                          {"params", {{"uri", "file:///does-not-exist.txt"}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+}
+
+TEST_F(ServerHandlersTest, UnknownResourceTemplateReturnsInvalidParams) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::ResourceTemplate tmpl;
+    tmpl.uriTemplate = "file:///docs/{name}";
+    tmpl.name = "docs";
+    setup.server.add_resource_template<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        tmpl, [](mcp::ReadResourceRequestParams) { return mcp::ReadResourceResult{}; });
+
+    auto responses =
+        run_request(setup, nlohmann::json{{"jsonrpc", "2.0"},
+                                          {"id", "2"},
+                                          {"method", "resources/read"},
+                                          {"params", {{"uri", "file:///other/item.txt"}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
 }
 
 TEST_F(ServerHandlersTest, DuplicateNamedRegistrationsAreRejected) {
