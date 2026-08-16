@@ -806,8 +806,6 @@ int main() {
 
     StreamableHttpSessionManager manager(io_ctx.get_executor(), "0.0.0.0", mcp_port,
                                          create_server_with_tools);
-    manager.set_stateless_json_mode(true);
-
     manager.set_custom_request_handler(
         [](const boost::beast::http::request<boost::beast::http::string_body>& req)
             -> std::optional<boost::beast::http::response<boost::beast::http::string_body>> {
