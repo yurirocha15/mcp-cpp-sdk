@@ -11,6 +11,8 @@
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/redirect_error.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
@@ -1011,6 +1013,43 @@ std::string join_scopes(const std::vector<std::string>& scopes) {
     return joined;
 }
 
+std::vector<std::string> split_scopes(std::string_view scopes) {
+    std::vector<std::string> split;
+    std::size_t cursor = 0;
+    while (cursor < scopes.size()) {
+        const auto next = scopes.find(' ', cursor);
+        const auto token = scopes.substr(cursor, next == std::string_view::npos ? next : next - cursor);
+        if (!token.empty()) {
+            split.emplace_back(token);
+        }
+        if (next == std::string_view::npos) {
+            break;
+        }
+        cursor = next + 1;
+    }
+    return split;
+}
+
+/// Union of two scope strings, preserving the order of `primary` and appending whatever only
+/// `secondary` carries. Step-up authorization re-authorizes on a challenge that names only what the
+/// refused operation needed, so without the union an earlier grant's scopes would be dropped.
+std::optional<std::string> union_scopes(const std::optional<std::string>& primary,
+                                        const std::optional<std::string>& secondary) {
+    if (!primary || primary->empty()) {
+        return secondary && !secondary->empty() ? secondary : std::nullopt;
+    }
+    if (!secondary || secondary->empty()) {
+        return primary;
+    }
+    auto merged = split_scopes(*primary);
+    for (auto& candidate : split_scopes(*secondary)) {
+        if (std::find(merged.begin(), merged.end(), candidate) == merged.end()) {
+            merged.push_back(std::move(candidate));
+        }
+    }
+    return join_scopes(merged);
+}
+
 /// Choose the token endpoint authentication method from what the server advertises.
 ///
 /// A server that publishes the list has told the client which methods it will accept, so the
@@ -1076,6 +1115,7 @@ struct OAuthAuthorizationManager::Impl {
          OAuthAuthorizationConfig authorization_config, AuthorizationCallback authorization_callback)
         : token_store(std::move(store)),
           http_client(std::make_shared<OAuthHttpClient>(executor)),
+          executor(executor),
           config(std::move(authorization_config)),
           callback(std::move(authorization_callback)) {
         // A bare `client_id` is the shorthand form of injected credentials, so the two spellings
@@ -1101,18 +1141,29 @@ struct OAuthAuthorizationManager::Impl {
 
     /// Challenge scope is authoritative; `scopes_supported` is the fallback; otherwise no scope is
     /// requested at all. An explicit configured scope overrides both.
+    ///
+    /// The two sources are never merged with each other: the spec forbids assuming any particular
+    /// set relationship between a challenge scope and `scopes_supported`, so whichever one applies
+    /// is used whole. Scope already granted by an earlier authorization *is* merged in, because a
+    /// 403 step-up challenge names only what the refused operation needed and re-authorizing on it
+    /// alone would silently drop the rest of the grant.
     static std::optional<std::string> select_scope(const Impl& owner, const BearerChallenge& challenge,
                                                    const ProtectedResourceMetadata& resource) {
         if (owner.config.scope) {
             return owner.config.scope;
         }
+        std::optional<std::string> selected;
         if (challenge.scope && !challenge.scope->empty()) {
-            return challenge.scope;
+            selected = challenge.scope;
+        } else if (resource.scopes_supported && !resource.scopes_supported->empty()) {
+            selected = join_scopes(*resource.scopes_supported);
         }
-        if (resource.scopes_supported && !resource.scopes_supported->empty()) {
-            return join_scopes(*resource.scopes_supported);
+        std::optional<std::string> granted;
+        {
+            std::lock_guard lock(owner.state_mutex);
+            granted = owner.granted_scope;
         }
-        return std::nullopt;
+        return union_scopes(selected, granted);
     }
 
     /// Record the four authorization-server facts client identity selection turns on.
@@ -1264,6 +1315,15 @@ struct OAuthAuthorizationManager::Impl {
 
         operation->auth_metadata = co_await owner.discovery->discover_auth_server(
             operation->resource_metadata->authorization_servers.front());
+        // RFC 8414 §3.3: the issuer a metadata document claims MUST be the location it was fetched
+        // from, compared byte-exact. Normalizing here would re-open the AS mix-up this closes.
+        if (operation->auth_metadata->issuer.empty() ||
+            operation->auth_metadata->issuer !=
+                operation->resource_metadata->authorization_servers.front()) {
+            throw std::runtime_error(
+                "Authorization server metadata issuer does not identify the server it was fetched "
+                "from");
+        }
         if (operation->auth_metadata->authorization_endpoint.empty() ||
             operation->auth_metadata->token_endpoint.empty()) {
             throw std::runtime_error(
@@ -1294,8 +1354,51 @@ struct OAuthAuthorizationManager::Impl {
 
         operation->token = co_await owner.http_client->exchange_code(
             operation->token_config, *operation->response.code, operation->request.code_verifier);
+        {
+            std::lock_guard lock(owner.state_mutex);
+            // What the server actually granted, falling back to what was asked for when the token
+            // response stays silent (RFC 6749 §5.1 makes `scope` optional in that case).
+            owner.granted_scope =
+                operation->token.scope ? operation->token.scope : operation->request.scope;
+        }
         owner.token_store->store(owner.config.server_url, operation->token);
         co_return true;
+    }
+
+    /// Waiters share the leader's outcome instead of opening a second authorization flow, so a
+    /// burst of concurrent requests that all hit the same challenge authorizes exactly once.
+    static Task<bool> await_in_flight(std::shared_ptr<Impl> owner,
+                                      std::shared_ptr<net::steady_timer> flight) {
+        boost::system::error_code ignored;
+        co_await flight->async_wait(net::redirect_error(net::use_awaitable, ignored));
+        std::lock_guard lock(owner->state_mutex);
+        co_return owner->last_flight_succeeded;
+    }
+
+    static Task<bool> run_leading_challenge(std::shared_ptr<ChallengeOperation> operation) {
+        auto owner = operation->owner;
+        bool succeeded = false;
+        std::exception_ptr failure;
+        try {
+            succeeded = co_await run_challenge(std::move(operation));
+        } catch (...) {
+            failure = std::current_exception();
+        }
+
+        std::shared_ptr<net::steady_timer> finished;
+        {
+            std::lock_guard lock(owner->state_mutex);
+            owner->last_flight_succeeded = succeeded;
+            finished = std::move(owner->flight);
+            owner->flight.reset();
+        }
+        if (finished) {
+            finished->cancel();
+        }
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
+        co_return succeeded;
     }
 
     static Task<bool> handle_challenge(std::shared_ptr<Impl> owner, const std::string& header) {
@@ -1303,10 +1406,25 @@ struct OAuthAuthorizationManager::Impl {
         if (!challenge) {
             return return_false();
         }
+
+        std::shared_ptr<net::steady_timer> joined;
+        {
+            std::lock_guard lock(owner->state_mutex);
+            if (owner->flight) {
+                joined = owner->flight;
+            } else {
+                owner->flight = std::make_shared<net::steady_timer>(
+                    owner->executor, net::steady_timer::time_point::max());
+            }
+        }
+        if (joined) {
+            return await_in_flight(std::move(owner), std::move(joined));
+        }
+
         auto operation = std::make_shared<ChallengeOperation>();
         operation->owner = std::move(owner);
         operation->challenge = std::move(*challenge);
-        return run_challenge(std::move(operation));
+        return run_leading_challenge(std::move(operation));
     }
 
     static Task<bool> try_refresh(std::shared_ptr<Impl> owner) {
@@ -1348,12 +1466,18 @@ struct OAuthAuthorizationManager::Impl {
     std::shared_ptr<TokenStore> token_store;
     std::shared_ptr<OAuthHttpClient> http_client;
     std::shared_ptr<OAuthDiscoveryClient> discovery;
+    net::any_io_executor executor;
     OAuthAuthorizationConfig config;
     AuthorizationCallback callback;
     mutable std::mutex state_mutex;
     std::optional<AuthorizationRequest> last_request;
     std::optional<OAuthClientInformation> last_identity;
     std::optional<OAuthConfig> token_config;
+    std::optional<std::string> granted_scope;
+    /// Non-null exactly while one authorization flow is running; cancelling it releases the
+    /// requests that coalesced onto it.
+    std::shared_ptr<net::steady_timer> flight;
+    bool last_flight_succeeded{false};
 };
 
 OAuthAuthorizationManager::OAuthAuthorizationManager(const net::any_io_executor& executor,
@@ -1412,7 +1536,13 @@ struct OAuthClientTransport::Impl {
         std::exception_ptr write_error;
         std::string authenticate_challenge;
         bool authentication_challenge{false};
+        bool refresh_allowed{false};
+        int authorization_attempts{0};
     };
+
+    /// At most three authorization challenges are honoured per logical request, so a server that
+    /// keeps refusing a scope it will never grant cannot drive an unbounded authorization loop.
+    static constexpr int g_max_authorization_challenges = 3;
 
     explicit Impl(std::shared_ptr<ITransport> wrapped,
                   std::shared_ptr<Authenticator> token_authenticator,
@@ -1582,49 +1712,64 @@ struct OAuthClientTransport::Impl {
     }
 
     static Task<void> run_write(std::shared_ptr<WriteOperation> operation) {
-        try {
-            co_await operation->owner->inner->write_message(*operation->outgoing);
-        } catch (const mcp::HttpStatusError& error) {
-            operation->authentication_challenge =
-                operation->owner->uses_http_authorization_header &&
-                error.status() == static_cast<unsigned int>(http::status::unauthorized);
-            if (operation->authentication_challenge) {
-                operation->authenticate_challenge = error.authenticate_challenge();
-            }
-            operation->write_error = std::current_exception();
-        } catch (...) {
-            operation->write_error = std::current_exception();
-        }
+        while (true) {
+            operation->write_error = nullptr;
+            operation->authentication_challenge = false;
+            operation->refresh_allowed = false;
+            operation->authenticate_challenge.clear();
 
-        if (!operation->write_error) {
-            co_return;
-        }
-        if (operation->authentication_challenge) {
-            bool refreshed = false;
+            try {
+                co_await operation->owner->inner->write_message(*operation->outgoing);
+            } catch (const mcp::HttpStatusError& error) {
+                // 401 says the request was not authenticated at all. 403 that carries a challenge
+                // is the step-up case: the token is valid but its scope does not cover this
+                // operation, so the challenge drives a fresh authorization rather than a refresh.
+                const auto unauthorized =
+                    error.status() == static_cast<unsigned int>(http::status::unauthorized);
+                const auto stepped_up =
+                    error.status() == static_cast<unsigned int>(http::status::forbidden) &&
+                    !error.authenticate_challenge().empty();
+                operation->authentication_challenge =
+                    operation->owner->uses_http_authorization_header && (unauthorized || stepped_up);
+                if (operation->authentication_challenge) {
+                    operation->authenticate_challenge = error.authenticate_challenge();
+                    operation->refresh_allowed = unauthorized;
+                }
+                operation->write_error = std::current_exception();
+            } catch (...) {
+                operation->write_error = std::current_exception();
+            }
+
+            if (!operation->write_error) {
+                co_return;
+            }
+            if (!operation->authentication_challenge ||
+                operation->authorization_attempts >= g_max_authorization_challenges) {
+                break;
+            }
+            ++operation->authorization_attempts;
+
+            bool authorized = false;
             try {
                 // A challenge that names its metadata can drive a full authorization exchange;
-                // renewing an existing grant is the fallback when it cannot.
+                // renewing an existing grant is the fallback when it cannot. Renewal is pointless
+                // against an insufficient-scope refusal, so it is offered only for a 401.
                 if (!operation->authenticate_challenge.empty()) {
-                    refreshed = co_await operation->owner->authenticator->try_handle_challenge(
+                    authorized = co_await operation->owner->authenticator->try_handle_challenge(
                         operation->authenticate_challenge);
                 }
-                if (!refreshed) {
-                    refreshed = co_await operation->owner->authenticator->try_refresh_token();
+                if (!authorized && operation->refresh_allowed) {
+                    authorized = co_await operation->owner->authenticator->try_refresh_token();
                 }
             } catch (...) {
                 erase_pending(operation);
                 throw;
             }
-            if (refreshed) {
-                try {
-                    co_await operation->owner->inner->write_message(*operation->outgoing);
-                } catch (...) {
-                    erase_pending(operation);
-                    throw;
-                }
-                co_return;
+            if (!authorized) {
+                break;
             }
         }
+
         erase_pending(operation);
         std::rethrow_exception(operation->write_error);
     }

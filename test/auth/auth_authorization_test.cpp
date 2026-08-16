@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -20,6 +21,7 @@
 #include <boost/beast/http.hpp>
 #include <exception>
 #include <functional>
+#include <mcp/auth/client_identity.hpp>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/transport/http_client.hpp>
 #include <memory>
@@ -950,4 +952,356 @@ TEST(AuthChallengeReplayTest, ReplaysTheExactRequestAfterChallengeDrivenAuthoriz
     EXPECT_EQ(server.bodies()[4], wire);
     EXPECT_TRUE(server.authorizations()[0].empty());
     EXPECT_EQ(server.authorizations()[4], "Bearer granted-access-token");
+}
+
+namespace {
+
+/// Consent callback that records the scope of every authorization request it is asked to run.
+mcp::auth::AuthorizationCallback recording_callback(std::vector<std::string>* scopes) {
+    return [scopes](const mcp::auth::AuthorizationRequest& request)
+               -> mcp::Task<mcp::auth::AuthorizationResponse> {
+        scopes->push_back(request.scope.value_or(""));
+        mcp::auth::AuthorizationResponse response;
+        response.code = "test-authorization-code";
+        response.state = request.state;
+        response.iss = request.issuer;
+        co_return response;
+    };
+}
+
+/// True when every space-separated scope in `needle` appears in `haystack`.
+bool has_scopes(const std::string& haystack, const std::vector<std::string>& needle) {
+    std::vector<std::string> present;
+    std::string current;
+    for (const char character : haystack) {
+        if (character == ' ') {
+            if (!current.empty()) {
+                present.push_back(current);
+            }
+            current.clear();
+            continue;
+        }
+        current.push_back(character);
+    }
+    if (!current.empty()) {
+        present.push_back(current);
+    }
+    for (const auto& wanted : needle) {
+        if (std::find(present.begin(), present.end(), wanted) == present.end()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+TEST(AuthScopeStepUpTest, UnionsTheGrantedScopeWithAForbiddenChallengeAndReplaysTheRequest) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    int mcp_calls = 0;
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/mcp") {
+            ++mcp_calls;
+            if (mcp_calls == 1) {
+                // Unauthenticated: the challenge names a scope that is disjoint from the PRM's
+                // `scopes_supported`, and the challenge must still win.
+                http::response<http::string_body> challenge{http::status::unauthorized, 11};
+                challenge.set(http::field::www_authenticate,
+                              R"(Bearer scope="mcp:basic", resource_metadata=")" + base + R"(/prm")");
+                return challenge;
+            }
+            if (mcp_calls == 2) {
+                // Step-up: the token is valid, but this operation needs a scope the grant lacks.
+                http::response<http::string_body> challenge{http::status::forbidden, 11};
+                challenge.set(http::field::www_authenticate,
+                              R"(Bearer error="insufficient_scope", scope="mcp:write", )"
+                              R"(resource_metadata=")" +
+                                  base + R"(/prm")");
+                return challenge;
+            }
+            return status_response(http::status::accepted);
+        }
+        if (target == "/prm") {
+            return json_response({{"resource", base + "/mcp"},
+                                  {"authorization_servers", json::array({base})},
+                                  {"scopes_supported", json::array({"prm:only"})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(20), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    std::vector<std::string> requested_scopes;
+    const std::string wire = R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})";
+    std::exception_ptr failure;
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            auto inner =
+                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+                io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+            mcp::auth::OAuthClientTransport transport(inner, manager);
+            try {
+                co_await transport.write_message(wire);
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            transport.close();
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    ASSERT_EQ(failure, nullptr);
+    ASSERT_EQ(requested_scopes.size(), 2U);
+
+    // The challenge scope is authoritative even though it shares nothing with `scopes_supported`:
+    // no set relationship between the two may be assumed in either direction.
+    EXPECT_EQ(requested_scopes[0], "mcp:basic");
+    EXPECT_FALSE(has_scopes(requested_scopes[0], {"prm:only"}));
+
+    // Step-up re-authorizes on the union, so the scope already granted survives the escalation.
+    EXPECT_TRUE(has_scopes(requested_scopes[1], {"mcp:basic", "mcp:write"}));
+    EXPECT_FALSE(has_scopes(requested_scopes[1], {"prm:only"}));
+
+    // The replay is the same request bytes, carrying the newly acquired token.
+    EXPECT_EQ(mcp_calls, 3);
+    ASSERT_FALSE(server.bodies().empty());
+    EXPECT_EQ(server.bodies().back(), wire);
+    EXPECT_EQ(server.authorizations().back(), "Bearer granted-access-token");
+}
+
+TEST(AuthScopeStepUpTest, StopsAfterThreeAuthorizationChallengesForOneRequest) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/mcp") {
+            // A scope escalation that will never succeed, exactly as the retry-limit fixture does.
+            if (request[http::field::authorization].empty()) {
+                http::response<http::string_body> challenge{http::status::unauthorized, 11};
+                challenge.set(http::field::www_authenticate,
+                              R"(Bearer scope="mcp:admin", resource_metadata=")" + base + R"(/prm")");
+                return challenge;
+            }
+            http::response<http::string_body> challenge{http::status::forbidden, 11};
+            challenge.set(http::field::www_authenticate,
+                          R"(Bearer error="insufficient_scope", scope="mcp:admin", )"
+                          R"(resource_metadata=")" +
+                              base + R"(/prm")");
+            return challenge;
+        }
+        if (target == "/prm") {
+            return json_response({{"resource", base + "/mcp"},
+                                  {"authorization_servers", json::array({base})},
+                                  {"scopes_supported", json::array({"mcp:admin"})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(40), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    std::vector<std::string> requested_scopes;
+    std::exception_ptr failure;
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            auto inner =
+                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+                io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+            mcp::auth::OAuthClientTransport transport(inner, manager);
+            try {
+                co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            transport.close();
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    // The refusal is surfaced rather than retried forever, and the cap is three per request.
+    EXPECT_NE(failure, nullptr);
+    EXPECT_EQ(requested_scopes.size(), 3U);
+}
+
+TEST(AuthScopeStepUpTest, CoalescesConcurrentChallengesIntoASingleAuthorizationFlow) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&base](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(10), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    std::vector<std::string> requested_scopes;
+    const std::string header = R"(Bearer scope="mcp:basic", resource_metadata=")" + base + R"(/prm")";
+
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+        io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+
+    int completed = 0;
+    int succeeded = 0;
+    const auto challenger = [&]() -> mcp::Task<void> {
+        const auto authorized = co_await manager->try_handle_challenge(header);
+        succeeded += authorized ? 1 : 0;
+        if (++completed == 2) {
+            server.close();
+        }
+    };
+    asio::co_spawn(io_ctx, challenger(), asio::detached);
+    asio::co_spawn(io_ctx, challenger(), asio::detached);
+
+    io_ctx.run();
+
+    // Both callers are authorized, but only one of them ran a flow.
+    EXPECT_EQ(completed, 2);
+    EXPECT_EQ(succeeded, 2);
+    EXPECT_EQ(requested_scopes.size(), 1U);
+    EXPECT_EQ(store->load(config.server_url).has_value(), true);
+}
+
+TEST(AuthIssuerBindingTest, RejectsAuthServerMetadataWhoseIssuerIsNotItsDiscoveryLocation) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&base](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/mcp") {
+            http::response<http::string_body> challenge{http::status::unauthorized, 11};
+            challenge.set(http::field::www_authenticate,
+                          R"(Bearer resource_metadata=")" + base + R"(/prm")");
+            return challenge;
+        }
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            // The document claims to be a different authorization server than the one it was
+            // fetched from -- RFC 8414 3.3 makes that a hard refusal, not a normalization problem.
+            auto metadata = auth_server_metadata(base, true);
+            metadata["issuer"] = "https://other.example.com";
+            return json_response(metadata);
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    std::vector<std::string> requested_scopes;
+    bool threw = false;
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+                io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+            try {
+                (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                             R"(/prm")");
+            } catch (const std::exception&) {
+                threw = true;
+            }
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_TRUE(threw);
+    // Refused before any consent prompt or token exchange could bind a credential to the wrong AS.
+    EXPECT_TRUE(requested_scopes.empty());
+    EXPECT_FALSE(store->load(config.server_url).has_value());
+}
+
+TEST(AuthClientIdentityBindingTest, RefusesInjectedCredentialsBoundToADifferentIssuer) {
+    mcp::auth::ClientIdentityConfig config;
+    mcp::auth::OAuthClientInformation injected;
+    injected.client_id = "client-for-as-one";
+    injected.client_secret = "secret-for-as-one";
+    injected.issuer = "https://as-one.example.com";
+    config.pre_registered = injected;
+
+    mcp::auth::ClientIdentityServerFacts other;
+    other.issuer = "https://as-two.example.com";
+    // A registration endpoint is on offer, and it must still not be taken: injected credentials are
+    // terminal, so a misbound secret yields no identity rather than a silent dynamic registration.
+    other.registration_endpoint = "https://as-two.example.com/register";
+
+    EXPECT_EQ(mcp::auth::select_client_identity(config, other, std::nullopt),
+              mcp::auth::ClientIdentityDecision::unavailable);
+
+    mcp::auth::ClientIdentityServerFacts matching;
+    matching.issuer = "https://as-one.example.com";
+    EXPECT_EQ(mcp::auth::select_client_identity(config, matching, std::nullopt),
+              mcp::auth::ClientIdentityDecision::use_pre_registered);
+
+    // Credentials that never named an issuer keep their existing single-server behaviour.
+    config.pre_registered->issuer.clear();
+    EXPECT_EQ(mcp::auth::select_client_identity(config, other, std::nullopt),
+              mcp::auth::ClientIdentityDecision::use_pre_registered);
 }
