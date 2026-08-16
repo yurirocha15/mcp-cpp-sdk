@@ -455,6 +455,18 @@ void from_json(const nlohmann::json& json, AuthServerMetadata& metadata) {
         metadata.code_challenge_methods_supported =
             json.at("code_challenge_methods_supported").get<std::vector<std::string>>();
     }
+    if (json.contains("authorization_response_iss_parameter_supported")) {
+        metadata.authorization_response_iss_parameter_supported =
+            json.at("authorization_response_iss_parameter_supported").get<bool>();
+    }
+    if (json.contains("client_id_metadata_document_supported")) {
+        metadata.client_id_metadata_document_supported =
+            json.at("client_id_metadata_document_supported").get<bool>();
+    }
+    if (json.contains("token_endpoint_auth_methods_supported")) {
+        metadata.token_endpoint_auth_methods_supported =
+            json.at("token_endpoint_auth_methods_supported").get<std::vector<std::string>>();
+    }
 }
 
 struct OAuthDiscoveryClient::Impl {
