@@ -162,6 +162,14 @@ target_link_libraries(mcp-cpp-sdk
                       INTERFACE "mcp-cpp-sdk-${MCP_CPP_SDK_DEFAULT_LINKAGE}")
 add_library(mcp::sdk ALIAS mcp-cpp-sdk)
 
+option(
+  MCP_CPP_SDK_BUILD_CONFORMANCE
+  "Build client and server fixtures for the official MCP conformance runner"
+  OFF)
+if(MCP_CPP_SDK_BUILD_CONFORMANCE)
+  add_subdirectory(conformance)
+endif()
+
 # Documentation target
 option(BUILD_DOCS "Add the Doxygen documentation target" ON)
 if(BUILD_DOCS)
