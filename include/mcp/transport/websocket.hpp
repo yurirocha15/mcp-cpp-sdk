@@ -38,12 +38,15 @@ class MCP_API WebSocketServerTransport final : public ITransport {
     /**
      * @brief Read the next message from the WebSocket connection.
      *
-     * Throws std::runtime_error if the transport is closed or the connection drops.
+     * @throws std::logic_error If another read is already outstanding.
+     * @throws std::runtime_error If the transport is closed or the connection drops.
      */
     Task<std::string> read_message() override;
 
     /**
      * @brief Send a message over the WebSocket connection.
+     *
+     * Concurrent writes are serialized by the transport.
      *
      * @param message The message to send.
      */
@@ -56,7 +59,7 @@ class MCP_API WebSocketServerTransport final : public ITransport {
 
    private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
 };
 
 /**
@@ -89,7 +92,9 @@ class MCP_API WebSocketClientTransport final : public ITransport {
      * @brief Read the next message from the WebSocket connection.
      *
      * Connects and performs the WebSocket handshake on the first call.
-     * Throws std::runtime_error if the transport is closed or the connection drops.
+     *
+     * @throws std::logic_error If another read is already outstanding.
+     * @throws std::runtime_error If the transport is closed or the connection drops.
      */
     Task<std::string> read_message() override;
 
@@ -97,6 +102,7 @@ class MCP_API WebSocketClientTransport final : public ITransport {
      * @brief Send a message over the WebSocket connection.
      *
      * Connects and performs the WebSocket handshake on the first call.
+     * Concurrent writes are serialized by the transport.
      *
      * @param message The message to send.
      */
@@ -109,7 +115,7 @@ class MCP_API WebSocketClientTransport final : public ITransport {
 
    private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
 };
 
 }  // namespace mcp

@@ -87,11 +87,16 @@ set(MCP_CPP_SDK_SOURCES
     src/core/runtime.cpp
     src/core/secure_random.cpp
     src/core/serialized_transport_writer.cpp
+    src/protocol/tools.cpp
+    src/auth/oauth.cpp
+    src/client/client.cpp
     src/server/server_stdio.cpp
     src/server/server_http.cpp
     src/server/server_tool.cpp
     src/server/server.cpp
     src/transport/stdio.cpp
+    src/transport/memory.cpp
+    src/transport/http_types.cpp
     src/transport/http_server.cpp
     src/transport/http_client.cpp
     src/transport/http_session_manager.cpp

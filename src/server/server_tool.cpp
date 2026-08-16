@@ -10,21 +10,28 @@ void Server::add_tool(const std::string& name, const std::string& description,
     tool.description = description;
     tool.inputSchema = input_schema;
 
-    register_tool(tool, name,
-                  [h = std::move(handler)](Context& /*ctx*/,
-                                           const nlohmann::json& params) -> Task<nlohmann::json> {
-                      try {
-                          co_return h(params);
-                      } catch (const std::exception& e) {
-                          CallToolResult err;
-                          TextContent tc;
-                          tc.text = e.what();
-                          err.content.emplace_back(std::move(tc));
-                          err.isError = true;
-                          nlohmann::json j = std::move(err);
-                          co_return j;
-                      }
-                  });
+    register_tool(
+        tool, name,
+        [h = std::move(handler)](Context& /*ctx*/, const nlohmann::json& params)
+            -> Task<nlohmann::json> { co_return h(params); },
+        detail::ToolResultMode::eNormalize);
+}
+
+void Server::add_raw_tool(const Tool& tool, TypeErasedHandler handler) {
+    register_tool(tool, tool.name, std::move(handler), detail::ToolResultMode::eValidated);
+}
+
+void Server::add_raw_tool(const Tool& tool,
+                          std::function<nlohmann::json(const nlohmann::json&)> handler) {
+    add_raw_tool(tool,
+                 [h = std::move(handler)](Context& /*ctx*/,
+                                          const nlohmann::json& params) -> Task<nlohmann::json> {
+                     try {
+                         co_return h(params);
+                     } catch (const std::exception& e) {
+                         co_return nlohmann::json(make_tool_error_result(e.what()));
+                     }
+                 });
 }
 
 }  // namespace mcp

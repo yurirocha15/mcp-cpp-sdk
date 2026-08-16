@@ -3,38 +3,25 @@
 #include <mcp/core/constants.hpp>
 #include <mcp/core/context.hpp>
 #include <mcp/core/core.hpp>
+#include <mcp/core/export.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_types.hpp>
 #include <mcp/transport/transport.hpp>
 
-#include <openssl/evp.h>
-#include <openssl/rand.h>
-#include <algorithm>
 #include <array>
 #include <boost/asio/any_io_executor.hpp>
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/strand.hpp>
-#include <boost/asio/use_awaitable.hpp>
-#include <boost/beast/core.hpp>
-#include <boost/beast/http.hpp>
 #include <chrono>
+#include <cstddef>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <string_view>
-#include <unordered_map>
-#include <utility>
 #include <vector>
 
 namespace mcp::auth {
 
-namespace beast = boost::beast;
-namespace http = beast::http;
 namespace net = boost::asio;
 
 namespace constants {
@@ -57,109 +44,15 @@ constexpr std::size_t g_default_cache_ttl_seconds = 300;
 }  // namespace constants
 
 namespace detail {
-inline std::string base64_encode(const unsigned char* data, std::size_t len) {
-    std::string result;
-    result.reserve(((len + 2) / 3) * 4);
-
-    for (std::size_t i = 0; i < len; i += 3) {
-        unsigned int n = static_cast<unsigned int>(data[i]) << constants::g_shift16;
-        if (i + 1 < len) {
-            n |= static_cast<unsigned int>(data[i + 1]) << constants::g_shift8;
-        }
-        if (i + 2 < len) {
-            n |= static_cast<unsigned int>(data[i + 2]);
-        }
-
-        result.push_back(
-            mcp::constants::g_alphabet[(n >> constants::g_shift18) & constants::g_mask0x3F]);
-        result.push_back(
-            mcp::constants::g_alphabet[(n >> constants::g_shift12) & constants::g_mask0x3F]);
-        result.push_back(
-            (i + 1 < len)
-                ? mcp::constants::g_alphabet[(n >> constants::g_shift6) & constants::g_mask0x3F]
-                : '=');
-        result.push_back((i + 2 < len) ? mcp::constants::g_alphabet[n & constants::g_mask0x3F] : '=');
-    }
-
-    return result;
-}
-
-inline std::string base64url_encode(const unsigned char* data, std::size_t len) {
-    auto encoded = base64_encode(data, len);
-
-    for (auto& ch : encoded) {
-        if (ch == '+') {
-            ch = '-';
-        } else if (ch == '/') {
-            ch = '_';
-        }
-    }
-    encoded.erase(std::remove(encoded.begin(), encoded.end(), '='), encoded.end());
-    return encoded;
-}
+MCP_API std::string base64_encode(const unsigned char* data, std::size_t len);
+MCP_API std::string base64url_encode(const unsigned char* data, std::size_t len);
 
 /// SHA-256 via OpenSSL EVP interface.
-inline std::array<unsigned char, constants::g_sha256_digest_length> sha256(const std::string& input) {
-    std::array<unsigned char, constants::g_sha256_digest_length> digest{};
-    unsigned int digest_len = 0;
+MCP_API std::array<unsigned char, constants::g_sha256_digest_length> sha256(const std::string& input);
 
-    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
-    if (!ctx || EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr) != 1 ||
-        EVP_DigestUpdate(ctx.get(), input.data(), input.size()) != 1 ||
-        EVP_DigestFinal_ex(ctx.get(), digest.data(), &digest_len) != 1) {
-        throw std::runtime_error("OpenSSL SHA-256 failed");
-    }
-
-    return digest;
-}
-
-inline std::string generate_random_string(std::size_t length) {
-    static const std::size_t s_charset_size = mcp::constants::g_unreserved_chars.size();
-    // Largest multiple of charset_size that fits in a byte (avoids modulo bias)
-    static const auto s_bias_limit =
-        static_cast<unsigned char>((256 / s_charset_size) * s_charset_size);
-
-    std::string result;
-    result.reserve(length);
-    while (result.size() < length) {
-        unsigned char byte = 0;
-        if (RAND_bytes(&byte, 1) != 1) {
-            throw std::runtime_error("RAND_bytes failed");
-        }
-        if (byte < s_bias_limit) {
-            result.push_back(mcp::constants::g_unreserved_chars[byte % s_charset_size]);
-        }
-    }
-    return result;
-}
-
-inline std::string url_encode(const std::string& value) {
-    std::string result;
-    result.reserve(value.size() * 3);
-
-    for (unsigned char ch : value) {
-        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
-            ch == '-' || ch == '_' || ch == '.' || ch == '~') {
-            result.push_back(static_cast<char>(ch));
-        } else {
-            result.push_back('%');
-            result.push_back(mcp::constants::g_hex_digits_upper[ch >> constants::g_shift4]);
-            result.push_back(mcp::constants::g_hex_digits_upper[ch & constants::g_mask0x0F]);
-        }
-    }
-    return result;
-}
-
-inline std::string build_form_body(const KeyValuePairList& params) {
-    std::string body;
-    for (const auto& [key, value] : params) {
-        if (!body.empty()) {
-            body.push_back('&');
-        }
-        body += url_encode(key) + "=" + url_encode(value);
-    }
-    return body;
-}
+MCP_API std::string generate_random_string(std::size_t length);
+MCP_API std::string url_encode(const std::string& value);
+MCP_API std::string build_form_body(const KeyValuePairList& params);
 
 }  // namespace detail
 
@@ -178,21 +71,7 @@ struct PkcePair {
  * @param verifier_length Length of the verifier string, between 43 and 128 characters.
  * @return A PKCE pair suitable for OAuth 2.1 authorization code flows.
  */
-inline PkcePair generate_pkce_pair(std::size_t verifier_length = constants::g_default_verifier_length) {
-    if (verifier_length < constants::g_min_verifier_length ||
-        verifier_length > constants::g_max_verifier_length) {
-        throw std::invalid_argument("PKCE verifier length must be 43-128 characters");
-    }
-
-    PkcePair pair;
-    pair.code_verifier = detail::generate_random_string(verifier_length);
-    pair.challenge_method = "S256";
-
-    auto hash = detail::sha256(pair.code_verifier);
-    pair.code_challenge = detail::base64url_encode(hash.data(), hash.size());
-
-    return pair;
-}
+MCP_API PkcePair generate_pkce_pair(std::size_t verifier_length = constants::g_default_verifier_length);
 
 /**
  * @brief OAuth token response data returned by an authorization server.
@@ -212,14 +91,8 @@ struct TokenResponse {
      * @param margin Safety margin in seconds applied before reported expiry.
      * @return True when the token is expired or within the safety margin.
      */
-    [[nodiscard]] bool is_expired(
-        int margin = constants::g_default_token_lifetime_safety_margin_seconds) const {
-        if (!expires_in.has_value()) {
-            return false;
-        }
-        auto expiry = received_at + std::chrono::seconds(*expires_in) - std::chrono::seconds(margin);
-        return std::chrono::steady_clock::now() >= expiry;
-    }
+    [[nodiscard]] MCP_API bool is_expired(
+        int margin = constants::g_default_token_lifetime_safety_margin_seconds) const;
 };
 
 /**
@@ -228,20 +101,7 @@ struct TokenResponse {
  * @param j JSON token payload.
  * @param t Token response to populate.
  */
-inline void from_json(const nlohmann::json& j, TokenResponse& t) {
-    j.at("access_token").get_to(t.access_token);
-    t.token_type = j.value("token_type", "Bearer");
-    if (j.contains("refresh_token")) {
-        t.refresh_token = j.at("refresh_token").get<std::string>();
-    }
-    if (j.contains("expires_in")) {
-        t.expires_in = j.at("expires_in").get<int>();
-    }
-    if (j.contains("scope")) {
-        t.scope = j.at("scope").get<std::string>();
-    }
-    t.received_at = std::chrono::steady_clock::now();
-}
+MCP_API void from_json(const nlohmann::json& j, TokenResponse& t);
 
 /**
  * @brief Serialize a token response to JSON.
@@ -249,18 +109,7 @@ inline void from_json(const nlohmann::json& j, TokenResponse& t) {
  * @param j JSON object to populate.
  * @param t Token response to serialize.
  */
-inline void to_json(nlohmann::json& j, const TokenResponse& t) {
-    j = nlohmann::json{{"access_token", t.access_token}, {"token_type", t.token_type}};
-    if (t.refresh_token) {
-        j["refresh_token"] = *t.refresh_token;
-    }
-    if (t.expires_in) {
-        j["expires_in"] = *t.expires_in;
-    }
-    if (t.scope) {
-        j["scope"] = *t.scope;
-    }
-}
+MCP_API void to_json(nlohmann::json& j, const TokenResponse& t);
 
 /**
  * @brief Abstract storage interface for OAuth tokens keyed by server URL.
@@ -293,18 +142,23 @@ class TokenStore {
 /**
  * @brief Thread-safe in-memory token store implementation.
  */
-class InMemoryTokenStore : public TokenStore {
+class MCP_API InMemoryTokenStore : public TokenStore {
    public:
+    InMemoryTokenStore();
+    ~InMemoryTokenStore() override;
+
+    InMemoryTokenStore(const InMemoryTokenStore&) = delete;
+    InMemoryTokenStore& operator=(const InMemoryTokenStore&) = delete;
+    InMemoryTokenStore(InMemoryTokenStore&&) = delete;
+    InMemoryTokenStore& operator=(InMemoryTokenStore&&) = delete;
+
     /**
      * @brief Store or replace a token in the in-memory cache.
      *
      * @param server_url MCP server URL used as the storage key.
      * @param token Token data to persist.
      */
-    void store(const std::string& server_url, TokenResponse token) override {
-        std::lock_guard lock(mutex_);
-        tokens_[server_url] = std::move(token);
-    }
+    void store(const std::string& server_url, TokenResponse token) override;
 
     /**
      * @brief Load a token from the in-memory cache.
@@ -312,28 +166,18 @@ class InMemoryTokenStore : public TokenStore {
      * @param server_url MCP server URL used as the storage key.
      * @return The stored token, if present.
      */
-    std::optional<TokenResponse> load(const std::string& server_url) const override {
-        std::lock_guard lock(mutex_);
-        auto it = tokens_.find(server_url);
-        if (it == tokens_.end()) {
-            return std::nullopt;
-        }
-        return it->second;
-    }
+    std::optional<TokenResponse> load(const std::string& server_url) const override;
 
     /**
      * @brief Remove a token from the in-memory cache.
      *
      * @param server_url MCP server URL used as the storage key.
      */
-    void remove(const std::string& server_url) override {
-        std::lock_guard lock(mutex_);
-        tokens_.erase(server_url);
-    }
+    void remove(const std::string& server_url) override;
 
    private:
-    mutable std::mutex mutex_;
-    std::unordered_map<std::string, TokenResponse> tokens_;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 /**
@@ -353,15 +197,14 @@ struct OAuthConfig {
 /**
  * @brief Minimal HTTP client for OAuth token exchange and metadata retrieval.
  */
-class OAuthHttpClient {
+class MCP_API OAuthHttpClient {
    public:
     /**
      * @brief Construct an OAuth HTTP client.
      *
      * @param executor Executor used for asynchronous operations.
      */
-    explicit OAuthHttpClient(const net::any_io_executor& executor)
-        : strand_(net::make_strand(executor)) {}
+    explicit OAuthHttpClient(const net::any_io_executor& executor);
 
     /**
      * @brief Exchange an authorization code for an access token.
@@ -372,22 +215,7 @@ class OAuthHttpClient {
      * @return A task resolving to the parsed token response.
      */
     Task<TokenResponse> exchange_code(const OAuthConfig& config, const std::string& code,
-                                      const std::string& code_verifier) {
-        KeyValuePairList params = {
-            {"grant_type", "authorization_code"},  {"code", code},
-            {"redirect_uri", config.redirect_uri}, {"client_id", config.client_id},
-            {"code_verifier", code_verifier},
-        };
-
-        if (config.client_secret) {
-            params.emplace_back("client_secret", *config.client_secret);
-        }
-        if (config.resource) {
-            params.emplace_back("resource", *config.resource);
-        }
-
-        co_return co_await post_token_request(config.token_endpoint, params);
-    }
+                                      const std::string& code_verifier);
 
     /**
      * @brief Refresh an access token using a refresh token.
@@ -396,22 +224,7 @@ class OAuthHttpClient {
      * @param refresh_token Refresh token issued by the authorization server.
      * @return A task resolving to the parsed token response.
      */
-    Task<TokenResponse> refresh_token(const OAuthConfig& config, const std::string& refresh_token) {
-        KeyValuePairList params = {
-            {"grant_type", "refresh_token"},
-            {"refresh_token", refresh_token},
-            {"client_id", config.client_id},
-        };
-
-        if (config.client_secret) {
-            params.emplace_back("client_secret", *config.client_secret);
-        }
-        if (config.resource) {
-            params.emplace_back("resource", *config.resource);
-        }
-
-        co_return co_await post_token_request(config.token_endpoint, params);
-    }
+    Task<TokenResponse> refresh_token(const OAuthConfig& config, const std::string& refresh_token);
 
     /**
      * @brief Fetch a JSON document from an OAuth discovery endpoint.
@@ -419,122 +232,11 @@ class OAuthHttpClient {
      * @param url HTTP URL to fetch.
      * @return A task resolving to the parsed JSON body.
      */
-    Task<nlohmann::json> get_json(const std::string& url) {
-        auto parsed = parse_url(url);
-
-        co_await net::post(strand_, net::use_awaitable);
-
-        net::ip::tcp::resolver resolver(strand_);
-        auto endpoints = co_await resolver.async_resolve(parsed.host, parsed.port, net::use_awaitable);
-
-        beast::tcp_stream stream(strand_);
-        stream.expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
-        co_await stream.async_connect(endpoints, net::use_awaitable);
-
-        http::request<http::empty_body> req{http::verb::get, parsed.path,
-                                            mcp::constants::g_http_version_11};
-        req.set(http::field::host, parsed.host);
-        req.set(http::field::accept, "application/json");
-
-        stream.expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
-        co_await http::async_write(stream, req, net::use_awaitable);
-
-        beast::flat_buffer buffer;
-        http::response<http::string_body> res;
-        co_await http::async_read(stream, buffer, res, net::use_awaitable);
-
-        beast::error_code ec;
-        (void)stream.socket().shutdown(net::ip::tcp::socket::shutdown_both, ec);
-
-        if (res.result_int() >= mcp::constants::g_http_bad_request) {
-            throw std::runtime_error("HTTP GET " + url + " failed with status " +
-                                     std::to_string(res.result_int()));
-        }
-
-        auto json = nlohmann::json::parse(res.body(), nullptr, false);
-        if (json.is_discarded()) {
-            throw std::runtime_error("Failed to parse JSON from " + url);
-        }
-
-        co_return json;
-    }
+    Task<nlohmann::json> get_json(const std::string& url);
 
    private:
-    struct ParsedUrl {
-        std::string host;
-        std::string port;
-        std::string path;
-    };
-
-    static ParsedUrl parse_url(const std::string& url) {
-        if (!url.starts_with(mcp::constants::g_http_prefix)) {
-            throw std::invalid_argument("OAuth HTTP client URL must start with http://");
-        }
-
-        auto authority_and_path = url.substr(mcp::constants::g_http_prefix.size());
-        auto path_sep = authority_and_path.find('/');
-        auto authority = authority_and_path.substr(0, path_sep);
-        auto path_val = path_sep == std::string::npos ? "/" : authority_and_path.substr(path_sep);
-
-        std::string host;
-        std::string port = "80";
-        auto colon = authority.find(':');
-        if (colon == std::string::npos) {
-            host = std::move(authority);
-        } else {
-            host = authority.substr(0, colon);
-            port = authority.substr(colon + 1);
-        }
-
-        return {std::move(host), std::move(port), std::move(path_val)};
-    }
-
-    Task<TokenResponse> post_token_request(const std::string& token_endpoint,
-                                           const KeyValuePairList& params) {
-        auto parsed = parse_url(token_endpoint);
-        auto form_body = detail::build_form_body(params);
-
-        co_await net::post(strand_, net::use_awaitable);
-
-        net::ip::tcp::resolver resolver(strand_);
-        auto endpoints = co_await resolver.async_resolve(parsed.host, parsed.port, net::use_awaitable);
-
-        beast::tcp_stream stream(strand_);
-        stream.expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
-        co_await stream.async_connect(endpoints, net::use_awaitable);
-
-        http::request<http::string_body> req{http::verb::post, parsed.path,
-                                             mcp::constants::g_http_version_11};
-        req.set(http::field::host, parsed.host);
-        req.set(http::field::content_type, "application/x-www-form-urlencoded");
-        req.set(http::field::accept, "application/json");
-        req.body() = std::move(form_body);
-        req.prepare_payload();
-
-        stream.expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
-        co_await http::async_write(stream, req, net::use_awaitable);
-
-        beast::flat_buffer buffer;
-        http::response<http::string_body> res;
-        co_await http::async_read(stream, buffer, res, net::use_awaitable);
-
-        beast::error_code ec;
-        (void)stream.socket().shutdown(net::ip::tcp::socket::shutdown_both, ec);
-
-        if (res.result_int() >= mcp::constants::g_http_bad_request) {
-            throw std::runtime_error("Token request failed with status " +
-                                     std::to_string(res.result_int()) + ": " + res.body());
-        }
-
-        auto response_json = nlohmann::json::parse(res.body(), nullptr, false);
-        if (response_json.is_discarded()) {
-            throw std::runtime_error("Failed to parse token response JSON");
-        }
-
-        co_return response_json.get<TokenResponse>();
-    }
-
-    net::strand<net::any_io_executor> strand_;
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
 };
 
 /**
@@ -553,18 +255,7 @@ struct ProtectedResourceMetadata {
  * @param j JSON metadata payload.
  * @param m Metadata structure to populate.
  */
-inline void from_json(const nlohmann::json& j, ProtectedResourceMetadata& m) {
-    m.raw = j;
-    if (j.contains("resource")) {
-        j.at("resource").get_to(m.resource);
-    }
-    if (j.contains("authorization_servers")) {
-        j.at("authorization_servers").get_to(m.authorization_servers);
-    }
-    if (j.contains("scopes_supported")) {
-        m.scopes_supported = j.at("scopes_supported").get<std::vector<std::string>>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& j, ProtectedResourceMetadata& m);
 
 /**
  * @brief Metadata exposed by an OAuth authorization server.
@@ -590,37 +281,7 @@ struct AuthServerMetadata {
  * @param j JSON metadata payload.
  * @param m Metadata structure to populate.
  */
-inline void from_json(const nlohmann::json& j, AuthServerMetadata& m) {
-    m.raw = j;
-    if (j.contains("issuer")) {
-        j.at("issuer").get_to(m.issuer);
-    }
-    if (j.contains("authorization_endpoint")) {
-        j.at("authorization_endpoint").get_to(m.authorization_endpoint);
-    }
-    if (j.contains("token_endpoint")) {
-        j.at("token_endpoint").get_to(m.token_endpoint);
-    }
-    if (j.contains("revocation_endpoint")) {
-        m.revocation_endpoint = j.at("revocation_endpoint").get<std::string>();
-    }
-    if (j.contains("registration_endpoint")) {
-        m.registration_endpoint = j.at("registration_endpoint").get<std::string>();
-    }
-    if (j.contains("scopes_supported")) {
-        m.scopes_supported = j.at("scopes_supported").get<std::vector<std::string>>();
-    }
-    if (j.contains("response_types_supported")) {
-        m.response_types_supported = j.at("response_types_supported").get<std::vector<std::string>>();
-    }
-    if (j.contains("grant_types_supported")) {
-        m.grant_types_supported = j.at("grant_types_supported").get<std::vector<std::string>>();
-    }
-    if (j.contains("code_challenge_methods_supported")) {
-        m.code_challenge_methods_supported =
-            j.at("code_challenge_methods_supported").get<std::vector<std::string>>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& j, AuthServerMetadata& m);
 
 template <typename T>
 struct CachedEntry {
@@ -633,7 +294,7 @@ struct CachedEntry {
 /**
  * @brief Client for OAuth protected-resource and authorization-server discovery.
  */
-class OAuthDiscoveryClient {
+class MCP_API OAuthDiscoveryClient {
    public:
     /**
      * @brief Construct an OAuth discovery client.
@@ -643,8 +304,12 @@ class OAuthDiscoveryClient {
      */
     explicit OAuthDiscoveryClient(
         std::shared_ptr<OAuthHttpClient> http_client,
-        std::chrono::seconds cache_ttl = std::chrono::seconds(constants::g_default_cache_ttl_seconds))
-        : http_client_(std::move(http_client)), cache_ttl_(cache_ttl) {}
+        std::chrono::seconds cache_ttl = std::chrono::seconds(constants::g_default_cache_ttl_seconds));
+
+    OAuthDiscoveryClient(const OAuthDiscoveryClient&) = delete;
+    OAuthDiscoveryClient& operator=(const OAuthDiscoveryClient&) = delete;
+    OAuthDiscoveryClient(OAuthDiscoveryClient&&) = delete;
+    OAuthDiscoveryClient& operator=(OAuthDiscoveryClient&&) = delete;
 
     /**
      * @brief Discover metadata for a protected resource.
@@ -652,47 +317,7 @@ class OAuthDiscoveryClient {
      * @param resource_url Resource URL whose metadata should be resolved.
      * @return A task resolving to the discovered protected-resource metadata.
      */
-    Task<ProtectedResourceMetadata> discover_protected_resource(const std::string& resource_url) {
-        {
-            std::lock_guard lock(cache_mutex_);
-            auto it = resource_cache_.find(resource_url);
-            if (it != resource_cache_.end() && !it->second.is_expired()) {
-                co_return it->second.data;
-            }
-        }
-
-        auto parsed = parse_url_components(resource_url);
-        auto base = parsed.scheme + "://" + parsed.authority;
-
-        std::vector<std::string> urls_to_try;
-        if (!parsed.path.empty() && parsed.path != "/") {
-            auto path_part = parsed.path;
-            if (!path_part.empty() && path_part.front() == '/') {
-                path_part = path_part.substr(1);
-            }
-            urls_to_try.push_back(base + "/.well-known/oauth-protected-resource/" + path_part);
-        }
-        urls_to_try.push_back(base + "/.well-known/oauth-protected-resource");
-
-        for (const auto& url : urls_to_try) {
-            try {
-                auto json = co_await http_client_->get_json(url);
-                auto metadata = json.get<ProtectedResourceMetadata>();
-
-                std::lock_guard lock(cache_mutex_);
-                resource_cache_[resource_url] = {
-                    metadata,
-                    std::chrono::steady_clock::now() + cache_ttl_,
-                };
-                co_return metadata;
-            } catch (...) {
-                // Ignore failure and try next fallback URL
-                continue;
-            }
-        }
-
-        throw std::runtime_error("Failed to discover protected resource metadata for " + resource_url);
-    }
+    Task<ProtectedResourceMetadata> discover_protected_resource(const std::string& resource_url);
 
     /**
      * @brief Discover metadata for an authorization server.
@@ -700,134 +325,31 @@ class OAuthDiscoveryClient {
      * @param issuer_url Issuer URL or base URL of the authorization server.
      * @return A task resolving to the discovered authorization-server metadata.
      */
-    Task<AuthServerMetadata> discover_auth_server(const std::string& issuer_url) {
-        {
-            std::lock_guard lock(cache_mutex_);
-            auto it = auth_cache_.find(issuer_url);
-            if (it != auth_cache_.end() && !it->second.is_expired()) {
-                co_return it->second.data;
-            }
-        }
-
-        auto parsed = parse_url_components(issuer_url);
-        auto base = parsed.scheme + "://" + parsed.authority;
-
-        std::vector<std::string> urls_to_try;
-        bool has_path = !parsed.path.empty() && parsed.path != "/";
-
-        if (has_path) {
-            auto path_part = parsed.path;
-            if (!path_part.empty() && path_part.front() == '/') {
-                path_part = path_part.substr(1);
-            }
-            if (!path_part.empty() && path_part.back() == '/') {
-                path_part.pop_back();
-            }
-            urls_to_try.push_back(base + "/.well-known/oauth-authorization-server/" + path_part);
-            urls_to_try.push_back(base + "/.well-known/openid-configuration/" + path_part);
-            urls_to_try.push_back(issuer_url + "/.well-known/openid-configuration");
-        } else {
-            urls_to_try.push_back(base + "/.well-known/oauth-authorization-server");
-            urls_to_try.push_back(base + "/.well-known/openid-configuration");
-        }
-
-        for (const auto& url : urls_to_try) {
-            try {
-                auto json = co_await http_client_->get_json(url);
-                auto metadata = json.get<AuthServerMetadata>();
-
-                std::lock_guard lock(cache_mutex_);
-                auth_cache_[issuer_url] = {
-                    metadata,
-                    std::chrono::steady_clock::now() + cache_ttl_,
-                };
-                co_return metadata;
-            } catch (...) {
-                // Ignore failure and try next fallback URL
-                continue;
-            }
-        }
-
-        throw std::runtime_error("Failed to discover authorization server metadata for " + issuer_url);
-    }
+    Task<AuthServerMetadata> discover_auth_server(const std::string& issuer_url);
 
     /**
      * @brief Clear all cached discovery metadata.
      */
-    void clear_cache() {
-        std::lock_guard lock(cache_mutex_);
-        resource_cache_.clear();
-        auth_cache_.clear();
-    }
+    void clear_cache();
 
    private:
-    struct UrlComponents {
-        std::string scheme;
-        std::string authority;
-        std::string path;
-    };
-
-    static UrlComponents parse_url_components(const std::string& url) {
-        UrlComponents result;
-        auto scheme_end = url.find("://");
-        if (scheme_end == std::string::npos) {
-            throw std::invalid_argument("URL missing scheme: " + url);
-        }
-        result.scheme = url.substr(0, scheme_end);
-        auto rest = url.substr(scheme_end + 3);
-
-        auto path_start = rest.find('/');
-        if (path_start == std::string::npos) {
-            result.authority = rest;
-            result.path = "/";
-        } else {
-            result.authority = rest.substr(0, path_start);
-            result.path = rest.substr(path_start);
-        }
-        return result;
-    }
-
-    std::shared_ptr<OAuthHttpClient> http_client_;
-    std::chrono::seconds cache_ttl_;
-
-    mutable std::mutex cache_mutex_;
-    std::unordered_map<std::string, CachedEntry<ProtectedResourceMetadata>> resource_cache_;
-    std::unordered_map<std::string, CachedEntry<AuthServerMetadata>> auth_cache_;
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
 };
 
-/// @brief Callback used to validate a bearer token extracted from request metadata.
+/// @brief Legacy callback used to validate a bearer token embedded in request metadata.
 using TokenValidator = std::function<Task<bool>(const std::string& token)>;
 
 /**
- * @brief Create middleware that validates bearer tokens in request metadata.
+ * @brief Create legacy middleware that validates bearer tokens in request metadata.
+ *
+ * For Streamable HTTP servers, prefer set_bearer_token_validator() on the HTTP transport or
+ * session manager so authentication is enforced at the HTTP boundary.
  *
  * @param validator Async callback that returns true when the token is accepted.
  * @return Middleware enforcing presence and validity of `_meta.auth_token`.
  */
-inline Middleware make_auth_middleware(TokenValidator validator) {
-    return [validator = std::move(validator)](mcp::Context& ctx, const nlohmann::json& params,
-                                              TypeErasedHandler next) -> Task<nlohmann::json> {
-        std::string token;
-        if (params.contains("_meta") && params["_meta"].contains("auth_token")) {
-            token = params["_meta"]["auth_token"].get<std::string>();
-        }
-
-        if (token.empty()) {
-            co_return nlohmann::json{
-                {"content", {{{"type", "text"}, {"text", "Unauthorized: missing Bearer token"}}}},
-                {"isError", true}};
-        }
-
-        bool valid = co_await validator(token);
-        if (!valid) {
-            co_return nlohmann::json{
-                {"content", {{{"type", "text"}, {"text", "Unauthorized: invalid Bearer token"}}}},
-                {"isError", true}};
-        }
-
-        co_return co_await next(ctx, params);
-    };
-}
+MCP_API Middleware make_auth_middleware(TokenValidator validator);
 
 /**
  * @brief Extract a bearer token from an Authorization header value.
@@ -835,14 +357,7 @@ inline Middleware make_auth_middleware(TokenValidator validator) {
  * @param auth_header_value Header value to parse.
  * @return The token value without the `Bearer ` prefix, or an empty string on mismatch.
  */
-inline std::string extract_bearer_token(std::string_view auth_header_value) {
-    constexpr std::string_view prefix = "Bearer ";
-    if (auth_header_value.size() > prefix.size() &&
-        auth_header_value.substr(0, prefix.size()) == prefix) {
-        return std::string(auth_header_value.substr(prefix.size()));
-    }
-    return {};
-}
+MCP_API std::string extract_bearer_token(std::string_view auth_header_value);
 
 /**
  * @brief Abstract interface for providing access tokens and handling refresh.
@@ -874,66 +389,53 @@ class Authenticator {
 /**
  * @brief OAuth 2.0 implementation of the Authenticator interface.
  */
-class OAuthAuthenticator : public Authenticator {
+class MCP_API OAuthAuthenticator : public Authenticator {
    public:
     OAuthAuthenticator(std::shared_ptr<TokenStore> token_store,
                        std::shared_ptr<OAuthHttpClient> oauth_client, OAuthConfig config,
-                       std::string server_url)
-        : token_store_(std::move(token_store)),
-          oauth_client_(std::move(oauth_client)),
-          config_(std::move(config)),
-          server_url_(std::move(server_url)) {}
+                       std::string server_url);
 
-    [[nodiscard]] std::string get_access_token() const override {
-        auto token = token_store_->load(server_url_);
-        if (token) {
-            return token->access_token;
-        }
-        return {};
-    }
+    [[nodiscard]] std::string get_access_token() const override;
 
-    Task<bool> try_refresh_token() override {
-        auto stored = token_store_->load(server_url_);
-        if (!stored || !stored->refresh_token) {
-            co_return false;
-        }
-
-        try {
-            auto new_token = co_await oauth_client_->refresh_token(config_, *stored->refresh_token);
-            if (!new_token.refresh_token && stored->refresh_token) {
-                new_token.refresh_token = stored->refresh_token;
-            }
-            token_store_->store(server_url_, std::move(new_token));
-            co_return true;
-        } catch (...) {
-            co_return false;
-        }
-    }
+    Task<bool> try_refresh_token() override;
 
     /// @brief Stores an initial token obtained from an explicit OAuth exchange (e.g., authorization
     /// code flow).
     /// @param token The token response to persist via the configured TokenStore.
-    void store_token(TokenResponse token) { token_store_->store(server_url_, std::move(token)); }
+    void store_token(TokenResponse token);
 
    private:
-    std::shared_ptr<TokenStore> token_store_;
-    std::shared_ptr<OAuthHttpClient> oauth_client_;
-    OAuthConfig config_;
-    std::string server_url_;
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
 };
 
 /**
- * @brief Transport wrapper that injects and refreshes OAuth bearer tokens.
+ * @brief Resource limits for legacy JSON-RPC authentication replay correlation.
  *
- * @details Wraps any `ITransport` to automatically inject OAuth bearer tokens on write and handle token
- * refresh on auth failures. When the server returns error codes -32001 or -32000
- * (authentication-related), the transport calls `Authenticator::try_refresh_token()` and, if
- * successful, re-sends the last written message and reads the new response. Only one retry attempt is
- * made per `read_message()` call. Callers should ensure messages are idempotent since they may be
- * re-sent after a token refresh. `last_written_message_` stores the most recently written message for
- * potential replay.
+ * @details Pending request wires are retained only until a matching response arrives, the entry is
+ * evicted to satisfy these limits, the TTL elapses, or the transport closes. A zero limit or a
+ * non-positive TTL disables legacy response-driven replay correlation. HTTP status-driven refresh
+ * and retry does not depend on this cache.
  */
-class OAuthClientTransport final : public ITransport {
+struct OAuthClientTransportOptions {
+    std::size_t max_pending_requests{256};                    ///< Maximum retained request count.
+    std::size_t max_pending_request_bytes{16 * 1024 * 1024};  ///< Approximate retained wire/key bytes.
+    std::chrono::milliseconds pending_request_ttl{std::chrono::minutes(5)};  ///< Replay eligibility.
+};
+
+/**
+ * @brief Transport wrapper that supplies and refreshes OAuth bearer tokens.
+ *
+ * @details For HttpClientTransport, tokens are sent in the HTTP Authorization header. The legacy
+ * request-metadata mechanism is retained only for non-HTTP transports. The wrapper also handles token
+ * refresh on legacy JSON-RPC authorization failures. When the server returns -32000, the
+ * transport calls `Authenticator::try_refresh_token()` and, if successful, re-sends the request whose
+ * ID matches the error response and reads the new response. Only one retry attempt is
+ * made per `read_message()` call. Callers should ensure messages are idempotent since they may be
+ * re-sent after a token refresh. Outstanding request wires are tracked by JSON-RPC request ID in a
+ * bounded, expiring cache so an authentication error cannot replay a different concurrent request.
+ */
+class MCP_API OAuthClientTransport final : public ITransport {
    public:
     /**
      * @brief Construct an authenticated transport wrapper.
@@ -942,49 +444,30 @@ class OAuthClientTransport final : public ITransport {
      * @param authenticator Authenticator used to retrieve and refresh tokens.
      */
     OAuthClientTransport(std::shared_ptr<ITransport> inner,
-                         std::shared_ptr<Authenticator> authenticator)
-        : inner_(std::move(inner)), authenticator_(std::move(authenticator)) {}
+                         std::shared_ptr<Authenticator> authenticator);
+
+    /**
+     * @brief Construct an authenticated transport wrapper with replay-correlation limits.
+     *
+     * @param inner Underlying transport used for MCP message exchange.
+     * @param authenticator Authenticator used to retrieve and refresh tokens.
+     * @param options Bounds and TTL for retaining outstanding request wires.
+     */
+    OAuthClientTransport(std::shared_ptr<ITransport> inner,
+                         std::shared_ptr<Authenticator> authenticator,
+                         OAuthClientTransportOptions options);
 
     /**
      * @brief Read a message from the inner transport, retrying once on authentication errors.
-     * @details If the received message contains an authentication error (JSON-RPC error code -32001 or
-     * -32000), attempts one token refresh via `Authenticator::try_refresh_token()`. On successful
-     * refresh, replays the last written message and returns the new response. If refresh fails or a
-     * second auth error is received, returns the error response as-is. If the response cannot be parsed
-     * as JSON, the raw string is returned unchanged.
+     * @details If the received message contains the legacy JSON-RPC authentication error -32000,
+     * attempts one token refresh via `Authenticator::try_refresh_token()`. On successful
+     * refresh, replays the matching outstanding request while it remains eligible and returns the new
+     * response. If refresh fails, correlation has expired or been evicted, or a second auth error is
+     * received, returns the error response as-is. If the response cannot be parsed as JSON, the raw
+     * string is returned unchanged.
      * @return The (possibly retried) raw message string.
      */
-    Task<std::string> read_message() override {
-        if (!inner_) {
-            throw std::runtime_error("OAuthClientTransport inner transport is null");
-        }
-        auto raw = co_await inner_->read_message();
-
-        try {
-            auto json_msg = nlohmann::json::parse(raw);
-            JSONRPCMessage msg = json_msg.get<JSONRPCMessage>();
-
-            if (auto* error_resp = std::get_if<JSONRPCErrorResponse>(&msg)) {
-                auto code = error_resp->error.code;
-                // Error codes -32001 (authentication required) and -32000 (authentication failed)
-                // are MCP standard JSON-RPC error codes for auth-related failures.
-                // Attempt to refresh token and retry the original request once.
-                if (code == g_REQUEST_TIMEOUT || code == g_UNAUTHORIZED) {
-                    bool refreshed = co_await authenticator_->try_refresh_token();
-                    if (refreshed && !last_written_message_.empty()) {
-                        co_await write_message(last_written_message_);
-                        co_return co_await inner_->read_message();
-                    }
-                }
-            }
-        } catch (const std::exception& e) {
-            // Silently ignore JSON parse errors: returns raw message to caller unchanged.
-            // This allows the client to handle non-JSON responses gracefully.
-            (void)e;
-        }
-
-        co_return raw;
-    }
+    Task<std::string> read_message() override;
 
     /**
      * @brief Inject the current bearer token into an outgoing MCP message.
@@ -992,59 +475,16 @@ class OAuthClientTransport final : public ITransport {
      * @param message Serialized JSON-RPC request or notification.
      * @return A task that completes once the wrapped transport accepts the message.
      */
-    Task<void> write_message(std::string_view message) override {
-        if (!inner_) {
-            throw std::runtime_error("OAuthClientTransport inner transport is null");
-        }
-        std::string injected = std::string(message);
-        try {
-            auto json_msg = nlohmann::json::parse(message);
-            JSONRPCMessage msg = json_msg.get<JSONRPCMessage>();
-
-            if (std::holds_alternative<JSONRPCRequest>(msg)) {
-                injected = inject_token(std::get<JSONRPCRequest>(msg));
-            }
-        } catch (const std::exception& e) {
-            // Ignore parse errors, send original message.
-            (void)e;
-        }
-
-        last_written_message_ = std::string(message);
-        co_await inner_->write_message(injected);
-    }
+    Task<void> write_message(std::string_view message) override;
 
     /**
      * @brief Close the wrapped transport.
      */
-    void close() override { inner_->close(); }
+    void close() override;
 
    private:
-    [[nodiscard]] std::string inject_token(JSONRPCRequest request) const {
-        auto token = authenticator_->get_access_token();
-        if (token.empty()) {
-            return nlohmann::json(request).dump();
-        }
-
-        if (!request.params) {
-            request.params = nlohmann::json::object();
-        }
-
-        auto& params = *request.params;
-        if (!params.is_object()) {
-            params = nlohmann::json::object();
-        }
-
-        if (!params.contains("_meta")) {
-            params["_meta"] = nlohmann::json::object();
-        }
-        params["_meta"]["auth_token"] = token;
-
-        return nlohmann::json(request).dump();
-    }
-
-    std::shared_ptr<ITransport> inner_;
-    std::shared_ptr<Authenticator> authenticator_;
-    std::string last_written_message_;
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
 };
 
 }  // namespace mcp::auth

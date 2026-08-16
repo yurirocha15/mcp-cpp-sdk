@@ -14,6 +14,8 @@
 #include <boost/beast/http.hpp>
 #include <chrono>
 #include <memory>
+#include <mutex>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <queue>
 #include <stdexcept>
@@ -35,20 +37,35 @@ struct HttpClientTransport::Impl {
 
     struct SharedState {
         explicit SharedState(net::strand<net::any_io_executor>& strand)
-            : timer(strand), resolver(strand) {}
+            : timer(strand), operation_timer(strand), resolver(strand) {
+            operation_timer.expires_at(std::chrono::steady_clock::time_point::max());
+        }
 
         net::steady_timer timer;
+        net::steady_timer operation_timer;
         net::ip::tcp::resolver resolver;
         std::optional<beast::tcp_stream> stream;
         std::queue<std::string> queue;
         std::atomic<bool> closed{false};
+        mutable std::mutex metadata_mutex;
         std::string session_id;
         std::string last_event_id;
+        std::string protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
+        std::optional<std::string> initialize_request_key;
+        bool operation_active{false};
+        bool read_active{false};
     };
 
     struct ParsedSseEvent {
         std::string data;
         std::string id;
+    };
+
+    struct CloseTarget {
+        std::string host;
+        std::string port;
+        std::string path;
+        std::function<std::string()> bearer_token_provider;
     };
 
     Impl(const net::any_io_executor& executor, const std::string& url)
@@ -180,18 +197,63 @@ struct HttpClientTransport::Impl {
     }
 
     void enqueue_message(std::string message_text) const {
-        auto shared_state = state;
-        net::post(shared_state->timer.get_executor(),
-                  [shared_state, queued_message = std::move(message_text)]() mutable {
-                      shared_state->queue.push(std::move(queued_message));
-                      shared_state->timer.cancel();
-                  });
+        state->queue.push(std::move(message_text));
+        state->timer.cancel();
     }
 
     void capture_session_id(const StringResponse& response) {
         auto header_iter = response.find("MCP-Session-Id");
         if (header_iter != response.end()) {
+            std::lock_guard lock(state->metadata_mutex);
             state->session_id = std::string(header_iter->value());
+        }
+    }
+
+    bool capture_initialize_request(std::string_view message) {
+        try {
+            const auto request = nlohmann::json::parse(message);
+            if (request.is_object() && request.value("method", "") == "initialize" &&
+                request.contains("id") &&
+                (request.at("id").is_string() || request.at("id").is_number_integer())) {
+                state->initialize_request_key = request.at("id").get<RequestId>().correlation_key();
+                return true;
+            }
+        } catch (const std::exception&) {
+            // The protocol layer reports malformed JSON; the transport only
+            // tracks valid initialize envelopes for header negotiation.
+        }
+        return false;
+    }
+
+    void capture_negotiated_protocol_version(std::string_view message) {
+        if (!state->initialize_request_key) {
+            return;
+        }
+
+        try {
+            const auto response = nlohmann::json::parse(message);
+            if (!response.is_object() || !response.contains("id") ||
+                (!response.at("id").is_string() && !response.at("id").is_number_integer()) ||
+                response.at("id").get<RequestId>().correlation_key() !=
+                    *state->initialize_request_key) {
+                return;
+            }
+
+            state->initialize_request_key.reset();
+            if (!response.contains("result") || !response.at("result").is_object()) {
+                return;
+            }
+            const auto& result = response.at("result");
+            if (!result.contains("protocolVersion") || !result.at("protocolVersion").is_string()) {
+                return;
+            }
+
+            const auto protocol_version = result.at("protocolVersion").get<std::string>();
+            if (is_supported_protocol_version(protocol_version)) {
+                state->protocol_version = protocol_version;
+            }
+        } catch (const std::exception&) {
+            // The client protocol layer owns response validation.
         }
     }
 
@@ -201,8 +263,15 @@ struct HttpClientTransport::Impl {
         }
 
         if (response.result_int() >= constants::g_http_bad_request) {
-            throw std::runtime_error("HTTP request failed with status " +
-                                     std::to_string(response.result_int()));
+            std::string challenge;
+            const auto challenge_it = response.find(http::field::www_authenticate);
+            if (challenge_it != response.end()) {
+                challenge = std::string(challenge_it->value());
+            }
+            throw HttpStatusError(
+                response.result_int(),
+                "HTTP request failed with status " + std::to_string(response.result_int()),
+                std::move(challenge));
         }
 
         if (response.find(http::field::content_type) == response.end()) {
@@ -213,6 +282,7 @@ struct HttpClientTransport::Impl {
 
         if (starts_with(content_type_header, "application/json")) {
             if (!response.body().empty()) {
+                capture_negotiated_protocol_version(response.body());
                 enqueue_message(response.body());
             }
             return;
@@ -223,8 +293,10 @@ struct HttpClientTransport::Impl {
             while (!parsed_messages.empty()) {
                 auto& event = parsed_messages.front();
                 if (!event.id.empty()) {
+                    std::lock_guard lock(state->metadata_mutex);
                     state->last_event_id = event.id;
                 }
+                capture_negotiated_protocol_version(event.data);
                 enqueue_message(std::move(event.data));
                 parsed_messages.pop();
             }
@@ -245,15 +317,129 @@ struct HttpClientTransport::Impl {
         state->stream.reset();
     }
 
+    static void complete_operation(const std::shared_ptr<SharedState>& shared_state) {
+        shared_state->operation_active = false;
+        boost::system::error_code ignored;
+        shared_state->operation_timer.cancel(ignored);
+    }
+
+    static Task<std::string> run_read(std::shared_ptr<Impl> impl) {
+        auto& state = *impl->state;
+        if (state.read_active) {
+            throw std::logic_error("HttpClientTransport supports one pending read");
+        }
+        state.read_active = true;
+        try {
+            for (;;) {
+                if (state.closed.load(std::memory_order_acquire)) {
+                    throw std::runtime_error("HttpClientTransport is closed");
+                }
+
+                if (!state.queue.empty()) {
+                    auto message_text = std::move(state.queue.front());
+                    state.queue.pop();
+                    state.read_active = false;
+                    co_return message_text;
+                }
+
+                state.timer.expires_at(std::chrono::steady_clock::time_point::max());
+                try {
+                    co_await state.timer.async_wait(net::use_awaitable);
+                } catch (const boost::system::system_error& error) {
+                    if (error.code() != net::error::operation_aborted) {
+                        throw;
+                    }
+                }
+            }
+        } catch (...) {
+            state.read_active = false;
+            throw;
+        }
+    }
+
+    static Task<void> run_write(std::shared_ptr<Impl> impl, std::string message) {
+        auto& state = *impl->state;
+        if (state.closed.load(std::memory_order_acquire)) {
+            throw std::runtime_error("HttpClientTransport is closed");
+        }
+
+        while (state.operation_active) {
+            try {
+                co_await state.operation_timer.async_wait(net::use_awaitable);
+            } catch (const boost::system::system_error& error) {
+                if (error.code() != net::error::operation_aborted) {
+                    throw;
+                }
+            }
+            if (state.closed.load(std::memory_order_acquire)) {
+                throw std::runtime_error("HttpClientTransport is closed");
+            }
+        }
+
+        state.operation_timer.expires_at(std::chrono::steady_clock::time_point::max());
+        state.operation_active = true;
+        const bool initialize_operation = impl->capture_initialize_request(message);
+
+        try {
+            co_await impl->ensure_connected();
+
+            StringRequest request{http::verb::post, impl->path, constants::g_http_version_11};
+            request.set(http::field::host, impl->host);
+            request.set(http::field::content_type, "application/json");
+            request.set(http::field::accept, "application/json, text/event-stream");
+            request.set("MCP-Protocol-Version", state.protocol_version);
+            if (impl->bearer_token_provider) {
+                const auto token = impl->bearer_token_provider();
+                if (!token.empty()) {
+                    request.set(http::field::authorization, "Bearer " + token);
+                }
+            }
+            if (!state.session_id.empty()) {
+                request.set("MCP-Session-Id", state.session_id);
+            }
+            if (!state.last_event_id.empty()) {
+                request.set("Last-Event-ID", state.last_event_id);
+            }
+            request.body() = std::move(message);
+            request.prepare_payload();
+
+            if (!state.stream) {
+                throw std::runtime_error("HttpClientTransport stream is not initialized");
+            }
+            auto& stream = *state.stream;
+            stream.expires_after(std::chrono::seconds(constants::g_http_timeout_seconds));
+            co_await http::async_write(stream, request, net::use_awaitable);
+
+            beast::flat_buffer response_buffer;
+            StringResponse response;
+            co_await http::async_read(stream, response_buffer, response, net::use_awaitable);
+
+            impl->capture_session_id(response);
+            impl->process_response(response);
+            if (initialize_operation) {
+                state.initialize_request_key.reset();
+            }
+            complete_operation(impl->state);
+        } catch (...) {
+            if (initialize_operation) {
+                state.initialize_request_key.reset();
+            }
+            impl->reset_connection();
+            complete_operation(impl->state);
+            throw;
+        }
+    }
+
     net::strand<net::any_io_executor> strand;
     std::shared_ptr<SharedState> state;
     std::string host;
     std::string port;
     std::string path;
+    std::function<std::string()> bearer_token_provider;
 };
 
 HttpClientTransport::HttpClientTransport(const net::any_io_executor& executor, const std::string& url)
-    : impl_(std::make_unique<Impl>(executor, url)) {}
+    : impl_(std::make_shared<Impl>(executor, url)) {}
 
 HttpClientTransport::~HttpClientTransport() {
     try {
@@ -264,80 +450,28 @@ HttpClientTransport::~HttpClientTransport() {
     }
 }
 
-const std::string& HttpClientTransport::session_id() const { return impl_->state->session_id; }
+std::string HttpClientTransport::session_id() const {
+    std::lock_guard lock(impl_->state->metadata_mutex);
+    return impl_->state->session_id;
+}
 
-const std::string& HttpClientTransport::last_event_id() const { return impl_->state->last_event_id; }
+std::string HttpClientTransport::last_event_id() const {
+    std::lock_guard lock(impl_->state->metadata_mutex);
+    return impl_->state->last_event_id;
+}
+
+void HttpClientTransport::set_bearer_token_provider(std::function<std::string()> provider) {
+    impl_->bearer_token_provider = std::move(provider);
+}
 
 Task<std::string> HttpClientTransport::read_message() {
-    auto& state = *impl_->state;
-    for (;;) {
-        if (!state.queue.empty()) {
-            auto message_text = std::move(state.queue.front());
-            state.queue.pop();
-            co_return message_text;
-        }
-
-        if (state.closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("HttpClientTransport is closed");
-        }
-
-        state.timer.expires_at(std::chrono::steady_clock::time_point::max());
-        try {
-            co_await state.timer.async_wait(net::use_awaitable);
-        } catch (const boost::system::system_error& error) {
-            if (error.code() != net::error::operation_aborted) {
-                throw;
-            }
-        }
-    }
+    auto impl = impl_;
+    return net::co_spawn(impl->strand, Impl::run_read(impl), net::use_awaitable);
 }
 
 Task<void> HttpClientTransport::write_message(std::string_view message) {
-    if (impl_->state->closed.load(std::memory_order_acquire)) {
-        throw std::runtime_error("HttpClientTransport is closed");
-    }
-
-    std::string msg(message);
-    co_await net::post(impl_->strand, net::use_awaitable);
-
-    if (impl_->state->closed.load(std::memory_order_acquire)) {
-        throw std::runtime_error("HttpClientTransport is closed");
-    }
-
-    try {
-        co_await impl_->ensure_connected();
-
-        StringRequest request{http::verb::post, impl_->path, constants::g_http_version_11};
-        request.set(http::field::host, impl_->host);
-        request.set(http::field::content_type, "application/json");
-        request.set(http::field::accept, "application/json, text/event-stream");
-        request.set("MCP-Protocol-Version", std::string(g_LATEST_PROTOCOL_VERSION));
-        if (!impl_->state->session_id.empty()) {
-            request.set("MCP-Session-Id", impl_->state->session_id);
-        }
-        if (!impl_->state->last_event_id.empty()) {
-            request.set("Last-Event-ID", impl_->state->last_event_id);
-        }
-        request.body() = std::move(msg);
-        request.prepare_payload();
-
-        if (!impl_->state->stream) {
-            throw std::runtime_error("HttpClientTransport stream is not initialized");
-        }
-        auto& stream = *impl_->state->stream;
-        stream.expires_after(std::chrono::seconds(constants::g_http_timeout_seconds));
-        co_await http::async_write(stream, request, net::use_awaitable);
-
-        beast::flat_buffer response_buffer;
-        StringResponse response;
-        co_await http::async_read(stream, response_buffer, response, net::use_awaitable);
-
-        impl_->capture_session_id(response);
-        impl_->process_response(response);
-    } catch (...) {
-        impl_->reset_connection();
-        throw;
-    }
+    auto impl = impl_;
+    return net::co_spawn(impl->strand, Impl::run_write(impl, std::string(message)), net::use_awaitable);
 }
 
 void HttpClientTransport::close() {
@@ -348,16 +482,36 @@ void HttpClientTransport::close() {
     auto shared_state = impl_->state;
     net::post(shared_state->timer.get_executor(), [shared_state]() { shared_state->timer.cancel(); });
 
-    auto active_session_id = shared_state->session_id;
+    auto close_target = std::make_shared<Impl::CloseTarget>(
+        Impl::CloseTarget{impl_->host, impl_->port, impl_->path, impl_->bearer_token_provider});
     net::co_spawn(
         impl_->strand,
-        [shared_state, active_session_id, host = impl_->host, port = impl_->port,
-         path = impl_->path]() -> Task<void> {
-            if (!active_session_id.empty()) {
+        [shared_state, close_target = std::move(close_target)]() -> Task<void> {
+            if (shared_state->operation_active) {
+                shared_state->resolver.cancel();
+                if (shared_state->stream) {
+                    beast::error_code ignored;
+                    shared_state->stream->socket().cancel(ignored);
+                }
+                while (shared_state->operation_active) {
+                    try {
+                        co_await shared_state->operation_timer.async_wait(net::use_awaitable);
+                    } catch (const boost::system::system_error& error) {
+                        if (error.code() != net::error::operation_aborted) {
+                            co_return;
+                        }
+                    }
+                }
+            }
+
+            auto active_session_id = std::make_shared<const std::string>(shared_state->session_id);
+            auto active_protocol_version =
+                std::make_shared<const std::string>(shared_state->protocol_version);
+            if (!active_session_id->empty()) {
                 try {
                     if (!shared_state->stream.has_value()) {
                         auto resolved_endpoints = co_await shared_state->resolver.async_resolve(
-                            host, port, net::use_awaitable);
+                            close_target->host, close_target->port, net::use_awaitable);
 
                         shared_state->stream.emplace(shared_state->timer.get_executor());
                         shared_state->stream->expires_after(
@@ -366,11 +520,17 @@ void HttpClientTransport::close() {
                                                                      net::use_awaitable);
                     }
 
-                    http::request<http::empty_body> delete_request{http::verb::delete_, path,
-                                                                   constants::g_http_version_11};
-                    delete_request.set(http::field::host, host);
-                    delete_request.set("MCP-Session-Id", active_session_id);
-                    delete_request.set("MCP-Protocol-Version", std::string(g_LATEST_PROTOCOL_VERSION));
+                    http::request<http::empty_body> delete_request{
+                        http::verb::delete_, close_target->path, constants::g_http_version_11};
+                    delete_request.set(http::field::host, close_target->host);
+                    delete_request.set("MCP-Session-Id", *active_session_id);
+                    delete_request.set("MCP-Protocol-Version", *active_protocol_version);
+                    if (close_target->bearer_token_provider) {
+                        const auto token = close_target->bearer_token_provider();
+                        if (!token.empty()) {
+                            delete_request.set(http::field::authorization, "Bearer " + token);
+                        }
+                    }
 
                     shared_state->stream->expires_after(
                         std::chrono::seconds(constants::g_http_timeout_seconds));
@@ -394,7 +554,10 @@ void HttpClientTransport::close() {
                 shared_state->stream->socket().close(operation_error);
                 shared_state->stream.reset();
             }
-            shared_state->session_id.clear();
+            {
+                std::lock_guard lock(shared_state->metadata_mutex);
+                shared_state->session_id.clear();
+            }
             co_return;
         },
         net::detached);
