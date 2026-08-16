@@ -288,7 +288,12 @@ if(BUILD_TESTING)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
 
   include(GoogleTest)
-  gtest_discover_tests(mcp-sdk-tests)
+  # Default per-test timeout so one deadlocked test cannot stall a ctest run for
+  # the 25-minute ctest default (or forever without --timeout).
+  gtest_discover_tests(
+    mcp-sdk-tests
+    PROPERTIES
+    TIMEOUT 120)
 
   option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
   if(ENABLE_COVERAGE)
