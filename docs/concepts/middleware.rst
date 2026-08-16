@@ -89,19 +89,24 @@ Common Examples
 Authentication
 ^^^^^^^^^^^^^^
 
-You can create a middleware that checks for a specific header or parameter. For a full OAuth implementation, see the :doc:`oauth` concept page.
+You can create middleware that checks a specific parameter. For the current
+OAuth and HTTP bearer-authentication building blocks, limits, and recommended
+security boundary, see :doc:`oauth`.
 
 .. code-block:: cpp
 
    server.use([](Context& ctx, const nlohmann::json& params, TypeErasedHandler next) -> Task<nlohmann::json> {
        if (!is_authorized(params)) {
-           mcp::CallToolResult err;
-           err.isError = true;
-           err.content.push_back(mcp::TextContent{"Unauthorized access"});
-           co_return nlohmann::json(err);
+           throw std::runtime_error("Unauthorized access");
        }
        co_return co_await next(ctx, params);
    });
+
+Tool middleware returns the same application value as the wrapped handler. To
+short-circuit with a tool error, throw an exception; the server converts it to
+a top-level ``CallToolResult`` with ``isError=true``. Complete protocol result
+objects belong in a typed ``CallToolResult`` handler or ``add_raw_tool()``, not
+in an ordinary JSON middleware return value.
 
 Logging
 ^^^^^^^

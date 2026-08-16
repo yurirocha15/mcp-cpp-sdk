@@ -1,28 +1,30 @@
-OAuth
-=====
+OAuth helpers
+=============
 
-OAuth 2.0 and 2.1 support in the MCP C++ SDK enables secure, delegated authentication for both clients and servers. This implementation provides comprehensive tools for discovery, token management, and automatic transport-level authentication.
+The SDK currently provides experimental OAuth building blocks rather than a
+complete, policy-free OAuth 2.1 client. Applications remain responsible for
+browser interaction, redirect handling, client registration, consent UX,
+secure persistent storage, and selecting the authorization-server policy that
+fits their deployment.
 
-The OAuth features are primarily designed for remote transports like HTTP or WebSockets, where persistent and secure identification is required.
+The available pieces cover PKCE generation, protected-resource and
+authorization-server metadata discovery, authorization-code exchange, refresh
+tokens, volatile token storage, and transport-level bearer authentication.
 
-OAuth Overview
---------------
+Security boundary
+-----------------
 
-The SDK implements the modern OAuth 2.1 authorization code flow with **PKCE** (Proof Key for Code Exchange) by default. This ensures high security for native applications and public clients without requiring client secrets.
+``OAuthHttpClient`` and the built-in MCP HTTP transports currently accept only
+plain ``http://`` URLs. Use them directly only for loopback development or a
+trusted internal boundary. Production traffic outside that boundary must use a
+TLS-terminating proxy or a custom TLS transport. Never log access tokens,
+refresh tokens, authorization codes, client secrets, or PKCE verifiers.
 
-Key components:
+Configuration
+-------------
 
-* **OAuthConfig**: Defines client identifiers and server endpoints.
-* **OAuthDiscoveryClient**: Automatically resolves metadata from `.well-known` endpoints.
-* **TokenStore**: Persistently stores access and refresh tokens.
-* **OAuthAuthenticator**: Manages the lifecycle of tokens, including automatic background refresh.
-* **OAuthClientTransport**: A transport wrapper that injects bearer tokens into outgoing requests.
-* **Auth Middleware**: Server-side protection for MCP tools and resources.
-
-Configuration (OAuthConfig)
----------------------------
-
-The `OAuthConfig` structure holds the necessary parameters for interacting with an OAuth authorization server.
+``OAuthConfig`` describes the endpoints and client information used for an
+explicit token exchange or refresh:
 
 .. code-block:: cpp
 
@@ -30,90 +32,82 @@ The `OAuthConfig` structure holds the necessary parameters for interacting with 
 
    mcp::auth::OAuthConfig config;
    config.client_id = "my-mcp-client";
-   config.token_endpoint = "https://auth.example.com/token";
-   config.authorization_endpoint = "https://auth.example.com/authorize";
-   config.redirect_uri = "http://localhost:8080/callback";
-   config.scope = "mcp:full_access";
+   config.token_endpoint = "http://127.0.0.1:9000/token";
+   config.authorization_endpoint = "http://127.0.0.1:9000/authorize";
+   config.redirect_uri = "http://127.0.0.1:8080/callback";
+   config.scope = "mcp:read";
 
-Discovery (OAuthDiscoveryClient)
---------------------------------
+Discovery and PKCE
+------------------
 
-Instead of hardcoding endpoints, the `OAuthDiscoveryClient` can resolve authorization server details and protected resource metadata using standard `.well-known` discovery documents.
+``OAuthDiscoveryClient`` reads protected-resource and authorization-server
+metadata. Discovery results are cached for a configurable interval.
 
 .. code-block:: cpp
 
    auto oauth_http = std::make_shared<mcp::auth::OAuthHttpClient>(executor);
    mcp::auth::OAuthDiscoveryClient discovery(oauth_http);
 
-   // Discover which auth server protects a specific resource
-   auto resource_meta = co_await discovery.discover_protected_resource("https://api.example.com/mcp");
-
-   // Discover endpoints for an authorization server
-   auto auth_meta = co_await discovery.discover_auth_server(resource_meta.authorization_servers.front());
-
-Token Storage (TokenStore)
---------------------------
-
-Tokens are managed through the `TokenStore` interface. The SDK provides a thread-safe `InMemoryTokenStore` for development and volatile sessions. For production, you can implement a custom `TokenStore` that persists tokens to a secure database or keychain.
-
-.. code-block:: cpp
-
-   auto token_store = std::make_shared<mcp::auth::InMemoryTokenStore>();
-
-PKCE Flow
----------
-
-For secure authorization code flows, use `generate_pkce_pair()` to create a code verifier and challenge.
-
-.. code-block:: cpp
-
+   auto resource = co_await discovery.discover_protected_resource(server_url);
+   auto authorization_server =
+       co_await discovery.discover_auth_server(resource.authorization_servers.front());
    auto pkce = mcp::auth::generate_pkce_pair();
-   // Send pkce.code_challenge to the authorization endpoint
-   // Send pkce.code_verifier to the token endpoint during exchange
 
-Client-Side Authentication
---------------------------
+The application builds and opens the authorization URL, receives the callback,
+validates its own state value, and then calls ``exchange_code`` with the code
+and the original PKCE verifier.
 
-The `OAuthAuthenticator` and `OAuthClientTransport` work together to automate authentication. The transport wrapper automatically injects the `auth_token` into the `_meta` field of every MCP request.
+Token storage and refresh
+-------------------------
 
-.. literalinclude:: ../../examples/features/oauth_flow.cpp
-   :language: cpp
-   :lines: 410-413
-   :dedent: 8
+``InMemoryTokenStore`` is thread-safe but volatile. Production applications
+should implement ``TokenStore`` with encryption and operating-system-appropriate
+secret storage.
 
-Automatic Token Refresh
-^^^^^^^^^^^^^^^^^^^^^^^
+``OAuthAuthenticator`` reads the current access token and can explicitly
+refresh it. It does not run a background refresh task. ``OAuthClientTransport``
+attempts one refresh-and-retry after an HTTP 401 from ``HttpClientTransport``;
+for non-HTTP transports it also understands the legacy JSON-RPC
+``g_UNAUTHORIZED`` path. Because a request can be replayed, callers should
+avoid wrapping non-idempotent operations unless their server provides its own
+deduplication semantics.
 
-If a request fails with an authentication error (JSON-RPC codes -32001 or -32000), the `OAuthClientTransport` will:
-
-1. Catch the error response.
-2. Call `authenticator->try_refresh_token()` using the stored refresh token.
-3. If successful, automatically replay the original request with the new token.
-
-This ensures a seamless experience for the user even when access tokens expire.
-
-Server-Side Protection
-----------------------
-
-On the server side, you can protect your tools and resources using `make_auth_middleware`. This middleware extracts the bearer token from incoming request metadata and validates it via a callback.
-
-.. literalinclude:: ../../examples/features/oauth_flow.cpp
-   :language: cpp
-   :lines: 524-530
-   :dedent: 8
-
-Example Walkthrough
+HTTP authentication
 -------------------
 
-The following example demonstrates a complete OAuth integration, from discovery to authenticated tool calls with automatic refresh.
+When ``OAuthClientTransport`` wraps ``HttpClientTransport``, the access token
+is sent as ``Authorization: Bearer <token>``. It is not copied into MCP request
+metadata. Configure the matching server-side validator before starting the
+listener:
 
-.. literalinclude:: ../../examples/features/oauth_flow.cpp
-   :language: cpp
-   :lines: 378-474
-   :dedent: 0
+.. code-block:: cpp
 
-Cross-References
+   mcp::StreamableHttpSessionManager manager(executor, host, port, factory);
+   manager.set_bearer_token_validator(
+       [](std::string_view token) { return validate_token(token); });
+
+``HttpServerTransport`` exposes the same validator. The older
+``make_auth_middleware`` helper checks ``_meta.auth_token`` and exists for
+non-HTTP or legacy integrations; it should not replace authentication at the
+HTTP boundary.
+
+Example and current limits
+--------------------------
+
+``examples/features/oauth_flow.cpp`` is a loopback demonstration using a mock
+authorization server and ``MemoryTransport`` for MCP messages. Its MCP-side
+authentication uses the legacy ``_meta.auth_token`` middleware path; it does
+not demonstrate the HTTP ``Authorization: Bearer`` boundary described above.
+The example exercises discovery, PKCE, code exchange, legacy token injection,
+and one refresh without exposing secret values.
+
+The official client conformance baseline records the OAuth scenarios that are
+not yet implemented. In particular, the SDK does not currently orchestrate all
+protected-resource metadata variants, CIMD/pre-registration, scope escalation,
+or token-endpoint authentication modes as a complete end-user flow.
+
+Cross-references
 ----------------
 
-* See :doc:`transports` for more information on transport wrappers.
-* See :doc:`context` for details on request metadata.
+* See :doc:`transports` for HTTP transport security and Origin validation.
+* See :doc:`context` for request context and the legacy metadata path.
