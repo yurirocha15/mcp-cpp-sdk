@@ -70,8 +70,12 @@ TEST_F(ElicitationTest, FormElicitationRoundtrip) {
 
     std::vector<std::string> written_messages;
     raw_transport->set_on_write([&written_messages, raw_transport](std::string_view msg) {
-        written_messages.emplace_back(msg);
         auto json_msg = nlohmann::json::parse(msg);
+        if (json_msg.value("id", "") == "initialize") {
+            return;
+        }
+
+        written_messages.emplace_back(msg);
 
         if (json_msg.contains("method") && json_msg["method"] == "elicitation/create") {
             auto request_id = json_msg["id"].get<std::string>();
@@ -101,6 +105,8 @@ TEST_F(ElicitationTest, FormElicitationRoundtrip) {
     tool_call_request["method"] = "tools/call";
     tool_call_request["params"] = {{"name", "ask_user"}, {"arguments", {{"text", "hello"}}}};
 
+    raw_transport->enqueue_message(make_initialize_request("initialize").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tool_call_request.dump());
 
     boost::asio::co_spawn(
@@ -154,8 +160,12 @@ TEST_F(ElicitationTest, URLElicitationRoundtrip) {
 
     std::vector<std::string> written_messages;
     raw_transport->set_on_write([&written_messages, raw_transport](std::string_view msg) {
-        written_messages.emplace_back(msg);
         auto json_msg = nlohmann::json::parse(msg);
+        if (json_msg.value("id", "") == "initialize") {
+            return;
+        }
+
+        written_messages.emplace_back(msg);
 
         if (json_msg.contains("method") && json_msg["method"] == "elicitation/create") {
             auto request_id = json_msg["id"].get<std::string>();
@@ -185,6 +195,8 @@ TEST_F(ElicitationTest, URLElicitationRoundtrip) {
     tool_call_request["method"] = "tools/call";
     tool_call_request["params"] = {{"name", "oauth_tool"}, {"arguments", {{"text", "go"}}}};
 
+    raw_transport->enqueue_message(make_initialize_request("initialize").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tool_call_request.dump());
 
     boost::asio::co_spawn(
@@ -241,8 +253,12 @@ TEST_F(ElicitationTest, ClientDeclinesElicitation) {
 
     std::vector<std::string> written_messages;
     raw_transport->set_on_write([&written_messages, raw_transport](std::string_view msg) {
-        written_messages.emplace_back(msg);
         auto json_msg = nlohmann::json::parse(msg);
+        if (json_msg.value("id", "") == "initialize") {
+            return;
+        }
+
+        written_messages.emplace_back(msg);
 
         if (json_msg.contains("method") && json_msg["method"] == "elicitation/create") {
             auto request_id = json_msg["id"].get<std::string>();
@@ -268,6 +284,8 @@ TEST_F(ElicitationTest, ClientDeclinesElicitation) {
     tool_call_request["method"] = "tools/call";
     tool_call_request["params"] = {{"name", "needs_input"}, {"arguments", {{"text", "test"}}}};
 
+    raw_transport->enqueue_message(make_initialize_request("initialize").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tool_call_request.dump());
 
     boost::asio::co_spawn(

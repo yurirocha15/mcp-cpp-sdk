@@ -30,6 +30,10 @@ nlohmann::json make_tool_call_request(std::string_view id, const std::string& to
             {"params", {{"name", tool_name}, {"arguments", args}}}};
 }
 
+nlohmann::json make_initialized_notification() {
+    return {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
+}
+
 nlohmann::json greet_schema() {
     return {
         {"type", "object"},
@@ -150,6 +154,7 @@ TEST_F(ServerStdioTest, RunStdioHandlesToolCall) {
     std::ostringstream output;
 
     sbuf.feed(make_initialize_request("1").dump() + "\n");
+    sbuf.feed(make_initialized_notification().dump() + "\n");
     sbuf.feed(make_tool_call_request("2", "greet", {{"name", "World"}}).dump() + "\n");
 
     std::thread server_thread([&] { server_->run_stdio(input, output); });
@@ -172,7 +177,7 @@ TEST_F(ServerStdioTest, RunStdioHandlesToolCall) {
     auto tool_response = responses[1];
     EXPECT_EQ(tool_response["id"], "2");
     ASSERT_TRUE(tool_response.contains("result"));
-    EXPECT_EQ(tool_response["result"]["greeting"], "Hello, World");
+    EXPECT_EQ(tool_response["result"]["structuredContent"]["greeting"], "Hello, World");
 }
 
 TEST_F(ServerStdioTest, RunStdioExitsCleanlyOnEmptyInput) {

@@ -41,6 +41,7 @@ TEST_F(ServerSubscriptionsTest, SubscribeReturnsEmptyResult) {
     });
 
     raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json sub_req;
     sub_req["jsonrpc"] = "2.0";
@@ -86,6 +87,7 @@ TEST_F(ServerSubscriptionsTest, UnsubscribeReturnsEmptyResult) {
     });
 
     raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json sub_req;
     sub_req["jsonrpc"] = "2.0";
@@ -157,6 +159,7 @@ TEST_F(ServerSubscriptionsTest, NotifyResourceUpdatedSendsToSubscribers) {
     });
 
     raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
 
     // Subscribe to a resource
     nlohmann::json sub_req;
@@ -230,6 +233,7 @@ TEST_F(ServerSubscriptionsTest, NotifyResourceUpdatedNotSentForUnsubscribedUri) 
     });
 
     raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";

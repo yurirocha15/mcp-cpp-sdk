@@ -1247,6 +1247,14 @@ TEST(ProtocolTest, RequestIdInvalidTypeThrows) {
     EXPECT_THROW(j2.get<mcp::RequestId>(), std::invalid_argument);
 }
 
+TEST(ProtocolTest, RequestIdCorrelationKeyPreservesType) {
+    const mcp::RequestId string_id = "1";
+    const mcp::RequestId integer_id = int64_t{1};
+
+    EXPECT_NE(string_id.correlation_key(), integer_id.correlation_key());
+    EXPECT_EQ(string_id.to_string(), integer_id.to_string());
+}
+
 TEST(ProtocolTest, ProgressTokenIsRequestId) {
     static_assert(std::is_same_v<mcp::ProgressToken, mcp::RequestId>);
 
@@ -1401,10 +1409,23 @@ TEST(ProtocolTest, JSONRPCErrorResponseSerialization) {
     no_id.error = {.code = mcp::g_PARSE_ERROR, .message = "Parse error"};
 
     nlohmann::json j2 = no_id;
-    EXPECT_FALSE(j2.contains("id"));
+    EXPECT_TRUE(j2.contains("id"));
+    EXPECT_TRUE(j2["id"].is_null());
 
     auto deserialized2 = j2.get<mcp::JSONRPCErrorResponse>();
     EXPECT_FALSE(deserialized2.id.has_value());
+}
+
+TEST(ProtocolTest, CallToolArgumentsDefaultToObjectAndRejectOtherJsonTypes) {
+    const auto omitted = nlohmann::json{{"name", "echo"}}.get<mcp::CallToolParams>();
+    EXPECT_TRUE(omitted.arguments.is_object());
+    EXPECT_TRUE(omitted.arguments.empty());
+
+    for (const auto& invalid_arguments : {nlohmann::json(nullptr), nlohmann::json::array(),
+                                          nlohmann::json("text"), nlohmann::json(7)}) {
+        const auto input = nlohmann::json{{"name", "echo"}, {"arguments", invalid_arguments}};
+        EXPECT_THROW(static_cast<void>(input.get<mcp::CallToolParams>()), std::invalid_argument);
+    }
 }
 
 TEST(ProtocolTest, JSONRPCResponseVariantDispatch) {
@@ -2238,4 +2259,20 @@ TEST(ProtocolTest, ElicitationCompleteNotificationSerialization) {
     nlohmann::json j = notif;
     EXPECT_EQ(j["method"], "notifications/elicitation/complete");
     EXPECT_EQ(j["params"]["requestId"], "req1");
+}
+
+TEST(ProtocolTest, RejectsInvalidJsonRpcVersion) {
+    nlohmann::json request = {{"jsonrpc", "1.0"}, {"id", 1}, {"method", "ping"}, {"params", nullptr}};
+    EXPECT_THROW((void)request.get<mcp::JSONRPCRequest>(), std::invalid_argument);
+
+    nlohmann::json response = {{"jsonrpc", "3.0"}, {"id", 1}, {"result", json::object()}};
+    EXPECT_THROW((void)response.get<mcp::JSONRPCResultResponse>(), std::invalid_argument);
+}
+
+TEST(ProtocolTest, RejectsMismatchedContentDiscriminator) {
+    nlohmann::json invalid_text = {{"type", "image"}, {"text", "not an image"}};
+    EXPECT_THROW((void)invalid_text.get<mcp::TextContent>(), std::invalid_argument);
+
+    nlohmann::json unknown_content = {{"type", "unknown"}};
+    EXPECT_THROW((void)unknown_content.get<mcp::ContentBlock>(), std::invalid_argument);
 }
