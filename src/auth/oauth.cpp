@@ -235,6 +235,23 @@ namespace {
 
 constexpr std::string_view g_https_prefix = "https://";
 
+/// Bound and clean a peer-supplied response body before it is embedded in diagnostic text:
+/// truncated so an oversized body cannot bloat the message, control characters replaced so a
+/// hostile body cannot forge log lines.
+std::string sanitize_for_diagnostics(std::string_view body) {
+    constexpr std::size_t max_length = 256;
+    std::string cleaned(body.substr(0, max_length));
+    for (auto& character : cleaned) {
+        if (static_cast<unsigned char>(character) < 0x20 || character == 0x7f) {
+            character = ' ';
+        }
+    }
+    if (body.size() > max_length) {
+        cleaned += "...";
+    }
+    return cleaned;
+}
+
 /// Resolve a `Location` header against the URL that produced it.
 std::string resolve_redirect_target(const std::string& base, const std::string& location) {
     if (location.find("://") != std::string::npos) {
@@ -533,7 +550,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         if (exchange->response().result_int() >= mcp::constants::g_http_bad_request) {
             throw std::runtime_error(failure_label + " failed with status " +
                                      std::to_string(exchange->response().result_int()) + ": " +
-                                     exchange->response().body());
+                                     sanitize_for_diagnostics(exchange->response().body()));
         }
 
         exchange->body = exchange->response().body();
