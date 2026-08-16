@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace mcp {
 
@@ -179,10 +180,41 @@ class MCP_API HttpServerTransport final : public ITransport {
      *
      * When enabled, HTTP POST responses always use `application/json` and
      * outbound responses are not copied into the SSE replay event store.
+     * This option is atomic and may be changed while the listener is running.
      *
      * @param json_only True to bypass SSE framing and event storage.
      */
     void set_json_only(bool json_only);
+
+    /**
+     * @brief Replace the allowlist used for requests carrying an Origin header.
+     *
+     * Requests without an Origin header remain valid for non-browser MCP clients. An Origin header
+     * is rejected by default until its exact value appears in this allowlist.
+     * Configure the allowlist before listen() or run() starts.
+     *
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_allowed_origins(std::vector<std::string> origins);
+
+    /**
+     * @brief Explicitly opt into accepting every Origin header value.
+     *
+     * Configure this before listen() or run() starts.
+     *
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_allow_all_origins(bool allow_all);
+
+    /**
+     * @brief Require and validate an HTTP Authorization: Bearer header.
+     *
+     * Passing an empty validator disables HTTP authentication.
+     * Configure the validator before listen() or run() starts.
+     *
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_bearer_token_validator(BearerTokenValidator validator);
 
     /**
      * @brief Read the next queued JSON-RPC message from HTTP POST bodies.
@@ -210,7 +242,8 @@ class MCP_API HttpServerTransport final : public ITransport {
 
    private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    static Task<void> listen_impl(std::shared_ptr<Impl> impl);
+    std::shared_ptr<Impl> impl_;
 };
 
 }  // namespace mcp

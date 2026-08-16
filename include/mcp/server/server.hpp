@@ -44,6 +44,11 @@ using CompletionHandler = std::function<Task<CompleteResult>(const CompleteParam
 
 namespace detail {
 
+enum class ToolResultMode : std::uint8_t {
+    eNormalize,
+    eValidated,
+};
+
 /// @brief Detects whether Fn is invocable with (In) returning Task<Out>.
 template <typename Fn, typename In, typename Out>
 concept AsyncHandlerNoCtx = requires(Fn fn, In in) {
@@ -169,7 +174,10 @@ class MCP_API Server {
         tool.description = description;
         tool.inputSchema = input_schema;
         auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        register_tool(tool, name, detail::wrap_handler<In, Out>(std::move(async_handler)));
+        constexpr auto result_mode = std::same_as<Out, CallToolResult>
+                                         ? detail::ToolResultMode::eValidated
+                                         : detail::ToolResultMode::eNormalize;
+        register_tool(tool, name, detail::wrap_handler<In, Out>(std::move(async_handler)), result_mode);
     }
 
     /**
@@ -187,7 +195,10 @@ class MCP_API Server {
         tool.inputSchema = input_schema;
         tool.outputSchema = output_schema;
         auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        register_tool(tool, name, detail::wrap_handler<In, Out>(std::move(async_handler)));
+        constexpr auto result_mode = std::same_as<Out, CallToolResult>
+                                         ? detail::ToolResultMode::eValidated
+                                         : detail::ToolResultMode::eNormalize;
+        register_tool(tool, name, detail::wrap_handler<In, Out>(std::move(async_handler)), result_mode);
     }
 
     /**
@@ -205,6 +216,26 @@ class MCP_API Server {
     void add_tool(const std::string& name, const std::string& description,
                   const nlohmann::json& input_schema,
                   std::function<nlohmann::json(const nlohmann::json&)> handler);
+
+    /**
+     * @brief Register a low-level tool whose handler returns a complete CallToolResult JSON object.
+     *
+     * Unlike add_tool(), this escape hatch never normalizes arbitrary output.
+     * Every returned value is validated as a complete CallToolResult before it
+     * is sent to the client.
+     *
+     * @param tool Tool metadata.
+     * @param handler Asynchronous raw handler receiving tool arguments.
+     */
+    void add_raw_tool(const Tool& tool, TypeErasedHandler handler);
+
+    /**
+     * @brief Register a synchronous low-level tool returning complete CallToolResult JSON.
+     *
+     * @param tool Tool metadata.
+     * @param handler Synchronous raw handler receiving tool arguments.
+     */
+    void add_raw_tool(const Tool& tool, std::function<nlohmann::json(const nlohmann::json&)> handler);
 
     /**
      * @brief Register a resource with the server.
@@ -227,6 +258,26 @@ class MCP_API Server {
      * @param tmpl Resource template metadata.
      */
     void add_resource_template(const ResourceTemplate& tmpl);
+
+    /**
+     * @brief Register a resource template and its resources/read handler.
+     *
+     * Exact resources registered with add_resource() take precedence over
+     * template matches. Duplicate and structurally identical templates are
+     * rejected, and a URI matching more than one template is reported as an
+     * ambiguous request.
+     *
+     * @tparam In Handler input type, normally ReadResourceRequestParams.
+     * @tparam Out Handler result type, normally ReadResourceResult.
+     * @tparam Fn Handler callable (sync/async, with/without Context).
+     * @param tmpl Resource template metadata.
+     * @param handler Handler invoked when resources/read matches the template.
+     */
+    template <JsonSerializable In, JsonSerializable Out, typename Fn>
+    void add_resource_template(const ResourceTemplate& tmpl, Fn handler) {
+        auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
+        register_resource_template(tmpl, detail::wrap_handler<In, Out>(std::move(async_handler)));
+    }
 
     /**
      * @brief Register a prompt with the server.
@@ -296,7 +347,9 @@ class MCP_API Server {
     /**
      * @brief Start the server session loop on the given transport.
      *
-     * Runs until the transport is closed or an error occurs.
+     * Runs until the transport is closed or an error occurs, then waits for
+     * request handlers already dispatched by this session to finish. The
+     * Server object must outlive the returned task.
      *
      * @param transport The transport to use for message exchange. Ownership is shared.
      * @param executor  The executor to use for async operations.
@@ -345,7 +398,8 @@ class MCP_API Server {
      * @brief Dispatch a parsed JSON-RPC request and return its serialized response.
      *
      * Used by stateless HTTP JSON mode to avoid creating a transport-backed
-     * server session for request/response messages.
+     * server session for request/response messages. The request envelope is
+     * validated, but no stateful initialize/initialized handshake is required.
      *
      * @param json_msg The parsed JSON-RPC request object.
      * @return A task that resolves to the serialized JSON-RPC response.
@@ -414,8 +468,10 @@ class MCP_API Server {
 
    private:
     // Non-template registration helpers called by the template add_* methods above.
-    void register_tool(const Tool& tool, const std::string& name, TypeErasedHandler handler);
+    void register_tool(const Tool& tool, const std::string& name, TypeErasedHandler handler,
+                       detail::ToolResultMode result_mode);
     void register_resource(const Resource& resource, TypeErasedHandler handler);
+    void register_resource_template(const ResourceTemplate& tmpl, TypeErasedHandler handler);
     void register_prompt(const Prompt& prompt, TypeErasedHandler handler);
 
     Context make_context(std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
@@ -424,21 +480,21 @@ class MCP_API Server {
     /**
      * @brief Dispatches an incoming JSON-RPC request to the appropriate registered handler.
      *
-     * @details Exceptions thrown during dispatch are caught and returned as `g_INTERNAL_ERROR`
-     * (-32603) JSON-RPC error responses. The exception's `what()` message becomes the error data.
+     * @details Request parameter decoding failures are returned as `g_INVALID_PARAMS` (-32602).
+     * Exceptions thrown by handlers or middleware are returned as `g_INTERNAL_ERROR` (-32603).
      *
      * @param json_msg The raw JSON-RPC request object.
      */
     Task<void> dispatch_request(nlohmann::json json_msg);
 
-    Task<std::string> dispatch_request_wire(nlohmann::json json_msg);
+    Task<std::string> dispatch_request_wire(nlohmann::json json_msg, bool enforce_lifecycle);
 
     void dispatch_notification(const nlohmann::json& json_msg);
 
     void dispatch_response(const nlohmann::json& json_msg);
 
     Task<void> handle_initialize(const nlohmann::json& json_msg);
-    Task<std::string> handle_initialize_wire(const nlohmann::json& json_msg);
+    Task<std::string> handle_initialize_wire(const nlohmann::json& json_msg, bool update_lifecycle);
 
     Task<void> handle_shutdown(const nlohmann::json& json_msg);
     Task<std::string> handle_shutdown_wire(const nlohmann::json& json_msg);
@@ -502,10 +558,24 @@ class MCP_API Server {
 
     [[nodiscard]] bool has_tool_output_schema(const std::string& name) const;
 
-    void reset_session();
-
     struct PendingRequest;
     struct Session;
+
+    static Task<nlohmann::json> await_reverse_response(std::shared_ptr<Session> session,
+                                                       std::shared_ptr<const std::string> wire,
+                                                       std::int64_t id);
+    static Task<nlohmann::json> await_reverse_response_on_strand(
+        std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, std::int64_t id);
+
+    Task<void> run_session(std::shared_ptr<Session> session);
+    Task<void> dispatch_on_strand(nlohmann::json json_msg);
+    Task<void> notify_resource_updated_on_strand(std::shared_ptr<Session> session,
+                                                 std::shared_ptr<const std::string> uri);
+
+    [[nodiscard]] std::shared_ptr<Session> session_snapshot() const;
+
+    void reset_session();
+    void reset_session(const std::shared_ptr<Session>& session);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

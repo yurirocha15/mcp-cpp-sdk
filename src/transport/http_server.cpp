@@ -1,3 +1,4 @@
+#include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/http_types.hpp>
 
@@ -13,10 +14,10 @@
 #include <boost/beast/http.hpp>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <queue>
-#include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -31,6 +32,8 @@ namespace beast = boost::beast;
 namespace http = boost::beast::http;
 
 struct HttpServerTransport::Impl {
+    using Connection = beast::tcp_stream;
+
     struct SharedState {
         explicit SharedState(boost::asio::strand<boost::asio::any_io_executor>& execution_strand)
             : timer(execution_strand) {}
@@ -38,6 +41,7 @@ struct HttpServerTransport::Impl {
         boost::asio::steady_timer timer;
         std::queue<std::string> queue;
         std::atomic<bool> closed{false};
+        bool read_active{false};
     };
 
     struct PendingResponse {
@@ -115,17 +119,37 @@ struct HttpServerTransport::Impl {
         return {header_it->value().data(), header_it->value().size()};
     }
 
-    static std::string generate_session_id() {
-        std::random_device random_device;
-        std::mt19937 generator(random_device());
-        std::uniform_int_distribution<std::size_t> distribution(0, constants::g_hex_digits.size() - 1);
+    static std::string generate_session_id() { return detail::generate_secure_session_id(); }
 
-        std::string session_identifier;
-        session_identifier.reserve(constants::g_session_id_length);
-        for (std::size_t i = 0; i < constants::g_session_id_length; i++) {
-            session_identifier.push_back(constants::g_hex_digits[distribution(generator)]);
+    void ensure_configurable() const {
+        if (listening_started || state->closed.load(std::memory_order_acquire)) {
+            throw std::logic_error("HttpServerTransport configuration must be set before listen()");
         }
-        return session_identifier;
+    }
+
+    bool begin_listening() {
+        std::lock_guard lock(configuration_mutex);
+        if (state->closed.load(std::memory_order_acquire)) {
+            return false;
+        }
+        if (listening_started) {
+            throw std::logic_error("HttpServerTransport::listen() may only be called once");
+        }
+        listening_started = true;
+        return true;
+    }
+
+    static void close_connection(const std::shared_ptr<Connection>& connection) {
+        boost::system::error_code ignored;
+        (void)connection->socket().cancel(ignored);
+        (void)connection->socket().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ignored);
+        (void)connection->socket().close(ignored);
+    }
+
+    void close_active_connections() {
+        for (const auto& connection : active_connections) {
+            close_connection(connection);
+        }
     }
 
     bool is_origin_allowed(std::string_view origin_value) const {
@@ -136,12 +160,8 @@ struct HttpServerTransport::Impl {
     }
 
     void enqueue_incoming_message(std::string message_payload) const {
-        auto shared_state = state;
-        boost::asio::post(shared_state->timer.get_executor(),
-                          [shared_state, payload = std::move(message_payload)]() mutable {
-                              shared_state->queue.push(std::move(payload));
-                              shared_state->timer.cancel();
-                          });
+        state->queue.push(std::move(message_payload));
+        state->timer.cancel();
     }
 
     static void set_common_headers(StringResponse& response, bool keep_alive) {
@@ -204,8 +224,6 @@ struct HttpServerTransport::Impl {
     }
 
     Task<SessionCheckResult> validate_post_session(const StringRequest& request) {
-        co_await boost::asio::post(strand, boost::asio::use_awaitable);
-
         const auto session_header_it = request.find("MCP-Session-Id");
         const bool session_header_present = session_header_it != request.end();
 
@@ -231,8 +249,6 @@ struct HttpServerTransport::Impl {
     }
 
     Task<SessionCheckResult> validate_delete_session(const StringRequest& request) {
-        co_await boost::asio::post(strand, boost::asio::use_awaitable);
-
         if (!session_id.has_value()) {
             co_return SessionCheckResult{true, {}};
         }
@@ -251,8 +267,6 @@ struct HttpServerTransport::Impl {
 
     Task<std::optional<std::shared_ptr<boost::asio::steady_timer>>> register_pending_request(
         const std::string& request_id_key) {
-        co_await boost::asio::post(strand, boost::asio::use_awaitable);
-
         if (pending_responses.contains(request_id_key)) {
             co_return std::nullopt;
         }
@@ -266,8 +280,6 @@ struct HttpServerTransport::Impl {
     }
 
     Task<bool> is_response_ready(const std::string& request_id_key) {
-        co_await boost::asio::post(strand, boost::asio::use_awaitable);
-
         const auto pending_it = pending_responses.find(request_id_key);
         if (pending_it == pending_responses.end()) {
             co_return true;
@@ -277,8 +289,6 @@ struct HttpServerTransport::Impl {
     }
 
     Task<PendingResult> consume_pending_response(const std::string& request_id_key) {
-        co_await boost::asio::post(strand, boost::asio::use_awaitable);
-
         const auto pending_it = pending_responses.find(request_id_key);
         if (pending_it == pending_responses.end()) {
             co_return PendingResult{};
@@ -292,7 +302,6 @@ struct HttpServerTransport::Impl {
     }
 
     Task<void> terminate_session() {
-        co_await boost::asio::post(strand, boost::asio::use_awaitable);
         session_id.reset();
         session_active = false;
         co_return;
@@ -333,6 +342,24 @@ struct HttpServerTransport::Impl {
         return std::nullopt;
     }
 
+    std::optional<StringResponse> check_authorization(const StringRequest& request) const {
+        if (!bearer_token_validator) {
+            return std::nullopt;
+        }
+
+        const auto authorization_it = request.find(http::field::authorization);
+        const auto token = authorization_it == request.end()
+                               ? std::string_view{}
+                               : http_bearer_token(header_value(authorization_it));
+        if (token.empty() || !bearer_token_validator(token)) {
+            auto response =
+                make_error_response(request, http::status::unauthorized, "Invalid bearer token");
+            response.set(http::field::www_authenticate, "Bearer");
+            return response;
+        }
+        return std::nullopt;
+    }
+
     Task<StringResponse> handle_post(const StringRequest& request) {
         const auto request_json = nlohmann::json::parse(request.body(), nullptr, false);
         if (request_json.is_discarded() || !request_json.is_object()) {
@@ -344,6 +371,9 @@ struct HttpServerTransport::Impl {
             co_return std::move(*error);
         }
         if (auto error = check_origin(request)) {
+            co_return std::move(*error);
+        }
+        if (auto error = check_authorization(request)) {
             co_return std::move(*error);
         }
 
@@ -400,7 +430,8 @@ struct HttpServerTransport::Impl {
             accept_it != request.end() &&
             std::string_view(accept_it->value()).find("text/event-stream") != std::string_view::npos;
 
-        if (!json_only_ && client_accepts_sse && pending_result.event_id.has_value()) {
+        if (!json_only_.load(std::memory_order_acquire) && client_accepts_sse &&
+            pending_result.event_id.has_value()) {
             auto response =
                 make_sse_response(request, *pending_result.event_id, *pending_result.response_body);
             if (pending_result.session_header.has_value()) {
@@ -424,6 +455,9 @@ struct HttpServerTransport::Impl {
         if (auto error = check_origin(request)) {
             co_return std::move(*error);
         }
+        if (auto error = check_authorization(request)) {
+            co_return std::move(*error);
+        }
 
         const auto session_check = co_await validate_delete_session(request);
         if (!session_check.ok) {
@@ -438,6 +472,12 @@ struct HttpServerTransport::Impl {
     Task<StringResponse> handle_get(const StringRequest& request) {
         const nlohmann::json request_json = {"method", "get"};
         if (auto error = check_protocol_version(request, request_json)) {
+            co_return std::move(*error);
+        }
+        if (auto error = check_origin(request)) {
+            co_return std::move(*error);
+        }
+        if (auto error = check_authorization(request)) {
             co_return std::move(*error);
         }
 
@@ -468,6 +508,10 @@ struct HttpServerTransport::Impl {
     }
 
     Task<StringResponse> handle_request(const StringRequest& request) {
+        if (state->closed.load(std::memory_order_acquire)) {
+            co_return make_error_response(request, http::status::service_unavailable,
+                                          "Transport closed");
+        }
         if (request.method() == http::verb::post) {
             co_return co_await handle_post(request);
         }
@@ -484,8 +528,8 @@ struct HttpServerTransport::Impl {
         co_return response;
     }
 
-    Task<void> handle_connection(boost::asio::ip::tcp::socket socket) {
-        beast::tcp_stream stream(std::move(socket));
+    Task<void> handle_connection(const std::shared_ptr<Connection>& connection) {
+        auto& stream = *connection;
         beast::flat_buffer request_buffer;
 
         for (;;) {
@@ -501,7 +545,14 @@ struct HttpServerTransport::Impl {
                 throw;
             }
 
+            if (state->closed.load(std::memory_order_acquire)) {
+                break;
+            }
+
             auto response = co_await handle_request(request);
+            if (state->closed.load(std::memory_order_acquire)) {
+                break;
+            }
             const bool keep_connection_alive = response.keep_alive();
             co_await http::async_write(stream, response, boost::asio::use_awaitable);
 
@@ -514,27 +565,111 @@ struct HttpServerTransport::Impl {
         (void)stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
     }
 
+    static Task<std::string> run_read(std::shared_ptr<Impl> impl) {
+        auto& state = *impl->state;
+        if (state.read_active) {
+            throw std::logic_error("HttpServerTransport supports one pending read");
+        }
+        state.read_active = true;
+
+        try {
+            for (;;) {
+                if (state.closed.load(std::memory_order_acquire)) {
+                    throw std::runtime_error("HttpServerTransport is closed");
+                }
+
+                if (!state.queue.empty()) {
+                    auto message_payload = std::move(state.queue.front());
+                    state.queue.pop();
+                    state.read_active = false;
+                    co_return message_payload;
+                }
+
+                state.timer.expires_at(std::chrono::steady_clock::time_point::max());
+                try {
+                    co_await state.timer.async_wait(boost::asio::use_awaitable);
+                } catch (const boost::system::system_error& error) {
+                    if (error.code() != boost::asio::error::operation_aborted) {
+                        throw;
+                    }
+                }
+            }
+        } catch (...) {
+            state.read_active = false;
+            throw;
+        }
+    }
+
+    static Task<void> run_write(std::shared_ptr<Impl> impl, std::string message) {
+        if (impl->state->closed.load(std::memory_order_acquire)) {
+            throw std::runtime_error("HttpServerTransport is closed");
+        }
+
+        const auto response_json = nlohmann::json::parse(message, nullptr, false);
+        if (response_json.is_discarded() || !response_json.is_object()) {
+            co_return;
+        }
+
+        std::optional<std::string> event_id;
+        if (!impl->json_only_.load(std::memory_order_acquire)) {
+            event_id = impl->event_store.append(message);
+        }
+
+        if (!response_json.contains("id")) {
+            co_return;
+        }
+
+        const auto request_id_key = response_json.at("id").dump();
+        const auto pending_it = impl->pending_responses.find(request_id_key);
+        if (pending_it == impl->pending_responses.end()) {
+            co_return;
+        }
+
+        pending_it->second.response_body = std::move(message);
+        pending_it->second.event_id = std::move(event_id);
+        pending_it->second.response_ready = true;
+
+        if (is_initialize_result_response(response_json)) {
+            const auto& result = response_json.at("result");
+            if (!impl->session_id.has_value()) {
+                impl->session_id = generate_session_id();
+            }
+            if (result.contains("protocolVersion") && result.at("protocolVersion").is_string()) {
+                impl->negotiated_protocol_version = result.at("protocolVersion").get<std::string>();
+            }
+            pending_it->second.session_header = impl->session_id;
+            impl->session_active = true;
+        }
+
+        pending_it->second.ready_timer->cancel();
+    }
+
     std::string host;
     unsigned short port;
     boost::asio::strand<boost::asio::any_io_executor> strand;
     boost::asio::ip::tcp::acceptor acceptor;
     std::shared_ptr<SharedState> state;
+    std::unordered_set<std::shared_ptr<Connection>> active_connections;
+
+    mutable std::mutex configuration_mutex;
+    bool listening_started{false};
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
     std::optional<std::string> session_id;
     std::string negotiated_protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
     bool session_active{false};
 
-    bool allow_all_origins{true};
+    bool allow_all_origins{false};
     std::unordered_set<std::string> allowed_origins;
+    BearerTokenValidator bearer_token_validator;
 
     EventStore event_store;
-    bool json_only_{false};
+    std::atomic<bool> json_only_{false};
 };
 
 HttpServerTransport::HttpServerTransport(const boost::asio::any_io_executor& executor, std::string host,
                                          unsigned short port, std::size_t event_store_capacity)
-    : impl_(std::make_unique<Impl>(executor, std::move(host), port, event_store_capacity)) {}
+    : impl_(std::make_shared<Impl>(executor, std::move(host), port, event_store_capacity)) {}
 
 HttpServerTransport::~HttpServerTransport() {
     try {
@@ -556,126 +691,120 @@ unsigned short HttpServerTransport::port() const {
     return endpoint.port();
 }
 
-void HttpServerTransport::set_json_only(bool json_only) { impl_->json_only_ = json_only; }
+void HttpServerTransport::set_json_only(bool json_only) {
+    impl_->json_only_.store(json_only, std::memory_order_release);
+}
+
+void HttpServerTransport::set_allowed_origins(std::vector<std::string> origins) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->allowed_origins.clear();
+    impl_->allowed_origins.reserve(origins.size());
+    for (auto& origin : origins) {
+        impl_->allowed_origins.insert(std::move(origin));
+    }
+    impl_->allow_all_origins = false;
+}
+
+void HttpServerTransport::set_allow_all_origins(bool allow_all) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->allow_all_origins = allow_all;
+}
+
+void HttpServerTransport::set_bearer_token_validator(BearerTokenValidator validator) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->bearer_token_validator = std::move(validator);
+}
 
 Task<std::string> HttpServerTransport::read_message() {
-    auto& state = *impl_->state;
-    for (;;) {
-        if (!state.queue.empty()) {
-            auto message_payload = std::move(state.queue.front());
-            state.queue.pop();
-            co_return message_payload;
-        }
-
-        if (state.closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("HttpServerTransport is closed");
-        }
-
-        state.timer.expires_at(std::chrono::steady_clock::time_point::max());
-        try {
-            co_await state.timer.async_wait(boost::asio::use_awaitable);
-        } catch (const boost::system::system_error& err) {
-            if (err.code() != boost::asio::error::operation_aborted) {
-                throw;
-            }
-        }
-    }
+    auto impl = impl_;
+    return boost::asio::co_spawn(impl->strand, Impl::run_read(impl), boost::asio::use_awaitable);
 }
 
 Task<void> HttpServerTransport::write_message(std::string_view message) {
-    std::string msg(message);
-    co_await boost::asio::post(impl_->strand, boost::asio::use_awaitable);
-
-    if (impl_->state->closed.load(std::memory_order_acquire)) {
-        throw std::runtime_error("HttpServerTransport is closed");
-    }
-
-    const auto response_json = nlohmann::json::parse(msg, nullptr, false);
-    if (response_json.is_discarded() || !response_json.is_object()) {
-        co_return;
-    }
-
-    std::optional<std::string> event_id;
-    if (!impl_->json_only_) {
-        event_id = impl_->event_store.append(msg);
-    }
-
-    if (!response_json.contains("id")) {
-        co_return;
-    }
-
-    const auto request_id_key = response_json.at("id").dump();
-    const auto pending_it = impl_->pending_responses.find(request_id_key);
-    if (pending_it == impl_->pending_responses.end()) {
-        co_return;
-    }
-
-    pending_it->second.response_body = msg;
-    pending_it->second.event_id = std::move(event_id);
-    pending_it->second.response_ready = true;
-
-    if (Impl::is_initialize_result_response(response_json)) {
-        const auto& result = response_json.at("result");
-        if (!impl_->session_id.has_value()) {
-            impl_->session_id = Impl::generate_session_id();
-        }
-        if (result.contains("protocolVersion") && result.at("protocolVersion").is_string()) {
-            impl_->negotiated_protocol_version = result.at("protocolVersion").get<std::string>();
-        }
-        pending_it->second.session_header = impl_->session_id;
-        impl_->session_active = true;
-    }
-
-    pending_it->second.ready_timer->cancel();
-    co_return;
+    auto impl = impl_;
+    return boost::asio::co_spawn(impl->strand, Impl::run_write(impl, std::string(message)),
+                                 boost::asio::use_awaitable);
 }
 
 void HttpServerTransport::close() {
-    if (impl_->state->closed.exchange(true, std::memory_order_acq_rel)) {
-        return;
+    auto impl = impl_;
+    {
+        std::lock_guard lock(impl->configuration_mutex);
+        if (impl->state->closed.exchange(true, std::memory_order_acq_rel)) {
+            return;
+        }
     }
 
-    boost::asio::post(impl_->strand, [this]() {
+    boost::asio::post(impl->strand, [impl]() {
         boost::system::error_code ec;
-        (void)impl_->acceptor.cancel(ec);
-        (void)impl_->acceptor.close(ec);
+        (void)impl->acceptor.cancel(ec);
+        (void)impl->acceptor.close(ec);
+        impl->close_active_connections();
 
-        for (auto& pending_entry : impl_->pending_responses) {
+        for (auto& pending_entry : impl->pending_responses) {
             pending_entry.second.ready_timer->cancel();
         }
-        impl_->pending_responses.clear();
+        impl->pending_responses.clear();
 
-        impl_->session_id.reset();
-        impl_->negotiated_protocol_version = std::string(g_LATEST_PROTOCOL_VERSION);
-        impl_->session_active = false;
+        impl->session_id.reset();
+        impl->negotiated_protocol_version = std::string(g_LATEST_PROTOCOL_VERSION);
+        impl->session_active = false;
     });
 
-    boost::asio::post(impl_->state->timer.get_executor(),
-                      [state = impl_->state]() { state->timer.cancel(); });
+    boost::asio::post(impl->state->timer.get_executor(),
+                      [state = impl->state]() { state->timer.cancel(); });
 }
 
 Task<void> HttpServerTransport::listen() {
+    auto impl = impl_;
+    (void)impl->begin_listening();
+    return boost::asio::co_spawn(impl->strand, listen_impl(impl), boost::asio::use_awaitable);
+}
+
+Task<void> HttpServerTransport::listen_impl(std::shared_ptr<Impl> impl) {
     for (;;) {
-        if (impl_->state->closed.load(std::memory_order_acquire)) {
+        if (impl->state->closed.load(std::memory_order_acquire)) {
             co_return;
         }
 
-        boost::asio::ip::tcp::socket socket(impl_->strand);
+        boost::asio::ip::tcp::socket socket(impl->strand);
         try {
-            socket = co_await impl_->acceptor.async_accept(boost::asio::use_awaitable);
+            socket = co_await impl->acceptor.async_accept(boost::asio::use_awaitable);
         } catch (const boost::system::system_error& err) {
-            if (impl_->state->closed.load(std::memory_order_acquire) ||
+            if (impl->state->closed.load(std::memory_order_acquire) ||
                 err.code() == boost::asio::error::operation_aborted) {
                 co_return;
             }
             throw;
         }
 
-        boost::asio::co_spawn(impl_->strand, impl_->handle_connection(std::move(socket)),
-                              [](const std::exception_ptr&) {
-                                  // Connection errors (EOF, client disconnect) are normal;
-                                  // handled per-connection, not propagated to the accept loop.
-                              });
+        if (impl->state->closed.load(std::memory_order_acquire)) {
+            boost::system::error_code ignored;
+            (void)socket.close(ignored);
+            co_return;
+        }
+
+        auto connection = std::make_shared<Impl::Connection>(std::move(socket));
+        impl->active_connections.insert(connection);
+
+        boost::asio::co_spawn(
+            impl->strand,
+            [impl, connection]() -> Task<void> {
+                try {
+                    co_await impl->handle_connection(connection);
+                } catch (...) {
+                    impl->active_connections.erase(connection);
+                    throw;
+                }
+                impl->active_connections.erase(connection);
+            },
+            [](const std::exception_ptr&) {
+                // Connection errors (EOF, client disconnect) are normal;
+                // handled per-connection, not propagated to the accept loop.
+            });
     }
 }
 

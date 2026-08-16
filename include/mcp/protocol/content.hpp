@@ -5,6 +5,16 @@
 
 namespace mcp {
 
+namespace detail {
+
+inline void validate_content_type(std::string_view actual, std::string_view expected) {
+    if (actual != expected) {
+        throw std::invalid_argument("content type must be \"" + std::string(expected) + "\"");
+    }
+}
+
+}  // namespace detail
+
 /**
  * @brief Represents text content.
  */
@@ -141,6 +151,7 @@ inline void to_json(nlohmann::json& json_obj, const ResourceLink& link) {
 
 inline void from_json(const nlohmann::json& json_obj, ResourceLink& link) {
     json_obj.at("type").get_to(link.type);
+    detail::validate_content_type(link.type, "resource_link");
     json_obj.at("uri").get_to(link.uri);
     json_obj.at("name").get_to(link.name);
     if (json_obj.contains("description")) {
@@ -188,6 +199,7 @@ inline void to_json(nlohmann::json& json_obj, const EmbeddedResource& res) {
 
 inline void from_json(const nlohmann::json& json_obj, EmbeddedResource& res) {
     json_obj.at("type").get_to(res.type);
+    detail::validate_content_type(res.type, "resource");
     json_obj.at("resource").get_to(res.resource);
     if (json_obj.contains("_meta")) {
         res.meta = json_obj.at("_meta").get<nlohmann::json>();
@@ -218,6 +230,7 @@ inline void to_json(nlohmann::json& json_obj, const ToolUseContent& content) {
 
 inline void from_json(const nlohmann::json& json_obj, ToolUseContent& content) {
     json_obj.at("type").get_to(content.type);
+    detail::validate_content_type(content.type, "tool_use");
     json_obj.at("id").get_to(content.id);
     json_obj.at("name").get_to(content.name);
     json_obj.at("input").get_to(content.input);
@@ -254,6 +267,7 @@ inline void to_json(nlohmann::json& json_obj, const ToolResultContent& content) 
 
 inline void from_json(const nlohmann::json& json_obj, ToolResultContent& content) {
     json_obj.at("type").get_to(content.type);
+    detail::validate_content_type(content.type, "tool_result");
     json_obj.at("toolUseId").get_to(content.toolUseId);
     json_obj.at("content").get_to(content.content);
     if (json_obj.contains("isError")) {
@@ -285,6 +299,7 @@ inline void to_json(nlohmann::json& json_obj, const TextContent& content) {
  */
 inline void from_json(const nlohmann::json& json_obj, TextContent& content) {
     json_obj.at("type").get_to(content.type);
+    detail::validate_content_type(content.type, "text");
     json_obj.at("text").get_to(content.text);
 }
 
@@ -307,6 +322,7 @@ inline void to_json(nlohmann::json& json_obj, const ImageContent& content) {
  */
 inline void from_json(const nlohmann::json& json_obj, ImageContent& content) {
     json_obj.at("type").get_to(content.type);
+    detail::validate_content_type(content.type, "image");
     json_obj.at("data").get_to(content.data);
     json_obj.at("mimeType").get_to(content.mimeType);
 }
@@ -330,6 +346,7 @@ inline void to_json(nlohmann::json& json_obj, const AudioContent& content) {
  */
 inline void from_json(const nlohmann::json& json_obj, AudioContent& content) {
     json_obj.at("type").get_to(content.type);
+    detail::validate_content_type(content.type, "audio");
     json_obj.at("data").get_to(content.data);
     json_obj.at("mimeType").get_to(content.mimeType);
 }

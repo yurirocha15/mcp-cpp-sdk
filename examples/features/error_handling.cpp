@@ -59,17 +59,18 @@ int main() {
                                               {"properties", {{"code", {{"type", "integer"}}}}},
                                               {"required", nlohmann::json::array({"code"})}};
 
-        server.add_tool("return_error", "Returns error JSON", return_error_schema,
-                        [](const nlohmann::json& args) -> nlohmann::json {
-                            std::cout << "[Server] return_error handler called\n";
-                            int code = args.at("code").get<int>();
-                            mcp::CallToolResult result;
-                            mcp::TextContent content;
-                            content.text = "Application error with code " + std::to_string(code);
-                            result.content.emplace_back(std::move(content));
-                            result.isError = true;
-                            return nlohmann::json(result);
-                        });
+        server.add_tool<nlohmann::json, mcp::CallToolResult>(
+            "return_error", "Returns error JSON", return_error_schema,
+            [](const nlohmann::json& args) -> mcp::CallToolResult {
+                std::cout << "[Server] return_error handler called\n";
+                int code = args.at("code").get<int>();
+                mcp::CallToolResult result;
+                mcp::TextContent content;
+                content.text = "Application error with code " + std::to_string(code);
+                result.content.emplace_back(std::move(content));
+                result.isError = true;
+                return result;
+            });
 
         // Tool 3: Accesses invalid argument (nlohmann::json throws)
         nlohmann::json invalid_access_schema = {
@@ -77,17 +78,18 @@ int main() {
             {"properties", {{"optional_field", {{"type", "string"}}}}},
             {"required", nlohmann::json::array({})}};
 
-        server.add_tool("invalid_access", "Accesses non-existent argument", invalid_access_schema,
-                        [](const nlohmann::json& args) -> nlohmann::json {
-                            std::cout << "[Server] invalid_access handler called\n";
-                            // This will throw if "required_field" doesn't exist
-                            std::string value = args.at("required_field").get<std::string>();
-                            mcp::CallToolResult result;
-                            mcp::TextContent content;
-                            content.text = value;
-                            result.content.emplace_back(std::move(content));
-                            return nlohmann::json(result);
-                        });
+        server.add_tool<nlohmann::json, mcp::CallToolResult>(
+            "invalid_access", "Accesses non-existent argument", invalid_access_schema,
+            [](const nlohmann::json& args) -> mcp::CallToolResult {
+                std::cout << "[Server] invalid_access handler called\n";
+                // This will throw if "required_field" doesn't exist
+                std::string value = args.at("required_field").get<std::string>();
+                mcp::CallToolResult result;
+                mcp::TextContent content;
+                content.text = value;
+                result.content.emplace_back(std::move(content));
+                return result;
+            });
 
         // Tool 4: Successful tool (for comparison)
         nlohmann::json success_schema = {{"type", "object"},

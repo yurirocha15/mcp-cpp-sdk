@@ -21,6 +21,7 @@
 #include <exception>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 namespace asio = boost::asio;
@@ -83,13 +84,8 @@ int main() {
                 params.at("arguments").at("block").get<bool>()) {
                 std::cout << "[Middleware C] Short-circuiting: block flag detected\n";
                 co_await ctx.log_info("Middleware C: short-circuit");
-                // Return error without calling next
-                mcp::CallToolResult err;
-                mcp::TextContent content;
-                content.text = "Request blocked by middleware C";
-                err.content.emplace_back(std::move(content));
-                err.isError = true;
-                co_return nlohmann::json(err);
+                // Exceptions are converted into protocol-valid tool errors.
+                throw std::runtime_error("Request blocked by middleware C");
             }
 
             auto result = co_await next(ctx, params);
@@ -108,12 +104,7 @@ int main() {
         server.add_tool("echo", "Echo a message", echo_schema,
                         [](const nlohmann::json& args) -> nlohmann::json {
                             std::cout << "[Handler] Executing echo tool\n";
-                            // Return a CallToolResult-compatible structure with content
-                            mcp::CallToolResult result;
-                            mcp::TextContent content;
-                            content.text = args.at("message").get<std::string>();
-                            result.content.emplace_back(std::move(content));
-                            return nlohmann::json(result);
+                            return nlohmann::json{{"echo", args.at("message").get<std::string>()}};
                         });
 
         // ========== CLIENT SETUP ==========
