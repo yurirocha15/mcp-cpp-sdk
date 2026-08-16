@@ -159,11 +159,11 @@ with other async work — you can wire up the transport manually:
            });
 
        boost::asio::io_context io;
-       auto transport = std::make_unique<mcp::StdioTransport>(io.get_executor());
+       auto transport = std::make_shared<mcp::StdioTransport>(io.get_executor());
        boost::asio::co_spawn(
            io,
            [&]() -> mcp::Task<void> {
-               co_await server.run(std::move(transport), io.get_executor());
+               co_await server.run(transport, io.get_executor());
            },
            boost::asio::detached);
        io.run();
@@ -177,12 +177,13 @@ Quick Start: Minimal Client
    A convenience ``client.run_stdio()`` API is planned. For now, clients
    require manual ``io_context`` setup as shown below.
 
-Here's a minimal MCP client that connects to a server and calls a tool:
+Here's a minimal MCP client that connects to an already running Streamable HTTP
+server and calls a tool:
 
 .. code-block:: cpp
 
    #include <mcp/client/client.hpp>
-   #include <mcp/transport/stdio.hpp>
+   #include <mcp/transport/http_client.hpp>
    #include <boost/asio/co_spawn.hpp>
    #include <boost/asio/detached.hpp>
    #include <boost/asio/io_context.hpp>
@@ -193,8 +194,9 @@ Here's a minimal MCP client that connects to a server and calls a tool:
 
        boost::asio::io_context io;
 
-       auto transport = std::make_unique<StdioTransport>(io.get_executor());
-       Client client(std::move(transport), io.get_executor());
+       auto transport = std::make_shared<HttpClientTransport>(
+           io.get_executor(), "http://127.0.0.1:3000/mcp");
+       Client client(transport, io.get_executor());
 
        boost::asio::co_spawn(
            io,
@@ -203,14 +205,14 @@ Here's a minimal MCP client that connects to a server and calls a tool:
                Implementation info;
                info.name = "math-client";
                info.version = "1.0.0";
-               co_await client.connect(std::move(info), {});
+               co_await client.connect(info, {});
 
                // Call the "add" tool
                nlohmann::json args = {{"a", 5}, {"b", 7}};
                auto result = co_await client.call_tool("add", args);
-               std::cout << "Result: " << result.dump(2) << std::endl;
+               std::cout << "Result: " << nlohmann::json(result).dump(2) << std::endl;
 
-               co_await client.close();
+               client.close();
            }(),
            boost::asio::detached
        );

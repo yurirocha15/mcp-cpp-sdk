@@ -113,14 +113,12 @@ Error Handling
 
 There are two primary ways to handle errors in tool handlers:
 
-1. **Throwing Exceptions**: The synchronous ``add_tool(name, description,
-   schema, std::function<nlohmann::json(const nlohmann::json&)>)`` overload
-   catches handler exceptions and converts them into a tool error response
-   (``isError: true``). Typed and asynchronous handlers propagate exceptions as
-   JSON-RPC internal errors instead.
-2. **Explicit Error Returns**: You can return a `mcp::CallToolResult` object
-   with the `isError` field set to `true`. This gives you full control over
-   the error message and any additional metadata you want to return.
+1. **Throwing Exceptions**: All tool-handler overloads convert standard
+   exceptions into a tool error response (``isError: true``).
+2. **Explicit Error Returns**: A handler declared with
+   ``Out=mcp::CallToolResult`` can return a complete result whose ``isError``
+   field is ``true``. ``add_raw_tool()`` provides the equivalent low-level JSON
+   escape hatch with runtime validation.
 
 The following example demonstrates both patterns:
 
@@ -129,10 +127,10 @@ The following example demonstrates both patterns:
    :lines: 45-76
 
 Use ``isError: true`` when the tool completed normally but needs to report an
-application-level failure back to the client. Unhandled exceptions from typed or
-async handlers become JSON-RPC errors, while exceptions from the raw synchronous
-JSON overload are converted into tool error results. In both cases, the SDK
-keeps the session alive when possible. This is a critical distinction:
+application-level failure back to the client. Standard exceptions from sync,
+typed, and async tool handlers are converted into the same protocol-level tool
+error shape. In both cases, the SDK keeps the session alive when possible. This
+is a critical distinction:
 
 - **Protocol Errors**: Issues like malformed JSON, invalid method names, or
   disconnected transports cause JSON-RPC level errors.
