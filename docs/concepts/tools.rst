@@ -123,9 +123,10 @@ There are two primary ways to handle errors in tool handlers:
    (synchronous, typed or asynchronous) or by middleware during ``tools/call``
    is converted into a tool error result (``isError: true``) whose text is the
    exception message.
-2. **Explicit Error Returns**: You can return a `mcp::CallToolResult` object
-   with the `isError` field set to `true`. This gives you full control over
-   the error message and any additional metadata you want to return.
+2. **Explicit Error Returns**: A handler declared with
+   ``Out=mcp::CallToolResult`` can return a complete result whose ``isError``
+   field is ``true``. ``add_raw_tool()`` provides the equivalent low-level JSON
+   escape hatch with runtime validation.
 
 The following example demonstrates both patterns:
 
