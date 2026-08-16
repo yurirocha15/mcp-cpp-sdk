@@ -5,17 +5,22 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include <mcp/detail/secure_random.hpp>
+
 #include <algorithm>
+#include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/system/error_code.hpp>
 #include <chrono>
 #include <cstdint>
 #include <exception>
 #include <iterator>
+#include <limits>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -223,73 +228,116 @@ void InMemoryTokenStore::remove(const std::string& server_url) {
     impl_->tokens.erase(server_url);
 }
 
-struct OAuthHttpClient::Impl {
+namespace {
+
+constexpr std::string_view g_https_prefix = "https://";
+
+/// Resolve a `Location` header against the URL that produced it.
+std::string resolve_redirect_target(const std::string& base, const std::string& location) {
+    if (location.find("://") != std::string::npos) {
+        return location;
+    }
+    const auto origin = metadata_url_origin(base);
+    if (origin.empty()) {
+        return location;
+    }
+    if (!location.empty() && location.front() == '/') {
+        return origin + location;
+    }
+
+    auto directory = base;
+    if (const auto query = directory.find_first_of("?#"); query != std::string::npos) {
+        directory.erase(query);
+    }
+    const auto last_slash = directory.rfind('/');
+    if (last_slash == std::string::npos || last_slash < origin.size()) {
+        return origin + "/" + location;
+    }
+    return directory.substr(0, last_slash + 1) + location;
+}
+
+bool is_redirect_status(unsigned int status) {
+    return status == static_cast<unsigned int>(http::status::moved_permanently) ||
+           status == static_cast<unsigned int>(http::status::found) ||
+           status == static_cast<unsigned int>(http::status::see_other) ||
+           status == static_cast<unsigned int>(http::status::temporary_redirect) ||
+           status == static_cast<unsigned int>(http::status::permanent_redirect);
+}
+
+}  // namespace
+
+struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Impl> {
     struct ParsedUrl {
+        std::string scheme;
         std::string host;
         std::string port;
         std::string path;
     };
 
-    struct GetOperation {
-        GetOperation(const net::strand<net::any_io_executor>& executor, ParsedUrl parsed_url,
-                     std::string original_url)
-            : parsed(std::move(parsed_url)),
-              url(std::move(original_url)),
-              resolver(executor),
-              stream(executor),
-              request(http::verb::get, parsed.path, mcp::constants::g_http_version_11) {
-            request.set(http::field::host, parsed.host);
-            request.set(http::field::accept, "application/json");
+    /// State for one HTTP exchange. `reset` rebuilds the per-hop pieces so a redirect can be
+    /// followed on a fresh connection without discarding the operation.
+    struct Exchange {
+        Exchange(std::shared_ptr<Impl> state, net::strand<net::any_io_executor> executor,
+                 std::string target)
+            : owner(std::move(state)),
+              strand(std::move(executor)),
+              url(std::move(target)),
+              resolver(strand) {}
+
+        void reset() {
+            endpoints.clear();
+            // A redirect is followed on a fresh connection; tcp_stream is not reassignable.
+            stream.emplace(strand);
+            buffer.clear();
+            parser.emplace();
+            const auto limit = owner->policy ? owner->policy->max_response_bytes
+                                             : std::numeric_limits<std::uint64_t>::max();
+            parser->body_limit(limit);
         }
 
+        [[nodiscard]] const http::response<http::string_body>& response() const {
+            return parser->get();
+        }
+
+        std::shared_ptr<Impl> owner;
+        net::strand<net::any_io_executor> strand;
         ParsedUrl parsed;
         std::string url;
         net::ip::tcp::resolver resolver;
-        std::optional<net::ip::tcp::resolver::results_type> endpoints;
-        beast::tcp_stream stream;
-        http::request<http::empty_body> request;
+        std::vector<net::ip::tcp::endpoint> endpoints;
+        std::optional<beast::tcp_stream> stream;
         beast::flat_buffer buffer;
-        http::response<http::string_body> response;
-    };
-
-    struct PostOperation {
-        PostOperation(const net::strand<net::any_io_executor>& executor, ParsedUrl parsed_url,
-                      std::string form_body)
-            : parsed(std::move(parsed_url)),
-              resolver(executor),
-              stream(executor),
-              request(http::verb::post, parsed.path, mcp::constants::g_http_version_11) {
-            request.set(http::field::host, parsed.host);
-            request.set(http::field::content_type, "application/x-www-form-urlencoded");
-            request.set(http::field::accept, "application/json");
-            request.body() = std::move(form_body);
-            request.prepare_payload();
-        }
-
-        ParsedUrl parsed;
-        net::ip::tcp::resolver resolver;
-        std::optional<net::ip::tcp::resolver::results_type> endpoints;
-        beast::tcp_stream stream;
-        http::request<http::string_body> request;
-        beast::flat_buffer buffer;
-        http::response<http::string_body> response;
+        std::optional<http::response_parser<http::string_body>> parser;
+        std::string body;
     };
 
     explicit Impl(const net::any_io_executor& executor) : strand(net::make_strand(executor)) {}
 
     static ParsedUrl parse_url(const std::string& url) {
-        if (!url.starts_with(mcp::constants::g_http_prefix)) {
-            throw std::invalid_argument("OAuth HTTP client URL must start with http://");
+        std::string scheme;
+        std::string default_port;
+        std::size_t prefix_length = 0;
+        if (url.starts_with(mcp::constants::g_http_prefix)) {
+            scheme = "http";
+            default_port = "80";
+            prefix_length = mcp::constants::g_http_prefix.size();
+        } else if (url.starts_with(g_https_prefix)) {
+            scheme = "https";
+            default_port = "443";
+            prefix_length = g_https_prefix.size();
+        } else {
+            throw std::invalid_argument(
+                "OAuth HTTP client URL must use the http:// or https:// scheme");
         }
 
-        auto authority_and_path = url.substr(mcp::constants::g_http_prefix.size());
+        auto authority_and_path = url.substr(prefix_length);
         const auto path_separator = authority_and_path.find('/');
         auto authority = authority_and_path.substr(0, path_separator);
         auto path =
             path_separator == std::string::npos ? "/" : authority_and_path.substr(path_separator);
 
         std::string host;
-        std::string port = "80";
+        auto port = std::move(default_port);
         const auto colon = authority.find(':');
         if (colon == std::string::npos) {
             host = std::move(authority);
@@ -298,72 +346,179 @@ struct OAuthHttpClient::Impl {
             port = authority.substr(colon + 1);
         }
 
-        return {std::move(host), std::move(port), std::move(path)};
+        return {std::move(scheme), std::move(host), std::move(port), std::move(path)};
+    }
+
+    /// Validate a target before any lookup. Refusal happens here, so the host of a refused target
+    /// is never resolved and no socket is opened for it.
+    static void enforce_url_policy(const std::optional<MetadataFetchPolicy>& policy,
+                                   const std::string& url) {
+        if (!policy) {
+            return;
+        }
+        const auto decision = validate_metadata_url(*policy, url);
+        if (decision != MetadataUrlDecision::allowed) {
+            throw MetadataPolicyError(decision, url);
+        }
+    }
+
+    /// Classify every address a lookup produced. One blocked answer refuses the whole fetch, so a
+    /// resolver that mixes a routable answer with a hostile one cannot smuggle the hostile one in.
+    static void enforce_address_policy(const std::optional<MetadataFetchPolicy>& policy,
+                                       const std::vector<net::ip::tcp::endpoint>& endpoints) {
+        if (!policy) {
+            return;
+        }
+        for (const auto& endpoint : endpoints) {
+            auto literal = endpoint.address().to_string();
+            const auto decision = validate_metadata_address(*policy, literal);
+            if (decision != MetadataUrlDecision::allowed) {
+                throw MetadataPolicyError(decision, std::move(literal));
+            }
+        }
+    }
+
+    static Task<void> connect(const std::shared_ptr<Exchange>& exchange) {
+        if (exchange->parsed.scheme != "http") {
+            throw std::runtime_error(
+                "OAuth over https requires TLS support, which this build does not provide: " +
+                exchange->url);
+        }
+
+        if (exchange->owner->host_resolver) {
+            const auto port = static_cast<unsigned short>(std::stoul(exchange->parsed.port));
+            for (const auto& literal :
+                 exchange->owner->host_resolver(exchange->parsed.host, exchange->parsed.port)) {
+                boost::system::error_code parse_error;
+                const auto address = net::ip::make_address(literal, parse_error);
+                if (parse_error) {
+                    throw std::runtime_error("Host resolver returned an unusable address: " + literal);
+                }
+                exchange->endpoints.emplace_back(address, port);
+            }
+        } else {
+            const auto results = co_await exchange->resolver.async_resolve(
+                exchange->parsed.host, exchange->parsed.port, net::use_awaitable);
+            for (const auto& entry : results) {
+                exchange->endpoints.push_back(entry.endpoint());
+            }
+        }
+
+        if (exchange->endpoints.empty()) {
+            throw std::runtime_error("No address resolved for " + exchange->parsed.host);
+        }
+        enforce_address_policy(exchange->owner->policy, exchange->endpoints);
+
+        // Connect only to the addresses this single lookup produced. They are pinned for the
+        // exchange, so a name that resolves differently later cannot redirect it.
+        exchange->stream->expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
+        co_await exchange->stream->async_connect(exchange->endpoints, net::use_awaitable);
+    }
+
+    template <typename Request>
+    static Task<void> exchange_once(const std::shared_ptr<Exchange>& exchange, Request& request) {
+        co_await connect(exchange);
+
+        exchange->stream->expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
+        co_await http::async_write(*exchange->stream, request, net::use_awaitable);
+        try {
+            co_await http::async_read(*exchange->stream, exchange->buffer, *exchange->parser,
+                                      net::use_awaitable);
+        } catch (const boost::system::system_error& error) {
+            beast::error_code discard_error;
+            (void)exchange->stream->socket().shutdown(net::ip::tcp::socket::shutdown_both,
+                                                      discard_error);
+            if (error.code() == http::error::body_limit) {
+                // The body is abandoned mid-read rather than buffered to completion.
+                throw MetadataPolicyError(MetadataUrlDecision::response_too_large, exchange->url);
+            }
+            throw;
+        }
+
+        beast::error_code shutdown_error;
+        (void)exchange->stream->socket().shutdown(net::ip::tcp::socket::shutdown_both, shutdown_error);
     }
 
     Task<nlohmann::json> get_json(std::string url) {
-        auto parsed = parse_url(url);
-        auto operation = std::make_shared<GetOperation>(strand, std::move(parsed), std::move(url));
-        return run_get(std::move(operation));
+        return run_get(std::make_shared<Exchange>(shared_from_this(), strand, std::move(url)));
     }
 
     Task<TokenResponse> post_token_request(std::string token_endpoint, const KeyValuePairList& params) {
-        auto operation = std::make_shared<PostOperation>(strand, parse_url(token_endpoint),
-                                                         detail::build_form_body(params));
-        return run_post(std::move(operation));
+        return run_post(
+            std::make_shared<Exchange>(shared_from_this(), strand, std::move(token_endpoint)),
+            std::make_shared<std::string>(detail::build_form_body(params)));
     }
 
-    static Task<nlohmann::json> run_get(std::shared_ptr<GetOperation> operation) {
-        co_await net::post(operation->resolver.get_executor(), net::use_awaitable);
+    static Task<nlohmann::json> run_get(std::shared_ptr<Exchange> exchange) {
+        co_await net::post(exchange->strand, net::use_awaitable);
 
-        operation->endpoints = co_await operation->resolver.async_resolve(
-            operation->parsed.host, operation->parsed.port, net::use_awaitable);
-        operation->stream.expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
-        co_await operation->stream.async_connect(*operation->endpoints, net::use_awaitable);
+        const auto redirect_budget =
+            exchange->owner->policy ? exchange->owner->policy->max_redirects : 0;
+        for (std::size_t redirect = 0;; ++redirect) {
+            // Every hop, including each redirect target, is validated afresh before it is reached.
+            enforce_url_policy(exchange->owner->policy, exchange->url);
+            exchange->parsed = parse_url(exchange->url);
+            exchange->reset();
 
-        operation->stream.expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
-        co_await http::async_write(operation->stream, operation->request, net::use_awaitable);
-        co_await http::async_read(operation->stream, operation->buffer, operation->response,
-                                  net::use_awaitable);
+            http::request<http::empty_body> request(http::verb::get, exchange->parsed.path,
+                                                    mcp::constants::g_http_version_11);
+            request.set(http::field::host, exchange->parsed.host);
+            request.set(http::field::accept, "application/json");
+            co_await exchange_once(exchange, request);
 
-        beast::error_code shutdown_error;
-        (void)operation->stream.socket().shutdown(net::ip::tcp::socket::shutdown_both, shutdown_error);
-
-        if (operation->response.result_int() >= mcp::constants::g_http_bad_request) {
-            throw std::runtime_error("HTTP GET " + operation->url + " failed with status " +
-                                     std::to_string(operation->response.result_int()));
+            const auto status = exchange->response().result_int();
+            if (!is_redirect_status(status)) {
+                break;
+            }
+            if (redirect >= redirect_budget) {
+                throw MetadataPolicyError(MetadataUrlDecision::redirect_limit_exceeded, exchange->url);
+            }
+            const auto location = exchange->response().find(http::field::location);
+            if (location == exchange->response().end()) {
+                throw std::runtime_error("HTTP GET " + exchange->url +
+                                         " returned a redirect without a Location header");
+            }
+            exchange->url = resolve_redirect_target(exchange->url, std::string(location->value()));
         }
 
-        auto response_json = nlohmann::json::parse(operation->response.body(), nullptr, false);
+        if (exchange->response().result_int() >= mcp::constants::g_http_bad_request) {
+            throw std::runtime_error("HTTP GET " + exchange->url + " failed with status " +
+                                     std::to_string(exchange->response().result_int()));
+        }
+
+        exchange->body = exchange->response().body();
+        auto response_json = nlohmann::json::parse(exchange->body, nullptr, false);
         if (response_json.is_discarded()) {
-            throw std::runtime_error("Failed to parse JSON from " + operation->url);
+            throw std::runtime_error("Failed to parse JSON from " + exchange->url);
         }
         co_return response_json;
     }
 
-    static Task<TokenResponse> run_post(std::shared_ptr<PostOperation> operation) {
-        co_await net::post(operation->resolver.get_executor(), net::use_awaitable);
+    static Task<TokenResponse> run_post(std::shared_ptr<Exchange> exchange,
+                                        std::shared_ptr<std::string> form_body) {
+        co_await net::post(exchange->strand, net::use_awaitable);
 
-        operation->endpoints = co_await operation->resolver.async_resolve(
-            operation->parsed.host, operation->parsed.port, net::use_awaitable);
-        operation->stream.expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
-        co_await operation->stream.async_connect(*operation->endpoints, net::use_awaitable);
+        enforce_url_policy(exchange->owner->policy, exchange->url);
+        exchange->parsed = parse_url(exchange->url);
+        exchange->reset();
 
-        operation->stream.expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
-        co_await http::async_write(operation->stream, operation->request, net::use_awaitable);
-        co_await http::async_read(operation->stream, operation->buffer, operation->response,
-                                  net::use_awaitable);
+        http::request<http::string_body> request(http::verb::post, exchange->parsed.path,
+                                                 mcp::constants::g_http_version_11);
+        request.set(http::field::host, exchange->parsed.host);
+        request.set(http::field::content_type, "application/x-www-form-urlencoded");
+        request.set(http::field::accept, "application/json");
+        request.body() = *form_body;
+        request.prepare_payload();
+        co_await exchange_once(exchange, request);
 
-        beast::error_code shutdown_error;
-        (void)operation->stream.socket().shutdown(net::ip::tcp::socket::shutdown_both, shutdown_error);
-
-        if (operation->response.result_int() >= mcp::constants::g_http_bad_request) {
+        if (exchange->response().result_int() >= mcp::constants::g_http_bad_request) {
             throw std::runtime_error("Token request failed with status " +
-                                     std::to_string(operation->response.result_int()) + ": " +
-                                     operation->response.body());
+                                     std::to_string(exchange->response().result_int()) + ": " +
+                                     exchange->response().body());
         }
 
-        auto response_json = nlohmann::json::parse(operation->response.body(), nullptr, false);
+        exchange->body = exchange->response().body();
+        auto response_json = nlohmann::json::parse(exchange->body, nullptr, false);
         if (response_json.is_discarded()) {
             throw std::runtime_error("Failed to parse token response JSON");
         }
@@ -371,10 +526,20 @@ struct OAuthHttpClient::Impl {
     }
 
     net::strand<net::any_io_executor> strand;
+    std::optional<MetadataFetchPolicy> policy;
+    HostResolver host_resolver;
 };
 
 OAuthHttpClient::OAuthHttpClient(const net::any_io_executor& executor)
     : impl_(std::make_shared<Impl>(executor)) {}
+
+void OAuthHttpClient::set_metadata_policy(MetadataFetchPolicy policy) {
+    impl_->policy = std::move(policy);
+}
+
+void OAuthHttpClient::set_host_resolver(HostResolver resolver) {
+    impl_->host_resolver = std::move(resolver);
+}
 
 Task<TokenResponse> OAuthHttpClient::exchange_code(const OAuthConfig& config, const std::string& code,
                                                    const std::string& code_verifier) {
@@ -514,22 +679,32 @@ struct OAuthDiscoveryClient::Impl {
         co_return std::move(*metadata);
     }
 
-    static Task<ProtectedResourceMetadata> discover_protected_resource(std::shared_ptr<Impl> owner,
-                                                                       std::string resource_url) {
+    static Task<ProtectedResourceMetadata> discover_protected_resource(
+        std::shared_ptr<Impl> owner, std::string resource_url,
+        const std::optional<std::string>& challenge_metadata_url) {
+        // A challenge-supplied URL is its own cache key, so a server that moves its metadata is
+        // never served an entry discovered through the well-known fallback.
+        auto cache_key = challenge_metadata_url.value_or(resource_url);
         {
             std::lock_guard lock(owner->cache_mutex);
-            const auto iter = owner->resource_cache.find(resource_url);
+            const auto iter = owner->resource_cache.find(cache_key);
             if (iter != owner->resource_cache.end() && !iter->second.is_expired()) {
                 return return_cached(std::make_shared<ProtectedResourceMetadata>(iter->second.data));
             }
         }
 
-        const auto parsed = parse_url_components(resource_url);
-        const auto base = parsed.scheme + "://" + parsed.authority;
         auto operation = std::make_shared<DiscoveryOperation<ProtectedResourceMetadata>>();
         operation->owner = std::move(owner);
-        operation->cache_key = std::move(resource_url);
+        operation->cache_key = std::move(cache_key);
 
+        if (challenge_metadata_url) {
+            // The challenge named the location; take the server at its word and try nothing else.
+            operation->urls.push_back(*challenge_metadata_url);
+            return run_protected_discovery(std::move(operation));
+        }
+
+        const auto parsed = parse_url_components(resource_url);
+        const auto base = parsed.scheme + "://" + parsed.authority;
         if (!parsed.path.empty() && parsed.path != "/") {
             auto path_part = parsed.path;
             if (path_part.front() == '/') {
@@ -590,6 +765,9 @@ struct OAuthDiscoveryClient::Impl {
                     std::chrono::steady_clock::now() + operation->owner->cache_ttl,
                 };
                 co_return *operation->metadata;
+            } catch (const MetadataPolicyError&) {
+                // A refused target is a security decision, not a candidate that missed.
+                throw;
             } catch (...) {
                 continue;
             }
@@ -613,6 +791,9 @@ struct OAuthDiscoveryClient::Impl {
                     std::chrono::steady_clock::now() + operation->owner->cache_ttl,
                 };
                 co_return *operation->metadata;
+            } catch (const MetadataPolicyError&) {
+                // A refused target is a security decision, not a candidate that missed.
+                throw;
             } catch (...) {
                 continue;
             }
@@ -634,7 +815,12 @@ OAuthDiscoveryClient::OAuthDiscoveryClient(std::shared_ptr<OAuthHttpClient> http
 
 Task<ProtectedResourceMetadata> OAuthDiscoveryClient::discover_protected_resource(
     const std::string& resource_url) {
-    return Impl::discover_protected_resource(impl_, resource_url);
+    return Impl::discover_protected_resource(impl_, resource_url, std::nullopt);
+}
+
+Task<ProtectedResourceMetadata> OAuthDiscoveryClient::discover_protected_resource(
+    const std::string& resource_url, const std::optional<std::string>& challenge_metadata_url) {
+    return Impl::discover_protected_resource(impl_, resource_url, challenge_metadata_url);
 }
 
 Task<AuthServerMetadata> OAuthDiscoveryClient::discover_auth_server(const std::string& issuer_url) {
@@ -759,6 +945,260 @@ void OAuthAuthenticator::store_token(TokenResponse token) {
     impl_->token_store->store(impl_->server_url, std::move(token));
 }
 
+namespace {
+
+/// Join scopes into the space-delimited form an authorization request carries.
+std::string join_scopes(const std::vector<std::string>& scopes) {
+    std::string joined;
+    for (const auto& scope : scopes) {
+        if (!joined.empty()) {
+            joined.push_back(' ');
+        }
+        joined += scope;
+    }
+    return joined;
+}
+
+std::string append_query(const std::string& endpoint, const std::string& query) {
+    if (query.empty()) {
+        return endpoint;
+    }
+    const auto separator = endpoint.find('?') == std::string::npos ? '?' : '&';
+    return endpoint + separator + query;
+}
+
+}  // namespace
+
+struct OAuthAuthorizationManager::Impl {
+    struct ChallengeOperation {
+        std::shared_ptr<Impl> owner;
+        BearerChallenge challenge;
+        std::optional<ProtectedResourceMetadata> resource_metadata;
+        std::optional<AuthServerMetadata> auth_metadata;
+        AuthorizationRequest request;
+        AuthorizationResponse response;
+        OAuthConfig token_config;
+        TokenResponse token;
+    };
+
+    struct RefreshOperation {
+        std::shared_ptr<Impl> owner;
+        OAuthConfig token_config;
+        TokenResponse stored_token;
+        std::optional<TokenResponse> new_token;
+    };
+
+    Impl(const net::any_io_executor& executor, std::shared_ptr<TokenStore> store,
+         OAuthAuthorizationConfig authorization_config, AuthorizationCallback authorization_callback)
+        : token_store(std::move(store)),
+          http_client(std::make_shared<OAuthHttpClient>(executor)),
+          config(std::move(authorization_config)),
+          callback(std::move(authorization_callback)) {
+        http_client->set_metadata_policy(config.policy);
+        if (config.host_resolver) {
+            http_client->set_host_resolver(config.host_resolver);
+        }
+        discovery = std::make_shared<OAuthDiscoveryClient>(http_client);
+    }
+
+    static Task<bool> return_false() { co_return false; }
+
+    /// Challenge scope is authoritative; `scopes_supported` is the fallback; otherwise no scope is
+    /// requested at all. An explicit configured scope overrides both.
+    static std::optional<std::string> select_scope(const Impl& owner, const BearerChallenge& challenge,
+                                                   const ProtectedResourceMetadata& resource) {
+        if (owner.config.scope) {
+            return owner.config.scope;
+        }
+        if (challenge.scope && !challenge.scope->empty()) {
+            return challenge.scope;
+        }
+        if (resource.scopes_supported && !resource.scopes_supported->empty()) {
+            return join_scopes(*resource.scopes_supported);
+        }
+        return std::nullopt;
+    }
+
+    static AuthorizationRequest build_request(const Impl& owner, const BearerChallenge& challenge,
+                                              const ProtectedResourceMetadata& resource,
+                                              const AuthServerMetadata& auth_server) {
+        const auto pkce = generate_pkce_pair();
+
+        AuthorizationRequest request;
+        request.state = mcp::detail::generate_secure_session_id();
+        request.code_verifier = pkce.code_verifier;
+        request.code_challenge = pkce.code_challenge;
+        // Recorded from the metadata document this client fetched itself. Response validation is
+        // only as trustworthy as this value's provenance.
+        request.issuer = auth_server.issuer;
+        request.issuer_parameter_supported =
+            auth_server.authorization_response_iss_parameter_supported.value_or(false);
+        request.client_id = owner.config.client_id;
+        request.redirect_uri = owner.config.redirect_uri;
+        request.scope = select_scope(owner, challenge, resource);
+        request.resource = resource.resource.empty() ? owner.config.server_url : resource.resource;
+
+        KeyValuePairList params = {
+            {"response_type", "code"},
+            {"client_id", request.client_id},
+            {"redirect_uri", request.redirect_uri},
+            {"state", request.state},
+            {"code_challenge", request.code_challenge},
+            {"code_challenge_method", pkce.challenge_method},
+        };
+        if (request.scope) {
+            params.emplace_back("scope", *request.scope);
+        }
+        // RFC 8707: the resource indicator travels on the authorization request as well as the
+        // token request.
+        if (request.resource) {
+            params.emplace_back("resource", *request.resource);
+        }
+        request.authorization_url =
+            append_query(auth_server.authorization_endpoint, detail::build_form_body(params));
+        return request;
+    }
+
+    static OAuthConfig build_token_config(const Impl& owner, const AuthServerMetadata& auth_server,
+                                          const AuthorizationRequest& request) {
+        OAuthConfig token_config;
+        token_config.client_id = owner.config.client_id;
+        token_config.client_secret = owner.config.client_secret;
+        token_config.token_endpoint = auth_server.token_endpoint;
+        token_config.authorization_endpoint = auth_server.authorization_endpoint;
+        token_config.revocation_endpoint = auth_server.revocation_endpoint;
+        token_config.redirect_uri = owner.config.redirect_uri;
+        token_config.scope = request.scope;
+        token_config.resource = request.resource;
+        return token_config;
+    }
+
+    static Task<bool> run_challenge(std::shared_ptr<ChallengeOperation> operation) {
+        auto& owner = *operation->owner;
+
+        // The challenge's own metadata URL wins over the well-known fallback order.
+        operation->resource_metadata = co_await owner.discovery->discover_protected_resource(
+            owner.config.server_url, operation->challenge.resource_metadata);
+        if (operation->resource_metadata->authorization_servers.empty()) {
+            throw std::runtime_error("Protected resource metadata listed no authorization servers");
+        }
+
+        operation->auth_metadata = co_await owner.discovery->discover_auth_server(
+            operation->resource_metadata->authorization_servers.front());
+        if (operation->auth_metadata->authorization_endpoint.empty() ||
+            operation->auth_metadata->token_endpoint.empty()) {
+            throw std::runtime_error(
+                "Authorization server metadata omitted an authorization or token endpoint");
+        }
+
+        operation->request = build_request(owner, operation->challenge, *operation->resource_metadata,
+                                           *operation->auth_metadata);
+        operation->token_config =
+            build_token_config(owner, *operation->auth_metadata, operation->request);
+        {
+            std::lock_guard lock(owner.state_mutex);
+            owner.last_request = operation->request;
+            owner.token_config = operation->token_config;
+        }
+
+        operation->response = co_await owner.callback(operation->request);
+        const auto validation =
+            validate_authorization_response(operation->request, operation->response);
+        if (!validation.accepted()) {
+            throw std::runtime_error("Authorization response rejected: " + validation.message);
+        }
+
+        operation->token = co_await owner.http_client->exchange_code(
+            operation->token_config, *operation->response.code, operation->request.code_verifier);
+        owner.token_store->store(owner.config.server_url, operation->token);
+        co_return true;
+    }
+
+    static Task<bool> handle_challenge(std::shared_ptr<Impl> owner, const std::string& header) {
+        auto challenge = select_bearer_challenge(parse_www_authenticate(header));
+        if (!challenge) {
+            return return_false();
+        }
+        auto operation = std::make_shared<ChallengeOperation>();
+        operation->owner = std::move(owner);
+        operation->challenge = std::move(*challenge);
+        return run_challenge(std::move(operation));
+    }
+
+    static Task<bool> try_refresh(std::shared_ptr<Impl> owner) {
+        auto stored = owner->token_store->load(owner->config.server_url);
+        if (!stored || !stored->refresh_token) {
+            return return_false();
+        }
+
+        auto operation = std::make_shared<RefreshOperation>();
+        {
+            std::lock_guard lock(owner->state_mutex);
+            if (!owner->token_config) {
+                return return_false();
+            }
+            operation->token_config = *owner->token_config;
+        }
+        operation->owner = std::move(owner);
+        operation->stored_token = std::move(*stored);
+        return run_refresh(std::move(operation));
+    }
+
+    static Task<bool> run_refresh(std::shared_ptr<RefreshOperation> operation) {
+        try {
+            operation->new_token = co_await operation->owner->http_client->refresh_token(
+                operation->token_config, *operation->stored_token.refresh_token);
+            if (!operation->new_token->refresh_token) {
+                operation->new_token->refresh_token = operation->stored_token.refresh_token;
+            }
+            operation->owner->token_store->store(operation->owner->config.server_url,
+                                                 std::move(*operation->new_token));
+            co_return true;
+        } catch (const MetadataPolicyError&) {
+            throw;
+        } catch (...) {
+            co_return false;
+        }
+    }
+
+    std::shared_ptr<TokenStore> token_store;
+    std::shared_ptr<OAuthHttpClient> http_client;
+    std::shared_ptr<OAuthDiscoveryClient> discovery;
+    OAuthAuthorizationConfig config;
+    AuthorizationCallback callback;
+    mutable std::mutex state_mutex;
+    std::optional<AuthorizationRequest> last_request;
+    std::optional<OAuthConfig> token_config;
+};
+
+OAuthAuthorizationManager::OAuthAuthorizationManager(const net::any_io_executor& executor,
+                                                     std::shared_ptr<TokenStore> token_store,
+                                                     OAuthAuthorizationConfig config,
+                                                     AuthorizationCallback callback) {
+    if (!token_store || !callback) {
+        throw std::invalid_argument(
+            "OAuthAuthorizationManager requires a token store and an authorization callback");
+    }
+    impl_ = std::make_shared<Impl>(executor, std::move(token_store), std::move(config),
+                                   std::move(callback));
+}
+
+std::string OAuthAuthorizationManager::get_access_token() const {
+    const auto token = impl_->token_store->load(impl_->config.server_url);
+    return token ? token->access_token : std::string{};
+}
+
+Task<bool> OAuthAuthorizationManager::try_refresh_token() { return Impl::try_refresh(impl_); }
+
+Task<bool> OAuthAuthorizationManager::try_handle_challenge(const std::string& www_authenticate) {
+    return Impl::handle_challenge(impl_, www_authenticate);
+}
+
+std::optional<AuthorizationRequest> OAuthAuthorizationManager::last_authorization_request() const {
+    std::lock_guard lock(impl_->state_mutex);
+    return impl_->last_request;
+}
+
 struct OAuthClientTransport::Impl {
     using Clock = std::chrono::steady_clock;
     using PendingOrder = std::list<std::string>;
@@ -780,6 +1220,7 @@ struct OAuthClientTransport::Impl {
         std::optional<std::string> request_key;
         std::optional<std::uint64_t> request_generation;
         std::exception_ptr write_error;
+        std::string authenticate_challenge;
         bool authentication_challenge{false};
     };
 
@@ -957,6 +1398,9 @@ struct OAuthClientTransport::Impl {
             operation->authentication_challenge =
                 operation->owner->uses_http_authorization_header &&
                 error.status() == static_cast<unsigned int>(http::status::unauthorized);
+            if (operation->authentication_challenge) {
+                operation->authenticate_challenge = error.authenticate_challenge();
+            }
             operation->write_error = std::current_exception();
         } catch (...) {
             operation->write_error = std::current_exception();
@@ -968,7 +1412,15 @@ struct OAuthClientTransport::Impl {
         if (operation->authentication_challenge) {
             bool refreshed = false;
             try {
-                refreshed = co_await operation->owner->authenticator->try_refresh_token();
+                // A challenge that names its metadata can drive a full authorization exchange;
+                // renewing an existing grant is the fallback when it cannot.
+                if (!operation->authenticate_challenge.empty()) {
+                    refreshed = co_await operation->owner->authenticator->try_handle_challenge(
+                        operation->authenticate_challenge);
+                }
+                if (!refreshed) {
+                    refreshed = co_await operation->owner->authenticator->try_refresh_token();
+                }
             } catch (...) {
                 erase_pending(operation);
                 throw;
