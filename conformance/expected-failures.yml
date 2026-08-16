@@ -6,7 +6,6 @@
 client:
   - elicitation-sep1034-client-defaults
   - sse-retry
-  - auth/scope-step-up
 server:
   - tools-call-sampling
   - tools-call-elicitation

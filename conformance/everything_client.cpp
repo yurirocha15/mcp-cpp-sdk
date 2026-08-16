@@ -140,6 +140,15 @@ mcp::Task<void> run_sse_retry(mcp::Client& client) {
     client.close();
 }
 
+mcp::Task<void> run_scope_step_up(mcp::Client& client) {
+    (void)co_await connect_conformance_client(client);
+    (void)co_await client.list_tools();
+    // The step-up fixture returns its 403 broader-scope challenge only for tools/call, so the
+    // escalation leg exists only if the client actually calls a tool after the initial grant.
+    (void)co_await client.call_tool("test-tool", EmptyArguments{});
+    client.close();
+}
+
 mcp::Task<void> run_scenario(mcp::Client& client, std::string_view scenario) {
     if (scenario == "initialize") {
         return run_initialize(client);
@@ -153,10 +162,15 @@ mcp::Task<void> run_scenario(mcp::Client& client, std::string_view scenario) {
     if (scenario == "sse-retry") {
         return run_sse_retry(client);
     }
+    if (scenario == "auth/scope-step-up") {
+        // Kept narrow on purpose: other auth fixtures use server builders that never register
+        // "test-tool", and only scope-retry-limit tolerates a client error.
+        return run_scope_step_up(client);
+    }
     if (scenario.starts_with("auth/")) {
-        // Every authorization scenario drives the same flow: one authenticated MCP request. What
-        // differs between them is what the fixture's servers advertise, which the SDK reacts to on
-        // its own.
+        // Every other authorization scenario drives the same flow: one authenticated MCP request.
+        // What differs between them is what the fixture's servers advertise, which the SDK reacts
+        // to on its own.
         return run_initialize(client);
     }
     throw std::runtime_error("unsupported conformance client scenario: " + std::string(scenario));
