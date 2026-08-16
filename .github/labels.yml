@@ -1,0 +1,36 @@
+- name: bug
+  color: d73a4a
+  description: Confirmed or reported defect
+- name: enhancement
+  color: a2eeef
+  description: New feature or improvement
+- name: question
+  color: d876e3
+  description: Usage or design question
+- name: needs confirmation
+  color: fbca04
+  description: Needs maintainer confirmation before classification
+- name: needs repro
+  color: f9d0c4
+  description: Needs a minimal reproducible example
+- name: ready for work
+  color: 0e8a16
+  description: Triaged and ready to implement
+- name: good first issue
+  color: 7057ff
+  description: Suitable for a first contribution
+- name: help wanted
+  color: 008672
+  description: Maintainers welcome community help
+- name: P0
+  color: b60205
+  description: Critical; resolve within 14 calendar days
+- name: P1
+  color: d93f0b
+  description: High priority and severe impact
+- name: P2
+  color: fbca04
+  description: Normal project priority
+- name: P3
+  color: c5def5
+  description: Low priority or long-term work
