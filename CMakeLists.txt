@@ -250,6 +250,7 @@ if(BUILD_TESTING)
       test/auth/auth_client_identity_test.cpp
       test/auth/auth_integration_test.cpp
       test/auth/auth_oauth_test.cpp
+      test/auth/auth_token_endpoint_auth_test.cpp
       test/client/client_core_test.cpp
       test/client/client_features_test.cpp
       test/client/client_notifications_test.cpp
