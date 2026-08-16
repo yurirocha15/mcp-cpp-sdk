@@ -77,6 +77,7 @@ TEST_F(ServerCancellationTest, CancellationFlagSetOnNotification) {
     });
 
     raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";
@@ -104,7 +105,7 @@ TEST_F(ServerCancellationTest, CancellationFlagSetOnNotification) {
     // Second is tool result — the handler should see cancellation
     EXPECT_EQ(responses[1]["id"], "2");
     ASSERT_TRUE(responses[1].contains("result"));
-    EXPECT_TRUE(responses[1]["result"]["was_cancelled"].get<bool>());
+    EXPECT_TRUE(responses[1]["result"]["structuredContent"]["was_cancelled"].get<bool>());
 }
 
 TEST_F(ServerCancellationTest, NoCancellationWhenNotSent) {
@@ -136,6 +137,7 @@ TEST_F(ServerCancellationTest, NoCancellationWhenNotSent) {
     });
 
     raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";
@@ -153,7 +155,7 @@ TEST_F(ServerCancellationTest, NoCancellationWhenNotSent) {
     ASSERT_EQ(responses.size(), 2);
     EXPECT_EQ(responses[1]["id"], "2");
     ASSERT_TRUE(responses[1].contains("result"));
-    EXPECT_FALSE(responses[1]["result"]["was_cancelled"].get<bool>());
+    EXPECT_FALSE(responses[1]["result"]["structuredContent"]["was_cancelled"].get<bool>());
 }
 
 TEST_F(ServerCancellationTest, CancellationForUnknownRequestIsIgnored) {
@@ -180,6 +182,7 @@ TEST_F(ServerCancellationTest, CancellationForUnknownRequestIsIgnored) {
     raw_transport->enqueue_message(cancel_notif.dump());
 
     raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
 
     boost::asio::co_spawn(
         io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
@@ -230,6 +233,7 @@ TEST_F(ServerCancellationTest, InFlightCleanedUpAfterToolCompletes) {
     });
 
     raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";

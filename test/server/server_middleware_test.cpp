@@ -12,6 +12,7 @@
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/server.hpp>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -63,6 +64,7 @@ TEST(ServerMiddlewareTest, MiddlewareModifiesParams) {
     });
 
     transport_ptr->enqueue_message(make_initialize_request("1").dump());
+    transport_ptr->enqueue_message(make_initialized_notification().dump());
 
     json call_req{{"jsonrpc", "2.0"},
                   {"id", "2"},
@@ -79,7 +81,7 @@ TEST(ServerMiddlewareTest, MiddlewareModifiesParams) {
         return msg.contains("id") && msg["id"] == "2" && msg.contains("result");
     });
     ASSERT_NE(it, responses.end());
-    EXPECT_EQ((*it)["result"]["sum"], 115);
+    EXPECT_EQ((*it)["result"]["structuredContent"]["sum"], 115);
 }
 
 // Test 2: Middleware short-circuits (returns without calling next)
@@ -99,7 +101,7 @@ TEST(ServerMiddlewareTest, MiddlewareShortCircuits) {
     // Middleware that blocks "forbidden" tool without calling next
     server.use([](Context& ctx, const json& params, TypeErasedHandler next) -> Task<json> {
         if (params.contains("name") && params["name"] == "forbidden") {
-            co_return json{{"error", "Tool 'forbidden' is not allowed"}};
+            throw std::runtime_error("Tool 'forbidden' is not allowed");
         }
         co_return co_await next(ctx, params);
     });
@@ -124,11 +126,12 @@ TEST(ServerMiddlewareTest, MiddlewareShortCircuits) {
     });
 
     transport_ptr->enqueue_message(make_initialize_request("1").dump());
+    transport_ptr->enqueue_message(make_initialized_notification().dump());
 
     json call_req{{"jsonrpc", "2.0"},
                   {"id", "2"},
                   {"method", "tools/call"},
-                  {"params", {{"name", "forbidden"}, {"arguments", {}}}}};
+                  {"params", {{"name", "forbidden"}, {"arguments", nlohmann::json::object()}}}};
     transport_ptr->enqueue_message(call_req.dump());
 
     boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
@@ -137,13 +140,14 @@ TEST(ServerMiddlewareTest, MiddlewareShortCircuits) {
     // Verify the tool was never executed
     EXPECT_FALSE(tool_executed);
 
-    // Check that a result was sent with an error field
+    // Check that middleware exceptions become protocol-valid tool errors.
     auto it = std::find_if(responses.begin(), responses.end(), [](const json& msg) {
         return msg.contains("id") && msg["id"] == "2" && msg.contains("result");
     });
     ASSERT_NE(it, responses.end());
-    EXPECT_TRUE((*it)["result"].contains("error"));
-    EXPECT_TRUE((*it)["result"]["error"].get<std::string>().find("forbidden") != std::string::npos);
+    EXPECT_TRUE((*it)["result"]["isError"].get<bool>());
+    EXPECT_TRUE((*it)["result"]["content"][0]["text"].get<std::string>().find("forbidden") !=
+                std::string::npos);
 }
 
 // Test 3: Multiple middlewares execute in order (1→2→handler→2→1)
@@ -198,11 +202,12 @@ TEST(ServerMiddlewareTest, MultipleMiddlewaresExecuteInOrder) {
     });
 
     transport_ptr->enqueue_message(make_initialize_request("1").dump());
+    transport_ptr->enqueue_message(make_initialized_notification().dump());
 
     json call_req{{"jsonrpc", "2.0"},
                   {"id", "2"},
                   {"method", "tools/call"},
-                  {"params", {{"name", "track"}, {"arguments", {}}}}};
+                  {"params", {{"name", "track"}, {"arguments", nlohmann::json::object()}}}};
     transport_ptr->enqueue_message(call_req.dump());
 
     boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
@@ -265,6 +270,7 @@ TEST(ServerMiddlewareTest, MiddlewarePostProcessesResult) {
     });
 
     transport_ptr->enqueue_message(make_initialize_request("1").dump());
+    transport_ptr->enqueue_message(make_initialized_notification().dump());
 
     json call_req{{"jsonrpc", "2.0"},
                   {"id", "2"},
@@ -280,6 +286,6 @@ TEST(ServerMiddlewareTest, MiddlewarePostProcessesResult) {
         return msg.contains("id") && msg["id"] == "2" && msg.contains("result");
     });
     ASSERT_NE(it, responses.end());
-    EXPECT_EQ((*it)["result"]["sum"], 40);
-    EXPECT_EQ((*it)["result"]["metadata"], "processed by middleware");
+    EXPECT_EQ((*it)["result"]["structuredContent"]["sum"], 40);
+    EXPECT_EQ((*it)["result"]["structuredContent"]["metadata"], "processed by middleware");
 }
