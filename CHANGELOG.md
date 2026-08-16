@@ -8,8 +8,19 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Added
 
+- Fixtures and a pinned harness for the official MCP conformance runner
+  (`@modelcontextprotocol/conformance@0.1.16`, spec revision `2025-11-25`),
+  with a regression baseline in `conformance/expected-failures.yml`, a
+  `--conformance` build flag, and a CI workflow that fails on any drift.
 - Secure random generation and serialized transport-write helpers under
   `mcp::detail`.
+- Reproducible cross-SDK benchmark tooling (order counterbalancing,
+  environment/container capture, resource-headroom validation, protocol
+  verification) and audited benchmark results.
+- Project policy documents: `ROADMAP.md` (tier gates), `MAINTENANCE.md`
+  (triage SLAs), `VERSIONING.md` (compatibility surface), and
+  `DEPENDENCY_POLICY.md` (runtime dependency floors).
+- GitHub issue templates and a label manifest (`.github/labels.yml`).
 
 ### Changed
 
@@ -49,6 +60,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   written with `"id": null`.
 - `HttpClientTransport::session_id()` and `last_event_id()` return
   `std::string` by value.
+- Documentation guides and feature examples refreshed to match the compiled
+  runtime split.
 
 ## [0.2.0] - TBD
 

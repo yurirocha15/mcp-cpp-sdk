@@ -16,11 +16,12 @@ The SDK includes several built-in transport types to cover different use cases:
 
 1. **StdioTransport**: For local process communication via standard input/output.
    This is the most common choice for connecting to local agents like Claude Desktop.
-2. **HttpServerTransport / HttpClientTransport**: For MCP over HTTP with custom
-   streamable headers, following the official MCP specification.
-3. **WebSocketServerTransport / WebSocketClientTransport**: For persistent,
-   bidirectional network communication.
-   Ideal for high-performance remote integrations.
+2. **HttpServerTransport / HttpClientTransport**: Single-session Streamable HTTP
+   building blocks. ``StreamableHttpSessionManager`` provides a multi-session
+   server endpoint.
+3. **WebSocketServerTransport / WebSocketClientTransport**: An optional
+   persistent transport for integrations that explicitly agree on WebSocket;
+   it is not the standard Streamable HTTP transport.
 4. **MemoryTransport**: An in-memory transport for unit testing and in-process
    communication.
 
@@ -78,14 +79,34 @@ Clients can connect to a stdio-based server by providing the executor to the
 HTTP Transport (Network)
 ------------------------
 
-The HTTP transport follows the MCP over HTTP specification, which uses a long-running
-POST request for server-sent events or streamable data.
+The HTTP implementation accepts MCP POST requests and returns either JSON or a
+finite SSE body. Managed sessions support session IDs, DELETE teardown, and
+bounded event replay through GET with ``Last-Event-ID``. Continuously open SSE
+polling streams are not yet implemented.
+
+After initialization, ``HttpClientTransport`` carries the server-selected
+protocol version on subsequent session requests and best-effort DELETE
+teardown, including when the initialize response arrived in an SSE event.
+
+The built-in HTTP transports are plaintext. Bind local development servers to
+loopback. For remote deployments, place them behind a TLS-terminating proxy or
+provide a custom TLS transport. Requests carrying an ``Origin`` header are
+denied by default; configure an exact allowlist (or explicitly opt into all
+origins) before starting the listener. Bearer-token validators must likewise be
+installed before ``listen()`` or ``run()``.
 
 HTTP Server Convenience
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 For developers who want a quick way to host an MCP server over HTTP without
 worrying about the underlying networking boilerplate, the SDK provides `run_http()`.
+
+``Server::run_http()`` owns its ``HttpServerTransport`` internally and does not
+currently expose Origin allowlist or bearer-token validator configuration. Use
+it only on a suitable trusted boundary, such as the loopback example below. For
+a configurable deployment, construct ``HttpServerTransport`` or
+``StreamableHttpSessionManager`` directly, apply the security settings, and
+then start the listener.
 
 .. literalinclude:: ../../examples/features/http_server_convenience.cpp
    :language: cpp
@@ -115,10 +136,11 @@ yourself.
 WebSocket Transport
 -------------------
 
-For full-duplex, bidirectional communication over the network,
+For integrations that explicitly choose full-duplex WebSocket communication,
 ``WebSocketServerTransport`` and ``WebSocketClientTransport``
-are the ideal choices. Unlike HTTP, which often requires polling or long-running
-streams for bidirectional data, WebSockets provide a native persistent connection.
+provide a persistent connection. Interoperability with standard MCP clients is
+not implied; use Streamable HTTP when protocol-standard remote transport is
+required.
 
 .. code-block:: cpp
 
@@ -187,17 +209,17 @@ integration. Use the table below as a guide:
 |                      |                          | - Secure by default (local only)               |
 |                      |                          | - Easiest to deploy                            |
 +----------------------+--------------------------+------------------------------------------------+
-| **HTTP**             | Remote APIs, Web Hooks   | - Firewall and proxy friendly                  |
-|                      |                          | - Works with standard web infrastructure       |
-|                      |                          | - Good for one-way or slow bidirectional data  |
+| **HTTP**             | MCP remote endpoints     | - Standard Streamable HTTP request model       |
+|                      |                          | - Managed sessions and bounded event replay    |
+|                      |                          | - Deploy behind TLS for non-loopback use       |
 +----------------------+--------------------------+------------------------------------------------+
-| **WebSocket**        | High-performance Remote  | - Native bidirectional communication           |
-|                      |                          | - Persistent, low-latency connection           |
-|                      |                          | - Minimal message overhead                     |
+| **WebSocket**        | Agreed custom integration| - Full-duplex persistent channel               |
+|                      |                          | - Separate client and server transport types   |
+|                      |                          | - Requires explicit interoperability agreement |
 +----------------------+--------------------------+------------------------------------------------+
-| **Memory**           | Unit & Integration Tests | - Extremely fast execution                     |
-|                      |                          | - Deterministic (no network flakes)            |
-|                      |                          | - No side effects on the host system           |
+| **Memory**           | Unit & Integration Tests | - In-process message exchange                  |
+|                      |                          | - No network setup                             |
+|                      |                          | - Linked endpoint-pair helper                  |
 +----------------------+--------------------------+------------------------------------------------+
 
 Custom Transports
