@@ -159,6 +159,7 @@ examples:
   python scripts/build.py --linkage shared --test  build/test only shared SDK
   python scripts/build.py --linkage static --test  build/test only static SDK
   python scripts/build.py --cppstd 23 --test        build/test a C++23 consumer
+  python scripts/build.py --conformance             build conformance fixtures
   python scripts/build.py --docs                   build documentation
   python scripts/build.py --clean                  remove all build artifacts
 """
@@ -180,6 +181,8 @@ def main():
                         help="Build and run tests")
     parser.add_argument("--examples", action="store_true",
                         help="Build example programs")
+    parser.add_argument("--conformance", action="store_true",
+                        help="Build fixtures for the official MCP conformance runner")
     parser.add_argument(
         "--linkage",
         choices=("both", "shared", "static"),
@@ -225,6 +228,7 @@ def main():
         f"-DBUILD_TESTING={'ON' if args.test else 'OFF'}",
         f"-DBUILD_EXAMPLES={'ON' if args.examples else 'OFF'}",
         f"-DBUILD_DOCS={'ON' if args.docs else 'OFF'}",
+        f"-DMCP_CPP_SDK_BUILD_CONFORMANCE={'ON' if args.conformance else 'OFF'}",
         f"-DMCP_CPP_SDK_BUILD_SHARED={'ON' if args.linkage in ('both', 'shared') else 'OFF'}",
         f"-DMCP_CPP_SDK_BUILD_STATIC={'ON' if args.linkage in ('both', 'static') else 'OFF'}",
         f"-DMCP_CPP_SDK_DEFAULT_LINKAGE={'static' if args.linkage == 'static' else 'shared'}",
