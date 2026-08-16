@@ -210,8 +210,25 @@ TEST_F(ServerToolTest, ResultHelpersProduceProtocolValidShapes) {
     nlohmann::json structured = mcp::make_tool_structured_result({{"answer", 42}}, "forty-two");
     EXPECT_EQ(structured["structuredContent"]["answer"], 42);
     EXPECT_EQ(structured["content"][0]["text"], "forty-two");
-    EXPECT_THROW(static_cast<void>(mcp::make_tool_structured_result(nlohmann::json::array())),
-                 std::invalid_argument);
+}
+
+TEST_F(ServerToolTest, StructuredResultRoundTripsScalarContent) {
+    nlohmann::json structured = mcp::make_tool_structured_result(42);
+    EXPECT_EQ(structured["structuredContent"], 42);
+    EXPECT_EQ(structured["content"][0]["text"], "42");
+}
+
+TEST_F(ServerToolTest, StructuredResultRoundTripsArrayContent) {
+    nlohmann::json array_content = nlohmann::json::array({1, 2, 3});
+    nlohmann::json structured = mcp::make_tool_structured_result(array_content);
+    EXPECT_EQ(structured["structuredContent"], array_content);
+    EXPECT_EQ(structured["content"][0]["text"], array_content.dump());
+}
+
+TEST_F(ServerToolTest, StructuredResultRoundTripsNullContent) {
+    nlohmann::json structured = mcp::make_tool_structured_result(nlohmann::json(nullptr));
+    EXPECT_TRUE(structured["structuredContent"].is_null());
+    EXPECT_EQ(structured["content"][0]["text"], "null");
 }
 
 TEST_F(ServerToolTest, RawToolAcceptsCompleteCallToolResult) {
