@@ -1,0 +1,71 @@
+name: MCP conformance regression baseline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  conformance-2025-11-25:
+    name: Pinned client/server baseline (2025-11-25)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: conformance/runner/package-lock.json
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@e42e6681d2906409c5dde4a315af6214eaa890ee # v1.2
+        with:
+          key: ubuntu-24.04-conformance
+
+      - name: Install CMake
+        uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
+        with:
+          cmake-version: '3.25'
+
+      - name: Cache Conan packages
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/.conan2/p
+          key: ubuntu-24.04-conan-conformance-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
+          restore-keys: ubuntu-24.04-conan-
+
+      - name: Install C++ dependencies
+        run: python3 scripts/init.py
+
+      - name: Build conformance fixtures
+        run: python3 scripts/build.py --conformance --jobs "$(nproc)"
+
+      - name: Install locked official runner
+        run: npm ci --ignore-scripts --prefix conformance/runner
+
+      - name: Run pinned regression suites
+        run: bash conformance/run.sh build/release build/conformance-results
+
+      - name: Upload conformance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mcp-conformance-2025-11-25
+          path: build/conformance-results
+          if-no-files-found: error
+          retention-days: 30

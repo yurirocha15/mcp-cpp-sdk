@@ -1,0 +1,25 @@
+name: Question
+description: Ask about SDK usage, behavior, or design
+title: "[Question]: "
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Include the goal you are trying to accomplish.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Include relevant SDK version, protocol revision, transport, and a concise code sample.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I checked the README, generated documentation, and existing issues.
+          required: true
