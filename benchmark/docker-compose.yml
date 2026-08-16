@@ -1,7 +1,9 @@
 services:
   redis:
-    image: redis:7-alpine
+    image: redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
     container_name: mcp-redis
+    cpuset: "${BENCHMARK_CPUSET:-}"
+    command: redis-server --save "" --appendonly no
     ports:
       - "6379:6379"
     deploy:
@@ -20,6 +22,7 @@ services:
   api-service:
     build: ./benchmark-mcp-servers-v2/api-service
     container_name: mcp-api-service
+    cpuset: "${BENCHMARK_CPUSET:-}"
     ports:
       - "8100:8100"
     deploy:
@@ -36,7 +39,10 @@ services:
       - mcp-network
 
   redis-seeder:
-    build: ./benchmark-mcp-servers-v2/infra/redis
+    build:
+      context: .
+      dockerfile: redis-seeder.Dockerfile
+    image: mcp-benchmark-redis-seeder:python-redis-5.2.1
     container_name: mcp-redis-seeder
     profiles: ["seeder"]
     depends_on:
@@ -45,6 +51,9 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+    volumes:
+      - ./benchmark-mcp-servers-v2/infra/redis/seed.py:/seed.py:ro
+    command: ["/seed.py"]
     networks:
       - mcp-network
 
@@ -53,6 +62,7 @@ services:
       context: ..
       dockerfile: benchmark/cpp/Dockerfile
     container_name: mcp-cpp-server
+    cpuset: "${BENCHMARK_CPUSET:-}"
     ports:
       - "8080:8080"
     environment:
@@ -76,14 +86,40 @@ services:
     networks:
       - mcp-network
 
+  ours-comparable-server:
+    build:
+      context: ..
+      dockerfile: benchmark/alternatives/Dockerfile.ours
+    container_name: mcp-ours-comparable-server
+    cpuset: "${BENCHMARK_CPUSET:-}"
+    ports:
+      - "8089:8080"
+    environment:
+      - PORT=8080
+      - REDIS_URL=redis://redis:6379
+      - API_SERVICE_URL=http://api-service:8100
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    networks:
+      - mcp-network
+
   # Upstream servers for comparison
   python-server:
     build:
       context: ./benchmark-mcp-servers-v2/python-server
       dockerfile: Dockerfile
     container_name: mcp-python-server
+    cpuset: "${BENCHMARK_CPUSET:-}"
     ports:
-      - "8081:8081"
+      - "8081:8082"
     environment:
       - REDIS_URL=redis://redis:6379
       - API_SERVICE_URL=http://api-service:8100
@@ -98,7 +134,7 @@ services:
       api-service:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,json; urllib.request.urlopen(urllib.request.Request('http://localhost:8081/mcp',data=json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'health','version':'1.0'}}}).encode(),headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream'}),timeout=5)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8082/health', timeout=5)"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -110,8 +146,9 @@ services:
       context: ./benchmark-mcp-servers-v2/go-server
       dockerfile: Dockerfile
     container_name: mcp-go-server
+    cpuset: "${BENCHMARK_CPUSET:-}"
     ports:
-      - "8082:8082"
+      - "8082:8081"
     environment:
       - REDIS_URL=redis://redis:6379
       - API_SERVICE_URL=http://api-service:8100
@@ -126,7 +163,7 @@ services:
       api-service:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8082/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8081/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -138,8 +175,9 @@ services:
       context: ./benchmark-mcp-servers-v2/rust-server
       dockerfile: Dockerfile
     container_name: mcp-rust-server
+    cpuset: "${BENCHMARK_CPUSET:-}"
     ports:
-      - "8083:8083"
+      - "8083:8095"
     environment:
       - REDIS_URL=redis://redis:6379
       - API_SERVICE_URL=http://api-service:8100
@@ -154,7 +192,7 @@ services:
       api-service:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8083/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8095/health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -162,6 +200,113 @@ services:
     networks:
       - mcp-network
 
+  hkr04-server:
+    build:
+      context: .
+      dockerfile: alternatives/Dockerfile
+      args:
+        SDK_NAME: hkr04
+    container_name: mcp-hkr04-server
+    cpuset: "${BENCHMARK_CPUSET:-}"
+    ports:
+      - "8084:8080"
+    environment:
+      - PORT=8080
+      - REDIS_URL=redis://redis:6379
+      - API_SERVICE_URL=http://api-service:8100
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    networks:
+      - mcp-network
+
+  fastmcpp-server:
+    build:
+      context: .
+      dockerfile: alternatives/Dockerfile
+      args:
+        SDK_NAME: fastmcpp
+    container_name: mcp-fastmcpp-server
+    cpuset: "${BENCHMARK_CPUSET:-}"
+    ports:
+      - "8085:8080"
+    environment:
+      - PORT=8080
+      - REDIS_URL=redis://redis:6379
+      - API_SERVICE_URL=http://api-service:8100
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    networks:
+      - mcp-network
+
+  cxxmcp-server:
+    build:
+      context: .
+      dockerfile: alternatives/Dockerfile
+      args:
+        SDK_NAME: cxxmcp
+    container_name: mcp-cxxmcp-server
+    cpuset: "${BENCHMARK_CPUSET:-}"
+    ports:
+      - "8086:8080"
+    environment:
+      - PORT=8080
+      - REDIS_URL=redis://redis:6379
+      - API_SERVICE_URL=http://api-service:8100
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    networks:
+      - mcp-network
+
+  neumann-server:
+    build:
+      context: .
+      dockerfile: alternatives/Dockerfile
+      args:
+        SDK_NAME: neumann
+    container_name: mcp-neumann-server
+    cpuset: "${BENCHMARK_CPUSET:-}"
+    ports:
+      - "8087:8080"
+    environment:
+      - PORT=8080
+      - REDIS_URL=redis://redis:6379
+      - API_SERVICE_URL=http://api-service:8100
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    networks:
+      - mcp-network
 
 networks:
   mcp-network:

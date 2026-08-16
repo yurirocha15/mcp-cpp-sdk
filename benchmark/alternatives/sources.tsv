@@ -1,0 +1,6 @@
+# id	repository	commit	benchmark_status
+hkr04	https://github.com/hkr04/cpp-mcp.git	f1117d5286efe6477ddd14322703f034615b6c0e	supported
+fastmcpp	https://github.com/0xeb/fastmcpp.git	9a3ee7125b1db9dc85a71f60661beb40ea1e7993	supported
+gopher-mcp	https://github.com/GopherSecurity/gopher-mcp.git	63e561107bebad254f854e60c39806a2e6e2468f	not-comparable-legacy-http-sse
+neumann	https://github.com/Neumann-Labs/mcp-cpp.git	57be64093a2241b58d01292d096b266fc6a52ec8	supported
+cxxmcp	https://github.com/caomengxuan666/cxxmcp.git	e48b75dc37372f6f7fc876dc436e34d2909e39af	supported
