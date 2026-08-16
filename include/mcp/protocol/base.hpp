@@ -39,6 +39,25 @@ inline constexpr int g_REQUEST_TIMEOUT = -32001;
  */
 inline constexpr int g_CONNECTION_CLOSED = -32002;
 
+// Error-code allocation policy: -32000..-32019 is a grandfathered legacy band
+// (pre-existing codes above); -32020..-32099 is the spec-reserved band for
+// codes introduced by newer MCP spec revisions, such as the ones below.
+
+/**
+ * @brief JSON-RPC error code for a mismatched or missing required header.
+ */
+inline constexpr int g_HEADER_MISMATCH = -32020;
+
+/**
+ * @brief JSON-RPC error code for a missing required client capability.
+ */
+inline constexpr int g_MISSING_REQUIRED_CLIENT_CAPABILITY = -32021;
+
+/**
+ * @brief JSON-RPC error code for an unsupported protocol version.
+ */
+inline constexpr int g_UNSUPPORTED_PROTOCOL_VERSION = -32022;
+
 /**
  * @brief JSON-RPC error code for invalid requests.
  */
