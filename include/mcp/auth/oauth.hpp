@@ -272,7 +272,13 @@ struct AuthServerMetadata {
     std::optional<std::vector<std::string>> grant_types_supported;  ///< Optional supported grant types.
     std::optional<std::vector<std::string>>
         code_challenge_methods_supported;  ///< Optional PKCE methods.
-    nlohmann::json raw;                    ///< Raw source document.
+    std::optional<bool>
+        authorization_response_iss_parameter_supported;  ///< Optional RFC 9207 `iss` support flag.
+    std::optional<bool>
+        client_id_metadata_document_supported;  ///< Optional client ID metadata document support flag.
+    std::optional<std::vector<std::string>>
+        token_endpoint_auth_methods_supported;  ///< Optional token endpoint auth methods.
+    nlohmann::json raw;                         ///< Raw source document.
 };
 
 /**

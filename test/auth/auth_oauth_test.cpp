@@ -630,6 +630,36 @@ TEST(AuthDiscoveryMetadataTest, AuthServerMinimalFields) {
     EXPECT_FALSE(metadata.scopes_supported.has_value());
 }
 
+TEST(AuthDiscoveryMetadataTest, AuthServerW5ExtensionFieldsParsedWhenPresent) {
+    json j = {{"issuer", "https://auth.example.com"},
+              {"authorization_endpoint", "https://auth.example.com/authorize"},
+              {"token_endpoint", "https://auth.example.com/token"},
+              {"authorization_response_iss_parameter_supported", true},
+              {"client_id_metadata_document_supported", true},
+              {"token_endpoint_auth_methods_supported", {"client_secret_basic", "none"}}};
+
+    auto metadata = j.get<mcp::auth::AuthServerMetadata>();
+    ASSERT_TRUE(metadata.authorization_response_iss_parameter_supported.has_value());
+    EXPECT_TRUE(metadata.authorization_response_iss_parameter_supported.value());
+    ASSERT_TRUE(metadata.client_id_metadata_document_supported.has_value());
+    EXPECT_TRUE(metadata.client_id_metadata_document_supported.value());
+    ASSERT_TRUE(metadata.token_endpoint_auth_methods_supported.has_value());
+    ASSERT_EQ(metadata.token_endpoint_auth_methods_supported->size(), 2);
+    EXPECT_EQ(metadata.token_endpoint_auth_methods_supported->at(0), "client_secret_basic");
+    EXPECT_EQ(metadata.token_endpoint_auth_methods_supported->at(1), "none");
+}
+
+TEST(AuthDiscoveryMetadataTest, AuthServerW5ExtensionFieldsAbsentByDefault) {
+    json j = {{"issuer", "https://auth.example.com"},
+              {"authorization_endpoint", "https://auth.example.com/authorize"},
+              {"token_endpoint", "https://auth.example.com/token"}};
+
+    auto metadata = j.get<mcp::auth::AuthServerMetadata>();
+    EXPECT_FALSE(metadata.authorization_response_iss_parameter_supported.has_value());
+    EXPECT_FALSE(metadata.client_id_metadata_document_supported.has_value());
+    EXPECT_FALSE(metadata.token_endpoint_auth_methods_supported.has_value());
+}
+
 TEST(AuthCacheTest, CachedEntryNotExpired) {
     mcp::auth::CachedEntry<int> entry{42, std::chrono::steady_clock::now() + std::chrono::hours(1)};
     EXPECT_FALSE(entry.is_expired());
