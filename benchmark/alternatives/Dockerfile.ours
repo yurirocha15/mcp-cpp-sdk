@@ -1,0 +1,32 @@
+FROM ubuntu@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    curl \
+    libboost-dev \
+    libcurl4-openssl-dev \
+    libhiredis-dev \
+    libssl-dev \
+    nlohmann-json3-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY CMakeLists.txt VERSION LICENSE ./
+COPY cmake/ cmake/
+COPY include/ include/
+COPY src/ src/
+COPY benchmark/alternatives/ benchmark/alternatives/
+
+RUN cmake -S /src/benchmark/alternatives -B /build \
+      -DBENCHMARK_SDK=ours \
+      -DBENCHMARK_SDK_SOURCE=/src \
+      -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build /build --target alternative-benchmark-server -j"$(nproc)"
+
+ENV PORT=8080
+EXPOSE 8080
+CMD ["/build/alternative-benchmark-server"]

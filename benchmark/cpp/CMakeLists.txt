@@ -28,7 +28,7 @@ target_link_libraries(benchmark-server PRIVATE mcp-cpp-sdk)
 
 if(CMAKE_BUILD_TYPE MATCHES Release)
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(benchmark-server PRIVATE -O3 -march=native)
+    target_compile_options(benchmark-server PRIVATE -O3)
   elseif(MSVC)
     target_compile_options(benchmark-server PRIVATE /O2)
   endif()
