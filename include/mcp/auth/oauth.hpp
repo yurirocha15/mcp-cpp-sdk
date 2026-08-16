@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mcp/auth/challenge.hpp>
+#include <mcp/auth/metadata_policy.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/core/context.hpp>
 #include <mcp/core/core.hpp>
@@ -195,6 +197,17 @@ struct OAuthConfig {
 };
 
 /**
+ * @brief Resolves a host and port to candidate address literals.
+ *
+ * @details This is the single gateway through which the OAuth HTTP client obtains a connectable
+ * address. When the fetch policy refuses a target the resolver is never invoked, so no socket can
+ * be opened for it. Applications may install one to route lookups through a custom or pinned
+ * resolver; when none is installed the executor's system resolver is used.
+ */
+using HostResolver =
+    std::function<std::vector<std::string>(const std::string& host, const std::string& port)>;
+
+/**
  * @brief Minimal HTTP client for OAuth token exchange and metadata retrieval.
  */
 class MCP_API OAuthHttpClient {
@@ -203,8 +216,33 @@ class MCP_API OAuthHttpClient {
      * @brief Construct an OAuth HTTP client.
      *
      * @param executor Executor used for asynchronous operations.
+     *
+     * @note Constructed without a fetch policy, the client issues requests to whatever URL the
+     * caller supplies. That is appropriate only for URLs the application chose itself. Any client
+     * that follows a `WWW-Authenticate` challenge must be given a policy via
+     * set_metadata_policy(), because the URLs it visits are then attacker-influenced.
      */
     explicit OAuthHttpClient(const net::any_io_executor& executor);
+
+    /**
+     * @brief Apply an outbound-request policy to every request this client issues.
+     *
+     * @param policy Policy governing schemes, origins, resolved addresses, response size and
+     *        redirect depth.
+     *
+     * @details Must be installed before the first request. Once installed, each request is
+     * validated before host resolution, every resolved address is classified before connecting,
+     * the addresses from that single resolution are pinned for the connection, response bodies are
+     * capped, and redirects are bounded and individually re-validated.
+     */
+    void set_metadata_policy(MetadataFetchPolicy policy);
+
+    /**
+     * @brief Install a custom host resolver.
+     *
+     * @param resolver Resolver invoked in place of the system resolver.
+     */
+    void set_host_resolver(HostResolver resolver);
 
     /**
      * @brief Exchange an authorization code for an access token.
@@ -326,6 +364,22 @@ class MCP_API OAuthDiscoveryClient {
     Task<ProtectedResourceMetadata> discover_protected_resource(const std::string& resource_url);
 
     /**
+     * @brief Discover metadata for a protected resource, honouring a challenge-supplied URL.
+     *
+     * @param resource_url Resource URL whose metadata should be resolved.
+     * @param challenge_metadata_url `resource_metadata` URL taken from a `WWW-Authenticate`
+     *        challenge, when the challenge supplied one.
+     * @return A task resolving to the discovered protected-resource metadata.
+     *
+     * @details When the challenge supplied a URL it is fetched and nothing else is tried, so a
+     * server that advertises its metadata location is taken at its word. Only when no URL was
+     * supplied does the well-known fallback run, trying the path-based location before the root
+     * one.
+     */
+    Task<ProtectedResourceMetadata> discover_protected_resource(
+        const std::string& resource_url, const std::optional<std::string>& challenge_metadata_url);
+
+    /**
      * @brief Discover metadata for an authorization server.
      *
      * @param issuer_url Issuer URL or base URL of the authorization server.
@@ -390,6 +444,22 @@ class Authenticator {
      * @return true if refresh succeeded and a new token was persisted; false otherwise.
      */
     virtual Task<bool> try_refresh_token() = 0;
+
+    /**
+     * @brief Performs challenge-driven authorization for a `WWW-Authenticate` response.
+     *
+     * @param www_authenticate Raw `WWW-Authenticate` header value from the challenge response.
+     * @return true if authorization completed and a new token was persisted; false otherwise.
+     *
+     * @details Called before try_refresh_token() when a challenge is available, so an
+     * implementation can discover metadata and run a full authorization exchange rather than only
+     * renewing an existing grant. The default implementation reports that it handled nothing,
+     * which keeps existing Authenticator implementations source-compatible.
+     */
+    virtual Task<bool> try_handle_challenge(const std::string& www_authenticate) {
+        (void)www_authenticate;
+        co_return false;
+    }
 };
 
 /**
@@ -409,6 +479,95 @@ class MCP_API OAuthAuthenticator : public Authenticator {
     /// code flow).
     /// @param token The token response to persist via the configured TokenStore.
     void store_token(TokenResponse token);
+
+   private:
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
+};
+
+/**
+ * @brief Application-controlled consent step for an authorization attempt.
+ *
+ * @details Receives the per-attempt request record and returns the response the authorization
+ * server delivered to the redirect URI. The SDK never launches a browser and never binds an
+ * unsolicited listener; carrying the user agent to the authorization endpoint and collecting the
+ * redirect is entirely the application's responsibility.
+ */
+using AuthorizationCallback = std::function<Task<AuthorizationResponse>(const AuthorizationRequest&)>;
+
+/**
+ * @brief Configuration for challenge-driven OAuth authorization.
+ */
+struct OAuthAuthorizationConfig {
+    std::string server_url;  ///< MCP server URL that issued the challenge; also the token store key.
+    std::string client_id;   ///< Client identifier presented to the authorization server.
+    std::optional<std::string> client_secret;  ///< Optional confidential-client secret.
+    std::string redirect_uri;                  ///< Redirect URI the authorization response returns to.
+    /// Scope override. When set it wins over both the challenge scope and the resource metadata;
+    /// when unset the challenge scope is preferred, then `scopes_supported`, then no scope at all.
+    std::optional<std::string> scope;
+    MetadataFetchPolicy policy;  ///< Outbound-request policy for every discovery and token request.
+    HostResolver host_resolver;  ///< Optional custom resolver; the system resolver is used when unset.
+};
+
+/**
+ * @brief Authenticator that performs challenge-driven OAuth authorization.
+ *
+ * @details Composes the pieces a `WWW-Authenticate` response requires: challenge parsing,
+ * protected-resource and authorization-server discovery under the configured fetch policy, an
+ * authorization request carrying S256 PKCE and cryptographic `state` bound to the issuer recorded
+ * from the selected metadata document, RFC 9207 response validation, and an authorization-code
+ * exchange carrying the RFC 8707 `resource` indicator.
+ */
+class MCP_API OAuthAuthorizationManager : public Authenticator {
+   public:
+    /**
+     * @brief Construct a challenge-driven authorization manager.
+     *
+     * @param executor Executor used for asynchronous operations.
+     * @param token_store Storage for the acquired access token.
+     * @param config Client identity, redirect URI and outbound-request policy.
+     * @param callback Application consent step invoked once per authorization attempt.
+     */
+    OAuthAuthorizationManager(const net::any_io_executor& executor,
+                              std::shared_ptr<TokenStore> token_store, OAuthAuthorizationConfig config,
+                              AuthorizationCallback callback);
+
+    /**
+     * @brief Return the stored access token without network I/O.
+     *
+     * @return The stored access token, or an empty string when none has been acquired.
+     */
+    [[nodiscard]] std::string get_access_token() const override;
+
+    /**
+     * @brief Renew the stored token using its refresh token, when one is present.
+     *
+     * @return true when a renewed token was persisted.
+     */
+    Task<bool> try_refresh_token() override;
+
+    /**
+     * @brief Run a full authorization exchange for a challenge response.
+     *
+     * @param www_authenticate Raw `WWW-Authenticate` header value.
+     * @return true when authorization completed and an access token was persisted; false when the
+     *         response carried no `Bearer` challenge to act on.
+     *
+     * @throws MetadataPolicyError If any discovery or token target is refused by the fetch policy.
+     * @throws std::runtime_error If discovery fails or the authorization response is rejected.
+     */
+    Task<bool> try_handle_challenge(const std::string& www_authenticate) override;
+
+    /**
+     * @brief Return the record of the most recent authorization attempt.
+     *
+     * @return The request record, or `std::nullopt` when no attempt has been made.
+     *
+     * @details Exposes the state, PKCE verifier, recorded issuer and resource indicator that were
+     * actually used, so applications can audit the binding an attempt was validated against.
+     */
+    [[nodiscard]] std::optional<AuthorizationRequest> last_authorization_request() const;
 
    private:
     struct Impl;
