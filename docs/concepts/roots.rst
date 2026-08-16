@@ -14,14 +14,17 @@ In the Model Context Protocol, roots represent the "home" or "workspace" directo
 Client-side Setup
 -----------------
 
-A client provides its list of roots using the ``set_roots()`` method. This method stores the roots internally and automatically registers a handler for the ``roots/list`` request.
+A client provides its list of roots using the ``set_roots()`` method. This method stores the roots internally, registers a handler for ``roots/list``, and—when called before ``connect()``—automatically advertises the matching client capability.
 
 .. literalinclude:: ../../examples/features/roots.cpp
    :language: cpp
    :start-after: // Declare roots that the client can access
    :end-before: Implementation client_info;
 
-The ``set_roots`` method also takes an optional ``notify`` parameter. If set to ``true``, the client will send a ``notifications/roots/list_changed`` notification to the server whenever the roots are updated, provided the server supports this capability.
+The ``set_roots`` method also takes an optional ``notify`` parameter. If set to
+``true``, the client sends ``notifications/roots/list_changed`` only when its
+initialization capabilities advertised ``roots.listChanged=true``. This is a
+client capability; servers do not advertise roots support.
 
 Server-side Discovery
 ---------------------

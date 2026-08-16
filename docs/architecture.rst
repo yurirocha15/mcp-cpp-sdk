@@ -9,20 +9,24 @@ Design Principles
 
 The mcp-cpp-sdk is built on several core design principles:
 
-Compiled Static Library
-^^^^^^^^^^^^^^^^^^^^^^^^
+Compiled library boundaries
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The SDK is a compiled static library (``libmcp-cpp-sdk.a``). Implementation
-details — including all Boost.Asio and Boost.Beast usage — are hidden behind
-PImpl boundaries in ``.cpp`` files. Only ``core.hpp`` retains a direct Boost
-include, because the ``Task<T>`` template alias must be visible at call sites.
+The SDK builds both shared and static library variants. Much of the client,
+server, and network-transport runtime is implemented in ``.cpp`` files, while
+serialization helpers and typed handler templates remain in public headers.
+The transport and OAuth runtime implementations live in compiled translation
+units. The async and transport APIs still expose Boost.Asio types and
+Boost.Beast aliases, so consumers parse the corresponding Boost headers.
 
 This design:
 
-* Reduces consumer compile times — Boost headers are not parsed for every
-  translation unit that includes an SDK header
-* Isolates ABI-unstable Boost internals behind a stable C++ interface
-* Keeps public headers free of Boost types except ``Task<T>``
+* Keeps implementation state behind PImpl where it materially reduces public
+  surface area
+* Places non-template runtime behavior in compiled translation units where the
+  public API does not require an inline definition
+* Preserves templates in headers where C++ requires their definitions at the
+  point of instantiation
 
 RAII and Value Semantics
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -30,9 +34,13 @@ RAII and Value Semantics
 The SDK follows modern C++ best practices:
 
 * **RAII**: Resources (sockets, timers) are owned by objects and cleaned up automatically
-* **Move semantics**: Expensive objects like ``Server`` and ``Client`` are move-only
-* **Smart pointers**: ``std::unique_ptr`` for ownership, ``std::shared_ptr`` where needed
-* **No raw pointers**: All memory is managed automatically
+* **Stable ownership**: ``Server`` and ``Client`` are non-copyable and
+  non-movable; callers keep them alive while their ``run()`` or ``connect()``
+  tasks are active
+* **Smart pointers**: implementation, transport, and request state that must
+  survive suspension is shared with the relevant coroutines
+* **Explicit lifetime contracts**: request-scoped non-owning views are paired
+  with an owning session or runtime state
 
 Coroutine-Based Async
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -52,7 +60,9 @@ The SDK emphasizes compile-time safety:
 * **Concepts**: ``JsonSerializable`` concept ensures types are JSON-compatible
 * **Strong typing**: Protocol types are structs, not raw JSON
 * **Template metaprogramming**: Handler signatures validated at compile time
-* **No ``void*`` or type erasure leaks**: Type erasure is internal only
+* **Typed registration helpers**: Templates validate handler signatures, then
+  bridge to the public ``TypeErasedHandler`` middleware interface and compiled
+  runtime
 
 Component Overview
 ------------------
@@ -68,14 +78,15 @@ Server
 * Handles JSON-RPC message dispatch
 * Executes handler functions with proper context
 * Supports multiple handler signatures (sync/async, with/without context)
-* Thread-safe via Boost.Asio strand
+* Serializes each server session through a Boost.Asio strand
 
 **Key responsibilities**:
 
 * Protocol compliance (MCP handshake, request handling)
 * Handler type erasure and invocation
 * ``ensure_async_handler`` — automatically normalizes handler signatures (sync/async, with/without ``Context``) into unified async form; called internally by ``add_tool``, ``add_resource``, etc.
-* Error handling: exceptions thrown during request dispatch are automatically caught and returned as ``g_INTERNAL_ERROR`` (-32603) JSON-RPC error responses
+* Error handling: tool-handler exceptions become ``CallToolResult`` values with
+  ``isError=true``; other request-dispatch failures use JSON-RPC error responses
 * Context creation and lifecycle management
 
 Client
@@ -87,14 +98,16 @@ Client
 * Sends requests and matches responses via request ID
 * Manages pending requests with timeout support
 * Handles server notifications
-* Thread-safe via Boost.Asio strand
+* Serializes client request, response, timeout, and close state through a
+  Boost.Asio strand-backed runtime
 
 **Key responsibilities**:
 
 * Request/response correlation (JSON-RPC id matching) via ``RequestId`` — a type-safe wrapper for JSON-RPC request identifiers (string or integer)
 * Reverse RPC: ``dispatch_incoming_request`` handles server-to-client JSON-RPC requests, enabling servers to request client capabilities (elicitation, sampling, roots)
 * Timeout management for requests
-* Connection lifecycle (connect, run, close)
+* Connection lifecycle (``connect()`` and ``close()``; the read loop is managed
+  internally)
 * Error propagation from server responses
 
 Transport Abstraction
@@ -148,21 +161,22 @@ Context is passed to handlers that declare a ``Context&`` parameter.
 
 * Structured logging with severity levels
 * Bidirectional communication (reverse RPC)
-* Request metadata (future extension point)
+* Cancellation state and progress support when a request supplies a progress
+  token
 
 Core Types
 ^^^^^^^^^^
 
-``mcp::core`` provides fundamental types:
+The core headers expose fundamental types in the ``mcp`` namespace:
 
 * ``Task<T>`` - Coroutine return type (alias for ``boost::asio::awaitable<T>``)
-* ``LogLevel`` - Enum for log severity
-* ``McpError`` - Exception type for MCP-specific errors
+* ``LoggingLevel`` - Protocol enum for log severity
+* ``Error`` and JSON-RPC error responses - Structured peer-visible failures
 
 Protocol Types
 ^^^^^^^^^^^^^^
 
-``mcp::protocol`` defines all MCP protocol messages:
+The protocol headers expose MCP message types in the ``mcp`` namespace:
 
 * Request types: ``InitializeRequest``, ``ListToolsRequest``, ``CallToolRequest``, etc.
 * Response types: ``InitializeResult``, ``ListToolsResult``, ``CallToolResult``, etc.
@@ -204,15 +218,13 @@ Design Decisions
 Why Boost.Asio?
 ^^^^^^^^^^^^^^^
 
-Boost.Asio is the de facto standard for async I/O in C++:
+The SDK uses Boost.Asio for async I/O because it provides the primitives used by
+the public coroutine model:
 
-* Mature, stable, and widely used
-* Excellent coroutine support (awaitable<T>)
+* C++20 coroutine support through ``awaitable<T>`` and ``co_spawn``
 * Cross-platform (Windows, Linux, macOS)
-* Provides all necessary primitives (timers, streams, executors)
-* Well-documented and performant
-
-Alternative considered: ``std::execution`` - not yet standardized or widely available.
+* Timers, streams, executors, and strands under one execution model
+* Established documentation and ecosystem
 
 Authentication and Authorization
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -223,7 +235,8 @@ The SDK includes OAuth 2.1 helpers in ``mcp::auth``:
 * ``OAuthAuthenticator``: concrete OAuth 2.0 implementation of the ``Authenticator`` interface
 * ``OAuthHttpClient`` for token and metadata HTTP calls
 * ``OAuthDiscoveryClient`` for protected resource and authorization-server discovery
-* ``OAuthClientTransport`` for injecting Bearer tokens into outgoing MCP requests, with automatic token refresh on ``-32001`` or ``-32000`` error responses
+* ``OAuthClientTransport`` for sending HTTP Bearer credentials and attempting
+  one refresh after HTTP 401 or the legacy ``g_UNAUTHORIZED`` JSON-RPC path
 * ``InMemoryTokenStore`` as a simple token persistence implementation
 
 This keeps authentication concerns out of the core client/server types while
@@ -232,32 +245,30 @@ still allowing authenticated transports and middleware-based validation.
 Why nlohmann_json?
 ^^^^^^^^^^^^^^^^^^
 
-nlohmann_json is the most popular C++ JSON library:
+nlohmann_json was selected for its direct mapping between JSON and C++ protocol
+types:
 
-* Intuitive API (``j["key"] = value``)
-* Excellent error messages
-* Automatic type conversion
-* Wide adoption in the C++ community
-* Active maintenance and good performance
+* Object-style API (``j["key"] = value``)
+* Automatic conversion through ``to_json`` and ``from_json``
+* Support for the variant and optional fields used by MCP messages
 
-Alternative considered: RapidJSON - faster but more complex API.
+Why compiled library variants?
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Why Compiled Static Library?
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The compiled variants provide implementation and linkage boundaries while
+retaining the template-based public API:
 
-Compiling the SDK as a static library reduces consumer build times:
+* **Encapsulation**: Internal request state and transport machinery stay behind
+  implementation boundaries
+* **Choice of linkage**: Consumers select ``mcp::sdk_shared`` or
+  ``mcp::sdk_static`` explicitly, or use ``mcp::sdk`` for the configured
+  default
+* **Template ergonomics**: Typed handlers remain available without a separate
+  code-generation step
 
-* **Faster builds**: Boost headers are compiled once into the library, not
-  re-parsed in every consumer translation unit
-* **Encapsulation**: Boost.Asio and Boost.Beast internals stay behind PImpl
-  boundaries and do not leak into consumer headers
-* **Stable interface**: Public headers expose only standard C++ and
-  ``Task<T>`` (the one unavoidable Boost type)
-* **Unchanged link model**: Consumers still link a single ``mcp-cpp-sdk``
-  target — no change to CMake integration
-
-Tradeoff: Cross-boundary inlining is no longer possible for PImpl'd types,
-which is acceptable given that the hot paths are I/O-bound.
+Tradeoff: the coroutine and executor types remain part of the source-level API,
+and PImpl calls cannot be inlined across the library boundary without link-time
+optimization.
 
 Why Multiple Handler Signatures?
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -274,29 +285,36 @@ Type erasure unifies these at runtime, so ``Server`` internals stay simple.
 Thread Safety Model
 -------------------
 
-All async operations execute on a Boost.Asio **strand**:
+Client runtime transitions and each server session are serialized through
+Boost.Asio strands. Separate HTTP sessions may run concurrently, and a
+``StreamableHttpSessionManager`` can place tool work on a separate executor.
+Application state shared by handlers therefore still needs its own
+synchronization.
 
-* Strand serializes handler execution
-* No explicit locks (``std::mutex``) needed
-* Simple mental model: handlers never run concurrently
-* Safe to modify ``Server``/``Client`` state from handlers
-
-External synchronization is required only if accessing SDK objects from outside
-the strand (e.g., from a different thread).
+Complete server registrations before starting a session. Configure Origin and
+bearer-token setters directly on ``HttpServerTransport`` or
+``StreamableHttpSessionManager`` before ``listen()`` or ``run()``;
+``Server::run_http()`` does not expose those transport settings. The token store
+is independently synchronized, but that does not make every OAuth wrapper
+operation safe for arbitrary concurrent calls.
 
 Performance Characteristics
 ---------------------------
 
-* **Zero-copy**: Messages are moved, not copied (``std::string`` via move semantics)
-* **Lazy serialization**: JSON parsed only when fields are accessed
-* **Minimal allocations**: Handler type erasure uses ``std::function`` (one allocation)
-* **No virtual dispatch in hot path**: Templates resolve at compile time
+Protocol messages are parsed with ``nlohmann_json`` and cross the transport
+interface as serialized strings. Typed handler dispatch is normalized once at
+registration; transport dispatch remains virtual by design. Allocation and
+copy behavior depends on message size, JSON values, and the selected transport,
+so the project does not promise zero-copy operation.
 
 For high-throughput scenarios, consider:
 
-* Reusing ``io_context`` across multiple connections
-* Tuning ``nlohmann_json`` allocator (custom allocator support)
-* Batching small messages if protocol allows
+* Reusing an ``io_context`` and a multi-session HTTP manager
+* Moving blocking application work to a bounded worker executor
+* Measuring the complete workload with the reproducible ``benchmark/`` suite
+
+Benchmark results are end-to-end measurements for a pinned workload and build
+configuration; they are not a universal SDK throughput guarantee.
 
 Extensibility
 -------------
@@ -305,7 +323,8 @@ The SDK is designed for extension:
 
 * **Custom transports**: Implement ``ITransport`` (e.g., for HTTP/2)
 * **Custom serialization**: Provide ``to_json``/``from_json`` for your types
-* **Custom executors**: Pass any ``mcp::Runtime``-compatible executor
+* **Asio executors**: Pass an executor accepted by the relevant
+  ``boost::asio::any_io_executor`` API
 * **Middleware**: Intercept handler execution for auth, logging, and request shaping
 
 Future Work
@@ -314,8 +333,9 @@ Future Work
 Potential future enhancements:
 
 * **Connection pooling**: Reuse transports across multiple requests
-* **HTTP/2 transport**: For high-performance network scenarios
-* **std::execution support**: When standardized and available
+* **HTTP/2 transport**: For deployments that require HTTP/2
+* **Sender/receiver interoperability**: Integration with standard execution
+  APIs as supported toolchains make it practical
 * **Batched operations**: Protocol extension for bulk requests
 
 See the GitHub issues for planned features and contributions.
