@@ -226,7 +226,8 @@ MetadataUrlDecision validate_metadata_url(const MetadataFetchPolicy& policy, con
     if (contains_origin(policy.denied_origins, origin)) {
         return MetadataUrlDecision::origin_denied;
     }
-    if (!contains_origin(policy.allowed_origins, origin)) {
+    if (!contains_origin(policy.allowed_origins, origin) &&
+        !(policy.origin_allowance && policy.origin_allowance(origin))) {
         return MetadataUrlDecision::origin_not_allowed;
     }
 
