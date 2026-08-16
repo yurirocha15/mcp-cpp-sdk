@@ -2294,3 +2294,20 @@ TEST(ProtocolTest, RejectsMismatchedContentDiscriminator) {
     nlohmann::json unknown_content = {{"type", "unknown"}};
     EXPECT_THROW((void)unknown_content.get<mcp::ContentBlock>(), std::invalid_argument);
 }
+
+TEST(ProtocolTest, DiscoverableVersionsDoNotLeakIntoLegacyNegotiation) {
+    // 2026-07-28 is discoverable but not negotiable: a legacy initialize requesting it must
+    // fall back to the latest fully-served version, not be echoed back.
+    EXPECT_FALSE(mcp::is_supported_protocol_version(mcp::g_PROTOCOL_VERSION_2026_07_28));
+    EXPECT_EQ(mcp::negotiate_protocol_version(mcp::g_PROTOCOL_VERSION_2026_07_28),
+              mcp::g_LATEST_PROTOCOL_VERSION);
+
+    ASSERT_EQ(mcp::g_SUPPORTED_PROTOCOL_VERSIONS.size(), 4u);
+    ASSERT_EQ(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.size(), 5u);
+    for (const auto version : mcp::g_SUPPORTED_PROTOCOL_VERSIONS) {
+        EXPECT_NE(std::find(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.begin(),
+                            mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.end(), version),
+                  mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.end());
+    }
+    EXPECT_EQ(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.back(), mcp::g_PROTOCOL_VERSION_2026_07_28);
+}
