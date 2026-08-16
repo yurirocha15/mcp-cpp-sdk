@@ -34,6 +34,15 @@ constexpr std::string_view g_PROTOCOL_VERSION_2025_06_18 = "2025-06-18";
 constexpr std::string_view g_PROTOCOL_VERSION_2025_11_25 = "2025-11-25";
 
 /**
+ * @brief Protocol version 2026-07-28 (stateless protocol revision).
+ *
+ * @details Deliberately absent from g_SUPPORTED_PROTOCOL_VERSIONS: legacy initialize
+ * negotiation must only resolve to versions whose semantics this SDK fully serves. This
+ * constant feeds the discovery surface until dual-era dispatch lands.
+ */
+constexpr std::string_view g_PROTOCOL_VERSION_2026_07_28 = "2026-07-28";
+
+/**
  * @brief The latest supported protocol version.
  */
 constexpr std::string_view g_LATEST_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2025_11_25;
@@ -44,6 +53,19 @@ constexpr std::string_view g_LATEST_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2025_1
 constexpr std::array<std::string_view, 4> g_SUPPORTED_PROTOCOL_VERSIONS = {
     g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
     g_PROTOCOL_VERSION_2025_11_25};
+
+/**
+ * @brief Protocol versions advertised through the 2026-07-28 discovery surface.
+ *
+ * @details Consumed only by server/discover; deliberately distinct from
+ * g_SUPPORTED_PROTOCOL_VERSIONS, which alone governs legacy initialize negotiation.
+ * Advertising a version here makes no promise to the negotiation path: a legacy peer
+ * requesting 2026-07-28 still negotiates g_LATEST_PROTOCOL_VERSION until dual-era dispatch
+ * serves the new semantics.
+ */
+constexpr std::array<std::string_view, 5> g_DISCOVERABLE_PROTOCOL_VERSIONS = {
+    g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
+    g_PROTOCOL_VERSION_2025_11_25, g_PROTOCOL_VERSION_2026_07_28};
 
 /**
  * @brief Check whether a protocol version is supported by this SDK.
