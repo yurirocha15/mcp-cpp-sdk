@@ -284,6 +284,38 @@ bool is_redirect_status(unsigned int status) {
            status == static_cast<unsigned int>(http::status::permanent_redirect);
 }
 
+/// RFC 9728 §3.3: does a protected-resource metadata `resource` value identify the server this
+/// client is configured for? Accepted when the two are byte-exact, or when `resource` is a proper
+/// URI prefix of `server_url` under RFC 8707 audience semantics -- same scheme and authority,
+/// compared byte-exact with no normalization (an explicit default port is a different authority
+/// than an implicit one), and a path that is either empty/`"/"` (matches any path on the server
+/// URL) or a prefix of the server URL's path aligned on a `/` segment boundary. `resource` may not
+/// carry a query or fragment.
+bool resource_identifies_server(const std::string& resource, const std::string& server_url) {
+    if (resource == server_url) {
+        return true;
+    }
+    if (resource.find('?') != std::string::npos || resource.find('#') != std::string::npos) {
+        return false;
+    }
+    const auto resource_origin = metadata_url_origin(resource);
+    const auto server_origin = metadata_url_origin(server_url);
+    if (resource_origin.empty() || resource_origin != server_origin) {
+        return false;
+    }
+    const auto resource_path = resource.substr(resource_origin.size());
+    if (resource_path.empty() || resource_path == "/") {
+        return true;
+    }
+    const auto server_path = server_url.substr(server_origin.size());
+    if (server_path == resource_path) {
+        return true;
+    }
+    return server_path.size() > resource_path.size() &&
+           server_path.compare(0, resource_path.size(), resource_path) == 0 &&
+           server_path[resource_path.size()] == '/';
+}
+
 }  // namespace
 
 struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Impl> {
@@ -1280,7 +1312,15 @@ struct OAuthAuthorizationManager::Impl {
         request.client_id = identity.client_id;
         request.redirect_uri = owner.config.redirect_uri;
         request.scope = select_scope(owner, challenge, resource);
-        request.resource = resource.resource.empty() ? owner.config.server_url : resource.resource;
+        if (resource.resource.empty()) {
+            request.resource = owner.config.server_url;
+        } else if (resource_identifies_server(resource.resource, owner.config.server_url)) {
+            request.resource = resource.resource;
+        } else {
+            throw std::runtime_error("Protected resource metadata resource '" +
+                                     sanitize_for_diagnostics(resource.resource) +
+                                     "' does not identify server '" + owner.config.server_url + "'");
+        }
 
         KeyValuePairList params = {
             {"response_type", "code"},

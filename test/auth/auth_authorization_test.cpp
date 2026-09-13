@@ -1305,3 +1305,144 @@ TEST(AuthClientIdentityBindingTest, RefusesInjectedCredentialsBoundToADifferentI
     EXPECT_EQ(mcp::auth::select_client_identity(config, other, std::nullopt),
               mcp::auth::ClientIdentityDecision::use_pre_registered);
 }
+
+namespace {
+
+/// Drive a challenge whose protected-resource metadata names `prm_resource` against a manager
+/// configured with `server_url`, and report whether authorization completed and, when it did, the
+/// `resource` value carried on the request that reached the authorization server.
+///
+/// `server_url` need not be reachable: the challenge always names the metadata location explicitly,
+/// so discovery never derives a fetch target from it. Only the `resource` comparison in
+/// RFC 9728 §3.3 validation reads it.
+struct PrmResourceOutcome {
+    bool authorized{false};
+    bool threw{false};
+    std::string resolved_resource;
+};
+
+PrmResourceOutcome try_prm_resource(const std::string& server_url, const std::string& prm_resource) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm.json") {
+            return json_response(
+                {{"resource", prm_resource}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = server_url;
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    PrmResourceOutcome outcome;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                         echoing_callback(nullptr));
+            try {
+                outcome.authorized = co_await manager.try_handle_challenge(
+                    R"(Bearer realm="mcp", resource_metadata=")" + base + R"(/prm.json")");
+                if (const auto record = manager.last_authorization_request();
+                    record && record->resource) {
+                    outcome.resolved_resource = *record->resource;
+                }
+            } catch (const std::exception&) {
+                outcome.threw = true;
+            }
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+    return outcome;
+}
+
+}  // namespace
+
+// `server_url` and the PRM `resource` value are only ever compared, never fetched, so a synthetic
+// origin exercises the comparison logic without any network dependency.
+
+// RFC 9728 §3.3: byte-exact match is always accepted, and the PRM's own value is what travels on
+// the authorization request (not a value substituted from config).
+TEST(AuthProtectedResourceValidationTest, AcceptsAByteExactMatch) {
+    const auto outcome = try_prm_resource("https://example.test/mcp", "https://example.test/mcp");
+    EXPECT_FALSE(outcome.threw);
+    EXPECT_TRUE(outcome.authorized);
+    EXPECT_EQ(outcome.resolved_resource, "https://example.test/mcp");
+}
+
+// The root-PRM layout (conformance `auth/metadata-var2`): the PRM's `resource` legitimately
+// identifies the server at coarser granularity than the endpoint URL. An origin-only value must be
+// accepted for any path on that origin.
+TEST(AuthProtectedResourceValidationTest, AcceptsAnOriginOnlyResourceForAPathedServerUrl) {
+    const auto outcome = try_prm_resource("https://example.test/mcp", "https://example.test");
+    EXPECT_FALSE(outcome.threw);
+    EXPECT_TRUE(outcome.authorized);
+    // The PRM's own (coarser) value is what is used, not the finer server URL.
+    EXPECT_EQ(outcome.resolved_resource, "https://example.test");
+}
+
+TEST(AuthProtectedResourceValidationTest, AcceptsAPathPrefixAlignedOnASegmentBoundary) {
+    const auto outcome = try_prm_resource("https://example.test/a/b", "https://example.test/a");
+    EXPECT_FALSE(outcome.threw);
+    EXPECT_TRUE(outcome.authorized);
+    EXPECT_EQ(outcome.resolved_resource, "https://example.test/a");
+}
+
+// "/ap" textually prefixes "/api", but not on a `/` segment boundary, so it must not be accepted as
+// identifying it.
+TEST(AuthProtectedResourceValidationTest, RejectsANonBoundaryPathPrefix) {
+    const auto outcome = try_prm_resource("https://example.test/api", "https://example.test/ap");
+    EXPECT_TRUE(outcome.threw);
+    EXPECT_FALSE(outcome.authorized);
+}
+
+TEST(AuthProtectedResourceValidationTest, RejectsADifferentAuthority) {
+    const auto outcome =
+        try_prm_resource("https://example.test/mcp", "https://different.example.test/mcp");
+    EXPECT_TRUE(outcome.threw);
+    EXPECT_FALSE(outcome.authorized);
+}
+
+TEST(AuthProtectedResourceValidationTest, RejectsADifferentScheme) {
+    const auto outcome = try_prm_resource("https://example.test/mcp", "http://example.test/mcp");
+    EXPECT_TRUE(outcome.threw);
+    EXPECT_FALSE(outcome.authorized);
+}
+
+// Authority comparison is byte-exact with no normalization: an explicit default port is a
+// different authority than an implicit one, even though they denote the same origin.
+TEST(AuthProtectedResourceValidationTest, RejectsAnExplicitDefaultPortAgainstAnImplicitOne) {
+    const auto outcome = try_prm_resource("https://example.test:443/mcp", "https://example.test/mcp");
+    EXPECT_TRUE(outcome.threw);
+    EXPECT_FALSE(outcome.authorized);
+}
+
+// A query or fragment on the PRM's `resource` value is never allowed, even when the origin and path
+// would otherwise match.
+TEST(AuthProtectedResourceValidationTest, RejectsAResourceValueCarryingAQuery) {
+    asio::io_context probe;
+    LoopbackServer server(probe);
+    const auto base = server.base_url();
+    server.close();
+
+    const auto outcome = try_prm_resource(base + "/mcp", base + "/mcp?tenant=1");
+    EXPECT_TRUE(outcome.threw);
+    EXPECT_FALSE(outcome.authorized);
+}
