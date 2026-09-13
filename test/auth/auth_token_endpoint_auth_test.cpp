@@ -105,6 +105,10 @@ ExchangeOutcome run_exchange(const std::function<mcp::auth::OAuthConfig(unsigned
         io_ctx,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+            mcp::auth::MetadataFetchPolicy policy;
+            policy.allowed_origins.push_back("http://127.0.0.1:" + std::to_string(port));
+            policy.allow_plain_http_loopback = true;
+            client.set_metadata_policy(policy);
             const auto config = make_config(port);
             try {
                 outcome.token = co_await client.exchange_code(config, "test-authorization-code",

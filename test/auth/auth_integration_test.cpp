@@ -662,6 +662,10 @@ TEST(AuthClientTransportTest, RefreshTokenReturnsTrue) {
     auto inner = std::make_shared<ScriptedTransport>(io.get_executor());
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     auto oauth_client = std::make_shared<mcp::auth::OAuthHttpClient>(io.get_executor());
+    mcp::auth::MetadataFetchPolicy oauth_policy;
+    oauth_policy.allowed_origins.push_back("http://127.0.0.1:" + std::to_string(port));
+    oauth_policy.allow_plain_http_loopback = true;
+    oauth_client->set_metadata_policy(oauth_policy);
 
     mcp::auth::OAuthConfig config;
     config.client_id = "test";
@@ -779,6 +783,10 @@ TEST(AuthClientTransportTest, RefreshPreservesOldRefreshTokenIfNewOneMissing) {
     auto inner = std::make_shared<ScriptedTransport>(io.get_executor());
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     auto oauth_client = std::make_shared<mcp::auth::OAuthHttpClient>(io.get_executor());
+    mcp::auth::MetadataFetchPolicy oauth_policy;
+    oauth_policy.allowed_origins.push_back("http://127.0.0.1:" + std::to_string(port));
+    oauth_policy.allow_plain_http_loopback = true;
+    oauth_client->set_metadata_policy(oauth_policy);
 
     mcp::auth::OAuthConfig config;
     config.client_id = "test";
