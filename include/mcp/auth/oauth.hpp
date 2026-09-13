@@ -223,10 +223,12 @@ class MCP_API OAuthHttpClient {
      *
      * @param executor Executor used for asynchronous operations.
      *
-     * @note Constructed without a fetch policy, the client issues requests to whatever URL the
-     * caller supplies. That is appropriate only for URLs the application chose itself. Any client
-     * that follows a `WWW-Authenticate` challenge must be given a policy via
-     * set_metadata_policy(), because the URLs it visits are then attacker-influenced.
+     * @note Constructed without an explicit fetch policy, the client holds a default-constructed
+     * `MetadataFetchPolicy`: an empty origin allow list and an https-only, non-loopback scheme
+     * requirement, so every request is refused until a policy is installed via
+     * set_metadata_policy(). Any client that follows a `WWW-Authenticate` challenge must be given a
+     * policy naming the origins it is meant to reach, because the URLs it visits are then
+     * attacker-influenced.
      */
     explicit OAuthHttpClient(const net::any_io_executor& executor);
 
