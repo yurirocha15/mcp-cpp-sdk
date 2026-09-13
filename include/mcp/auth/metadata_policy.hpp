@@ -25,8 +25,9 @@ constexpr std::size_t g_default_max_metadata_redirects = 3;
  * before host resolution, so a refused target is never contacted.
  */
 enum class MetadataUrlDecision {
-    allowed,             ///< Target passed every configured control.
-    malformed_url,       ///< URL could not be decomposed into scheme, host and port.
+    allowed,        ///< Target passed every configured control.
+    malformed_url,  ///< URL could not be decomposed into scheme, host and port, including a
+                    ///< port that is not a plain decimal number or a host that is nothing but dots.
     scheme_not_allowed,  ///< Scheme is not `https`, and the plain-HTTP loopback opt-out did not apply.
     origin_denied,       ///< Origin matched the application's deny list.
     origin_not_allowed,  ///< Origin is not present in the application's allow list.
@@ -58,11 +59,15 @@ enum class MetadataUrlDecision {
  * is not listed is refused. Applications must opt in to the origins they intend to talk to.
  */
 struct MetadataFetchPolicy {
-    /// Origins the application permits, each written as `scheme://host[:port]`. An empty list
-    /// denies every origin. Compared after canonicalizing scheme and host case, a trailing host
-    /// dot, and an explicit default port for the scheme (`:443` for `https`, `:80` for `http`); the
-    /// port value itself, IP literals and IPv6 bracket forms are otherwise compared exactly, so a
-    /// non-default port still distinguishes origins.
+    /// Origins the application permits, each written as `scheme://host[:port]` with nothing else
+    /// after the authority. An empty list denies every origin. Compared after canonicalizing scheme
+    /// and host case, a trailing run of host dots, a strictly-numeric explicit port (so `:00443` and
+    /// `:0443` both canonicalize the same as `:443`) that equals the scheme's default (`443` for
+    /// `https`, `80` for `http`), and an IP literal's textual form (so an expanded and a compressed
+    /// IPv6 spelling of the same address compare equal). A non-default port and a genuinely different
+    /// host otherwise still distinguish origins exactly. An entry that carries a path, query or
+    /// fragment after the authority, or whose port is not a plain in-range decimal number, is not a
+    /// bare origin and matches nothing rather than being widened or truncated into one.
     std::vector<std::string> allowed_origins;
 
     /// Origins the application refuses. Consulted before `allowed_origins`, so a denied origin is
@@ -118,8 +123,12 @@ struct MetadataFetchPolicy {
  * socket is opened. A host written as an IP literal is additionally classified here, so a URL
  * naming `169.254.169.254` or an RFC 1918 address is refused without any lookup at all. The origin
  * derived from `url` is canonicalized (see `MetadataFetchPolicy::allowed_origins`) once, before the
- * deny list, allow list or `origin_allowance` sees it; this is purely internal to the deny/allow
- * decision and does not affect `metadata_url_origin`, which never normalizes its result.
+ * deny list, allow list or `origin_allowance` sees it; a URL whose port or host does not canonicalize
+ * at all (a malformed port, or a host that is nothing but dots) is refused as `malformed_url`. The
+ * https-required check and the loopback opt-out that follow the origin decision also run on that same
+ * canonical scheme and host, not on the raw URL text, so they see exactly what the origin decision and
+ * `origin_allowance` saw. This canonicalization is purely internal to `validate_metadata_url` and does
+ * not affect `metadata_url_origin`, which never normalizes its result.
  */
 [[nodiscard]] MCP_API MetadataUrlDecision validate_metadata_url(const MetadataFetchPolicy& policy,
                                                                 const std::string& url);

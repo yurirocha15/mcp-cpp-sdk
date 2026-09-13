@@ -367,6 +367,72 @@ TEST(AuthMetadataPolicyTest, IpLiteralAndIpv6OriginsAreUnaffectedByCanonicalizat
               mcp::auth::MetadataUrlDecision::origin_denied);
 }
 
+TEST(AuthMetadataPolicyTest, DenyListCanonicalizesLeadingZerosInADefaultPort) {
+    auto policy = allow_origin("https://evil.example");
+    policy.denied_origins.emplace_back("https://evil.example");
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example:00443/prm"),
+              mcp::auth::MetadataUrlDecision::origin_denied);
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example:0443/prm"),
+              mcp::auth::MetadataUrlDecision::origin_denied);
+}
+
+TEST(AuthMetadataPolicyTest, NonDefaultPortCanonicalizesNumericallyDespiteLeadingZeros) {
+    const auto policy = allow_origin("https://evil.example:8443");
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example:08443/prm"),
+              mcp::auth::MetadataUrlDecision::allowed);
+}
+
+TEST(AuthMetadataPolicyTest, RejectsAPortThatIsNotAPlainDecimalNumber) {
+    const auto policy = allow_origin("https://evil.example");
+    const char* urls[] = {
+        "https://evil.example:+443/prm",
+        "https://evil.example: 443/prm",
+        "https://evil.example:44a3/prm",
+        "https://evil.example:/prm",
+    };
+    for (const auto* url : urls) {
+        EXPECT_EQ(mcp::auth::validate_metadata_url(policy, url),
+                  mcp::auth::MetadataUrlDecision::malformed_url)
+            << url;
+    }
+}
+
+TEST(AuthMetadataPolicyTest, DenyListMatchesAnAlternateIpv6TextualForm) {
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.denied_origins.emplace_back("https://[2606:2800:220:1::1]");
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy,
+                                               "https://[2606:2800:0220:0001:0000:0000:0000:0001]/prm"),
+              mcp::auth::MetadataUrlDecision::origin_denied);
+}
+
+TEST(AuthMetadataPolicyTest, AllowListEntryWithAPathMatchesNothing) {
+    const auto policy = allow_origin("https://as.test/realms/foo");
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test/prm"),
+              mcp::auth::MetadataUrlDecision::origin_not_allowed);
+}
+
+TEST(AuthMetadataPolicyTest, LoopbackOptOutIsCaseInsensitiveOnSchemeAndHost) {
+    auto policy = allow_origin("http://localhost:9000");
+    policy.allow_plain_http_loopback = true;
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "HTTP://localhost:9000/prm"),
+              mcp::auth::MetadataUrlDecision::allowed);
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://LOCALHOST:9000/prm"),
+              mcp::auth::MetadataUrlDecision::allowed);
+}
+
+TEST(AuthMetadataPolicyTest, DenyListCanonicalizesMultipleTrailingDots) {
+    auto policy = allow_origin("https://evil.example");
+    policy.denied_origins.emplace_back("https://evil.example");
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example../prm"),
+              mcp::auth::MetadataUrlDecision::origin_denied);
+}
+
+TEST(AuthMetadataPolicyTest, RejectsAHostThatIsNothingButDots) {
+    const mcp::auth::MetadataFetchPolicy policy;
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://.../prm"),
+              mcp::auth::MetadataUrlDecision::malformed_url);
+}
+
 TEST(AuthMetadataPolicyTest, RejectsPlainHttpForNonLoopbackHosts) {
     const auto policy = allow_origin("http://as.test");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://as.test/prm"),
