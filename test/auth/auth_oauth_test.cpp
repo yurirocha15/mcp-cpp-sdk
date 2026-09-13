@@ -45,6 +45,17 @@ asio::awaitable<void> run_mock_server(asio::ip::tcp::acceptor& acceptor, Accepto
     co_await handler(std::move(socket), acceptor);
 }
 
+/// A policy admitting exactly the plain-http loopback fixture these tests drive directly. A
+/// policy-less `OAuthHttpClient` now defaults to deny-all, so every test that talks to a mock
+/// server without going through `OAuthAuthorizationManager` (which always installs its own policy)
+/// must opt in explicitly.
+mcp::auth::MetadataFetchPolicy loopback_policy(unsigned short port) {
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allowed_origins.push_back("http://127.0.0.1:" + std::to_string(port));
+    policy.allow_plain_http_loopback = true;
+    return policy;
+}
+
 }  // namespace
 
 TEST(AuthSha256Test, EmptyString) {
@@ -295,6 +306,7 @@ TEST_F(MockTokenServer, ExchangeCodeProducesValidToken) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthConfig config;
             config.client_id = "test_client";
             config.token_endpoint = "http://127.0.0.1:" + std::to_string(port) + "/token";
@@ -356,6 +368,7 @@ TEST_F(MockTokenServer, ExchangeCodeWithClientSecret) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthConfig config;
             config.client_id = "test_client";
             config.client_secret = "super_secret";
@@ -413,6 +426,7 @@ TEST_F(MockTokenServer, RefreshTokenProducesNewToken) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthConfig config;
             config.client_id = "test_client";
             config.token_endpoint = "http://127.0.0.1:" + std::to_string(port) + "/token";
@@ -465,6 +479,7 @@ TEST_F(MockTokenServer, TokenExchangeErrorThrows) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthConfig config;
             config.client_id = "test_client";
             config.token_endpoint = "http://127.0.0.1:" + std::to_string(port) + "/token";
@@ -518,6 +533,7 @@ TEST_F(MockTokenServer, GetJsonReturnsValidJson) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             result =
                 co_await client.get_json("http://127.0.0.1:" + std::to_string(port) + "/well-known");
         },
@@ -560,6 +576,7 @@ TEST_F(MockTokenServer, GetJsonErrorThrows) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             try {
                 co_await client.get_json("http://127.0.0.1:" + std::to_string(port) + "/nope");
             } catch (const std::runtime_error&) {
@@ -712,6 +729,7 @@ TEST_F(DiscoveryTest, DiscoverProtectedResource) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
 
             result = co_await discovery.discover_protected_resource("http://127.0.0.1:" +
@@ -765,6 +783,7 @@ TEST_F(DiscoveryTest, DiscoverProtectedResourceWithPath) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
 
             result = co_await discovery.discover_protected_resource(
@@ -817,6 +836,7 @@ TEST_F(DiscoveryTest, DiscoverAuthServer) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
 
             result =
@@ -893,6 +913,7 @@ TEST_F(DiscoveryTest, DiscoverAuthServerFallsBackToOIDC) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
 
             result =
@@ -946,6 +967,7 @@ TEST_F(DiscoveryTest, CacheHitSkipsNetworkCall) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(300));
 
             result1 =
@@ -1001,6 +1023,7 @@ TEST_F(DiscoveryTest, ClearCacheInvalidatesEntries) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(300));
 
             co_await discovery.discover_auth_server("http://127.0.0.1:" + std::to_string(port));
@@ -1012,4 +1035,42 @@ TEST_F(DiscoveryTest, ClearCacheInvalidatesEntries) {
     io_ctx_.run();
 
     EXPECT_EQ(request_count, 2);
+}
+
+// A policy-less client now defaults to deny-all rather than allow-all: no origin is on the (empty)
+// allow list, and plain http is refused outright. Refusal happens in `enforce_url_policy` before
+// any lookup, so the host resolver this test installs must never run.
+TEST(AuthOAuthHttpClientDefaultPolicyTest, PolicyLessClientRefusesAnHttpLoopbackUrlWithoutResolving) {
+    asio::io_context io_ctx;
+    mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+
+    int resolver_calls = 0;
+    client.set_host_resolver(
+        [&resolver_calls](const std::string&, const std::string&) -> std::vector<std::string> {
+            ++resolver_calls;
+            return {"127.0.0.1"};
+        });
+
+    bool threw = false;
+    auto decision = mcp::auth::MetadataUrlDecision::allowed;
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> asio::awaitable<void> {
+            try {
+                (void)co_await client.get_json("http://127.0.0.1:18199/probe");
+            } catch (const mcp::auth::MetadataPolicyError& error) {
+                threw = true;
+                decision = error.decision();
+            }
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_TRUE(threw);
+    EXPECT_TRUE(decision == mcp::auth::MetadataUrlDecision::origin_not_allowed ||
+                decision == mcp::auth::MetadataUrlDecision::scheme_not_allowed)
+        << "unexpected decision: " << mcp::auth::describe(decision);
+    EXPECT_EQ(resolver_calls, 0);
 }
