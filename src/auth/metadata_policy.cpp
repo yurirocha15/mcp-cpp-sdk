@@ -5,6 +5,7 @@
 #include <boost/asio/ip/address.hpp>
 #include <boost/system/error_code.hpp>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -71,67 +72,150 @@ std::string lowercase_ascii(std::string value) {
     return value;
 }
 
-/// Canonicalize an origin (`scheme://authority`) for comparison. Lowercases the scheme and host,
-/// strips a single trailing dot from a non-literal host, and drops an explicit default port for the
-/// scheme (`:443` for `https`, `:80` for `http`). The port itself, IP literals and IPv6 bracket forms
-/// are otherwise preserved untouched, so a non-default port still distinguishes origins. An origin
-/// that does not decompose into `scheme://authority` is returned unchanged, so it still compares
-/// (and simply fails to match anything well-formed) instead of being dropped or throwing.
-std::string canonicalize_origin(const std::string& origin) {
+/// Parse a URL port substring strictly: ASCII digits only, no sign, no whitespace, and in range
+/// [0, 65535]. Leading zeros are tolerated and simply absorbed into the numeric value (`"00443"` and
+/// `"0443"` both parse to 443), but anything that is not a plain unsigned decimal number — including
+/// an empty string, a sign, embedded whitespace, or a value that overflows a 16-bit port — returns
+/// `nullopt` rather than silently truncating or wrapping.
+std::optional<std::uint32_t> parse_strict_port(const std::string& port_text) {
+    if (port_text.empty()) {
+        return std::nullopt;
+    }
+    std::uint64_t value = 0;
+    for (const char character : port_text) {
+        if (character < '0' || character > '9') {
+            return std::nullopt;
+        }
+        value = (value * 10) + static_cast<std::uint64_t>(character - '0');
+        if (value > 65535U) {
+            return std::nullopt;
+        }
+    }
+    return static_cast<std::uint32_t>(value);
+}
+
+/// Canonical form of an origin's components. Kept split (rather than only the formatted string) so
+/// `validate_metadata_url` can feed the same canonical scheme and host into the checks that run after
+/// the origin decision, instead of re-deriving them from raw, non-canonical text.
+struct CanonicalOrigin {
+    std::string scheme;
+    std::string host;  ///< Never bracketed, even when the origin names an IPv6 literal.
+    std::optional<std::uint32_t>
+        port;        ///< Absent when no port was written, or it was the scheme's default.
+    bool bracketed;  ///< Whether the original authority wrote the host as `[...]`.
+};
+
+/// Decompose and canonicalize an origin (`scheme://authority`) for comparison.
+///
+/// Lowercases the scheme and, for a non-IP-literal host, the host; strips every trailing dot from
+/// such a host (an FQDN dot run), and returns `nullopt` if that leaves it empty. For a host that
+/// parses as an IP literal (IPv4, or IPv6 with or without brackets), replaces it with its normalized
+/// textual form instead of lowercasing it, so an expanded and a compressed IPv6 spelling of the same
+/// address compare equal; a literal is never dot-stripped. Parses an explicit port strictly and
+/// numerically (see `parse_strict_port`) and drops it when it equals the scheme's default (`443` for
+/// `https`, `80` for `http`); a malformed port makes the whole origin fail to canonicalize.
+///
+/// Returns `nullopt` — meaning "does not canonicalize to a bare origin" — when `origin` does not
+/// decompose into `scheme://authority` with nothing following (a path, query or fragment means it was
+/// never a bare origin to begin with), when the host is malformed, or when a port is present but is
+/// not a plain in-range decimal number.
+std::optional<CanonicalOrigin> canonicalize_origin_parts(const std::string& origin) {
     std::string scheme;
     std::string authority;
     if (!split_url(origin, scheme, authority)) {
-        return origin;
+        return std::nullopt;
+    }
+    // A bare origin has nothing past the authority. An entry carrying a path, query or fragment
+    // (e.g. an allow-list entry mistakenly written as "https://as.test/realms/foo") is not an origin
+    // and must never be silently truncated into a match for the origin it happens to prefix.
+    if (scheme.size() + 3 + authority.size() != origin.size()) {
+        return std::nullopt;
     }
     std::string host;
     if (!authority_host(authority, host)) {
-        return origin;
+        return std::nullopt;
     }
 
     const bool bracketed = authority.front() == '[';
-    std::string port;
+    std::string port_text;
+    bool has_port = false;
     if (bracketed) {
         const auto closing = authority.find(']');
         if (closing != std::string::npos && closing + 1 < authority.size() &&
             authority[closing + 1] == ':') {
-            port = authority.substr(closing + 2);
+            port_text = authority.substr(closing + 2);
+            has_port = true;
         }
     } else {
         const auto colon = authority.find(':');
         if (colon != std::string::npos) {
-            port = authority.substr(colon + 1);
+            port_text = authority.substr(colon + 1);
+            has_port = true;
         }
     }
 
-    const auto canonical_scheme = lowercase_ascii(scheme);
+    std::optional<std::uint32_t> port;
+    if (has_port) {
+        port = parse_strict_port(port_text);
+        if (!port) {
+            return std::nullopt;
+        }
+    }
+
+    auto canonical_scheme = lowercase_ascii(scheme);
 
     boost::system::error_code error;
-    net::ip::make_address(host, error);
+    const auto address = net::ip::make_address(host, error);
     const bool is_ip_literal = !error;
 
-    auto canonical_host = lowercase_ascii(host);
-    if (!is_ip_literal && !canonical_host.empty() && canonical_host.back() == '.') {
-        canonical_host.pop_back();
+    std::string canonical_host;
+    if (is_ip_literal) {
+        canonical_host = address.to_string();
+    } else {
+        canonical_host = lowercase_ascii(host);
+        while (!canonical_host.empty() && canonical_host.back() == '.') {
+            canonical_host.pop_back();
+        }
+        if (canonical_host.empty()) {
+            return std::nullopt;
+        }
     }
 
-    const bool default_port =
-        (port == "443" && canonical_scheme == "https") || (port == "80" && canonical_scheme == "http");
-    if (default_port) {
-        port.clear();
+    if (port && ((*port == 443U && canonical_scheme == "https") ||
+                 (*port == 80U && canonical_scheme == "http"))) {
+        port.reset();
     }
 
-    std::string canonical_authority = bracketed ? "[" + canonical_host + "]" : canonical_host;
-    if (!port.empty()) {
-        canonical_authority += ":" + port;
+    return CanonicalOrigin{std::move(canonical_scheme), std::move(canonical_host), port, bracketed};
+}
+
+/// Format a `CanonicalOrigin` back into `scheme://authority` text, for list comparison and for the
+/// value handed to `origin_allowance`.
+std::string format_canonical_origin(const CanonicalOrigin& parts) {
+    std::string authority = parts.bracketed ? "[" + parts.host + "]" : parts.host;
+    if (parts.port) {
+        authority += ":" + std::to_string(*parts.port);
     }
-    return canonical_scheme + "://" + canonical_authority;
+    return parts.scheme + "://" + authority;
+}
+
+/// Canonicalize an origin purely for list-membership comparison; see `canonicalize_origin_parts`.
+std::optional<std::string> canonicalize_origin(const std::string& origin) {
+    const auto parts = canonicalize_origin_parts(origin);
+    if (!parts) {
+        return std::nullopt;
+    }
+    return format_canonical_origin(*parts);
 }
 
 /// Compare a canonicalized origin against a policy list, canonicalizing each list entry at
-/// comparison time so the caller never has to keep a normalized copy of the policy around.
+/// comparison time so the caller never has to keep a normalized copy of the policy around. An entry
+/// that does not canonicalize to a bare origin (a malformed port, a path/query/fragment, or any other
+/// malformed form) matches nothing, rather than being widened or treated as an error.
 bool contains_origin(const std::vector<std::string>& origins, const std::string& canonical_origin) {
     return std::any_of(origins.begin(), origins.end(), [&](const std::string& candidate) {
-        return canonicalize_origin(candidate) == canonical_origin;
+        const auto canonical_candidate = canonicalize_origin(candidate);
+        return canonical_candidate && *canonical_candidate == canonical_origin;
     });
 }
 
@@ -291,8 +375,14 @@ MetadataUrlDecision validate_metadata_url(const MetadataFetchPolicy& policy, con
     }
 
     // Canonicalized once, before any list or callback sees it, so a deny entry cannot be bypassed by
-    // a differently-cased scheme/host, an explicit default port, or a trailing FQDN dot.
-    const auto canonical_origin = canonicalize_origin(scheme + "://" + authority);
+    // a differently-cased scheme/host, an explicit or oddly-spelled default port, a run of trailing
+    // FQDN dots, or an alternate textual spelling of the same IP literal. A URL that only canonicalizes
+    // this far because of a malformed port or an all-dots host is refused outright.
+    const auto canonical = canonicalize_origin_parts(scheme + "://" + authority);
+    if (!canonical) {
+        return MetadataUrlDecision::malformed_url;
+    }
+    const auto canonical_origin = format_canonical_origin(*canonical);
     if (contains_origin(policy.denied_origins, canonical_origin)) {
         return MetadataUrlDecision::origin_denied;
     }
@@ -301,9 +391,11 @@ MetadataUrlDecision validate_metadata_url(const MetadataFetchPolicy& policy, con
         return MetadataUrlDecision::origin_not_allowed;
     }
 
-    if (scheme != "https") {
-        const auto loopback_opt_out =
-            policy.allow_plain_http_loopback && scheme == "http" && is_loopback_host(host);
+    // Runs on the canonical scheme/host, matching what the origin decision and the origin_allowance
+    // callback above just saw, rather than re-deriving the answer from raw, non-canonical text.
+    if (canonical->scheme != "https") {
+        const auto loopback_opt_out = policy.allow_plain_http_loopback && canonical->scheme == "http" &&
+                                      is_loopback_host(canonical->host);
         if (!loopback_opt_out) {
             return MetadataUrlDecision::scheme_not_allowed;
         }
