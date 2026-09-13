@@ -293,6 +293,16 @@ class MCP_API OAuthHttpClient {
      */
     Task<nlohmann::json> post_json(const std::string& url, const nlohmann::json& body);
 
+    /**
+     * @brief Abort every HTTP exchange currently in flight on this client.
+     *
+     * @details Closes the underlying socket of each active exchange from its own strand, so a
+     * pending resolve, connect, write, or read completes with an error instead of hanging. Safe to
+     * call from any thread and a no-op when nothing is in flight. A request issued after this call
+     * proceeds normally on a fresh connection.
+     */
+    void abort_pending();
+
    private:
     struct Impl;
     std::shared_ptr<Impl> impl_;
@@ -481,6 +491,16 @@ class Authenticator {
         (void)www_authenticate;
         co_return false;
     }
+
+    /**
+     * @brief Cancel any authorization work this authenticator has in flight and release parked
+     *        callers with an error.
+     *
+     * @details Called once, synchronously, by the owning transport's close(). An implementation that
+     * holds no cancellable network state may leave the default no-op, which keeps existing
+     * Authenticator implementations source-compatible. Safe to call more than once.
+     */
+    virtual void close() {}
 };
 
 /**
@@ -500,6 +520,9 @@ class MCP_API OAuthAuthenticator : public Authenticator {
     /// code flow).
     /// @param token The token response to persist via the configured TokenStore.
     void store_token(TokenResponse token);
+
+    /// @brief Aborts any in-flight token-refresh HTTP exchange.
+    void close() override;
 
    private:
     struct Impl;
@@ -608,6 +631,15 @@ class MCP_API OAuthAuthorizationManager : public Authenticator {
      * credential from a metadata-document identifier from a dynamic registration.
      */
     [[nodiscard]] std::optional<OAuthClientInformation> last_client_identity() const;
+
+    /**
+     * @brief Cancel any in-flight authorization flow and release parked followers with an error.
+     *
+     * @details Aborts the in-progress discovery or token-exchange HTTP exchange, cancels the
+     * single-flight timer so every coalesced follower wakes rather than waiting forever, and refuses
+     * new authorization attempts from this point on. Idempotent.
+     */
+    void close() override;
 
    private:
     struct Impl;

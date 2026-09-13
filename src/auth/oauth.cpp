@@ -481,6 +481,68 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         (void)exchange->stream->socket().shutdown(net::ip::tcp::socket::shutdown_both, shutdown_error);
     }
 
+    /// RAII membership in `active_exchanges` for the lifetime of one HTTP exchange, so
+    /// `abort_pending()` can reach a stalled connect/write/read and never targets one that finished.
+    struct ActiveExchangeGuard {
+        ActiveExchangeGuard(std::shared_ptr<Impl> owner_in, Exchange* exchange_in)
+            : owner(std::move(owner_in)), exchange(exchange_in) {}
+        ActiveExchangeGuard(const ActiveExchangeGuard&) = delete;
+        ActiveExchangeGuard& operator=(const ActiveExchangeGuard&) = delete;
+        ActiveExchangeGuard& operator=(ActiveExchangeGuard&&) = delete;
+
+        ActiveExchangeGuard(ActiveExchangeGuard&& other) noexcept
+            : owner(std::move(other.owner)), exchange(other.exchange) {
+            other.exchange = nullptr;
+        }
+
+        ~ActiveExchangeGuard() {
+            if (!owner || exchange == nullptr) {
+                return;
+            }
+            std::lock_guard lock(owner->active_mutex);
+            auto& list = owner->active_exchanges;
+            list.erase(std::remove_if(list.begin(), list.end(),
+                                      [this](const std::weak_ptr<Exchange>& weak) {
+                                          const auto locked = weak.lock();
+                                          return !locked || locked.get() == exchange;
+                                      }),
+                       list.end());
+        }
+
+        std::shared_ptr<Impl> owner;
+        Exchange* exchange;
+    };
+
+    static ActiveExchangeGuard track_exchange(const std::shared_ptr<Exchange>& exchange) {
+        std::lock_guard lock(exchange->owner->active_mutex);
+        exchange->owner->active_exchanges.push_back(exchange);
+        return ActiveExchangeGuard(exchange->owner, exchange.get());
+    }
+
+    /// Close the underlying socket of every exchange currently in flight, posted onto the client's
+    /// strand so the closure is never raced with the coroutine using it. A pending resolve, connect,
+    /// write, or read then completes with an error instead of hanging.
+    void abort_pending() {
+        std::vector<std::shared_ptr<Exchange>> exchanges;
+        {
+            std::lock_guard lock(active_mutex);
+            for (auto& weak : active_exchanges) {
+                if (auto locked = weak.lock()) {
+                    exchanges.push_back(std::move(locked));
+                }
+            }
+        }
+        for (auto& exchange : exchanges) {
+            net::post(strand, [exchange]() {
+                exchange->resolver.cancel();
+                if (exchange->stream) {
+                    beast::error_code ec;
+                    exchange->stream->socket().close(ec);
+                }
+            });
+        }
+    }
+
     Task<nlohmann::json> get_json(std::string url) {
         return run_get(std::make_shared<Exchange>(shared_from_this(), strand, std::move(url)));
     }
@@ -501,6 +563,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 
     static Task<nlohmann::json> run_get(std::shared_ptr<Exchange> exchange) {
         co_await net::post(exchange->strand, net::use_awaitable);
+        auto guard = track_exchange(exchange);
 
         const auto redirect_budget = exchange->owner->policy.max_redirects;
         for (std::size_t redirect = 0;; ++redirect) {
@@ -551,6 +614,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                                               std::string content_type, std::string failure_label,
                                               std::string authorization = {}) {
         co_await net::post(exchange->strand, net::use_awaitable);
+        auto guard = track_exchange(exchange);
 
         enforce_url_policy(exchange->owner->policy, exchange->url);
         exchange->parsed = parse_url(exchange->url);
@@ -594,6 +658,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     net::strand<net::any_io_executor> strand;
     MetadataFetchPolicy policy;
     HostResolver host_resolver;
+    std::mutex active_mutex;
+    std::vector<std::weak_ptr<Exchange>> active_exchanges;
 };
 
 OAuthHttpClient::OAuthHttpClient(const net::any_io_executor& executor)
@@ -606,6 +672,8 @@ void OAuthHttpClient::set_metadata_policy(MetadataFetchPolicy policy) {
 void OAuthHttpClient::set_host_resolver(HostResolver resolver) {
     impl_->host_resolver = std::move(resolver);
 }
+
+void OAuthHttpClient::abort_pending() { impl_->abort_pending(); }
 
 namespace {
 
@@ -1037,6 +1105,8 @@ void OAuthAuthenticator::store_token(TokenResponse token) {
     impl_->token_store->store(impl_->server_url, std::move(token));
 }
 
+void OAuthAuthenticator::close() { impl_->oauth_client->abort_pending(); }
+
 namespace {
 
 /// Join scopes into the space-delimited form an authorization request carries.
@@ -1418,6 +1488,12 @@ struct OAuthAuthorizationManager::Impl {
         boost::system::error_code ignored;
         co_await flight->async_wait(net::redirect_error(net::use_awaitable, ignored));
         std::lock_guard lock(owner->state_mutex);
+        // close() cancels the same timer to release a follower parked here; a follower that wakes
+        // because the manager closed gets a clear error rather than the misleading "not authorized"
+        // that the leader's own outcome would otherwise report.
+        if (owner->closed) {
+            throw std::runtime_error("OAuth authorization manager closed");
+        }
         co_return owner->last_flight_succeeded;
     }
 
@@ -1448,6 +1524,12 @@ struct OAuthAuthorizationManager::Impl {
     }
 
     static Task<bool> handle_challenge(std::shared_ptr<Impl> owner, const std::string& header) {
+        {
+            std::lock_guard lock(owner->state_mutex);
+            if (owner->closed) {
+                throw std::runtime_error("OAuth authorization manager closed");
+            }
+        }
         auto challenge = select_bearer_challenge(parse_www_authenticate(header));
         if (!challenge) {
             return return_false();
@@ -1524,6 +1606,31 @@ struct OAuthAuthorizationManager::Impl {
     /// requests that coalesced onto it.
     std::shared_ptr<net::steady_timer> flight;
     bool last_flight_succeeded{false};
+    bool closed{false};
+
+    /// Abort whatever this manager has in flight and release every parked follower with an error.
+    ///
+    /// `http_client->abort_pending()` unblocks the leader's own coroutine, wherever it is parked
+    /// (discovery, registration or token exchange all share the one client), which lets the leader's
+    /// existing cleanup in run_leading_challenge() cancel `flight` on its own; `flight->cancel()` is
+    /// still called directly here too, so a follower wakes immediately rather than waiting on that
+    /// cleanup to happen -- covering every phase, including one this manager cannot itself abort
+    /// (the application's own consent callback).
+    static void close(const std::shared_ptr<Impl>& owner) {
+        std::shared_ptr<net::steady_timer> flight;
+        {
+            std::lock_guard lock(owner->state_mutex);
+            if (owner->closed) {
+                return;
+            }
+            owner->closed = true;
+            flight = owner->flight;
+        }
+        owner->http_client->abort_pending();
+        if (flight) {
+            flight->cancel();
+        }
+    }
 };
 
 OAuthAuthorizationManager::OAuthAuthorizationManager(const net::any_io_executor& executor,
@@ -1548,6 +1655,8 @@ Task<bool> OAuthAuthorizationManager::try_refresh_token() { return Impl::try_ref
 Task<bool> OAuthAuthorizationManager::try_handle_challenge(const std::string& www_authenticate) {
     return Impl::handle_challenge(impl_, www_authenticate);
 }
+
+void OAuthAuthorizationManager::close() { Impl::close(impl_); }
 
 std::optional<AuthorizationRequest> OAuthAuthorizationManager::last_authorization_request() const {
     std::lock_guard lock(impl_->state_mutex);
@@ -1929,6 +2038,11 @@ void OAuthClientTransport::close() {
         impl_->pending_order.clear();
         impl_->pending_bytes = 0;
     }
+    // Releases anything the authenticator has parked -- an in-flight discovery/token exchange, or a
+    // follower waiting on a single-flight timer -- before the inner transport is torn down, so a
+    // write() still working its way through the authorization retry loop fails promptly instead of
+    // outliving this call.
+    impl_->authenticator->close();
     impl_->inner->close();
 }
 
