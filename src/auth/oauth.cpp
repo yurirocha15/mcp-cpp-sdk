@@ -23,7 +23,6 @@
 #include <ctime>
 #include <exception>
 #include <iterator>
-#include <limits>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -342,9 +341,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             stream.emplace(strand);
             buffer.clear();
             parser.emplace();
-            const auto limit = owner->policy ? owner->policy->max_response_bytes
-                                             : std::numeric_limits<std::uint64_t>::max();
-            parser->body_limit(limit);
+            parser->body_limit(owner->policy.max_response_bytes);
         }
 
         [[nodiscard]] const http::response<http::string_body>& response() const {
@@ -403,12 +400,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 
     /// Validate a target before any lookup. Refusal happens here, so the host of a refused target
     /// is never resolved and no socket is opened for it.
-    static void enforce_url_policy(const std::optional<MetadataFetchPolicy>& policy,
-                                   const std::string& url) {
-        if (!policy) {
-            return;
-        }
-        const auto decision = validate_metadata_url(*policy, url);
+    static void enforce_url_policy(const MetadataFetchPolicy& policy, const std::string& url) {
+        const auto decision = validate_metadata_url(policy, url);
         if (decision != MetadataUrlDecision::allowed) {
             throw MetadataPolicyError(decision, url);
         }
@@ -416,14 +409,11 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 
     /// Classify every address a lookup produced. One blocked answer refuses the whole fetch, so a
     /// resolver that mixes a routable answer with a hostile one cannot smuggle the hostile one in.
-    static void enforce_address_policy(const std::optional<MetadataFetchPolicy>& policy,
+    static void enforce_address_policy(const MetadataFetchPolicy& policy,
                                        const std::vector<net::ip::tcp::endpoint>& endpoints) {
-        if (!policy) {
-            return;
-        }
         for (const auto& endpoint : endpoints) {
             auto literal = endpoint.address().to_string();
-            const auto decision = validate_metadata_address(*policy, literal);
+            const auto decision = validate_metadata_address(policy, literal);
             if (decision != MetadataUrlDecision::allowed) {
                 throw MetadataPolicyError(decision, std::move(literal));
             }
@@ -512,8 +502,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     static Task<nlohmann::json> run_get(std::shared_ptr<Exchange> exchange) {
         co_await net::post(exchange->strand, net::use_awaitable);
 
-        const auto redirect_budget =
-            exchange->owner->policy ? exchange->owner->policy->max_redirects : 0;
+        const auto redirect_budget = exchange->owner->policy.max_redirects;
         for (std::size_t redirect = 0;; ++redirect) {
             // Every hop, including each redirect target, is validated afresh before it is reached.
             enforce_url_policy(exchange->owner->policy, exchange->url);
@@ -603,7 +592,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     }
 
     net::strand<net::any_io_executor> strand;
-    std::optional<MetadataFetchPolicy> policy;
+    MetadataFetchPolicy policy;
     HostResolver host_resolver;
 };
 
