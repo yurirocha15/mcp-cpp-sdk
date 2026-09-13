@@ -16,6 +16,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/redirect_error.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
@@ -26,6 +27,7 @@
 #include <mcp/transport/http_client.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -994,6 +996,37 @@ bool has_scopes(const std::string& haystack, const std::vector<std::string>& nee
     return true;
 }
 
+/// Accepts one connection and holds it open without ever reading or writing on it, modelling a
+/// discovery or token endpoint that stalls -- the target `close()` must be able to abort without
+/// waiting for it to time out on its own.
+class StallingServer final {
+   public:
+    explicit StallingServer(asio::io_context& io_ctx)
+        : io_ctx_(io_ctx), acceptor_(io_ctx, {asio::ip::make_address("127.0.0.1"), 0}) {}
+
+    [[nodiscard]] unsigned short port() const { return acceptor_.local_endpoint().port(); }
+    [[nodiscard]] std::string base_url() const { return "http://127.0.0.1:" + std::to_string(port()); }
+
+    /// Start accepting; the accepted socket is held as a member so the connection stays open (no
+    /// FIN, no RST) until this server is destroyed.
+    void accept_and_stall() {
+        acceptor_.async_accept([this](boost::system::error_code error, asio::ip::tcp::socket socket) {
+            if (!error) {
+                held_socket_ = std::move(socket);
+                ++accepted_;
+            }
+        });
+    }
+
+    [[nodiscard]] int accepted() const { return accepted_; }
+
+   private:
+    asio::io_context& io_ctx_;
+    asio::ip::tcp::acceptor acceptor_;
+    std::optional<asio::ip::tcp::socket> held_socket_;
+    int accepted_{0};
+};
+
 }  // namespace
 
 TEST(AuthScopeStepUpTest, UnionsTheGrantedScopeWithAForbiddenChallengeAndReplaysTheRequest) {
@@ -1215,6 +1248,344 @@ TEST(AuthScopeStepUpTest, CoalescesConcurrentChallengesIntoASingleAuthorizationF
     EXPECT_EQ(succeeded, 2);
     EXPECT_EQ(requested_scopes.size(), 1U);
     EXPECT_EQ(store->load(config.server_url).has_value(), true);
+}
+
+TEST(AuthTransportCloseTest, CloseDuringDiscoveryAbortsTheStalledExchange) {
+    asio::io_context io_ctx;
+    StallingServer stalling(io_ctx);
+    stalling.accept_and_stall();
+    const auto stalling_base = stalling.base_url();
+
+    // The resource server answers instantly; only the metadata target it names stalls, so it is
+    // discovery -- not the initial request -- that close() must abort.
+    LoopbackServer resource_server(io_ctx);
+    const auto resource_base = resource_server.base_url();
+    resource_server.set_handler([&](const http::request<http::string_body>&) {
+        http::response<http::string_body> challenge{http::status::unauthorized, 11};
+        challenge.set(http::field::www_authenticate,
+                      R"(Bearer resource_metadata=")" + stalling_base + R"(/prm")");
+        return challenge;
+    });
+    asio::co_spawn(io_ctx, resource_server.serve(5), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = resource_base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allowed_origins = {resource_base, stalling_base};
+    policy.allow_plain_http_loopback = true;
+    config.policy = policy;
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    std::vector<std::string> requested_scopes;
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+        io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+    auto inner =
+        std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), resource_base + "/mcp");
+    auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, manager);
+
+    bool completed = false;
+    bool timed_out = false;
+    std::exception_ptr failure;
+
+    // Declared before the work is spawned so the coroutine can cancel it on completion instead of
+    // io_ctx.run() always waiting out the full watchdog window.
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error && !completed) {
+            timed_out = true;
+            io_ctx.stop();
+        }
+    });
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            completed = true;
+            watchdog.cancel();
+        },
+        asio::detached);
+
+    // Close once the write has had time to reach the stalled discovery fetch.
+    asio::steady_timer closer(io_ctx);
+    closer.expires_after(std::chrono::milliseconds(200));
+    closer.async_wait([&](boost::system::error_code) {
+        transport->close();
+        resource_server.close();
+    });
+
+    io_ctx.run();
+
+    ASSERT_FALSE(timed_out) << "watchdog: close() did not unblock the stalled discovery exchange";
+    EXPECT_TRUE(completed);
+    EXPECT_NE(failure, nullptr);
+    EXPECT_GE(stalling.accepted(), 1);
+}
+
+TEST(AuthTransportCloseTest, CloseDuringTokenExchangeAbortsTheStalledExchange) {
+    asio::io_context io_ctx;
+    StallingServer stalling(io_ctx);
+    stalling.accept_and_stall();
+    const auto stalling_base = stalling.base_url();
+
+    // Discovery and the consent redirect both succeed normally; only the token endpoint -- pointed
+    // at the stalling server -- never answers, so close() must abort the token exchange itself.
+    LoopbackServer resource_server(io_ctx);
+    const auto resource_base = resource_server.base_url();
+    resource_server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/mcp") {
+            http::response<http::string_body> challenge{http::status::unauthorized, 11};
+            challenge.set(http::field::www_authenticate,
+                          R"(Bearer resource_metadata=")" + resource_base + R"(/prm")");
+            return challenge;
+        }
+        if (target == "/prm") {
+            return json_response({{"resource", resource_base + "/mcp"},
+                                  {"authorization_servers", json::array({resource_base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            json metadata = auth_server_metadata(resource_base, true);
+            metadata["token_endpoint"] = stalling_base + "/token";
+            return json_response(metadata);
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, resource_server.serve(5), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = resource_base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allowed_origins = {resource_base, stalling_base};
+    policy.allow_plain_http_loopback = true;
+    config.policy = policy;
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    std::vector<std::string> requested_scopes;
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+        io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+    auto inner =
+        std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), resource_base + "/mcp");
+    auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, manager);
+
+    bool completed = false;
+    bool timed_out = false;
+    std::exception_ptr failure;
+
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error && !completed) {
+            timed_out = true;
+            io_ctx.stop();
+        }
+    });
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            completed = true;
+            watchdog.cancel();
+        },
+        asio::detached);
+
+    asio::steady_timer closer(io_ctx);
+    closer.expires_after(std::chrono::milliseconds(200));
+    closer.async_wait([&](boost::system::error_code) {
+        transport->close();
+        resource_server.close();
+    });
+
+    io_ctx.run();
+
+    ASSERT_FALSE(timed_out) << "watchdog: close() did not unblock the stalled token exchange";
+    EXPECT_TRUE(completed);
+    EXPECT_NE(failure, nullptr);
+    EXPECT_GE(stalling.accepted(), 1);
+}
+
+TEST(AuthTransportCloseTest, CloseWhileAFollowerIsParkedOnTheSingleFlightTimerWakesItWithAnError) {
+    asio::io_context io_ctx;
+    StallingServer stalling(io_ctx);
+    stalling.accept_and_stall();
+    const auto stalling_base = stalling.base_url();
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = stalling_base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allowed_origins = {stalling_base};
+    policy.allow_plain_http_loopback = true;
+    config.policy = policy;
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    std::vector<std::string> requested_scopes;
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+        io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+
+    // Discovery itself is the stalled step: the leader parks inside it, and the follower parks on
+    // the single-flight timer behind the leader.
+    const std::string header = R"(Bearer resource_metadata=")" + stalling_base + R"(/prm")";
+
+    bool leader_done = false;
+    bool follower_done = false;
+    bool timed_out = false;
+    bool leader_authorized = false;
+    bool follower_authorized = false;
+    std::exception_ptr leader_failure;
+    std::exception_ptr follower_failure;
+
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error && !(leader_done && follower_done)) {
+            timed_out = true;
+            io_ctx.stop();
+        }
+    });
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                leader_authorized = co_await manager->try_handle_challenge(header);
+            } catch (...) {
+                leader_failure = std::current_exception();
+            }
+            leader_done = true;
+            if (follower_done) {
+                watchdog.cancel();
+            }
+        },
+        asio::detached);
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                follower_authorized = co_await manager->try_handle_challenge(header);
+            } catch (...) {
+                follower_failure = std::current_exception();
+            }
+            follower_done = true;
+            if (leader_done) {
+                watchdog.cancel();
+            }
+        },
+        asio::detached);
+
+    asio::steady_timer closer(io_ctx);
+    closer.expires_after(std::chrono::milliseconds(200));
+    closer.async_wait([&](boost::system::error_code) { manager->close(); });
+
+    io_ctx.run();
+
+    ASSERT_FALSE(timed_out) << "watchdog: close() did not wake the parked follower";
+    EXPECT_TRUE(leader_done);
+    EXPECT_TRUE(follower_done);
+    EXPECT_FALSE(leader_authorized);
+    EXPECT_FALSE(follower_authorized);
+    // The follower gets a clear error, not the leader's misleading "not authorized" outcome.
+    EXPECT_NE(follower_failure, nullptr);
+    EXPECT_NE(leader_failure, nullptr);
+}
+
+TEST(AuthTransportCloseTest, CloseWithQueuedPendingRequestsFailsThemPromptlyWithoutHanging) {
+    asio::io_context io_ctx;
+    StallingServer stalling(io_ctx);
+    stalling.accept_and_stall();
+    const auto stalling_base = stalling.base_url();
+
+    LoopbackServer resource_server(io_ctx);
+    const auto resource_base = resource_server.base_url();
+    resource_server.set_handler([&](const http::request<http::string_body>&) {
+        http::response<http::string_body> challenge{http::status::unauthorized, 11};
+        challenge.set(http::field::www_authenticate,
+                      R"(Bearer resource_metadata=")" + stalling_base + R"(/prm")");
+        return challenge;
+    });
+    asio::co_spawn(io_ctx, resource_server.serve(10), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = resource_base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allowed_origins = {resource_base, stalling_base};
+    policy.allow_plain_http_loopback = true;
+    config.policy = policy;
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    std::vector<std::string> requested_scopes;
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+        io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+    auto inner =
+        std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), resource_base + "/mcp");
+    auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, manager);
+
+    constexpr int request_count = 3;
+    std::vector<std::string> wires;
+    for (int index = 0; index < request_count; ++index) {
+        wires.push_back(json{{"jsonrpc", "2.0"}, {"id", index}, {"method", "tools/call"}}.dump());
+    }
+
+    int completed = 0;
+    int failed = 0;
+    bool timed_out = false;
+
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error && completed < request_count) {
+            timed_out = true;
+            io_ctx.stop();
+        }
+    });
+
+    for (const auto& wire : wires) {
+        asio::co_spawn(
+            io_ctx,
+            [&transport, &failed, &completed, &watchdog, wire]() -> mcp::Task<void> {
+                try {
+                    co_await transport->write_message(wire);
+                } catch (...) {
+                    ++failed;
+                }
+                ++completed;
+                if (completed == request_count) {
+                    watchdog.cancel();
+                }
+            },
+            asio::detached);
+    }
+
+    asio::steady_timer closer(io_ctx);
+    closer.expires_after(std::chrono::milliseconds(200));
+    closer.async_wait([&](boost::system::error_code) {
+        transport->close();
+        resource_server.close();
+    });
+
+    io_ctx.run();
+
+    ASSERT_FALSE(timed_out) << "watchdog: close() left a queued request parked";
+    EXPECT_EQ(completed, request_count);
+    EXPECT_EQ(failed, request_count);
 }
 
 TEST(AuthIssuerBindingTest, RejectsAuthServerMetadataWhoseIssuerIsNotItsDiscoveryLocation) {
