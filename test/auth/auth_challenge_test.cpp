@@ -291,14 +291,80 @@ TEST(AuthMetadataPolicyTest, DenyListWinsOverAllowList) {
               mcp::auth::MetadataUrlDecision::origin_denied);
 }
 
-TEST(AuthMetadataPolicyTest, OriginComparisonIsExact) {
+TEST(AuthMetadataPolicyTest, OriginComparisonIgnoresExplicitDefaultPort) {
     const auto policy = allow_origin("https://as.test");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test/prm"),
               mcp::auth::MetadataUrlDecision::allowed);
+    // An explicit default port canonicalizes to the same origin as no port at all.
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test:443/prm"),
-              mcp::auth::MetadataUrlDecision::origin_not_allowed);
+              mcp::auth::MetadataUrlDecision::allowed);
+    // A subdomain is a genuinely different origin and must stay refused.
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://sub.as.test/prm"),
               mcp::auth::MetadataUrlDecision::origin_not_allowed);
+    // A non-default port is preserved and still distinguishes origins.
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test:8443/prm"),
+              mcp::auth::MetadataUrlDecision::origin_not_allowed);
+}
+
+TEST(AuthMetadataPolicyTest, DenyListCanonicalizesSchemeAndHostCase) {
+    auto policy = allow_origin("https://evil.example");
+    policy.denied_origins.emplace_back("https://evil.example");
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "HTTPS://Evil.example/prm"),
+              mcp::auth::MetadataUrlDecision::origin_denied);
+}
+
+TEST(AuthMetadataPolicyTest, DenyListCanonicalizesExplicitDefaultPort) {
+    auto policy = allow_origin("https://evil.example");
+    policy.denied_origins.emplace_back("https://evil.example");
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example:443/prm"),
+              mcp::auth::MetadataUrlDecision::origin_denied);
+}
+
+TEST(AuthMetadataPolicyTest, DenyListCanonicalizesTrailingDot) {
+    auto policy = allow_origin("https://evil.example");
+    policy.denied_origins.emplace_back("https://evil.example");
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example./prm"),
+              mcp::auth::MetadataUrlDecision::origin_denied);
+}
+
+TEST(AuthMetadataPolicyTest, AllowListEntryCaseDoesNotHaveToMatchTheUrl) {
+    const auto policy = allow_origin("HTTPS://AS.TEST");
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test/prm"),
+              mcp::auth::MetadataUrlDecision::allowed);
+}
+
+TEST(AuthMetadataPolicyTest, OriginAllowanceCallbackReceivesTheCanonicalOrigin) {
+    mcp::auth::MetadataFetchPolicy policy;
+    std::string observed;
+    policy.origin_allowance = [&observed](const std::string& origin) {
+        observed = origin;
+        return true;
+    };
+    // The scheme is kept lowercase here because the separate https-required check further down is
+    // deliberately byte-exact and out of scope for this fix; only the host case, the explicit
+    // default port and the origin passed to the callback are under test.
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://Evil.example:443/prm"),
+              mcp::auth::MetadataUrlDecision::allowed);
+    EXPECT_EQ(observed, "https://evil.example");
+}
+
+TEST(AuthMetadataPolicyTest, IpLiteralAndIpv6OriginsAreUnaffectedByCanonicalization) {
+    // An IP literal has no FQDN trailing dot to strip, and dotted decimal notation is not affected
+    // by lowercasing.
+    const auto v4_policy = allow_origin("https://93.184.216.34");
+    EXPECT_EQ(mcp::auth::validate_metadata_url(v4_policy, "https://93.184.216.34/prm"),
+              mcp::auth::MetadataUrlDecision::allowed);
+
+    // An IPv6 bracketed literal keeps its brackets; only the hex digits are lowercased.
+    auto v6_policy = allow_origin("https://[2606:2800:220:1::1]");
+    EXPECT_EQ(mcp::auth::validate_metadata_url(v6_policy, "https://[2606:2800:220:1::1]/prm"),
+              mcp::auth::MetadataUrlDecision::allowed);
+    EXPECT_EQ(mcp::auth::validate_metadata_url(v6_policy, "https://[2606:2800:220:1::1]:443/prm"),
+              mcp::auth::MetadataUrlDecision::allowed);
+
+    v6_policy.denied_origins.emplace_back("https://[2606:2800:220:1::1]");
+    EXPECT_EQ(mcp::auth::validate_metadata_url(v6_policy, "https://[2606:2800:220:1::1]/prm"),
+              mcp::auth::MetadataUrlDecision::origin_denied);
 }
 
 TEST(AuthMetadataPolicyTest, RejectsPlainHttpForNonLoopbackHosts) {
