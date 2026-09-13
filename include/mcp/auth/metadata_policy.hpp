@@ -59,14 +59,20 @@ enum class MetadataUrlDecision {
  */
 struct MetadataFetchPolicy {
     /// Origins the application permits, each written as `scheme://host[:port]`. An empty list
-    /// denies every origin. Comparison is exact; no normalization is applied.
+    /// denies every origin. Compared after canonicalizing scheme and host case, a trailing host
+    /// dot, and an explicit default port for the scheme (`:443` for `https`, `:80` for `http`); the
+    /// port value itself, IP literals and IPv6 bracket forms are otherwise compared exactly, so a
+    /// non-default port still distinguishes origins.
     std::vector<std::string> allowed_origins;
 
     /// Origins the application refuses. Consulted before `allowed_origins`, so a denied origin is
-    /// refused even when it also appears in the allow list.
+    /// refused even when it also appears in the allow list. Compared with the same canonicalization
+    /// as `allowed_origins`.
     std::vector<std::string> denied_origins;
 
-    /// Consulted only for an origin `allowed_origins` does not list; returning true admits it.
+    /// Consulted only for an origin `allowed_origins` does not list; returning true admits it. The
+    /// origin passed to the callback is the canonicalized form (see `allowed_origins`), not the raw
+    /// text of the URL.
     ///
     /// An application generally cannot enumerate its authorization servers in advance, because a
     /// protected resource names them in metadata at run time. Rather than force such an application
@@ -110,7 +116,10 @@ struct MetadataFetchPolicy {
  *
  * @details This runs before host resolution. When it refuses, the host is never resolved and no
  * socket is opened. A host written as an IP literal is additionally classified here, so a URL
- * naming `169.254.169.254` or an RFC 1918 address is refused without any lookup at all.
+ * naming `169.254.169.254` or an RFC 1918 address is refused without any lookup at all. The origin
+ * derived from `url` is canonicalized (see `MetadataFetchPolicy::allowed_origins`) once, before the
+ * deny list, allow list or `origin_allowance` sees it; this is purely internal to the deny/allow
+ * decision and does not affect `metadata_url_origin`, which never normalizes its result.
  */
 [[nodiscard]] MCP_API MetadataUrlDecision validate_metadata_url(const MetadataFetchPolicy& policy,
                                                                 const std::string& url);

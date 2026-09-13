@@ -63,8 +63,76 @@ bool authority_host(const std::string& authority, std::string& host) {
     return !host.empty();
 }
 
-bool contains_origin(const std::vector<std::string>& origins, const std::string& origin) {
-    return std::find(origins.begin(), origins.end(), origin) != origins.end();
+/// Lowercase only ASCII letters; every other byte (digits, punctuation, non-ASCII) is left as-is.
+std::string lowercase_ascii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) -> char {
+        return (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a') : static_cast<char>(ch);
+    });
+    return value;
+}
+
+/// Canonicalize an origin (`scheme://authority`) for comparison. Lowercases the scheme and host,
+/// strips a single trailing dot from a non-literal host, and drops an explicit default port for the
+/// scheme (`:443` for `https`, `:80` for `http`). The port itself, IP literals and IPv6 bracket forms
+/// are otherwise preserved untouched, so a non-default port still distinguishes origins. An origin
+/// that does not decompose into `scheme://authority` is returned unchanged, so it still compares
+/// (and simply fails to match anything well-formed) instead of being dropped or throwing.
+std::string canonicalize_origin(const std::string& origin) {
+    std::string scheme;
+    std::string authority;
+    if (!split_url(origin, scheme, authority)) {
+        return origin;
+    }
+    std::string host;
+    if (!authority_host(authority, host)) {
+        return origin;
+    }
+
+    const bool bracketed = authority.front() == '[';
+    std::string port;
+    if (bracketed) {
+        const auto closing = authority.find(']');
+        if (closing != std::string::npos && closing + 1 < authority.size() &&
+            authority[closing + 1] == ':') {
+            port = authority.substr(closing + 2);
+        }
+    } else {
+        const auto colon = authority.find(':');
+        if (colon != std::string::npos) {
+            port = authority.substr(colon + 1);
+        }
+    }
+
+    const auto canonical_scheme = lowercase_ascii(scheme);
+
+    boost::system::error_code error;
+    net::ip::make_address(host, error);
+    const bool is_ip_literal = !error;
+
+    auto canonical_host = lowercase_ascii(host);
+    if (!is_ip_literal && !canonical_host.empty() && canonical_host.back() == '.') {
+        canonical_host.pop_back();
+    }
+
+    const bool default_port =
+        (port == "443" && canonical_scheme == "https") || (port == "80" && canonical_scheme == "http");
+    if (default_port) {
+        port.clear();
+    }
+
+    std::string canonical_authority = bracketed ? "[" + canonical_host + "]" : canonical_host;
+    if (!port.empty()) {
+        canonical_authority += ":" + port;
+    }
+    return canonical_scheme + "://" + canonical_authority;
+}
+
+/// Compare a canonicalized origin against a policy list, canonicalizing each list entry at
+/// comparison time so the caller never has to keep a normalized copy of the policy around.
+bool contains_origin(const std::vector<std::string>& origins, const std::string& canonical_origin) {
+    return std::any_of(origins.begin(), origins.end(), [&](const std::string& candidate) {
+        return canonicalize_origin(candidate) == canonical_origin;
+    });
 }
 
 /// Classify an IPv4 address against the ranges that must never be reached by a metadata fetch.
@@ -222,12 +290,14 @@ MetadataUrlDecision validate_metadata_url(const MetadataFetchPolicy& policy, con
         return MetadataUrlDecision::malformed_url;
     }
 
-    const auto origin = scheme + "://" + authority;
-    if (contains_origin(policy.denied_origins, origin)) {
+    // Canonicalized once, before any list or callback sees it, so a deny entry cannot be bypassed by
+    // a differently-cased scheme/host, an explicit default port, or a trailing FQDN dot.
+    const auto canonical_origin = canonicalize_origin(scheme + "://" + authority);
+    if (contains_origin(policy.denied_origins, canonical_origin)) {
         return MetadataUrlDecision::origin_denied;
     }
-    if (!contains_origin(policy.allowed_origins, origin) &&
-        !(policy.origin_allowance && policy.origin_allowance(origin))) {
+    if (!contains_origin(policy.allowed_origins, canonical_origin) &&
+        !(policy.origin_allowance && policy.origin_allowance(canonical_origin))) {
         return MetadataUrlDecision::origin_not_allowed;
     }
 
