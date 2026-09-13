@@ -9,9 +9,12 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/redirect_error.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <chrono>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/core/constants.hpp>
 #include <nlohmann/json.hpp>
@@ -496,6 +499,71 @@ TEST_F(MockTokenServer, TokenExchangeErrorThrows) {
     io_ctx_.run();
 
     EXPECT_TRUE(threw);
+}
+
+TEST_F(MockTokenServer, DoesNotReplayThePostAfterAnAmbiguousMidResponseFailure) {
+    // The connection dies after the request is fully read but before any response is written: from
+    // the client's point of view the server may or may not have acted on it, so this POST must never
+    // be silently replayed within the same exchange_code() call. Redirects are already never
+    // followed for a POST (src/auth/oauth.cpp: run_post_json) for the same reason; this proves there
+    // is no other path that re-sends it.
+    constexpr unsigned short port = 18111;
+
+    asio::ip::tcp::acceptor acceptor(io_ctx_, {asio::ip::make_address("127.0.0.1"), port});
+    int requests_seen = 0;
+
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> asio::awaitable<void> {
+            auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+            beast::tcp_stream stream(std::move(socket));
+            beast::flat_buffer buffer;
+            http::request<http::string_body> req;
+            co_await http::async_read(stream, buffer, req, asio::use_awaitable);
+            ++requests_seen;
+            beast::error_code ec;
+            stream.socket().close(ec);
+
+            // Give a bounded window for a (forbidden) replay to arrive, then cancel the accept so
+            // the test never hangs waiting for a connection that -- correctly -- never comes.
+            asio::steady_timer cutoff(io_ctx_);
+            cutoff.expires_after(std::chrono::milliseconds(300));
+            cutoff.async_wait([&](boost::system::error_code) { acceptor.cancel(); });
+
+            boost::system::error_code accept_error;
+            (void)co_await acceptor.async_accept(
+                asio::redirect_error(asio::use_awaitable, accept_error));
+            if (!accept_error) {
+                ++requests_seen;
+            }
+            cutoff.cancel();
+        },
+        asio::detached);
+
+    bool threw = false;
+
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> asio::awaitable<void> {
+            mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
+            mcp::auth::OAuthConfig config;
+            config.client_id = "test_client";
+            config.token_endpoint = "http://127.0.0.1:" + std::to_string(port) + "/token";
+            config.redirect_uri = "http://localhost/callback";
+
+            try {
+                co_await client.exchange_code(config, "a-code", "verifier");
+            } catch (const std::exception&) {
+                threw = true;
+            }
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_TRUE(threw);
+    EXPECT_EQ(requests_seen, 1);
 }
 
 TEST_F(MockTokenServer, GetJsonReturnsValidJson) {
