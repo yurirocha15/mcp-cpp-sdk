@@ -82,7 +82,7 @@ List the exact origins your deployment intends to contact:
        "https://protected-resource.example.org"
    };
 
-Comparison is **exact**: no normalization of case, default ports, or trailing slashes is applied. An allow-list entry must be written exactly as it appears in the URL.
+Comparison canonicalizes scheme and host case, a trailing run of host dots, a strictly-numeric explicit port that equals the scheme's default (``:443`` for ``https``, ``:80`` for ``http`` — so ``:00443`` and ``:0443`` both canonicalize the same as no port at all), and an IP literal's textual form (an expanded and a compressed IPv6 spelling of the same address compare equal). A non-default port and a genuinely different host still distinguish origins exactly. An allow-list entry that carries a path, query or fragment after the authority (e.g. ``"https://as.test/realms/foo"``) is not a bare origin and matches nothing.
 
 Deny List Always Wins
 ~~~~~~~~~~~~~~~~~~~~~
@@ -104,9 +104,12 @@ Applications that cannot enumerate all authorization servers in advance can impl
 .. code-block:: cpp
 
    policy.origin_allowance = [](const std::string& origin) {
-       // Custom rule: allow any HTTPS origin from internal domain
+       // Custom rule: allow any HTTPS origin from internal domain. The origin here is already
+       // canonicalized, so a default port (e.g. "https://auth.internal:443") has been elided down
+       // to "https://auth.internal" — match on ".internal", not ".internal:", so a default-port
+       // origin is not missed.
        if (origin.find("https://") == 0 &&
-           origin.find(".internal:") != std::string::npos) {
+           origin.find(".internal") != std::string::npos) {
            return true;
        }
        // Otherwise deny
