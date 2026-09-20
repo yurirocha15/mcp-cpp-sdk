@@ -1723,6 +1723,13 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
         << "the session request never reached the server: its id was squatted";
     EXPECT_EQ(collision_status, http::status::ok) << "body: " << collision_body;
     EXPECT_NE(collision_body.find("\"result\""), std::string::npos) << "body: " << collision_body;
+    // US-021 must survive the containment. sessionless_request_ids decides replay-store
+    // exclusion, so if the prober's chosen id were still the key, the session's OWN response --
+    // which carries that same id 7 -- would be misclassified as sessionless and silently
+    // dropped from the replay store. Both the initialize response and the id-7 session response
+    // belong there; only the unanswered sessionless discover does not. This case is reachable
+    // only now that the denial is gone, so it could not have been covered before.
+    EXPECT_EQ(server_transport.event_store().size(), 2u);
 }
 
 TEST_F(HttpTransportTest, NonAtomicConfigurationLocksWhenListeningStarts) {
