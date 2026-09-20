@@ -86,8 +86,8 @@ int main() {
 
     boost::asio::co_spawn(io, [&]() -> mcp::Task<void> {
         co_await client.connect("my-client", "1.0.0");
-        auto result =
-            co_await client.call_tool("hello", nlohmann::json{{"name", "World"}});
+        nlohmann::json arguments{{"name", "World"}};
+        auto result = co_await client.call_tool("hello", arguments);
         std::cerr << nlohmann::json(result).dump(2) << '\n';
         client.close();
     }, boost::asio::detached);
@@ -95,6 +95,12 @@ int main() {
     io.run();
 }
 ```
+
+Build the arguments into a named variable, as above, rather than passing a
+braced initializer directly to `call_tool`. GCC 12 and GCC 13 hit an internal
+compiler error on a braced `nlohmann::json` temporary that is `co_await`-ed in
+the same expression, and GCC 13 is the default compiler on Ubuntu 24.04. Clang
+accepts both spellings.
 
 ## Usage Highlights
 
