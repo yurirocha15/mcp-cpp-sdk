@@ -1312,6 +1312,37 @@ std::string append_query(const std::string& endpoint, const std::string& query) 
 }  // namespace
 
 struct OAuthAuthorizationManager::Impl {
+    /// One coalescing authorization attempt, and the channel every follower of it reads its result
+    /// from.
+    ///
+    /// The outcome lives here, on the attempt, rather than on the manager. It used to be a single
+    /// `bool last_flight_succeeded` member of Impl, which was wrong twice over. It was not
+    /// correlated with the attempt a follower actually joined, so a follower of one flight that
+    /// woke after a later flight had already finished read the later flight's result as its own and
+    /// could report success for an attempt that failed. And being a bare bool it carried no reason,
+    /// so a follower coalesced onto a failing leader got a bare "not authorized" while the leader
+    /// itself surfaced the full diagnostic -- including, since credentials became issuer-bound, a
+    /// refusal that names exactly what the caller has to change.
+    ///
+    /// `succeeded` and `failure` are written once by the leader in run_leading_challenge() and read
+    /// by followers after they wake, both under `state_mutex`. `expire_flight()` is what wakes
+    /// them, and it is always called after that write.
+    struct Flight {
+        explicit Flight(const net::strand<net::any_io_executor>& flight_strand)
+            : timer(flight_strand, net::steady_timer::time_point::max()) {}
+
+        /// Never waited on to expire naturally: it parks at time_point::max() and is pushed into
+        /// the past to release the followers. See expire_flight().
+        net::steady_timer timer;
+        /// Set when the leader has recorded its result below. A follower woken by close() rather
+        /// than by its leader finishing sees this false.
+        bool finished{false};
+        bool succeeded{false};
+        /// The leader's own exception, rethrown by every follower so they all report the same
+        /// reason the leader does. Null when the flight finished without throwing.
+        std::exception_ptr failure;
+    };
+
     struct ChallengeOperation {
         std::shared_ptr<Impl> owner;
         BearerChallenge challenge;
@@ -1657,19 +1688,18 @@ struct OAuthAuthorizationManager::Impl {
     /// cancel() alone -- which only affects a wait already pending -- can miss it, and the follower
     /// hangs forever. A null `flight` is a no-op.
     static void expire_flight(const net::strand<net::any_io_executor>& flight_strand,
-                              std::shared_ptr<net::steady_timer> flight) {
+                              std::shared_ptr<Flight> flight) {
         if (!flight) {
             return;
         }
         net::dispatch(flight_strand, [flight = std::move(flight)]() {
-            flight->expires_at(net::steady_timer::time_point::min());
+            flight->timer.expires_at(net::steady_timer::time_point::min());
         });
     }
 
     /// Waiters share the leader's outcome instead of opening a second authorization flow, so a
     /// burst of concurrent requests that all hit the same challenge authorizes exactly once.
-    static Task<bool> await_in_flight(std::shared_ptr<Impl> owner,
-                                      std::shared_ptr<net::steady_timer> flight) {
+    static Task<bool> await_in_flight(std::shared_ptr<Impl> owner, std::shared_ptr<Flight> flight) {
         // async_wait() touches the timer synchronously on the thread that calls it, so it has to be
         // initiated on the same strand expire_flight() dispatches its expires_at() onto; the
         // timer's associated executor governs only where its completion handler runs. This is the
@@ -1682,7 +1712,7 @@ struct OAuthAuthorizationManager::Impl {
         // the fix in the first place.
         co_await net::dispatch(net::bind_executor(owner->flight_strand, net::use_awaitable));
         boost::system::error_code ignored;
-        co_await flight->async_wait(net::redirect_error(net::use_awaitable, ignored));
+        co_await flight->timer.async_wait(net::redirect_error(net::use_awaitable, ignored));
 
         // The dispatch above moves this coroutine onto flight_strand, but only until the next
         // suspension: an awaitable's executor is fixed when it is spawned, and the wait's completion
@@ -1692,14 +1722,48 @@ struct OAuthAuthorizationManager::Impl {
         // bypassed by a continuation left on flight_strand. It is load-bearing rather than
         // incidental, so two tests assert it directly; see
         // AFollowerReleasedFromTheSingleFlightTimerResumesOnItsOwnStrand.
-        std::lock_guard lock(owner->state_mutex);
-        // close() cancels the same timer to release a follower parked here; a follower that wakes
-        // because the manager closed gets a clear error rather than the misleading "not authorized"
-        // that the leader's own outcome would otherwise report.
-        if (owner->closed) {
-            throw std::runtime_error("OAuth authorization manager closed");
+        std::exception_ptr failure;
+        bool succeeded = false;
+        {
+            std::lock_guard lock(owner->state_mutex);
+            // close() expires the same timer to release a follower parked here; a follower that
+            // wakes because the manager closed gets a clear error rather than the misleading "not
+            // authorized" that the leader's own outcome would otherwise report. Checked before the
+            // flight's own result because a closed manager is the more specific answer: the flight
+            // it joined may never have finished at all.
+            if (owner->closed) {
+                throw std::runtime_error("OAuth authorization manager closed");
+            }
+            // Read off the flight this follower actually waited on. Reading a manager-wide field
+            // here is what let a late waker report a different attempt's outcome.
+            //
+            // `finished` is a guard rather than a case that arises today: the only two things that
+            // expire this timer are the leader recording its result and close(), and the closed
+            // check above already took the second. It is here so that a third wake-up added later
+            // cannot reintroduce the failure mode this whole channel exists to remove -- a follower
+            // reporting a flat "not authorized" that is indistinguishable from a real refusal.
+            if (!flight->finished) {
+                throw std::runtime_error(
+                    "OAuth authorization attempt ended without recording an outcome");
+            }
+            failure = flight->failure;
+            succeeded = flight->succeeded;
         }
-        co_return owner->last_flight_succeeded;
+
+        // Rethrown outside the lock: the leader's exception is what a follower has to report, and
+        // it must not travel through a destructor while state_mutex is held. Every follower
+        // rethrows the same exception_ptr, which is safe -- the object it refers to is shared and
+        // read-only.
+        //
+        // This is a new throw on the follower path, so: nothing between here and the application
+        // swallows it. run_write() catches (...) only to erase_pending() and rethrow, and
+        // run_leading_challenge() is not on a follower's path at all. The catch-alls that discard
+        // and move to the next candidate live in the discovery fallback loops, which a follower
+        // never enters, and the one in the refresh path is a different call entirely.
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
+        co_return succeeded;
     }
 
     static Task<bool> run_leading_challenge(std::shared_ptr<ChallengeOperation> operation) {
@@ -1712,12 +1776,19 @@ struct OAuthAuthorizationManager::Impl {
             failure = std::current_exception();
         }
 
-        std::shared_ptr<net::steady_timer> finished;
+        std::shared_ptr<Flight> finished;
         {
             std::lock_guard lock(owner->state_mutex);
-            owner->last_flight_succeeded = succeeded;
             finished = std::move(owner->flight);
             owner->flight.reset();
+            if (finished) {
+                // Recorded on the attempt itself, before any follower is woken, so each follower
+                // reads the result of the flight it joined and gets the leader's own reason for it
+                // rather than a bare false. The same exception_ptr is rethrown below.
+                finished->succeeded = succeeded;
+                finished->failure = failure;
+                finished->finished = true;
+            }
         }
         // A late joiner may have read the old `flight` out of the lock above just before this reset
         // and not yet be waiting on it (see expire_flight()'s comment); expires_at(), not cancel(),
@@ -1735,7 +1806,7 @@ struct OAuthAuthorizationManager::Impl {
             return return_false();
         }
 
-        std::shared_ptr<net::steady_timer> joined;
+        std::shared_ptr<Flight> joined;
         {
             std::lock_guard lock(owner->state_mutex);
             // Checked in the same critical section that reads or creates `flight`: close() also
@@ -1749,8 +1820,7 @@ struct OAuthAuthorizationManager::Impl {
             if (owner->flight) {
                 joined = owner->flight;
             } else {
-                owner->flight = std::make_shared<net::steady_timer>(
-                    owner->flight_strand, net::steady_timer::time_point::max());
+                owner->flight = std::make_shared<Flight>(owner->flight_strand);
             }
         }
         if (joined) {
@@ -1817,8 +1887,7 @@ struct OAuthAuthorizationManager::Impl {
     std::optional<std::string> granted_scope;
     /// Non-null exactly while one authorization flow is running; cancelling it releases the
     /// requests that coalesced onto it.
-    std::shared_ptr<net::steady_timer> flight;
-    bool last_flight_succeeded{false};
+    std::shared_ptr<Flight> flight;
     bool closed{false};
 
     /// Abort whatever this manager has in flight and release every parked follower with an error.
@@ -1832,7 +1901,7 @@ struct OAuthAuthorizationManager::Impl {
     /// abort_pending() cannot: a leader parked in the application's own consent callback, which
     /// holds no cancellable network state of its own.
     static void close(const std::shared_ptr<Impl>& owner) {
-        std::shared_ptr<net::steady_timer> flight;
+        std::shared_ptr<Flight> flight;
         {
             std::lock_guard lock(owner->state_mutex);
             if (owner->closed) {
