@@ -240,45 +240,94 @@ struct Client::Impl {
         }
     }
 
+    // Two failure classes meet in this loop and only one of them is fatal.
+    //
+    // read_message() failing says the transport can no longer produce messages -- the peer hung
+    // up, the socket died, the client was closed. Nothing the session does next can succeed, so
+    // it ends: pending requests fail and the transport closes. That call is the only statement
+    // left inside the outer try for exactly this reason.
+    //
+    // Everything after it works on bytes already taken off the wire. A failure there says this
+    // one message was unusable; the transport is still healthy and the next message may be fine.
+    // Those are reported through on_protocol_error and dropped, and the loop continues.
     static Task<void> read_loop(std::shared_ptr<Impl> state) {
         try {
             for (;;) {
                 auto raw = co_await state->transport->read_message();
-                auto json_message = nlohmann::json::parse(raw);
-
-                if (!json_message.is_object()) {
-                    throw McpError(g_INVALID_REQUEST, "JSON-RPC message must be an object");
-                }
-                if (state->options.strict_protocol_validation) {
-                    if (!json_message.contains("jsonrpc") || !json_message.at("jsonrpc").is_string()) {
-                        throw McpError(g_INVALID_REQUEST, "JSON-RPC message is missing jsonrpc");
-                    }
-                    detail::validate_jsonrpc_version(json_message.at("jsonrpc").get<std::string>());
-                }
-
-                const bool has_id = json_message.contains("id");
-                const bool has_method = json_message.contains("method");
-                if (has_id && !has_method) {
-                    dispatch_response(state, json_message);
-                } else if (has_id && has_method) {
-                    boost::asio::co_spawn(state->strand,
-                                          dispatch_incoming_request(state, std::move(json_message)),
-                                          boost::asio::detached);
-                } else if (!has_id && has_method) {
-                    dispatch_notification(state, json_message);
-                }
+                dispatch_message(state, raw);
             }
         } catch (const std::exception& error) {
             state->closed.store(true, std::memory_order_release);
-            fail_pending_requests(
-                state, Error{g_CONNECTION_CLOSED,
-                             "Client read loop stopped: " + std::string(error.what()), std::nullopt});
+            fail_pending_requests(state, Error{g_CONNECTION_CLOSED,
+                                               "Client read loop stopped: " +
+                                                   detail::sanitize_for_diagnostics(error.what()),
+                                               std::nullopt});
             state->transport->close();
         } catch (...) {
             state->closed.store(true, std::memory_order_release);
             fail_pending_requests(state,
                                   Error{g_CONNECTION_CLOSED, "Client read loop stopped", std::nullopt});
             state->transport->close();
+        }
+    }
+
+    /// Decodes and routes one received message. Never throws: an unusable message is reported
+    /// and dropped so that a single bad message cannot end the session.
+    static void dispatch_message(const std::shared_ptr<Impl>& state, const std::string& raw) {
+        try {
+            auto json_message = nlohmann::json::parse(raw);
+
+            if (!json_message.is_object()) {
+                throw McpError(g_INVALID_REQUEST, "JSON-RPC message must be an object");
+            }
+            if (state->options.strict_protocol_validation) {
+                if (!json_message.contains("jsonrpc") || !json_message.at("jsonrpc").is_string()) {
+                    throw McpError(g_INVALID_REQUEST, "JSON-RPC message is missing jsonrpc");
+                }
+                detail::validate_jsonrpc_version(json_message.at("jsonrpc").get<std::string>());
+            }
+
+            const bool has_id = json_message.contains("id");
+            const bool has_method = json_message.contains("method");
+            if (has_method && !json_message.at("method").is_string()) {
+                throw McpError(g_INVALID_REQUEST, "JSON-RPC method must be a string");
+            }
+
+            if (has_id && !has_method) {
+                dispatch_response(state, json_message);
+            } else if (has_id && has_method) {
+                // dispatch_incoming_request is detached, so anything that throws inside it is
+                // swallowed and the peer never hears back. Reject an unusable id here, where the
+                // drop is reported, instead of leaving the request silently unanswered.
+                const auto& id = json_message.at("id");
+                if (!id.is_string() && !id.is_number_integer()) {
+                    throw McpError(g_INVALID_REQUEST,
+                                   "JSON-RPC request id must be a string or integer");
+                }
+                boost::asio::co_spawn(state->strand,
+                                      dispatch_incoming_request(state, std::move(json_message)),
+                                      boost::asio::detached);
+            } else if (!has_id && has_method) {
+                dispatch_notification(state, json_message);
+            }
+        } catch (const std::exception& error) {
+            report_protocol_error(state, g_PARSE_ERROR,
+                                  "Dropped an undecodable message from the peer: " +
+                                      detail::sanitize_for_diagnostics(error.what()));
+        } catch (...) {
+            report_protocol_error(state, g_PARSE_ERROR, "Dropped an undecodable message from the peer");
+        }
+    }
+
+    static void report_protocol_error(const std::shared_ptr<Impl>& state, int code,
+                                      std::string message) {
+        if (!state->options.on_protocol_error) {
+            return;
+        }
+        try {
+            state->options.on_protocol_error(Error{code, std::move(message), std::nullopt});
+        } catch (...) {
+            // The hook exists to report failures; a failure of the hook itself has no listener.
         }
     }
 
@@ -306,7 +355,17 @@ struct Client::Impl {
                 Error{g_INVALID_REQUEST,
                       "JSON-RPC response must contain exactly one of result or error", std::nullopt};
         } else if (has_error) {
-            iter->second->error = json_message.at("error").get<Error>();
+            // An undecodable `error` member still identifies the request it answers. Fail that
+            // request now rather than drop the response and leave the caller waiting out its
+            // deadline for an answer that has already arrived.
+            try {
+                iter->second->error = json_message.at("error").get<Error>();
+            } catch (const std::exception& decode_error) {
+                iter->second->error = Error{g_INVALID_REQUEST,
+                                            "Malformed JSON-RPC error object: " +
+                                                detail::sanitize_for_diagnostics(decode_error.what()),
+                                            std::nullopt};
+            }
         } else {
             iter->second->result = json_message.at("result");
         }
@@ -319,7 +378,7 @@ struct Client::Impl {
                                       const nlohmann::json& json_message) {
         const auto method = json_message.at("method").get<std::string>();
         if (method == "notifications/cancelled") {
-            if (json_message.contains("params")) {
+            if (detail::has_json_value(json_message, "params")) {
                 auto params = json_message.at("params").get<CancelledNotificationParams>();
                 const auto id_key = params.requestId.correlation_key();
 
@@ -344,9 +403,23 @@ struct Client::Impl {
             }
         }
         if (callback) {
-            auto params =
-                json_message.contains("params") ? json_message.at("params") : nlohmann::json{};
-            callback(params);
+            auto params = detail::has_json_value(json_message, "params") ? json_message.at("params")
+                                                                         : nlohmann::json::object();
+            // The callback is application code running on the read loop. Letting it throw past
+            // here would end the session over a bug the application could otherwise handle, so
+            // the failure is reported against its method and the session carries on.
+            try {
+                callback(params);
+            } catch (const std::exception& error) {
+                report_protocol_error(state, g_INTERNAL_ERROR,
+                                      "Notification callback for " +
+                                          detail::sanitize_for_diagnostics(method) +
+                                          " threw: " + detail::sanitize_for_diagnostics(error.what()));
+            } catch (...) {
+                report_protocol_error(
+                    state, g_INTERNAL_ERROR,
+                    "Notification callback for " + detail::sanitize_for_diagnostics(method) + " threw");
+            }
         }
     }
 
@@ -364,14 +437,16 @@ struct Client::Impl {
         }
 
         if (request_handler) {
-            auto params =
-                json_message.contains("params") ? json_message.at("params") : nlohmann::json{};
+            auto params = detail::has_json_value(json_message, "params") ? json_message.at("params")
+                                                                         : nlohmann::json::object();
             nlohmann::json error_payload;
             nlohmann::json result;
             try {
                 result = co_await request_handler(params);
             } catch (const std::exception& error) {
                 error_payload = error.what();
+            } catch (...) {
+                error_payload = "Request handler failed";
             }
 
             if (!error_payload.is_null()) {
@@ -607,10 +682,20 @@ void Client::on_notification(const std::string& method, NotificationCallback cal
 }
 
 void Client::on_progress(ProgressCallback callback) {
-    on_notification("notifications/progress",
-                    [callback = std::move(callback)](const nlohmann::json& params) {
-                        callback(params.get<ProgressNotificationParams>());
-                    });
+    on_notification(
+        "notifications/progress", [callback = std::move(callback)](const nlohmann::json& params) {
+            ProgressNotificationParams progress;
+            try {
+                params.get_to(progress);
+            } catch (const std::exception& error) {
+                // Reported through ClientOptions::on_protocol_error by the read loop.
+                // Naming the cause here separates a notification the peer sent wrong
+                // from a bug in the application's own progress callback.
+                throw McpError(g_INVALID_PARAMS, "Malformed progress notification params: " +
+                                                     detail::sanitize_for_diagnostics(error.what()));
+            }
+            callback(progress);
+        });
 }
 
 void Client::on_request(const std::string& method, RequestHandler handler) {
