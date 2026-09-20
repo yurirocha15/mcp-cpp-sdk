@@ -10,10 +10,16 @@
 #include <boost/asio/use_future.hpp>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <future>
+#include <iostream>
+#include <iterator>
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <streambuf>
 #include <string>
 #include <thread>
@@ -475,3 +481,219 @@ TEST_F(StdioTransportTest, PolymorphicThroughBasePointer) {
 
     transport->close();
 }
+
+// The protocol channel on this transport is a real process stream, so the tests
+// that distinguish a shared stdout from an owned one have to work at the file
+// descriptor level. POSIX only; the Windows implementation of
+// create_owning_stdout() uses the CRT equivalents and is not exercised here.
+#if !defined(_WIN32)
+
+#include <fcntl.h>
+#include <unistd.h>
+
+namespace {
+
+// Points the process's stdout and stderr at files the test can read back, and
+// puts them back where it found them however the test leaves.
+class CapturedProcessStreams {
+   public:
+    CapturedProcessStreams(const std::filesystem::path& out, const std::filesystem::path& err)
+        : saved_stdout_(::dup(STDOUT_FILENO)), saved_stderr_(::dup(STDERR_FILENO)) {
+        std::cout.flush();
+        std::cerr.flush();
+        std::fflush(nullptr);
+        redirect(STDOUT_FILENO, out);
+        redirect(STDERR_FILENO, err);
+    }
+
+    ~CapturedProcessStreams() { restore(); }
+
+    CapturedProcessStreams(const CapturedProcessStreams&) = delete;
+    CapturedProcessStreams& operator=(const CapturedProcessStreams&) = delete;
+
+    void restore() {
+        std::cout.flush();
+        std::cerr.flush();
+        std::fflush(nullptr);
+        if (saved_stdout_ >= 0) {
+            ::dup2(saved_stdout_, STDOUT_FILENO);
+            ::close(saved_stdout_);
+            saved_stdout_ = -1;
+        }
+        if (saved_stderr_ >= 0) {
+            ::dup2(saved_stderr_, STDERR_FILENO);
+            ::close(saved_stderr_);
+            saved_stderr_ = -1;
+        }
+    }
+
+   private:
+    static void redirect(int target, const std::filesystem::path& path) {
+        const int file = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        ASSERT_GE(file, 0);
+        ASSERT_GE(::dup2(file, target), 0);
+        ::close(file);
+    }
+
+    int saved_stdout_;
+    int saved_stderr_;
+};
+
+std::string read_file(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+}
+
+// What a peer speaking JSON-RPC over the pipe would have to parse.
+std::vector<std::string> protocol_lines(const std::filesystem::path& path) {
+    std::vector<std::string> lines;
+    std::istringstream contents(read_file(path));
+    std::string line;
+    while (std::getline(contents, line)) {
+        if (!line.empty()) {
+            lines.push_back(line);
+        }
+    }
+    return lines;
+}
+
+constexpr const char* kFramedMessage = R"({"jsonrpc":"2.0","id":1,"result":{}})";
+constexpr const char* kStrayPrintf = "libfoo: connected to database";
+constexpr const char* kStrayCout = "cache warmed in 12ms";
+
+// Everything an application might innocently put on stdout while the session is
+// running.
+void emit_stray_application_output() {
+    std::printf("%s\n", kStrayPrintf);
+    std::fflush(stdout);
+    std::cout << kStrayCout << std::endl;
+}
+
+std::filesystem::path scratch_file(const char* name) {
+    return std::filesystem::temp_directory_path() / name;
+}
+
+}  // namespace
+
+// The footgun itself, asserted rather than assumed: the default std::cout
+// output shares the protocol channel with the rest of the process.
+TEST_F(StdioTransportTest, DefaultOutputSharesTheProtocolChannelWithTheApplication) {
+    const auto out = scratch_file("mcp_stdio_shared_out.txt");
+    const auto err = scratch_file("mcp_stdio_shared_err.txt");
+
+    {
+        CapturedProcessStreams capture(out, err);
+        std::istringstream input;
+        mcp::StdioTransport transport(io_ctx_.get_executor(), input, std::cout);
+
+        boost::asio::co_spawn(
+            io_ctx_,
+            [&]() -> mcp::Task<void> {
+                co_await transport.write_message(kFramedMessage);
+                emit_stray_application_output();
+                co_await transport.write_message(kFramedMessage);
+            },
+            boost::asio::detached);
+        io_ctx_.run();
+        std::cout.flush();
+    }
+
+    const auto lines = protocol_lines(out);
+    ASSERT_EQ(lines.size(), 4U) << "expected the two framed messages plus two stray lines";
+    EXPECT_EQ(lines[0], kFramedMessage);
+    EXPECT_EQ(lines[1], kStrayPrintf);
+    EXPECT_EQ(lines[2], kStrayCout);
+    EXPECT_EQ(lines[3], kFramedMessage);
+
+    std::filesystem::remove(out);
+    std::filesystem::remove(err);
+}
+
+// The regression test: an owning transport keeps the channel to itself.
+TEST_F(StdioTransportTest, OwnedStdoutKeepsStrayApplicationOutputOffTheProtocolChannel) {
+    const auto out = scratch_file("mcp_stdio_owned_out.txt");
+    const auto err = scratch_file("mcp_stdio_owned_err.txt");
+
+    {
+        CapturedProcessStreams capture(out, err);
+        std::istringstream input;
+        auto transport = mcp::StdioTransport::create_owning_stdout(io_ctx_.get_executor(), input);
+
+        boost::asio::co_spawn(
+            io_ctx_,
+            [&]() -> mcp::Task<void> {
+                co_await transport->write_message(kFramedMessage);
+                emit_stray_application_output();
+                co_await transport->write_message(kFramedMessage);
+            },
+            boost::asio::detached);
+        io_ctx_.run();
+        std::cout.flush();
+        transport.reset();
+    }
+
+    const auto lines = protocol_lines(out);
+    ASSERT_EQ(lines.size(), 2U) << "protocol channel carried: " << read_file(out);
+    EXPECT_EQ(lines[0], kFramedMessage);
+    EXPECT_EQ(lines[1], kFramedMessage);
+
+    // The application's output is not lost, only moved to the diagnostics stream.
+    const auto diagnostics = read_file(err);
+    EXPECT_NE(diagnostics.find(kStrayPrintf), std::string::npos);
+    EXPECT_NE(diagnostics.find(kStrayCout), std::string::npos);
+
+    std::filesystem::remove(out);
+    std::filesystem::remove(err);
+}
+
+// Destroying the owning transport has to give the process its stdout back,
+// otherwise a short-lived session silently swallows everything that follows.
+TEST_F(StdioTransportTest, OwnedStdoutIsRestoredWhenTheTransportIsDestroyed) {
+    const auto out = scratch_file("mcp_stdio_restore_out.txt");
+    const auto err = scratch_file("mcp_stdio_restore_err.txt");
+
+    {
+        CapturedProcessStreams capture(out, err);
+        std::istringstream input;
+        {
+            auto transport = mcp::StdioTransport::create_owning_stdout(io_ctx_.get_executor(), input);
+        }
+        std::cout << "after the session" << std::endl;
+    }
+
+    EXPECT_NE(read_file(out).find("after the session"), std::string::npos);
+
+    std::filesystem::remove(out);
+    std::filesystem::remove(err);
+}
+
+// A second owner would duplicate the already-redirected stdout and publish the
+// protocol onto stderr, so the attempt has to fail loudly instead.
+TEST_F(StdioTransportTest, OnlyOneTransportMayOwnStdoutAtATime) {
+    const auto out = scratch_file("mcp_stdio_single_out.txt");
+    const auto err = scratch_file("mcp_stdio_single_err.txt");
+
+    // Assertions live outside the capture, otherwise their diagnostics are
+    // written to the captured file and thrown away with it.
+    bool second_owner_rejected = false;
+    std::string rejection;
+    {
+        CapturedProcessStreams capture(out, err);
+        std::istringstream input;
+        auto first = mcp::StdioTransport::create_owning_stdout(io_ctx_.get_executor(), input);
+        try {
+            auto second = mcp::StdioTransport::create_owning_stdout(io_ctx_.get_executor(), input);
+        } catch (const std::runtime_error& error) {
+            second_owner_rejected = true;
+            rejection = error.what();
+        }
+    }
+
+    EXPECT_TRUE(second_owner_rejected) << "a second owner would publish the protocol onto stderr";
+    EXPECT_NE(rejection.find("standard output"), std::string::npos) << rejection;
+
+    std::filesystem::remove(out);
+    std::filesystem::remove(err);
+}
+
+#endif  // !defined(_WIN32)
