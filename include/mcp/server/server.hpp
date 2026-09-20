@@ -523,48 +523,34 @@ class MCP_API Server {
 
     void dispatch_response(const nlohmann::json& json_msg);
 
-    Task<void> handle_initialize(const nlohmann::json& json_msg);
     Task<std::string> handle_initialize_wire(const nlohmann::json& json_msg, bool update_lifecycle);
 
-    Task<void> handle_shutdown(const nlohmann::json& json_msg);
     Task<std::string> handle_shutdown_wire(const nlohmann::json& json_msg);
 
-    Task<void> handle_ping(const nlohmann::json& json_msg);
     Task<std::string> handle_ping_wire(const nlohmann::json& json_msg);
 
     Task<std::string> handle_discover_wire(const nlohmann::json& json_msg);
 
-    Task<void> handle_tools_call(const nlohmann::json& json_msg);
     Task<std::string> handle_tools_call_wire(const nlohmann::json& json_msg);
 
-    Task<void> handle_tools_list(const nlohmann::json& json_msg);
     Task<std::string> handle_tools_list_wire(const nlohmann::json& json_msg);
 
-    Task<void> handle_resources_list(const nlohmann::json& json_msg);
     Task<std::string> handle_resources_list_wire(const nlohmann::json& json_msg);
 
-    Task<void> handle_resources_read(const nlohmann::json& json_msg);
     Task<std::string> handle_resources_read_wire(const nlohmann::json& json_msg);
 
-    Task<void> handle_resource_templates_list(const nlohmann::json& json_msg);
     Task<std::string> handle_resource_templates_list_wire(const nlohmann::json& json_msg);
 
-    Task<void> handle_subscribe(const nlohmann::json& json_msg);
     Task<std::string> handle_subscribe_wire(const nlohmann::json& json_msg);
 
-    Task<void> handle_unsubscribe(const nlohmann::json& json_msg);
     Task<std::string> handle_unsubscribe_wire(const nlohmann::json& json_msg);
 
-    Task<void> handle_prompts_list(const nlohmann::json& json_msg);
     Task<std::string> handle_prompts_list_wire(const nlohmann::json& json_msg);
 
-    Task<void> handle_prompts_get(const nlohmann::json& json_msg);
     Task<std::string> handle_prompts_get_wire(const nlohmann::json& json_msg);
 
-    Task<void> handle_set_level(const nlohmann::json& json_msg);
     Task<std::string> handle_set_level_wire(const nlohmann::json& json_msg);
 
-    Task<void> handle_complete(const nlohmann::json& json_msg);
     Task<std::string> handle_complete_wire(const nlohmann::json& json_msg);
 
     Task<nlohmann::json> invoke_tool_impl(CallToolParams params,
