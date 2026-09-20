@@ -3813,3 +3813,135 @@ TEST(AuthClientServerPairingTest, DISABLED_ClientDiscoversAuthorizationFromTheSe
     EXPECT_TRUE(bearer->resource_metadata.has_value())
         << "RFC 9728 5.1: the challenge must name where the client can discover how to authenticate";
 }
+
+// set_metadata_policy() and set_host_resolver() were plain unsynchronised writes to state the
+// request coroutines read on the client strand, which ThreadSanitizer confirmed as a real race for
+// anyone driving OAuthHttpClient directly -- which is exactly who the public API is for. They are
+// safe in-tree only by accident, because OAuthAuthorizationManager's constructor sets both before
+// anything is spawned.
+//
+// Both are now taken under the mutex that already guards the exchange list, and each exchange reads
+// them ONCE when it is built. That second half is the part with teeth beyond thread safety: an
+// exchange re-validates every redirect hop, so a policy swapped mid-chain would have checked hop
+// one against the old rules and hop two against the new. This test pins that a chain runs under one
+// policy from end to end.
+TEST(AuthHttpClientPolicyTest, APolicyInstalledMidExchangeDoesNotChangeTheRulesUnderIt) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&base](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/hop0") {
+            http::response<http::string_body> redirect(http::status::found, request.version());
+            redirect.set(http::field::location, base + "/hop1");
+            return redirect;
+        }
+        return json_response({{"arrived", true}});
+    });
+    asio::co_spawn(io_ctx, server.serve(4), asio::detached);
+
+    auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+    client->set_metadata_policy(loopback_policy(server.origin()));
+
+    // The resolver hook runs synchronously inside the exchange, which makes "part-way through" an
+    // exact point rather than a race. On the first hop it swaps in a policy that allows nothing.
+    std::atomic<int> resolver_calls{0};
+    auto* raw_client = client.get();
+    client->set_host_resolver([&resolver_calls, raw_client](const std::string&, const std::string&) {
+        if (resolver_calls.fetch_add(1) == 0) {
+            raw_client->set_metadata_policy(mcp::auth::MetadataFetchPolicy{});
+        }
+        return std::vector<std::string>{"127.0.0.1"};
+    });
+
+    std::promise<std::string> result;
+    auto observed = result.get_future();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            std::string outcome;
+            try {
+                const auto body = co_await client->get_json(base + "/hop0");
+                outcome = body.value("arrived", false) ? "arrived" : "unexpected body";
+            } catch (const std::exception& error) {
+                outcome = std::string("threw: ") + error.what();
+            }
+            result.set_value(outcome);
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_EQ(observed.get(), "arrived")
+        << "the redirect chain was re-validated against a policy installed after it started";
+    const std::vector<std::string> expected_targets{"/hop0", "/hop1"};
+    EXPECT_EQ(server.targets(), expected_targets);
+    EXPECT_GE(resolver_calls.load(), 2) << "both hops must have resolved for this to prove anything";
+}
+
+// The race itself. Its value is under ThreadSanitizer, where the unsynchronised version reports the
+// setters against the reads in run_get() and connect(); without a sanitizer it still asserts that
+// nothing hangs or crashes while a policy and a resolver are replaced under live requests.
+TEST(AuthHttpClientPolicyTest, ReplacingThePolicyAndResolverUnderLiveRequestsIsSafe) {
+    constexpr int io_thread_count = 4;
+    constexpr int request_count = 60;
+
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler(
+        [](const http::request<http::string_body>&) { return json_response({{"ok", true}}); });
+    asio::co_spawn(io_ctx, server.serve(request_count + 4), asio::detached);
+
+    auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+    client->set_metadata_policy(loopback_policy(server.origin()));
+
+    std::atomic<int> completed{0};
+    std::atomic<bool> stop_writing{false};
+
+    std::vector<std::thread> runners;
+    runners.reserve(io_thread_count);
+    for (int index = 0; index < io_thread_count; ++index) {
+        runners.emplace_back([&io_ctx]() { io_ctx.run(); });
+    }
+
+    // An application thread that keeps installing both, exactly as a direct user of this client
+    // might when its configuration changes. Every policy it installs is equivalent, so a request
+    // succeeds whichever one it pinned; what is under test is the concurrent write, not the outcome.
+    std::thread writer([&]() {
+        while (!stop_writing.load()) {
+            client->set_metadata_policy(loopback_policy(server.origin()));
+            client->set_host_resolver(nullptr);
+        }
+    });
+
+    for (int index = 0; index < request_count; ++index) {
+        asio::co_spawn(
+            io_ctx,
+            [&]() -> mcp::Task<void> {
+                try {
+                    (void)co_await client->get_json(base + "/probe");
+                } catch (...) {
+                    // A refusal is an acceptable outcome; a race is not, and that is TSan's call.
+                }
+                completed.fetch_add(1);
+            },
+            asio::detached);
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (completed.load() < request_count && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    stop_writing.store(true);
+    writer.join();
+    server.close();
+    io_ctx.stop();
+    for (auto& runner : runners) {
+        runner.join();
+    }
+
+    EXPECT_EQ(completed.load(), request_count) << "a request neither completed nor failed";
+}
