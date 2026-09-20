@@ -256,16 +256,40 @@ A production authorization-server integration might configure:
    // Never set allow_plain_http_loopback in production
    policy.allow_plain_http_loopback = false;  // Explicitly documented
 
-Pass this policy to every :cpp:class:`mcp::auth::OAuthHttpClient`:
+Give this policy to the authorization manager, which applies it to every
+discovery and token request it makes:
+
+.. code-block:: cpp
+
+   mcp::auth::OAuthAuthorizationConfig config;
+   config.server_url = "https://mcp.example.com/mcp";
+   config.client_id = "my-mcp-client";
+   config.redirect_uri = "https://app.example.com/callback";
+   config.policy = policy;
+
+   auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+       executor, token_store, std::move(config), authorize);
+
+An application driving an :cpp:class:`mcp::auth::OAuthHttpClient` directly must
+install the policy on it, or every fetch is refused:
 
 .. code-block:: cpp
 
    auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(executor);
    http_client->set_metadata_policy(policy);
 
+The fetch policy is only one of the controls an authorization flow needs. It
+stops the SDK contacting a target it should not, but it says nothing about
+whether the metadata that comes back is bound to the issuer that was asked for,
+whether the ``state`` echoed by the authorization server matches, or whether the
+RFC 9207 ``iss`` parameter is correct.
+:cpp:class:`mcp::auth::OAuthAuthorizationManager` applies those; an application
+composing the low-level pieces itself does not get them. See
+:ref:`oauth-what-the-manager-validates`.
+
 Cross-References
 ----------------
 
-- See :doc:`/concepts/oauth` for OAuth flow overview and API reference.
+- See :doc:`/concepts/oauth` for the challenge-driven authorization flow and API reference.
 - See :doc:`/concepts/transports` for general HTTP transport security.
 - See :doc:`deployment` for overall production deployment patterns.
