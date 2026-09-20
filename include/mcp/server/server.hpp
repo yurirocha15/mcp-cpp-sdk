@@ -601,7 +601,9 @@ class MCP_API Server {
     void reset_session(const std::shared_ptr<Session>& session);
 
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    // Shared rather than owned outright: work already in flight when this Server is destroyed
+    // keeps the implementation alive until it finishes, so it never runs against freed state.
+    std::shared_ptr<Impl> impl_;
 };
 
 }  // namespace mcp

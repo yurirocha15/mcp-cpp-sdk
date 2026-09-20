@@ -401,7 +401,7 @@ struct Server::Impl {
 };
 
 Server::Server(const Implementation& server_info, const ServerCapabilities& capabilities)
-    : impl_(std::make_unique<Impl>()) {
+    : impl_(std::make_shared<Impl>()) {
     impl_->server_info = server_info;
     impl_->capabilities = capabilities;
 }
