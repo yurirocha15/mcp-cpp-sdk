@@ -237,22 +237,9 @@ namespace {
 
 constexpr std::string_view g_https_prefix = "https://";
 
-/// Bound and clean a peer-supplied response body before it is embedded in diagnostic text:
-/// truncated so an oversized body cannot bloat the message, control characters replaced so a
-/// hostile body cannot forge log lines.
-std::string sanitize_for_diagnostics(std::string_view body) {
-    constexpr std::size_t max_length = 256;
-    std::string cleaned(body.substr(0, max_length));
-    for (auto& character : cleaned) {
-        if (static_cast<unsigned char>(character) < 0x20 || character == 0x7f) {
-            character = ' ';
-        }
-    }
-    if (body.size() > max_length) {
-        cleaned += "...";
-    }
-    return cleaned;
-}
+/// Shared with MetadataPolicyError, which sanitizes its own message, so every diagnostic in the
+/// auth code flattens peer-controlled text the same way.
+using detail::sanitize_for_diagnostics;
 
 /// Resolve a `Location` header against the URL that produced it.
 std::string resolve_redirect_target(const std::string& base, const std::string& location) {
@@ -483,7 +470,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         }
 
         if (exchange->endpoints.empty()) {
-            throw std::runtime_error("No address resolved for " + exchange->parsed.host);
+            throw std::runtime_error("No address resolved for " +
+                                     sanitize_for_diagnostics(exchange->parsed.host));
         }
         enforce_address_policy(exchange->owner->policy, exchange->endpoints);
 
@@ -658,21 +646,23 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             }
             const auto location = exchange->response().find(http::field::location);
             if (location == exchange->response().end()) {
-                throw std::runtime_error("HTTP GET " + exchange->url +
+                throw std::runtime_error("HTTP GET " + sanitize_for_diagnostics(exchange->url) +
                                          " returned a redirect without a Location header");
             }
             exchange->url = resolve_redirect_target(exchange->url, std::string(location->value()));
         }
 
         if (exchange->response().result_int() >= mcp::constants::g_http_bad_request) {
-            throw std::runtime_error("HTTP GET " + exchange->url + " failed with status " +
+            throw std::runtime_error("HTTP GET " + sanitize_for_diagnostics(exchange->url) +
+                                     " failed with status " +
                                      std::to_string(exchange->response().result_int()));
         }
 
         exchange->body = exchange->response().body();
         auto response_json = nlohmann::json::parse(exchange->body, nullptr, false);
         if (response_json.is_discarded()) {
-            throw std::runtime_error("Failed to parse JSON from " + exchange->url);
+            throw std::runtime_error("Failed to parse JSON from " +
+                                     sanitize_for_diagnostics(exchange->url));
         }
         co_return response_json;
     }
@@ -712,7 +702,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         exchange->body = exchange->response().body();
         auto response_json = nlohmann::json::parse(exchange->body, nullptr, false);
         if (response_json.is_discarded()) {
-            throw std::runtime_error("Failed to parse JSON from " + exchange->url);
+            throw std::runtime_error("Failed to parse JSON from " +
+                                     sanitize_for_diagnostics(exchange->url));
         }
         co_return response_json;
     }
@@ -1041,7 +1032,7 @@ struct OAuthDiscoveryClient::Impl {
             co_return *operation->metadata;
         }
         throw std::runtime_error("Failed to discover protected resource metadata for " +
-                                 operation->cache_key);
+                                 sanitize_for_diagnostics(operation->cache_key));
     }
 
     static Task<AuthServerMetadata> run_auth_discovery(
@@ -1067,7 +1058,7 @@ struct OAuthDiscoveryClient::Impl {
             }
         }
         throw std::runtime_error("Failed to discover authorization server metadata for " +
-                                 operation->cache_key);
+                                 sanitize_for_diagnostics(operation->cache_key));
     }
 
     std::shared_ptr<OAuthHttpClient> http_client;
@@ -1512,7 +1503,7 @@ struct OAuthAuthorizationManager::Impl {
                     throw std::runtime_error(
                         "Injected client credentials carry a client_secret but name no issuer, so "
                         "they cannot be presented to authorization server " +
-                        operation->facts.issuer +
+                        sanitize_for_diagnostics(operation->facts.issuer) +
                         "; set the issuer these credentials are bound to. Set "
                         "client_identity.pre_registered.issuer if you populated "
                         "client_identity.pre_registered yourself; client_issuer applies only to "
@@ -1520,7 +1511,7 @@ struct OAuthAuthorizationManager::Impl {
                         "client_identity.pre_registered is set");
                 }
                 throw std::runtime_error("No client identity is available for authorization server " +
-                                         operation->facts.issuer);
+                                         sanitize_for_diagnostics(operation->facts.issuer));
             }
         }
 
