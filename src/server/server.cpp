@@ -184,8 +184,23 @@ void validate_call_tool_result(const nlohmann::json& result) {
     static_cast<void>(result.get<CallToolResult>());
 }
 
+bool is_serialized_call_tool_result(const nlohmann::json& result) {
+    try {
+        validate_call_tool_result(result);
+    } catch (const std::exception&) {
+        return false;
+    }
+    return true;
+}
+
 nlohmann::json normalize_structured_tool_result(nlohmann::json result) {
     if (result.is_object()) {
+        // A handler that built a CallToolResult is already speaking the protocol; wrapping it again
+        // would bury its content blocks inside a text block. Domain data that merely carries a
+        // "content" key fails the full CallToolResult check and is still wrapped.
+        if (is_serialized_call_tool_result(result)) {
+            return result;
+        }
         return nlohmann::json(make_tool_structured_result(std::move(result)));
     }
     if (result.is_string()) {
