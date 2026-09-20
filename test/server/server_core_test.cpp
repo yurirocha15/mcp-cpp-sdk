@@ -11,6 +11,7 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -22,6 +23,8 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <mutex>
+#include <queue>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -1645,6 +1648,14 @@ class QuiescentSessionTransport final : public mcp::ITransport {
     mcp::Task<std::string> read_message() override {
         read_calls_.fetch_add(1, std::memory_order_release);
         for (;;) {
+            {
+                std::lock_guard lock(mutex_);
+                if (!incoming_.empty()) {
+                    auto message = std::move(incoming_.front());
+                    incoming_.pop();
+                    co_return message;
+                }
+            }
             try {
                 co_await reader_.async_wait(boost::asio::use_awaitable);
             } catch (const boost::system::system_error& error) {
@@ -1653,6 +1664,15 @@ class QuiescentSessionTransport final : public mcp::ITransport {
                 }
             }
         }
+    }
+
+    // Callable from any thread: the timer is only ever touched on its own executor.
+    void feed(std::string message) {
+        {
+            std::lock_guard lock(mutex_);
+            incoming_.push(std::move(message));
+        }
+        boost::asio::post(reader_.get_executor(), [this] { reader_.cancel(); });
     }
 
     mcp::Task<void> write_message(std::string_view message) override {
@@ -1675,6 +1695,8 @@ class QuiescentSessionTransport final : public mcp::ITransport {
 
    private:
     boost::asio::steady_timer reader_;
+    std::mutex mutex_;
+    std::queue<std::string> incoming_;
     std::atomic_size_t read_calls_{0};
     std::atomic_size_t reverse_requests_{0};
     std::atomic_size_t close_calls_{0};
@@ -1881,4 +1903,73 @@ TEST(ServerTeardownTest, DestroyFromForeignThreadWithPendingReverseRequests) {
     for (auto& thread : pool) {
         thread.join();
     }
+}
+
+// A handler that is still running when its Server is destroyed must be able to find that out
+// instead of dereferencing freed memory. The reverse-RPC call below is the reachable hazard: it
+// goes through the Context the handler was given, which is the only route application code has
+// back into the Server.
+//
+// The failure it reports has to be distinguishable from the two neighbouring ones -- stateless
+// direct dispatch, and a session that is merely closing -- because a handler's correct response
+// differs in each case, so the message is asserted rather than just the fact of an exception.
+TEST(ServerTeardownTest, ReverseRequestFromAHandlerReportsADestroyedServer) {
+    boost::asio::io_context io_ctx;
+    auto transport = std::make_shared<QuiescentSessionTransport>(io_ctx.get_executor());
+    auto server = std::make_unique<mcp::Server>(mcp::Implementation{"teardown-handler", "1.0"},
+                                                mcp::ServerCapabilities{});
+
+    std::atomic_bool handler_entered{false};
+    std::atomic_bool server_destroyed{false};
+    std::atomic_bool call_returned{false};
+    std::string observed;
+
+    // A tool handler is the only way application code is handed a Context, so the hazard is
+    // reached the way a real one would reach it. The handler parks until the Server is gone, then
+    // calls back through the Context it was given.
+    server->add_tool<nlohmann::json, nlohmann::json>(
+        "park", "Waits for the server to go away", nlohmann::json{{"type", "object"}},
+        [&](mcp::Context& ctx, const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+            handler_entered.store(true, std::memory_order_release);
+            while (!server_destroyed.load(std::memory_order_acquire)) {
+                boost::asio::steady_timer pause(io_ctx, std::chrono::milliseconds(1));
+                co_await pause.async_wait(boost::asio::use_awaitable);
+            }
+            try {
+                mcp::CreateMessageRequestParams request;
+                request.maxTokens = 1;
+                static_cast<void>(co_await ctx.sample_llm(request));
+            } catch (const std::exception& error) {
+                observed = error.what();
+            }
+            call_returned.store(true, std::memory_order_release);
+            co_return nlohmann::json::object();
+        });
+
+    boost::asio::co_spawn(io_ctx, server->run(transport, io_ctx.get_executor()), boost::asio::detached);
+
+    auto work = boost::asio::make_work_guard(io_ctx);
+    std::thread runner([&io_ctx] { io_ctx.run(); });
+
+    ASSERT_TRUE(wait_for_condition([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
+
+    transport->feed(make_initialize_request("init").dump());
+    transport->feed(make_initialized_notification().dump());
+    transport->feed(make_tool_call_request("call", "park").dump());
+
+    ASSERT_TRUE(wait_for_condition([&] { return handler_entered.load(std::memory_order_acquire); },
+                                   g_teardown_budget));
+
+    run_with_teardown_watchdog(g_teardown_budget, [&server] { server.reset(); });
+    server_destroyed.store(true, std::memory_order_release);
+
+    EXPECT_TRUE(wait_for_condition([&] { return call_returned.load(std::memory_order_acquire); },
+                                   g_teardown_budget))
+        << "the reverse-RPC call never returned";
+    EXPECT_NE(observed.find("destroyed"), std::string::npos)
+        << "reverse RPC after destruction reported: " << observed;
+
+    work.reset();
+    io_ctx.stop();
+    runner.join();
 }
