@@ -3,12 +3,21 @@
 ///
 /// This example shows:
 /// - In-process OAuth discovery + token endpoints served by a mock HTTP server
-/// - OAuthDiscoveryClient resolving protected-resource and auth-server metadata
-/// - OAuthAuthenticator with InMemoryTokenStore storing the exchanged token
+/// - OAuthAuthorizationManager acting on a `WWW-Authenticate` challenge: discovery under a
+///   MetadataFetchPolicy, issuer binding, cryptographic `state`, S256 PKCE, RFC 9207 response
+///   validation, and an RFC 8707 resource-indicated code exchange
+/// - An application-supplied consent callback standing in for a browser
+/// - InMemoryTokenStore holding the acquired token, keyed by the MCP server URL
 /// - OAuthClientTransport wrapping a MemoryTransport client connection
 /// - Automatic auth-token injection into MCP requests
 /// - Automatic refresh after a server-side auth failure
 /// - make_auth_middleware() protecting MCP tools on the server side
+///
+/// @warning Authorization goes through OAuthAuthorizationManager. Driving OAuthDiscoveryClient
+/// and OAuthHttpClient::exchange_code() by hand compiles and appears to work, but performs no
+/// issuer binding, no `state` check and no RFC 9207 validation. See the long comment in
+/// run_client_demo(), and the "Challenge-driven authorization" section of
+/// docs/guides/oauth-security.rst.
 
 #include <mcp/auth/oauth.hpp>
 #include <mcp/client/client.hpp>
@@ -341,15 +350,10 @@ struct ClientFlowRuntime {
 };
 
 struct ClientFlowState {
-    std::shared_ptr<mcp::auth::OAuthHttpClient> oauth_http;
     std::shared_ptr<mcp::auth::InMemoryTokenStore> token_store;
-    std::shared_ptr<mcp::auth::OAuthAuthenticator> authenticator;
-    std::optional<mcp::auth::ProtectedResourceMetadata> protected_metadata;
-    std::optional<mcp::auth::AuthServerMetadata> auth_metadata;
+    std::shared_ptr<mcp::auth::OAuthAuthorizationManager> manager;
     std::optional<mcp::auth::TokenResponse> stored_after_refresh;
-    mcp::auth::OAuthConfig oauth_config;
-    mcp::auth::PkcePair pkce;
-    std::string auth_code;
+    std::string resource;
 };
 
 std::string make_initialize_request_wire() {
@@ -393,58 +397,103 @@ auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
         std::cout << "OAuth mock server: " << runtime.mock_oauth->issuer() << '\n';
         std::cout << "MCP client/server transport: MemoryTransport loopback\n\n";
 
-        state->oauth_http =
-            std::make_shared<mcp::auth::OAuthHttpClient>(runtime.io_ctx->get_executor());
+        state->resource = runtime.mock_oauth->protected_resource_url();
 
-        // A default-constructed OAuthHttpClient refuses every metadata target: the allow list is
-        // empty and plain HTTP to a loopback address is not permitted. Discovery URLs are
-        // attacker-influenced, so the application must name the origins it intends to reach before
-        // the first request. This example talks only to its own mock server on loopback, so it
-        // allows that one origin and opts in to plain-HTTP loopback. A real client lists the
-        // origins of its MCP server and of the authorization servers that server names, and leaves
-        // allow_plain_http_loopback false so only https targets are reachable.
+        // ---------------------------------------------------------------------------------
+        // Authorization runs through OAuthAuthorizationManager. Do not hand-roll this flow.
+        //
+        // The manager is the only supported way to act on a `WWW-Authenticate` challenge,
+        // because it is where the security checks live. Driving OAuthDiscoveryClient and
+        // OAuthHttpClient::exchange_code() yourself compiles and appears to work, but it
+        // silently skips every one of them:
+        //
+        //   * the issuer in the authorization-server metadata is bound byte-for-byte to the
+        //     URL the document was fetched from, so a redirect or a substituted document
+        //     cannot move you to an attacker's issuer;
+        //   * the `state` parameter is generated from a cryptographic random source and the
+        //     response is rejected unless it matches;
+        //   * RFC 9207 `iss` validation runs before the response's `error` fields are read
+        //     or displayed, so a mismatched issuer cannot smuggle text to your user;
+        //   * PKCE S256 is generated and the verifier is retained for the token request;
+        //   * the RFC 8707 `resource` indicator is carried into the code exchange, so the
+        //     token you receive is bound to this MCP server and not replayable elsewhere.
+        //
+        // A challenge-supplied metadata URL is attacker-influenced input. Fetching it and
+        // then trusting whatever comes back is the whole attack, and that is precisely what
+        // the manual route does.
+        // ---------------------------------------------------------------------------------
+
+        // A default-constructed policy refuses every metadata target: the allow list is empty
+        // and plain HTTP to a loopback address is not permitted. The application must name the
+        // origins it intends to reach before the first request. This example talks only to its
+        // own mock server on loopback, so it allows that one origin and opts in to plain-HTTP
+        // loopback. A real client lists the origins of its MCP server and of the authorization
+        // servers that server names, and leaves allow_plain_http_loopback false so only https
+        // targets are reachable.
         mcp::auth::MetadataFetchPolicy policy;
         policy.allowed_origins = {runtime.mock_oauth->issuer()};
         policy.allow_plain_http_loopback = true;
-        state->oauth_http->set_metadata_policy(std::move(policy));
 
-        mcp::auth::OAuthDiscoveryClient discovery(state->oauth_http);
-
-        state->protected_metadata = co_await discovery.discover_protected_resource(
-            runtime.mock_oauth->protected_resource_url());
-        state->auth_metadata = co_await discovery.discover_auth_server(
-            state->protected_metadata->authorization_servers.front());
-
-        std::cout << "[Client] Discovered protected resource: " << state->protected_metadata->resource
-                  << '\n';
-        std::cout << "[Client] Discovered token endpoint: " << state->auth_metadata->token_endpoint
-                  << '\n';
-
-        state->pkce = mcp::auth::generate_pkce_pair();
-        state->auth_code = runtime.mock_oauth->issue_authorization_code(state->pkce.code_verifier);
-        std::cout << "[Client] Generated PKCE challenge: " << state->pkce.code_challenge << '\n';
-
-        state->oauth_config.client_id = "oauth-flow-example-client";
-        state->oauth_config.token_endpoint = state->auth_metadata->token_endpoint;
-        state->oauth_config.authorization_endpoint = state->auth_metadata->authorization_endpoint;
-        state->oauth_config.redirect_uri = "http://localhost/callback";
-        state->oauth_config.scope = "mcp:demo";
+        mcp::auth::OAuthAuthorizationConfig auth_config;
+        auth_config.server_url = state->resource;
+        auth_config.client_id = "oauth-flow-example-client";
+        auth_config.redirect_uri = "http://localhost/callback";
+        auth_config.policy = std::move(policy);
 
         state->token_store = std::make_shared<mcp::auth::InMemoryTokenStore>();
-        state->authenticator = std::make_shared<mcp::auth::OAuthAuthenticator>(
-            state->token_store, state->oauth_http, state->oauth_config,
-            state->protected_metadata->resource);
 
-        {
-            auto initial_token = co_await state->oauth_http->exchange_code(
-                state->oauth_config, state->auth_code, state->pkce.code_verifier);
-            state->authenticator->store_token(initial_token);
+        // The consent step. The SDK never launches a browser and never binds a listener for the
+        // redirect: carrying the user agent to request.authorization_url and collecting the
+        // response is the application's job.
+        //
+        // DO NOT COPY THIS CALLBACK. It stands in for a browser by minting the code directly
+        // from the mock authorization server, which is only possible because this example owns
+        // both ends. A real client opens request.authorization_url, waits for the redirect to
+        // request.redirect_uri, and returns parse_authorization_response(redirect_url). What it
+        // must not do is invent the values below: `state` and `iss` are echoed here because a
+        // genuine authorization server would echo them, and the manager rejects the response if
+        // they do not match what it recorded.
+        auto* mock_oauth = runtime.mock_oauth;
+        auto authorize = [mock_oauth](const mcp::auth::AuthorizationRequest& request)
+            -> mcp::Task<mcp::auth::AuthorizationResponse> {
+            std::cout << "[Client] Consent step for recorded issuer: " << request.issuer << '\n';
+            std::cout << "[Client] Resource indicator: " << request.resource.value_or("<none>") << '\n';
+
+            mcp::auth::AuthorizationResponse response;
+            response.code = mock_oauth->issue_authorization_code(request.code_verifier);
+            response.state = request.state;
+            response.iss = request.issuer;
+            co_return response;
+        };
+
+        state->manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+            runtime.io_ctx->get_executor(), state->token_store, std::move(auth_config),
+            std::move(authorize));
+
+        // What a conforming MCP resource server returns with its 401, per RFC 9728. Over an HTTP
+        // transport this arrives as a response header; this example runs over MemoryTransport, so
+        // the header the resource server would have sent is written out here.
+        const std::string www_authenticate =
+            "Bearer resource_metadata=\"" + runtime.mock_oauth->issuer() +
+            "/.well-known/oauth-protected-resource/memory-mcp\", scope=\"mcp:demo\"";
+
+        std::cout << "[Client] Acting on the resource server's WWW-Authenticate challenge\n";
+        if (!co_await state->manager->try_handle_challenge(www_authenticate)) {
+            throw std::runtime_error("challenge carried no Bearer authorization to act on");
         }
+
+        // The manager records what each attempt was actually validated against, so an application
+        // can audit the binding rather than take it on trust.
+        const auto record = state->manager->last_authorization_request();
+        if (!record) {
+            throw std::runtime_error("authorization completed without recording a request");
+        }
+        std::cout << "[Client] Authorization succeeded against issuer: " << record->issuer << '\n';
         std::cout << "[Client] Stored initial access token (value redacted)\n";
 
         {
             auto oauth_transport = std::make_shared<mcp::auth::OAuthClientTransport>(
-                runtime.client_base_transport, state->authenticator);
+                runtime.client_base_transport, state->manager);
 
             co_await oauth_transport->write_message(make_initialize_request_wire());
 
@@ -471,7 +520,7 @@ auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
                 throw std::runtime_error("secure_echo returned an unexpected tool error");
             }
 
-            state->stored_after_refresh = state->token_store->load(state->protected_metadata->resource);
+            state->stored_after_refresh = state->token_store->load(state->resource);
             if (!state->stored_after_refresh ||
                 state->stored_after_refresh->access_token != "refreshed-access-token") {
                 throw std::runtime_error("token refresh did not persist the refreshed access token");
