@@ -520,6 +520,16 @@ bool breaks_a_line(std::uint32_t codepoint) {
            codepoint == 0x2028 || codepoint == 0x2029;
 }
 
+/// Codepoints that re-order the text after them without ending the line. The explicit embeddings
+/// and overrides (U+202A-U+202E), the isolates (U+2066-U+2069) and the implicit marks
+/// (U+200E/U+200F) all let a peer reverse the rendering of the rest of a diagnostic, so a refusal
+/// can be made to read as its opposite. Same forgery as a line break, by a route that never breaks
+/// one.
+bool reorders_the_line(std::uint32_t codepoint) {
+    return (codepoint >= 0x202a && codepoint <= 0x202e) ||
+           (codepoint >= 0x2066 && codepoint <= 0x2069) || codepoint == 0x200e || codepoint == 0x200f;
+}
+
 }  // namespace
 
 std::string sanitize_for_diagnostics(std::string_view value) {
@@ -542,7 +552,7 @@ std::string sanitize_for_diagnostics(std::string_view value) {
         }
         if (decoded.length == 0) {
             cleaned.push_back('?');
-        } else if (breaks_a_line(decoded.codepoint)) {
+        } else if (breaks_a_line(decoded.codepoint) || reorders_the_line(decoded.codepoint)) {
             cleaned.push_back(' ');
         } else {
             cleaned.append(value.substr(index, decoded.length));
