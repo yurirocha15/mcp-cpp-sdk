@@ -914,14 +914,6 @@ void Server::dispatch_response(const nlohmann::json& json_msg) {
     it->second.timer->cancel();
 }
 
-Task<void> Server::handle_initialize(const nlohmann::json& json_msg) {
-    auto session = session_snapshot();
-    if (!session) {
-        throw std::runtime_error("server initialization requires an active session");
-    }
-    co_await session->writer->write_message(co_await handle_initialize_wire(json_msg, true));
-}
-
 Task<std::string> Server::handle_initialize_wire(const nlohmann::json& json_msg,
                                                  bool update_lifecycle) {
     auto initialize_request = deserialize_request_params<InitializeRequest>(json_msg, "initialize");
@@ -940,25 +932,9 @@ Task<std::string> Server::handle_initialize_wire(const nlohmann::json& json_msg,
                                nlohmann::json(std::move(init_result)));
 }
 
-Task<void> Server::handle_shutdown(const nlohmann::json& json_msg) {
-    auto session = session_snapshot();
-    if (!session) {
-        throw std::runtime_error("server shutdown requires an active session");
-    }
-    co_await session->writer->write_message(co_await handle_shutdown_wire(json_msg));
-}
-
 Task<std::string> Server::handle_shutdown_wire(const nlohmann::json& json_msg) {
     impl_->shutdown_requested.store(true, std::memory_order_relaxed);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object());
-}
-
-Task<void> Server::handle_ping(const nlohmann::json& json_msg) {
-    auto session = session_snapshot();
-    if (!session) {
-        throw std::runtime_error("server ping requires an active session");
-    }
-    co_await session->writer->write_message(co_await handle_ping_wire(json_msg));
 }
 
 Task<std::string> Server::handle_ping_wire(const nlohmann::json& json_msg) {
@@ -1048,14 +1024,6 @@ Task<nlohmann::json> Server::invoke_tool_impl(CallToolParams params,
     co_return handler_result;
 }
 
-Task<void> Server::handle_tools_call(const nlohmann::json& json_msg) {
-    auto session = session_snapshot();
-    if (!session) {
-        throw std::runtime_error("tool dispatch requires an active session");
-    }
-    co_await session->writer->write_message(co_await handle_tools_call_wire(json_msg));
-}
-
 Task<std::string> Server::handle_tools_call_wire(const nlohmann::json& json_msg) {
     auto params = deserialize_request_params<CallToolParams>(json_msg, "tools/call");
     if (!impl_->tool_handlers.contains(params.name)) {
@@ -1104,14 +1072,6 @@ Task<std::string> Server::handle_tools_call_wire(const nlohmann::json& json_msg)
     }
 }
 
-Task<void> Server::handle_tools_list(const nlohmann::json& json_msg) {
-    auto session = session_snapshot();
-    if (!session) {
-        throw std::runtime_error("tool listing requires an active session");
-    }
-    co_await session->writer->write_message(co_await handle_tools_list_wire(json_msg));
-}
-
 Task<std::string> Server::handle_tools_list_wire(const nlohmann::json& json_msg) {
     auto page = paginate(impl_->tools.size(), json_msg);
     if (!page) {
@@ -1129,14 +1089,6 @@ Task<std::string> Server::handle_tools_list_wire(const nlohmann::json& json_msg)
                                nlohmann::json(std::move(list_result)));
 }
 
-Task<void> Server::handle_resources_list(const nlohmann::json& json_msg) {
-    auto session = session_snapshot();
-    if (!session) {
-        throw std::runtime_error("resource listing requires an active session");
-    }
-    co_await session->writer->write_message(co_await handle_resources_list_wire(json_msg));
-}
-
 Task<std::string> Server::handle_resources_list_wire(const nlohmann::json& json_msg) {
     auto page = paginate(impl_->resources.size(), json_msg);
     if (!page) {
@@ -1152,14 +1104,6 @@ Task<std::string> Server::handle_resources_list_wire(const nlohmann::json& json_
 
     co_return make_result_wire(json_msg.at("id").get<RequestId>(),
                                nlohmann::json(std::move(list_result)));
-}
-
-Task<void> Server::handle_resources_read(const nlohmann::json& json_msg) {
-    auto session = session_snapshot();
-    if (!session) {
-        throw std::runtime_error("resource reading requires an active session");
-    }
-    co_await session->writer->write_message(co_await handle_resources_read_wire(json_msg));
 }
 
 Task<std::string> Server::handle_resources_read_wire(const nlohmann::json& json_msg) {
@@ -1212,14 +1156,6 @@ Task<std::string> Server::handle_resources_read_wire(const nlohmann::json& json_
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
 }
 
-Task<void> Server::handle_resource_templates_list(const nlohmann::json& json_msg) {
-    auto session = session_snapshot();
-    if (!session) {
-        throw std::runtime_error("resource template listing requires an active session");
-    }
-    co_await session->writer->write_message(co_await handle_resource_templates_list_wire(json_msg));
-}
-
 Task<std::string> Server::handle_resource_templates_list_wire(const nlohmann::json& json_msg) {
     auto page = paginate(impl_->resource_templates.size(), json_msg);
     if (!page) {
@@ -1239,14 +1175,6 @@ Task<std::string> Server::handle_resource_templates_list_wire(const nlohmann::js
                                nlohmann::json(std::move(list_result)));
 }
 
-Task<void> Server::handle_subscribe(const nlohmann::json& json_msg) {
-    auto session = session_snapshot();
-    if (!session) {
-        throw std::runtime_error("resource subscription requires an active session");
-    }
-    co_await session->writer->write_message(co_await handle_subscribe_wire(json_msg));
-}
-
 Task<std::string> Server::handle_subscribe_wire(const nlohmann::json& json_msg) {
     auto params = deserialize_request_params<ResourceSubscribeParams>(json_msg, "resources/subscribe");
     auto session = session_snapshot();
@@ -1257,14 +1185,6 @@ Task<std::string> Server::handle_subscribe_wire(const nlohmann::json& json_msg) 
         impl_->subscribe_handler(params.uri);
     }
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object());
-}
-
-Task<void> Server::handle_unsubscribe(const nlohmann::json& json_msg) {
-    auto session = session_snapshot();
-    if (!session) {
-        throw std::runtime_error("resource unsubscription requires an active session");
-    }
-    co_await session->writer->write_message(co_await handle_unsubscribe_wire(json_msg));
 }
 
 Task<std::string> Server::handle_unsubscribe_wire(const nlohmann::json& json_msg) {
@@ -1278,14 +1198,6 @@ Task<std::string> Server::handle_unsubscribe_wire(const nlohmann::json& json_msg
         impl_->unsubscribe_handler(params.uri);
     }
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object());
-}
-
-Task<void> Server::handle_prompts_list(const nlohmann::json& json_msg) {
-    auto session = session_snapshot();
-    if (!session) {
-        throw std::runtime_error("prompt listing requires an active session");
-    }
-    co_await session->writer->write_message(co_await handle_prompts_list_wire(json_msg));
 }
 
 Task<std::string> Server::handle_prompts_list_wire(const nlohmann::json& json_msg) {
@@ -1305,14 +1217,6 @@ Task<std::string> Server::handle_prompts_list_wire(const nlohmann::json& json_ms
                                nlohmann::json(std::move(list_result)));
 }
 
-Task<void> Server::handle_prompts_get(const nlohmann::json& json_msg) {
-    auto session = session_snapshot();
-    if (!session) {
-        throw std::runtime_error("prompt retrieval requires an active session");
-    }
-    co_await session->writer->write_message(co_await handle_prompts_get_wire(json_msg));
-}
-
 Task<std::string> Server::handle_prompts_get_wire(const nlohmann::json& json_msg) {
     auto params = deserialize_request_params<GetPromptRequestParams>(json_msg, "prompts/get");
     auto iter = impl_->prompt_handlers.find(params.name);
@@ -1329,26 +1233,10 @@ Task<std::string> Server::handle_prompts_get_wire(const nlohmann::json& json_msg
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
 }
 
-Task<void> Server::handle_set_level(const nlohmann::json& json_msg) {
-    auto session = session_snapshot();
-    if (!session) {
-        throw std::runtime_error("logging configuration requires an active session");
-    }
-    co_await session->writer->write_message(co_await handle_set_level_wire(json_msg));
-}
-
 Task<std::string> Server::handle_set_level_wire(const nlohmann::json& json_msg) {
     auto params = deserialize_request_params<SetLevelRequestParams>(json_msg, "logging/setLevel");
     impl_->log_level.store(params.level, std::memory_order_relaxed);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object());
-}
-
-Task<void> Server::handle_complete(const nlohmann::json& json_msg) {
-    auto session = session_snapshot();
-    if (!session) {
-        throw std::runtime_error("completion requires an active session");
-    }
-    co_await session->writer->write_message(co_await handle_complete_wire(json_msg));
 }
 
 Task<std::string> Server::handle_complete_wire(const nlohmann::json& json_msg) {
