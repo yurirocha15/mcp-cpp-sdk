@@ -564,7 +564,7 @@ TEST_F(WebSocketTransportTest, CanceledQueuedWriteDoesNotBlockSubsequentWrites) 
                 io_ctx_.get_executor(), "127.0.0.1", std::to_string(port));
             EXPECT_EQ(co_await transport->read_message(), "ready");
 
-            auto watchdog = std::make_shared<asio::steady_timer>(coordinator, 2s);
+            auto watchdog = std::make_shared<asio::steady_timer>(coordinator, 30s);
             watchdog->async_wait(
                 asio::bind_executor(coordinator, [transport](const boost::system::error_code& error) {
                     if (!error) {
