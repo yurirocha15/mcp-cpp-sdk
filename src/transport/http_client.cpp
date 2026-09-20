@@ -446,8 +446,7 @@ struct HttpClientTransport::Impl {
     std::string path;
     mutable std::mutex provider_mutex;
     /// Guarded by provider_mutex: written by set_bearer_token_provider(), read once per request in
-    /// pin_bearer_token_provider(). It used to be a plain unsynchronised write that the write
-    /// coroutine read on the strand while an application thread could be replacing it.
+    /// pin_bearer_token_provider().
     std::function<std::string()> bearer_token_provider;
 };
 
@@ -473,10 +472,7 @@ std::string HttpClientTransport::last_event_id() const {
     return impl_->state->last_event_id;
 }
 
-// Takes provider_mutex rather than trusting that nobody installs a provider after the first
-// request. The doc comment asks for that ordering, but nothing enforced it and nothing told a
-// caller who broke it: the result was a data race, which is silent right up until it is not.
-// Installing one mid-flight is now well defined -- a request already started keeps the provider it
+// Safe to call at any time, including mid-flight: a request already started keeps the provider it
 // pinned, and the next one picks up the new value.
 void HttpClientTransport::set_bearer_token_provider(std::function<std::string()> provider) {
     std::lock_guard lock(impl_->provider_mutex);

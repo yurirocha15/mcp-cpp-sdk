@@ -943,7 +943,7 @@ TEST_F(SessionManagerTest, NonInitializeWithoutSessionReturns400) {
 }
 
 // ---------------------------------------------------------------------------
-// 9b. server/discover is reachable with zero prior state in stateful mode: no session is
+// server/discover is reachable with zero prior state in stateful mode: no session is
 // created and no Mcp-Session-Id is issued, unlike every other sessionless non-initialize
 // method (pinned above by NonInitializeWithoutSessionReturns400).
 // ---------------------------------------------------------------------------
@@ -1031,7 +1031,7 @@ TEST_F(SessionManagerTest, SessionlessDiscoverStaysReachableAfterSessionEstablis
 }
 
 // ---------------------------------------------------------------------------
-// 9c. server/discover is exempted from the MCP-Protocol-Version header check that rejects any
+// server/discover is exempted from the MCP-Protocol-Version header check that rejects any
 // version outside g_SUPPORTED_PROTOCOL_VERSIONS, so a modern client probing with its own
 // 2026-07-28 header is not rejected pre-dispatch — unlike every other method (pinned by
 // BadProtocolVersionReturns400 for initialize, and StatelessBadProtocolVersionReturns400 /
@@ -1065,7 +1065,7 @@ TEST_F(SessionManagerTest, SessionlessDiscoverAcceptsUnsupportedProtocolVersionH
 }
 
 // ---------------------------------------------------------------------------
-// 9d. Stateless mode: server/discover with a 2026-07-28 header is accepted, while tools/list
+// Stateless mode: server/discover with a 2026-07-28 header is accepted, while tools/list
 // (non-discover) with the same header still gets the legacy 400 — pinning that the header
 // exemption is scoped to server/discover and not widened to other methods.
 // ---------------------------------------------------------------------------

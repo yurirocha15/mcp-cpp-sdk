@@ -1153,12 +1153,12 @@ TEST(AuthOAuthHttpClientDefaultPolicyTest, PolicyLessClientRefusesAnHttpLoopback
 }
 
 // -------------------------------------------------------------------------------------------
-// F3: the metadata policy and the host resolver must be installable as ONE change.
+// The metadata policy and the host resolver must be installable as ONE change.
 //
 // The fixture is two HTTP servers sharing a port on two loopback addresses, each naming itself
 // in its body. Every request targets `http://localhost:<port>/doc`, so the installed resolver
 // alone decides which server answers, and the body IS the classification: a body of "new" can
-// only be produced by the NEW resolver under the OLD, wider allow list, which is F3 on the wire.
+// only be produced by the NEW resolver under the OLD, wider allow list -- the defect, on the wire.
 // -------------------------------------------------------------------------------------------
 namespace {
 
@@ -1477,7 +1477,7 @@ TEST(OAuthSetterPairAtomicity, ReconfiguringAsOnePairNeverExposesTheNewResolverU
         thread.join();
     }
 
-    // Non-vacuity: the traffic must have straddled BOTH whole configurations, or a zero F3 count
+    // Non-vacuity: the traffic must have straddled BOTH whole configurations, or a zero mixed count
     // would only mean the requests all landed in one steady state.
     EXPECT_GT(old_server.load(), 0u) << "no exchange ever ran under the wide configuration";
     EXPECT_GT(refused.load(), 0u) << "no exchange ever ran under the narrow configuration";

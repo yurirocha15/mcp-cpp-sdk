@@ -872,7 +872,7 @@ TEST_F(ServerCoreTest, ConcurrentReverseRequestsRemainCorrelatedOnMultiThreadedE
 }
 
 // ---------------------------------------------------------------------------
-// server/discover (WORK_PLAN 3.1)
+// server/discover
 // ---------------------------------------------------------------------------
 
 TEST_F(ServerCoreTest, DiscoverWithoutInitializeReturnsFullPayload) {

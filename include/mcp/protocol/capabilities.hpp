@@ -783,7 +783,7 @@ inline void from_json(const nlohmann::json& json_obj, InitializeResult& res) {
  * 2026-07-28 spec, `_meta` may include `io.modelcontextprotocol/protocolVersion`,
  * `io.modelcontextprotocol/clientInfo`, and `io.modelcontextprotocol/clientCapabilities`;
  * this type accepts and preserves the raw `_meta` object without interpreting its
- * contents. Recording those fields is deferred to a later WORK_PLAN item.
+ * contents.
  */
 struct DiscoverRequest {
     std::optional<nlohmann::json> meta;  ///< Reserved for protocol use; contents not interpreted yet.
@@ -816,9 +816,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(CacheScope,
 /**
  * @brief Represents the result of a server/discover request.
  *
- * @details `resultType` is always "complete" for this result; WORK_PLAN 3.2 will
- * introduce a shared result-envelope helper that other cacheable results also use, at
- * which point this field's assignment should be routed through it.
+ * @details `resultType` is always "complete" for this result.
  */
 struct DiscoverResult {
     std::string resultType = "complete";         ///< Always "complete" for this result.

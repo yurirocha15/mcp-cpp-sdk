@@ -920,12 +920,12 @@ Task<std::string> Server::handle_ping_wire(const nlohmann::json& json_msg) {
 }
 
 // Params carry only `_meta`, whose contents (protocolVersion, clientInfo, clientCapabilities)
-// are accepted but not yet interpreted — see WORK_PLAN 3.4. This request is a pre-gate method
+// are accepted but not yet interpreted. This request is a pre-gate method
 // like initialize/ping: reachable with no prior state and idempotent, so it neither reads
 // json_msg's params nor mutates lifecycle.
 Task<std::string> Server::handle_discover_wire(const nlohmann::json& json_msg) {
     DiscoverResult discover_result;
-    // resultType uses the DiscoverResult struct default ("complete"); WORK_PLAN 3.2 introduces
+    // resultType uses the DiscoverResult struct default ("complete"); a future revision introduces
     // a shared result-envelope helper for this field that other cacheable results will also use.
     discover_result.supportedVersions.assign(g_DISCOVERABLE_PROTOCOL_VERSIONS.begin(),
                                              g_DISCOVERABLE_PROTOCOL_VERSIONS.end());
