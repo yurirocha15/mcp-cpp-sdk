@@ -186,8 +186,11 @@ class MCP_API InMemoryClientCredentialStore : public ClientCredentialStore {
  * @brief Application-supplied inputs to client identity selection.
  */
 struct ClientIdentityConfig {
-    /// Credentials the application obtained out of band. When present they are used exactly as
-    /// given for every authorization server, and registration is never attempted.
+    /// Credentials the application obtained out of band. When present, registration is never
+    /// attempted. Set `issuer` on them to say which authorization server they belong to: it is
+    /// required whenever `client_secret` is set, because an unbound secret is refused rather than
+    /// presented to whichever server the protected-resource document named. See
+    /// `select_client_identity` for the full rule.
     std::optional<OAuthClientInformation> pre_registered;
     /// URL of a client ID metadata document the application publishes. Used as the client
     /// identifier itself when the authorization server advertises support for it.
@@ -238,9 +241,19 @@ enum class ClientIdentityDecision {
  *
  * @details Precedence, highest first:
  *
- * 1. Injected credentials. They win outright and there is no fallback: if the application named a
- *    client, registering a different one behind its back would silently change who the user is
- *    consenting to.
+ * 1. Injected credentials, subject to their issuer binding. They win outright and there is no
+ *    fallback: if the application named a client, registering a different one behind its back
+ *    would silently change who the user is consenting to. The binding is the precondition on that
+ *    precedence, and it decides between three outcomes:
+ *    - `pre_registered.issuer` names the issuer being contacted: the credentials are used.
+ *    - `pre_registered.issuer` names a different issuer: `unavailable`, never a fallback. Handing
+ *      one authorization server's secret to another is credential misbinding.
+ *    - `pre_registered.issuer` is empty: the credentials are unbound. A public client (no
+ *      `client_secret`) is still used, because a `client_id` is not a secret. A `client_secret`
+ *      with no issuer is refused with `unavailable`: the authorization server was named by the
+ *      protected-resource document, and "bound to no issuer" must not be read as "bound to every
+ *      issuer". Set `pre_registered.issuer` (or `OAuthAuthorizationConfig::client_issuer` on the
+ *      shorthand path) to use a confidential client.
  * 2. A configured client ID metadata document URL, when the server advertises support for one.
  *    Dynamic registration is skipped entirely on this path.
  * 3. Credentials already registered with this exact issuer. A stored entry whose recorded issuer
