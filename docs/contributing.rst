@@ -300,7 +300,7 @@ Example bug report:
    **Steps to Reproduce**
    ```cpp
    mcp::Client client(transport, executor);
-   co_await client.call_tool("nonexistent", {});  // Hangs forever
+   co_await client.call_tool("nonexistent", nlohmann::json::object());  // Hangs forever
    ```
 
    **Expected**: Exception thrown or timeout
