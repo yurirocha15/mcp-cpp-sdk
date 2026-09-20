@@ -1,3 +1,5 @@
+#include "../detail/diagnostic_text.hpp"
+
 #include <mcp/detail/serialized_transport_writer.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
@@ -942,7 +944,10 @@ Task<nlohmann::json> Server::invoke_tool_impl(CallToolParams params,
                                               std::optional<ProgressToken> progress_token) {
     auto iter = impl_->tool_handlers.find(params.name);
     if (iter == impl_->tool_handlers.end()) {
-        throw std::runtime_error("Unknown tool: " + params.name);
+        // The name is chosen by whoever called: over JSON-RPC that is the client, and through the
+        // public `invoke_tool` entry point it is whatever text the embedding passed in. Flatten and
+        // bound it, or a name carrying CR/LF forges a line in the operator's log.
+        throw std::runtime_error("Unknown tool: " + detail::sanitize_for_diagnostics(params.name));
     }
 
     auto ctx = make_context(std::move(cancelled), std::move(progress_token));
@@ -993,8 +998,11 @@ Task<void> Server::handle_tools_call(const nlohmann::json& json_msg) {
 Task<std::string> Server::handle_tools_call_wire(const nlohmann::json& json_msg) {
     auto params = deserialize_request_params<CallToolParams>(json_msg, "tools/call");
     if (!impl_->tool_handlers.contains(params.name)) {
+        // This, not the throw in invoke_tool_impl, is the site a remote client actually reaches:
+        // the RPC path refuses before dispatch. The name is entirely the client's, so flatten and
+        // bound it before it reaches the operator's log.
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_METHOD_NOT_FOUND,
-                                  "Unknown tool: " + params.name);
+                                  "Unknown tool: " + detail::sanitize_for_diagnostics(params.name));
     }
 
     // [gcc11-sso: int64-id] request_id_str from json_msg (heap-safe); used only in in_flight map.

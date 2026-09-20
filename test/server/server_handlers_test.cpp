@@ -1458,3 +1458,119 @@ TEST_F(ServerHandlersTest, CompletionWithoutHandlerReturnsError) {
     ASSERT_TRUE(error_response.contains("error"));
     EXPECT_EQ(error_response["error"]["code"], mcp::g_METHOD_NOT_FOUND);
 }
+
+// A tool name is chosen entirely by the client, and an unknown one is the ordinary error path of
+// any `tools/call`. The name reaches a diagnostic that the server operator reads, so a name
+// carrying CR/LF forges a line in whatever that diagnostic lands in, and a bidi override reorders
+// the rest of it. Same defect as the peer-controlled text in the auth diagnostics, opposite
+// direction: here the untrusted side is the client.
+TEST_F(ServerHandlersTest, UnknownToolDiagnosticFlattensClientChosenName) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    // "zqtripwire" is a token no other code path produces; see the tripwire assertions below.
+    // \xe2\x80\xae is U+202E RIGHT-TO-LEFT OVERRIDE, written escaped so this source file does not
+    // itself contain a bidi override.
+    const std::string forged_name =
+        "zqtripwire\r\n2026-09-20 ERROR forged line from the client\xe2\x80\xae reordered tail";
+
+    nlohmann::json call_req;
+    call_req["jsonrpc"] = "2.0";
+    call_req["id"] = "2";
+    call_req["method"] = "tools/call";
+    call_req["params"] = nlohmann::json{{"name", forged_name}, {"arguments", nlohmann::json::object()}};
+
+    auto responses = run_request(setup, std::move(call_req));
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& error_response = responses[1];
+    ASSERT_TRUE(error_response.contains("error")) << "response: " << error_response.dump();
+    const auto message = error_response["error"]["message"].get<std::string>();
+
+    // Tripwire. The payload must actually have reached the "Unknown tool" site rather than being
+    // rejected earlier by params validation or routed to some other diagnostic that flattens its
+    // own message; either would make the assertions below pass for a reason unrelated to the site
+    // under test. The code pins WHICH of the two "Unknown tool" sites this is: the RPC path refuses
+    // in handle_tools_call_wire with g_METHOD_NOT_FOUND, whereas the invoke_tool path throws and
+    // surfaces as g_INTERNAL_ERROR through the dispatcher. Dump the message on failure so a vacuous
+    // pass cannot hide.
+    ASSERT_EQ(error_response["error"]["code"], mcp::g_METHOD_NOT_FOUND)
+        << "response: " << error_response.dump();
+    ASSERT_EQ(message.rfind("Unknown tool: ", 0), 0U) << "actual message: " << message;
+    ASSERT_NE(message.find("zqtripwire"), std::string::npos) << "actual message: " << message;
+
+    EXPECT_EQ(message.find('\r'), std::string::npos) << "actual message: " << message;
+    EXPECT_EQ(message.find('\n'), std::string::npos) << "actual message: " << message;
+    EXPECT_EQ(message.find("\xe2\x80\xae"), std::string::npos) << "actual message: " << message;
+}
+
+// The same site must also bound the name, so a client cannot flood the operator's log through a
+// megabyte-long tool name.
+TEST_F(ServerHandlersTest, UnknownToolDiagnosticBoundsClientChosenName) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    const std::string forged_name = "zqtripwire" + std::string(64 * 1024, 'A');
+
+    nlohmann::json call_req;
+    call_req["jsonrpc"] = "2.0";
+    call_req["id"] = "2";
+    call_req["method"] = "tools/call";
+    call_req["params"] = nlohmann::json{{"name", forged_name}, {"arguments", nlohmann::json::object()}};
+
+    auto responses = run_request(setup, std::move(call_req));
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& error_response = responses[1];
+    ASSERT_TRUE(error_response.contains("error")) << "response: " << error_response.dump();
+    const auto message = error_response["error"]["message"].get<std::string>();
+
+    ASSERT_EQ(error_response["error"]["code"], mcp::g_METHOD_NOT_FOUND)
+        << "actual message prefix: " << message.substr(0, 64);
+    ASSERT_EQ(message.rfind("Unknown tool: ", 0), 0U)
+        << "actual message prefix: " << message.substr(0, 64);
+    ASSERT_NE(message.find("zqtripwire"), std::string::npos)
+        << "actual message prefix: " << message.substr(0, 64);
+    EXPECT_LT(message.size(), forged_name.size()) << "message size: " << message.size();
+    EXPECT_LE(message.size(), std::size_t{512}) << "message size: " << message.size();
+}
+
+// The second "Unknown tool" site. `invoke_tool` bypasses the JSON-RPC loop for json_only
+// deployments, so the name it is given is whatever the embedding passes in -- peer-chosen text in
+// exactly the deployments that use this entry point. It is a distinct site from the one the RPC
+// path takes, and it throws rather than building an error frame, so it needs its own test.
+TEST_F(ServerHandlersTest, InvokeToolUnknownNameDiagnosticIsFlattened) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    const std::string forged_name =
+        "zqtripwire\r\n2026-09-20 ERROR forged line from the caller\xe2\x80\xae reordered tail";
+
+    std::string message;
+    bool threw = false;
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            try {
+                static_cast<void>(
+                    co_await setup.server.invoke_tool(forged_name, nlohmann::json::object()));
+            } catch (const std::exception& error) {
+                threw = true;
+                message = error.what();
+            }
+        },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    // Tripwire: the name must have reached the invoke_tool site itself, not some earlier refusal.
+    ASSERT_TRUE(threw) << "invoke_tool accepted an unknown tool name";
+    ASSERT_EQ(message.rfind("Unknown tool: ", 0), 0U) << "actual message: " << message;
+    ASSERT_NE(message.find("zqtripwire"), std::string::npos) << "actual message: " << message;
+
+    EXPECT_EQ(message.find('\r'), std::string::npos) << "actual message: " << message;
+    EXPECT_EQ(message.find('\n'), std::string::npos) << "actual message: " << message;
+    EXPECT_EQ(message.find("\xe2\x80\xae"), std::string::npos) << "actual message: " << message;
+}

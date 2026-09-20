@@ -1,3 +1,5 @@
+#include "../detail/diagnostic_text.hpp"
+
 #include <mcp/client/client.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
 
@@ -112,8 +114,12 @@ struct Client::Impl {
             if (state->options.strict_protocol_validation &&
                 !is_supported_protocol_version(initialize_result->protocolVersion)) {
                 request_close(state, "Server selected an unsupported protocol version");
+                // The version is whatever the remote server put in its `initialize` result, and
+                // this message reaches the application's log. Flatten and bound it, or a server
+                // answering with CR/LF forges a log line the application did not write.
                 throw McpError(g_INVALID_REQUEST, "Server selected unsupported protocol version: " +
-                                                      initialize_result->protocolVersion);
+                                                      detail::sanitize_for_diagnostics(
+                                                          initialize_result->protocolVersion));
             }
 
             co_await notification(state, "notifications/initialized", std::nullopt);
