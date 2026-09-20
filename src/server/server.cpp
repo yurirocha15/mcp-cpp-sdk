@@ -656,33 +656,41 @@ Task<void> Server::run_session(std::shared_ptr<Session> session) {
         // Closing a transport is the normal way to stop a session.
     }
 
-    session->stopping.store(true, std::memory_order_release);
-    for (auto& [id, cancelled] : session->in_flight) {
-        static_cast<void>(id);
-        cancelled->store(true, std::memory_order_relaxed);
-    }
-    for (auto& [id, pending] : session->pending_requests) {
-        if (!pending.completed) {
-            pending.error = Error{g_CONNECTION_CLOSED, "Server session closed", std::nullopt};
-            pending.completed = true;
+    // Teardown below can fail — a transport may throw from close, and the drain wait rethrows any
+    // error that is not cancellation. Whichever way it ends, the session must be unregistered, or
+    // every later run() is refused for the lifetime of this Server.
+    try {
+        session->stopping.store(true, std::memory_order_release);
+        for (auto& [id, cancelled] : session->in_flight) {
+            static_cast<void>(id);
+            cancelled->store(true, std::memory_order_relaxed);
         }
-        static_cast<void>(id);
-        pending.timer->cancel();
-    }
-    session->transport->close();
+        for (auto& [id, pending] : session->pending_requests) {
+            if (!pending.completed) {
+                pending.error = Error{g_CONNECTION_CLOSED, "Server session closed", std::nullopt};
+                pending.completed = true;
+            }
+            static_cast<void>(id);
+            pending.timer->cancel();
+        }
+        session->transport->close();
 
-    while (session->active_dispatches.load(std::memory_order_acquire) != 0) {
-        session->drain_timer->expires_at(std::chrono::steady_clock::time_point::max());
-        if (session->active_dispatches.load(std::memory_order_acquire) == 0) {
-            break;
-        }
-        try {
-            co_await session->drain_timer->async_wait(boost::asio::use_awaitable);
-        } catch (const boost::system::system_error& error) {
-            if (error.code() != boost::asio::error::operation_aborted) {
-                throw;
+        while (session->active_dispatches.load(std::memory_order_acquire) != 0) {
+            session->drain_timer->expires_at(std::chrono::steady_clock::time_point::max());
+            if (session->active_dispatches.load(std::memory_order_acquire) == 0) {
+                break;
+            }
+            try {
+                co_await session->drain_timer->async_wait(boost::asio::use_awaitable);
+            } catch (const boost::system::system_error& error) {
+                if (error.code() != boost::asio::error::operation_aborted) {
+                    throw;
+                }
             }
         }
+    } catch (...) {
+        reset_session(session);
+        throw;
     }
 
     reset_session(session);
@@ -1525,7 +1533,13 @@ void Server::reset_session(const std::shared_ptr<Session>& session) {
         pending.timer->cancel();
     }
     if (session->transport) {
-        session->transport->close();
+        // Unregistering the session below is what frees the Server for reuse, and it must happen
+        // even for a transport that cannot close cleanly. This also runs from ~Server, where an
+        // escaping exception would terminate the process.
+        try {
+            session->transport->close();
+        } catch (const std::exception&) {
+        }
     }
 
     {
