@@ -283,7 +283,8 @@ if(BUILD_TESTING)
       test/server/server_http_test.cpp
       test/server/server_tool_test.cpp
       test/transport/transport_factory_test.cpp
-      test/core/gcc11_sso_crash_test.cpp)
+      test/core/gcc11_sso_crash_test.cpp
+      test/core/json_peer_input_matrix_test.cpp)
   add_executable(mcp-sdk-tests ${TEST_SRCS})
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
   if(MSVC)
@@ -293,6 +294,26 @@ if(BUILD_TESTING)
     # hold (error C1128). The flag lifts that limit to 2^32; the only cost is a
     # larger object file.
     target_compile_options(mcp-sdk-tests PRIVATE /bigobj)
+  endif()
+
+  # The peer-input matrix is generated from scripts/json_census.py, and its
+  # worth depends on covering every protocol type. Checking that here means a
+  # new type with a from_json breaks the build until it is either in the matrix
+  # or excluded with a stated reason, rather than quietly arriving untested.
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_custom_target(
+      mcp-json-matrix-complete ALL
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_json_matrix.py"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      COMMENT "Checking the peer-input matrix covers every protocol type")
+    add_dependencies(mcp-sdk-tests mcp-json-matrix-complete)
+  else()
+    message(
+      WARNING
+        "Python3 not found; the peer-input matrix completeness check is skipped"
+    )
   endif()
 
   include(GoogleTest)
