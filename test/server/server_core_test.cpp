@@ -445,6 +445,74 @@ TEST_F(ServerCoreTest, RequestsRequireCompletedInitializationHandshake) {
     EXPECT_TRUE(server.is_initialized());
 }
 
+TEST_F(ServerCoreTest, InitializedNotificationWithNullParamsCompletesTheHandshake) {
+    mcp::Implementation info;
+    info.name = "test-server";
+    info.version = "1.0";
+    mcp::Server server(info, mcp::ServerCapabilities{});
+
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    std::vector<nlohmann::json> responses;
+    raw_transport->set_on_write([&responses, raw_transport](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        if (responses.size() == 2) {
+            raw_transport->close();
+        }
+    });
+
+    raw_transport->enqueue_message(make_initialize_request("init").dump());
+    auto initialized = make_initialized_notification();
+    initialized["params"] = nullptr;
+    raw_transport->enqueue_message(initialized.dump());
+    raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"}, {"id", "list"}, {"method", "tools/list"}}.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("result"));
+    EXPECT_TRUE(responses[1]["result"]["tools"].empty());
+}
+
+TEST_F(ServerCoreTest, NotificationWithNonObjectParamsIsStillRejected) {
+    mcp::Implementation info;
+    info.name = "test-server";
+    info.version = "1.0";
+    mcp::Server server(info, mcp::ServerCapabilities{});
+
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    std::vector<nlohmann::json> responses;
+    raw_transport->set_on_write([&responses, raw_transport](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        if (responses.size() == 2) {
+            raw_transport->close();
+        }
+    });
+
+    raw_transport->enqueue_message(make_initialize_request("init").dump());
+    auto initialized = make_initialized_notification();
+    initialized["params"] = "not-an-object";
+    raw_transport->enqueue_message(initialized.dump());
+    raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"}, {"id", "list"}, {"method", "tools/list"}}.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("error"));
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_REQUEST);
+}
+
 TEST_F(ServerCoreTest, InvalidJsonRpcEnvelopesAreRejected) {
     mcp::Implementation info;
     info.name = "test-server";
