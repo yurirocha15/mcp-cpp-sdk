@@ -287,37 +287,101 @@ mcp::auth::AuthorizationCallback make_authorization_callback(boost::asio::any_io
     };
 }
 
-mcp::auth::OAuthAuthorizationConfig make_authorization_config(const std::string& server_url) {
+/// The outbound-request policy every fixture request runs under.
+///
+/// The narrow loopback opt-out lives here and only here: the fixture's servers speak plain HTTP on
+/// ephemeral loopback ports, which is not production-ready OAuth. The authorization server's origin
+/// is only learned at run time from the protected resource's metadata, so the allow list states the
+/// rule rather than an enumeration.
+mcp::auth::MetadataFetchPolicy make_fetch_policy(const std::string& server_url) {
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allow_plain_http_loopback = true;
+    policy.allowed_origins.push_back(mcp::auth::metadata_url_origin(server_url));
+    policy.origin_allowance = is_loopback_origin;
+    return policy;
+}
+
+/// The credentials the runner hands the fixture out of band, if it handed it any.
+std::optional<nlohmann::json> conformance_context() {
+    const auto context = optional_environment("MCP_CONFORMANCE_CONTEXT");
+    if (!context) {
+        return std::nullopt;
+    }
+    auto parsed = nlohmann::json::parse(*context, nullptr, false);
+    if (!parsed.is_object()) {
+        return std::nullopt;
+    }
+    return parsed;
+}
+
+/// Resolve the issuer the runner's injected credentials are bound to.
+///
+/// The SDK refuses to present a `client_secret` that names no issuer, because on a real deployment
+/// the authorization server is named by a document the client did not write. The fixture is the one
+/// case where that document is trustworthy: the runner starts both the MCP server and the
+/// authorization server for the scenario, and hands over the credentials it minted for that pair.
+/// The runner does not put the issuer in `MCP_CONFORMANCE_CONTEXT` (conformance 0.1.16 sends only
+/// `client_id` and `client_secret`), so this reads an `issuer` key when a future runner supplies
+/// one and otherwise performs the protected-resource discovery step itself, under the same fetch
+/// policy the SDK will use, and binds to the authorization server that document names.
+///
+/// This is a deliberate fixture-only decision and must not be copied into an application: an
+/// application that binds its secret to whatever issuer the protected-resource document names has
+/// re-created the very misbinding the SDK refusal exists to prevent. An application knows its own
+/// issuer out of band, because that is where it registered.
+std::string resolve_injected_issuer(boost::asio::io_context& io_context, const std::string& server_url,
+                                    const nlohmann::json& context) {
+    if (context.contains("issuer") && context.at("issuer").is_string()) {
+        return context.at("issuer").get<std::string>();
+    }
+
+    auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_context.get_executor());
+    http_client->set_metadata_policy(make_fetch_policy(server_url));
+    auto discovery = std::make_shared<mcp::auth::OAuthDiscoveryClient>(http_client);
+
+    auto resolved = boost::asio::co_spawn(
+        io_context,
+        [discovery, server_url]() -> mcp::Task<std::string> {
+            const auto metadata = co_await discovery->discover_protected_resource(server_url);
+            if (metadata.authorization_servers.empty()) {
+                throw std::runtime_error(
+                    "Protected resource metadata listed no authorization server to bind the "
+                    "runner-supplied credentials to");
+            }
+            co_return metadata.authorization_servers.front();
+        },
+        boost::asio::use_future);
+
+    io_context.run();
+    io_context.restart();
+    return resolved.get();
+}
+
+mcp::auth::OAuthAuthorizationConfig make_authorization_config(boost::asio::io_context& io_context,
+                                                              const std::string& server_url) {
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = server_url;
     config.redirect_uri = std::string(g_redirect_uri);
     config.client_identity.client_metadata_url = std::string(g_client_metadata_url);
     config.client_identity.metadata.client_name = "mcp-cpp-sdk-conformance-client";
     config.credential_store = std::make_shared<mcp::auth::InMemoryClientCredentialStore>();
+    config.policy = make_fetch_policy(server_url);
 
     // Credentials the runner hands the fixture out of band. When they are present the SDK presents
     // them and never registers; when they are absent it chooses between the metadata document and
     // registration on what the authorization server advertises.
-    if (const auto context = optional_environment("MCP_CONFORMANCE_CONTEXT")) {
-        const auto parsed = nlohmann::json::parse(*context, nullptr, false);
-        if (parsed.is_object() && parsed.contains("client_id")) {
-            mcp::auth::OAuthClientInformation injected;
-            injected.client_id = parsed.at("client_id").get<std::string>();
-            if (parsed.contains("client_secret")) {
-                injected.client_secret = parsed.at("client_secret").get<std::string>();
-            }
-            injected.source = mcp::auth::ClientIdentitySource::pre_registered;
-            config.client_identity.pre_registered = std::move(injected);
+    if (const auto context = conformance_context(); context && context->contains("client_id")) {
+        mcp::auth::OAuthClientInformation injected;
+        injected.client_id = context->at("client_id").get<std::string>();
+        if (context->contains("client_secret")) {
+            injected.client_secret = context->at("client_secret").get<std::string>();
+            // A secret must name the issuer it belongs to or the SDK refuses to present it.
+            injected.issuer = resolve_injected_issuer(io_context, server_url, *context);
         }
+        injected.source = mcp::auth::ClientIdentitySource::pre_registered;
+        config.client_identity.pre_registered = std::move(injected);
     }
 
-    // The narrow loopback opt-out, enabled here and only here: the fixture's servers speak plain
-    // HTTP on ephemeral loopback ports, which is not production-ready OAuth. The authorization
-    // server's origin is only learned at run time from the protected resource's metadata, so the
-    // allow list states the rule rather than an enumeration.
-    config.policy.allow_plain_http_loopback = true;
-    config.policy.allowed_origins.push_back(mcp::auth::metadata_url_origin(server_url));
-    config.policy.origin_allowance = is_loopback_origin;
     return config;
 }
 
@@ -335,13 +399,21 @@ int main(int argc, char** argv) {
 
         boost::asio::io_context io_context;
         auto executor = io_context.get_executor();
+
+        // Built before the transport exists, because binding runner-supplied credentials to their
+        // issuer may need a discovery round trip that drives this io_context to completion first.
+        std::optional<mcp::auth::OAuthAuthorizationConfig> authorization_config;
+        if (std::string_view(scenario).starts_with("auth/")) {
+            authorization_config = make_authorization_config(io_context, server_url);
+        }
+
         std::shared_ptr<mcp::ITransport> transport =
             std::make_shared<mcp::HttpClientTransport>(executor, server_url);
 
-        if (std::string_view(scenario).starts_with("auth/")) {
+        if (authorization_config) {
             auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
                 executor, std::make_shared<mcp::auth::InMemoryTokenStore>(),
-                make_authorization_config(server_url), make_authorization_callback(executor));
+                std::move(*authorization_config), make_authorization_callback(executor));
             transport = std::make_shared<mcp::auth::OAuthClientTransport>(transport, manager);
         }
 

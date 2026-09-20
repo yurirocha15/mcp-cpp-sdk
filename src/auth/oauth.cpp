@@ -1285,6 +1285,10 @@ struct OAuthAuthorizationManager::Impl {
             OAuthClientInformation injected;
             injected.client_id = config.client_id;
             injected.client_secret = config.client_secret;
+            // Without this the issuer binding in `select_client_identity` is inert on the
+            // shorthand path: an empty issuer would make every authorization server look like
+            // the one these credentials belong to.
+            injected.issuer = config.client_issuer;
             injected.source = ClientIdentitySource::pre_registered;
             config.client_identity.pre_registered = std::move(injected);
         }
@@ -1385,9 +1389,23 @@ struct OAuthAuthorizationManager::Impl {
                 co_return *operation->stored_identity;
             case ClientIdentityDecision::register_dynamically:
                 break;
-            case ClientIdentityDecision::unavailable:
+            case ClientIdentityDecision::unavailable: {
+                // `unavailable` covers several causes; say which one, because the unbound-secret
+                // refusal is a configuration mistake the caller can fix and the generic message
+                // would send them looking in the wrong place.
+                const auto& injected = owner.config.client_identity.pre_registered;
+                if (injected && !injected->client_id.empty() && injected->issuer.empty() &&
+                    injected->client_secret && !injected->client_secret->empty()) {
+                    throw std::runtime_error(
+                        "Injected client credentials carry a client_secret but name no issuer, so "
+                        "they cannot be presented to authorization server " +
+                        operation->facts.issuer +
+                        "; set the issuer these credentials are bound to (client_issuer, or "
+                        "pre_registered.issuer)");
+                }
                 throw std::runtime_error("No client identity is available for authorization server " +
                                          operation->facts.issuer);
+            }
         }
 
         operation->registration_response = co_await owner.http_client->post_json(

@@ -180,7 +180,20 @@ ClientIdentityDecision select_client_identity(const ClientIdentityConfig& config
         // holds for one authorization server to a different one is credential misbinding, and the
         // terminal rule above means the answer is "no identity", never a silent registration.
         const auto& expected_issuer = config.pre_registered->issuer;
-        if (!expected_issuer.empty() && expected_issuer != server.issuer) {
+        if (expected_issuer.empty()) {
+            // Unbound credentials. A `client_id` is a public identifier and costs nothing to show
+            // to the wrong server, so a public client still authorizes normally. A `client_secret`
+            // is different: the authorization server reached here was named by the
+            // protected-resource document, so presenting an unbound secret hands the application's
+            // credential to whichever server that document chose. "Bound to no issuer" must not be
+            // read as "bound to every issuer", so the secret is refused at the point of use.
+            if (config.pre_registered->client_secret &&
+                !config.pre_registered->client_secret->empty()) {
+                return ClientIdentityDecision::unavailable;
+            }
+            return ClientIdentityDecision::use_pre_registered;
+        }
+        if (expected_issuer != server.issuer) {
             return ClientIdentityDecision::unavailable;
         }
         return ClientIdentityDecision::use_pre_registered;

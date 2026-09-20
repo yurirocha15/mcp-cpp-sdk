@@ -552,7 +552,13 @@ struct OAuthAuthorizationConfig {
     /// `client_identity.pre_registered` and therefore never falls back to registration.
     std::string client_id;
     std::optional<std::string> client_secret;  ///< Optional confidential-client secret.
-    std::string redirect_uri;                  ///< Redirect URI the authorization response returns to.
+    /// Issuer the shorthand credentials above are bound to. Required whenever `client_secret` is
+    /// set: the authorization server is named by the protected-resource document, so a secret that
+    /// names no issuer is refused rather than presented. "Bound to no issuer" must never be read as
+    /// "bound to every issuer". Leave empty for a public client, whose `client_id` is not a secret
+    /// and may be presented to any authorization server.
+    std::string client_issuer;
+    std::string redirect_uri;  ///< Redirect URI the authorization response returns to.
     /// Scope override. When set it wins over both the challenge scope and the resource metadata;
     /// when unset the challenge scope is preferred, then `scopes_supported`, then no scope at all.
     std::optional<std::string> scope;
