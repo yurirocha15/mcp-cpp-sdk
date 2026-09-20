@@ -2054,10 +2054,172 @@ TEST(AuthClientIdentityBindingTest, RefusesInjectedCredentialsBoundToADifferentI
     EXPECT_EQ(mcp::auth::select_client_identity(config, matching, std::nullopt),
               mcp::auth::ClientIdentityDecision::use_pre_registered);
 
-    // Credentials that never named an issuer keep their existing single-server behaviour.
+    // Credentials that never named an issuer are unbound, not universally bound. A secret that
+    // belongs to nobody in particular must not be handed to whichever authorization server the
+    // protected-resource document happened to name.
     config.pre_registered->issuer.clear();
     EXPECT_EQ(mcp::auth::select_client_identity(config, other, std::nullopt),
+              mcp::auth::ClientIdentityDecision::unavailable);
+    EXPECT_EQ(mcp::auth::select_client_identity(config, matching, std::nullopt),
+              mcp::auth::ClientIdentityDecision::unavailable);
+}
+
+// The refusal is aimed at the secret, not at injected credentials in general. A public client's
+// `client_id` is not confidential, so an unbound one still authorizes normally and the fix is not a
+// sledgehammer.
+TEST(AuthClientIdentityBindingTest, UnboundPublicClientCredentialsAreStillUsed) {
+    mcp::auth::ClientIdentityConfig config;
+    mcp::auth::OAuthClientInformation injected;
+    injected.client_id = "public-client";
+    config.pre_registered = injected;
+
+    mcp::auth::ClientIdentityServerFacts anywhere;
+    anywhere.issuer = "https://as-two.example.com";
+    anywhere.registration_endpoint = "https://as-two.example.com/register";
+
+    EXPECT_EQ(mcp::auth::select_client_identity(config, anywhere, std::nullopt),
               mcp::auth::ClientIdentityDecision::use_pre_registered);
+
+    // An empty-string secret is no secret at all and must not trip the refusal.
+    config.pre_registered->client_secret = "";
+    EXPECT_EQ(mcp::auth::select_client_identity(config, anywhere, std::nullopt),
+              mcp::auth::ClientIdentityDecision::use_pre_registered);
+}
+
+namespace {
+
+/// What an end-to-end run of the shorthand `client_id` / `client_secret` / `client_issuer` config
+/// did, seen from the authorization server's side of the wire.
+struct InjectedSecretOutcome {
+    bool authorized{false};
+    std::string failure;
+    std::vector<std::string> targets;
+    bool secret_seen_on_the_wire{false};
+};
+
+/// Drive one challenge with shorthand credentials whose bound issuer is `choose_issuer(base)`,
+/// against a loopback authorization server that advertises `client_secret_post` so a presented
+/// secret lands in the token request body verbatim and can be asserted on directly.
+///
+/// The issuer is chosen from the server's base URL rather than passed in, because the fixture binds
+/// an ephemeral port that the caller cannot know before the server exists.
+InjectedSecretOutcome try_injected_secret(
+    const std::function<std::string(const std::string&)>& choose_issuer) {
+    static constexpr std::string_view secret = "application-held-secret";
+
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&base](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            auto metadata = auth_server_metadata(base, true);
+            metadata["token_endpoint_auth_methods_supported"] = json::array({"client_secret_post"});
+            return json_response(metadata);
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "application-held-client";
+    config.client_secret = std::string(secret);
+    config.client_issuer = choose_issuer(base);
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    // asio::detached swallows exceptions, which would turn a failed assertion into a hang.
+    std::promise<InjectedSecretOutcome> result;
+    auto observed = result.get_future();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            InjectedSecretOutcome outcome;
+            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                         echoing_callback(nullptr));
+            try {
+                outcome.authorized = co_await manager.try_handle_challenge(
+                    R"(Bearer resource_metadata=")" + base + R"(/prm")");
+            } catch (const std::exception& error) {
+                outcome.failure = error.what();
+            }
+            outcome.targets = server.targets();
+            // The secret would travel in the token request body under client_secret_post, and in
+            // the base64 Authorization header under client_secret_basic; check both spellings so
+            // this cannot pass merely because the auth method changed.
+            const std::string basic_credentials = "application-held-client:" + std::string(secret);
+            const auto basic_header = mcp::auth::detail::base64_encode(
+                reinterpret_cast<const unsigned char*>(basic_credentials.data()),
+                basic_credentials.size());
+            const auto contains_secret = [&](const std::vector<std::string>& recorded) {
+                return std::any_of(recorded.begin(), recorded.end(), [&](const std::string& value) {
+                    return value.find(secret) != std::string::npos ||
+                           value.find(basic_header) != std::string::npos;
+                });
+            };
+            outcome.secret_seen_on_the_wire =
+                contains_secret(server.bodies()) || contains_secret(server.authorizations());
+            result.set_value(std::move(outcome));
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+    return observed.get();
+}
+
+bool saw_target(const std::vector<std::string>& targets, std::string_view target) {
+    return std::find(targets.begin(), targets.end(), target) != targets.end();
+}
+
+}  // namespace
+
+// The invariant: a client_secret never reaches an authorization server it is not bound to. The
+// protected-resource document names this authorization server, so binding the credentials to a
+// different one must stop the flow before the token request, not merely fail it afterwards.
+TEST(AuthClientIdentityBindingTest, DoesNotSendTheClientSecretToAnAuthorizationServerItIsNotBoundTo) {
+    const auto outcome =
+        try_injected_secret([](const std::string&) { return "https://as-elsewhere.example.com"; });
+
+    EXPECT_FALSE(outcome.authorized);
+    EXPECT_FALSE(outcome.failure.empty());
+    EXPECT_FALSE(saw_target(outcome.targets, "/token"));
+    EXPECT_FALSE(outcome.secret_seen_on_the_wire);
+}
+
+// The gap this closes: credentials that name no issuer used to fall through to `use_pre_registered`
+// for every authorization server, so the guard was inert on the shorthand path the SDK itself
+// builds. Refusing at the point of use keeps construction working for every existing caller while
+// still guaranteeing the secret is never transmitted.
+TEST(AuthClientIdentityBindingTest, RefusesAnInjectedClientSecretThatNamesNoIssuer) {
+    const auto outcome = try_injected_secret([](const std::string&) { return std::string{}; });
+
+    EXPECT_FALSE(outcome.authorized);
+    EXPECT_NE(outcome.failure.find("name no issuer"), std::string::npos) << outcome.failure;
+    EXPECT_FALSE(saw_target(outcome.targets, "/token"));
+    EXPECT_FALSE(outcome.secret_seen_on_the_wire);
+}
+
+// The positive control, without which the two tests above would pass on a build that simply never
+// authorizes. A correctly bound secret still reaches the token endpoint it belongs to, and this is
+// also what proves the wire assertions above can observe a secret when one is really sent.
+TEST(AuthClientIdentityBindingTest, AuthorizesNormallyWhenTheInjectedSecretNamesItsOwnIssuer) {
+    const auto outcome = try_injected_secret([](const std::string& base) { return base; });
+
+    EXPECT_TRUE(outcome.authorized) << outcome.failure;
+    EXPECT_TRUE(outcome.failure.empty()) << outcome.failure;
+    EXPECT_TRUE(saw_target(outcome.targets, "/token"));
+    EXPECT_TRUE(outcome.secret_seen_on_the_wire);
 }
 
 namespace {
