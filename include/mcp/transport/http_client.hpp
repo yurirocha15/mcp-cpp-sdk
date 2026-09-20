@@ -85,7 +85,9 @@ class MCP_API HttpClientTransport final : public ITransport {
     /**
      * @brief Configure a provider for HTTP Authorization: Bearer headers.
      *
-     * Configure this before starting client operations. Returning an empty string omits the header.
+     * Returning an empty string omits the header. Safe to call at any time, including while
+     * requests are in flight: each request pins the provider installed when it started, so a
+     * request already running keeps its provider and the next one picks up the new value.
      */
     void set_bearer_token_provider(std::function<std::string()> provider);
 

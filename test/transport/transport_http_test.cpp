@@ -1571,3 +1571,51 @@ TEST_F(HttpTransportTest, NonAtomicConfigurationLocksWhenListeningStarts) {
     asio::co_spawn(io_ctx_, std::move(listener), asio::detached);
     io_ctx_.run();
 }
+
+// A bearer provider installed after write_message() returns belongs to the next request, not to the
+// one that call already started. HttpClientTransport pins the provider when the request begins, the
+// way OAuthHttpClient::make_exchange() pins its per-exchange state, so the property holds without
+// any timing window to hit: the swap below happens strictly after write_message() has returned and
+// strictly before the request reaches the wire.
+TEST_F(HttpTransportTest, WriteMessagePinsBearerProviderAtRequestStart) {
+    asio::ip::tcp::acceptor acceptor(io_ctx_,
+                                     asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0));
+    const auto port = acceptor.local_endpoint().port();
+
+    std::string observed_authorization;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            beast::tcp_stream stream(co_await acceptor.async_accept(asio::use_awaitable));
+
+            beast::flat_buffer buffer;
+            http::request<http::string_body> request;
+            co_await http::async_read(stream, buffer, request, asio::use_awaitable);
+            observed_authorization = std::string(request[http::field::authorization]);
+
+            http::response<http::string_body> response{http::status::accepted, 11};
+            response.prepare_payload();
+            co_await http::async_write(stream, response, asio::use_awaitable);
+
+            beast::error_code ignored;
+            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+        },
+        asio::detached);
+
+    mcp::HttpClientTransport client(io_ctx_.get_executor(),
+                                    "http://127.0.0.1:" + std::to_string(port) + "/mcp");
+    client.set_bearer_token_provider([]() { return std::string("pinned-at-start"); });
+
+    nlohmann::json notification = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
+    auto write = client.write_message(notification.dump());
+
+    client.set_bearer_token_provider([]() { return std::string("swapped-after-start"); });
+
+    std::exception_ptr write_error;
+    asio::co_spawn(io_ctx_, std::move(write),
+                   [&write_error](std::exception_ptr error) { write_error = error; });
+    io_ctx_.run();
+
+    ASSERT_EQ(write_error, nullptr);
+    EXPECT_EQ(observed_authorization, "Bearer pinned-at-start");
+}
