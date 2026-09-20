@@ -642,12 +642,18 @@ class MCP_API OAuthAuthorizationManager : public Authenticator {
     [[nodiscard]] std::optional<OAuthClientInformation> last_client_identity() const;
 
     /**
-     * @brief Cancel any in-flight authorization flow and release parked followers with an error.
+     * @brief Abort this manager's HTTP work, release parked followers with an error, and refuse
+     *        further authorization attempts.
      *
      * @details Aborts the in-progress discovery or token-exchange HTTP exchange, expires the
      * single-flight timer so every coalesced follower wakes rather than waiting forever, and refuses
      * new authorization attempts from this point on -- including one racing this very call. Safe to
      * call from any thread. Idempotent.
+     *
+     * @note A leader parked inside the application's own authorization callback is not reachable
+     * from here: it holds no cancellable network state, so it keeps waiting on whatever the
+     * application has it waiting on. Followers coalesced onto that flow are still released, but the
+     * flow itself ends only when the application's callback returns or its executor stops.
      */
     void close() override;
 

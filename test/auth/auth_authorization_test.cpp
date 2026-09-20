@@ -11,12 +11,14 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
+#include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
@@ -1648,6 +1650,325 @@ TEST(AuthTransportCloseTest,
         EXPECT_FALSE(follower_authorized[index]) << "follower " << index;
         EXPECT_NE(follower_failure[index], nullptr) << "follower " << index;
     }
+}
+
+// The single-flight timer is a boost::asio::steady_timer, which Boost.Asio documents as unsafe for
+// concurrent use. Its two touch points -- expire_flight()'s expires_at() and a follower's
+// async_wait() in await_in_flight() -- both run synchronously on whatever thread calls them, so
+// they need mutual exclusion that the timer itself does not provide.
+//
+// Every other close test in this file drives the io_context from exactly ONE thread, which
+// serialises those two calls by accident and hides the defect; that is why all of them passed
+// under ThreadSanitizer while the race was live. Two things are needed to reach the window, and
+// both are load-bearing here:
+//
+//   * The io_context runs on SEVERAL threads, so expire_flight()'s handler and a follower's
+//     async_wait() can genuinely execute at the same instant.
+//   * Followers keep ARRIVING while close() lands. Posting a burst up front and then closing
+//     reproduces nothing: close() sets `closed` first, so every follower spawned afterwards throws
+//     in handle_challenge() without ever reaching the timer. Only a follower that read `flight`
+//     before `closed` was set and calls async_wait() after expire_flight() already ran is in the
+//     gap, so the stream has to still be draining when close() runs.
+//
+// Against the unfixed manager ThreadSanitizer reports the race directly (expires_at() versus
+// async_wait() on the timer allocated in handle_challenge()). Without a sanitizer the assertions
+// below still catch the consequence: a follower whose wait was enqueued at the pre-write deadline
+// of time_point::max() is never woken by anything, and the watchdog fires.
+TEST(AuthTransportCloseTest, CloseWakesEveryFollowerWhileTheyKeepArrivingOnAMultiThreadedIoContext) {
+    constexpr int io_thread_count = 4;
+    // A strand serialises its own followers but not the followers on the other strands, so several
+    // strands give the narrow window many independent chances per run.
+    constexpr int follower_strand_count = 4;
+    constexpr int follower_count = 3000;
+    constexpr auto close_delay = std::chrono::microseconds(300);
+
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&base](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+
+    // Parks forever, modelling an application consent prompt nobody has answered, so the flight
+    // stays open for followers to coalesce onto. Deliberately leaked into the stopped io_context
+    // exactly as the single-threaded consent test leaks it: releasing a parked leader is not what
+    // this test covers.
+    std::promise<void> leader_parked_signal;
+    auto leader_parked = leader_parked_signal.get_future();
+    auto callback =
+        [&io_ctx, &leader_parked_signal](
+            const mcp::auth::AuthorizationRequest&) -> mcp::Task<mcp::auth::AuthorizationResponse> {
+        leader_parked_signal.set_value();
+        asio::steady_timer never(io_ctx, asio::steady_timer::time_point::max());
+        boost::system::error_code ignored;
+        co_await never.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+        co_return mcp::auth::AuthorizationResponse{};
+    };
+
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(io_ctx.get_executor(), store,
+                                                                          config, callback);
+    const std::string header = R"(Bearer resource_metadata=")" + base + R"(/prm")";
+
+    // Counters rather than per-index vectors: these are written from four io threads at once, and
+    // std::vector<bool> packs its elements into shared words, which would be a race in the test
+    // itself rather than in the code under test.
+    std::atomic<int> followers_done{0};
+    std::atomic<int> followers_failed{0};
+    std::atomic<int> followers_authorized{0};
+    std::atomic<int> resumed_off_own_strand{0};
+    std::atomic<bool> timed_out{false};
+    std::exception_ptr leader_failure;
+
+    // Each follower runs on one of these, standing in for the strand a real caller is on: Client
+    // spawns its write onto its own strand and SerializedTransportWriter builds another to
+    // serialise writes. Declared out here so the follower coroutines can still name their own
+    // strand after the block below has ended.
+    std::vector<asio::strand<asio::io_context::executor_type>> strands;
+    strands.reserve(follower_strand_count);
+    for (int index = 0; index < follower_strand_count; ++index) {
+        strands.push_back(asio::make_strand(io_ctx));
+    }
+
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(30));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error && followers_done.load() < follower_count) {
+            timed_out.store(true);
+        }
+        io_ctx.stop();
+    });
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                (void)co_await manager->try_handle_challenge(header);
+            } catch (...) {
+                leader_failure = std::current_exception();
+            }
+        },
+        asio::detached);
+
+    std::vector<std::thread> runners;
+    runners.reserve(io_thread_count);
+    for (int index = 0; index < io_thread_count; ++index) {
+        runners.emplace_back([&io_ctx]() { io_ctx.run(); });
+    }
+
+    const auto parked_status = leader_parked.wait_for(std::chrono::seconds(10));
+
+    std::thread feeder;
+    if (parked_status == std::future_status::ready) {
+        feeder = std::thread([&]() {
+            for (int index = 0; index < follower_count; ++index) {
+                const int strand_index = index % follower_strand_count;
+                asio::co_spawn(
+                    strands[strand_index],
+                    [&, strand_index]() -> mcp::Task<void> {
+                        try {
+                            if (co_await manager->try_handle_challenge(header)) {
+                                followers_authorized.fetch_add(1);
+                            }
+                        } catch (...) {
+                            followers_failed.fetch_add(1);
+                        }
+                        // Serialising the timer means await_in_flight() has to initiate its wait on
+                        // the manager's flight strand, which takes the follower off its own
+                        // executor. Everything after the wait has to be handed back, or a real
+                        // caller's write would resume outside the strand that exists to serialise
+                        // it -- the race closed and write serialisation silently broken in its
+                        // place.
+                        if (!strands[strand_index].running_in_this_thread()) {
+                            resumed_off_own_strand.fetch_add(1);
+                        }
+                        if (followers_done.fetch_add(1) + 1 == follower_count) {
+                            io_ctx.stop();
+                        }
+                    },
+                    asio::detached);
+            }
+        });
+
+        // No synchronization beyond what the manager itself provides, from a thread that is not
+        // running the io_context: this is how an application tears a transport down. The delay
+        // decides where in the still-draining follower stream close() lands.
+        std::this_thread::sleep_for(close_delay);
+        manager->close();
+        feeder.join();
+    }
+
+    for (auto& runner : runners) {
+        runner.join();
+    }
+
+    ASSERT_EQ(parked_status, std::future_status::ready)
+        << "leader never reached the consent callback (discovery failed? "
+        << (leader_failure ? "yes, see leader_failure" : "no exception captured") << ")";
+    ASSERT_FALSE(timed_out.load())
+        << "watchdog: a follower was left parked on the single-flight timer (" << followers_done.load()
+        << "/" << follower_count << " woke up)";
+    EXPECT_EQ(followers_done.load(), follower_count);
+    // Every follower either joined the flight and was released by close(), or arrived after
+    // `closed` was set and threw straight away. Neither outcome authorizes anything: the leader
+    // never got past the consent callback.
+    EXPECT_EQ(followers_authorized.load(), 0);
+    EXPECT_EQ(followers_failed.load(), follower_count);
+    EXPECT_EQ(resumed_off_own_strand.load(), 0)
+        << "a follower resumed off the strand it was spawned on: await_in_flight() left the caller "
+           "on the manager's flight strand instead of handing it back";
+}
+
+// Serialising the single-flight timer means await_in_flight() initiates its wait on the manager's
+// own flight strand, which takes the follower off the executor it was spawned on. Everything after
+// that wait has to come back: Client spawns its write onto its own strand
+// (src/client/client.cpp) and SerializedTransportWriter builds another
+// (src/core/serialized_transport_writer.cpp) precisely to serialise writes, and a continuation that
+// resumed on the manager's flight strand would bypass both -- closing the timer race and silently
+// breaking write serialisation in its place.
+//
+// The multi-threaded test above also checks this, but most of its followers arrive after close()
+// has set `closed` and throw without ever parking, so the check is only as strong as the subset
+// that did park. Here exactly one follower is used and it is proven to have parked before close()
+// runs, which makes the executor assertion unconditional.
+TEST(AuthTransportCloseTest, AFollowerReleasedFromTheSingleFlightTimerResumesOnItsOwnStrand) {
+    constexpr int io_thread_count = 4;
+
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&base](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+
+    std::promise<void> leader_parked_signal;
+    auto leader_parked = leader_parked_signal.get_future();
+    auto callback =
+        [&io_ctx, &leader_parked_signal](
+            const mcp::auth::AuthorizationRequest&) -> mcp::Task<mcp::auth::AuthorizationResponse> {
+        leader_parked_signal.set_value();
+        asio::steady_timer never(io_ctx, asio::steady_timer::time_point::max());
+        boost::system::error_code ignored;
+        co_await never.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+        co_return mcp::auth::AuthorizationResponse{};
+    };
+
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(io_ctx.get_executor(), store,
+                                                                          config, callback);
+    const std::string header = R"(Bearer resource_metadata=")" + base + R"(/prm")";
+
+    // The follower's own strand, standing in for a real caller's.
+    auto follower_strand = asio::make_strand(io_ctx);
+
+    std::atomic<bool> follower_done{false};
+    std::atomic<bool> follower_threw{false};
+    std::atomic<bool> follower_on_own_strand{false};
+    std::atomic<bool> timed_out{false};
+    std::exception_ptr leader_failure;
+
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(30));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error && !follower_done.load()) {
+            timed_out.store(true);
+        }
+        io_ctx.stop();
+    });
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                (void)co_await manager->try_handle_challenge(header);
+            } catch (...) {
+                leader_failure = std::current_exception();
+            }
+        },
+        asio::detached);
+
+    std::vector<std::thread> runners;
+    runners.reserve(io_thread_count);
+    for (int index = 0; index < io_thread_count; ++index) {
+        runners.emplace_back([&io_ctx]() { io_ctx.run(); });
+    }
+
+    const auto parked_status = leader_parked.wait_for(std::chrono::seconds(10));
+
+    bool follower_was_parked = false;
+    if (parked_status == std::future_status::ready) {
+        asio::co_spawn(
+            follower_strand,
+            [&]() -> mcp::Task<void> {
+                try {
+                    (void)co_await manager->try_handle_challenge(header);
+                } catch (...) {
+                    follower_threw.store(true);
+                }
+                follower_on_own_strand.store(follower_strand.running_in_this_thread());
+                follower_done.store(true);
+                io_ctx.stop();
+            },
+            asio::detached);
+
+        // Long enough for the follower to join the flight and register its wait. What makes this
+        // deterministic is not the sleep but the check after it: if the follower had returned
+        // without parking, it would already be done.
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        follower_was_parked = !follower_done.load();
+
+        manager->close();
+    }
+
+    for (auto& runner : runners) {
+        runner.join();
+    }
+
+    ASSERT_EQ(parked_status, std::future_status::ready)
+        << "leader never reached the consent callback (discovery failed? "
+        << (leader_failure ? "yes, see leader_failure" : "no exception captured") << ")";
+    ASSERT_TRUE(follower_was_parked)
+        << "the follower finished before close() ran, so it never parked on the single-flight "
+           "timer and this test proves nothing";
+    ASSERT_FALSE(timed_out.load()) << "watchdog: close() never woke the parked follower";
+    EXPECT_TRUE(follower_threw.load()) << "a follower released by close() must report an error";
+    EXPECT_TRUE(follower_on_own_strand.load())
+        << "the follower resumed off the strand it was spawned on: await_in_flight() left it on "
+           "the manager's flight strand instead of handing it back";
 }
 
 // B2: flight->expires_at()/cancel() in close() and flight->async_wait() in await_in_flight() touch
