@@ -1743,6 +1743,10 @@ TEST_F(HttpTransportTest, NonAtomicConfigurationLocksWhenListeningStarts) {
     EXPECT_THROW(server.set_allowed_origins({"https://trusted.example"}), std::logic_error);
     EXPECT_THROW(server.set_allow_all_origins(true), std::logic_error);
     EXPECT_THROW(server.set_bearer_token_validator({}), std::logic_error);
+    EXPECT_THROW(server.set_bearer_challenge({}), std::logic_error);
+    EXPECT_THROW(server.set_protected_resource_metadata({}), std::logic_error);
+    EXPECT_THROW(server.set_unauthenticated_paths({"/health"}), std::logic_error);
+    EXPECT_THROW(server.set_async_bearer_token_validator({}), std::logic_error);
     EXPECT_THROW(server.set_max_request_body_bytes(4096), std::logic_error);
 
     server.close();
@@ -1798,6 +1802,486 @@ TEST_F(HttpTransportTest, WriteMessagePinsBearerProviderAtRequestStart) {
     EXPECT_EQ(observed_authorization, "Bearer pinned-at-start");
 }
 
+// ===========================================================================
+// WWW-Authenticate challenge rendering
+// ===========================================================================
+
+TEST(BearerChallengeTest, EmptyConfigRendersBareBearer) {
+    EXPECT_EQ(mcp::format_www_authenticate(mcp::BearerChallengeConfig{}), "Bearer");
+}
+
+TEST(BearerChallengeTest, EachParameterRendersOnItsOwn) {
+    mcp::BearerChallengeConfig realm_only;
+    realm_only.realm = "mcp";
+    EXPECT_EQ(mcp::format_www_authenticate(realm_only), R"(Bearer realm="mcp")");
+
+    mcp::BearerChallengeConfig error_only;
+    error_only.error = "invalid_token";
+    EXPECT_EQ(mcp::format_www_authenticate(error_only), R"(Bearer error="invalid_token")");
+
+    mcp::BearerChallengeConfig scope_only;
+    scope_only.scope = "mcp:read mcp:write";
+    EXPECT_EQ(mcp::format_www_authenticate(scope_only), R"(Bearer scope="mcp:read mcp:write")");
+
+    mcp::BearerChallengeConfig metadata_only;
+    metadata_only.resource_metadata = "http://127.0.0.1:9000/.well-known/oauth-protected-resource/mcp";
+    EXPECT_EQ(
+        mcp::format_www_authenticate(metadata_only),
+        R"(Bearer resource_metadata="http://127.0.0.1:9000/.well-known/oauth-protected-resource/mcp")");
+}
+
+TEST(BearerChallengeTest, AllParametersRenderInDocumentedOrder) {
+    mcp::BearerChallengeConfig challenge;
+    challenge.resource_metadata = "http://127.0.0.1:9000/.well-known/oauth-protected-resource/mcp";
+    challenge.scope = "mcp:read";
+    challenge.realm = "mcp";
+    challenge.error = "invalid_token";
+
+    EXPECT_EQ(mcp::format_www_authenticate(challenge),
+              R"(Bearer realm="mcp", error="invalid_token", scope="mcp:read", )"
+              R"(resource_metadata="http://127.0.0.1:9000/.well-known/oauth-protected-resource/mcp")");
+}
+
+TEST(BearerChallengeTest, OrderIsIndependentOfAssignmentOrder) {
+    mcp::BearerChallengeConfig assigned_forwards;
+    assigned_forwards.realm = "r";
+    assigned_forwards.scope = "s";
+
+    mcp::BearerChallengeConfig assigned_backwards;
+    assigned_backwards.scope = "s";
+    assigned_backwards.realm = "r";
+
+    EXPECT_EQ(mcp::format_www_authenticate(assigned_forwards), R"(Bearer realm="r", scope="s")");
+    EXPECT_EQ(mcp::format_www_authenticate(assigned_backwards),
+              mcp::format_www_authenticate(assigned_forwards));
+}
+
+TEST(BearerChallengeTest, BackslashAndQuoteAreEscaped) {
+    mcp::BearerChallengeConfig challenge;
+    challenge.realm = R"(a"b\c)";
+
+    EXPECT_EQ(mcp::format_www_authenticate(challenge), R"(Bearer realm="a\"b\\c")");
+}
+
+TEST(BearerChallengeTest, UnquotableValueIsRejected) {
+    mcp::BearerChallengeConfig carriage_return;
+    carriage_return.realm = "mcp\r\nX-Injected: 1";
+    EXPECT_THROW(mcp::format_www_authenticate(carriage_return), std::invalid_argument);
+
+    mcp::BearerChallengeConfig non_ascii;
+    non_ascii.scope =
+        "mcp:r\xc3\xa9"
+        "ad";
+    EXPECT_THROW(mcp::format_www_authenticate(non_ascii), std::invalid_argument);
+}
+
+TEST(HttpRequestPathTest, QueryAndFragmentAreStripped) {
+    EXPECT_EQ(mcp::http_request_path("/health"), "/health");
+    EXPECT_EQ(mcp::http_request_path("/health?probe=1"), "/health");
+    EXPECT_EQ(mcp::http_request_path("/health#frag"), "/health");
+    EXPECT_EQ(mcp::http_request_path("/health?a=1#frag"), "/health");
+}
+
+TEST(ProtectedResourceMetadataTest, PathInsertsTheWellKnownSegmentBeforeTheResourcePath) {
+    // RFC 9728 3.1: a resource with a path is described under that path, not at the bare
+    // well-known location. Publishing at the bare path would leave clients looking elsewhere.
+    mcp::ProtectedResourceMetadataConfig with_path;
+    with_path.resource = "https://h/mcp";
+    EXPECT_EQ(mcp::protected_resource_metadata_path(with_path),
+              "/.well-known/oauth-protected-resource/mcp");
+    EXPECT_EQ(mcp::protected_resource_metadata_url(with_path),
+              "https://h/.well-known/oauth-protected-resource/mcp");
+
+    mcp::ProtectedResourceMetadataConfig nested;
+    nested.resource = "https://h/a/b";
+    EXPECT_EQ(mcp::protected_resource_metadata_path(nested),
+              "/.well-known/oauth-protected-resource/a/b");
+}
+
+TEST(ProtectedResourceMetadataTest, PathIsBareOnlyForAResourceAtTheOriginRoot) {
+    mcp::ProtectedResourceMetadataConfig root;
+    root.resource = "https://h";
+    EXPECT_EQ(mcp::protected_resource_metadata_path(root), "/.well-known/oauth-protected-resource");
+
+    mcp::ProtectedResourceMetadataConfig trailing_slash;
+    trailing_slash.resource = "https://h/";
+    EXPECT_EQ(mcp::protected_resource_metadata_path(trailing_slash),
+              "/.well-known/oauth-protected-resource");
+}
+
+TEST(ProtectedResourceMetadataTest, AnExplicitPathOverridesTheDerivation) {
+    mcp::ProtectedResourceMetadataConfig overridden;
+    overridden.resource = "https://h/mcp";
+    overridden.path = "/custom-metadata";
+
+    EXPECT_EQ(mcp::protected_resource_metadata_path(overridden), "/custom-metadata");
+    EXPECT_EQ(mcp::protected_resource_metadata_url(overridden), "https://h/custom-metadata");
+}
+
+TEST(ProtectedResourceMetadataTest, DocumentUrlIgnoresQueryAndFragmentOnTheResource) {
+    mcp::ProtectedResourceMetadataConfig noisy;
+    noisy.resource = "https://h/mcp?x=1#frag";
+
+    EXPECT_EQ(mcp::protected_resource_metadata_path(noisy),
+              "/.well-known/oauth-protected-resource/mcp");
+}
+
+TEST(ProtectedResourceMetadataTest, DocumentOmitsEmptyLists) {
+    mcp::ProtectedResourceMetadataConfig metadata;
+    metadata.resource = "http://127.0.0.1:9000/mcp";
+
+    const auto document = nlohmann::json::parse(mcp::format_protected_resource_metadata(metadata));
+
+    EXPECT_EQ(document.at("resource"), "http://127.0.0.1:9000/mcp");
+    EXPECT_FALSE(document.contains("authorization_servers"));
+    EXPECT_FALSE(document.contains("scopes_supported"));
+}
+
+// ===========================================================================
+// Server-side OAuth challenge, metadata route and unauthenticated paths
+// ===========================================================================
+
+namespace {
+
+struct ChallengeProbeResult {
+    unsigned int status{0};
+    std::string www_authenticate;
+    std::string content_type;
+    std::string body;
+};
+
+/// Fire one HTTP request at the transport and report the parts the challenge tests assert on.
+mcp::Task<ChallengeProbeResult> probe(const asio::any_io_executor& executor, unsigned short port,
+                                      http::verb method, const std::string& target,
+                                      const std::string& body = {},
+                                      const std::string& bearer_token = {}) {
+    beast::tcp_stream stream(executor);
+    asio::ip::tcp::resolver resolver(executor);
+    auto endpoints =
+        co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
+    co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+
+    http::request<http::string_body> request{method, target, 11};
+    request.set(http::field::host, "127.0.0.1");
+    request.set(http::field::content_type, "application/json");
+    if (!bearer_token.empty()) {
+        request.set(http::field::authorization, "Bearer " + bearer_token);
+    }
+    request.body() = body;
+    request.prepare_payload();
+    co_await http::async_write(stream, request, asio::use_awaitable);
+
+    beast::flat_buffer response_buffer;
+    http::response<http::string_body> response;
+    co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
+
+    ChallengeProbeResult result;
+    result.status = response.result_int();
+    result.www_authenticate = std::string(response[http::field::www_authenticate]);
+    result.content_type = std::string(response[http::field::content_type]);
+    result.body = response.body();
+
+    beast::error_code shutdown_error;
+    stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
+    co_return result;
+}
+
+constexpr std::string_view g_notification_body = R"({"jsonrpc":"2.0","method":"notifications/x"})";
+
+}  // namespace
+
+// The challenge URL must come from `resource` alone. Behind a TLS terminator, a reverse proxy or a
+// container port mapping the listener's own origin is not the one clients can reach, so a URL
+// inferred from it would be unfetchable. The listener below is deliberately bound to an ephemeral
+// port that has nothing to do with the advertised resource.
+TEST_F(HttpTransportTest, ChallengeMetadataUrlComesFromTheResourceNotTheListener) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    const auto listener_port = server->port();
+
+    mcp::ProtectedResourceMetadataConfig metadata;
+    metadata.resource = "https://mcp.example.com/mcp";
+    server->set_protected_resource_metadata(metadata);
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    ChallengeProbeResult denied;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            denied = co_await probe(io_ctx_.get_executor(), listener_port, http::verb::post, "/mcp",
+                                    std::string(g_notification_body));
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(
+        denied.www_authenticate,
+        R"(Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp")");
+    EXPECT_EQ(denied.www_authenticate.find("127.0.0.1"), std::string::npos)
+        << "the challenge leaked the listener address: " << denied.www_authenticate;
+    EXPECT_EQ(denied.www_authenticate.find(std::to_string(listener_port)), std::string::npos)
+        << "the challenge leaked the listener port: " << denied.www_authenticate;
+}
+
+TEST_F(HttpTransportTest, UnconfiguredTransportSendsBareBearerChallenge) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    const auto port = server->port();
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    ChallengeProbeResult denied;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            denied = co_await probe(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                    std::string(g_notification_body));
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(denied.status, 401);
+    EXPECT_EQ(denied.www_authenticate, "Bearer");
+}
+
+TEST_F(HttpTransportTest, ConfiguredChallengeIsSentOnUnauthorized) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+
+    mcp::BearerChallengeConfig challenge;
+    challenge.realm = "mcp";
+    challenge.scope = "mcp:read";
+    challenge.resource_metadata = "http://127.0.0.1:9000/.well-known/oauth-protected-resource/mcp";
+    server->set_bearer_challenge(challenge);
+    const auto port = server->port();
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    ChallengeProbeResult denied;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            denied = co_await probe(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                    std::string(g_notification_body));
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(denied.status, 401);
+    EXPECT_EQ(denied.www_authenticate,
+              R"(Bearer realm="mcp", scope="mcp:read", )"
+              R"(resource_metadata="http://127.0.0.1:9000/.well-known/oauth-protected-resource/mcp")");
+}
+
+TEST_F(HttpTransportTest, ProtectedResourceMetadataIsReadableWithoutAToken) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    const auto port = server->port();
+
+    mcp::ProtectedResourceMetadataConfig metadata;
+    metadata.resource = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    metadata.authorization_servers = {"http://127.0.0.1:9000"};
+    metadata.scopes_supported = {"mcp:read"};
+    server->set_protected_resource_metadata(metadata);
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    ChallengeProbeResult document;
+    ChallengeProbeResult denied;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            document = co_await probe(io_ctx_.get_executor(), port, http::verb::get,
+                                      "/.well-known/oauth-protected-resource/mcp");
+            denied = co_await probe(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                    std::string(g_notification_body));
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    ASSERT_EQ(document.status, 200);
+    EXPECT_EQ(document.content_type, "application/json");
+    const auto parsed = nlohmann::json::parse(document.body);
+    EXPECT_EQ(parsed.at("resource"), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
+    EXPECT_EQ(parsed.at("authorization_servers"), nlohmann::json::array({"http://127.0.0.1:9000"}));
+    EXPECT_EQ(parsed.at("scopes_supported"), nlohmann::json::array({"mcp:read"}));
+
+    EXPECT_EQ(denied.status, 401);
+    EXPECT_EQ(denied.www_authenticate, R"(Bearer resource_metadata="http://127.0.0.1:)" +
+                                           std::to_string(port) +
+                                           R"(/.well-known/oauth-protected-resource/mcp")");
+}
+
+TEST_F(HttpTransportTest, ExplicitChallengeMetadataUrlSurvivesMetadataConfiguration) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    const auto port = server->port();
+
+    mcp::BearerChallengeConfig challenge;
+    challenge.resource_metadata = "http://gateway.example/.well-known/oauth-protected-resource";
+    server->set_bearer_challenge(challenge);
+
+    mcp::ProtectedResourceMetadataConfig metadata;
+    metadata.resource = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    server->set_protected_resource_metadata(metadata);
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    ChallengeProbeResult denied;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            denied = co_await probe(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                    std::string(g_notification_body));
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(
+        denied.www_authenticate,
+        R"(Bearer resource_metadata="http://gateway.example/.well-known/oauth-protected-resource")");
+}
+
+TEST_F(HttpTransportTest, UnauthenticatedPathsAreExemptFromAuthAndExcludedFromDispatch) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    server->set_unauthenticated_paths({"/health"});
+    const auto port = server->port();
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    ChallengeProbeResult exempt;
+    ChallengeProbeResult exempt_with_query;
+    ChallengeProbeResult guarded;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            exempt = co_await probe(io_ctx_.get_executor(), port, http::verb::post, "/health",
+                                    std::string(g_notification_body));
+            exempt_with_query = co_await probe(io_ctx_.get_executor(), port, http::verb::post,
+                                               "/health?probe=1", std::string(g_notification_body));
+            guarded = co_await probe(io_ctx_.get_executor(), port, http::verb::post, "/healthy",
+                                     std::string(g_notification_body));
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    // Exempt from the bearer check, and excluded from MCP dispatch: nothing claimed the path, so
+    // it is 404 rather than an unauthenticated 202.
+    EXPECT_EQ(exempt.status, 404);
+    EXPECT_EQ(exempt_with_query.status, 404);
+    EXPECT_EQ(guarded.status, 401);
+}
+
+// The catastrophic misconfiguration: exempting the path MCP is served on. It must fail loudly.
+TEST_F(HttpTransportTest, ExemptingTheMcpPathRefusesToServeMcpUnauthenticated) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    server->set_unauthenticated_paths({"/mcp"});
+    const auto port = server->port();
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    ChallengeProbeResult dispatched;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            dispatched = co_await probe(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                        std::string(g_notification_body));
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(dispatched.status, 404);
+    EXPECT_NE(dispatched.status, 202) << "an exempt path must never reach unauthenticated dispatch";
+}
+
+TEST_F(HttpTransportTest, AnExemptPathTheMetadataRouteClaimsIsStillServed) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    const auto port = server->port();
+
+    mcp::ProtectedResourceMetadataConfig metadata;
+    metadata.resource = "https://mcp.example.com/mcp";
+    server->set_protected_resource_metadata(metadata);
+    server->set_unauthenticated_paths({"/.well-known/oauth-protected-resource/mcp"});
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    ChallengeProbeResult document;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            document = co_await probe(io_ctx_.get_executor(), port, http::verb::get,
+                                      "/.well-known/oauth-protected-resource/mcp");
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    ASSERT_EQ(document.status, 200);
+    EXPECT_EQ(nlohmann::json::parse(document.body).at("resource"), "https://mcp.example.com/mcp");
+}
+
+TEST_F(HttpTransportTest, AsyncBearerValidatorDecidesWithoutBlocking) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    std::atomic<int> validator_calls{0};
+    server->set_async_bearer_token_validator([&validator_calls](std::string token) -> mcp::Task<bool> {
+        validator_calls.fetch_add(1, std::memory_order_relaxed);
+        // Suspend, the way a real introspection call would, before deciding.
+        asio::steady_timer timer(co_await asio::this_coro::executor);
+        timer.expires_after(std::chrono::milliseconds(1));
+        co_await timer.async_wait(asio::use_awaitable);
+        co_return token == "good";
+    });
+    const auto port = server->port();
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    ChallengeProbeResult denied;
+    ChallengeProbeResult accepted;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            denied = co_await probe(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                    std::string(g_notification_body), "bad");
+            accepted = co_await probe(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                      std::string(g_notification_body), "good");
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(denied.status, 401);
+    EXPECT_EQ(denied.www_authenticate, "Bearer");
+    EXPECT_EQ(accepted.status, 202);
+    EXPECT_EQ(validator_calls.load(std::memory_order_relaxed), 2);
+}
+
+TEST_F(HttpTransportTest, OnlyOneBearerValidatorMayBeInstalled) {
+    mcp::HttpServerTransport sync_first(io_ctx_.get_executor(), "127.0.0.1", 0);
+    sync_first.set_bearer_token_validator([](std::string_view) { return true; });
+    EXPECT_THROW(sync_first.set_async_bearer_token_validator(
+                     [](std::string) -> mcp::Task<bool> { co_return true; }),
+                 std::logic_error);
+    sync_first.close();
+
+    mcp::HttpServerTransport async_first(io_ctx_.get_executor(), "127.0.0.1", 0);
+    async_first.set_async_bearer_token_validator(
+        [](std::string) -> mcp::Task<bool> { co_return true; });
+    EXPECT_THROW(async_first.set_bearer_token_validator([](std::string_view) { return true; }),
+                 std::logic_error);
+    async_first.close();
+}
+
 TEST_F(HttpTransportTest, RequestBodyBeyondTheLimitIsRejected) {
     auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
     const auto port = server->port();
@@ -1834,4 +2318,16 @@ TEST_F(HttpTransportTest, RequestBodyBeyondTheLimitIsRejected) {
     io_ctx_.run();
 
     EXPECT_EQ(status, 413);
+}
+
+TEST_F(HttpTransportTest, ProtectedResourceMetadataRequiresAnAbsoluteResourceUrl) {
+    mcp::HttpServerTransport server(io_ctx_.get_executor(), "127.0.0.1", 0);
+
+    EXPECT_THROW(server.set_protected_resource_metadata({}), std::invalid_argument);
+
+    mcp::ProtectedResourceMetadataConfig relative;
+    relative.resource = "/mcp";
+    EXPECT_THROW(server.set_protected_resource_metadata(relative), std::invalid_argument);
+
+    server.close();
 }

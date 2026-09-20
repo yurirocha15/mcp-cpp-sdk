@@ -198,7 +198,16 @@ struct StreamableHttpSessionManager::Impl {
     bool allow_all_origins_{false};
     std::unordered_set<std::string> allowed_origins_;
     BearerTokenValidator bearer_token_validator_;
+    AsyncBearerTokenValidator async_bearer_token_validator_;
     std::size_t max_request_body_bytes_{constants::g_default_max_request_body_bytes};
+    BearerChallengeConfig bearer_challenge_;
+    // Rendered once when the challenge or the metadata changes, so serving a 401 never formats.
+    std::string www_authenticate_value_{"Bearer"};
+    std::optional<ProtectedResourceMetadataConfig> protected_resource_metadata_;
+    std::string protected_resource_metadata_body_;
+    // The resolved serving path: `path` when set, else derived from `resource`.
+    std::string protected_resource_metadata_path_;
+    std::unordered_set<std::string> unauthenticated_paths_;
 
     std::atomic<bool> closed{false};
     mutable std::mutex configuration_mutex_;
@@ -459,6 +468,38 @@ struct StreamableHttpSessionManager::Impl {
         (void)stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
     }
 
+    /// @brief Render the challenge a 401 will carry, borrowing the metadata URL when unset.
+    std::string render_challenge(const BearerChallengeConfig& challenge) const {
+        auto effective = challenge;
+        if (effective.resource_metadata.empty() && protected_resource_metadata_.has_value()) {
+            effective.resource_metadata =
+                protected_resource_metadata_url(*protected_resource_metadata_);
+        }
+        return format_www_authenticate(effective);
+    }
+
+    bool is_unauthenticated_path(const StringRequest& request) const {
+        if (unauthenticated_paths_.empty()) {
+            return false;
+        }
+        const auto path = http_request_path(std::string_view(request.target()));
+        return unauthenticated_paths_.contains(std::string(path));
+    }
+
+    /// @brief Answer a GET for the configured RFC 9728 document, which needs no bearer token.
+    std::optional<StringResponse> serve_protected_resource_metadata(
+        const StringRequest& request) const {
+        if (!protected_resource_metadata_.has_value() || request.method() != http::verb::get) {
+            return std::nullopt;
+        }
+        if (http_request_path(std::string_view(request.target())) !=
+            protected_resource_metadata_path_) {
+            return std::nullopt;
+        }
+        return detail_session_mgr::make_json_response(request, http::status::ok,
+                                                      protected_resource_metadata_body_);
+    }
+
     Task<StringResponse> handle_request(const StringRequest& request,
                                         boost::asio::strand<boost::asio::any_io_executor> conn_strand,
                                         std::unique_ptr<Server>& stateless_server) {
@@ -474,15 +515,28 @@ struct StreamableHttpSessionManager::Impl {
                                                               "Origin not allowed");
         }
 
-        if (bearer_token_validator_) {
+        if (auto document = serve_protected_resource_metadata(request)) {
+            co_return std::move(*document);
+        }
+
+        const bool unauthenticated_path = is_unauthenticated_path(request);
+        if (!unauthenticated_path && (bearer_token_validator_ || async_bearer_token_validator_)) {
             const auto authorization_it = request.find(http::field::authorization);
             const auto token = authorization_it == request.end()
                                    ? std::string_view{}
                                    : http_bearer_token(std::string_view(authorization_it->value()));
-            if (token.empty() || !bearer_token_validator_(token)) {
+            // The synchronous path neither copies the token nor suspends; only an async validator
+            // pays for either.
+            bool accepted = false;
+            if (async_bearer_token_validator_) {
+                accepted = !token.empty() && co_await async_bearer_token_validator_(std::string(token));
+            } else if (bearer_token_validator_) {
+                accepted = !token.empty() && bearer_token_validator_(token);
+            }
+            if (!accepted) {
                 auto response = detail_session_mgr::make_error_response(
                     request, http::status::unauthorized, "Invalid bearer token");
-                response.set(http::field::www_authenticate, "Bearer");
+                response.set(http::field::www_authenticate, www_authenticate_value_);
                 co_return response;
             }
         }
@@ -492,6 +546,15 @@ struct StreamableHttpSessionManager::Impl {
             if (custom_response.has_value()) {
                 co_return std::move(*custom_response);
             }
+        }
+
+        if (unauthenticated_path) {
+            // An exempt path is excluded from MCP dispatch, not merely excused from the bearer
+            // check. Serving MCP here would answer it with no authentication at all, so once the
+            // metadata route and the custom handler have both declined, nothing is left to answer
+            // it.
+            co_return detail_session_mgr::make_error_response(request, http::status::not_found,
+                                                              "Not found");
         }
 
         if (request.method() == http::verb::post) {
@@ -978,7 +1041,20 @@ void StreamableHttpSessionManager::set_allow_all_origins(bool allow_all) {
 void StreamableHttpSessionManager::set_bearer_token_validator(BearerTokenValidator validator) {
     std::lock_guard lock(impl_->configuration_mutex_);
     impl_->ensure_configurable();
+    if (validator && impl_->async_bearer_token_validator_) {
+        throw std::logic_error("StreamableHttpSessionManager accepts one bearer token validator");
+    }
     impl_->bearer_token_validator_ = std::move(validator);
+}
+
+void StreamableHttpSessionManager::set_async_bearer_token_validator(
+    AsyncBearerTokenValidator validator) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    if (validator && impl_->bearer_token_validator_) {
+        throw std::logic_error("StreamableHttpSessionManager accepts one bearer token validator");
+    }
+    impl_->async_bearer_token_validator_ = std::move(validator);
 }
 
 void StreamableHttpSessionManager::set_max_request_body_bytes(std::size_t max_bytes) {
@@ -988,6 +1064,48 @@ void StreamableHttpSessionManager::set_max_request_body_bytes(std::size_t max_by
         throw std::invalid_argument("Maximum request body size must be greater than zero");
     }
     impl_->max_request_body_bytes_ = max_bytes;
+}
+
+void StreamableHttpSessionManager::set_bearer_challenge(BearerChallengeConfig challenge) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    auto rendered = impl_->render_challenge(challenge);
+    impl_->bearer_challenge_ = std::move(challenge);
+    impl_->www_authenticate_value_ = std::move(rendered);
+}
+
+void StreamableHttpSessionManager::set_protected_resource_metadata(
+    ProtectedResourceMetadataConfig metadata) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    if (metadata.resource.empty()) {
+        throw std::invalid_argument("Protected-resource metadata requires a resource URL");
+    }
+
+    auto metadata_url = protected_resource_metadata_url(metadata);
+    auto document = format_protected_resource_metadata(metadata);
+    auto challenge = impl_->bearer_challenge_;
+    if (challenge.resource_metadata.empty()) {
+        challenge.resource_metadata = std::move(metadata_url);
+    }
+    auto rendered = format_www_authenticate(challenge);
+
+    auto document_path = protected_resource_metadata_path(metadata);
+
+    impl_->protected_resource_metadata_ = std::move(metadata);
+    impl_->protected_resource_metadata_path_ = std::move(document_path);
+    impl_->protected_resource_metadata_body_ = std::move(document);
+    impl_->www_authenticate_value_ = std::move(rendered);
+}
+
+void StreamableHttpSessionManager::set_unauthenticated_paths(std::vector<std::string> paths) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    impl_->unauthenticated_paths_.clear();
+    impl_->unauthenticated_paths_.reserve(paths.size());
+    for (auto& path : paths) {
+        impl_->unauthenticated_paths_.insert(std::move(path));
+    }
 }
 
 std::size_t StreamableHttpSessionManager::session_count() const {
