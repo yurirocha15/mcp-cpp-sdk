@@ -304,6 +304,7 @@ struct HttpServerTransport::Impl {
                                      std::move(pending_it->second.session_header),
                                      std::move(pending_it->second.event_id)};
         pending_responses.erase(pending_it);
+        sessionless_request_ids.erase(request_id_key);
         co_return pending_result;
     }
 
@@ -426,6 +427,11 @@ struct HttpServerTransport::Impl {
         if (!timer_signal.has_value()) {
             co_return make_error_response(request, http::status::bad_request,
                                           "Request id already pending");
+        }
+        if (is_sessionless_discover) {
+            // Tracked so run_write can keep this response out of the shared replay store. The
+            // entry is dropped again in consume_pending_response and in close().
+            sessionless_request_ids.insert(request_id_key);
         }
 
         enqueue_incoming_message(request.body());
@@ -641,16 +647,29 @@ struct HttpServerTransport::Impl {
             co_return;
         }
 
+        std::optional<std::string> response_id_key;
+        if (response_json.contains("id")) {
+            response_id_key = response_json.at("id").dump();
+        }
+
+        // Responses to sessionless pre-gate requests must never reach the replay store. That
+        // store is a bounded ring shared with the established session, so appending them would
+        // evict the session's own replay history and turn its next Last-Event-ID resume into a
+        // 410 Gone. Sessionless requests are unauthenticated by construction, so their traffic
+        // must not be able to consume replay capacity that belongs to a real session.
+        const bool skip_event_store =
+            response_id_key.has_value() && impl->sessionless_request_ids.contains(*response_id_key);
+
         std::optional<std::string> event_id;
-        if (!impl->json_only_.load(std::memory_order_acquire)) {
+        if (!impl->json_only_.load(std::memory_order_acquire) && !skip_event_store) {
             event_id = impl->event_store.append(message);
         }
 
-        if (!response_json.contains("id")) {
+        if (!response_id_key.has_value()) {
             co_return;
         }
 
-        const auto request_id_key = response_json.at("id").dump();
+        const auto& request_id_key = *response_id_key;
         const auto pending_it = impl->pending_responses.find(request_id_key);
         if (pending_it == impl->pending_responses.end()) {
             co_return;
@@ -686,6 +705,7 @@ struct HttpServerTransport::Impl {
     bool listening_started{false};
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
+    std::unordered_set<std::string> sessionless_request_ids;
     std::optional<std::string> session_id;
     std::string negotiated_protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
     bool session_active{false};
@@ -779,6 +799,7 @@ void HttpServerTransport::close() {
             pending_entry.second.ready_timer->cancel();
         }
         impl->pending_responses.clear();
+        impl->sessionless_request_ids.clear();
 
         impl->session_id.reset();
         impl->negotiated_protocol_version = std::string(g_LATEST_PROTOCOL_VERSION);
