@@ -2103,6 +2103,67 @@ TEST(AuthTransportCloseTest, CloseThenChallengeThrowsPromptlyWithoutAnyDiscovery
     EXPECT_TRUE(requested_scopes.empty());
 }
 
+// Authenticator::try_handle_challenge() is a coroutine on the virtual this overrides, so its
+// contract is the lazy one: building the awaitable does nothing, and any error surfaces from the
+// await. Impl::handle_challenge() contains no co_await or co_return, which makes it a plain
+// function returning an awaitable, so a bare `throw` in its body fired when try_handle_challenge()
+// was *called* instead. A caller that builds the awaitable first and awaits it later -- or stores
+// it, or hands it to a combinator -- saw the exception escape from the wrong place, outside
+// whatever try/catch was wrapped around the await.
+TEST(AuthTransportCloseTest, ChallengeOnAClosedManagerThrowsFromTheAwaitNotFromTheCall) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler([&base](const http::request<http::string_body>&) {
+        return json_response(
+            {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+    });
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    std::vector<std::string> requested_scopes;
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+        io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+
+    manager->close();
+    // Well formed, so it is the closed check that refuses this and not the challenge parse.
+    const std::string header = R"(Bearer resource_metadata=")" + base + R"(/prm")";
+
+    std::optional<mcp::Task<bool>> pending;
+    bool threw_from_the_call = false;
+    try {
+        pending.emplace(manager->try_handle_challenge(header));
+    } catch (...) {
+        threw_from_the_call = true;
+    }
+    EXPECT_FALSE(threw_from_the_call);
+    ASSERT_TRUE(pending.has_value());
+
+    bool threw_from_the_await = false;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                (void)co_await std::move(*pending);
+            } catch (const std::exception&) {
+                threw_from_the_await = true;
+            }
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_TRUE(threw_from_the_await);
+    EXPECT_TRUE(server.targets().empty());
+    EXPECT_TRUE(requested_scopes.empty());
+}
+
 // N1's counterpart on OAuthAuthenticator: close() used to be stateless there (it only forwarded to
 // OAuthHttpClient::abort_pending(), which used to let a request started afterward run normally), so
 // try_refresh_token() after close() would perform a real token-refresh exchange and overwrite the
