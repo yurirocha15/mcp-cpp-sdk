@@ -348,7 +348,7 @@ NullTransport& null_transport() {
     return transport;
 }
 
-struct Server::Impl {
+struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     enum class LifecycleState : std::uint8_t {
         eUninitialized,
         eAwaitingInitialized,
@@ -374,6 +374,9 @@ struct Server::Impl {
     std::optional<CacheScope> discover_cache_scope;
     std::atomic<LifecycleState> lifecycle{LifecycleState::eUninitialized};
     std::atomic_bool shutdown_requested{false};
+    // Set by ~Server. The implementation itself outlives the Server whenever work is still
+    // in flight, so this is what tells that work its owner has gone.
+    std::atomic_bool server_gone{false};
 
     mutable std::mutex session_mutex;
     std::shared_ptr<Session> session;
@@ -464,7 +467,12 @@ Server::Server(const Implementation& server_info, const ServerCapabilities& capa
     impl_->capabilities = capabilities;
 }
 
-Server::~Server() { reset_session(); }
+Server::~Server() {
+    if (impl_) {
+        impl_->server_gone.store(true, std::memory_order_release);
+    }
+    reset_session();
+}
 
 void Server::register_tool(const Tool& tool, const std::string& name, TypeErasedHandler handler,
                            detail::ToolResultMode result_mode) {
@@ -556,6 +564,12 @@ Task<nlohmann::json> Server::send_request(const std::string& method,
 
 Task<nlohmann::json> Server::Impl::send_request(const std::string& method,
                                                 const std::optional<nlohmann::json>& params) {
+    // Distinct from the two failures below: a handler still running after its Server was
+    // destroyed has to be able to tell that apart from a session that is merely closing and
+    // from stateless dispatch, because the right response differs in each case.
+    if (server_gone.load(std::memory_order_acquire)) {
+        throw std::runtime_error("reverse RPC is unavailable: the Server has been destroyed");
+    }
     auto session = session_snapshot();
     if (!session || !session->transport || !session->strand ||
         session->stopping.load(std::memory_order_acquire)) {
@@ -715,9 +729,10 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
             session->active_dispatches.fetch_add(1, std::memory_order_relaxed);
             boost::asio::co_spawn(
                 *session->strand,
-                [this, session, json_msg = std::move(json_msg)]() mutable -> Task<void> {
+                [impl = shared_from_this(), session,
+                 json_msg = std::move(json_msg)]() mutable -> Task<void> {
                     try {
-                        co_await dispatch_on_strand(std::move(json_msg));
+                        co_await impl->dispatch_on_strand(std::move(json_msg));
                     } catch (...) {
                         // A failed request must not terminate the detached dispatcher.
                     }
@@ -819,8 +834,9 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
     }
 
     return {*transport,
-            [this](std::string method, std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
-                co_return co_await send_request(std::move(method), std::move(params));
+            [impl = shared_from_this()](std::string method,
+                                        std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
+                co_return co_await impl->send_request(std::move(method), std::move(params));
             },
             std::move(cancelled),
             std::move(progress_token),
