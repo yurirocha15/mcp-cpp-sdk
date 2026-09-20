@@ -27,9 +27,15 @@ from pathlib import Path
 FENCE_RE = re.compile(r"^```cpp\s*$(.*?)^```\s*$", re.MULTILINE | re.DOTALL)
 
 # Flags that carry the information a snippet needs: where the headers are, which
-# language standard applies, and which macros the SDK's own headers expect.
-PASSTHROUGH_PREFIXES = ("-I", "-D", "-std=", "-m")
-PASSTHROUGH_PAIRS = ("-isystem", "-include", "-imacros")
+# language standard applies, which macros the SDK's own headers expect, and which
+# toolchain root the compiler was aimed at. The last group is what makes this work
+# on macOS: CMake drives an Xcode clang with ``-isysroot <SDK>``, and without it
+# that compiler cannot find its own ``<concepts>``, so every snippet fails for a
+# reason that has nothing to do with the snippet.
+PASSTHROUGH_PREFIXES = ("-I", "-D", "-std=", "-m", "-stdlib=", "--sysroot=",
+                        "--target=")
+PASSTHROUGH_PAIRS = ("-isystem", "-include", "-imacros", "-isysroot", "--sysroot",
+                     "-arch", "-target")
 
 
 def extract_snippets(readme_path):
