@@ -496,6 +496,15 @@ struct StreamableHttpSessionManager::Impl {
                    detail_session_mgr::protocol_header_value(protocol_header_it));
     }
 
+    // Dispatching on another executor is spelled as a named coroutine rather than a lambda handed
+    // to co_spawn. A closure is built in the caller's frame and carries its captures there, and on
+    // GCC 11 an object that lives in a coroutine frame across a suspension can be corrupted -- see
+    // the SSO note in docs/contributing.rst. Taking the arguments by value moves them into this
+    // coroutine's own frame instead, leaving nothing of the request in the caller's.
+    static Task<std::string> dispatch_on_executor(Server* server, nlohmann::json request_json) {
+        co_return co_await server->dispatch_request_direct(std::move(request_json));
+    }
+
     Task<StringResponse> handle_stateless_post(const StringRequest& request,
                                                nlohmann::json request_json,
                                                std::unique_ptr<Server>& stateless_server) {
@@ -525,11 +534,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         auto response_body = co_await boost::asio::co_spawn(
-            dispatch_executor,
-            [server = stateless_server.get(),
-             request_json = std::move(request_json)]() mutable -> Task<std::string> {
-                co_return co_await server->dispatch_request_direct(std::move(request_json));
-            },
+            dispatch_executor, dispatch_on_executor(stateless_server.get(), std::move(request_json)),
             boost::asio::use_awaitable);
         co_return detail_session_mgr::make_json_response(request, http::status::ok,
                                                          std::move(response_body));
@@ -550,11 +555,7 @@ struct StreamableHttpSessionManager::Impl {
         auto discover_server = factory(dispatch_executor);
 
         auto response_body = co_await boost::asio::co_spawn(
-            dispatch_executor,
-            [server = discover_server.get(),
-             request_json = std::move(request_json)]() mutable -> Task<std::string> {
-                co_return co_await server->dispatch_request_direct(std::move(request_json));
-            },
+            dispatch_executor, dispatch_on_executor(discover_server.get(), std::move(request_json)),
             boost::asio::use_awaitable);
         co_return detail_session_mgr::make_json_response(request, http::status::ok,
                                                          std::move(response_body));
