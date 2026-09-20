@@ -528,8 +528,13 @@ Task<nlohmann::json> Server::await_reverse_response_on_strand(std::shared_ptr<Se
     session->pending_requests.erase(it);
 
     if (error) {
+        // Same defect as the peer-controlled text in the client's McpError, opposite direction:
+        // this is the error a CLIENT returned for a server-initiated request (sampling,
+        // elicitation, roots/list), stored verbatim by dispatch_response(). `message` is the
+        // client's text and this diagnostic is what the server operator logs, with no
+        // authorization step in the way, so it is flattened and bounded before it goes in.
         throw std::runtime_error("JSON-RPC error " + std::to_string(error->code) + ": " +
-                                 error->message);
+                                 detail::sanitize_for_diagnostics(error->message));
     }
 
     co_return json_result;

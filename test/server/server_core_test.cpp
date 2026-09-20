@@ -1291,3 +1291,152 @@ TEST_F(ServerCoreTest, DiscoverWorksAgainAfterInitializeIdempotently) {
 
     EXPECT_TRUE(server.is_initialized());
 }
+
+namespace {
+
+// Drives one server-initiated request that the client answers with a JSON-RPC error object, and
+// reports the diagnostic the server raised.
+//
+// Same defect as the peer-controlled text in the client's McpError, opposite direction: here the
+// untrusted side is the client. Every server-initiated request -- sampling/createMessage,
+// elicitation, roots/list -- can be answered with an error whose `message` the client writes, and
+// that message is deserialized verbatim and interpolated into the runtime_error the server
+// operator logs. There is no authorization step in the way.
+struct ReverseErrorOutcome {
+    bool threw{false};
+    std::string what;
+};
+
+// A free coroutine rather than a lambda, and every operand named rather than a temporary: GCC 13
+// ICEs (build_special_member_call) on a co_await of a call taking a temporary inside a try block
+// in a capturing coroutine lambda.
+mcp::Task<void> capture_reverse_request_error(mcp::Server& server, ReverseErrorOutcome& outcome) {
+    const std::optional<nlohmann::json> params{nlohmann::json{{"probe", true}}};
+    try {
+        auto result = co_await server.send_request("sampling/createMessage", params);
+        static_cast<void>(result);
+    } catch (const std::exception& error) {
+        outcome.threw = true;
+        outcome.what = error.what();
+    }
+}
+
+ReverseErrorOutcome reverse_request_against_peer_error(boost::asio::io_context& io_ctx,
+                                                       const std::string& peer_message) {
+    using namespace std::chrono_literals;
+
+    // Named copies rather than a structured binding: GCC 13 ICEs on capturing a structured binding
+    // by copy in a coroutine lambda alongside a by-reference default.
+    auto transport_pair = mcp::create_memory_transport_pair(io_ctx.get_executor());
+    auto server_transport = transport_pair.first;
+    auto client_transport = transport_pair.second;
+    mcp::Server server({"reverse-error-server", "1.0"}, mcp::ServerCapabilities{});
+
+    ReverseErrorOutcome outcome;
+    std::atomic_bool session_ready{false};
+
+    boost::asio::co_spawn(io_ctx, server.run(server_transport, io_ctx.get_executor()),
+                          boost::asio::detached);
+
+    boost::asio::co_spawn(
+        io_ctx,
+        [client_transport, peer_message, &session_ready]() -> mcp::Task<void> {
+            co_await client_transport->write_message(make_initialize_request("init").dump());
+            static_cast<void>(co_await client_transport->read_message());
+            co_await client_transport->write_message(make_initialized_notification().dump());
+            session_ready.store(true, std::memory_order_release);
+
+            // Answer the server's reverse request with an error of the client's own choosing. The
+            // message travels as JSON, so CR/LF written here arrive as real control bytes: the
+            // encoder escapes them and the server's decoder turns them back.
+            for (;;) {
+                const auto request = nlohmann::json::parse(co_await client_transport->read_message());
+                if (!request.contains("id")) {
+                    continue;
+                }
+                co_await client_transport->write_message(
+                    make_error_response(request.at("id").get<std::string>(), mcp::g_INTERNAL_ERROR,
+                                        peer_message)
+                        .dump());
+                co_return;
+            }
+        },
+        boost::asio::detached);
+
+    boost::asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(10s);
+    watchdog.async_wait([client_transport](const boost::system::error_code& error) {
+        if (!error) {
+            client_transport->close();
+        }
+    });
+
+    boost::asio::co_spawn(
+        io_ctx,
+        [&io_ctx, &server, &outcome, &session_ready, &watchdog, client_transport]() -> mcp::Task<void> {
+            boost::asio::steady_timer poll(io_ctx);
+            for (int attempt = 0; attempt < 5000 && !session_ready.load(std::memory_order_acquire);
+                 ++attempt) {
+                poll.expires_after(1ms);
+                co_await poll.async_wait(boost::asio::use_awaitable);
+            }
+            co_await capture_reverse_request_error(server, outcome);
+            // Cancelled rather than left pending: an armed watchdog is outstanding work, and
+            // io_context::run() would sit on it for the full ten seconds after the test is done.
+            watchdog.cancel();
+            client_transport->close();
+        },
+        boost::asio::detached);
+
+    io_ctx.run();
+    return outcome;
+}
+
+}  // namespace
+
+// The message in the error a CLIENT returns for a server-initiated request is the client's text,
+// and it reaches the diagnostic the server operator logs. A client answering with CR/LF forges a
+// line in that log; a bidi override reorders the tail of the message.
+TEST_F(ServerCoreTest, ReverseRequestErrorDiagnosticFlattensThePeerChosenMessage) {
+    // "zqtripwire" is a token no other code path produces; see the tripwire assertions below.
+    // \xe2\x80\xae is U+202E RIGHT-TO-LEFT OVERRIDE, written escaped so this source file does not
+    // itself contain a bidi override.
+    const std::string forged =
+        "denied\r\n2026-09-20 INFO zqtripwire operator approved\xe2\x80\xae reordered tail";
+
+    const auto outcome = reverse_request_against_peer_error(io_ctx_, forged);
+
+    // Tripwire, ordered before the flattening assertions. send_request() has four other throw
+    // sites -- "reverse RPC is unavailable in stateless direct dispatch", "server session is
+    // closing", "duplicate pending request id", "pending request not found for id" -- none of
+    // which interpolates a byte the peer chose, and each of which would satisfy everything below
+    // for a reason unrelated to the site under test. Dump what() on failure so a vacuous pass
+    // cannot hide.
+    ASSERT_TRUE(outcome.threw) << "send_request() raised nothing at all";
+    ASSERT_EQ(outcome.what.rfind("JSON-RPC error ", 0), 0U) << "actual what(): " << outcome.what;
+    ASSERT_NE(outcome.what.find(std::to_string(mcp::g_INTERNAL_ERROR)), std::string::npos)
+        << "actual what(): " << outcome.what;
+    ASSERT_NE(outcome.what.find("zqtripwire"), std::string::npos) << "actual what(): " << outcome.what;
+
+    EXPECT_EQ(outcome.what.find('\r'), std::string::npos) << "actual what(): " << outcome.what;
+    EXPECT_EQ(outcome.what.find('\n'), std::string::npos) << "actual what(): " << outcome.what;
+    EXPECT_EQ(outcome.what.find("\xe2\x80\xae"), std::string::npos)
+        << "actual what(): " << outcome.what;
+}
+
+// The same site must bound the value too, so a client cannot flood the server operator's log
+// through a megabyte-long error message.
+TEST_F(ServerCoreTest, ReverseRequestErrorDiagnosticBoundsThePeerChosenMessage) {
+    const std::string forged = "zqtripwire" + std::string(64 * 1024, 'A');
+
+    const auto outcome = reverse_request_against_peer_error(io_ctx_, forged);
+
+    ASSERT_TRUE(outcome.threw) << "send_request() raised nothing at all";
+    ASSERT_EQ(outcome.what.rfind("JSON-RPC error ", 0), 0U)
+        << "actual what() prefix: " << outcome.what.substr(0, 80);
+    ASSERT_NE(outcome.what.find("zqtripwire"), std::string::npos)
+        << "actual what() prefix: " << outcome.what.substr(0, 80);
+
+    EXPECT_LT(outcome.what.size(), forged.size()) << "what() size: " << outcome.what.size();
+    EXPECT_LE(outcome.what.size(), std::size_t{512}) << "what() size: " << outcome.what.size();
+}
