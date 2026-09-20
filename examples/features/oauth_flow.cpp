@@ -17,7 +17,7 @@
 /// and OAuthHttpClient::exchange_code() by hand compiles and appears to work, but performs no
 /// issuer binding, no `state` check and no RFC 9207 validation. See the long comment in
 /// run_client_demo(), and the "Challenge-driven authorization" section of
-/// docs/guides/oauth-security.rst.
+/// docs/concepts/oauth.rst.
 
 #include <mcp/auth/oauth.hpp>
 #include <mcp/client/client.hpp>
