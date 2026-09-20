@@ -286,6 +286,14 @@ if(BUILD_TESTING)
       test/core/gcc11_sso_crash_test.cpp)
   add_executable(mcp-sdk-tests ${TEST_SRCS})
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
+  if(MSVC)
+    # A gtest translation unit emits a COMDAT section per template
+    # instantiation, and the suites built on nlohmann::json and Boost.Asio
+    # instantiate enough of them to pass the 65,279 sections a COFF object can
+    # hold (error C1128). The flag lifts that limit to 2^32; the only cost is a
+    # larger object file.
+    target_compile_options(mcp-sdk-tests PRIVATE /bigobj)
+  endif()
 
   include(GoogleTest)
   # Default per-test timeout so one deadlocked test cannot stall a ctest run for
