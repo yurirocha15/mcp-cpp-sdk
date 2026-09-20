@@ -17,6 +17,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -1002,7 +1003,64 @@ TEST_F(ServerCoreTest, DiscoverAcceptsMetaWithoutMutatingLifecycle) {
     EXPECT_FALSE(server.is_initialized());
 }
 
-TEST_F(ServerCoreTest, DiscoverCachingHintsOmittedByDefaultPresentWhenConfigured) {
+TEST_F(ServerCoreTest, DiscoverAcceptsAbsentOrEmptyParamsButRejectsNonObjectParams) {
+    mcp::Server server({"params-server", "1.0"}, mcp::ServerCapabilities{});
+
+    // params absent entirely.
+    nlohmann::json response_no_params;
+    boost::asio::co_spawn(io_ctx_,
+                          server.dispatch_request_direct(nlohmann::json{
+                              {"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}}),
+                          [&response_no_params](std::exception_ptr error, std::string wire) {
+                              EXPECT_EQ(error, nullptr);
+                              response_no_params = nlohmann::json::parse(wire);
+                          });
+    io_ctx_.run();
+    ASSERT_TRUE(response_no_params.contains("result"));
+    EXPECT_EQ(response_no_params["result"]["resultType"], "complete");
+
+    io_ctx_.restart();
+
+    // params present but an empty object.
+    nlohmann::json response_empty_params;
+    boost::asio::co_spawn(
+        io_ctx_,
+        server.dispatch_request_direct(nlohmann::json{{"jsonrpc", "2.0"},
+                                                      {"id", "d2"},
+                                                      {"method", "server/discover"},
+                                                      {"params", nlohmann::json::object()}}),
+        [&response_empty_params](std::exception_ptr error, std::string wire) {
+            EXPECT_EQ(error, nullptr);
+            response_empty_params = nlohmann::json::parse(wire);
+        });
+    io_ctx_.run();
+    ASSERT_TRUE(response_empty_params.contains("result"));
+    EXPECT_EQ(response_empty_params["result"]["resultType"], "complete");
+
+    io_ctx_.restart();
+
+    // params present but not an object: rejected pre-dispatch as an invalid request, the same
+    // as for any other method (see validate_request_envelope).
+    nlohmann::json response_bad_params;
+    boost::asio::co_spawn(io_ctx_,
+                          server.dispatch_request_direct(nlohmann::json{{"jsonrpc", "2.0"},
+                                                                        {"id", "d3"},
+                                                                        {"method", "server/discover"},
+                                                                        {"params", "not-an-object"}}),
+                          [&response_bad_params](std::exception_ptr error, std::string wire) {
+                              EXPECT_EQ(error, nullptr);
+                              response_bad_params = nlohmann::json::parse(wire);
+                          });
+    io_ctx_.run();
+    ASSERT_TRUE(response_bad_params.contains("error"));
+    EXPECT_EQ(response_bad_params["error"]["code"], mcp::g_INVALID_REQUEST);
+}
+
+// server/utilities/caching.md requires servers to include caching hints on every "complete"
+// result, server/discover listed first; an absent ttlMs "should only occur in older server
+// versions". This SDK therefore always emits ttlMs (default 0) and cacheScope (default
+// "private", the conservative choice absent a spec-stated default) unless overridden.
+TEST_F(ServerCoreTest, DiscoverCachingHintsPresentWithDefaultsOverriddenWhenConfigured) {
     mcp::Server default_server({"default-server", "1.0"}, mcp::ServerCapabilities{});
 
     nlohmann::json default_response;
@@ -1016,8 +1074,10 @@ TEST_F(ServerCoreTest, DiscoverCachingHintsOmittedByDefaultPresentWhenConfigured
     io_ctx_.run();
 
     ASSERT_TRUE(default_response.contains("result"));
-    EXPECT_FALSE(default_response["result"].contains("ttlMs"));
-    EXPECT_FALSE(default_response["result"].contains("cacheScope"));
+    ASSERT_TRUE(default_response["result"].contains("ttlMs"));
+    EXPECT_EQ(default_response["result"]["ttlMs"], 0);
+    ASSERT_TRUE(default_response["result"].contains("cacheScope"));
+    EXPECT_EQ(default_response["result"]["cacheScope"], "private");
 
     io_ctx_.restart();
 
@@ -1040,6 +1100,139 @@ TEST_F(ServerCoreTest, DiscoverCachingHintsOmittedByDefaultPresentWhenConfigured
     EXPECT_EQ(configured_response["result"]["ttlMs"], 3600000);
     ASSERT_TRUE(configured_response["result"].contains("cacheScope"));
     EXPECT_EQ(configured_response["result"]["cacheScope"], "public");
+
+    io_ctx_.restart();
+
+    // Explicitly configuring CacheScope::ePrivate must also serialize correctly, distinct from
+    // it merely being the unconfigured default asserted above.
+    mcp::Server explicit_private_server({"explicit-private-server", "1.0"}, mcp::ServerCapabilities{});
+    explicit_private_server.set_discover_cache_scope(mcp::CacheScope::ePrivate);
+
+    nlohmann::json explicit_private_response;
+    boost::asio::co_spawn(io_ctx_,
+                          explicit_private_server.dispatch_request_direct(nlohmann::json{
+                              {"jsonrpc", "2.0"}, {"id", "d3"}, {"method", "server/discover"}}),
+                          [&explicit_private_response](std::exception_ptr error, std::string wire) {
+                              EXPECT_EQ(error, nullptr);
+                              explicit_private_response = nlohmann::json::parse(wire);
+                          });
+    io_ctx_.run();
+
+    ASSERT_TRUE(explicit_private_response.contains("result"));
+    ASSERT_TRUE(explicit_private_response["result"].contains("cacheScope"));
+    EXPECT_EQ(explicit_private_response["result"]["cacheScope"], "private");
+}
+
+TEST_F(ServerCoreTest, SetDiscoverTtlMsRejectsNegativeValues) {
+    mcp::Server server({"negative-ttl-server", "1.0"}, mcp::ServerCapabilities{});
+    EXPECT_THROW(server.set_discover_ttl_ms(-1), std::invalid_argument);
+}
+
+TEST_F(ServerCoreTest, InstructionsAppearInBothInitializeAndDiscoverWhenSet) {
+    mcp::Server server({"instructed-server", "1.0"}, mcp::ServerCapabilities{});
+    server.set_instructions("Use the tools wisely.");
+
+    nlohmann::json discover_response;
+    boost::asio::co_spawn(io_ctx_,
+                          server.dispatch_request_direct(nlohmann::json{
+                              {"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}}),
+                          [&discover_response](std::exception_ptr error, std::string wire) {
+                              EXPECT_EQ(error, nullptr);
+                              discover_response = nlohmann::json::parse(wire);
+                          });
+    io_ctx_.run();
+    ASSERT_TRUE(discover_response.contains("result"));
+    ASSERT_TRUE(discover_response["result"].contains("instructions"));
+    EXPECT_EQ(discover_response["result"]["instructions"], "Use the tools wisely.");
+
+    io_ctx_.restart();
+
+    nlohmann::json init_response;
+    boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(make_initialize_request("i1")),
+                          [&init_response](std::exception_ptr error, std::string wire) {
+                              EXPECT_EQ(error, nullptr);
+                              init_response = nlohmann::json::parse(wire);
+                          });
+    io_ctx_.run();
+    ASSERT_TRUE(init_response.contains("result"));
+    ASSERT_TRUE(init_response["result"].contains("instructions"));
+    EXPECT_EQ(init_response["result"]["instructions"], "Use the tools wisely.");
+}
+
+TEST_F(ServerCoreTest, InstructionsOmittedFromBothInitializeAndDiscoverWhenUnset) {
+    mcp::Server server({"uninstructed-server", "1.0"}, mcp::ServerCapabilities{});
+
+    nlohmann::json discover_response;
+    boost::asio::co_spawn(io_ctx_,
+                          server.dispatch_request_direct(nlohmann::json{
+                              {"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}}),
+                          [&discover_response](std::exception_ptr error, std::string wire) {
+                              EXPECT_EQ(error, nullptr);
+                              discover_response = nlohmann::json::parse(wire);
+                          });
+    io_ctx_.run();
+    ASSERT_TRUE(discover_response.contains("result"));
+    EXPECT_FALSE(discover_response["result"].contains("instructions"));
+
+    io_ctx_.restart();
+
+    nlohmann::json init_response;
+    boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(make_initialize_request("i1")),
+                          [&init_response](std::exception_ptr error, std::string wire) {
+                              EXPECT_EQ(error, nullptr);
+                              init_response = nlohmann::json::parse(wire);
+                          });
+    io_ctx_.run();
+    ASSERT_TRUE(init_response.contains("result"));
+    EXPECT_FALSE(init_response["result"].contains("instructions"));
+}
+
+TEST_F(ServerCoreTest, DiscoverCapabilitiesMatchInitializeCapabilitiesForNonTrivialSet) {
+    mcp::ServerCapabilities caps;
+    mcp::ServerCapabilities::ToolsCapability tools_cap;
+    tools_cap.listChanged = true;
+    caps.tools = tools_cap;
+    mcp::ServerCapabilities::ResourcesCapability resources_cap;
+    resources_cap.listChanged = true;
+    resources_cap.subscribe = false;
+    caps.resources = resources_cap;
+    mcp::ServerCapabilities::PromptsCapability prompts_cap;
+    prompts_cap.listChanged = true;
+    caps.prompts = prompts_cap;
+    caps.logging = nlohmann::json::object();
+
+    mcp::Server server({"capable-server", "1.0"}, caps);
+
+    nlohmann::json discover_response;
+    boost::asio::co_spawn(io_ctx_,
+                          server.dispatch_request_direct(nlohmann::json{
+                              {"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}}),
+                          [&discover_response](std::exception_ptr error, std::string wire) {
+                              EXPECT_EQ(error, nullptr);
+                              discover_response = nlohmann::json::parse(wire);
+                          });
+    io_ctx_.run();
+
+    io_ctx_.restart();
+
+    nlohmann::json init_response;
+    boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(make_initialize_request("i1")),
+                          [&init_response](std::exception_ptr error, std::string wire) {
+                              EXPECT_EQ(error, nullptr);
+                              init_response = nlohmann::json::parse(wire);
+                          });
+    io_ctx_.run();
+
+    ASSERT_TRUE(discover_response.contains("result"));
+    ASSERT_TRUE(init_response.contains("result"));
+
+    const auto& discover_caps = discover_response["result"]["capabilities"];
+    const auto& init_caps = init_response["result"]["capabilities"];
+    ASSERT_TRUE(discover_caps.contains("tools"));
+    ASSERT_TRUE(discover_caps.contains("resources"));
+    ASSERT_TRUE(discover_caps.contains("prompts"));
+    ASSERT_TRUE(discover_caps.contains("logging"));
+    EXPECT_EQ(discover_caps, init_caps);
 }
 
 TEST_F(ServerCoreTest, DiscoverWorksAgainAfterInitializeIdempotently) {
@@ -1055,17 +1248,19 @@ TEST_F(ServerCoreTest, DiscoverWorksAgainAfterInitializeIdempotently) {
     std::vector<nlohmann::json> responses;
     raw_transport->set_on_write([&responses, raw_transport](std::string_view msg) {
         responses.push_back(nlohmann::json::parse(msg));
-        if (responses.size() == 3) {
+        if (responses.size() == 4) {
             raw_transport->close();
         }
     });
 
-    nlohmann::json discover_req = {{"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}};
+    nlohmann::json discover_req_1 = {{"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}};
+    nlohmann::json discover_req_2 = {{"jsonrpc", "2.0"}, {"id", "d2"}, {"method", "server/discover"}};
     nlohmann::json ping_req = {{"jsonrpc", "2.0"}, {"id", "p1"}, {"method", "ping"}};
 
     raw_transport->enqueue_message(make_initialize_request("i1").dump());
     raw_transport->enqueue_message(make_initialized_notification().dump());
-    raw_transport->enqueue_message(discover_req.dump());
+    raw_transport->enqueue_message(discover_req_1.dump());
+    raw_transport->enqueue_message(discover_req_2.dump());
     raw_transport->enqueue_message(ping_req.dump());
 
     boost::asio::co_spawn(
@@ -1074,7 +1269,7 @@ TEST_F(ServerCoreTest, DiscoverWorksAgainAfterInitializeIdempotently) {
 
     io_ctx_.run();
 
-    ASSERT_EQ(responses.size(), 3);
+    ASSERT_EQ(responses.size(), 4);
     EXPECT_EQ(responses[0]["id"], "i1");
     ASSERT_TRUE(responses[0].contains("result"));
 
@@ -1082,10 +1277,15 @@ TEST_F(ServerCoreTest, DiscoverWorksAgainAfterInitializeIdempotently) {
     ASSERT_TRUE(responses[1].contains("result"));
     EXPECT_EQ(responses[1]["result"]["resultType"], "complete");
 
+    // Idempotent: a second discover call returns the exact same result (modulo the envelope id).
+    EXPECT_EQ(responses[2]["id"], "d2");
+    ASSERT_TRUE(responses[2].contains("result"));
+    EXPECT_EQ(responses[2]["result"], responses[1]["result"]);
+
     // A follow-up request after discover still requires (and gets) the eReady lifecycle state
     // reached by initialize+initialized: discover neither reset nor otherwise mutated it.
-    EXPECT_EQ(responses[2]["id"], "p1");
-    ASSERT_TRUE(responses[2].contains("result"));
+    EXPECT_EQ(responses[3]["id"], "p1");
+    ASSERT_TRUE(responses[3].contains("result"));
 
     EXPECT_TRUE(server.is_initialized());
 }

@@ -115,6 +115,12 @@ struct HttpServerTransport::Impl {
                request_json.at("method").get<std::string>() == "initialize";
     }
 
+    static bool is_discover_request(const nlohmann::json& request_json) {
+        return request_json.is_object() && request_json.contains("method") &&
+               request_json.at("method").is_string() &&
+               request_json.at("method").get<std::string>() == "server/discover";
+    }
+
     static std::string_view header_value(const StringRequest::const_iterator& header_it) {
         return {header_it->value().data(), header_it->value().size()};
     }
@@ -320,6 +326,14 @@ struct HttpServerTransport::Impl {
             }
             return make_error_response(request, http::status::bad_request,
                                        "Invalid MCP-Protocol-Version header");
+        }
+
+        if (is_discover_request(request_json)) {
+            // server/discover advertises protocol versions (see g_DISCOVERABLE_PROTOCOL_VERSIONS)
+            // outside g_SUPPORTED_PROTOCOL_VERSIONS, and is reachable with zero prior session
+            // state, so it is exempted from header validation here exactly like initialize is
+            // exempted from the negotiated-version check below.
+            return std::nullopt;
         }
 
         if (protocol_header_it == request.end() ||

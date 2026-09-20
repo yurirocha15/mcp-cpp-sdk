@@ -943,6 +943,127 @@ TEST_F(SessionManagerTest, NonInitializeWithoutSessionReturns400) {
 }
 
 // ---------------------------------------------------------------------------
+// 9b. server/discover is reachable with zero prior state in stateful mode: no session is
+// created and no Mcp-Session-Id is issued, unlike every other sessionless non-initialize
+// method (pinned above by NonInitializeWithoutSessionReturns400).
+// ---------------------------------------------------------------------------
+
+TEST_F(SessionManagerTest, SessionlessDiscoverReturns200WithoutCreatingSession) {
+    const unsigned short port = 19118;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse response;
+    std::size_t session_count = 0;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            json request = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "server/discover"}};
+            response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                            request.dump());  // no session_id
+            session_count = manager.session_count();
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(response.status, 200);
+    EXPECT_TRUE(response.session_id.empty());
+    EXPECT_EQ(session_count, 0);
+
+    auto body = json::parse(response.body);
+    ASSERT_TRUE(body.contains("result"));
+    const auto& result = body["result"];
+    EXPECT_EQ(result["resultType"], "complete");
+    EXPECT_FALSE(result["supportedVersions"].get<std::vector<std::string>>().empty());
+    ASSERT_TRUE(result.contains("_meta"));
+    EXPECT_EQ(result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "test-session-server");
+    ASSERT_TRUE(result["capabilities"].contains("tools"));
+    ASSERT_TRUE(result.contains("ttlMs"));
+    ASSERT_TRUE(result.contains("cacheScope"));
+}
+
+// ---------------------------------------------------------------------------
+// 9c. server/discover is exempted from the MCP-Protocol-Version header check that rejects any
+// version outside g_SUPPORTED_PROTOCOL_VERSIONS, so a modern client probing with its own
+// 2026-07-28 header is not rejected pre-dispatch — unlike every other method (pinned by
+// BadProtocolVersionReturns400 for initialize, and StatelessBadProtocolVersionReturns400 /
+// the discover-vs-tools-list test below for the general case).
+// ---------------------------------------------------------------------------
+
+TEST_F(SessionManagerTest, SessionlessDiscoverAcceptsUnsupportedProtocolVersionHeader) {
+    const unsigned short port = 19119;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            json request = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "server/discover"}};
+            response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                            request.dump(), {}, "2026-07-28");
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(response.status, 200);
+    auto body = json::parse(response.body);
+    ASSERT_TRUE(body.contains("result"));
+    EXPECT_EQ(body["result"]["resultType"], "complete");
+}
+
+// ---------------------------------------------------------------------------
+// 9d. Stateless mode: server/discover with a 2026-07-28 header is accepted, while tools/list
+// (non-discover) with the same header still gets the legacy 400 — pinning that the header
+// exemption is scoped to server/discover and not widened to other methods.
+// ---------------------------------------------------------------------------
+
+TEST_F(SessionManagerTest,
+       StatelessDiscoverAcceptsUnsupportedProtocolVersionHeaderToolsListStillRejected) {
+    const unsigned short port = 19120;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_stateless_json_mode(true);
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse discover_response;
+    RawResponse tools_list_response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            json discover_request = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "server/discover"}};
+            discover_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                     "/mcp", discover_request.dump(), {}, "2026-07-28");
+
+            json tools_list_request = {
+                {"jsonrpc", "2.0"}, {"method", "tools/list"}, {"params", json::object()}, {"id", 2}};
+            tools_list_response =
+                co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                     tools_list_request.dump(), {}, "2026-07-28");
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(discover_response.status, 200);
+    auto discover_body = json::parse(discover_response.body);
+    ASSERT_TRUE(discover_body.contains("result"));
+    EXPECT_EQ(discover_body["result"]["resultType"], "complete");
+
+    EXPECT_EQ(tools_list_response.status, 400);
+}
+
+// ---------------------------------------------------------------------------
 // 10. DELETE on unknown session returns 404
 // ---------------------------------------------------------------------------
 

@@ -417,7 +417,12 @@ void Server::set_instructions(std::string instructions) {
     impl_->instructions = std::move(instructions);
 }
 
-void Server::set_discover_ttl_ms(std::int64_t ttl_ms) { impl_->discover_ttl_ms = ttl_ms; }
+void Server::set_discover_ttl_ms(std::int64_t ttl_ms) {
+    if (ttl_ms < 0) {
+        throw std::invalid_argument("Discover ttlMs must be >= 0");
+    }
+    impl_->discover_ttl_ms = ttl_ms;
+}
 
 void Server::set_discover_cache_scope(CacheScope scope) { impl_->discover_cache_scope = scope; }
 
@@ -907,24 +912,29 @@ Task<std::string> Server::handle_ping_wire(const nlohmann::json& json_msg) {
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object());
 }
 
-// [gcc11-sso: wire-builders] Params carry only `_meta`, whose contents (protocolVersion,
-// clientInfo, clientCapabilities) are accepted but not yet interpreted — see WORK_PLAN 3.4.
-// This request is a pre-gate method like initialize/ping: reachable with no prior state and
-// idempotent, so it neither reads json_msg's params nor mutates lifecycle.
+// Params carry only `_meta`, whose contents (protocolVersion, clientInfo, clientCapabilities)
+// are accepted but not yet interpreted — see WORK_PLAN 3.4. This request is a pre-gate method
+// like initialize/ping: reachable with no prior state and idempotent, so it neither reads
+// json_msg's params nor mutates lifecycle.
 Task<std::string> Server::handle_discover_wire(const nlohmann::json& json_msg) {
     DiscoverResult discover_result;
-    // resultType is always "complete" here; WORK_PLAN 3.2 introduces a shared result-envelope
-    // helper for this field that other cacheable results will also use.
-    discover_result.resultType = "complete";
+    // resultType uses the DiscoverResult struct default ("complete"); WORK_PLAN 3.2 introduces
+    // a shared result-envelope helper for this field that other cacheable results will also use.
     discover_result.supportedVersions.assign(g_DISCOVERABLE_PROTOCOL_VERSIONS.begin(),
                                              g_DISCOVERABLE_PROTOCOL_VERSIONS.end());
     discover_result.capabilities = impl_->capabilities;
     discover_result.serverInfo = impl_->server_info;
     discover_result.instructions = impl_->instructions;
-    discover_result.ttlMs = impl_->discover_ttl_ms;
-    discover_result.cacheScope = impl_->discover_cache_scope;
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(),
-                               nlohmann::json(std::move(discover_result)));
+    // server/utilities/caching.md: servers MUST include caching hints on "complete" results,
+    // server/discover listed first, and MUST provide a ttlMs >= 0. ttlMs defaults to 0 ("do not
+    // cache" / immediately stale per the spec's freshness rule); an absent ttlMs "should only
+    // occur in older server versions", which this SDK is not, so it is always emitted. The spec
+    // does not state a default cacheScope, so this SDK defaults to the conservative choice,
+    // "private" (do not assume the result is safe to share across authorization contexts),
+    // until a caller explicitly opts into "public" via set_discover_cache_scope.
+    discover_result.ttlMs = impl_->discover_ttl_ms.value_or(0);
+    discover_result.cacheScope = impl_->discover_cache_scope.value_or(CacheScope::ePrivate);
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json(discover_result));
 }
 
 Task<nlohmann::json> Server::invoke_tool_impl(CallToolParams params,
