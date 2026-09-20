@@ -516,8 +516,9 @@ TEST(AuthClientIdentityLoopbackTest, PreRegisteredCredentialsAreNeverExchangedFo
     IdentityFixture fixture;
     fixture.config.server_url = base + "/mcp";
     fixture.config.redirect_uri = "http://127.0.0.1:9999/callback";
-    fixture.config.client_identity.pre_registered =
-        credentials("application-chosen-client", std::string{});
+    // Bound to the issuer these credentials were registered with, which is the precondition for a
+    // confidential client: the SDK refuses to present a secret that names no issuer.
+    fixture.config.client_identity.pre_registered = credentials("application-chosen-client", base);
     fixture.config.client_identity.pre_registered->client_secret = "application-chosen-secret";
     fixture.config.client_identity.client_metadata_url = "https://client.example/metadata.json";
     fixture.config.credential_store = fixture.credentials;
@@ -718,6 +719,9 @@ TEST(AuthTokenEndpointAuthLoopbackTest, PutsTheSecretInHttpBasicWhenTheServerAsk
     fixture.config.redirect_uri = "http://127.0.0.1:9999/callback";
     fixture.config.client_id = "confidential-client";
     fixture.config.client_secret = "confidential-secret";
+    // A confidential client must name the issuer its secret belongs to; without it the SDK refuses
+    // to present the secret at all, which is what makes the binding guard load-bearing.
+    fixture.config.client_issuer = base;
     fixture.config.policy = loopback_policy(server.origin());
 
     run_single_challenge(server, fixture, io_ctx, R"(Bearer resource_metadata=")" + base + R"(/prm")",
