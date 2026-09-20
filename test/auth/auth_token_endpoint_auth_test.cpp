@@ -1,12 +1,12 @@
 /**
  * @file auth_token_endpoint_auth_test.cpp
- * @brief Wire-level and negative-log evidence for token endpoint client authentication (Slice D):
+ * @brief Wire-level and negative-log evidence for token endpoint client authentication:
  *        the client secret goes exactly where the negotiated `token_endpoint_auth_method` says it
  *        belongs -- HTTP Basic header for `client_secret_basic`, the form body for
  *        `client_secret_post`, nowhere at all for `none` -- and it never surfaces in a diagnostic
  *        message when the token request fails.
  *
- * Slice B (client identity selection) and the decision function `select_token_endpoint_auth_method`
+ * client identity selection and the decision function `select_token_endpoint_auth_method`
  * already have coverage elsewhere; this file exercises `OAuthHttpClient::exchange_code` directly
  * against a loopback token endpoint, one exchange per test, so each assertion is about exactly where
  * bytes travelled on the wire.

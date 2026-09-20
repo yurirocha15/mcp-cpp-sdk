@@ -821,28 +821,23 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     net::strand<net::any_io_executor> strand;
     std::mutex active_mutex;
     /// Both guarded by active_mutex: written by the setters, read once per exchange in
-    /// make_exchange(). They used to be plain unsynchronised state that request coroutines read on
-    /// the client strand while an application thread could be writing it.
+    /// make_exchange().
     MetadataFetchPolicy policy;
     HostResolver host_resolver;
     std::vector<std::weak_ptr<Exchange>> active_exchanges;
     /// Set once by abort_pending(); makes the abort sticky so an exchange started afterward is
     /// refused instead of running to completion. Guarded by active_mutex alongside the list above.
     bool aborted{false};
-    // A scope's own abort latch lives on the scope (detail::OAuthScopeState), not in a container
-    // here. The client used to hold a set of aborted scope ids that nothing ever erased, so a
-    // long-lived client with a churn of short-lived scopes grew by one entry per closed scope for
-    // the life of the process. Nothing about a closed scope is retained here now.
+    // A scope's abort latch lives on the scope itself (detail::OAuthScopeState). Do not add a
+    // container of scope state here: it would have to outlive every exchange that could still
+    // consult it, which in practice means never being cleaned up.
 };
 
 OAuthHttpClient::OAuthHttpClient(const net::any_io_executor& executor)
     : impl_(std::make_shared<Impl>(executor)) {}
 
-// Both take active_mutex rather than trusting that nobody calls them after the first request. The
-// doc comments ask for that ordering, but nothing enforced it and nothing told a caller who broke
-// it: the result was a data race, which is silent right up until it is not. Installing either
-// mid-flight is now well defined -- exchanges already running keep what they started with, and the
-// next one picks up the new value.
+// Safe to call at any time, including mid-flight: exchanges already running keep what they started
+// with, and the next one picks up the new value. See configure() below for changing both together.
 void OAuthHttpClient::set_metadata_policy(MetadataFetchPolicy policy) {
     std::lock_guard lock(impl_->active_mutex);
     impl_->policy = std::move(policy);
@@ -853,14 +848,13 @@ void OAuthHttpClient::set_host_resolver(HostResolver resolver) {
     impl_->host_resolver = std::move(resolver);
 }
 
-// The two setters above are each atomic; the PAIR of them is not, and that is a security defect
-// rather than a tidiness one. Calling them one after the other leaves an interval holding one new
-// value and one old one, and make_exchange() pins whatever it finds. Resolver-first is the natural
-// order to write and the dangerous one: the redirection lands before the narrowing does, so an
-// exchange in the interval is sent where the new resolver says while being checked against the old,
-// wider allow list. The interval is however long the caller takes between the two statements -- at
-// a 1 ms gap, 9,406 of 9,985 narrowings admitted a request they were meant to refuse. One hold of
-// the mutex for both values removes the interval outright.
+// Installs both values under one lock. Use this rather than the two setters above whenever both
+// change: calling them in sequence leaves an interval holding one new value and one old one, and
+// make_exchange() pins whatever it finds. Resolver-first is the natural order to write and the
+// dangerous one, because the redirection takes effect before the narrower allow list does, so an
+// exchange in the interval is sent where the new resolver says while being checked against the old
+// one. The interval is as long as the caller takes between the two statements; at a 1 ms gap,
+// 9,406 of 9,985 narrowings admitted a request they were meant to refuse.
 void OAuthHttpClient::configure(MetadataFetchPolicy policy, HostResolver resolver) {
     std::lock_guard lock(impl_->active_mutex);
     impl_->policy = std::move(policy);
@@ -1545,14 +1539,12 @@ struct OAuthAuthorizationManager::Impl {
     /// One coalescing authorization attempt, and the channel every follower of it reads its result
     /// from.
     ///
-    /// The outcome lives here, on the attempt, rather than on the manager. It used to be a single
-    /// `bool last_flight_succeeded` member of Impl, which was wrong twice over. It was not
-    /// correlated with the attempt a follower actually joined, so a follower of one flight that
-    /// woke after a later flight had already finished read the later flight's result as its own and
-    /// could report success for an attempt that failed. And being a bare bool it carried no reason,
-    /// so a follower coalesced onto a failing leader got a bare "not authorized" while the leader
-    /// itself surfaced the full diagnostic -- including, since credentials became issuer-bound, a
-    /// refusal that names exactly what the caller has to change.
+    /// The outcome lives here, on the attempt, rather than on the manager. Holding it per-attempt
+    /// is what keeps a follower's result correlated with the flight it actually joined: a
+    /// manager-wide field would let a follower that wakes after a later flight finished read that
+    /// flight's result as its own. Carrying the exception rather than a bool is what lets a
+    /// coalesced follower see the same diagnostic as the leader, which for an issuer-bound
+    /// credential refusal names exactly what the caller has to change.
     ///
     /// `succeeded` and `failure` are written once by the leader in run_leading_challenge() and read
     /// by followers after they wake, both under `state_mutex`. `expire_flight()` is what wakes

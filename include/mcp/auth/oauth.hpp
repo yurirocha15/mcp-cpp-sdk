@@ -264,10 +264,12 @@ class MCP_API OAuthHttpClient {
      * @param policy Policy governing schemes, origins, resolved addresses, response size and
      *        redirect depth.
      *
-     * @details Must be installed before the first request. Once installed, each request is
-     * validated before host resolution, every resolved address is classified before connecting,
-     * the addresses from that single resolution are pinned for the connection, response bodies are
-     * capped, and redirects are bounded and individually re-validated.
+     * @details May be called at any time, including while requests are in flight: an exchange
+     * already running keeps the policy it started with, and the next one picks up the new value.
+     * Once installed, each request is validated before host resolution, every resolved address is
+     * classified before connecting, the addresses from that single resolution are pinned for the
+     * connection, response bodies are capped, and redirects are bounded and individually
+     * re-validated.
      *
      * @warning Do not pair this with set_host_resolver() to change both. This setter and that one
      * are individually atomic and do NOT compose: between the two calls the client holds one new

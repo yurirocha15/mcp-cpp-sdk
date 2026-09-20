@@ -1,11 +1,8 @@
 /**
  * @file auth_client_identity_test.cpp
- * @brief Tests for client identity selection (Slice B): metadata documents, injected credentials,
+ * @brief Tests for client identity selection: metadata documents, injected credentials,
  *        dynamic registration as the last resort, and the issuer binding that keeps one
  *        authorization server's credentials away from another.
- *
- * The loopback cases are the primary evidence for the slice; none of them involves a conformance
- * runner.
  */
 
 #include <gtest/gtest.h>
