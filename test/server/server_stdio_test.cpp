@@ -3,10 +3,15 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <csignal>
+#include <cstddef>
 #include <mutex>
+#include <ostream>
 #include <sstream>
+#include <streambuf>
 #include <string>
 #include <thread>
 
@@ -97,6 +102,64 @@ class BlockingStreambuf : public std::streambuf {
     bool closed_ = false;
 };
 
+/// A streambuf that collects what the server writes under a mutex and lets the test thread block
+/// until whole response lines have arrived.
+///
+/// The tests used to poll a std::ostringstream that the server thread was writing into, which is
+/// a data race on the stream's own buffer. They polled because run_stdio() offers its caller no
+/// way to learn that a response has been produced; that missing happens-before edge is recorded
+/// separately as finding F9 and is not addressed here. This only removes the race the tests were
+/// creating for themselves.
+class CollectingStreambuf : public std::streambuf {
+   public:
+    /// Blocks until `count` newline-terminated lines have been written or the budget expires.
+    /// Returns whether the count was reached.
+    bool wait_for_lines(std::size_t count, std::chrono::milliseconds budget) {
+        std::unique_lock<std::mutex> lock(mu_);
+        return cv_.wait_for(lock, budget, [&] { return lines_ >= count; });
+    }
+
+    std::string str() {
+        std::lock_guard<std::mutex> lock(mu_);
+        return buffer_;
+    }
+
+   protected:
+    int overflow(int ch) override {
+        if (ch == traits_type::eof()) {
+            return traits_type::not_eof(ch);
+        }
+        const auto byte = traits_type::to_char_type(ch);
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            buffer_.push_back(byte);
+            if (byte == '\n') {
+                ++lines_;
+            }
+        }
+        cv_.notify_all();
+        return ch;
+    }
+
+    std::streamsize xsputn(const char* data, std::streamsize count) override {
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            buffer_.append(data, static_cast<std::size_t>(count));
+            lines_ += static_cast<std::size_t>(std::count(data, data + count, '\n'));
+        }
+        cv_.notify_all();
+        return count;
+    }
+
+   private:
+    std::mutex mu_;
+    std::condition_variable cv_;
+    std::string buffer_;
+    std::size_t lines_ = 0;
+};
+
+constexpr std::chrono::milliseconds g_response_budget{10000};
+
 }  // namespace
 
 class ServerStdioTest : public ::testing::Test {
@@ -124,24 +187,19 @@ class ServerStdioTest : public ::testing::Test {
 TEST_F(ServerStdioTest, RunStdioInitializesAndResponds) {
     BlockingStreambuf sbuf;
     std::istream input(&sbuf);
-    std::ostringstream output;
+    CollectingStreambuf obuf;
+    std::ostream output(&obuf);
 
     sbuf.feed(make_initialize_request("1").dump() + "\n");
 
     std::thread server_thread([&] { server_->run_stdio(input, output); });
 
-    // Wait for the response to appear
-    for (int i = 0; i < 50; ++i) {
-        if (!output.str().empty()) {
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
+    EXPECT_TRUE(obuf.wait_for_lines(1, g_response_budget)) << "no response line was written";
 
     sbuf.close();
     server_thread.join();
 
-    auto responses = parse_responses(output.str());
+    auto responses = parse_responses(obuf.str());
     ASSERT_EQ(responses.size(), 1);
     EXPECT_EQ(responses[0]["id"], "1");
     EXPECT_TRUE(responses[0].contains("result"));
@@ -151,7 +209,8 @@ TEST_F(ServerStdioTest, RunStdioInitializesAndResponds) {
 TEST_F(ServerStdioTest, RunStdioHandlesToolCall) {
     BlockingStreambuf sbuf;
     std::istream input(&sbuf);
-    std::ostringstream output;
+    CollectingStreambuf obuf;
+    std::ostream output(&obuf);
 
     sbuf.feed(make_initialize_request("1").dump() + "\n");
     sbuf.feed(make_initialized_notification().dump() + "\n");
@@ -159,19 +218,12 @@ TEST_F(ServerStdioTest, RunStdioHandlesToolCall) {
 
     std::thread server_thread([&] { server_->run_stdio(input, output); });
 
-    // Wait for both responses
-    for (int i = 0; i < 100; ++i) {
-        auto lines = parse_responses(output.str());
-        if (lines.size() >= 2) {
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
+    EXPECT_TRUE(obuf.wait_for_lines(2, g_response_budget)) << "fewer than two response lines";
 
     sbuf.close();
     server_thread.join();
 
-    auto responses = parse_responses(output.str());
+    auto responses = parse_responses(obuf.str());
     ASSERT_GE(responses.size(), 2);
 
     auto tool_response = responses[1];
