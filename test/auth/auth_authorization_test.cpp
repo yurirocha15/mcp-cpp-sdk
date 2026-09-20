@@ -1421,6 +1421,206 @@ TEST(AuthTransportCloseTest, CloseDuringTokenExchangeAbortsTheStalledExchange) {
     EXPECT_GE(stalling.accepted(), 1);
 }
 
+// A follower must report the outcome of the flight IT joined, and must report why that flight
+// failed.
+//
+// The follower's result channel used to be a single `bool last_flight_succeeded` on the manager,
+// which was wrong in two ways at once. It was not correlated with the attempt the follower waited
+// on, so a follower woken from flight one that read the field after flight two had finished picked
+// up flight two's result. And being a bare bool it carried no reason, so a follower coalesced onto
+// a failing leader got "not authorized" with no message while the leader surfaced the full
+// diagnostic -- which matters now that a credential refusal names exactly what the caller has to
+// change.
+//
+// Both faces are provoked here in one run, and the sequencing is arranged rather than raced:
+//
+//   1. The leader of flight one parks inside the application's authorization callback.
+//   2. A follower joins flight one and parks on its timer.
+//   3. That follower's own strand is then blocked, so its wake-up cannot be delivered.
+//   4. The leader of flight one is released and fails with a distinctive message.
+//   5. A second challenge runs to completion and SUCCEEDS, which is what overwrote the shared
+//      field.
+//   6. Only then is the follower's strand released and its result read.
+//
+// Against the shared-bool version the follower reports success at step 6 -- flight two's outcome,
+// for a flight that failed. It must instead fail with flight one's message.
+TEST(AuthTransportCloseTest, AFollowerReportsItsOwnFlightsFailureNotALaterFlightsSuccess) {
+    constexpr int io_thread_count = 4;
+    const std::string leader_failure_text = "flight one refused by the application callback";
+
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&base](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm.json") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(6), asio::detached);
+
+    // The first leader runs here, and so does the gate it parks on, so the gate is only ever
+    // touched from one strand. Expiring a timer from a thread that is not the one waiting on it is
+    // the very defect the single-flight timer had; the test must not reintroduce it.
+    auto leader_strand = asio::make_strand(io_ctx);
+    auto follower_strand = asio::make_strand(io_ctx);
+    asio::steady_timer leader_gate(leader_strand, asio::steady_timer::time_point::max());
+
+    std::atomic<int> callback_calls{0};
+    std::promise<void> leader_parked_signal;
+    auto leader_parked = leader_parked_signal.get_future();
+
+    auto callback = [&](const mcp::auth::AuthorizationRequest& request)
+        -> mcp::Task<mcp::auth::AuthorizationResponse> {
+        if (callback_calls.fetch_add(1) == 0) {
+            leader_parked_signal.set_value();
+            boost::system::error_code ignored;
+            co_await leader_gate.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+            throw std::runtime_error(leader_failure_text);
+        }
+        // The second challenge is a normal, successful authorization.
+        mcp::auth::AuthorizationResponse response;
+        response.code = "test-authorization-code";
+        response.state = request.state;
+        response.iss = request.issuer;
+        co_return response;
+    };
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(io_ctx.get_executor(), store,
+                                                                          config, callback);
+    const std::string header = R"(Bearer realm="mcp", resource_metadata=")" + base + R"(/prm.json")";
+
+    std::promise<std::string> first_leader_signal;
+    auto first_leader = first_leader_signal.get_future();
+    std::promise<bool> second_leader_signal;
+    auto second_leader = second_leader_signal.get_future();
+    std::promise<std::pair<bool, std::string>> follower_signal;
+    auto follower_result = follower_signal.get_future();
+
+    std::promise<void> blocker_running_signal;
+    auto blocker_running = blocker_running_signal.get_future();
+    std::promise<void> blocker_release_signal;
+    auto blocker_release = blocker_release_signal.get_future();
+
+    std::atomic<bool> timed_out{false};
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(30));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error) {
+            timed_out.store(true);
+            io_ctx.stop();
+        }
+    });
+
+    std::vector<std::thread> runners;
+    runners.reserve(io_thread_count);
+    for (int index = 0; index < io_thread_count; ++index) {
+        runners.emplace_back([&io_ctx]() { io_ctx.run(); });
+    }
+
+    asio::co_spawn(
+        leader_strand,
+        [&]() -> mcp::Task<void> {
+            std::string message;
+            try {
+                (void)co_await manager->try_handle_challenge(header);
+                message = "<no exception>";
+            } catch (const std::exception& error) {
+                message = error.what();
+            }
+            first_leader_signal.set_value(message);
+        },
+        asio::detached);
+
+    ASSERT_EQ(leader_parked.wait_for(std::chrono::seconds(10)), std::future_status::ready)
+        << "the first leader never reached the authorization callback";
+
+    // Spawned before the blocker is posted to the same strand, so the follower has already joined
+    // the flight and suspended by the time the blocker takes the strand over. Joining happens
+    // synchronously inside try_handle_challenge(), before the coroutine's first suspension.
+    asio::co_spawn(
+        follower_strand,
+        [&]() -> mcp::Task<void> {
+            bool authorized = false;
+            std::string message;
+            try {
+                authorized = co_await manager->try_handle_challenge(header);
+            } catch (const std::exception& error) {
+                message = error.what();
+            }
+            follower_signal.set_value({authorized, message});
+        },
+        asio::detached);
+
+    // Holds the follower's strand so its wake-up stays queued while the second flight runs and
+    // finishes. This is what makes "a follower that wakes late" deterministic instead of a race.
+    asio::post(follower_strand, [&]() {
+        blocker_running_signal.set_value();
+        blocker_release.wait();
+    });
+    ASSERT_EQ(blocker_running.wait_for(std::chrono::seconds(10)), std::future_status::ready)
+        << "the follower's strand was never taken over, so nothing was held back";
+
+    // Release the first leader, which now fails.
+    asio::post(leader_strand,
+               [&leader_gate]() { leader_gate.expires_at(asio::steady_timer::time_point::min()); });
+    ASSERT_EQ(first_leader.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+    const auto first_message = first_leader.get();
+    ASSERT_NE(first_message.find(leader_failure_text), std::string::npos)
+        << "the first leader did not fail the way this test needs it to: " << first_message;
+
+    // A second, successful flight. Its result is what the shared field used to hand the follower.
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            bool authorized = false;
+            try {
+                authorized = co_await manager->try_handle_challenge(header);
+            } catch (...) {
+                authorized = false;
+            }
+            second_leader_signal.set_value(authorized);
+        },
+        asio::detached);
+    ASSERT_EQ(second_leader.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+    ASSERT_TRUE(second_leader.get())
+        << "the second flight had to succeed for this test to mean anything";
+
+    // Only now may the follower wake.
+    blocker_release_signal.set_value();
+    const auto follower_status = follower_result.wait_for(std::chrono::seconds(10));
+
+    io_ctx.stop();
+    for (auto& runner : runners) {
+        runner.join();
+    }
+
+    ASSERT_FALSE(timed_out.load()) << "watchdog fired";
+    ASSERT_EQ(follower_status, std::future_status::ready) << "the follower never woke";
+    const auto [follower_authorized, follower_message] = follower_result.get();
+
+    EXPECT_FALSE(follower_authorized)
+        << "the follower reported the LATER flight's success for a flight that failed";
+    EXPECT_NE(follower_message.find(leader_failure_text), std::string::npos)
+        << "the follower did not surface its own leader's reason, it got: " << follower_message;
+}
+
 TEST(AuthTransportCloseTest, CloseWhileAFollowerIsParkedOnTheSingleFlightTimerWakesItWithAnError) {
     asio::io_context io_ctx;
     StallingServer stalling(io_ctx);
