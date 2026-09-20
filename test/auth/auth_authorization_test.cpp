@@ -2500,16 +2500,18 @@ TEST(AuthHttpClientScopeRetentionTest, RetainsNoPerScopeStateAsAuthenticatorsCom
 // is never released from `active_exchanges`.
 //
 // The peak assertion is what keeps it honest. Without it, an instrumentation bug that always
-// reported zero would satisfy the return-to-baseline check silently.
+// reported zero would satisfy the return-to-baseline check silently. It is sampled from inside the
+// token server's handler, which runs while the exchange that asked for the token is still open, so
+// the number it reports is a count taken with an exchange in flight. Sampled after the co_await
+// instead -- where it used to be -- the exchange has already released its reference by the time the
+// count is read, and the peak would measure only the authenticators the test is deliberately
+// holding, which is not what the paragraph above claims for it.
 TEST(AuthHttpClientScopeRetentionTest, TheScopeAbortLatchIsReleasedByEveryChurnedAuthenticator) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
     const auto base = server.base_url();
 
     constexpr int churn = 16;
-    server.set_handler(
-        [](const http::request<http::string_body>&) { return json_response(token_document()); });
-    asio::co_spawn(io_ctx, server.serve(churn), asio::detached);
 
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
@@ -2517,7 +2519,17 @@ TEST(AuthHttpClientScopeRetentionTest, TheScopeAbortLatchIsReleasedByEveryChurne
 
     const auto baseline = mcp::auth::internal::live_scope_latch_count();
     std::size_t peak = baseline;
+    int in_flight_samples = 0;
     int refreshed = 0;
+
+    // Single-threaded io_context: the handler runs on the same thread as the churn coroutine, so
+    // these are plain variables rather than atomics.
+    server.set_handler([&](const http::request<http::string_body>&) {
+        ++in_flight_samples;
+        peak = std::max(peak, mcp::auth::internal::live_scope_latch_count());
+        return json_response(token_document());
+    });
+    asio::co_spawn(io_ctx, server.serve(churn), asio::detached);
 
     asio::co_spawn(
         io_ctx,
@@ -2540,12 +2552,11 @@ TEST(AuthHttpClientScopeRetentionTest, TheScopeAbortLatchIsReleasedByEveryChurne
 
                 auto authenticator = std::make_shared<mcp::auth::OAuthAuthenticator>(
                     store, http_client, config, server_url);
-                // A real exchange through the scope, so the latch is genuinely shared with an
-                // in-flight request rather than only with the scope object.
+                // A real exchange through the scope: the token server's handler runs inside this
+                // co_await, and that is where the peak is sampled.
                 if (co_await authenticator->try_refresh_token()) {
                     ++refreshed;
                 }
-                peak = std::max(peak, mcp::auth::internal::live_scope_latch_count());
                 authenticator->close();
                 live.push_back(std::move(authenticator));
             }
@@ -2558,6 +2569,9 @@ TEST(AuthHttpClientScopeRetentionTest, TheScopeAbortLatchIsReleasedByEveryChurne
     io_ctx.run();
 
     ASSERT_EQ(refreshed, churn) << "the churn did not actually perform its exchanges";
+    ASSERT_EQ(in_flight_samples, churn)
+        << "the peak was never sampled with an exchange in flight, so it reports the count at some "
+           "other moment and the comment above is describing something the test does not measure";
     EXPECT_GT(peak, baseline + 1)
         << "latches were never counted, so returning to the baseline proves nothing";
     EXPECT_EQ(mcp::auth::internal::live_scope_latch_count(), baseline)
