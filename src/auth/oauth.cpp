@@ -637,7 +637,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 
     /// The scoped counterpart, with the same guarantees confined to one scope: `scope` is latched
     /// and every exchange belonging to it is closed, while other scopes and the client's own
-    /// unscoped work carry on. Pass 0 to mean the whole client, which is what abort_pending() does.
+    /// unscoped work carry on. Pass `nullptr` to mean the whole client, which is what
+    /// abort_pending() does.
     void abort_matching(const std::shared_ptr<detail::OAuthScopeState>& scope) {
         std::vector<std::shared_ptr<Exchange>> exchanges;
         {
@@ -673,7 +674,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     }
 
     // Every request carries the scope it was issued under, so aborting that scope reaches exactly
-    // these exchanges and no others. Scope 0 is the client's own work.
+    // these exchanges and no others. A null scope is the client's own unscoped work.
     /// Build an exchange with the fetch policy and host resolver PINNED for its whole lifetime.
     ///
     /// Two reasons, and the second is not about threads at all.
