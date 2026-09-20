@@ -458,7 +458,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         if (exchange->parsed.scheme != "http") {
             throw std::runtime_error(
                 "OAuth over https requires TLS support, which this build does not provide: " +
-                exchange->url);
+                sanitize_for_diagnostics(exchange->url));
         }
 
         if (exchange->host_resolver) {
@@ -468,7 +468,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                 boost::system::error_code parse_error;
                 const auto address = net::ip::make_address(literal, parse_error);
                 if (parse_error) {
-                    throw std::runtime_error("Host resolver returned an unusable address: " + literal);
+                    throw std::runtime_error("Host resolver returned an unusable address: " +
+                                             sanitize_for_diagnostics(literal));
                 }
                 exchange->endpoints.emplace_back(address, port);
             }
@@ -666,7 +667,9 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     }
 
     Task<nlohmann::json> post_json(std::string url, std::string body, std::uint64_t scope = 0) {
-        auto label = "HTTP POST " + url;
+        // Sanitized where the label is built, not where it is thrown: `url` is moved into the
+        // exchange on the next line, and the throw site only ever sees the label.
+        auto label = "HTTP POST " + sanitize_for_diagnostics(url);
         return run_post_json(make_exchange(std::move(url), scope),
                              std::make_shared<std::string>(std::move(body)), "application/json",
                              std::move(label));
@@ -1015,7 +1018,9 @@ struct OAuthDiscoveryClient::Impl {
         UrlComponents result;
         const auto scheme_end = url.find("://");
         if (scheme_end == std::string::npos) {
-            throw std::invalid_argument("URL missing scheme: " + url);
+            // The authorization server identifier a protected-resource document names arrives here
+            // with nothing having validated it, so this is the throw site a peer reaches first.
+            throw std::invalid_argument("URL missing scheme: " + sanitize_for_diagnostics(url));
         }
         result.scheme = url.substr(0, scheme_end);
         auto rest = url.substr(scheme_end + 3);
