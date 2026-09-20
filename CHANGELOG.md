@@ -36,6 +36,17 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `OAuthHttpClient` constructed without a `MetadataFetchPolicy` now refuses
   every request (deny-all default) instead of allowing any target; callers
   must supply an explicit policy.
+- A `MetadataFetchPolicy::denied_origins` entry that is not a bare origin — it
+  carries a path (a lone trailing `/` included), a query or a fragment, or its
+  port is not a plain in-range decimal number — is now rejected instead of
+  silently ignored. `validate_metadata_url` throws `MetadataPolicyError` with
+  the new `MetadataUrlDecision::denied_origin_entry_malformed`, naming the
+  offending entry, and refuses every target until the policy is corrected.
+  Previously such an entry denied nothing, so `denied_origins` of
+  `{"https://evil.example/"}` admitted `https://evil.example`. A configuration
+  that relied on that silence is now a hard failure. `allowed_origins` is
+  unchanged: an entry that is not a bare origin still matches nothing, because
+  dropping an allow entry grants nothing and so fails closed.
 
 ## [0.2.0] - TBD
 
