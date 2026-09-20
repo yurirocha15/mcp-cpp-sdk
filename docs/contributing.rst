@@ -384,6 +384,50 @@ callee's suspensions.
 The crash manifests as ``munmap_chunk(): invalid pointer`` at process exit, not at the
 point of access, making it hard to debug without valgrind.
 
+GCC 12 and 13 Initializer-List Coroutine ICE
+---------------------------------------------
+
+**Never write an initializer list inside a co_await expression when its elements
+have non-trivial destructors.** GCC 12 and GCC 13 crash outright:
+
+.. code-block:: text
+
+   internal compiler error: in build_special_member_call, at cp/call.cc:11096
+
+Unlike the GCC 11 bug above, this is a compile-time failure, not a runtime one, and the
+diagnostic points at the closing brace of the enclosing lambda rather than the offending
+argument. GCC 13 is the default compiler on Ubuntu 24.04.
+
+**Affected** (each crashes GCC 12 and 13):
+
+.. code-block:: cpp
+
+   co_await client.call_tool("hello", nlohmann::json{{"name", "World"}});
+   co_await client.call_tool("hello", nlohmann::json({{"name", "World"}}));  // parens do not help
+   co_await client.get_prompt("greet", std::map<std::string, std::string>{{"who", "you"}});
+   co_await client.call_tool("e", std::vector<std::string>{"a", "b"});
+
+**Not affected**: ``nlohmann::json::object()``, ``std::vector<int>{1, 2, 3}`` (trivially
+destructible elements), a ``std::string`` temporary, and aggregate initialization such as
+``mcp::ClientCapabilities{}`` or ``AddArgs{.a = 3.0, .b = 4.0}``. The trigger is the
+initializer-list backing array, not the type.
+
+**Fix pattern — hoist-before-await**: bind the value to a named variable before the
+co_await expression.
+
+.. code-block:: cpp
+
+   // DO NOT: co_await client.call_tool("hello", nlohmann::json{{"name", "World"}});
+   nlohmann::json arguments{{"name", "World"}};
+   auto result = co_await client.call_tool("hello", arguments);
+
+Changing the SDK's own signatures does not help: a parameter taken by value instead of by
+const reference still crashes. Avoiding the construct at the call site is the only fix.
+
+**Detection**: ``scripts/check_readme_snippets.py`` compiles the README's complete
+examples with the toolchain that built the SDK, and CI runs it on the Linux matrix
+entries, where that toolchain is GCC.
+
 Feature Requests
 ----------------
 
