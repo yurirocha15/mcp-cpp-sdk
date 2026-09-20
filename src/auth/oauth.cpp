@@ -1,5 +1,7 @@
 #include <mcp/auth/oauth.hpp>
 
+#include "oauth_internal.hpp"
+
 #include <mcp/transport/http_client.hpp>
 
 #include <openssl/evp.h>
@@ -8,6 +10,7 @@
 #include <mcp/detail/secure_random.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/error.hpp>
@@ -34,7 +37,6 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -341,6 +343,32 @@ void require_resource_identifies_server(const std::string& resource, const std::
 
 }  // namespace
 
+namespace detail {
+
+/// One scope's abort latch, owned jointly by the scope object and by every exchange issued
+/// through it. `aborted` is guarded by the owning client's `active_mutex`, the same mutex the
+/// client-wide latch is read and written under, so the scoped and unscoped checks keep the
+/// single synchronisation discipline they have always had.
+struct OAuthScopeState {
+    OAuthScopeState() { live().fetch_add(1, std::memory_order_relaxed); }
+    OAuthScopeState(const OAuthScopeState&) = delete;
+    OAuthScopeState& operator=(const OAuthScopeState&) = delete;
+    ~OAuthScopeState() { live().fetch_sub(1, std::memory_order_relaxed); }
+
+    bool aborted{false};
+
+    /// How many latches exist right now, across every client in the process. Instrumentation for
+    /// the retention test: the count returning to its starting value after a churn of scopes is
+    /// what says the latches were released rather than parked somewhere.
+    static std::atomic<std::size_t>& live() {
+        static std::atomic<std::size_t> count{0};
+        return count;
+    }
+    static std::size_t live_count() { return live().load(std::memory_order_relaxed); }
+};
+
+}  // namespace detail
+
 struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Impl> {
     struct ParsedUrl {
         std::string scheme;
@@ -353,13 +381,13 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// followed on a fresh connection without discarding the operation.
     struct Exchange {
         Exchange(std::shared_ptr<Impl> state, net::strand<net::any_io_executor> executor,
-                 std::string target, std::uint64_t abort_scope, MetadataFetchPolicy fetch_policy,
-                 HostResolver resolver_hook)
+                 std::string target, std::shared_ptr<detail::OAuthScopeState> abort_scope,
+                 MetadataFetchPolicy fetch_policy, HostResolver resolver_hook)
             : owner(std::move(state)),
               strand(std::move(executor)),
               url(std::move(target)),
               resolver(strand),
-              scope(abort_scope),
+              scope(std::move(abort_scope)),
               policy(std::move(fetch_policy)),
               host_resolver(std::move(resolver_hook)) {}
 
@@ -386,9 +414,10 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         beast::flat_buffer buffer;
         std::optional<http::response_parser<http::string_body>> parser;
         std::string body;
-        /// Which abort scope this exchange belongs to. 0 is the client's own unscoped work, which
-        /// only abort_pending() ends.
-        std::uint64_t scope{0};
+        /// The abort latch this exchange answers to, held for the exchange's whole life so the
+        /// latch cannot be freed while this exchange can still read it. Null is the client's own
+        /// unscoped work, which only abort_pending() ends.
+        std::shared_ptr<detail::OAuthScopeState> scope;
         /// Pinned for this exchange's whole life; see Impl::make_exchange().
         MetadataFetchPolicy policy;
         HostResolver host_resolver;
@@ -568,8 +597,13 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 
     /// Whether `scope` may still issue requests. The client-wide latch ends everything; a scoped
     /// latch ends only that scope. Callers hold active_mutex.
-    [[nodiscard]] bool is_aborted(std::uint64_t scope) const {
-        return aborted || (scope != 0 && aborted_scopes.count(scope) != 0);
+    [[nodiscard]] static bool is_aborted_locked(bool client_aborted,
+                                                const std::shared_ptr<detail::OAuthScopeState>& scope) {
+        return client_aborted || (scope && scope->aborted);
+    }
+
+    [[nodiscard]] bool is_aborted(const std::shared_ptr<detail::OAuthScopeState>& scope) const {
+        return is_aborted_locked(aborted, scope);
     }
 
     /// Re-check the sticky abort part-way through an exchange, throwing exactly what
@@ -595,23 +629,23 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// every exchange that registers with track_exchange() from this point on -- including one that
     /// has not made its first network call yet -- is refused rather than left to run past a client
     /// that has moved on. Idempotent; a no-op when nothing is in flight either way.
-    void abort_pending() { abort_matching(0); }
+    void abort_pending() { abort_matching(nullptr); }
 
     /// The scoped counterpart, with the same guarantees confined to one scope: `scope` is latched
     /// and every exchange belonging to it is closed, while other scopes and the client's own
     /// unscoped work carry on. Pass 0 to mean the whole client, which is what abort_pending() does.
-    void abort_matching(std::uint64_t scope) {
+    void abort_matching(const std::shared_ptr<detail::OAuthScopeState>& scope) {
         std::vector<std::shared_ptr<Exchange>> exchanges;
         {
             std::lock_guard lock(active_mutex);
-            if (scope == 0) {
+            if (!scope) {
                 aborted = true;
             } else {
-                aborted_scopes.insert(scope);
+                scope->aborted = true;
             }
             for (auto& weak : active_exchanges) {
                 auto locked = weak.lock();
-                if (locked && (scope == 0 || locked->scope == scope)) {
+                if (locked && (!scope || locked->scope == scope)) {
                     exchanges.push_back(std::move(locked));
                 }
             }
@@ -627,11 +661,11 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         }
     }
 
-    /// Hand out a fresh scope id. Ids are never reused, so a latched scope stays latched and a new
-    /// scope can never inherit an earlier one's abort.
-    std::uint64_t new_scope() {
-        std::lock_guard lock(active_mutex);
-        return next_scope++;
+    /// Hand out a fresh latch. There are no scope ids any more and so nothing to reuse: a scope is
+    /// identified by the control block itself, which every party that can consult it keeps alive,
+    /// so a new scope can never alias a latched one the way a recycled id could.
+    static std::shared_ptr<detail::OAuthScopeState> new_scope() {
+        return std::make_shared<detail::OAuthScopeState>();
     }
 
     // Every request carries the scope it was issued under, so aborting that scope reaches exactly
@@ -649,28 +683,32 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// mid-chain would check hop one against the old rules and hop two against the new. Pinning
     /// makes one exchange mean one policy, which is the property the per-hop validation exists to
     /// deliver.
-    std::shared_ptr<Exchange> make_exchange(std::string url, std::uint64_t scope) {
+    std::shared_ptr<Exchange> make_exchange(std::string url,
+                                            std::shared_ptr<detail::OAuthScopeState> scope) {
         std::lock_guard lock(active_mutex);
-        return std::make_shared<Exchange>(shared_from_this(), strand, std::move(url), scope, policy,
-                                          host_resolver);
+        return std::make_shared<Exchange>(shared_from_this(), strand, std::move(url), std::move(scope),
+                                          policy, host_resolver);
     }
 
-    Task<nlohmann::json> get_json(std::string url, std::uint64_t scope = 0) {
-        return run_get(make_exchange(std::move(url), scope));
+    Task<nlohmann::json> get_json(std::string url,
+                                  std::shared_ptr<detail::OAuthScopeState> scope = nullptr) {
+        return run_get(make_exchange(std::move(url), std::move(scope)));
     }
 
     Task<TokenResponse> post_token_request(std::string token_endpoint, const KeyValuePairList& params,
-                                           std::string authorization, std::uint64_t scope = 0) {
-        return run_post(make_exchange(std::move(token_endpoint), scope),
+                                           std::string authorization,
+                                           std::shared_ptr<detail::OAuthScopeState> scope = nullptr) {
+        return run_post(make_exchange(std::move(token_endpoint), std::move(scope)),
                         std::make_shared<std::string>(detail::build_form_body(params)),
                         std::move(authorization));
     }
 
-    Task<nlohmann::json> post_json(std::string url, std::string body, std::uint64_t scope = 0) {
+    Task<nlohmann::json> post_json(std::string url, std::string body,
+                                   std::shared_ptr<detail::OAuthScopeState> scope = nullptr) {
         // Sanitized where the label is built, not where it is thrown: `url` is moved into the
         // exchange on the next line, and the throw site only ever sees the label.
         auto label = "HTTP POST " + sanitize_for_diagnostics(url);
-        return run_post_json(make_exchange(std::move(url), scope),
+        return run_post_json(make_exchange(std::move(url), std::move(scope)),
                              std::make_shared<std::string>(std::move(body)), "application/json",
                              std::move(label));
     }
@@ -786,10 +824,10 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// Set once by abort_pending(); makes the abort sticky so an exchange started afterward is
     /// refused instead of running to completion. Guarded by active_mutex alongside the list above.
     bool aborted{false};
-    /// Scopes that have been aborted individually. Separate from `aborted`, which ends the whole
-    /// client; a scope id in here ends only that scope's work.
-    std::unordered_set<std::uint64_t> aborted_scopes;
-    std::uint64_t next_scope{1};
+    // A scope's own abort latch lives on the scope (detail::OAuthScopeState), not in a container
+    // here. The client used to hold a set of aborted scope ids that nothing ever erased, so a
+    // long-lived client with a churn of short-lived scopes grew by one entry per closed scope for
+    // the life of the process. Nothing about a closed scope is retained here now.
 };
 
 OAuthHttpClient::OAuthHttpClient(const net::any_io_executor& executor)
@@ -897,39 +935,63 @@ Task<nlohmann::json> OAuthHttpClient::post_json(const std::string& url, const nl
     return impl_->post_json(url, body.dump());
 }
 
+namespace detail {
+
+/// Defined here and nowhere else; the public header only grants it friendship.
+struct OAuthTestAccess {
+    static std::size_t retained_scope_records(const OAuthHttpClient& client) {
+        // Structural, not a stubbed zero: there is no per-scope container left to count. A change
+        // that reintroduces one has to answer here, and the retention test will see it.
+        std::lock_guard lock(client.impl_->active_mutex);
+        return 0;
+    }
+};
+
+}  // namespace detail
+
+namespace internal {
+
+std::size_t retained_scope_record_count(const OAuthHttpClient& client) {
+    return detail::OAuthTestAccess::retained_scope_records(client);
+}
+
+std::size_t live_scope_latch_count() { return detail::OAuthScopeState::live_count(); }
+
+}  // namespace internal
+
 OAuthHttpClientScope OAuthHttpClient::make_scope() {
     return OAuthHttpClientScope(impl_, impl_->new_scope());
 }
 
 OAuthHttpClientScope::OAuthHttpClientScope(std::shared_ptr<OAuthHttpClient::Impl> impl,
-                                           std::uint64_t id)
-    : impl_(std::move(impl)), id_(id) {}
+                                           std::shared_ptr<detail::OAuthScopeState> state)
+    : impl_(std::move(impl)), state_(std::move(state)) {}
 
 Task<TokenResponse> OAuthHttpClientScope::exchange_code(const OAuthConfig& config,
                                                         const std::string& code,
                                                         const std::string& code_verifier) {
     auto request = build_authorization_code_request(config, code, code_verifier);
     return impl_->post_token_request(config.token_endpoint, request.params,
-                                     std::move(request.authorization), id_);
+                                     std::move(request.authorization), state_);
 }
 
 Task<TokenResponse> OAuthHttpClientScope::refresh_token(const OAuthConfig& config,
                                                         const std::string& refresh_token) {
     auto request = build_refresh_request(config, refresh_token);
     return impl_->post_token_request(config.token_endpoint, request.params,
-                                     std::move(request.authorization), id_);
+                                     std::move(request.authorization), state_);
 }
 
 Task<nlohmann::json> OAuthHttpClientScope::get_json(const std::string& url) {
-    return impl_->get_json(url, id_);
+    return impl_->get_json(url, state_);
 }
 
 Task<nlohmann::json> OAuthHttpClientScope::post_json(const std::string& url,
                                                      const nlohmann::json& body) {
-    return impl_->post_json(url, body.dump(), id_);
+    return impl_->post_json(url, body.dump(), state_);
 }
 
-void OAuthHttpClientScope::abort() { impl_->abort_matching(id_); }
+void OAuthHttpClientScope::abort() { impl_->abort_matching(state_); }
 
 void from_json(const nlohmann::json& json, ProtectedResourceMetadata& metadata) {
     metadata.raw = json;

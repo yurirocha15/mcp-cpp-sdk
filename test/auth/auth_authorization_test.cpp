@@ -30,6 +30,10 @@
 #include <mcp/auth/oauth.hpp>
 #include <mcp/transport/http_client.hpp>
 #include <mcp/transport/http_session_manager.hpp>
+
+// Reach-in for retained-state assertions; see the header. Not a public SDK header.
+#include "../../src/auth/oauth_internal.hpp"
+
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -2434,6 +2438,132 @@ TEST(AuthTransportCloseTest, AuthenticatorCloseThenRefreshPerformsNoNetworkIO) {
 
 // Closing one authenticator must not disable another that merely shares the same HTTP client.
 //
+// The abort latch has to outlive every exchange that could still consult it, and must not outlive
+// the process. A shared client with a churn of short-lived authenticators -- one per server across
+// a reconnect loop -- is the ordinary shape that tells the two apart: each close() latches a scope,
+// and if the client is the thing remembering which scopes are latched, it remembers one more
+// forever every time an authenticator goes away.
+//
+// Asserted on the retained records themselves, not on a stand-in that happens to move with them.
+//
+// KNOWN LIMITATION, so that nobody reads this as a live guard. This test was red before the abort
+// latch moved onto the scope: it counted one retained record per closed authenticator. It cannot go
+// red again on its own, because the container it counts no longer exists and the accessor now
+// answers zero structurally. It pins the absence of that container; it does not detect a new one.
+// The test below it, TheScopeAbortLatchIsReleasedByEveryChurnedAuthenticator, is the live guard --
+// edit that one if you are looking for the test that can still fail.
+TEST(AuthHttpClientScopeRetentionTest, RetainsNoPerScopeStateAsAuthenticatorsComeAndGo) {
+    asio::io_context io_ctx;
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+
+    mcp::auth::OAuthConfig config;
+    config.client_id = "churn-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+
+    ASSERT_EQ(mcp::auth::internal::retained_scope_record_count(*http_client), 0U)
+        << "a client that has issued no scope at all is already holding records";
+
+    // Each authenticator opens a scope, closes it, and is destroyed before the next one is built,
+    // so at no point are two of them alive together. Nothing here is still reachable afterward.
+    const auto churn_through = [&](int count, int first_index) {
+        for (int index = 0; index < count; ++index) {
+            mcp::auth::OAuthAuthenticator authenticator(
+                store, http_client, config, "http://server" + std::to_string(first_index + index));
+            authenticator.close();
+        }
+    };
+
+    constexpr int small_churn = 8;
+    constexpr int large_churn = 256;
+    churn_through(small_churn, 0);
+    const auto after_small = mcp::auth::internal::retained_scope_record_count(*http_client);
+    churn_through(large_churn, small_churn);
+    const auto after_large = mcp::auth::internal::retained_scope_record_count(*http_client);
+
+    // The shape of the bug is proportionality: what the client keeps must not be a function of how
+    // many authenticators have come and gone.
+    EXPECT_EQ(after_small, after_large)
+        << "retained records grew from " << after_small << " to " << after_large << " over "
+        << large_churn << " more closed authenticators";
+    EXPECT_EQ(after_large, 0U) << "the client kept " << after_large
+                               << " abort records for authenticators that are gone";
+}
+
+// The live guard, and the one to edit if you are changing how scopes are held.
+//
+// Added together with the fix, so it has never been seen failing -- but unlike the test above it,
+// it CAN fail. It counts the abort latches alive in the process, drives a churn of authenticators
+// that each run a real token refresh through their scope, and requires the count to come back to
+// where it started. It goes red the day a latch outlives the scope it belongs to: a capture that
+// escapes into the client, a reference cycle between the latch and an exchange, or an exchange that
+// is never released from `active_exchanges`.
+//
+// The peak assertion is what keeps it honest. Without it, an instrumentation bug that always
+// reported zero would satisfy the return-to-baseline check silently.
+TEST(AuthHttpClientScopeRetentionTest, TheScopeAbortLatchIsReleasedByEveryChurnedAuthenticator) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    constexpr int churn = 16;
+    server.set_handler(
+        [](const http::request<http::string_body>&) { return json_response(token_document()); });
+    asio::co_spawn(io_ctx, server.serve(churn), asio::detached);
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+    http_client->set_metadata_policy(loopback_policy(server.origin()));
+
+    const auto baseline = mcp::auth::internal::live_scope_latch_count();
+    std::size_t peak = baseline;
+    int refreshed = 0;
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            // Held together on purpose: the peak has to exceed the baseline by more than one, so a
+            // counter that merely toggled would not satisfy it.
+            std::vector<std::shared_ptr<mcp::auth::OAuthAuthenticator>> live;
+            for (int index = 0; index < churn; ++index) {
+                const auto server_url = base + "/server" + std::to_string(index);
+                mcp::auth::TokenResponse stored;
+                stored.access_token = "stale-access-token";
+                stored.token_type = "Bearer";
+                stored.refresh_token = "stale-refresh-token";
+                store->store(server_url, stored);
+
+                mcp::auth::OAuthConfig config;
+                config.client_id = "churn-client";
+                config.token_endpoint = base + "/token";
+                config.redirect_uri = "http://127.0.0.1:9999/callback";
+
+                auto authenticator = std::make_shared<mcp::auth::OAuthAuthenticator>(
+                    store, http_client, config, server_url);
+                // A real exchange through the scope, so the latch is genuinely shared with an
+                // in-flight request rather than only with the scope object.
+                if (co_await authenticator->try_refresh_token()) {
+                    ++refreshed;
+                }
+                peak = std::max(peak, mcp::auth::internal::live_scope_latch_count());
+                authenticator->close();
+                live.push_back(std::move(authenticator));
+            }
+            // Every scope goes away here; nothing the test holds references a latch afterward.
+            live.clear();
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    ASSERT_EQ(refreshed, churn) << "the churn did not actually perform its exchanges";
+    EXPECT_GT(peak, baseline + 1)
+        << "latches were never counted, so returning to the baseline proves nothing";
+    EXPECT_EQ(mcp::auth::internal::live_scope_latch_count(), baseline)
+        << "a scope's abort latch outlived the authenticator that owned it";
+}
+
 // OAuthAuthenticator takes its client by shared_ptr, which is an invitation to share one across
 // several servers. close() used to call OAuthHttpClient::abort_pending(), which latches the whole
 // client irreversibly -- right for a client its owner built for itself, wrong for one the
