@@ -1030,6 +1030,9 @@ TEST_F(HttpTransportTest, SessionlessDiscoverSucceedsAfterSessionEstablished) {
     // transport-private id so it cannot squat the session's id space; that is an implementation
     // detail the peer must never see.
     EXPECT_EQ(nlohmann::json::parse(discover_body).at("id"), 2) << "body: " << discover_body;
+    // State the negative directly rather than inferring it from the id above: no part of the
+    // response a peer can read may carry the internal id, whatever shape it takes.
+    EXPECT_EQ(discover_body.find("mcp-pregate"), std::string::npos) << "body: " << discover_body;
 }
 
 TEST_F(HttpTransportTest, SessionlessNonDiscoverRequestRejectedAfterSessionEstablished) {
