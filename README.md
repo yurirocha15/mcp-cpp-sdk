@@ -159,6 +159,11 @@ This is a compiler defect rather than an SDK one, and no change to the SDK's
 signatures avoids it: taking the argument by value instead of by reference
 still crashes.
 
+The contributing guide's [Known
+Issues](https://yurirocha15.github.io/mcp-cpp-sdk/contributing.html#known-issues)
+section carries the full case list, alongside the separate GCC 11 coroutine bug
+this codebase also works around.
+
 ## Documentation
 
 For full guides, API reference, and integration details, visit our **[Documentation Site](https://yurirocha15.github.io/mcp-cpp-sdk)**.
