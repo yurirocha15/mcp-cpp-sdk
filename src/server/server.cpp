@@ -230,6 +230,13 @@ bool has_valid_request_id(const nlohmann::json& message) {
            (message.at("id").is_string() || message.at("id").is_number_integer());
 }
 
+// A peer that serializes an absent optional as an explicit null means the member is not there, and
+// a null is never a usable error object. "result" gets no such treatment: JSON-RPC allows a null
+// result as a legitimate empty value, so a present-but-null result is a result.
+bool has_error_member(const nlohmann::json& message) {
+    return message.contains("error") && !message.at("error").is_null();
+}
+
 const char* validate_request_envelope(const nlohmann::json& message) {
     if (!message.is_object()) {
         return "JSON-RPC request must be an object";
@@ -244,7 +251,7 @@ const char* validate_request_envelope(const nlohmann::json& message) {
     if (!message.contains("method") || !message.at("method").is_string()) {
         return "JSON-RPC request method must be a string";
     }
-    if (message.contains("result") || message.contains("error")) {
+    if (message.contains("result") || has_error_member(message)) {
         return "JSON-RPC request must not contain result or error";
     }
     if (message.contains("params") && !message.at("params").is_object()) {
@@ -260,7 +267,7 @@ bool is_valid_notification_envelope(const nlohmann::json& message) {
     return message.is_object() && !message.contains("id") && message.contains("jsonrpc") &&
            message.at("jsonrpc").is_string() && message.at("jsonrpc") == "2.0" &&
            message.contains("method") && message.at("method").is_string() &&
-           !message.contains("result") && !message.contains("error") &&
+           !message.contains("result") && !has_error_member(message) &&
            (!message.contains("params") || message.at("params").is_null() ||
             message.at("params").is_object());
 }
@@ -268,11 +275,11 @@ bool is_valid_notification_envelope(const nlohmann::json& message) {
 bool is_valid_response_envelope(const nlohmann::json& message) {
     if (!message.is_object() || !has_valid_request_id(message) || message.contains("method") ||
         !message.contains("jsonrpc") || !message.at("jsonrpc").is_string() ||
-        message.at("jsonrpc") != "2.0" || (message.contains("result") == message.contains("error"))) {
+        message.at("jsonrpc") != "2.0" || (message.contains("result") == has_error_member(message))) {
         return false;
     }
 
-    if (!message.contains("error")) {
+    if (!has_error_member(message)) {
         return true;
     }
 
@@ -721,7 +728,7 @@ Task<void> Server::dispatch_on_strand(nlohmann::json json_msg) {
     }
 
     if (json_msg.is_object() && !json_msg.contains("method") &&
-        (json_msg.contains("result") || json_msg.contains("error"))) {
+        (json_msg.contains("result") || has_error_member(json_msg))) {
         dispatch_response(json_msg);
         co_return;
     }
@@ -907,7 +914,7 @@ void Server::dispatch_response(const nlohmann::json& json_msg) {
         return;
     }
 
-    if (json_msg.contains("error")) {
+    if (has_error_member(json_msg)) {
         it->second.error = json_msg.at("error").get<Error>();
     } else if (json_msg.contains("result")) {
         it->second.result = json_msg.at("result");
