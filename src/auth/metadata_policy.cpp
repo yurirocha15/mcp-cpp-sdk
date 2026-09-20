@@ -208,15 +208,45 @@ std::optional<std::string> canonicalize_origin(const std::string& origin) {
     return format_canonical_origin(*parts);
 }
 
-/// Compare a canonicalized origin against a policy list, canonicalizing each list entry at
-/// comparison time so the caller never has to keep a normalized copy of the policy around. An entry
-/// that does not canonicalize to a bare origin (a malformed port, a path/query/fragment, or any other
-/// malformed form) matches nothing, rather than being widened or treated as an error.
+/// Compare a canonicalized origin against the allow list, canonicalizing each entry at comparison
+/// time so the caller never has to keep a normalized copy of the policy around. An entry that does
+/// not canonicalize to a bare origin (a malformed port, a path/query/fragment, or any other
+/// malformed form) matches nothing, rather than being widened or truncated into a match for the
+/// origin it happens to prefix. Dropping an allow entry grants nothing, so this direction is
+/// fail-closed; the deny list, where the same silence would be fail-open, is handled by
+/// `denies_origin` instead.
 bool contains_origin(const std::vector<std::string>& origins, const std::string& canonical_origin) {
     return std::any_of(origins.begin(), origins.end(), [&](const std::string& candidate) {
         const auto canonical_candidate = canonicalize_origin(candidate);
         return canonical_candidate && *canonical_candidate == canonical_origin;
     });
+}
+
+/// Compare a canonicalized origin against the deny list, requiring every entry to be a bare origin.
+///
+/// Silently discarding a deny entry the way `contains_origin` discards an allow entry would be
+/// fail-open: an author who writes `https://evil.example/` would block nothing while believing the
+/// origin was refused. Nor is such an entry quietly reinterpreted as the origin it resembles;
+/// guessing at a security rule the author did not write trades one silent misapplication for
+/// another. An entry that does not canonicalize is a configuration error, so it is reported as one.
+///
+/// The whole list is examined before a match can be returned, so a malformed entry is reported even
+/// when an earlier entry already matched and even when no entry describes the target at hand. A
+/// policy carrying one therefore refuses every target until it is corrected.
+///
+/// @throws MetadataPolicyError With `denied_origin_entry_malformed`, naming the offending entry.
+bool denies_origin(const std::vector<std::string>& origins, const std::string& canonical_origin) {
+    bool denied = false;
+    for (const auto& candidate : origins) {
+        const auto canonical_candidate = canonicalize_origin(candidate);
+        if (!canonical_candidate) {
+            throw MetadataPolicyError(MetadataUrlDecision::denied_origin_entry_malformed, candidate);
+        }
+        if (*canonical_candidate == canonical_origin) {
+            denied = true;
+        }
+    }
+    return denied;
 }
 
 /// Classify an IPv4 address against the ranges that must never be reached by a metadata fetch.
@@ -345,6 +375,8 @@ std::string_view describe(MetadataUrlDecision decision) {
             return "redirect chain exceeded the configured bound";
         case MetadataUrlDecision::response_too_large:
             return "response exceeded the configured size cap";
+        case MetadataUrlDecision::denied_origin_entry_malformed:
+            return "deny list entry is not a bare origin";
     }
     return "refused";
 }
@@ -383,7 +415,7 @@ MetadataUrlDecision validate_metadata_url(const MetadataFetchPolicy& policy, con
         return MetadataUrlDecision::malformed_url;
     }
     const auto canonical_origin = format_canonical_origin(*canonical);
-    if (contains_origin(policy.denied_origins, canonical_origin)) {
+    if (denies_origin(policy.denied_origins, canonical_origin)) {
         return MetadataUrlDecision::origin_denied;
     }
     if (!contains_origin(policy.allowed_origins, canonical_origin) &&
