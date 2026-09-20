@@ -852,6 +852,20 @@ void OAuthHttpClient::set_host_resolver(HostResolver resolver) {
     impl_->host_resolver = std::move(resolver);
 }
 
+// The two setters above are each atomic; the PAIR of them is not, and that is a security defect
+// rather than a tidiness one. Calling them one after the other leaves an interval holding one new
+// value and one old one, and make_exchange() pins whatever it finds. Resolver-first is the natural
+// order to write and the dangerous one: the redirection lands before the narrowing does, so an
+// exchange in the interval is sent where the new resolver says while being checked against the old,
+// wider allow list. The interval is however long the caller takes between the two statements -- at
+// a 1 ms gap, 9,406 of 9,985 narrowings admitted a request they were meant to refuse. One hold of
+// the mutex for both values removes the interval outright.
+void OAuthHttpClient::configure(MetadataFetchPolicy policy, HostResolver resolver) {
+    std::lock_guard lock(impl_->active_mutex);
+    impl_->policy = std::move(policy);
+    impl_->host_resolver = std::move(resolver);
+}
+
 void OAuthHttpClient::abort_pending() { impl_->abort_pending(); }
 
 namespace {
@@ -1603,10 +1617,11 @@ struct OAuthAuthorizationManager::Impl {
         if (config.client_identity.metadata.redirect_uris.empty() && !config.redirect_uri.empty()) {
             config.client_identity.metadata.redirect_uris.push_back(config.redirect_uri);
         }
-        http_client->set_metadata_policy(config.policy);
-        if (config.host_resolver) {
-            http_client->set_host_resolver(config.host_resolver);
-        }
+        // One call rather than two, even here where the client has not yet issued a request: the
+        // pair method is what a reader should find at a site that installs both. An empty
+        // `host_resolver` leaves this client on the executor's system resolver, which is exactly
+        // what the guard that used to skip the second call achieved.
+        http_client->configure(config.policy, config.host_resolver);
         discovery = std::make_shared<OAuthDiscoveryClient>(http_client);
     }
 

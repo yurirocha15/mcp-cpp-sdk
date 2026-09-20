@@ -5,20 +5,27 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
+#include <cstdint>
+#include <future>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/core/constants.hpp>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -1141,4 +1148,364 @@ TEST(AuthOAuthHttpClientDefaultPolicyTest, PolicyLessClientRefusesAnHttpLoopback
                 decision == mcp::auth::MetadataUrlDecision::scheme_not_allowed)
         << "unexpected decision: " << mcp::auth::describe(decision);
     EXPECT_EQ(resolver_calls, 0);
+}
+
+// -------------------------------------------------------------------------------------------
+// F3: the metadata policy and the host resolver must be installable as ONE change.
+//
+// The fixture is two HTTP servers sharing a port on two loopback addresses, each naming itself
+// in its body. Every request targets `http://localhost:<port>/doc`, so the installed resolver
+// alone decides which server answers, and the body IS the classification: a body of "new" can
+// only be produced by the NEW resolver under the OLD, wider allow list, which is F3 on the wire.
+// -------------------------------------------------------------------------------------------
+namespace {
+
+/// One loopback HTTP server that answers every request with its own name.
+class NamedLoopbackServer {
+   public:
+    NamedLoopbackServer(asio::io_context& ctx, const std::string& address, unsigned short port,
+                        std::string name)
+        : acceptor_(ctx, {asio::ip::make_address(address), port}), name_(std::move(name)) {
+        asio::co_spawn(ctx, accept_loop(), asio::detached);
+    }
+
+    void close() {
+        boost::system::error_code ec;
+        acceptor_.close(ec);
+    }
+
+   private:
+    asio::awaitable<void> accept_loop() {
+        for (;;) {
+            boost::system::error_code ec;
+            auto socket =
+                co_await acceptor_.async_accept(asio::redirect_error(asio::use_awaitable, ec));
+            if (ec) {
+                co_return;
+            }
+            asio::co_spawn(socket.get_executor(), serve(std::move(socket)), asio::detached);
+        }
+    }
+
+    asio::awaitable<void> serve(asio::ip::tcp::socket socket) {
+        beast::tcp_stream stream(std::move(socket));
+        beast::flat_buffer buffer;
+        http::request<http::string_body> request;
+        boost::system::error_code ec;
+        co_await http::async_read(stream, buffer, request,
+                                  asio::redirect_error(asio::use_awaitable, ec));
+        if (ec) {
+            co_return;
+        }
+        http::response<http::string_body> response{http::status::ok, request.version()};
+        response.set(http::field::content_type, "application/json");
+        response.body() = json{{"server", name_}}.dump();
+        response.prepare_payload();
+        co_await http::async_write(stream, response, asio::redirect_error(asio::use_awaitable, ec));
+        stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+    }
+
+    asio::ip::tcp::acceptor acceptor_;
+    std::string name_;
+};
+
+/// A port free on BOTH loopback addresses, or 0 when the second address is unavailable.
+unsigned short find_twin_loopback_port() {
+    asio::io_context probe_ctx;
+    for (unsigned short port = 18140; port < 18200; ++port) {
+        try {
+            asio::ip::tcp::acceptor first(probe_ctx, {asio::ip::make_address("127.0.0.1"), port});
+            asio::ip::tcp::acceptor second(probe_ctx, {asio::ip::make_address("127.0.0.2"), port});
+            return port;
+        } catch (const boost::system::system_error&) {
+            continue;
+        }
+    }
+    return 0;
+}
+
+mcp::auth::MetadataFetchPolicy origin_policy(const std::string& origin) {
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allowed_origins.push_back(origin);
+    policy.allow_plain_http_loopback = true;
+    return policy;
+}
+
+/// What one completed exchange was observed to do.
+enum class Observed {
+    old_server,
+    new_server,
+    refused_origin,
+    other
+};
+
+Observed classify_exchange(const std::exception_ptr& failure, const json& body) {
+    if (failure == nullptr) {
+        const auto name = body.value("server", std::string{});
+        if (name == "old") {
+            return Observed::old_server;
+        }
+        if (name == "new") {
+            return Observed::new_server;
+        }
+        return Observed::other;
+    }
+    try {
+        std::rethrow_exception(failure);
+    } catch (const mcp::auth::MetadataPolicyError& error) {
+        return error.decision() == mcp::auth::MetadataUrlDecision::origin_not_allowed
+                   ? Observed::refused_origin
+                   : Observed::other;
+    } catch (const std::exception&) {
+        return Observed::other;
+    }
+}
+
+void busy_wait_micros(int micros) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(micros);
+    while (std::chrono::steady_clock::now() < deadline) {
+    }
+}
+
+/// The two servers plus the two configurations the application moves between.
+struct TwinFixture {
+    explicit TwinFixture(unsigned short port)
+        : old_server(ctx, "127.0.0.1", port, "old"),
+          new_server(ctx, "127.0.0.2", port, "new"),
+          url("http://localhost:" + std::to_string(port) + "/doc"),
+          wide(origin_policy("http://localhost:" + std::to_string(port))),
+          narrow(origin_policy("http://127.0.0.9:1")) {
+        thread = std::thread([this]() { ctx.run(); });
+    }
+
+    ~TwinFixture() {
+        asio::post(ctx, [this]() {
+            old_server.close();
+            new_server.close();
+        });
+        work.reset();
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+
+    asio::io_context ctx;
+    asio::executor_work_guard<asio::io_context::executor_type> work{asio::make_work_guard(ctx)};
+    NamedLoopbackServer old_server;
+    NamedLoopbackServer new_server;
+    std::thread thread;
+    std::string url;
+    mcp::auth::MetadataFetchPolicy wide;
+    mcp::auth::MetadataFetchPolicy narrow;
+    mcp::auth::HostResolver resolver_old = [](const std::string&, const std::string&) {
+        return std::vector<std::string>{"127.0.0.1"};
+    };
+    mcp::auth::HostResolver resolver_new = [](const std::string&, const std::string&) {
+        return std::vector<std::string>{"127.0.0.2"};
+    };
+};
+
+}  // namespace
+
+// The hazard itself, with the race taken out of it: the exchange is started at a point the test
+// chooses, inside the gap between the two setter calls. It sees the new resolver under the old,
+// wider allow list every time, because that is simply what the client's state is at that instant.
+TEST(OAuthSetterPairAtomicity, TheTwoSingleSettersLeaveAWindowAnExchangeCanFallInto) {
+    const unsigned short port = find_twin_loopback_port();
+    if (port == 0) {
+        GTEST_SKIP() << "no port free on both 127.0.0.1 and 127.0.0.2";
+    }
+    TwinFixture fixture(port);
+
+    asio::io_context client_ctx;
+    auto client = std::make_shared<mcp::auth::OAuthHttpClient>(client_ctx.get_executor());
+    client->set_host_resolver(fixture.resolver_old);
+    client->set_metadata_policy(fixture.wide);
+
+    std::promise<void> resolver_installed;
+    std::promise<void> exchange_finished;
+    auto installed = resolver_installed.get_future();
+    auto finished = exchange_finished.get_future();
+
+    std::thread reconfigurer([&]() {
+        client->set_host_resolver(fixture.resolver_new);
+        resolver_installed.set_value();
+        finished.wait();
+        client->set_metadata_policy(fixture.narrow);
+    });
+
+    installed.wait();
+
+    std::exception_ptr failure;
+    json body;
+    asio::co_spawn(
+        client_ctx,
+        [&]() -> asio::awaitable<void> {
+            try {
+                body = co_await client->get_json(fixture.url);
+            } catch (...) {
+                failure = std::current_exception();
+            }
+        },
+        asio::detached);
+    client_ctx.run();
+    exchange_finished.set_value();
+    reconfigurer.join();
+
+    EXPECT_EQ(classify_exchange(failure, body), Observed::new_server) << "body was " << body.dump();
+}
+
+// The regression. An application that moves between two whole configurations with a millisecond
+// of its own work between the two calls admits, on nearly every narrowing, an exchange directed
+// by the new resolver and validated against the old allow list. Applied as one unit there is no
+// instant at which that state exists, so the count is zero rather than small.
+TEST(OAuthSetterPairAtomicity, ReconfiguringAsOnePairNeverExposesTheNewResolverUnderTheOldPolicy) {
+    const unsigned short port = find_twin_loopback_port();
+    if (port == 0) {
+        GTEST_SKIP() << "no port free on both 127.0.0.1 and 127.0.0.2";
+    }
+    TwinFixture fixture(port);
+
+    asio::io_context client_ctx;
+    auto work = asio::make_work_guard(client_ctx);
+    auto client = std::make_shared<mcp::auth::OAuthHttpClient>(client_ctx.get_executor());
+
+    auto reconfigure = [&](const mcp::auth::MetadataFetchPolicy& policy,
+                           const mcp::auth::HostResolver& resolver) {
+        client->configure(policy, resolver);
+    };
+
+    reconfigure(fixture.wide, fixture.resolver_old);
+
+    std::atomic<std::uint64_t> old_server{0};
+    std::atomic<std::uint64_t> new_server{0};
+    std::atomic<std::uint64_t> refused{0};
+    std::atomic<std::uint64_t> other{0};
+    std::atomic<std::uint64_t> in_flight{0};
+    std::atomic<std::uint64_t> transitions{0};
+    std::atomic<bool> stop{false};
+
+    std::vector<std::thread> io_threads;
+    io_threads.reserve(2);
+    for (int index = 0; index < 2; ++index) {
+        io_threads.emplace_back([&client_ctx]() { client_ctx.run(); });
+    }
+
+    std::thread writer([&]() {
+        while (!stop.load(std::memory_order_relaxed)) {
+            reconfigure(fixture.narrow, fixture.resolver_new);
+            transitions.fetch_add(1, std::memory_order_relaxed);
+            busy_wait_micros(1000);
+            reconfigure(fixture.wide, fixture.resolver_old);
+            busy_wait_micros(1000);
+        }
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (transitions.load() >= 25 && old_server.load() >= 25 && refused.load() >= 25) {
+            break;
+        }
+        if (in_flight.load(std::memory_order_relaxed) >= 2) {
+            std::this_thread::yield();
+            continue;
+        }
+        in_flight.fetch_add(1, std::memory_order_relaxed);
+        asio::co_spawn(
+            client_ctx,
+            [&]() -> asio::awaitable<void> {
+                std::exception_ptr failure;
+                json body;
+                try {
+                    body = co_await client->get_json(fixture.url);
+                } catch (...) {
+                    failure = std::current_exception();
+                }
+                switch (classify_exchange(failure, body)) {
+                    case Observed::old_server:
+                        old_server.fetch_add(1, std::memory_order_relaxed);
+                        break;
+                    case Observed::new_server:
+                        new_server.fetch_add(1, std::memory_order_relaxed);
+                        break;
+                    case Observed::refused_origin:
+                        refused.fetch_add(1, std::memory_order_relaxed);
+                        break;
+                    case Observed::other:
+                        other.fetch_add(1, std::memory_order_relaxed);
+                        break;
+                }
+                in_flight.fetch_sub(1, std::memory_order_relaxed);
+            },
+            asio::detached);
+    }
+
+    stop.store(true);
+    writer.join();
+    const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (in_flight.load() > 0 && std::chrono::steady_clock::now() < drain_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_EQ(in_flight.load(), 0u) << "an exchange never completed; the run proves nothing";
+    work.reset();
+    client_ctx.stop();
+    for (auto& thread : io_threads) {
+        thread.join();
+    }
+
+    // Non-vacuity: the traffic must have straddled BOTH whole configurations, or a zero F3 count
+    // would only mean the requests all landed in one steady state.
+    EXPECT_GT(old_server.load(), 0u) << "no exchange ever ran under the wide configuration";
+    EXPECT_GT(refused.load(), 0u) << "no exchange ever ran under the narrow configuration";
+    EXPECT_GE(transitions.load(), 25u) << "the run did not reach enough narrowings to mean much";
+    EXPECT_EQ(new_server.load(), 0u)
+        << "F3: " << new_server.load() << " of "
+        << (old_server.load() + new_server.load() + refused.load() + other.load())
+        << " exchanges were directed by the NEW resolver while validated against the OLD, wider "
+           "allow list, across "
+        << transitions.load() << " narrowings";
+}
+
+// Guards the regression above from passing for the wrong reason: a configure() that quietly
+// dropped its resolver argument would also never produce a "new" body. Each call here installs a
+// configuration and the exchange that follows must show BOTH halves of it.
+TEST(OAuthSetterPairAtomicity, ConfigureInstallsBothOfItsArguments) {
+    const unsigned short port = find_twin_loopback_port();
+    if (port == 0) {
+        GTEST_SKIP() << "no port free on both 127.0.0.1 and 127.0.0.2";
+    }
+    TwinFixture fixture(port);
+
+    asio::io_context client_ctx;
+    mcp::auth::OAuthHttpClient client(client_ctx.get_executor());
+
+    auto observe = [&]() {
+        std::exception_ptr failure;
+        json body;
+        client_ctx.restart();
+        asio::co_spawn(
+            client_ctx,
+            [&]() -> asio::awaitable<void> {
+                try {
+                    body = co_await client.get_json(fixture.url);
+                } catch (...) {
+                    failure = std::current_exception();
+                }
+            },
+            asio::detached);
+        client_ctx.run();
+        return classify_exchange(failure, body);
+    };
+
+    client.configure(fixture.wide, fixture.resolver_old);
+    EXPECT_EQ(observe(), Observed::old_server);
+
+    // Only the resolver changes: the policy half must still be the wide one, or this would be a
+    // refusal rather than a body from the second server.
+    client.configure(fixture.wide, fixture.resolver_new);
+    EXPECT_EQ(observe(), Observed::new_server);
+
+    // Only the policy changes: the narrowing must take effect on the very next exchange.
+    client.configure(fixture.narrow, fixture.resolver_new);
+    EXPECT_EQ(observe(), Observed::refused_origin);
 }
