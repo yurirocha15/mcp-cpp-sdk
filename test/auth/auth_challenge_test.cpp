@@ -1,7 +1,7 @@
 /**
  * @file auth_challenge_test.cpp
  * @brief Tests for WWW-Authenticate challenge parsing, RFC 9207 issuer validation, and the
- *        outbound-request policy that guards OAuth metadata discovery (Slice A / 2.E5a).
+ *        outbound-request policy that guards OAuth metadata discovery.
  */
 
 #include <gtest/gtest.h>

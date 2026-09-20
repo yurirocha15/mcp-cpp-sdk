@@ -925,7 +925,8 @@ Task<std::string> Server::handle_ping_wire(const nlohmann::json& json_msg) {
 // json_msg's params nor mutates lifecycle.
 Task<std::string> Server::handle_discover_wire(const nlohmann::json& json_msg) {
     DiscoverResult discover_result;
-    // resultType uses the DiscoverResult struct default ("complete").
+    // resultType uses the DiscoverResult struct default ("complete"); a future revision introduces
+    // a shared result-envelope helper for this field that other cacheable results will also use.
     discover_result.supportedVersions.assign(g_DISCOVERABLE_PROTOCOL_VERSIONS.begin(),
                                              g_DISCOVERABLE_PROTOCOL_VERSIONS.end());
     discover_result.capabilities = impl_->capabilities;
