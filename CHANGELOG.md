@@ -29,6 +29,13 @@ Versioning; a `0.x` version is a stable release unless its version has an
   types); protocol models and typed handler templates remain header-based.
 - Documentation guides and feature examples refreshed to match the compiled
   runtime split.
+- OAuth protected-resource metadata that omits the RFC 9728 `resource`
+  member is now rejected instead of falling back to the configured server
+  URL; a `resource` value must identify the configured server (exact match
+  or an origin/segment-boundary prefix).
+- `OAuthHttpClient` constructed without a `MetadataFetchPolicy` now refuses
+  every request (deny-all default) instead of allowing any target; callers
+  must supply an explicit policy.
 
 ## [0.2.0] - TBD
 
