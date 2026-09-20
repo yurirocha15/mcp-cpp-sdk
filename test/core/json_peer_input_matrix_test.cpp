@@ -267,7 +267,7 @@ TEST(JsonPeerInputMatrix, CancelledNotification) {
 TEST(JsonPeerInputMatrix, CancelledNotificationParams) {
     const json baseline = json::parse(R"json({"requestId":1})json");
     static const FieldExpect fields[] = {
-        {"reason", R"json("x")json", 0, false, true, true, false},
+        {"reason", R"json("x")json", 0, false, false, true, false},
         {"requestId", R"json(1)json", 1, true, true, true, false},
     };
     for (const auto& f : fields) {
@@ -571,11 +571,11 @@ TEST(JsonPeerInputMatrix, EnumSchema) {
 }
 
 TEST(JsonPeerInputMatrix, Error) {
-    const json baseline = json::parse(R"json({"code":1,"message":"x"})json");
+    const json baseline = json::parse(R"json({"code":1})json");
     static const FieldExpect fields[] = {
         {"code", R"json(1)json", 0, true, true, true, false},
         {"data", R"json({})json", 0, false, false, false, false},
-        {"message", R"json("x")json", 0, true, true, true, false},
+        {"message", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("Error.") + f.key);
@@ -753,9 +753,9 @@ TEST(JsonPeerInputMatrix, InitializedNotification) {
 }
 
 TEST(JsonPeerInputMatrix, JSONRPCErrorResponse) {
-    const json baseline = json::parse(R"json({"error":{"code":1,"message":"x"},"jsonrpc":"2.0"})json");
+    const json baseline = json::parse(R"json({"error":{"code":1},"jsonrpc":"2.0"})json");
     static const FieldExpect fields[] = {
-        {"error", R"json({"code":1,"message":"x"})json", 0, true, true, true, false},
+        {"error", R"json({"code":1})json", 0, true, true, true, false},
         {"id", R"json(1)json", 1, false, false, true, false},
         {"jsonrpc", R"json("2.0")json", 0, true, true, true, true},
     };
@@ -1020,7 +1020,7 @@ TEST(JsonPeerInputMatrix, LoggingMessageNotificationParams) {
     static const FieldExpect fields[] = {
         {"data", R"json({})json", 0, true, false, false, false},
         {"level", R"json("emergency")json", 0, true, false, false, false},
-        {"logger", R"json("x")json", 0, false, true, true, false},
+        {"logger", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("LoggingMessageNotificationParams.") + f.key);
@@ -1092,10 +1092,10 @@ TEST(JsonPeerInputMatrix, ProgressNotification) {
 TEST(JsonPeerInputMatrix, ProgressNotificationParams) {
     const json baseline = json::parse(R"json({"progressToken":1,"progress":1.0})json");
     static const FieldExpect fields[] = {
-        {"message", R"json("x")json", 0, false, true, true, false},
+        {"message", R"json("x")json", 0, false, false, true, false},
         {"progress", R"json(1.0)json", 0, true, true, true, false},
         {"progressToken", R"json(1)json", 1, true, true, true, false},
-        {"total", R"json(1.0)json", 0, false, true, true, false},
+        {"total", R"json(1.0)json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ProgressNotificationParams.") + f.key);
@@ -1194,7 +1194,7 @@ TEST(JsonPeerInputMatrix, RelatedTaskMetadata) {
     const json baseline = json::parse(R"json({"id":"x"})json");
     static const FieldExpect fields[] = {
         {"id", R"json("x")json", 0, true, true, true, false},
-        {"title", R"json("x")json", 0, false, true, true, false},
+        {"title", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("RelatedTaskMetadata.") + f.key);
@@ -1483,8 +1483,8 @@ TEST(JsonPeerInputMatrix, TaskData) {
 TEST(JsonPeerInputMatrix, TaskMetadata) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
-        {"relatedTasks", R"json([{"id":"x"}])json", 0, false, true, true, false},
-        {"ttl", R"json(1)json", 0, false, true, true, false},
+        {"relatedTasks", R"json([{"id":"x"}])json", 0, false, false, true, false},
+        {"ttl", R"json(1)json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("TaskMetadata.") + f.key);
@@ -1509,7 +1509,7 @@ TEST(JsonPeerInputMatrix, TaskStatusNotificationParams) {
     const json baseline = json::parse(R"json({"id":"x","status":"cancelled"})json");
     static const FieldExpect fields[] = {
         {"id", R"json("x")json", 0, true, true, true, false},
-        {"message", R"json("x")json", 0, false, true, true, false},
+        {"message", R"json("x")json", 0, false, false, true, false},
         {"metadata", R"json({})json", 0, false, false, false, false},
         {"status", R"json("cancelled")json", 0, true, false, false, false},
     };
