@@ -456,9 +456,31 @@ MetadataUrlDecision validate_metadata_address(const MetadataFetchPolicy& policy,
     return classify_v4(policy, address.to_v4());
 }
 
+namespace detail {
+
+std::string sanitize_for_diagnostics(std::string_view value) {
+    constexpr std::size_t max_length = 256;
+    std::string cleaned(value.substr(0, max_length));
+    for (auto& character : cleaned) {
+        if (static_cast<unsigned char>(character) < 0x20 || character == 0x7f) {
+            character = ' ';
+        }
+    }
+    if (value.size() > max_length) {
+        cleaned += "...";
+    }
+    return cleaned;
+}
+
+}  // namespace detail
+
+// The target is sanitized for the MESSAGE and kept raw in `target_`. Every throw site passes a URL
+// or address that came from a peer, and sanitizing here rather than at each of them means a throw
+// site cannot forget. `target()` still returns the value verbatim, because a caller inspecting it
+// programmatically wants the real URL, not one with its control characters flattened.
 MetadataPolicyError::MetadataPolicyError(MetadataUrlDecision decision, std::string target)
     : std::runtime_error("OAuth metadata target refused (" + std::string(describe(decision)) +
-                         "): " + target),
+                         "): " + detail::sanitize_for_diagnostics(target)),
       decision_(decision),
       target_(std::move(target)) {}
 

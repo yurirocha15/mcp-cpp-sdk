@@ -18,6 +18,27 @@ constexpr std::size_t g_default_max_metadata_redirects = 3;
 
 }  // namespace constants
 
+namespace detail {
+
+/**
+ * @brief Bound and clean peer-controlled text before embedding it in a diagnostic message.
+ *
+ * @param value Text that came from a peer: a URL, a host, an issuer, a metadata field, a response
+ *        body. Anything the SDK did not author itself.
+ * @return The text truncated to a fixed budget, with an ellipsis when it was cut, and with every
+ *         control character replaced by a space.
+ *
+ * @details Diagnostics built from peer-controlled text are a log-forging vector: a value carrying
+ * newlines can close the SDK's message and open a line of the attacker's own, and an unbounded one
+ * floods whatever the message lands in. Parsed JSON is the sharp edge rather than raw bytes on the
+ * wire, because a metadata document is decoded before its fields are interpolated, so `\n` and
+ * `\r` written as escape sequences arrive as real control bytes. No secret is involved, so this
+ * addresses forgery and flooding rather than disclosure.
+ */
+[[nodiscard]] MCP_API std::string sanitize_for_diagnostics(std::string_view value);
+
+}  // namespace detail
+
 /**
  * @brief Outcome of validating a metadata target before any network access occurs.
  *

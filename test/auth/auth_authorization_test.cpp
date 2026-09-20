@@ -3254,3 +3254,156 @@ TEST(AuthProtectedResourceValidationTest, ARejectedProtectedResourceDocumentIsNo
     EXPECT_EQ(server.targets(), expected_targets)
         << "the rejected document was served from the cache instead of being re-fetched";
 }
+
+namespace {
+
+/// A payload shaped like a forged log entry: the CR/LF closes the SDK's own line, and what follows
+/// reads as a fresh, authoritative-looking one.
+const std::string& forged_log_line() {
+    static const std::string value =
+        "\r\n2026-09-20T00:00:00Z INFO authorization granted to everyone\r\n";
+    return value;
+}
+
+bool carries_control_characters(const std::string& text) {
+    return std::any_of(text.begin(), text.end(), [](char character) {
+        const auto value = static_cast<unsigned char>(character);
+        return value < 0x20 || value == 0x7f;
+    });
+}
+
+}  // namespace
+
+// Peer-controlled text reaching a diagnostic message is a log-forging vector, and JSON is the sharp
+// edge: a metadata document is decoded before its fields are interpolated, so an issuer written
+// with `\r\n` escape sequences arrives as real control bytes. This one goes through
+// MetadataPolicyError, whose constructor now flattens its own message so that no throw site has to
+// remember to.
+TEST(AuthDiagnosticsSanitizingTest, AnIssuerCarryingControlCharactersCannotForgeALogLine) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    const auto hostile_issuer = "https://evil" + forged_log_line() + "host.test";
+
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm.json") {
+            // `resource` identifies our server, so the document is accepted and the SDK goes on to
+            // the authorization server it names. That name is the payload.
+            return json_response({{"resource", base + "/mcp"},
+                                  {"authorization_servers", json::array({hostile_issuer})}});
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    std::promise<std::string> result;
+    auto observed = result.get_future();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            std::string failure;
+            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                         echoing_callback(nullptr));
+            try {
+                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                            R"(/prm.json")");
+                failure = "<no exception>";
+            } catch (const std::exception& error) {
+                failure = error.what();
+            }
+            result.set_value(failure);
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    const auto failure = observed.get();
+    ASSERT_NE(failure, "<no exception>");
+    // The control-character check is the assertion; it is what makes the forged second line
+    // impossible regardless of how the message is worded.
+    EXPECT_FALSE(carries_control_characters(failure)) << failure;
+    // The payload's visible text may still appear, flattened onto the SDK's own single line. What
+    // must not survive is its ability to start a line of its own.
+    EXPECT_EQ(failure.find('\n'), std::string::npos) << failure;
+    EXPECT_EQ(failure.find('\r'), std::string::npos) << failure;
+}
+
+// The same property away from MetadataPolicyError, since sanitizing in that constructor covers only
+// the throw sites that go through it. An `error` on the authorization response is peer-controlled
+// too, and it is interpolated by validate_authorization_response() into the message run_challenge()
+// throws. Being issuer-authentic makes it trustworthy as to origin, not as to content.
+TEST(AuthDiagnosticsSanitizingTest, AnAuthorizationResponseErrorCannotForgeALogLine) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&base](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm.json") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    // Echoes state and iss so the response is accepted as authentic, then reports the payload as
+    // the server's error. That ordering matters: the error is only read once the response has
+    // passed the state and iss checks.
+    auto hostile_callback = [](const mcp::auth::AuthorizationRequest& request)
+        -> mcp::Task<mcp::auth::AuthorizationResponse> {
+        mcp::auth::AuthorizationResponse response;
+        response.state = request.state;
+        response.iss = request.issuer;
+        response.error = "access_denied" + forged_log_line() + "granted";
+        co_return response;
+    };
+
+    std::promise<std::string> result;
+    auto observed = result.get_future();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            std::string failure;
+            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                         hostile_callback);
+            try {
+                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                            R"(/prm.json")");
+                failure = "<no exception>";
+            } catch (const std::exception& error) {
+                failure = error.what();
+            }
+            result.set_value(failure);
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    const auto failure = observed.get();
+    ASSERT_NE(failure, "<no exception>");
+    EXPECT_NE(failure.find("Authorization response rejected"), std::string::npos) << failure;
+    EXPECT_FALSE(carries_control_characters(failure)) << failure;
+    EXPECT_EQ(failure.find('\n'), std::string::npos) << failure;
+    EXPECT_EQ(failure.find('\r'), std::string::npos) << failure;
+}
