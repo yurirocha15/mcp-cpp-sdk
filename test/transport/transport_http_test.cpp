@@ -11,6 +11,7 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/write.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
@@ -1742,6 +1743,7 @@ TEST_F(HttpTransportTest, NonAtomicConfigurationLocksWhenListeningStarts) {
     EXPECT_THROW(server.set_allowed_origins({"https://trusted.example"}), std::logic_error);
     EXPECT_THROW(server.set_allow_all_origins(true), std::logic_error);
     EXPECT_THROW(server.set_bearer_token_validator({}), std::logic_error);
+    EXPECT_THROW(server.set_max_request_body_bytes(4096), std::logic_error);
 
     server.close();
     asio::co_spawn(io_ctx_, std::move(listener), asio::detached);
@@ -1794,4 +1796,42 @@ TEST_F(HttpTransportTest, WriteMessagePinsBearerProviderAtRequestStart) {
 
     ASSERT_EQ(write_error, nullptr);
     EXPECT_EQ(observed_authorization, "Bearer pinned-at-start");
+}
+
+TEST_F(HttpTransportTest, RequestBodyBeyondTheLimitIsRejected) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    const auto port = server->port();
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    unsigned int status = 0;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            // Announcing the length is enough: the parser rejects the request before the body is
+            // sent, which is the point of the limit.
+            const std::string header =
+                "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                "Content-Length: " +
+                std::to_string(mcp::constants::g_default_max_request_body_bytes + 1) + "\r\n\r\n";
+
+            beast::tcp_stream stream(io_ctx_.get_executor());
+            asio::ip::tcp::resolver resolver(io_ctx_.get_executor());
+            auto endpoints =
+                co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
+            co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+            co_await asio::async_write(stream, asio::buffer(header), asio::use_awaitable);
+
+            beast::flat_buffer response_buffer;
+            http::response<http::string_body> response;
+            co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
+            status = response.result_int();
+
+            beast::error_code shutdown_error;
+            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
+        },
+        [server](const std::exception_ptr&) { server->close(); });
+    io_ctx_.run();
+
+    EXPECT_EQ(status, 413);
 }
