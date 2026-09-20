@@ -986,6 +986,50 @@ TEST_F(SessionManagerTest, SessionlessDiscoverReturns200WithoutCreatingSession) 
     ASSERT_TRUE(result.contains("cacheScope"));
 }
 
+// This transport's immunity to the HttpServerTransport defect (sessionless discover rejected
+// once a session exists) is NOT structural. It holds only because handle_post intercepts
+// sessionless discover BEFORE calling resolve_session_for_post, which is two adjacent
+// statements in a particular order. Any refactor that hoists session resolution earlier
+// reintroduces that bug silently, so pin the after-a-session case, not just the zero-state
+// case covered above.
+TEST_F(SessionManagerTest, SessionlessDiscoverStaysReachableAfterSessionEstablished) {
+    const unsigned short port = 19121;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse init_response;
+    RawResponse discover_response;
+    std::size_t session_count_after = 0;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            init_response = co_await do_initialize(io_ctx_.get_executor(), port);
+
+            json request = {{"jsonrpc", "2.0"}, {"id", 2}, {"method", "server/discover"}};
+            discover_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                     "/mcp", request.dump());  // no session id
+            session_count_after = manager.session_count();
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(init_response.status, 200);
+    ASSERT_FALSE(init_response.session_id.empty());
+
+    EXPECT_EQ(discover_response.status, 200);
+    EXPECT_TRUE(discover_response.session_id.empty());
+    // The established session is untouched: still exactly one, and no second one was minted.
+    EXPECT_EQ(session_count_after, 1);
+
+    auto body = json::parse(discover_response.body);
+    ASSERT_TRUE(body.contains("result"));
+    EXPECT_EQ(body["result"]["resultType"], "complete");
+}
+
 // ---------------------------------------------------------------------------
 // 9c. server/discover is exempted from the MCP-Protocol-Version header check that rejects any
 // version outside g_SUPPORTED_PROTOCOL_VERSIONS, so a modern client probing with its own
