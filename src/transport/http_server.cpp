@@ -13,6 +13,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -611,22 +612,51 @@ struct HttpServerTransport::Impl {
         co_return response;
     }
 
+    /// @brief Report a body that exceeded max_request_body_bytes, ignoring a dead peer.
+    static Task<void> write_payload_too_large(Connection& stream) {
+        StringResponse response{http::status::payload_too_large, 11};
+        response.set(http::field::server, "mcp-cpp-sdk");
+        response.set(http::field::content_type, "application/json");
+        response.keep_alive(false);
+        response.body() = nlohmann::json{{"error", "Request body too large"}}.dump();
+        response.prepare_payload();
+        try {
+            co_await http::async_write(stream, response, boost::asio::use_awaitable);
+        } catch (const boost::system::system_error&) {
+            // The peer that overran the limit may already be gone; nothing more to report to it.
+            (void)0;
+        }
+    }
+
     Task<void> handle_connection(const std::shared_ptr<Connection>& connection) {
         auto& stream = *connection;
         beast::flat_buffer request_buffer;
 
         for (;;) {
-            StringRequest request;
+            http::request_parser<http::string_body> parser;
+            parser.body_limit(max_request_body_bytes);
+            bool body_too_large = false;
             try {
-                co_await http::async_read(stream, request_buffer, request, boost::asio::use_awaitable);
+                co_await http::async_read(stream, request_buffer, parser, boost::asio::use_awaitable);
             } catch (const boost::system::system_error& err) {
                 if (err.code() == boost::asio::error::eof ||
                     err.code() == boost::asio::error::connection_reset ||
                     err.code() == boost::asio::error::operation_aborted) {
                     break;
                 }
-                throw;
+                if (err.code() != http::error::body_limit) {
+                    throw;
+                }
+                body_too_large = true;
             }
+
+            if (body_too_large) {
+                // The parser cannot resynchronize after a truncated body, so the connection ends
+                // with this answer rather than reading another request from it.
+                co_await write_payload_too_large(stream);
+                break;
+            }
+            StringRequest request = parser.release();
 
             if (state->closed.load(std::memory_order_acquire)) {
                 break;
@@ -770,6 +800,7 @@ struct HttpServerTransport::Impl {
     bool allow_all_origins{false};
     std::unordered_set<std::string> allowed_origins;
     BearerTokenValidator bearer_token_validator;
+    std::size_t max_request_body_bytes{constants::g_default_max_request_body_bytes};
 
     EventStore event_store;
     std::atomic<bool> json_only_{false};
@@ -824,6 +855,15 @@ void HttpServerTransport::set_bearer_token_validator(BearerTokenValidator valida
     std::lock_guard lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->bearer_token_validator = std::move(validator);
+}
+
+void HttpServerTransport::set_max_request_body_bytes(std::size_t max_bytes) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    if (max_bytes == 0) {
+        throw std::invalid_argument("Maximum request body size must be greater than zero");
+    }
+    impl_->max_request_body_bytes = max_bytes;
 }
 
 Task<std::string> HttpServerTransport::read_message() {

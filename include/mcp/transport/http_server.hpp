@@ -217,6 +217,22 @@ class MCP_API HttpServerTransport final : public ITransport {
     void set_bearer_token_validator(BearerTokenValidator validator);
 
     /**
+     * @brief Cap the HTTP request body this transport will read.
+     *
+     * A request whose body exceeds the cap is answered `413 Payload Too Large` and its connection
+     * is closed; it never reaches MCP dispatch. Defaults to
+     * mcp::constants::g_default_max_request_body_bytes. Lower it only deliberately: binary content
+     * travels as base64 inside the JSON body, so a cap near the size of the raw content rejects
+     * payloads that previously worked.
+     *
+     * Configure the cap before listen() or run() starts.
+     *
+     * @throws std::invalid_argument If `max_bytes` is zero.
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_max_request_body_bytes(std::size_t max_bytes);
+
+    /**
      * @brief Read the next queued JSON-RPC message from HTTP POST bodies.
      */
     Task<std::string> read_message() override;
