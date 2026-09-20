@@ -53,6 +53,30 @@ This separation (SEP-2352) prevents a vulnerability where a single MCP server pr
 
 **Do not merge these stores.** Use separate persistent implementations, keyed correctly, and validate that a stored credential's issuer matches the issuer being contacted before presenting the credential. The SDK's :cpp:func:`mcp::auth::select_client_identity` function validates the issuer binding automatically when reusing stored credentials; operators who implement custom storage must enforce the same check.
 
+The Class That Applies These Controls
+--------------------------------------
+
+Everything above describes controls rather than the code that enforces them. :cpp:class:`mcp::auth::OAuthAuthorizationManager` is that code, and the only supported way to act on a ``WWW-Authenticate`` challenge. It applies the fetch policy to every request it makes, binds the issuer byte-for-byte to the metadata document it was read from, generates and checks a cryptographic ``state``, applies RFC 9207 ``iss`` validation before any ``error`` field in the response is read, carries S256 PKCE, and sends the RFC 8707 ``resource`` indicator into the code exchange.
+
+Composing :cpp:class:`mcp::auth::OAuthDiscoveryClient` and :cpp:func:`mcp::auth::OAuthHttpClient::exchange_code` into your own flow compiles and appears to work while applying **none** of them. That is the failure mode this guide exists to prevent: the fetch policy alone governs which targets are contacted, and says nothing about whether what comes back is bound to the issuer that was asked for.
+
+Worked Flow
+~~~~~~~~~~~
+
+Taken from ``examples/features/oauth_flow.cpp``, which runs end to end against a mock authorization server:
+
+.. literalinclude:: ../../examples/features/oauth_flow.cpp
+   :language: cpp
+   :start-after: docs-begin: manager-flow
+   :end-before: docs-end: manager-flow
+   :dedent: 8
+
+The consent callback in that example mints the authorization code directly from its own mock server, which is possible only because the example owns both ends. A real client opens ``request.authorization_url`` in the user's browser, waits for the redirect to ``request.redirect_uri``, and returns :cpp:func:`mcp::auth::parse_authorization_response`. It must never invent ``state`` or ``iss``: the manager compares both against what it recorded and rejects a response that does not match.
+
+After a successful challenge, :cpp:func:`mcp::auth::OAuthAuthorizationManager::last_authorization_request` returns the record the attempt was validated against, so an application can audit the binding rather than take it on trust.
+
+See :doc:`/concepts/oauth` for the full API reference and for what the low-level building blocks do and do not provide.
+
 Metadata-Fetch Policy and Origin Validation
 --------------------------------------------
 

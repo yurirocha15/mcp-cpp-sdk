@@ -423,6 +423,7 @@ auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
         // the manual route does.
         // ---------------------------------------------------------------------------------
 
+        // docs-begin: manager-flow
         // A default-constructed policy refuses every metadata target: the allow list is empty
         // and plain HTTP to a loopback address is not permitted. The application must name the
         // origins it intends to reach before the first request. This example talks only to its
@@ -481,6 +482,7 @@ auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
         if (!co_await state->manager->try_handle_challenge(www_authenticate)) {
             throw std::runtime_error("challenge carried no Bearer authorization to act on");
         }
+        // docs-end: manager-flow
 
         // The manager records what each attempt was actually validated against, so an application
         // can audit the binding rather than take it on trust.
