@@ -330,6 +330,26 @@ bool resource_identifies_server(const std::string& resource, const std::string& 
            server_path[resource_path.size()] == '/';
 }
 
+/// Throws unless `resource` is present and identifies `server_url`.
+///
+/// Called before the SDK contacts anything the protected-resource document names, so a document
+/// that does not identify our configured server cannot make us fetch attacker-named authorization
+/// server metadata, register a client with it, or persist those credentials.
+void require_resource_identifies_server(const std::string& resource, const std::string& server_url) {
+    if (resource.empty()) {
+        // RFC 9728 §2 makes `resource` a required member; a PRM that omits it (or ships it
+        // empty) does not meet the spec and must not be trusted silently.
+        throw std::runtime_error("Protected resource metadata for server '" +
+                                 sanitize_for_diagnostics(server_url) +
+                                 "' is missing the required 'resource' member");
+    }
+    if (!resource_identifies_server(resource, server_url)) {
+        throw std::runtime_error("Protected resource metadata resource '" +
+                                 sanitize_for_diagnostics(resource) + "' does not identify server '" +
+                                 sanitize_for_diagnostics(server_url) + "'");
+    }
+}
+
 }  // namespace
 
 struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Impl> {
@@ -1404,20 +1424,11 @@ struct OAuthAuthorizationManager::Impl {
         request.client_id = identity.client_id;
         request.redirect_uri = owner.config.redirect_uri;
         request.scope = select_scope(owner, challenge, resource);
-        if (resource.resource.empty()) {
-            // RFC 9728 §2 makes `resource` a required member; a PRM that omits it (or ships it
-            // empty) does not meet the spec and must not be trusted silently.
-            throw std::runtime_error("Protected resource metadata for server '" +
-                                     sanitize_for_diagnostics(owner.config.server_url) +
-                                     "' is missing the required 'resource' member");
-        } else if (resource_identifies_server(resource.resource, owner.config.server_url)) {
-            request.resource = resource.resource;
-        } else {
-            throw std::runtime_error("Protected resource metadata resource '" +
-                                     sanitize_for_diagnostics(resource.resource) +
-                                     "' does not identify server '" +
-                                     sanitize_for_diagnostics(owner.config.server_url) + "'");
-        }
+        // Defence in depth: `run_challenge` already rejected an unidentified resource before any
+        // outbound request. Re-checking here is a pure string comparison that cannot fail on that
+        // path, and keeps `build_request` correct if a second caller ever appears.
+        require_resource_identifies_server(resource.resource, owner.config.server_url);
+        request.resource = resource.resource;
 
         KeyValuePairList params = {
             {"response_type", "code"},
@@ -1466,6 +1477,12 @@ struct OAuthAuthorizationManager::Impl {
         if (operation->resource_metadata->authorization_servers.empty()) {
             throw std::runtime_error("Protected resource metadata listed no authorization servers");
         }
+        // Checked here, before the first outbound request driven by this document, so a PRM that
+        // does not identify our configured server cannot make us fetch the authorization server
+        // metadata it names, register a client with that server, or persist those credentials.
+        // Deliberately after the authorization-servers check so error precedence is unchanged.
+        require_resource_identifies_server(operation->resource_metadata->resource,
+                                           owner.config.server_url);
 
         operation->auth_metadata = co_await owner.discovery->discover_auth_server(
             operation->resource_metadata->authorization_servers.front());
