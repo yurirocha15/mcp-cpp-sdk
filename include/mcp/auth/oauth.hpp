@@ -370,6 +370,20 @@ struct CachedEntry {
 };
 
 /**
+ * @brief Caller's verdict on a protected-resource document, before it is trusted or cached.
+ *
+ * @details Invoked with the parsed document on the way out of discovery, whether it was just
+ * fetched or served from the cache. Throwing rejects it: the exception reaches the caller, no cache
+ * entry is written, and discovery does not fall through to the next candidate URL, because a
+ * document that was found and refused is not a candidate that missed.
+ *
+ * Discovery cannot make this judgement itself. Whether a document identifies the server the caller
+ * actually meant to reach is the caller's business, and a document that fails that test must never
+ * be committed to a cache that a later attempt would be served from.
+ */
+using ProtectedResourceAcceptor = std::function<void(const ProtectedResourceMetadata&)>;
+
+/**
  * @brief Client for OAuth protected-resource and authorization-server discovery.
  */
 class MCP_API OAuthDiscoveryClient {
@@ -412,6 +426,24 @@ class MCP_API OAuthDiscoveryClient {
      */
     Task<ProtectedResourceMetadata> discover_protected_resource(
         const std::string& resource_url, const std::optional<std::string>& challenge_metadata_url);
+
+    /**
+     * @brief Discover metadata for a protected resource, subject to the caller's acceptance.
+     *
+     * @param resource_url Resource URL whose metadata should be resolved.
+     * @param challenge_metadata_url `resource_metadata` URL taken from a `WWW-Authenticate`
+     *        challenge, when the challenge supplied one.
+     * @param accept Called with the document before it is returned or cached; throwing rejects it.
+     * @return A task resolving to the discovered protected-resource metadata.
+     *
+     * @details Identical to the two-argument form except that nothing is written to the cache until
+     * `accept` has passed on it, and `accept` runs on a cache hit as well, so a document can never
+     * be trusted on a later attempt on the strength of an earlier one that was refused. Prefer this
+     * form whenever the document has to satisfy something the caller knows and discovery does not.
+     */
+    Task<ProtectedResourceMetadata> discover_protected_resource(
+        const std::string& resource_url, const std::optional<std::string>& challenge_metadata_url,
+        ProtectedResourceAcceptor accept);
 
     /**
      * @brief Discover metadata for an authorization server.

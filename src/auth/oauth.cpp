@@ -883,6 +883,10 @@ struct OAuthDiscoveryClient::Impl {
         std::size_t next_url{0};
         nlohmann::json response;
         std::optional<Metadata> metadata;
+        /// Caller's verdict, consulted before the document is cached or returned. Empty means
+        /// accept everything that parsed, which is the contract of the overloads that take no
+        /// acceptor.
+        std::function<void(const Metadata&)> accept;
     };
 
     Impl(std::shared_ptr<OAuthHttpClient> client, std::chrono::seconds ttl)
@@ -913,9 +917,23 @@ struct OAuthDiscoveryClient::Impl {
         co_return std::move(*metadata);
     }
 
+    /// Serve a cached document, but only if the caller still accepts it.
+    ///
+    /// A coroutine rather than a plain check at the call site so that a rejection surfaces from the
+    /// await like every other discovery failure, instead of throwing out of the call that merely
+    /// builds the awaitable.
+    static Task<ProtectedResourceMetadata> return_accepted_cached(
+        std::shared_ptr<ProtectedResourceMetadata> metadata, ProtectedResourceAcceptor accept) {
+        if (accept) {
+            accept(*metadata);
+        }
+        co_return std::move(*metadata);
+    }
+
     static Task<ProtectedResourceMetadata> discover_protected_resource(
         std::shared_ptr<Impl> owner, std::string resource_url,
-        const std::optional<std::string>& challenge_metadata_url) {
+        const std::optional<std::string>& challenge_metadata_url,
+        ProtectedResourceAcceptor accept = {}) {
         // A challenge-supplied URL is its own cache key, so a server that moves its metadata is
         // never served an entry discovered through the well-known fallback.
         auto cache_key = challenge_metadata_url.value_or(resource_url);
@@ -923,13 +941,15 @@ struct OAuthDiscoveryClient::Impl {
             std::lock_guard lock(owner->cache_mutex);
             const auto iter = owner->resource_cache.find(cache_key);
             if (iter != owner->resource_cache.end() && !iter->second.is_expired()) {
-                return return_cached(std::make_shared<ProtectedResourceMetadata>(iter->second.data));
+                return return_accepted_cached(
+                    std::make_shared<ProtectedResourceMetadata>(iter->second.data), std::move(accept));
             }
         }
 
         auto operation = std::make_shared<DiscoveryOperation<ProtectedResourceMetadata>>();
         operation->owner = std::move(owner);
         operation->cache_key = std::move(cache_key);
+        operation->accept = std::move(accept);
 
         if (challenge_metadata_url) {
             // The challenge named the location; take the server at its word and try nothing else.
@@ -992,19 +1012,33 @@ struct OAuthDiscoveryClient::Impl {
                 operation->response =
                     co_await operation->owner->http_client->get_json(operation->urls[index]);
                 operation->metadata = operation->response.get<ProtectedResourceMetadata>();
-
-                std::lock_guard lock(operation->owner->cache_mutex);
-                operation->owner->resource_cache[operation->cache_key] = {
-                    *operation->metadata,
-                    std::chrono::steady_clock::now() + operation->owner->cache_ttl,
-                };
-                co_return *operation->metadata;
             } catch (const MetadataPolicyError&) {
                 // A refused target is a security decision, not a candidate that missed.
                 throw;
             } catch (...) {
                 continue;
             }
+
+            // Deliberately outside the try above, and before the cache is written.
+            //
+            // Outside, because the caller refusing a document that was fetched and parsed is a
+            // verdict on that document, not a candidate that missed; letting `catch (...)` swallow
+            // it would silently move on to the next well-known URL. Before, because a document the
+            // caller refuses must never become a cache entry that a later attempt is served from
+            // without ever reaching the network -- which is exactly what made an attacker-supplied
+            // document worth planting for the full TTL.
+            if (operation->accept) {
+                operation->accept(*operation->metadata);
+            }
+
+            {
+                std::lock_guard lock(operation->owner->cache_mutex);
+                operation->owner->resource_cache[operation->cache_key] = {
+                    *operation->metadata,
+                    std::chrono::steady_clock::now() + operation->owner->cache_ttl,
+                };
+            }
+            co_return *operation->metadata;
         }
         throw std::runtime_error("Failed to discover protected resource metadata for " +
                                  operation->cache_key);
@@ -1055,6 +1089,13 @@ Task<ProtectedResourceMetadata> OAuthDiscoveryClient::discover_protected_resourc
 Task<ProtectedResourceMetadata> OAuthDiscoveryClient::discover_protected_resource(
     const std::string& resource_url, const std::optional<std::string>& challenge_metadata_url) {
     return Impl::discover_protected_resource(impl_, resource_url, challenge_metadata_url);
+}
+
+Task<ProtectedResourceMetadata> OAuthDiscoveryClient::discover_protected_resource(
+    const std::string& resource_url, const std::optional<std::string>& challenge_metadata_url,
+    ProtectedResourceAcceptor accept) {
+    return Impl::discover_protected_resource(impl_, resource_url, challenge_metadata_url,
+                                             std::move(accept));
 }
 
 Task<AuthServerMetadata> OAuthDiscoveryClient::discover_auth_server(const std::string& issuer_url) {
@@ -1523,18 +1564,32 @@ struct OAuthAuthorizationManager::Impl {
     static Task<bool> run_challenge(std::shared_ptr<ChallengeOperation> operation) {
         auto& owner = *operation->owner;
 
+        // Both checks that decide whether this document may be acted on, handed to discovery as its
+        // acceptance test rather than applied after the fact.
+        //
+        // Applying them afterwards left a real hole: run_protected_discovery() wrote every document
+        // that merely parsed into the resource cache before returning it, so a refused document was
+        // already planted for the full TTL and the next attempt was served it without a fetch. As
+        // the acceptor they gate the cache write instead, and they run on a cache hit too, so a
+        // document can never be trusted later on the strength of an earlier attempt that refused
+        // it.
+        //
+        // The order of the two is load-bearing and unchanged: a document that both lists no
+        // authorization servers and carries a resource that is not ours still reports the missing
+        // authorization servers, exactly as it did when these ran here.
+        auto accept = [owner = operation->owner](const ProtectedResourceMetadata& resource) {
+            if (resource.authorization_servers.empty()) {
+                throw std::runtime_error("Protected resource metadata listed no authorization servers");
+            }
+            // Refused before the first outbound request this document would drive, so a PRM that
+            // does not identify our configured server cannot make us fetch the authorization server
+            // metadata it names, register a client with that server, or persist those credentials.
+            require_resource_identifies_server(resource.resource, owner->config.server_url);
+        };
+
         // The challenge's own metadata URL wins over the well-known fallback order.
         operation->resource_metadata = co_await owner.discovery->discover_protected_resource(
-            owner.config.server_url, operation->challenge.resource_metadata);
-        if (operation->resource_metadata->authorization_servers.empty()) {
-            throw std::runtime_error("Protected resource metadata listed no authorization servers");
-        }
-        // Checked here, before the first outbound request driven by this document, so a PRM that
-        // does not identify our configured server cannot make us fetch the authorization server
-        // metadata it names, register a client with that server, or persist those credentials.
-        // Deliberately after the authorization-servers check so error precedence is unchanged.
-        require_resource_identifies_server(operation->resource_metadata->resource,
-                                           owner.config.server_url);
+            owner.config.server_url, operation->challenge.resource_metadata, std::move(accept));
 
         operation->auth_metadata = co_await owner.discovery->discover_auth_server(
             operation->resource_metadata->authorization_servers.front());
