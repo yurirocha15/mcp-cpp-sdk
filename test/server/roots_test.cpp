@@ -139,7 +139,8 @@ TEST_F(RootsTest, ServerRequestsRootsFromClient) {
 }
 
 TEST_F(RootsTest, RequestRootsWithoutSenderThrows) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     mcp::Context ctx(*raw_transport);
 
