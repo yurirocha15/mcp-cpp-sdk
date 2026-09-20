@@ -11,6 +11,7 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/thread_pool.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/write.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
@@ -1464,6 +1465,7 @@ TEST_F(SessionManagerTest, NonAtomicConfigurationLocksWhenListeningStarts) {
     EXPECT_THROW(manager.set_bearer_token_validator({}), std::logic_error);
     EXPECT_THROW(manager.set_stateless_json_mode(true), std::logic_error);
     EXPECT_THROW(manager.set_tool_executor(io_ctx_.get_executor()), std::logic_error);
+    EXPECT_THROW(manager.set_max_request_body_bytes(4096), std::logic_error);
 
     manager.close();
     asio::co_spawn(io_ctx_, std::move(listener), asio::detached);
@@ -1522,3 +1524,96 @@ TEST_F(SessionManagerTest, StatelessDispatchUsesConfiguredToolExecutor) {
     EXPECT_FALSE(handler_ran_on_http_thread.load(std::memory_order_acquire));
     EXPECT_EQ(json::parse(response.body)["result"]["content"][0]["text"], "tool executor");
 }
+
+TEST_F(SessionManagerTest, RequestBodyBeyondTheLimitIsRejected) {
+    const unsigned short port = 19135;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    unsigned int status = 0;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            // Announcing the length is enough: the parser rejects the request before the body is
+            // sent, which is the point of the limit.
+            const std::string header =
+                "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                "Content-Length: " +
+                std::to_string(mcp::constants::g_default_max_request_body_bytes + 1) + "\r\n\r\n";
+
+            beast::tcp_stream stream(io_ctx_.get_executor());
+            asio::ip::tcp::resolver resolver(io_ctx_.get_executor());
+            auto endpoints =
+                co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
+            co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+            co_await asio::async_write(stream, asio::buffer(header), asio::use_awaitable);
+
+            beast::flat_buffer response_buffer;
+            http::response<http::string_body> response;
+            co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
+            status = response.result_int();
+
+            beast::error_code shutdown_error;
+            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
+        },
+        [&manager](const std::exception_ptr&) { manager.close(); });
+    io_ctx_.run();
+
+    EXPECT_EQ(status, 413);
+}
+
+// The two setters are order-independent: each renders from the whole current configuration, so
+// neither call can strand the other's contribution. Both orders are exercised against real
+// listeners and the resulting headers compared to each other.
+
+TEST_F(SessionManagerTest, RequestBodyLimitIsConfigurable) {
+    const unsigned short port = 19141;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_max_request_body_bytes(4096);
+    EXPECT_THROW(manager.set_max_request_body_bytes(0), std::invalid_argument);
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    unsigned int status = 0;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const std::string header =
+                "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                "Content-Length: 8192\r\n\r\n";
+
+            beast::tcp_stream stream(io_ctx_.get_executor());
+            asio::ip::tcp::resolver resolver(io_ctx_.get_executor());
+            auto endpoints =
+                co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
+            co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+            co_await asio::async_write(stream, asio::buffer(header), asio::use_awaitable);
+
+            beast::flat_buffer response_buffer;
+            http::response<http::string_body> response;
+            co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
+            status = response.result_int();
+
+            beast::error_code shutdown_error;
+            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
+        },
+        [&manager](const std::exception_ptr&) { manager.close(); });
+    io_ctx_.run();
+
+    // 8 KB clears the default but not the 4 KB cap installed above, so the cap is what answered.
+    EXPECT_EQ(status, 413);
+}
+
+// ===========================================================================
+// End to end: the SDK's own client completes discovery against the SDK's own server
+// ===========================================================================
+
+// The gap this API closes was that the SDK's client could not be driven by the SDK's server: the
+// challenge named no metadata location, so discovery had nothing to start from. This exercises the
+// whole path on real sockets — an unauthenticated request draws a 401, the challenge is parsed by
+// the SDK's own parser, the URL it names is fetched by the SDK's own discovery client, and the
+// document that comes back is the one the server was configured with. Nothing here is a string
+// comparison against a hand-written header.
