@@ -392,13 +392,20 @@ struct HttpServerTransport::Impl {
         }
 
         // server/discover is a pre-gate method: it MUST stay reachable with zero prior session
-        // state, so a discover request that carries no MCP-Session-Id header skips the POST
+        // state, so a discover REQUEST that carries no MCP-Session-Id header skips the POST
         // session gate — mirroring HttpSessionManager, which intercepts sessionless discover
         // before resolve_session_for_post. Nothing else is exempted: any other method, and
         // discover WITH a session header, still goes through validate_post_session unchanged,
         // and this path neither creates nor mutates session state.
-        const bool is_sessionless_discover =
-            is_discover_request(request_json) && request.find("MCP-Session-Id") == request.end();
+        //
+        // The "id" requirement is deliberate and does NOT mirror the sibling transport. Without
+        // it a sessionless JSON-RPC *notification* named server/discover would skip the gate and
+        // push its whole body onto the unbounded incoming queue below, answering 202 without
+        // ever waiting for the server. server/discover is a request method, so demanding an id
+        // costs nothing and keeps that unbounded enqueue behind the session gate.
+        const bool is_sessionless_discover = is_discover_request(request_json) &&
+                                             request_json.contains("id") &&
+                                             request.find("MCP-Session-Id") == request.end();
         if (!is_sessionless_discover) {
             const auto session_check = co_await validate_post_session(request);
             if (!session_check.ok) {
