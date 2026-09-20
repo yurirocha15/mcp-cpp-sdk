@@ -69,6 +69,19 @@ struct ClientOptions {
     std::chrono::milliseconds request_timeout{std::chrono::seconds(30)};
     /** @brief Reject malformed JSON-RPC envelopes received from the peer. */
     bool strict_protocol_validation{true};
+    /**
+     * @brief Invoked when an incoming message is discarded instead of dispatched.
+     *
+     * Reports two things, neither of which ends the session and neither of which the
+     * application can otherwise observe:
+     * - a message the peer sent that the client could not decode, as g_PARSE_ERROR;
+     * - an exception thrown by an application notification callback, as g_INTERNAL_ERROR,
+     *   with the notification method in the message.
+     *
+     * Runs on the client's read loop, so it must not block. An exception thrown from it is
+     * discarded: there is nowhere left to report a failure of the reporting path itself.
+     */
+    std::function<void(const Error&)> on_protocol_error;
 };
 
 /** @brief Overrides for one outgoing request. */
