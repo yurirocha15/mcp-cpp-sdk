@@ -566,6 +566,23 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         return ActiveExchangeGuard(exchange->owner, exchange.get());
     }
 
+    /// Re-check the sticky abort part-way through an exchange, throwing exactly what
+    /// track_exchange() throws.
+    ///
+    /// track_exchange() runs once per exchange, before the first request, but run_get() follows
+    /// redirects in a loop and every iteration builds a fresh socket through Exchange::reset(). So
+    /// an abort_pending() that lands while an iteration's read is completing closes a socket that
+    /// is already finished with -- no effect -- and the resumed coroutine then follows the redirect
+    /// and runs a whole new request for a client that has been torn down, up to
+    /// `policy.max_redirects` times. The sticky `aborted` flag cannot catch that on its own because
+    /// track_exchange() never runs again.
+    static void throw_if_aborted(const std::shared_ptr<Impl>& owner) {
+        std::lock_guard lock(owner->active_mutex);
+        if (owner->aborted) {
+            throw boost::system::system_error(net::error::operation_aborted);
+        }
+    }
+
     /// Close the underlying socket of every exchange currently in flight, posted onto the client's
     /// strand so the closure is never raced with the coroutine using it. A pending resolve, connect,
     /// write, or read then completes with an error instead of hanging. Also latches `aborted`, so
@@ -618,6 +635,9 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 
         const auto redirect_budget = exchange->owner->policy.max_redirects;
         for (std::size_t redirect = 0;; ++redirect) {
+            // Re-read the abort on every hop, not just at track_exchange() above: abort_pending()
+            // can land between two iterations, where it has nothing left to close.
+            throw_if_aborted(exchange->owner);
             // Every hop, including each redirect target, is validated afresh before it is reached.
             enforce_url_policy(exchange->owner->policy, exchange->url);
             exchange->parsed = parse_url(exchange->url);
@@ -1305,6 +1325,19 @@ struct OAuthAuthorizationManager::Impl {
 
     static Task<bool> return_false() { co_return false; }
 
+    /// Fails the same way return_false() succeeds: lazily, when the returned awaitable is awaited.
+    ///
+    /// handle_challenge() contains no co_await or co_return, so it is a plain function returning an
+    /// awaitable, and a bare `throw` in its body fires when try_handle_challenge() is *called*
+    /// rather than when its result is awaited -- unlike the virtual it overrides, whose contract is
+    /// the lazy one. Returning this instead moves only the throw; handle_challenge() stays a plain
+    /// function, which matters because it returns its awaitables in tail position and making it a
+    /// coroutine would add a frame and a suspension to a path that runs on every 401.
+    static Task<bool> throw_closed() {
+        throw std::runtime_error("OAuth authorization manager closed");
+        co_return false;
+    }
+
     /// Challenge scope is authoritative; `scopes_supported` is the fallback; otherwise no scope is
     /// requested at all. An explicit configured scope overrides both.
     ///
@@ -1656,7 +1689,7 @@ struct OAuthAuthorizationManager::Impl {
             // still stop that flight's first network call either way, but this keeps a closed
             // manager from starting one at all.)
             if (owner->closed) {
-                throw std::runtime_error("OAuth authorization manager closed");
+                return throw_closed();
             }
             if (owner->flight) {
                 joined = owner->flight;
