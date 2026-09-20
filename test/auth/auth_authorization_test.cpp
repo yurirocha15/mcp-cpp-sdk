@@ -2500,12 +2500,14 @@ TEST(AuthHttpClientScopeRetentionTest, RetainsNoPerScopeStateAsAuthenticatorsCom
 // is never released from `active_exchanges`.
 //
 // The peak assertion is what keeps it honest. Without it, an instrumentation bug that always
-// reported zero would satisfy the return-to-baseline check silently. It is sampled from inside the
-// token server's handler, which runs while the exchange that asked for the token is still open, so
-// the number it reports is a count taken with an exchange in flight. Sampled after the co_await
-// instead -- where it used to be -- the exchange has already released its reference by the time the
-// count is read, and the peak would measure only the authenticators the test is deliberately
-// holding, which is not what the paragraph above claims for it.
+// reported zero would satisfy the return-to-baseline check silently.
+//
+// Be precise about what the peak is, because an earlier version of this comment was not and two
+// reviewers were misled by it. `live_scope_latch_count()` counts latch OBJECTS, so the peak is the
+// number of live scopes -- the authenticators this test is deliberately holding. Sampling from
+// inside the token server's handler means the count is taken while an exchange is in flight, and
+// `in_flight_samples` asserts that it genuinely was. It does NOT mean the number is larger than it
+// would be afterwards: an in-flight exchange holds a copy of an existing object and adds nothing.
 TEST(AuthHttpClientScopeRetentionTest, TheScopeAbortLatchIsReleasedByEveryChurnedAuthenticator) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
