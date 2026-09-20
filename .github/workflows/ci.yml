@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  # Manual runs only. The automatic triggers below stay scoped to `main` on purpose; this
+  # lets a feature branch be checked on the full matrix without spending CI on every push.
+  workflow_dispatch:
   push:
     branches: [ main ]
   pull_request:
