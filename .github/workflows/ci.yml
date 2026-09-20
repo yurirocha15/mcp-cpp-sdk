@@ -69,7 +69,15 @@ jobs:
         restore-keys: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-${{ matrix.linkage }}-ccache-
         max-size: 500M
 
+    # MCP_REQUIRE_TWIN_LOOPBACK turns the OAuthSetterPairAtomicity skips into failures. Those tests
+    # need a port free on both 127.0.0.1 and 127.0.0.2, and skip when the second address is
+    # missing -- which would delete the whole setter-pair atomicity regression suite while the run
+    # still reported green. Linux binds 127.0.0.0/8 as a whole, so there the address is always
+    # there and its absence is a broken runner, not an unsupported host. macOS gives lo0 only
+    # 127.0.0.1 unless an alias is added, so the skip stays available there.
     - name: Build and Test
+      env:
+        MCP_REQUIRE_TWIN_LOOPBACK: ${{ runner.os == 'Linux' && '1' || '' }}
       run: >-
         python scripts/build.py --examples --test
         --cppstd ${{ matrix.cppstd }} --linkage ${{ matrix.linkage }}
@@ -126,6 +134,8 @@ jobs:
         max-size: 500M
 
     - name: Build and Test with Sanitizers
+      env:
+        MCP_REQUIRE_TWIN_LOOPBACK: '1'
       run: python scripts/build.py --sanitize --test
 
   release-safety:
