@@ -1,5 +1,6 @@
 #include <mcp/auth/challenge.hpp>
 
+#include <mcp/auth/metadata_policy.hpp>
 #include <mcp/core/constants.hpp>
 
 #include <algorithm>
@@ -297,8 +298,13 @@ AuthorizationResponseValidation validate_authorization_response(const Authorizat
 
     // Only an issuer-authentic response may have its error values acted on or displayed.
     if (response.error) {
-        return {AuthorizationResponseStatus::server_error,
-                "authorization server returned error " + *response.error};
+        // Sanitized at the source rather than where the message is interpolated into an exception,
+        // so every consumer of this validation message gets the flattened form. The value reached
+        // us through a redirect the authorization server controls, and being issuer-authentic makes
+        // it trustworthy as to origin, not as to content.
+        return {
+            AuthorizationResponseStatus::server_error,
+            "authorization server returned error " + detail::sanitize_for_diagnostics(*response.error)};
     }
     if (!response.code || response.code->empty()) {
         return {AuthorizationResponseStatus::code_missing,
