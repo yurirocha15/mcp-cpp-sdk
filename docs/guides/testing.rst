@@ -78,9 +78,17 @@ When writing scripted tests, consider the following:
         auto init_res = co_await client->connect(client_info, client_caps);
         EXPECT_EQ(init_res.serverInfo.version, "1.0");
 
-        // 2. Call a tool and verify the content
-        auto result = co_await client->call_tool("echo", {{"message", "test"}});
-        EXPECT_EQ(result.content[0]["text"], "test");
+        // 2. Call a tool and verify the content.
+        // Build the arguments into a named variable: an initializer list inside
+        // a co_await expression crashes GCC 12 and 13. See "Compiler Notes" in
+        // the README.
+        nlohmann::json echo_args{{"message", "test"}};
+        auto result = co_await client->call_tool("echo", echo_args);
+
+        // CallToolResult::content holds ContentBlock, a variant, not JSON.
+        const auto* text = std::get_if<mcp::TextContent>(&result.content.at(0));
+        ASSERT_NE(text, nullptr);
+        EXPECT_EQ(text->text, "test");
 
         // 3. Verify server-side state if accessible
         EXPECT_TRUE(server->has_tool("echo"));
