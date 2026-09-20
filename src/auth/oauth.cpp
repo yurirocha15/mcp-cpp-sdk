@@ -1558,12 +1558,20 @@ struct OAuthAuthorizationManager::Impl {
                 const auto& injected = owner.config.client_identity.pre_registered;
                 if (injected && !injected->client_id.empty() && injected->issuer.empty() &&
                     injected->client_secret && !injected->client_secret->empty()) {
+                    // Both spellings are named, with the condition on each, because they are not
+                    // interchangeable and the old wording presented `client_issuer` as though they
+                    // were. `client_issuer` only fills in credentials given as client_id and
+                    // client_secret; the constructor refuses it next to a populated
+                    // `client_identity.pre_registered`, so a caller who built that struct
+                    // themselves has to set the issuer on it.
                     throw std::runtime_error(
                         "Injected client credentials carry a client_secret but name no issuer, so "
                         "they cannot be presented to authorization server " +
                         operation->facts.issuer +
-                        "; set the issuer these credentials are bound to (client_issuer, or "
-                        "pre_registered.issuer)");
+                        "; set the issuer these credentials are bound to. Set "
+                        "client_identity.pre_registered.issuer if you populated "
+                        "client_identity.pre_registered yourself; client_issuer applies only to "
+                        "credentials given as client_id and client_secret");
                 }
                 throw std::runtime_error("No client identity is available for authorization server " +
                                          operation->facts.issuer);
