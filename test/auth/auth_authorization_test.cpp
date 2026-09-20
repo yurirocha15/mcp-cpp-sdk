@@ -3909,15 +3909,15 @@ mcp::StreamableHttpSessionManager::ServerFactory make_pairing_server_factory() {
 //
 // RFC 9728 section 5.1 has the resource server point the client at its metadata with a
 // `resource_metadata` parameter on the challenge. Both places that set that header send a bare
-// `Bearer` instead -- in http_session_manager.cpp and http_server.cpp; grep `www_authenticate`.
+// `Bearer`, because this server was given a validator and nothing else.
 //
 // So a client that receives this challenge is told it needs a token and nothing about where to get
 // one. It can only fall back to the well-known location derived from the URL it was configured
 // with, which this server does not serve, and discovery fails.
 //
-// When those two emit sites are fixed, THIS test fails and
-// `DISABLED_ClientDiscoversAuthorizationFromTheServersOwnChallenge` below is the one to enable.
-// Read them as a pair.
+// This is the cost of leaving the resource undescribed, not a gap in the SDK:
+// `ClientDiscoversAuthorizationFromTheServersOwnChallenge` below is the same pairing with
+// set_protected_resource_metadata() configured. Read them as a pair.
 TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDiscoveryCannotStart) {
     constexpr unsigned short port = 19211;
 
@@ -3970,7 +3970,7 @@ TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDisc
     ASSERT_TRUE(challenge.had_www_authenticate);
     // The challenge is bare.
     EXPECT_EQ(challenge.www_authenticate, "Bearer")
-        << "the server now sends challenge parameters; enable the DISABLED_ test below";
+        << "an unconfigured server must not advertise challenge parameters";
     EXPECT_EQ(challenge.www_authenticate.find("resource_metadata"), std::string::npos)
         << challenge.www_authenticate;
 
@@ -3991,24 +3991,26 @@ TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDisc
     EXPECT_NE(client_failure.find("/mcp"), std::string::npos) << client_failure;
 }
 
-// The end state, written as a test so the fix has a target.
+// The end state the pair above was waiting for. A server that is told what resource it represents
+// advertises where its metadata lives, so the shipped client has somewhere to begin discovery.
 //
-// Disabled rather than left red on purpose, and the pair above is why. A permanently failing test
-// is noise that gets muted or deleted, and it cannot tell anyone WHEN it started passing. The
-// enabled test above fails the moment either emit site gains a `resource_metadata` parameter, and
-// its failure message says to come here. So the seam is guarded in both directions: the gap cannot
-// be closed silently, and it cannot be reopened silently either.
-//
-// To enable: have both emit sites send
-// `Bearer resource_metadata="<base>/.well-known/oauth-protected-resource"`, serve that document,
-// and delete the DISABLED_ prefix.
-TEST(AuthClientServerPairingTest, DISABLED_ClientDiscoversAuthorizationFromTheServersOwnChallenge) {
+// The seam stays guarded in both directions: the test above still pins that a server configured
+// with only a validator sends the bare challenge, so the parameter cannot appear by accident, and
+// this one fails if it ever stops appearing when the metadata IS configured.
+TEST(AuthClientServerPairingTest, ClientDiscoversAuthorizationFromTheServersOwnChallenge) {
     constexpr unsigned short port = 19212;
 
     asio::io_context io_ctx;
     mcp::StreamableHttpSessionManager manager(io_ctx.get_executor(), "127.0.0.1", port,
                                               make_pairing_server_factory());
     manager.set_bearer_token_validator([](std::string_view token) { return token == "valid-token"; });
+
+    // What the resource is called from outside is stated, never inferred from the bound address.
+    mcp::ProtectedResourceMetadataConfig metadata;
+    metadata.resource = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    metadata.authorization_servers = {"https://auth.example.com"};
+    manager.set_protected_resource_metadata(metadata);
+
     asio::co_spawn(io_ctx, manager.listen(), asio::detached);
 
     RawChallenge challenge;
