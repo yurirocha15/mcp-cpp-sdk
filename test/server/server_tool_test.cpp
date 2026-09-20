@@ -9,6 +9,7 @@
 #include <boost/asio/io_context.hpp>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -228,6 +229,26 @@ TEST_F(ServerToolTest, DomainObjectNamedContentIsStillWrapped) {
     ASSERT_TRUE(responses[1].contains("result"));
     EXPECT_EQ(responses[1]["result"]["structuredContent"]["content"][0], "first");
     EXPECT_EQ(responses[1]["result"]["content"][0]["type"], "text");
+}
+
+TEST_F(ServerToolTest, SyncHandlerExceptionTextIsSanitizedBeforeItReachesThePeer) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool("fail", "Always fails", nlohmann::json{{"type", "object"}},
+                          [](const nlohmann::json&) -> nlohmann::json {
+                              throw std::runtime_error("broke\nat /opt/internal/secret.cpp:12");
+                          });
+
+    auto responses = call_tool(setup, "fail");
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("result"));
+    EXPECT_TRUE(responses[1]["result"]["isError"].get<bool>());
+    auto text = responses[1]["result"]["content"][0]["text"].get<std::string>();
+    EXPECT_EQ(text.find('\n'), std::string::npos);
+    EXPECT_NE(text.find("broke"), std::string::npos);
 }
 
 TEST_F(ServerToolTest, NonTemplateToolAppearsInToolsList) {
