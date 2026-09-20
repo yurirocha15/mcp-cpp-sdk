@@ -58,7 +58,7 @@ asio::awaitable<void> run_mock_server(asio::ip::tcp::acceptor& acceptor, Accepto
 }
 
 /// A policy admitting exactly the plain-http loopback fixture these tests drive directly. A
-/// policy-less `OAuthHttpClient` now defaults to deny-all, so every test that talks to a mock
+/// policy-less `OAuthHttpClient` defaults to deny-all, so every test that talks to a mock
 /// server without going through `OAuthAuthorizationManager` (which always installs its own policy)
 /// must opt in explicitly.
 mcp::auth::MetadataFetchPolicy loopback_policy(unsigned short port) {
@@ -1114,9 +1114,9 @@ TEST_F(DiscoveryTest, ClearCacheInvalidatesEntries) {
     EXPECT_EQ(request_count, 2);
 }
 
-// A policy-less client now defaults to deny-all rather than allow-all: no origin is on the (empty)
-// allow list, and plain http is refused outright. Refusal happens in `enforce_url_policy` before
-// any lookup, so the host resolver this test installs must never run.
+// A policy-less client denies every origin: no origin is on the (empty) allow list, and plain http
+// is refused outright. Refusal happens in `enforce_url_policy` before any lookup, so the host
+// resolver this test installs must never run.
 TEST(AuthOAuthHttpClientDefaultPolicyTest, PolicyLessClientRefusesAnHttpLoopbackUrlWithoutResolving) {
     asio::io_context io_ctx;
     mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
@@ -1483,7 +1483,7 @@ TEST(OAuthSetterPairAtomicity, ReconfiguringAsOnePairNeverExposesTheNewResolverU
     EXPECT_GT(refused.load(), 0u) << "no exchange ever ran under the narrow configuration";
     EXPECT_GE(transitions.load(), 25u) << "the run did not reach enough narrowings to mean much";
     EXPECT_EQ(new_server.load(), 0u)
-        << "F3: " << new_server.load() << " of "
+        << new_server.load() << " of "
         << (old_server.load() + new_server.load() + refused.load() + other.load())
         << " exchanges were directed by the NEW resolver while validated against the OLD, wider "
            "allow list, across "

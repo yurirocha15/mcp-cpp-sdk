@@ -666,9 +666,9 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         }
     }
 
-    /// Hand out a fresh latch. There are no scope ids any more and so nothing to reuse: a scope is
-    /// identified by the control block itself, which every party that can consult it keeps alive,
-    /// so a new scope can never alias a latched one the way a recycled id could.
+    /// Hand out a fresh latch. A scope is identified by the control block itself, which every party
+    /// that can consult it keeps alive, so a new scope can never alias a latched one the way a
+    /// recycled id could. Do not reintroduce scope ids.
     static std::shared_ptr<detail::OAuthScopeState> new_scope() {
         return std::make_shared<detail::OAuthScopeState>();
     }
@@ -676,8 +676,6 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     // Every request carries the scope it was issued under, so aborting that scope reaches exactly
     // these exchanges and no others. A null scope is the client's own unscoped work.
     /// Build an exchange with the fetch policy and host resolver PINNED for its whole lifetime.
-    ///
-    /// Two reasons, and the second is not about threads at all.
     ///
     /// set_metadata_policy() and set_host_resolver() are plain writes to state the exchange
     /// coroutines read, which ThreadSanitizer confirmed as a real race for anyone driving this
@@ -851,10 +849,8 @@ void OAuthHttpClient::set_host_resolver(HostResolver resolver) {
 // Installs both values under one lock. Use this rather than the two setters above whenever both
 // change: calling them in sequence leaves an interval holding one new value and one old one, and
 // make_exchange() pins whatever it finds. Resolver-first is the natural order to write and the
-// dangerous one, because the redirection takes effect before the narrower allow list does, so an
-// exchange in the interval is sent where the new resolver says while being checked against the old
-// one. The interval is as long as the caller takes between the two statements; at a 1 ms gap,
-// 9,406 of 9,985 narrowings admitted a request they were meant to refuse.
+// dangerous one. See the @warning on set_metadata_policy() in include/mcp/auth/oauth.hpp for why,
+// and for how wide the interval measures.
 void OAuthHttpClient::configure(MetadataFetchPolicy policy, HostResolver resolver) {
     std::lock_guard lock(impl_->active_mutex);
     impl_->policy = std::move(policy);
@@ -953,7 +949,7 @@ namespace detail {
 /// Defined here and nowhere else; the public header only grants it friendship.
 struct OAuthTestAccess {
     static std::size_t retained_scope_records(const OAuthHttpClient& client) {
-        // Structural, not a stubbed zero: there is no per-scope container left to count. A change
+        // Structural, not a stubbed zero: there is no per-scope container to count. A change
         // that reintroduces one has to answer here, and the retention test will see it.
         std::lock_guard lock(client.impl_->active_mutex);
         return 0;
@@ -1439,11 +1435,11 @@ void OAuthAuthenticator::store_token(TokenResponse token) {
     impl_->token_store->store(impl_->server_url, std::move(token));
 }
 
-/// Ends only this authenticator's requests. It used to call abort_pending(), which latches the
-/// whole client irreversibly -- correct for a client its owner created, wrong for one the
-/// application supplied and may share. Two authenticators for two servers sharing one client meant
-/// closing either one silently disabled the other: run_refresh() reports a failed refresh as a
-/// plain `false`, so the survivor got no error, only tokens that quietly stopped renewing.
+/// Ends only this authenticator's requests. Do not reach for abort_pending() here: it latches the
+/// whole client irreversibly, which is correct for a client its owner created and wrong for one the
+/// application supplied and may share. Two authenticators for two servers on one client would then
+/// silently disable each other -- run_refresh() reports a failed refresh as a plain `false`, so the
+/// survivor gets no error, only tokens that quietly stop renewing.
 void OAuthAuthenticator::close() { impl_->scope.abort(); }
 
 namespace {
@@ -1501,8 +1497,8 @@ std::optional<std::string> union_scopes(const std::optional<std::string>& primar
 ///
 /// A server that publishes the list has told the client which methods it will accept, so the
 /// client picks the strongest one it can actually satisfy rather than guessing. A server that
-/// publishes nothing leaves the decision unset, which keeps the pre-existing behaviour of sending
-/// the secret, when there is one, in the request body.
+/// publishes nothing leaves the decision unset, which sends the secret, when there is one, in the
+/// request body.
 std::optional<std::string> select_token_endpoint_auth_method(
     const std::optional<std::vector<std::string>>& supported, bool has_client_secret) {
     if (!supported || supported->empty()) {
@@ -1612,8 +1608,7 @@ struct OAuthAuthorizationManager::Impl {
         }
         // One call rather than two, even here where the client has not yet issued a request: the
         // pair method is what a reader should find at a site that installs both. An empty
-        // `host_resolver` leaves this client on the executor's system resolver, which is exactly
-        // what the guard that used to skip the second call achieved.
+        // `host_resolver` leaves this client on the executor's system resolver.
         http_client->configure(config.policy, config.host_resolver);
         discovery = std::make_shared<OAuthDiscoveryClient>(http_client);
     }
@@ -1726,12 +1721,11 @@ struct OAuthAuthorizationManager::Impl {
                 if (injected && !injected->client_id.empty() && injected->issuer.empty() &&
                     injected->client_secret && !injected->client_secret->empty()) {
                     // Both spellings are named, with the condition on each, because they are not
-                    // interchangeable and the old wording presented `client_issuer` as though they
-                    // were. The constructor copies `client_issuer` into the injected credentials
-                    // only when `client_identity.pre_registered` was not already set, so a caller
-                    // who built that struct themselves can set `client_issuer` and watch it be
-                    // ignored -- while working to clear a security refusal, which is the worst
-                    // moment to be sent to the wrong field.
+                    // interchangeable. The constructor copies `client_issuer` into the injected
+                    // credentials only when `client_identity.pre_registered` was not already set,
+                    // so a caller who built that struct themselves can set `client_issuer` and
+                    // watch it be ignored -- while working to clear a security refusal, which is
+                    // the worst moment to be sent to the wrong field.
                     throw std::runtime_error(
                         "Injected client credentials carry a client_secret but name no issuer, so "
                         "they cannot be presented to authorization server " +
@@ -1831,16 +1825,14 @@ struct OAuthAuthorizationManager::Impl {
         // Both checks that decide whether this document may be acted on, handed to discovery as its
         // acceptance test rather than applied after the fact.
         //
-        // Applying them afterwards left a real hole: run_protected_discovery() wrote every document
-        // that merely parsed into the resource cache before returning it, so a refused document was
-        // already planted for the full TTL and the next attempt was served it without a fetch. As
-        // the acceptor they gate the cache write instead, and they run on a cache hit too, so a
-        // document can never be trusted later on the strength of an earlier attempt that refused
-        // it.
+        // Handed to discovery rather than applied afterwards, because discovery writes a parsed
+        // document to the resource cache before returning it: applied after the fact, a refused
+        // document would already be planted for the full TTL and the next attempt served it without
+        // a fetch. As the acceptor they gate the cache write, and they run on a cache hit too.
         //
-        // The order of the two is load-bearing and unchanged: a document that both lists no
-        // authorization servers and carries a resource that is not ours still reports the missing
-        // authorization servers, exactly as it did when these ran here.
+        // The order of the two is load-bearing: a document that both lists no authorization servers
+        // and carries a resource that is not ours must still report the missing authorization
+        // servers.
         auto accept = [owner = operation->owner](const ProtectedResourceMetadata& resource) {
             if (resource.authorization_servers.empty()) {
                 throw std::runtime_error("Protected resource metadata listed no authorization servers");
@@ -1968,7 +1960,7 @@ struct OAuthAuthorizationManager::Impl {
                 throw std::runtime_error("OAuth authorization manager closed");
             }
             // Read off the flight this follower actually waited on. Reading a manager-wide field
-            // here is what let a late waker report a different attempt's outcome.
+            // here would let a late waker report a different attempt's outcome.
             //
             // `finished` is a guard rather than a case that arises today: the only two things that
             // expire this timer are the leader recording its result and close(), and the closed
@@ -1988,11 +1980,11 @@ struct OAuthAuthorizationManager::Impl {
         // rethrows the same exception_ptr, which is safe -- the object it refers to is shared and
         // read-only.
         //
-        // This is a new throw on the follower path, so: nothing between here and the application
-        // swallows it. run_write() catches (...) only to erase_pending() and rethrow, and
-        // run_leading_challenge() is not on a follower's path at all. The catch-alls that discard
-        // and move to the next candidate live in the discovery fallback loops, which a follower
-        // never enters, and the one in the refresh path is a different call entirely.
+        // Nothing between here and the application swallows this throw on the follower path.
+        // run_write() catches (...) only to erase_pending() and rethrow, and run_leading_challenge()
+        // is not on a follower's path at all. The catch-alls that discard and move to the next
+        // candidate live in the discovery fallback loops, which a follower never enters, and the one
+        // in the refresh path is a different call entirely.
         if (failure) {
             std::rethrow_exception(failure);
         }

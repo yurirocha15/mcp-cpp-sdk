@@ -232,12 +232,9 @@ struct OAuthScopeState;
 /// this client's private state, and granting friendship to one opaque tag is the narrowest way to
 /// allow that. It hands out nothing callable -- the type is defined only inside the
 /// implementation, and the accessors are declared in src/auth/oauth_internal.hpp, which is not
-/// installed, so no consumer can reach them without hand-redeclaring an implementation symbol.
-/// The symbols themselves are exported, because the test binary links the shared library and this
-/// library is built with hidden visibility; "absent from every installed header" and "not
-/// exported" were not both achievable without changing what the tests link against, which is a
-/// far larger change than it would be worth. A friend declaration does not affect layout, so
-/// binary compatibility is unaffected.
+/// installed. The symbols are exported because the test binary links the shared library, which is
+/// built with hidden visibility. A friend declaration does not affect layout, so binary
+/// compatibility is unaffected.
 struct OAuthTestAccess;
 
 }  // namespace detail

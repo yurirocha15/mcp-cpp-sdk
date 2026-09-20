@@ -82,7 +82,6 @@ int main() {
             "invalid_access", "Accesses non-existent argument", invalid_access_schema,
             [](const nlohmann::json& args) -> mcp::CallToolResult {
                 std::cout << "[Server] invalid_access handler called\n";
-                // This will throw if "required_field" doesn't exist
                 std::string value = args.at("required_field").get<std::string>();
                 mcp::CallToolResult result;
                 mcp::TextContent content;
