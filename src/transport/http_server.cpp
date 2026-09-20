@@ -13,6 +13,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -49,6 +50,9 @@ struct HttpServerTransport::Impl {
         std::optional<std::string> response_body;
         std::optional<std::string> session_header;
         std::optional<std::string> event_id;
+        // Set only for a request carried under a sentinel id. Holds the id the caller actually
+        // sent, so run_write can put it back before the response leaves the transport.
+        std::optional<nlohmann::json> client_request_id;
         bool response_ready{false};
     };
 
@@ -272,7 +276,8 @@ struct HttpServerTransport::Impl {
     }
 
     Task<std::optional<std::shared_ptr<boost::asio::steady_timer>>> register_pending_request(
-        const std::string& request_id_key) {
+        const std::string& request_id_key,
+        std::optional<nlohmann::json> client_request_id = std::nullopt) {
         if (pending_responses.contains(request_id_key)) {
             co_return std::nullopt;
         }
@@ -280,9 +285,21 @@ struct HttpServerTransport::Impl {
         auto timer_signal = std::make_shared<boost::asio::steady_timer>(strand);
         timer_signal->expires_at(std::chrono::steady_clock::time_point::max());
 
-        pending_responses.emplace(request_id_key, PendingResponse{timer_signal, std::nullopt,
-                                                                  std::nullopt, std::nullopt, false});
+        pending_responses.emplace(
+            request_id_key, PendingResponse{timer_signal, std::nullopt, std::nullopt, std::nullopt,
+                                            std::move(client_request_id), false});
         co_return timer_signal;
+    }
+
+    // A transport-private id for a request that arrives with no session credential. The random
+    // prefix is drawn once per transport from the same secure source as the session id, so a
+    // peer cannot construct an id that collides with a live sentinel, and the counter keeps
+    // concurrent sentinels distinct from each other.
+    std::string next_sentinel_request_id() {
+        if (sentinel_id_prefix.empty()) {
+            sentinel_id_prefix = "mcp-pregate-" + generate_session_id() + "-";
+        }
+        return sentinel_id_prefix + std::to_string(++sentinel_id_counter);
     }
 
     Task<bool> is_response_ready(const std::string& request_id_key) {
@@ -422,8 +439,33 @@ struct HttpServerTransport::Impl {
             co_return make_empty_json_response(request, http::status::accepted);
         }
 
-        const auto request_id_key = request_json.at("id").dump();
-        const auto timer_signal = co_await register_pending_request(request_id_key);
+        // A sessionless discover is answered on no credential at all, so the JSON-RPC id it
+        // carries is chosen by an unauthenticated party. Registering it under that raw id would
+        // put a stranger in the same key space the established session correlates on: whoever
+        // registers first owns the id, so a prober could claim an id the session then needs and
+        // force a spurious "Request id already pending" on a legitimate request. It would also
+        // put that raw id into sessionless_request_ids, which decides replay-store exclusion,
+        // letting the prober's chosen id steer what the session's replay history contains.
+        //
+        // The discover is therefore carried under a transport-private sentinel id: registered,
+        // correlated and replay-filtered under the sentinel, with the caller's own id restored
+        // in run_write before the response leaves. Only this pre-gate path pays the rewrite and
+        // the re-serialisation; every session-gated request is still registered under, and
+        // forwarded with, the exact bytes the peer sent.
+        std::string request_id_key;
+        std::optional<nlohmann::json> client_request_id;
+        std::string sentinel_body;
+        if (is_sessionless_discover) {
+            client_request_id = request_json.at("id");
+            auto sentinel_json = request_json;
+            sentinel_json["id"] = next_sentinel_request_id();
+            request_id_key = sentinel_json.at("id").dump();
+            sentinel_body = sentinel_json.dump();
+        } else {
+            request_id_key = request_json.at("id").dump();
+        }
+
+        const auto timer_signal = co_await register_pending_request(request_id_key, client_request_id);
         if (!timer_signal.has_value()) {
             co_return make_error_response(request, http::status::bad_request,
                                           "Request id already pending");
@@ -432,9 +474,10 @@ struct HttpServerTransport::Impl {
             // Tracked so run_write can keep this response out of the shared replay store. The
             // entry is dropped again in consume_pending_response and in close().
             sessionless_request_ids.insert(request_id_key);
+            enqueue_incoming_message(std::move(sentinel_body));
+        } else {
+            enqueue_incoming_message(request.body());
         }
-
-        enqueue_incoming_message(request.body());
 
         for (;;) {
             if (state->closed.load(std::memory_order_acquire)) {
@@ -675,6 +718,15 @@ struct HttpServerTransport::Impl {
             co_return;
         }
 
+        // The request was carried under a sentinel id, so the server answered the sentinel. Put
+        // the caller's own id back before the response leaves the transport; the peer must see
+        // the id it sent, and must never see the sentinel.
+        if (pending_it->second.client_request_id.has_value()) {
+            auto restored_response = response_json;
+            restored_response["id"] = *pending_it->second.client_request_id;
+            message = restored_response.dump();
+        }
+
         pending_it->second.response_body = std::move(message);
         pending_it->second.event_id = std::move(event_id);
         pending_it->second.response_ready = true;
@@ -706,6 +758,8 @@ struct HttpServerTransport::Impl {
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
     std::unordered_set<std::string> sessionless_request_ids;
+    std::string sentinel_id_prefix;
+    std::uint64_t sentinel_id_counter{0};
     std::optional<std::string> session_id;
     std::string negotiated_protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
     bool session_active{false};
