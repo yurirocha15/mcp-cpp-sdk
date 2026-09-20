@@ -140,14 +140,14 @@ TEST(ServerMiddlewareTest, MiddlewareShortCircuits) {
     // Verify the tool was never executed
     EXPECT_FALSE(tool_executed);
 
-    // Check that middleware exceptions become protocol-valid tool errors.
+    // A middleware that throws is signalling that the call must not proceed, which belongs on the
+    // protocol channel rather than in a successful tool result.
     auto it = std::find_if(responses.begin(), responses.end(), [](const json& msg) {
-        return msg.contains("id") && msg["id"] == "2" && msg.contains("result");
+        return msg.contains("id") && msg["id"] == "2" && msg.contains("error");
     });
     ASSERT_NE(it, responses.end());
-    EXPECT_TRUE((*it)["result"]["isError"].get<bool>());
-    EXPECT_TRUE((*it)["result"]["content"][0]["text"].get<std::string>().find("forbidden") !=
-                std::string::npos);
+    EXPECT_EQ((*it)["error"]["code"], mcp::g_INTERNAL_ERROR);
+    EXPECT_TRUE((*it)["error"]["message"].get<std::string>().find("forbidden") != std::string::npos);
 }
 
 // Test 3: Multiple middlewares execute in order (1→2→handler→2→1)
