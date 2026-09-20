@@ -620,6 +620,11 @@ class MCP_API Server {
     /// Whether the session's transport has ended a session since the current one was initialized.
     [[nodiscard]] bool transport_started_new_session() const;
 
+    /// Fails every outstanding request on a session and wakes whoever is waiting on it. Must run
+    /// on the session strand: the request maps are plain std::maps that only the strand mutates,
+    /// and the correlation timers belong to that strand.
+    static void abandon_session_work(const std::shared_ptr<Session>& session);
+
     void reset_session();
     void reset_session(const std::shared_ptr<Session>& session);
 
