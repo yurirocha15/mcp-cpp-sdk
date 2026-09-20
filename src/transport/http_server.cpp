@@ -13,7 +13,6 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -161,6 +160,23 @@ struct HttpServerTransport::Impl {
         for (const auto& connection : active_connections) {
             close_connection(connection);
         }
+    }
+
+    /// @brief Render the challenge a 401 will carry, borrowing the metadata URL when unset.
+    std::string render_challenge(const BearerChallengeConfig& challenge) const {
+        auto effective = challenge;
+        if (effective.resource_metadata.empty() && protected_resource_metadata.has_value()) {
+            effective.resource_metadata = protected_resource_metadata_url(*protected_resource_metadata);
+        }
+        return format_www_authenticate(effective);
+    }
+
+    bool is_unauthenticated_path(const StringRequest& request) const {
+        if (unauthenticated_paths.empty()) {
+            return false;
+        }
+        const auto path = http_request_path(std::string_view(request.target()));
+        return unauthenticated_paths.contains(std::string(path));
     }
 
     bool is_origin_allowed(std::string_view origin_value) const {
@@ -375,22 +391,57 @@ struct HttpServerTransport::Impl {
         return std::nullopt;
     }
 
+    /// @brief Answer a GET for the configured RFC 9728 document, which needs no bearer token.
+    std::optional<StringResponse> serve_protected_resource_metadata(
+        const StringRequest& request) const {
+        if (!protected_resource_metadata.has_value() || request.method() != http::verb::get) {
+            return std::nullopt;
+        }
+        if (http_request_path(std::string_view(request.target())) != protected_resource_metadata_path) {
+            return std::nullopt;
+        }
+        if (auto error = check_origin(request)) {
+            return error;
+        }
+        return make_json_response(request, http::status::ok, protected_resource_metadata_body);
+    }
+
+    StringResponse make_unauthorized_response(const StringRequest& request) const {
+        auto response =
+            make_error_response(request, http::status::unauthorized, "Invalid bearer token");
+        response.set(http::field::www_authenticate, www_authenticate_value);
+        return response;
+    }
+
+    static std::string_view request_bearer_token(const StringRequest& request) {
+        const auto authorization_it = request.find(http::field::authorization);
+        return authorization_it == request.end() ? std::string_view{}
+                                                 : http_bearer_token(header_value(authorization_it));
+    }
+
+    /// @brief Run the bearer check when it can be decided without suspending.
+    /// @details Returns nothing when an async validator is installed, because that decision
+    ///          belongs to check_authorization_async; keeping the two apart leaves the far more
+    ///          common synchronous path free of a coroutine frame and of copying the token.
     std::optional<StringResponse> check_authorization(const StringRequest& request) const {
-        if (!bearer_token_validator) {
+        if (async_bearer_token_validator || !bearer_token_validator) {
             return std::nullopt;
         }
 
-        const auto authorization_it = request.find(http::field::authorization);
-        const auto token = authorization_it == request.end()
-                               ? std::string_view{}
-                               : http_bearer_token(header_value(authorization_it));
+        const auto token = request_bearer_token(request);
         if (token.empty() || !bearer_token_validator(token)) {
-            auto response =
-                make_error_response(request, http::status::unauthorized, "Invalid bearer token");
-            response.set(http::field::www_authenticate, "Bearer");
-            return response;
+            return make_unauthorized_response(request);
         }
         return std::nullopt;
+    }
+
+    /// @brief Run the bearer check against an async validator. Only entered when one is installed.
+    Task<std::optional<StringResponse>> check_authorization_async(const StringRequest& request) const {
+        const auto token = request_bearer_token(request);
+        if (token.empty() || !co_await async_bearer_token_validator(std::string(token))) {
+            co_return make_unauthorized_response(request);
+        }
+        co_return std::nullopt;
     }
 
     Task<StringResponse> handle_post(const StringRequest& request) {
@@ -408,6 +459,11 @@ struct HttpServerTransport::Impl {
         }
         if (auto error = check_authorization(request)) {
             co_return std::move(*error);
+        }
+        if (async_bearer_token_validator) {
+            if (auto error = co_await check_authorization_async(request)) {
+                co_return std::move(*error);
+            }
         }
 
         // server/discover is a pre-gate method: it MUST stay reachable with zero prior session
@@ -542,6 +598,11 @@ struct HttpServerTransport::Impl {
         if (auto error = check_authorization(request)) {
             co_return std::move(*error);
         }
+        if (async_bearer_token_validator) {
+            if (auto error = co_await check_authorization_async(request)) {
+                co_return std::move(*error);
+            }
+        }
 
         const auto session_check = co_await validate_delete_session(request);
         if (!session_check.ok) {
@@ -563,6 +624,11 @@ struct HttpServerTransport::Impl {
         }
         if (auto error = check_authorization(request)) {
             co_return std::move(*error);
+        }
+        if (async_bearer_token_validator) {
+            if (auto error = co_await check_authorization_async(request)) {
+                co_return std::move(*error);
+            }
         }
 
         if (!session_id.has_value()) {
@@ -596,6 +662,15 @@ struct HttpServerTransport::Impl {
             co_return make_error_response(request, http::status::service_unavailable,
                                           "Transport closed");
         }
+        if (auto document = serve_protected_resource_metadata(request)) {
+            co_return std::move(*document);
+        }
+        if (is_unauthenticated_path(request)) {
+            // An exempt path is excluded from MCP dispatch, not merely excused from the bearer
+            // check. Serving MCP here would answer it with no authentication at all, so a path the
+            // metadata route did not claim has nothing left to answer it.
+            co_return make_error_response(request, http::status::not_found, "Not found");
+        }
         if (request.method() == http::verb::post) {
             co_return co_await handle_post(request);
         }
@@ -615,9 +690,8 @@ struct HttpServerTransport::Impl {
     /// @brief Report a body that exceeded max_request_body_bytes, ignoring a dead peer.
     static Task<void> write_payload_too_large(Connection& stream) {
         StringResponse response{http::status::payload_too_large, 11};
-        response.set(http::field::server, "mcp-cpp-sdk");
+        set_common_headers(response, false);
         response.set(http::field::content_type, "application/json");
-        response.keep_alive(false);
         response.body() = nlohmann::json{{"error", "Request body too large"}}.dump();
         response.prepare_payload();
         try {
@@ -800,7 +874,16 @@ struct HttpServerTransport::Impl {
     bool allow_all_origins{false};
     std::unordered_set<std::string> allowed_origins;
     BearerTokenValidator bearer_token_validator;
+    AsyncBearerTokenValidator async_bearer_token_validator;
     std::size_t max_request_body_bytes{constants::g_default_max_request_body_bytes};
+    BearerChallengeConfig bearer_challenge;
+    // Rendered once when the challenge or the metadata changes, so serving a 401 never formats.
+    std::string www_authenticate_value{"Bearer"};
+    std::optional<ProtectedResourceMetadataConfig> protected_resource_metadata;
+    std::string protected_resource_metadata_body;
+    // The resolved serving path: `path` when set, else derived from `resource`.
+    std::string protected_resource_metadata_path;
+    std::unordered_set<std::string> unauthenticated_paths;
 
     EventStore event_store;
     std::atomic<bool> json_only_{false};
@@ -854,7 +937,19 @@ void HttpServerTransport::set_allow_all_origins(bool allow_all) {
 void HttpServerTransport::set_bearer_token_validator(BearerTokenValidator validator) {
     std::lock_guard lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
+    if (validator && impl_->async_bearer_token_validator) {
+        throw std::logic_error("HttpServerTransport accepts one bearer token validator");
+    }
     impl_->bearer_token_validator = std::move(validator);
+}
+
+void HttpServerTransport::set_async_bearer_token_validator(AsyncBearerTokenValidator validator) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    if (validator && impl_->bearer_token_validator) {
+        throw std::logic_error("HttpServerTransport accepts one bearer token validator");
+    }
+    impl_->async_bearer_token_validator = std::move(validator);
 }
 
 void HttpServerTransport::set_max_request_body_bytes(std::size_t max_bytes) {
@@ -864,6 +959,47 @@ void HttpServerTransport::set_max_request_body_bytes(std::size_t max_bytes) {
         throw std::invalid_argument("Maximum request body size must be greater than zero");
     }
     impl_->max_request_body_bytes = max_bytes;
+}
+
+void HttpServerTransport::set_bearer_challenge(BearerChallengeConfig challenge) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    auto rendered = impl_->render_challenge(challenge);
+    impl_->bearer_challenge = std::move(challenge);
+    impl_->www_authenticate_value = std::move(rendered);
+}
+
+void HttpServerTransport::set_protected_resource_metadata(ProtectedResourceMetadataConfig metadata) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    if (metadata.resource.empty()) {
+        throw std::invalid_argument("Protected-resource metadata requires a resource URL");
+    }
+
+    auto metadata_url = protected_resource_metadata_url(metadata);
+    auto document = format_protected_resource_metadata(metadata);
+    auto challenge = impl_->bearer_challenge;
+    if (challenge.resource_metadata.empty()) {
+        challenge.resource_metadata = std::move(metadata_url);
+    }
+    auto rendered = format_www_authenticate(challenge);
+
+    auto document_path = protected_resource_metadata_path(metadata);
+
+    impl_->protected_resource_metadata = std::move(metadata);
+    impl_->protected_resource_metadata_path = std::move(document_path);
+    impl_->protected_resource_metadata_body = std::move(document);
+    impl_->www_authenticate_value = std::move(rendered);
+}
+
+void HttpServerTransport::set_unauthenticated_paths(std::vector<std::string> paths) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->unauthenticated_paths.clear();
+    impl_->unauthenticated_paths.reserve(paths.size());
+    for (auto& path : paths) {
+        impl_->unauthenticated_paths.insert(std::move(path));
+    }
 }
 
 Task<std::string> HttpServerTransport::read_message() {
