@@ -8,6 +8,7 @@
 #include <mcp/detail/secure_random.hpp>
 
 #include <algorithm>
+#include <boost/asio/bind_executor.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/ip/address.hpp>
@@ -1276,7 +1277,7 @@ struct OAuthAuthorizationManager::Impl {
          OAuthAuthorizationConfig authorization_config, AuthorizationCallback authorization_callback)
         : token_store(std::move(store)),
           http_client(std::make_shared<OAuthHttpClient>(executor)),
-          executor(executor),
+          flight_strand(net::make_strand(executor)),
           config(std::move(authorization_config)),
           callback(std::move(authorization_callback)) {
         // A bare `client_id` is the shorthand form of injected credentials, so the two spellings
@@ -1554,9 +1555,11 @@ struct OAuthAuthorizationManager::Impl {
         co_return true;
     }
 
-    /// Push `flight`'s deadline into the past, on the manager's executor so the change is never
-    /// raced with the timer's own operations (a pending async_wait() elsewhere, or one just about to
-    /// start).
+    /// Push `flight`'s deadline into the past, on `flight_strand` so the change is never raced with
+    /// the timer's own operations (a pending async_wait() elsewhere, or one just about to start).
+    /// await_in_flight() initiates its wait on the same strand, which is what makes that true: the
+    /// timer's associated executor governs only where its completion handler runs, while
+    /// expires_at() and async_wait() both execute on the thread that calls them.
     ///
     /// expires_at() -- unlike cancel() -- both cancels whatever is currently pending on the timer
     /// *and* moves its deadline, so a wait that starts only after this call still sees an
@@ -1565,12 +1568,12 @@ struct OAuthAuthorizationManager::Impl {
     /// async_wait when this runs: joining and waiting are two separate steps, not one atomic one, so
     /// cancel() alone -- which only affects a wait already pending -- can miss it, and the follower
     /// hangs forever. A null `flight` is a no-op.
-    static void expire_flight(const net::any_io_executor& executor,
+    static void expire_flight(const net::strand<net::any_io_executor>& flight_strand,
                               std::shared_ptr<net::steady_timer> flight) {
         if (!flight) {
             return;
         }
-        net::dispatch(executor, [flight = std::move(flight)]() {
+        net::dispatch(flight_strand, [flight = std::move(flight)]() {
             flight->expires_at(net::steady_timer::time_point::min());
         });
     }
@@ -1579,8 +1582,28 @@ struct OAuthAuthorizationManager::Impl {
     /// burst of concurrent requests that all hit the same challenge authorizes exactly once.
     static Task<bool> await_in_flight(std::shared_ptr<Impl> owner,
                                       std::shared_ptr<net::steady_timer> flight) {
+        // async_wait() touches the timer synchronously on the thread that calls it, so it has to be
+        // initiated on the same strand expire_flight() dispatches its expires_at() onto; the
+        // timer's associated executor governs only where its completion handler runs. This is the
+        // step that actually closes the race -- putting the timer and expire_flight() on a strand
+        // relocates the completion handler and nothing else.
+        //
+        // bind_executor() rather than a bare post(flight_strand, use_awaitable): a bare post leaves
+        // the resumption on this coroutine's own executor and only happens to land inside the strand
+        // when the two share one io_context, which is exactly the configuration that does not need
+        // the fix in the first place.
+        co_await net::dispatch(net::bind_executor(owner->flight_strand, net::use_awaitable));
         boost::system::error_code ignored;
         co_await flight->async_wait(net::redirect_error(net::use_awaitable, ignored));
+
+        // The dispatch above moves this coroutine onto flight_strand, but only until the next
+        // suspension: an awaitable's executor is fixed when it is spawned, and the wait's completion
+        // handler carries that executor, so the caller is back on its own executor here and no
+        // explicit hop back is needed. That matters -- Client spawns its write onto its own strand
+        // and SerializedTransportWriter builds another to serialise writes, and both would be
+        // bypassed by a continuation left on flight_strand. It is load-bearing rather than
+        // incidental, so two tests assert it directly; see
+        // AFollowerReleasedFromTheSingleFlightTimerResumesOnItsOwnStrand.
         std::lock_guard lock(owner->state_mutex);
         // close() cancels the same timer to release a follower parked here; a follower that wakes
         // because the manager closed gets a clear error rather than the misleading "not authorized"
@@ -1611,7 +1634,7 @@ struct OAuthAuthorizationManager::Impl {
         // A late joiner may have read the old `flight` out of the lock above just before this reset
         // and not yet be waiting on it (see expire_flight()'s comment); expires_at(), not cancel(),
         // is what still reaches it.
-        expire_flight(owner->executor, std::move(finished));
+        expire_flight(owner->flight_strand, std::move(finished));
         if (failure) {
             std::rethrow_exception(failure);
         }
@@ -1639,7 +1662,7 @@ struct OAuthAuthorizationManager::Impl {
                 joined = owner->flight;
             } else {
                 owner->flight = std::make_shared<net::steady_timer>(
-                    owner->executor, net::steady_timer::time_point::max());
+                    owner->flight_strand, net::steady_timer::time_point::max());
             }
         }
         if (joined) {
@@ -1691,7 +1714,12 @@ struct OAuthAuthorizationManager::Impl {
     std::shared_ptr<TokenStore> token_store;
     std::shared_ptr<OAuthHttpClient> http_client;
     std::shared_ptr<OAuthDiscoveryClient> discovery;
-    net::any_io_executor executor;
+    /// Serialises every access to `flight`. A boost::asio::steady_timer is not safe for concurrent
+    /// use, and its two touch points -- expire_flight()'s expires_at() and await_in_flight()'s
+    /// async_wait() -- both execute synchronously on whatever thread calls them, so nothing but a
+    /// strand shared by both of them keeps them apart on a multi-threaded io_context. The timer is
+    /// constructed on this strand as well, so its completion handlers run here too.
+    net::strand<net::any_io_executor> flight_strand;
     OAuthAuthorizationConfig config;
     AuthorizationCallback callback;
     mutable std::mutex state_mutex;
@@ -1726,7 +1754,7 @@ struct OAuthAuthorizationManager::Impl {
             flight = owner->flight;
         }
         owner->http_client->abort_pending();
-        expire_flight(owner->executor, std::move(flight));
+        expire_flight(owner->flight_strand, std::move(flight));
     }
 };
 
