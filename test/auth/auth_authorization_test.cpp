@@ -3803,10 +3803,12 @@ std::string utf8_codepoint(std::uint32_t codepoint) {
 // a browser-based log viewer -- the same outcome U+2028/U+2029 were flattened to prevent, reached
 // without ending a line at all.
 TEST(AuthDiagnosticsSanitizingTest, BidirectionalOverridesAreFlattenedToo) {
-    // Every codepoint that can re-order or re-base the run of text that follows it: the explicit
-    // embeddings and overrides, the isolates, and the two implicit marks.
+    // The bidi controls Unicode defines: the explicit embeddings and overrides (U+202A-U+202E),
+    // the isolates (U+2066-U+2069) and all three implicit marks -- LRM (U+200E), RLM (U+200F) and
+    // ALM (U+061C). ALM is the one an enumeration reaches for last, because it sits in the Arabic
+    // block rather than beside the other two; it is the same class as RLM.
     const std::vector<std::uint32_t> reordering = {0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066,
-                                                   0x2067, 0x2068, 0x2069, 0x200E, 0x200F};
+                                                   0x2067, 0x2068, 0x2069, 0x200E, 0x200F, 0x061C};
 
     for (const auto codepoint : reordering) {
         const auto raw = "server '" + utf8_codepoint(codepoint) + "denied'";
@@ -3834,6 +3836,10 @@ TEST(AuthDiagnosticsSanitizingTest, BidirectionalOverridesAreFlattenedToo) {
         << "U+2065 sits just below the isolates and must not be caught by an off-by-one range";
     EXPECT_NE(cleaned_adjacent.find(utf8_codepoint(0x206A)), std::string::npos)
         << "U+206A sits just above the isolates and must not be caught by an off-by-one range";
+    const auto arabic_neighbour = utf8_codepoint(0x061B);
+    EXPECT_EQ(mcp::auth::detail::sanitize_for_diagnostics(arabic_neighbour), arabic_neighbour)
+        << "U+061B is the Arabic semicolon, a printable character next to ALM, and must not be "
+           "caught by a range written around U+061C";
 }
 
 // ---------------------------------------------------------------------------
