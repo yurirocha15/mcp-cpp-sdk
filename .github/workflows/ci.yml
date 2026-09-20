@@ -84,6 +84,12 @@ jobs:
     - name: Run Examples
       run: python scripts/run_examples.py
 
+    # On the stdio transport stdout is the protocol channel. Running an example
+    # and checking its exit code does not notice prose printed there, so assert
+    # the stream separately. run_examples.py builds into build/release.
+    - name: Check stdio protocol streams
+      run: python scripts/check_stdio_streams.py build/release
+
   sanitize:
     runs-on: ubuntu-24.04
 
