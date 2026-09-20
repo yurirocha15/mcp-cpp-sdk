@@ -9,13 +9,18 @@
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <chrono>
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <functional>
+#include <future>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -1617,4 +1622,263 @@ TEST_F(ServerCoreTest, ReverseRequestErrorDiagnosticBoundsThePeerChosenMessage) 
 
     EXPECT_LT(outcome.what.size(), forged.size()) << "what() size: " << outcome.what.size();
     EXPECT_LE(outcome.what.size(), std::size_t{512}) << "what() size: " << outcome.what.size();
+}
+
+// ---------------------------------------------------------------------------
+// Server destruction
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A transport whose read loop stays suspended for as long as the test needs it to. close() is
+// counted but deliberately does not wake the reader, so the session loop never resumes after the
+// Server it belongs to is gone. Resuming it would exercise a different rule -- run() documents
+// that the Server must outlive the task it returns -- and these tests are about what the
+// destructor itself does on the thread that runs it.
+class QuiescentSessionTransport final : public mcp::ITransport {
+   public:
+    explicit QuiescentSessionTransport(const boost::asio::any_io_executor& executor)
+        : reader_(executor) {
+        reader_.expires_at(std::chrono::steady_clock::time_point::max());
+    }
+
+    mcp::Task<std::string> read_message() override {
+        read_calls_.fetch_add(1, std::memory_order_release);
+        for (;;) {
+            try {
+                co_await reader_.async_wait(boost::asio::use_awaitable);
+            } catch (const boost::system::system_error& error) {
+                if (error.code() != boost::asio::error::operation_aborted) {
+                    throw;
+                }
+            }
+        }
+    }
+
+    mcp::Task<void> write_message(std::string_view message) override {
+        if (message.find("sampling/createMessage") != std::string_view::npos) {
+            reverse_requests_.fetch_add(1, std::memory_order_release);
+        }
+        co_return;
+    }
+
+    void close() override { close_calls_.fetch_add(1, std::memory_order_release); }
+
+    // Non-zero once run_session has registered the session and asked for its first message.
+    [[nodiscard]] std::size_t read_calls() const { return read_calls_.load(std::memory_order_acquire); }
+    [[nodiscard]] std::size_t reverse_requests() const {
+        return reverse_requests_.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] std::size_t close_calls() const {
+        return close_calls_.load(std::memory_order_acquire);
+    }
+
+   private:
+    boost::asio::steady_timer reader_;
+    std::atomic_size_t read_calls_{0};
+    std::atomic_size_t reverse_requests_{0};
+    std::atomic_size_t close_calls_{0};
+};
+
+// Runs `body` on a helper thread and aborts the process if it has not returned within `budget`.
+// A destructor that blocks forever hangs the whole test binary rather than failing one test, and
+// a hung binary reports neither a pass nor a failure for anything in it. Aborting converts that
+// into a loud failure with a named cause. std::abort is used instead of a gtest failure because
+// the blocked thread cannot be joined or unwound.
+void run_with_teardown_watchdog(std::chrono::milliseconds budget, const std::function<void()>& body) {
+    std::promise<void> finished;
+    auto reached_the_end = finished.get_future();
+    std::thread worker([&finished, &body]() {
+        try {
+            body();
+        } catch (...) {
+            finished.set_exception(std::current_exception());
+            return;
+        }
+        finished.set_value();
+    });
+
+    if (reached_the_end.wait_for(budget) != std::future_status::ready) {
+        std::fprintf(stderr, "server teardown did not finish within %lld ms\n",
+                     static_cast<long long>(budget.count()));
+        std::fflush(stderr);
+        std::abort();
+    }
+
+    worker.join();
+    reached_the_end.get();
+}
+
+// Spins until `condition` holds, or the budget runs out. Returns whether it held.
+bool wait_for_condition(const std::function<bool()>& condition, std::chrono::milliseconds budget) {
+    const auto deadline = std::chrono::steady_clock::now() + budget;
+    while (!condition()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
+constexpr std::chrono::milliseconds g_teardown_budget{10000};
+
+}  // namespace
+
+// Positive control for the watchdog the tests below rely on: a body that deliberately overruns
+// its budget must abort with a named cause. Without this, a watchdog that had stopped biting
+// would make every test below look like it passed. Disabled because it aborts on purpose; run it
+// with --gtest_also_run_disabled_tests to re-check the watchdog.
+TEST(ServerTeardownTest, DISABLED_TeardownWatchdogAbortsOnOverrun) {
+    run_with_teardown_watchdog(std::chrono::milliseconds(200),
+                               [] { std::this_thread::sleep_for(std::chrono::seconds(30)); });
+}
+
+// Building a Server, registering tools and letting it go out of scope without ever running it is
+// the ordinary lifecycle in this SDK's own tests and examples. The destructor therefore has to
+// complete with no executor to post to and no session to unwind. Returning is the whole
+// assertion: what this detects is a destructor that blocks, which the watchdog turns into an
+// abort rather than a hang.
+TEST(ServerTeardownTest, DestroyWithoutSessionCompletes) {
+    run_with_teardown_watchdog(g_teardown_budget, [] {
+        mcp::ServerCapabilities capabilities;
+        capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
+        mcp::Server server({"teardown-no-session", "1.0"}, capabilities);
+        server.add_tool<nlohmann::json, nlohmann::json>(
+            "noop", "Does nothing", nlohmann::json{{"type", "object"}},
+            [](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+                co_return nlohmann::json::object();
+            });
+    });
+}
+
+// run() was spawned but the io_context was never run, so the session was never created and the
+// posted work never executed. Anything the destructor posted here would never be picked up.
+// Returning is the whole assertion, as above.
+TEST(ServerTeardownTest, DestroyWithNeverRunIoContextCompletes) {
+    run_with_teardown_watchdog(g_teardown_budget, [] {
+        boost::asio::io_context io_ctx;
+        auto transport = std::make_shared<QuiescentSessionTransport>(io_ctx.get_executor());
+        mcp::Server server({"teardown-never-run", "1.0"}, mcp::ServerCapabilities{});
+        boost::asio::co_spawn(io_ctx, server.run(transport, io_ctx.get_executor()),
+                              boost::asio::detached);
+    });
+}
+
+// The session exists and holds pending reverse requests, but the io_context has been stopped and
+// its thread joined, so nothing can run on the session strand again. A destructor that waited for
+// strand work to complete would never be satisfied here.
+TEST(ServerTeardownTest, DestroyAfterIoContextStoppedCompletes) {
+    boost::asio::io_context io_ctx;
+    auto transport = std::make_shared<QuiescentSessionTransport>(io_ctx.get_executor());
+    auto server = std::make_unique<mcp::Server>(mcp::Implementation{"teardown-stopped", "1.0"},
+                                                mcp::ServerCapabilities{});
+
+    boost::asio::co_spawn(io_ctx, server->run(transport, io_ctx.get_executor()), boost::asio::detached);
+
+    auto work = boost::asio::make_work_guard(io_ctx);
+    std::thread runner([&io_ctx] { io_ctx.run(); });
+
+    ASSERT_TRUE(wait_for_condition([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
+
+    std::atomic_size_t settled{0};
+    boost::asio::co_spawn(
+        io_ctx, server->send_request("sampling/createMessage", nlohmann::json{{"sequence", 0}}),
+        [&settled](std::exception_ptr, nlohmann::json) {
+            settled.fetch_add(1, std::memory_order_release);
+        });
+    ASSERT_TRUE(
+        wait_for_condition([&] { return transport->reverse_requests() == 1; }, g_teardown_budget));
+
+    work.reset();
+    io_ctx.stop();
+    runner.join();
+
+    ASSERT_EQ(settled.load(std::memory_order_acquire), 0U);
+
+    run_with_teardown_watchdog(g_teardown_budget, [&server] { server.reset(); });
+}
+
+// Destruction from a thread that is itself driving the session's executor. With a single-threaded
+// io_context the destroying thread is the thread the session strand runs on, so a destructor that
+// waited on strand work would deadlock against itself.
+TEST(ServerTeardownTest, DestroyFromSessionExecutorThreadCompletes) {
+    boost::asio::io_context io_ctx;
+    auto transport = std::make_shared<QuiescentSessionTransport>(io_ctx.get_executor());
+    auto server = std::make_unique<mcp::Server>(mcp::Implementation{"teardown-on-executor", "1.0"},
+                                                mcp::ServerCapabilities{});
+
+    boost::asio::co_spawn(io_ctx, server->run(transport, io_ctx.get_executor()), boost::asio::detached);
+
+    run_with_teardown_watchdog(g_teardown_budget, [&] {
+        while (transport->read_calls() == 0 && io_ctx.poll_one() > 0) {
+        }
+        server.reset();
+    });
+
+    EXPECT_GE(transport->read_calls(), 1U) << "the session was never registered";
+    EXPECT_GE(transport->close_calls(), 1U);
+}
+
+// The F6 scenario: a Server destroyed from a thread that is not the session strand, while other
+// threads are servicing that strand and the session's pending-request map is full.
+//
+// The two ASSERTs before the destructor are the reachability witness, and they stand on their own
+// without a sanitizer: every reverse request has reached the wire, so each owns an entry in the
+// session's pending-request map, and none has settled, so none of those entries has been erased.
+// The map the destructor is about to walk therefore holds pending_count entries.
+TEST(ServerTeardownTest, DestroyFromForeignThreadWithPendingReverseRequests) {
+    constexpr std::size_t pending_count = 512;
+    constexpr std::size_t pool_size = 2;
+
+    boost::asio::io_context io_ctx;
+    auto transport = std::make_shared<QuiescentSessionTransport>(io_ctx.get_executor());
+    auto server = std::make_unique<mcp::Server>(mcp::Implementation{"teardown-foreign", "1.0"},
+                                                mcp::ServerCapabilities{});
+
+    boost::asio::co_spawn(io_ctx, server->run(transport, io_ctx.get_executor()), boost::asio::detached);
+
+    auto work = boost::asio::make_work_guard(io_ctx);
+    std::vector<std::thread> pool;
+    pool.reserve(pool_size);
+    for (std::size_t index = 0; index < pool_size; ++index) {
+        pool.emplace_back([&io_ctx] { io_ctx.run(); });
+    }
+
+    ASSERT_TRUE(wait_for_condition([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
+
+    std::atomic_size_t settled{0};
+    for (std::size_t sequence = 0; sequence < pending_count; ++sequence) {
+        boost::asio::co_spawn(
+            io_ctx,
+            server->send_request("sampling/createMessage", nlohmann::json{{"sequence", sequence}}),
+            [&settled](std::exception_ptr, nlohmann::json) {
+                settled.fetch_add(1, std::memory_order_release);
+            });
+    }
+
+    ASSERT_TRUE(wait_for_condition([&] { return transport->reverse_requests() == pending_count; },
+                                   g_teardown_budget));
+    ASSERT_EQ(settled.load(std::memory_order_acquire), 0U);
+    ASSERT_EQ(transport->close_calls(), 0U);
+
+    run_with_teardown_watchdog(g_teardown_budget, [&server] { server.reset(); });
+
+    // Closing the transport is the last step of session teardown, after the pending-request walk,
+    // so observing it proves the teardown ran over the non-empty map witnessed above.
+    EXPECT_GE(transport->close_calls(), 1U);
+
+    // Every pending request is failed and woken even though run_session never reaches its own
+    // teardown here: this transport does not wake its reader on close, so whatever the destructor
+    // arranges is the only cleanup that runs. Destroying a Server mid-session must not strand the
+    // callers waiting on its reverse requests.
+    EXPECT_TRUE(wait_for_condition(
+        [&] { return settled.load(std::memory_order_acquire) == pending_count; }, g_teardown_budget))
+        << "settled " << settled.load(std::memory_order_acquire) << " of " << pending_count;
+
+    work.reset();
+    io_ctx.stop();
+    for (auto& thread : pool) {
+        thread.join();
+    }
 }
