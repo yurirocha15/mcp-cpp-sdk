@@ -3962,3 +3962,82 @@ TEST(AuthHttpClientPolicyTest, ReplacingThePolicyAndResolverUnderLiveRequestsIsS
 
     EXPECT_EQ(completed.load(), request_count) << "a request neither completed nor failed";
 }
+
+// A protected-resource document names its authorization servers, and nothing validates that a name
+// is a URL before it reaches a diagnostic. These two tests hold the line at the exception message:
+// whatever the peer put in `authorization_servers`, what surfaces to the application must be one
+// line and must be bounded.
+namespace {
+
+/// Drive `try_handle_challenge` against a `/prm` document carrying `authorization_server` verbatim,
+/// and return `what()` from whatever it throws. An empty string means it did not throw.
+std::string challenge_failure_message(const std::string& authorization_server) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&base, &authorization_server](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response({{"resource", base + "/mcp"},
+                                  {"authorization_servers", json::array({authorization_server})}});
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(1), asio::detached);
+
+    ManagerFixture fixture;
+    fixture.config.server_url = base + "/mcp";
+    fixture.config.client_id = "test-client";
+    fixture.config.redirect_uri = "http://127.0.0.1:9999/callback";
+    fixture.config.policy = loopback_policy(server.origin());
+
+    std::string message;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
+                                                         fixture.config, echoing_callback(nullptr));
+            try {
+                (void)co_await manager.try_handle_challenge(
+                    R"(Bearer realm="mcp", resource_metadata=")" + base + R"(/prm")");
+            } catch (const std::exception& error) {
+                message = error.what();
+            }
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+    return message;
+}
+
+}  // namespace
+
+TEST(AuthDiagnosticSanitizationTest, DoesNotLeaveLineBreaksFromTheAuthorizationServerInDiagnostics) {
+    // No "://" anywhere in the payload: the identifier must reach the scheme check as the thing it
+    // is, a bare string. A payload carrying a scheme parses instead and is refused by the metadata
+    // policy, whose own message is sanitized, which would make this test pass without proving
+    // anything.
+    const auto message = challenge_failure_message("evil\r\nFORGED");
+
+    ASSERT_FALSE(message.empty()) << "the malformed authorization server identifier was accepted";
+    ASSERT_NE(message.find("FORGED"), std::string::npos)
+        << "the identifier never reached the diagnostic, so this test proves nothing: " << message;
+    EXPECT_EQ(message.find('\r'), std::string::npos)
+        << "a carriage return the peer chose reached the diagnostic: " << message;
+    EXPECT_EQ(message.find('\n'), std::string::npos)
+        << "a line feed the peer chose reached the diagnostic: " << message;
+}
+
+TEST(AuthDiagnosticSanitizationTest, CapsTheAuthorizationServerIdentifierItReportsInDiagnostics) {
+    constexpr std::size_t oversized_length = 64U * 1024U;
+    const auto message = challenge_failure_message(std::string(oversized_length, 'A'));
+
+    ASSERT_FALSE(message.empty()) << "the malformed authorization server identifier was accepted";
+    // The sanitizer's bound is 256 bytes plus an ellipsis; the surrounding literal is short, so any
+    // message near the peer's own length means the value arrived unbounded.
+    EXPECT_LT(message.size(), 1024U)
+        << "the peer's " << oversized_length << "-byte identifier was not capped; message is "
+        << message.size() << " bytes";
+}
