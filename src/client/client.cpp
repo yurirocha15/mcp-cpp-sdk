@@ -348,7 +348,9 @@ struct Client::Impl {
             return;
         }
 
-        const bool has_error = json_message.contains("error");
+        // Asymmetric on purpose: a null `result` is a legitimate empty result, so presence is the
+        // right test for it, while a null `error` is the absence of an error and must not count.
+        const bool has_error = detail::has_json_value(json_message, "error");
         const bool has_result = json_message.contains("result");
         if (has_error == has_result) {
             iter->second->error =
