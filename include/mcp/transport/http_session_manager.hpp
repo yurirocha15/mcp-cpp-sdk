@@ -41,8 +41,9 @@ namespace mcp {
  * auto server_factory = [](const asio::any_io_executor&) {
  *     ServerCapabilities caps;
  *     caps.tools = ServerCapabilities::ToolsCapability{};
- *     Server server({"my-server", "1.0"}, std::move(caps));
- *     server.add_tool<json, json>("echo", "Echo tool", schema, handler);
+ *     Implementation info{"my-server", "1.0"};
+ *     auto server = std::make_unique<Server>(info, std::move(caps));
+ *     server->add_tool<json, json>("echo", "Echo tool", schema, handler);
  *     return server;
  * };
  *
