@@ -87,7 +87,7 @@ int main() {
 
         server.add_tool("quick_task", "A quick task that completes immediately", quick_schema,
                         [](const nlohmann::json& args) -> nlohmann::json {
-                            std::cout << "[Server] quick_task called\n";
+                            std::cerr << "[Server] quick_task called\n";
                             int value = args.at("value").get<int>();
                             CallToolResult result;
                             TextContent content;
@@ -104,7 +104,7 @@ int main() {
         server.add_tool<nlohmann::json, nlohmann::json>(
             "slow_task", "A task that takes time to complete", slow_schema,
             [](nlohmann::json args) -> Task<nlohmann::json> {
-                std::cout << "[Server] slow_task called\n";
+                std::cerr << "[Server] slow_task called\n";
                 int duration_ms = args.at("duration_ms").get<int>();
 
                 // Simulate work with async delay
@@ -113,7 +113,7 @@ int main() {
                 work_timer.expires_after(std::chrono::milliseconds(duration_ms));
                 co_await work_timer.async_wait(asio::use_awaitable);
 
-                std::cout << "[Server] slow_task completed after " << duration_ms << "ms\n";
+                std::cerr << "[Server] slow_task completed after " << duration_ms << "ms\n";
                 CallToolResult result;
                 TextContent content;
                 content.text = "Slow task completed after " + std::to_string(duration_ms) + "ms";
@@ -122,6 +122,8 @@ int main() {
             });
 
         // ========== TRANSPORT SETUP ==========
+        // stdout is handed to the transport, so it is the protocol channel and
+        // carries JSON-RPC only. Every diagnostic in this example goes to stderr.
         BlockingInputBuffer input_buffer;
         std::istream controlled_input(&input_buffer);
         auto transport =
@@ -134,10 +136,10 @@ int main() {
                 asio::steady_timer trigger(io_ctx.get_executor());
                 trigger.expires_after(std::chrono::seconds(1));
                 co_await trigger.async_wait(asio::use_awaitable);
-                std::cout << "[Main] Initiating graceful shutdown\n";
+                std::cerr << "[Main] Initiating graceful shutdown\n";
                 input_buffer.close();
                 graceful_shutdown(io_ctx, transport);
-                std::cout << "[Main] Graceful shutdown initiated (timeout: "
+                std::cerr << "[Main] Graceful shutdown initiated (timeout: "
                           << constants::g_shutdown_timeout_ms << "ms)\n";
             },
             asio::detached);
@@ -146,21 +148,21 @@ int main() {
         asio::co_spawn(
             io_ctx,
             [&, transport]() -> Task<void> {
-                std::cout << "[Server] Starting\n";
+                std::cerr << "[Server] Starting\n";
                 try {
                     co_await server.run(transport, io_ctx.get_executor());
-                    std::cout << "[Server] Stopped normally\n";
+                    std::cerr << "[Server] Stopped normally\n";
                 } catch (const std::exception& e) {
-                    std::cout << "[Server] Stopped with exception: " << e.what() << "\n";
+                    std::cerr << "[Server] Stopped with exception: " << e.what() << "\n";
                 }
             },
             asio::detached);
 
         // ========== RUN IO CONTEXT ==========
-        std::cout << "[Main] Starting io_context\n";
+        std::cerr << "[Main] Starting io_context\n";
         io_ctx.run();
 
-        std::cout << "[Main] io_context stopped, exiting normally\n";
+        std::cerr << "[Main] io_context stopped, exiting normally\n";
         return EXIT_SUCCESS;
 
     } catch (const std::exception& e) {
