@@ -241,6 +241,9 @@ TEST_F(ServerStdioTest, RunStdioExitsCleanlyOnEmptyInput) {
     EXPECT_TRUE(output.str().empty());
 }
 
+// Returning is the whole assertion: what this detects is run_stdio() failing to shut down on a
+// signal, which shows up as a join that never completes rather than as a wrong value. The absence
+// of an EXPECT here is deliberate.
 TEST_F(ServerStdioTest, RunStdioSignalCausesShutdown) {
     BlockingStreambuf sbuf;
     std::istream input(&sbuf);
