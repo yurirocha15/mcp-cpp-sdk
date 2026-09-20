@@ -1446,3 +1446,23 @@ TEST_F(ClientCoreTest, PeerRequestWithUnusableIdDoesNotStopReadLoop) {
     ASSERT_EQ(outcome.reported.size(), 1U) << "the drop was silent";
     EXPECT_EQ(outcome.reported.front().code, mcp::g_PARSE_ERROR);
 }
+
+// `result` and `error` are not symmetric. A null `result` is a legitimate empty result, but a null
+// `error` is the absence of an error -- so selecting on presence alone reads a successful response
+// as one carrying both members, and rejects it. The request completes, so nothing hangs and nothing
+// times out; the caller is simply handed a protocol violation in place of the result that arrived.
+//
+// The second request is the control: the same response without the null member.
+TEST_F(ClientCoreTest, ResultWithNullErrorMemberIsNotAProtocolViolation) {
+    const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
+        return std::vector<nlohmann::json>{
+            {{"jsonrpc", "2.0"}, {"id", id}, {"result", {{"ok", true}}}, {"error", nullptr}}};
+    });
+
+    EXPECT_FALSE(outcome.first_threw)
+        << "a successful response was rejected over a null error member: " << outcome.first_message;
+    EXPECT_TRUE(outcome.second_succeeded)
+        << "the control response failed too, so the null member is not the difference: "
+        << outcome.second_failure;
+    EXPECT_TRUE(outcome.reported.empty()) << "a well-formed response was reported as an error";
+}
