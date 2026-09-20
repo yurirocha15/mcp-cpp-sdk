@@ -33,6 +33,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -2364,6 +2365,18 @@ TEST(AuthTransportCloseTest, ChallengeOnAClosedManagerThrowsFromTheAwaitNotFromT
     EXPECT_TRUE(threw_from_the_await);
     EXPECT_TRUE(server.targets().empty());
     EXPECT_TRUE(requested_scopes.empty());
+}
+
+// Constructing a scope means dereferencing the client, so a null one now faults in the constructor
+// where it used to construct fine and fault later. Nonsensical usage either way; the point is that
+// it is refused the way the sibling constructor refuses it, not that it segfaults.
+TEST(AuthAuthenticatorConstructionTest, RefusesANullHttpClientInsteadOfFaulting) {
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    mcp::auth::OAuthConfig config;
+    config.client_id = "test-client";
+
+    EXPECT_THROW(mcp::auth::OAuthAuthenticator(store, nullptr, config, "http://server1"),
+                 std::invalid_argument);
 }
 
 // N1's counterpart on OAuthAuthenticator: close() used to be stateless there (it only forwarded to
