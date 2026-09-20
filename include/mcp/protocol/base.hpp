@@ -20,6 +20,21 @@ inline void validate_jsonrpc_version(std::string_view version) {
     }
 }
 
+/**
+ * @brief Reports whether @p key is present in @p json_obj and carries a value.
+ *
+ * An absent optional and one serialized as an explicit `null` are the same statement on
+ * the wire -- "no value" -- so `from_json` must read them the same way. Writing
+ * `contains(key)` alone accepts the null and then throws when the value is extracted.
+ *
+ * Returns false for a @p json_obj that is not an object, so a null payload decodes into a
+ * type whose members are all optional rather than failing.
+ */
+inline bool has_json_value(const nlohmann::json& json_obj, const char* key) {
+    const auto iter = json_obj.find(key);
+    return iter != json_obj.end() && !iter->is_null();
+}
+
 }  // namespace detail
 
 // MCP Protocol Constants
@@ -190,8 +205,15 @@ inline void to_json(nlohmann::json& json_obj, const Error& error) {
 
 inline void from_json(const nlohmann::json& json_obj, Error& error) {
     json_obj.at("code").get_to(error.code);
-    json_obj.at("message").get_to(error.message);
-    if (json_obj.contains("data")) {
+    // JSON-RPC 2.0 requires `message`, but a peer that omits it or sends it as null has still
+    // told us which error occurred. Decoding to an empty message keeps `code` -- the part a
+    // caller acts on -- rather than discarding the whole error object.
+    if (detail::has_json_value(json_obj, "message")) {
+        json_obj.at("message").get_to(error.message);
+    } else {
+        error.message.clear();
+    }
+    if (detail::has_json_value(json_obj, "data")) {
         error.data = json_obj.at("data");
     }
 }
@@ -229,7 +251,7 @@ inline void to_json(nlohmann::json& j, const RelatedTaskMetadata& t) {
 }
 inline void from_json(const nlohmann::json& j, RelatedTaskMetadata& t) {
     j.at("id").get_to(t.id);
-    if (j.contains("title")) {
+    if (detail::has_json_value(j, "title")) {
         t.title = j.at("title").get<std::string>();
     }
 }
@@ -253,10 +275,10 @@ inline void to_json(nlohmann::json& json_obj, const TaskMetadata& meta) {
 }
 
 inline void from_json(const nlohmann::json& json_obj, TaskMetadata& meta) {
-    if (json_obj.contains("ttl")) {
+    if (detail::has_json_value(json_obj, "ttl")) {
         meta.ttl = json_obj.at("ttl").get<int64_t>();
     }
-    if (json_obj.contains("relatedTasks")) {
+    if (detail::has_json_value(json_obj, "relatedTasks")) {
         meta.relatedTasks = json_obj.at("relatedTasks").get<std::vector<RelatedTaskMetadata>>();
     }
 }
@@ -286,7 +308,7 @@ inline void from_json(const nlohmann::json& json_obj, JSONRPCRequest& req) {
     json_obj.at("jsonrpc").get_to(req.jsonrpc);
     detail::validate_jsonrpc_version(req.jsonrpc);
     json_obj.at("method").get_to(req.method);
-    if (json_obj.contains("params")) {
+    if (detail::has_json_value(json_obj, "params")) {
         req.params = json_obj.at("params");
     }
 }
@@ -311,7 +333,7 @@ inline void from_json(const nlohmann::json& json_obj, JSONRPCNotification& notif
     json_obj.at("jsonrpc").get_to(notif.jsonrpc);
     detail::validate_jsonrpc_version(notif.jsonrpc);
     json_obj.at("method").get_to(notif.method);
-    if (json_obj.contains("params")) {
+    if (detail::has_json_value(json_obj, "params")) {
         notif.params = json_obj.at("params");
     }
 }
@@ -362,7 +384,7 @@ inline void from_json(const nlohmann::json& json_obj, JSONRPCErrorResponse& resp
     json_obj.at("error").get_to(resp.error);
     json_obj.at("jsonrpc").get_to(resp.jsonrpc);
     detail::validate_jsonrpc_version(resp.jsonrpc);
-    if (json_obj.contains("id") && !json_obj.at("id").is_null()) {
+    if (detail::has_json_value(json_obj, "id")) {
         resp.id = json_obj.at("id").get<RequestId>();
     } else {
         resp.id.reset();
@@ -377,7 +399,9 @@ inline void to_json(nlohmann::json& json_obj, const JSONRPCResponse& resp) {
 }
 
 inline void from_json(const nlohmann::json& json_obj, JSONRPCResponse& resp) {
-    if (json_obj.contains("error")) {
+    // A null `error` alongside a real `result` is how some peers spell "no error"; selecting on
+    // presence alone would route such a response into the error branch and fail to decode it.
+    if (detail::has_json_value(json_obj, "error")) {
         resp = json_obj.get<JSONRPCErrorResponse>();
     } else {
         resp = json_obj.get<JSONRPCResultResponse>();
@@ -393,7 +417,7 @@ inline void to_json(nlohmann::json& json_obj, const JSONRPCMessage& msg) {
 }
 
 inline void from_json(const nlohmann::json& json_obj, JSONRPCMessage& msg) {
-    if (json_obj.contains("error")) {
+    if (detail::has_json_value(json_obj, "error")) {
         msg = json_obj.get<JSONRPCErrorResponse>();
     } else if (json_obj.contains("result")) {
         msg = json_obj.get<JSONRPCResultResponse>();
