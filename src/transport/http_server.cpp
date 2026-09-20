@@ -391,10 +391,20 @@ struct HttpServerTransport::Impl {
             co_return std::move(*error);
         }
 
-        const auto session_check = co_await validate_post_session(request);
-        if (!session_check.ok) {
-            co_return make_error_response(request, http::status::bad_request,
-                                          session_check.error_message);
+        // server/discover is a pre-gate method: it MUST stay reachable with zero prior session
+        // state, so a discover request that carries no MCP-Session-Id header skips the POST
+        // session gate — mirroring HttpSessionManager, which intercepts sessionless discover
+        // before resolve_session_for_post. Nothing else is exempted: any other method, and
+        // discover WITH a session header, still goes through validate_post_session unchanged,
+        // and this path neither creates nor mutates session state.
+        const bool is_sessionless_discover =
+            is_discover_request(request_json) && request.find("MCP-Session-Id") == request.end();
+        if (!is_sessionless_discover) {
+            const auto session_check = co_await validate_post_session(request);
+            if (!session_check.ok) {
+                co_return make_error_response(request, http::status::bad_request,
+                                              session_check.error_message);
+            }
         }
 
         const bool has_request_id = request_json.contains("id");
