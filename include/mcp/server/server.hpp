@@ -504,9 +504,6 @@ class MCP_API Server {
     void register_resource_template(const ResourceTemplate& tmpl, TypeErasedHandler handler);
     void register_prompt(const Prompt& prompt, TypeErasedHandler handler);
 
-    Context make_context(std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
-                         std::optional<ProgressToken> progress_token = std::nullopt);
-
     /**
      * @brief Dispatches an incoming JSON-RPC request to the appropriate registered handler.
      *
@@ -515,54 +512,8 @@ class MCP_API Server {
      *
      * @param json_msg The raw JSON-RPC request object.
      */
-    Task<void> dispatch_request(nlohmann::json json_msg);
-
-    Task<std::string> dispatch_request_wire(nlohmann::json json_msg, bool enforce_lifecycle);
-
-    void dispatch_notification(const nlohmann::json& json_msg);
-
-    void dispatch_response(const nlohmann::json& json_msg);
-
-    Task<std::string> handle_initialize_wire(const nlohmann::json& json_msg, bool update_lifecycle);
-
-    Task<std::string> handle_shutdown_wire(const nlohmann::json& json_msg);
-
-    Task<std::string> handle_ping_wire(const nlohmann::json& json_msg);
-
-    Task<std::string> handle_discover_wire(const nlohmann::json& json_msg);
-
-    Task<std::string> handle_tools_call_wire(const nlohmann::json& json_msg);
-
-    Task<std::string> handle_tools_list_wire(const nlohmann::json& json_msg);
-
-    Task<std::string> handle_resources_list_wire(const nlohmann::json& json_msg);
-
-    Task<std::string> handle_resources_read_wire(const nlohmann::json& json_msg);
-
-    Task<std::string> handle_resource_templates_list_wire(const nlohmann::json& json_msg);
-
-    Task<std::string> handle_subscribe_wire(const nlohmann::json& json_msg);
-
-    Task<std::string> handle_unsubscribe_wire(const nlohmann::json& json_msg);
-
-    Task<std::string> handle_prompts_list_wire(const nlohmann::json& json_msg);
-
-    Task<std::string> handle_prompts_get_wire(const nlohmann::json& json_msg);
-
-    Task<std::string> handle_set_level_wire(const nlohmann::json& json_msg);
-
-    Task<std::string> handle_complete_wire(const nlohmann::json& json_msg);
-
-    Task<nlohmann::json> invoke_tool_impl(CallToolParams params,
-                                          std::shared_ptr<std::atomic<bool>> cancelled,
-                                          std::optional<ProgressToken> progress_token);
 
     // [gcc11-sso: wire-builders] DO NOT convert to Task<T>.
-    static std::string make_result_wire(const RequestId& id, nlohmann::json result);
-    static std::string make_error_wire(const RequestId& id, int code, std::string message);
-
-    Task<void> send_notification(const std::string& method,
-                                 const std::optional<nlohmann::json>& params);
 
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
 
@@ -572,33 +523,14 @@ class MCP_API Server {
         std::optional<std::string> next_cursor;
     };
 
-    std::optional<PaginationSlice> paginate(std::size_t total, const nlohmann::json& json_msg);
-
-    [[nodiscard]] bool has_tool_output_schema(const std::string& name) const;
-
     struct PendingRequest;
     struct Session;
-
-    static Task<nlohmann::json> await_reverse_response(std::shared_ptr<Session> session,
-                                                       std::shared_ptr<const std::string> wire,
-                                                       std::int64_t id);
-    static Task<nlohmann::json> await_reverse_response_on_strand(
-        std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, std::int64_t id);
-
-    Task<void> run_session(std::shared_ptr<Session> session);
-    Task<void> dispatch_on_strand(nlohmann::json json_msg);
-    Task<void> notify_resource_updated_on_strand(std::shared_ptr<Session> session,
-                                                 std::shared_ptr<const std::string> uri);
-
-    [[nodiscard]] std::shared_ptr<Session> session_snapshot() const;
 
     /// Fails every outstanding request on a session and wakes whoever is waiting on it. Must run
     /// on the session strand: the request maps are plain std::maps that only the strand mutates,
     /// and the correlation timers belong to that strand.
-    static void abandon_session_work(const std::shared_ptr<Session>& session);
 
     void reset_session();
-    void reset_session(const std::shared_ptr<Session>& session);
 
     struct Impl;
     // Shared rather than owned outright: work already in flight when this Server is destroyed
