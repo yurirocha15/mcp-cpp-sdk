@@ -240,8 +240,12 @@ namespace {
 
 constexpr std::string_view g_https_prefix = "https://";
 
-/// Shared with MetadataPolicyError, which sanitizes its own message, so every diagnostic in the
-/// auth code flattens peer-controlled text the same way.
+/// Flattens peer-controlled text -- control characters, bidi overrides and ill-formed UTF-8 -- and
+/// caps it, so a value a peer chose cannot forge or reorder a line of a diagnostic. Every throw
+/// site in this file that interpolates a value originating from a peer must route it through here;
+/// `MetadataPolicyError` does the same inside its own constructor, so its throw sites do not repeat
+/// it. This is a convention, not something the compiler checks: a new throw site that forgets it
+/// re-opens the hole silently.
 using detail::sanitize_for_diagnostics;
 
 /// Resolve a `Location` header against the URL that produced it.
