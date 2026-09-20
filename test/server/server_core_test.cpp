@@ -869,6 +869,71 @@ TEST_F(ServerCoreTest, SessionTeardownStaysOnConfiguredStrandAcrossRepeatedRuns)
     }
 }
 
+// A peer that serializes absent optionals as explicit nulls answers a server-initiated request
+// with an "error" member set to null. That is not an error, and the response must still correlate.
+TEST_F(ServerCoreTest, ReverseRequestResponseCarryingNullErrorIsAccepted) {
+    using namespace std::chrono_literals;
+
+    auto [server_transport, client_transport] =
+        mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    mcp::Server server({"reverse-rpc-server", "1.0"}, mcp::ServerCapabilities{});
+
+    std::atomic_bool session_ready{false};
+    boost::asio::co_spawn(io_ctx_, server.run(server_transport, io_ctx_.get_executor()),
+                          boost::asio::detached);
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [client_transport, &session_ready]() -> mcp::Task<void> {
+            co_await client_transport->write_message(make_initialize_request("init").dump());
+            static_cast<void>(co_await client_transport->read_message());
+            co_await client_transport->write_message(make_initialized_notification().dump());
+            session_ready.store(true, std::memory_order_release);
+
+            auto request = nlohmann::json::parse(co_await client_transport->read_message());
+            // [gcc11-sso: scope-before-await] Build the message first: a braced-init-list temporary
+            // inside the co_await argument makes GCC fail with an internal compiler error.
+            auto response =
+                make_result_response(request.at("id").get<std::string>(), nlohmann::json{{"ok", true}});
+            response["error"] = nullptr;
+            co_await client_transport->write_message(response.dump());
+        },
+        boost::asio::detached);
+
+    bool completed = false;
+    nlohmann::json reverse_result;
+    boost::asio::steady_timer launch_poll(io_ctx_);
+    std::function<void()> launch;
+    launch = [&]() {
+        if (!session_ready.load(std::memory_order_acquire)) {
+            launch_poll.expires_after(1ms);
+            launch_poll.async_wait([&launch](const boost::system::error_code& error) {
+                if (!error) {
+                    launch();
+                }
+            });
+            return;
+        }
+        boost::asio::co_spawn(
+            io_ctx_, server.send_request("sampling/createMessage", nlohmann::json::object()),
+            [this, &completed, &reverse_result](std::exception_ptr error, nlohmann::json result) {
+                if (!error) {
+                    completed = true;
+                    reverse_result = std::move(result);
+                }
+                // The live session keeps the context busy, so stop it here; otherwise run_for
+                // waits out the whole timeout even when the response arrived immediately.
+                io_ctx_.stop();
+            });
+    };
+    launch();
+
+    io_ctx_.run_for(5s);
+
+    ASSERT_TRUE(completed) << "the reverse request never correlated with its response";
+    EXPECT_EQ(reverse_result["ok"], true);
+}
+
 TEST_F(ServerCoreTest, ConcurrentReverseRequestsRemainCorrelatedOnMultiThreadedExecutor) {
     using namespace std::chrono_literals;
 
