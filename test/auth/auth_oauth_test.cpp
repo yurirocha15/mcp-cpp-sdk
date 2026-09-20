@@ -19,12 +19,14 @@
 #include <boost/beast/http.hpp>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <future>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/core/constants.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -1209,6 +1211,34 @@ class NamedLoopbackServer {
     std::string name_;
 };
 
+/// Whether this environment has promised a second loopback address.
+///
+/// Every OAuthSetterPairAtomicity test needs a port free on both 127.0.0.1 and 127.0.0.2, and
+/// skips when there is none. On a host or container without 127.0.0.2 that silently deletes the
+/// entire regression evidence for the setter-pair atomicity fix while the suite still reports
+/// green -- the failure mode where a guard disappears and nothing says so. Where the second
+/// address is known to exist (Linux, where 127.0.0.0/8 is bound whole), set
+/// MCP_REQUIRE_TWIN_LOOPBACK=1 and a missing port fails the run instead of skipping it. CI sets it
+/// on Linux; the default stays a skip so the suite remains runnable anywhere.
+[[nodiscard]] bool twin_loopback_is_required() {
+    const char* const flag = std::getenv("MCP_REQUIRE_TWIN_LOOPBACK");
+    return flag != nullptr && std::string_view(flag) == "1";
+}
+
+/// Skip the calling test when no twin loopback port is available -- or fail it, when the
+/// environment declared that one must be. Declares `port_name` as the port to use.
+#define MCP_TWIN_LOOPBACK_PORT_OR_SKIP(port_name)                                                      \
+    const unsigned short port_name = find_twin_loopback_port();                                        \
+    if ((port_name) == 0) {                                                                            \
+        if (twin_loopback_is_required()) {                                                             \
+            FAIL() << "MCP_REQUIRE_TWIN_LOOPBACK=1, but no port in [18140, 18200) is free on "         \
+                      "both 127.0.0.1 and 127.0.0.2, so this test would have skipped and the "         \
+                      "setter-pair atomicity evidence would have vanished silently";                   \
+        }                                                                                              \
+        GTEST_SKIP() << "no port free on both 127.0.0.1 and 127.0.0.2";                                \
+    }                                                                                                  \
+    static_cast<void>(0)
+
 /// A port free on BOTH loopback addresses, or 0 when the second address is unavailable.
 unsigned short find_twin_loopback_port() {
     asio::io_context probe_ctx;
@@ -1311,10 +1341,7 @@ struct TwinFixture {
 // chooses, inside the gap between the two setter calls. It sees the new resolver under the old,
 // wider allow list every time, because that is simply what the client's state is at that instant.
 TEST(OAuthSetterPairAtomicity, TheTwoSingleSettersLeaveAWindowAnExchangeCanFallInto) {
-    const unsigned short port = find_twin_loopback_port();
-    if (port == 0) {
-        GTEST_SKIP() << "no port free on both 127.0.0.1 and 127.0.0.2";
-    }
+    MCP_TWIN_LOOPBACK_PORT_OR_SKIP(port);
     TwinFixture fixture(port);
 
     asio::io_context client_ctx;
@@ -1360,10 +1387,7 @@ TEST(OAuthSetterPairAtomicity, TheTwoSingleSettersLeaveAWindowAnExchangeCanFallI
 // by the new resolver and validated against the old allow list. Applied as one unit there is no
 // instant at which that state exists, so the count is zero rather than small.
 TEST(OAuthSetterPairAtomicity, ReconfiguringAsOnePairNeverExposesTheNewResolverUnderTheOldPolicy) {
-    const unsigned short port = find_twin_loopback_port();
-    if (port == 0) {
-        GTEST_SKIP() << "no port free on both 127.0.0.1 and 127.0.0.2";
-    }
+    MCP_TWIN_LOOPBACK_PORT_OR_SKIP(port);
     TwinFixture fixture(port);
 
     asio::io_context client_ctx;
@@ -1470,10 +1494,7 @@ TEST(OAuthSetterPairAtomicity, ReconfiguringAsOnePairNeverExposesTheNewResolverU
 // dropped its resolver argument would also never produce a "new" body. Each call here installs a
 // configuration and the exchange that follows must show BOTH halves of it.
 TEST(OAuthSetterPairAtomicity, ConfigureInstallsBothOfItsArguments) {
-    const unsigned short port = find_twin_loopback_port();
-    if (port == 0) {
-        GTEST_SKIP() << "no port free on both 127.0.0.1 and 127.0.0.2";
-    }
+    MCP_TWIN_LOOPBACK_PORT_OR_SKIP(port);
     TwinFixture fixture(port);
 
     asio::io_context client_ctx;
