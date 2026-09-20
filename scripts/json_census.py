@@ -1502,10 +1502,22 @@ def export_revision(repo: str, rev: str) -> str:
 # defect for an added line.
 # --------------------------------------------------------------------------
 
+# Each entry is (name, component, owner, field, class, note).
+#
+# `component` is a path fragment the matching row's file must contain. It is a
+# component, not a file: keying to a file would let exactly the refactor that
+# exposed F2 -- moving code from client.hpp to client.cpp -- turn a
+# rediscovery into a silent pass. But it cannot be dropped either. Both the
+# client and the server have a `dispatch_response`, and with no component
+# constraint the server's reverse-RPC gate matched the client's row and
+# reported PASS while covering nothing.
+#
+# `owner` is the deserialised type, or the enclosing function, or a tuple when
+# a defect has more than one manifestation across revisions.
 KNOWN_DEFECTS = [
     (
         "F1-progress",
-        "include/mcp/protocol/notification.hpp",
+        "protocol",
         "ProgressNotificationParams",
         "total",
         "null-fragile",
@@ -1513,7 +1525,7 @@ KNOWN_DEFECTS = [
     ),
     (
         "F1-progress-message",
-        "include/mcp/protocol/notification.hpp",
+        "protocol",
         "ProgressNotificationParams",
         "message",
         "null-fragile",
@@ -1521,23 +1533,29 @@ KNOWN_DEFECTS = [
     ),
     (
         "F1-error-message",
-        "include/mcp/protocol/base.hpp",
+        "protocol",
         "Error",
         "message",
         "required",
         "Error::from_json requires message via at(), so a peer error without one throws",
     ),
     (
-        "F1-server-envelope",
-        "src/server/server.cpp",
-        None,
+        # Either manifestation counts: at the merge base the reverse-RPC
+        # correlation path is dispatch_response alone, and the envelope helper
+        # that carries the contains(result) == contains(error) predicate is
+        # newer.
+        "F3-server-reverse-rpc",
+        "server",
+        ("is_valid_response_envelope", "dispatch_response"),
         "error",
         "misroute",
-        "contains(result) == contains(error) rejects a result carrying 'error': null",
+        "a response carrying a real result plus 'error': null is rejected and "
+        "dropped silently on the correlation path, hanging a server-initiated "
+        "sampling, roots or elicitation request to its timeout",
     ),
     (
         "F2-client-error",
-        "include/mcp/client/client.hpp",
+        "client",
         "dispatch_response",
         "error",
         "null-fragile",
@@ -1545,7 +1563,7 @@ KNOWN_DEFECTS = [
     ),
     (
         "F2-client-params",
-        "include/mcp/client/client.hpp",
+        "client",
         "dispatch_notification",
         "params",
         "null-fragile",
@@ -1558,19 +1576,19 @@ def run_self_test(rows: list[Row], rev: str, stream) -> int:
     """Require the census to rediscover every defect that was found by hand."""
     failures = 0
     stream.write(f"rediscovery gate against {rev}\n")
-    for name, path, owner, field_name, expected, note in KNOWN_DEFECTS:
-        # The path is a hint, not a requirement.  Keying the gate to a file
-        # would have let exactly the refactor that exposed F2 -- moving the
-        # code to a new file -- turn a rediscovery into a silent pass.
+    for name, component, owner, field_name, expected, note in KNOWN_DEFECTS:
+        owners = (owner,) if isinstance(owner, str) else owner
         hits = [
             r
             for r in rows
             if r.field_name == field_name
             and r.defect_class == expected
-            and (owner is None or owner in (r.owner, r.function, f"({r.function})"))
-        ] or []
-        if owner is None:
-            hits = [h for h in hits if h.file.replace(os.sep, "/").endswith(path)]
+            and component in r.file.replace(os.sep, "/")
+            and (
+                owner is None
+                or any(o in (r.owner, r.function, f"({r.function})") for o in owners)
+            )
+        ]
         if hits:
             h = hits[0]
             stream.write(
@@ -1581,12 +1599,52 @@ def run_self_test(rows: list[Row], rev: str, stream) -> int:
             failures += 1
             stream.write(
                 f"  FAIL  {name:22s} no {expected} row for "
-                f"{owner or '*'}.{field_name} (was in {path})\n"
+                f"{owner or '*'}.{field_name} anywhere under '{component}'\n"
                 f"        ({note})\n"
             )
     stream.write(
         f"rediscovered {len(KNOWN_DEFECTS) - failures}/{len(KNOWN_DEFECTS)}\n"
     )
+    return failures + check_asymmetry(rows, stream)
+
+
+def check_asymmetry(rows: list[Row], stream) -> int:
+    """Hold the line between 'error' and 'result'.
+
+    Null-tolerance applies to `"error"` and not to `"result"`: `"result": null`
+    is a legitimate empty result in JSON-RPC, while `"error": null` is not an
+    error.  A rule that flattens the two closes one defect and opens another,
+    so the distinction is checked rather than trusted -- including against a
+    future edit to ENVELOPE_KEYS itself.
+    """
+    failures = 0
+    if ENVELOPE_KEYS.get("result", (None,))[0] != "ok":
+        failures += 1
+        stream.write(
+            "  ASYMMETRY FAIL  'result' is not marked ok: a null result is a "
+            "legitimate empty result and must not be treated as absent\n"
+        )
+    if ENVELOPE_KEYS.get("error", (None,))[0] != MISROUTE:
+        failures += 1
+        stream.write(
+            "  ASYMMETRY FAIL  'error' is not marked misroute: a null error is "
+            "not an error and a presence test misroutes it\n"
+        )
+
+    bad = [r for r in rows if r.field_name == "result" and r.null == MISROUTE]
+    if bad:
+        failures += 1
+        stream.write(f"  ASYMMETRY FAIL  {len(bad)} 'result' rows classified misroute:\n")
+        for r in bad[:10]:
+            stream.write(f"      {r.file}:{r.line} {r.function}\n")
+
+    errors = len([r for r in rows if r.field_name == "error" and r.null == MISROUTE])
+    results = len([r for r in rows if r.field_name == "result"])
+    if not failures:
+        stream.write(
+            f"asymmetry held: {errors} 'error' presence tests flagged misroute, "
+            f"0 of {results} 'result' rows flagged\n"
+        )
     return failures
 
 
