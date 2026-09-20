@@ -22,6 +22,7 @@
 #include <boost/beast/http.hpp>
 #include <exception>
 #include <functional>
+#include <future>
 #include <mcp/auth/client_identity.hpp>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/transport/http_client.hpp>
@@ -29,6 +30,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace asio = boost::asio;
@@ -1002,7 +1004,7 @@ bool has_scopes(const std::string& haystack, const std::vector<std::string>& nee
 class StallingServer final {
    public:
     explicit StallingServer(asio::io_context& io_ctx)
-        : io_ctx_(io_ctx), acceptor_(io_ctx, {asio::ip::make_address("127.0.0.1"), 0}) {}
+        : acceptor_(io_ctx, {asio::ip::make_address("127.0.0.1"), 0}) {}
 
     [[nodiscard]] unsigned short port() const { return acceptor_.local_endpoint().port(); }
     [[nodiscard]] std::string base_url() const { return "http://127.0.0.1:" + std::to_string(port()); }
@@ -1021,7 +1023,6 @@ class StallingServer final {
     [[nodiscard]] int accepted() const { return accepted_; }
 
    private:
-    asio::io_context& io_ctx_;
     asio::ip::tcp::acceptor acceptor_;
     std::optional<asio::ip::tcp::socket> held_socket_;
     int accepted_{0};
@@ -1503,6 +1504,388 @@ TEST(AuthTransportCloseTest, CloseWhileAFollowerIsParkedOnTheSingleFlightTimerWa
     // The follower gets a clear error, not the leader's misleading "not authorized" outcome.
     EXPECT_NE(follower_failure, nullptr);
     EXPECT_NE(leader_failure, nullptr);
+}
+
+// The test above stalls the leader in discovery, where abort_pending() closing the socket also
+// unblocks the leader's own cleanup in time to cancel the single-flight timer -- so it cannot tell
+// a working flight->cancel() from one that only appears to work because the follower had already
+// registered its wait long before close() ran. This one stalls the leader somewhere abort_pending()
+// can never reach at all -- the application's own consent callback -- and races close() against a
+// follower joining the same flight from a second, real OS thread with no artificial delay between
+// them, so the follower's join and its flight->async_wait() registration are not guaranteed to have
+// both completed before close() runs. That gap is exactly what turns a bare flight->cancel() (a
+// no-op against a wait that has not started yet, and one that does not affect a *later* wait either)
+// into a permanent hang, and exactly what expires_at(time_point::min()) closes: it moves the timer's
+// deadline into the past, so a wait registered after this call still completes immediately.
+TEST(AuthTransportCloseTest,
+     CloseWhileALeaderIsParkedInTheApplicationConsentCallbackWakesAFollowerWithAnError) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&base](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+
+    // Never returns, modelling an application consent prompt nobody has answered yet. Signals
+    // `leader_parked_signal` right before parking, so the main thread knows `flight` already exists
+    // (it is created earlier still, synchronously, before discovery even starts) and the leader has
+    // reached the one phase this manager cannot itself abort. The leader is deliberately left parked
+    // here, leaked into the stopped io_context, for the rest of the test: releasing it is not this
+    // fix's job (see the manager's own doc comment on close()); only the follower's release is under
+    // test, so nothing below joins or waits on the leader's own coroutine.
+    std::promise<void> leader_parked_signal;
+    auto leader_parked = leader_parked_signal.get_future();
+    auto callback =
+        [&io_ctx, &leader_parked_signal](
+            const mcp::auth::AuthorizationRequest&) -> mcp::Task<mcp::auth::AuthorizationResponse> {
+        leader_parked_signal.set_value();
+        asio::steady_timer never(io_ctx, asio::steady_timer::time_point::max());
+        boost::system::error_code ignored;
+        co_await never.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+        co_return mcp::auth::AuthorizationResponse{};
+    };
+
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(io_ctx.get_executor(), store,
+                                                                          config, callback);
+    const std::string header = R"(Bearer resource_metadata=")" + base + R"(/prm")";
+
+    // A single follower racing a single close() call almost never lands in the gap between joining
+    // the flight and registering its wait: starting the runner thread, having it work through
+    // discovery and reach the callback, and then waking it again for one posted follower all take
+    // far longer than close()'s own few instructions, so the follower is reliably already waiting
+    // by the time close() runs (50/50 local runs against the unfixed code never reproduced the hang
+    // with just one). A burst of many followers, posted individually and racing the same close()
+    // call from a second thread with no synchronization, gives the same narrow window many
+    // independent chances to be hit in one test run instead of one.
+    constexpr int follower_count = 200;
+    std::vector<bool> follower_authorized(follower_count, false);
+    std::vector<std::exception_ptr> follower_failure(follower_count);
+    int followers_done = 0;
+    bool timed_out = false;
+    std::exception_ptr leader_failure;
+
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error && followers_done < follower_count) {
+            timed_out = true;
+        }
+        io_ctx.stop();
+    });
+
+    // asio::detached swallows an uncaught exception silently, which would otherwise leave
+    // `leader_parked_signal` unfulfilled forever with nothing left to explain why; captured here
+    // purely as a diagnostic in case discovery itself fails.
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                (void)co_await manager->try_handle_challenge(header);
+            } catch (...) {
+                leader_failure = std::current_exception();
+            }
+        },
+        asio::detached);
+
+    std::thread runner([&io_ctx]() { io_ctx.run(); });
+    // Bounded even though discovery against this instant loopback server should resolve in well
+    // under a millisecond: nothing here may block the main thread indefinitely, since a stall here
+    // would sit outside the io_context's own watchdog entirely.
+    const auto parked_status = leader_parked.wait_for(std::chrono::seconds(5));
+
+    if (parked_status == std::future_status::ready) {
+        for (int index = 0; index < follower_count; ++index) {
+            asio::post(io_ctx, [&, index]() {
+                asio::co_spawn(
+                    io_ctx,
+                    [&, index]() -> mcp::Task<void> {
+                        try {
+                            follower_authorized[index] = co_await manager->try_handle_challenge(header);
+                        } catch (...) {
+                            follower_failure[index] = std::current_exception();
+                        }
+                        if (++followers_done == follower_count) {
+                            io_ctx.stop();
+                        }
+                    },
+                    asio::detached);
+            });
+        }
+        // Deliberately no synchronization beyond what the manager itself provides: this call races
+        // the followers' posts above from a second thread that is not running the io_context at all,
+        // which is exactly how close() is used in practice (an application thread tearing down a
+        // transport while the io_context spins elsewhere).
+        manager->close();
+    }
+
+    runner.join();
+
+    ASSERT_EQ(parked_status, std::future_status::ready)
+        << "leader never reached the consent callback (discovery failed? "
+        << (leader_failure ? "yes, see leader_failure" : "no exception captured");
+    ASSERT_FALSE(timed_out) << "watchdog: close() did not wake every follower (" << followers_done
+                            << "/" << follower_count << " woke up)";
+    EXPECT_EQ(followers_done, follower_count);
+    for (int index = 0; index < follower_count; ++index) {
+        EXPECT_FALSE(follower_authorized[index]) << "follower " << index;
+        EXPECT_NE(follower_failure[index], nullptr) << "follower " << index;
+    }
+}
+
+// B2: flight->expires_at()/cancel() in close() and flight->async_wait() in await_in_flight() touch
+// the same non-thread-safe timer object; close() reaches it synchronously from whatever thread the
+// application calls OAuthClientTransport::close() from, which is not necessarily the thread running
+// the io_context. Runs the io_context on its own thread and calls close() from the main thread with
+// no synchronization beyond the manager's own, while a flow is genuinely in flight -- the shape most
+// likely to surface a data race under ASan/UBSan (and, since Boost.Asio's timer and socket types are
+// not safe under concurrent access from two threads, the shape a thread sanitizer build would target
+// too).
+TEST(AuthTransportCloseTest, CloseFromAnotherThreadWhileAuthorizationIsInFlightTerminatesCleanly) {
+    asio::io_context io_ctx;
+    StallingServer stalling(io_ctx);
+    stalling.accept_and_stall();
+    const auto stalling_base = stalling.base_url();
+
+    LoopbackServer resource_server(io_ctx);
+    const auto resource_base = resource_server.base_url();
+    resource_server.set_handler([&](const http::request<http::string_body>&) {
+        http::response<http::string_body> challenge{http::status::unauthorized, 11};
+        challenge.set(http::field::www_authenticate,
+                      R"(Bearer resource_metadata=")" + stalling_base + R"(/prm")");
+        return challenge;
+    });
+    asio::co_spawn(io_ctx, resource_server.serve(5), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = resource_base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allowed_origins = {resource_base, stalling_base};
+    policy.allow_plain_http_loopback = true;
+    config.policy = policy;
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    std::vector<std::string> requested_scopes;
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+        io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+    auto inner =
+        std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), resource_base + "/mcp");
+    auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, manager);
+
+    bool completed = false;
+    bool timed_out = false;
+    std::exception_ptr failure;
+
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error && !completed) {
+            timed_out = true;
+        }
+        io_ctx.stop();
+    });
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            completed = true;
+            io_ctx.stop();
+        },
+        asio::detached);
+
+    std::thread runner([&io_ctx]() { io_ctx.run(); });
+
+    // A brief head start into the stalled discovery fetch, then close from a thread that never runs
+    // the io_context at all.
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    transport->close();
+    resource_server.close();
+
+    runner.join();
+
+    ASSERT_FALSE(timed_out) << "watchdog: close() from another thread did not unblock the flow";
+    EXPECT_TRUE(completed);
+    EXPECT_NE(failure, nullptr);
+    EXPECT_GE(stalling.accepted(), 1);
+}
+
+// B3/N1: the closed check and the flight read-or-create used to be two separate critical sections in
+// handle_challenge(), so a request that passed the check before close() ran could still go on to
+// create a fresh flight and run a full authorization flow after the transport had closed. Folding
+// the check into the same lock as the flight read/create closes that window outright: a manager that
+// is already closed refuses a new challenge before it does anything else, including the discovery
+// fetch this asserts never happens.
+TEST(AuthTransportCloseTest, CloseThenChallengeThrowsPromptlyWithoutAnyDiscoveryOrHttp) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler([&base](const http::request<http::string_body>&) {
+        return json_response(
+            {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+    });
+    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    std::vector<std::string> requested_scopes;
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+        io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+
+    bool threw = false;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            manager->close();
+            try {
+                (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                             R"(/prm")");
+            } catch (const std::exception&) {
+                threw = true;
+            }
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_TRUE(threw);
+    EXPECT_TRUE(server.targets().empty());
+    EXPECT_TRUE(requested_scopes.empty());
+}
+
+// N1's counterpart on OAuthAuthenticator: close() used to be stateless there (it only forwarded to
+// OAuthHttpClient::abort_pending(), which used to let a request started afterward run normally), so
+// try_refresh_token() after close() would perform a real token-refresh exchange and overwrite the
+// stored token. The sticky `aborted` flag on OAuthHttpClient closes this too: the refresh's own POST
+// never opens a connection, run_refresh() folds that failure into its existing `false` return, and
+// the stale token is left exactly as it was.
+TEST(AuthTransportCloseTest, AuthenticatorCloseThenRefreshPerformsNoNetworkIO) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    int token_requests = 0;
+    server.set_handler([&](const http::request<http::string_body>&) {
+        ++token_requests;
+        return json_response(token_document());
+    });
+    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    mcp::auth::TokenResponse stored;
+    stored.access_token = "stale-access-token";
+    stored.token_type = "Bearer";
+    stored.refresh_token = "stale-refresh-token";
+    store->store(base + "/mcp", stored);
+
+    mcp::auth::OAuthConfig config;
+    config.client_id = "test-client";
+    config.token_endpoint = base + "/token";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+
+    auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+    http_client->set_metadata_policy(loopback_policy(server.origin()));
+    auto authenticator =
+        std::make_shared<mcp::auth::OAuthAuthenticator>(store, http_client, config, base + "/mcp");
+
+    bool refreshed = true;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            authenticator->close();
+            refreshed = co_await authenticator->try_refresh_token();
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_FALSE(refreshed);
+    EXPECT_EQ(token_requests, 0);
+    EXPECT_TRUE(server.targets().empty());
+    // The stale token was left alone, not overwritten by a refresh that should never have run.
+    EXPECT_EQ(authenticator->get_access_token(), "stale-access-token");
+}
+
+// close() must be safe to call more than once (OAuthClientTransport::close() itself is idempotent
+// and calls it only once per transport, but the manager and authenticator are reachable directly),
+// and a write issued after close() must fail fast rather than hang or reach the network.
+TEST(AuthTransportCloseTest, CloseTwiceIsIdempotentAndARequestAfterCloseFailsFast) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler([&base](const http::request<http::string_body>&) {
+        http::response<http::string_body> challenge{http::status::unauthorized, 11};
+        challenge.set(http::field::www_authenticate,
+                      R"(Bearer resource_metadata=")" + base + R"(/prm")");
+        return challenge;
+    });
+    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    std::vector<std::string> requested_scopes;
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+        io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+    auto inner = std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+    auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, manager);
+
+    bool completed = false;
+    std::exception_ptr failure;
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            transport->close();
+            transport->close();  // Must not throw, hang, or double-release anything.
+            try {
+                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            completed = true;
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_TRUE(completed);
+    EXPECT_NE(failure, nullptr);
+    EXPECT_TRUE(server.targets().empty());
 }
 
 TEST(AuthTransportCloseTest, CloseWithQueuedPendingRequestsFailsThemPromptlyWithoutHanging) {
