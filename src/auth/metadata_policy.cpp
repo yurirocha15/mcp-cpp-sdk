@@ -521,13 +521,19 @@ bool breaks_a_line(std::uint32_t codepoint) {
 }
 
 /// Codepoints that re-order the text after them without ending the line. The explicit embeddings
-/// and overrides (U+202A-U+202E), the isolates (U+2066-U+2069) and the implicit marks
-/// (U+200E/U+200F) all let a peer reverse the rendering of the rest of a diagnostic, so a refusal
-/// can be made to read as its opposite. Same forgery as a line break, by a route that never breaks
-/// one.
+/// and overrides (U+202A-U+202E), the isolates (U+2066-U+2069) and all three implicit marks -- LRM
+/// (U+200E), RLM (U+200F) and ALM (U+061C) -- let a peer reverse the rendering of the rest of a
+/// diagnostic, so a refusal can be made to read as its opposite. Same forgery as a line break, by
+/// a route that never breaks one.
+///
+/// ALM is easy to leave out, because it lives in the Arabic block rather than beside the other two
+/// marks. It is the same class as RLM: a strong invisible directional character that re-bases the
+/// neutral run after it. Bounded impact next to U+202E, which reverses a whole run, but there is
+/// no reason to admit it once RLM is refused.
 bool reorders_the_line(std::uint32_t codepoint) {
     return (codepoint >= 0x202a && codepoint <= 0x202e) ||
-           (codepoint >= 0x2066 && codepoint <= 0x2069) || codepoint == 0x200e || codepoint == 0x200f;
+           (codepoint >= 0x2066 && codepoint <= 0x2069) || codepoint == 0x200e || codepoint == 0x200f ||
+           codepoint == 0x061c;
 }
 
 }  // namespace
