@@ -15,6 +15,7 @@
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -668,18 +669,7 @@ Task<void> Server::run_session(std::shared_ptr<Session> session) {
     // every later run() is refused for the lifetime of this Server.
     try {
         session->stopping.store(true, std::memory_order_release);
-        for (auto& [id, cancelled] : session->in_flight) {
-            static_cast<void>(id);
-            cancelled->store(true, std::memory_order_relaxed);
-        }
-        for (auto& [id, pending] : session->pending_requests) {
-            if (!pending.completed) {
-                pending.error = Error{g_CONNECTION_CLOSED, "Server session closed", std::nullopt};
-                pending.completed = true;
-            }
-            static_cast<void>(id);
-            pending.timer->cancel();
-        }
+        abandon_session_work(session);
         session->transport->close();
 
         while (session->active_dispatches.load(std::memory_order_acquire) != 0) {
@@ -1521,12 +1511,7 @@ void Server::reset_session() {
     }
 }
 
-void Server::reset_session(const std::shared_ptr<Session>& session) {
-    if (!impl_ || !session) {
-        return;
-    }
-
-    session->stopping.store(true, std::memory_order_release);
+void Server::abandon_session_work(const std::shared_ptr<Session>& session) {
     for (auto& [id, cancelled] : session->in_flight) {
         static_cast<void>(id);
         cancelled->store(true, std::memory_order_relaxed);
@@ -1538,6 +1523,32 @@ void Server::reset_session(const std::shared_ptr<Session>& session) {
             pending.completed = true;
         }
         pending.timer->cancel();
+    }
+}
+
+void Server::reset_session(const std::shared_ptr<Session>& session) {
+    if (!impl_ || !session) {
+        return;
+    }
+
+    // Runs on whatever thread destroys the Server, so it does only what is safe from any thread:
+    // `stopping` is atomic, `impl_->session` is mutex-guarded, and ITransport::close() is what
+    // wakes a blocked reader. The request maps are plain std::maps that only the session strand
+    // may touch, so abandoning their entries is handed to that strand instead.
+    //
+    // The hand-off is a post that is never waited on. Waiting would deadlock when the destructor
+    // runs on the session strand itself, and would never return at all when the io_context is
+    // stopped or was never run -- which is the ordinary way a Server reaches its destructor. On a
+    // stopped context the posted work simply never runs, which is the same outcome as before:
+    // cancelling a timer whose executor has nothing driving it delivers nothing either.
+    session->stopping.store(true, std::memory_order_release);
+    if (session->strand) {
+        // Guarded for the same reason as the close below: queueing the hand-off allocates, and an
+        // exception escaping ~Server would terminate the process.
+        try {
+            boost::asio::post(*session->strand, [session] { Server::abandon_session_work(session); });
+        } catch (const std::exception&) {
+        }
     }
     if (session->transport) {
         // Unregistering the session below is what frees the Server for reuse, and it must happen
