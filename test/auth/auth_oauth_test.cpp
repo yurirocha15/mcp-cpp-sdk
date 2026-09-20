@@ -1262,7 +1262,7 @@ TEST(AuthOAuthHttpClientUrlTest, AnIpv6LiteralHostIsResolvedWithoutItsBrackets) 
 // The fixture is two HTTP servers sharing a port on two loopback addresses, each naming itself
 // in its body. Every request targets `http://localhost:<port>/doc`, so the installed resolver
 // alone decides which server answers, and the body IS the classification: a body of "new" can
-// only be produced by the NEW resolver under the OLD, wider allow list, which is the mix on the wire.
+// only be produced by the NEW resolver under the OLD, wider allow list -- the defect, on the wire.
 // -------------------------------------------------------------------------------------------
 namespace {
 

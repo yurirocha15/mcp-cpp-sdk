@@ -2841,10 +2841,10 @@ TEST(AuthTransportCloseTest, CloseFromAnotherThreadWhileAuthorizationIsInFlightT
     EXPECT_GE(stalling.accepted(), 1);
 }
 
-// The closed check and the flight read-or-create used to be two separate critical sections in
-// handle_challenge(), so a request that passed the check before close() ran could still go on to
-// create a fresh flight and run a full authorization flow after the transport had closed. Folding
-// the check into the same lock as the flight read/create closes that window outright: a manager that
+// The closed check and the flight read-or-create share one critical section in handle_challenge().
+// Split across two, a request that passed the check before close() ran could still create a fresh
+// flight and run a full authorization flow after the transport had closed. One lock closes that
+// window outright: a manager that
 // is already closed refuses a new challenge before it does anything else, including the discovery
 // fetch this asserts never happens.
 TEST(AuthTransportCloseTest, CloseThenChallengeThrowsPromptlyWithoutAnyDiscoveryOrHttp) {
@@ -2963,8 +2963,8 @@ TEST(AuthAuthenticatorConstructionTest, RefusesANullHttpClientInsteadOfFaulting)
                  std::invalid_argument);
 }
 
-// The counterpart on OAuthAuthenticator: close() used to be stateless there (it only forwarded to
-// OAuthHttpClient::abort_pending(), which used to let a request started afterward run normally), so
+// The same property on OAuthAuthenticator. If close() were stateless there -- merely forwarding to
+// OAuthHttpClient::abort_pending() and letting a request started afterward run -- then
 // try_refresh_token() after close() would perform a real token-refresh exchange and overwrite the
 // stored token. The sticky `aborted` flag on OAuthHttpClient closes this too: the refresh's own POST
 // never opens a connection, run_refresh() folds that failure into its existing `false` return, and
@@ -3026,15 +3026,10 @@ TEST(AuthTransportCloseTest, AuthenticatorCloseThenRefreshPerformsNoNetworkIO) {
 // escapes into the client, a reference cycle between the latch and an exchange, or an exchange that
 // is never released from `active_exchanges`.
 //
-// The peak assertion is what keeps it honest. Without it, an instrumentation bug that always
-// reported zero would satisfy the return-to-baseline check silently.
-//
-// Be precise about what the peak is. `live_scope_latch_count()` counts latch OBJECTS, so the peak
-// is the number of live scopes -- the authenticators this test is deliberately holding. Sampling
-// from inside the token server's handler means the count is taken while an exchange is in flight,
-// and `in_flight_samples` asserts that it genuinely was. It does NOT mean the number is larger than
-// it would be afterwards: an in-flight exchange holds a copy of an existing object and adds
-// nothing.
+// The peak assertion exists so the test cannot pass vacuously -- instrumentation that always
+// reported zero would satisfy return-to-baseline in silence. The peak is the number of live latch
+// objects, which here is the authenticators the test is holding; sampling from inside the token
+// server's handler is what makes `in_flight_samples` non-zero, not what makes the peak larger.
 TEST(AuthHttpClientScopeRetentionTest, TheScopeAbortLatchIsReleasedByEveryChurnedAuthenticator) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
