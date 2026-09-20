@@ -441,17 +441,28 @@ struct HttpServerTransport::Impl {
 
         // A sessionless discover is answered on no credential at all, so the JSON-RPC id it
         // carries is chosen by an unauthenticated party. Registering it under that raw id would
-        // put a stranger in the same key space the established session correlates on: whoever
-        // registers first owns the id, so a prober could claim an id the session then needs and
-        // force a spurious "Request id already pending" on a legitimate request. It would also
-        // put that raw id into sessionless_request_ids, which decides replay-store exclusion,
-        // letting the prober's chosen id steer what the session's replay history contains.
+        // put a stranger in the same key space the established session correlates on, with two
+        // consequences. Whoever registers first owns the id, so a prober could claim an id the
+        // session then needs and force a spurious "Request id already pending" on a legitimate
+        // request. And the raw id would land in sessionless_request_ids, which decides
+        // replay-store exclusion, so the prober's chosen id would steer what the session's
+        // replay history contains -- an unauthenticated party influencing session state, not
+        // merely denying itself service.
         //
         // The discover is therefore carried under a transport-private sentinel id: registered,
         // correlated and replay-filtered under the sentinel, with the caller's own id restored
         // in run_write before the response leaves. Only this pre-gate path pays the rewrite and
         // the re-serialisation; every session-gated request is still registered under, and
         // forwarded with, the exact bytes the peer sent.
+        //
+        // Do not replace this with a scoped map -- keying pending_responses per session or per
+        // principal and letting both parties hold the same raw id. It looks smaller and it is
+        // wrong: the correlation key is the id the peer echoes back, so a response arriving for
+        // id N could belong to either holder and the transport would have to guess, by arrival
+        // order or by content. Guessing wrong hands one party another party's response body.
+        // That converts today's clean denial, where the reply always reaches the registrant,
+        // into a genuine cross-party confusion -- strictly worse than the defect being fixed.
+        // Rewriting the id is what preserves the correlation property.
         std::string request_id_key;
         std::optional<nlohmann::json> client_request_id;
         std::string sentinel_body;
