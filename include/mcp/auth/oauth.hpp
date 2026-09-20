@@ -294,12 +294,15 @@ class MCP_API OAuthHttpClient {
     Task<nlohmann::json> post_json(const std::string& url, const nlohmann::json& body);
 
     /**
-     * @brief Abort every HTTP exchange currently in flight on this client.
+     * @brief Abort every HTTP exchange currently in flight on this client, and refuse every one
+     *        issued afterward.
      *
      * @details Closes the underlying socket of each active exchange from its own strand, so a
      * pending resolve, connect, write, or read completes with an error instead of hanging. Safe to
-     * call from any thread and a no-op when nothing is in flight. A request issued after this call
-     * proceeds normally on a fresh connection.
+     * call from any thread. Sticky: once called, a request issued afterward -- even one that has
+     * not yet made its first network call -- fails immediately instead of running to completion, so
+     * a caller cannot race this call to sneak a new exchange in. There is no way to undo this; the
+     * client is done issuing requests from this point on. Idempotent.
      */
     void abort_pending();
 
@@ -635,9 +638,10 @@ class MCP_API OAuthAuthorizationManager : public Authenticator {
     /**
      * @brief Cancel any in-flight authorization flow and release parked followers with an error.
      *
-     * @details Aborts the in-progress discovery or token-exchange HTTP exchange, cancels the
+     * @details Aborts the in-progress discovery or token-exchange HTTP exchange, expires the
      * single-flight timer so every coalesced follower wakes rather than waiting forever, and refuses
-     * new authorization attempts from this point on. Idempotent.
+     * new authorization attempts from this point on -- including one racing this very call. Safe to
+     * call from any thread. Idempotent.
      */
     void close() override;
 

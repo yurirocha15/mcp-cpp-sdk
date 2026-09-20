@@ -8,6 +8,8 @@
 #include <mcp/detail/secure_random.hpp>
 
 #include <algorithm>
+#include <boost/asio/dispatch.hpp>
+#include <boost/asio/error.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
@@ -526,19 +528,34 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         Exchange* exchange;
     };
 
+    /// Registers `exchange` as in flight, unless `abort_pending()` has already run -- in which case
+    /// this exchange is refused before it opens a connection, the same as one abort_pending() closes
+    /// out from under. Without this check, an exchange that starts registering after abort_pending()
+    /// already swept `active_exchanges` would never be reached by it and would run to completion
+    /// (see the sticky `aborted` flag on abort_pending() below).
     static ActiveExchangeGuard track_exchange(const std::shared_ptr<Exchange>& exchange) {
         std::lock_guard lock(exchange->owner->active_mutex);
+        if (exchange->owner->aborted) {
+            // The same error an exchange already in flight sees when abort_pending() closes its
+            // socket underneath it, so a caller cannot tell whether this exchange started before or
+            // after the client closed.
+            throw boost::system::system_error(net::error::operation_aborted);
+        }
         exchange->owner->active_exchanges.push_back(exchange);
         return ActiveExchangeGuard(exchange->owner, exchange.get());
     }
 
     /// Close the underlying socket of every exchange currently in flight, posted onto the client's
     /// strand so the closure is never raced with the coroutine using it. A pending resolve, connect,
-    /// write, or read then completes with an error instead of hanging.
+    /// write, or read then completes with an error instead of hanging. Also latches `aborted`, so
+    /// every exchange that registers with track_exchange() from this point on -- including one that
+    /// has not made its first network call yet -- is refused rather than left to run past a client
+    /// that has moved on. Idempotent; a no-op when nothing is in flight either way.
     void abort_pending() {
         std::vector<std::shared_ptr<Exchange>> exchanges;
         {
             std::lock_guard lock(active_mutex);
+            aborted = true;
             for (auto& weak : active_exchanges) {
                 if (auto locked = weak.lock()) {
                     exchanges.push_back(std::move(locked));
@@ -673,6 +690,9 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     HostResolver host_resolver;
     std::mutex active_mutex;
     std::vector<std::weak_ptr<Exchange>> active_exchanges;
+    /// Set once by abort_pending(); makes the abort sticky so an exchange started afterward is
+    /// refused instead of running to completion. Guarded by active_mutex alongside the list above.
+    bool aborted{false};
 };
 
 OAuthHttpClient::OAuthHttpClient(const net::any_io_executor& executor)
@@ -1499,6 +1519,27 @@ struct OAuthAuthorizationManager::Impl {
         co_return true;
     }
 
+    /// Push `flight`'s deadline into the past, on the manager's executor so the change is never
+    /// raced with the timer's own operations (a pending async_wait() elsewhere, or one just about to
+    /// start).
+    ///
+    /// expires_at() -- unlike cancel() -- both cancels whatever is currently pending on the timer
+    /// *and* moves its deadline, so a wait that starts only after this call still sees an
+    /// already-passed deadline and completes immediately instead of parking on one that never moved
+    /// off time_point::max(). That covers a follower that has joined `flight` but has not yet called
+    /// async_wait when this runs: joining and waiting are two separate steps, not one atomic one, so
+    /// cancel() alone -- which only affects a wait already pending -- can miss it, and the follower
+    /// hangs forever. A null `flight` is a no-op.
+    static void expire_flight(const net::any_io_executor& executor,
+                              std::shared_ptr<net::steady_timer> flight) {
+        if (!flight) {
+            return;
+        }
+        net::dispatch(executor, [flight = std::move(flight)]() {
+            flight->expires_at(net::steady_timer::time_point::min());
+        });
+    }
+
     /// Waiters share the leader's outcome instead of opening a second authorization flow, so a
     /// burst of concurrent requests that all hit the same challenge authorizes exactly once.
     static Task<bool> await_in_flight(std::shared_ptr<Impl> owner,
@@ -1532,9 +1573,10 @@ struct OAuthAuthorizationManager::Impl {
             finished = std::move(owner->flight);
             owner->flight.reset();
         }
-        if (finished) {
-            finished->cancel();
-        }
+        // A late joiner may have read the old `flight` out of the lock above just before this reset
+        // and not yet be waiting on it (see expire_flight()'s comment); expires_at(), not cancel(),
+        // is what still reaches it.
+        expire_flight(owner->executor, std::move(finished));
         if (failure) {
             std::rethrow_exception(failure);
         }
@@ -1542,12 +1584,6 @@ struct OAuthAuthorizationManager::Impl {
     }
 
     static Task<bool> handle_challenge(std::shared_ptr<Impl> owner, const std::string& header) {
-        {
-            std::lock_guard lock(owner->state_mutex);
-            if (owner->closed) {
-                throw std::runtime_error("OAuth authorization manager closed");
-            }
-        }
         auto challenge = select_bearer_challenge(parse_www_authenticate(header));
         if (!challenge) {
             return return_false();
@@ -1556,6 +1592,14 @@ struct OAuthAuthorizationManager::Impl {
         std::shared_ptr<net::steady_timer> joined;
         {
             std::lock_guard lock(owner->state_mutex);
+            // Checked in the same critical section that reads or creates `flight`: close() also
+            // takes this lock, so the two can never interleave as a new flight being created right
+            // after close() already ran past it, unnoticed. (http_client's own sticky abort would
+            // still stop that flight's first network call either way, but this keeps a closed
+            // manager from starting one at all.)
+            if (owner->closed) {
+                throw std::runtime_error("OAuth authorization manager closed");
+            }
             if (owner->flight) {
                 joined = owner->flight;
             } else {
@@ -1628,12 +1672,14 @@ struct OAuthAuthorizationManager::Impl {
 
     /// Abort whatever this manager has in flight and release every parked follower with an error.
     ///
-    /// `http_client->abort_pending()` unblocks the leader's own coroutine, wherever it is parked
-    /// (discovery, registration or token exchange all share the one client), which lets the leader's
-    /// existing cleanup in run_leading_challenge() cancel `flight` on its own; `flight->cancel()` is
-    /// still called directly here too, so a follower wakes immediately rather than waiting on that
-    /// cleanup to happen -- covering every phase, including one this manager cannot itself abort
-    /// (the application's own consent callback).
+    /// `http_client->abort_pending()` unblocks the leader's own coroutine wherever it is parked in
+    /// an HTTP call (discovery, registration and token exchange all share the one client), and being
+    /// sticky, also stops a leader -- or a fresh flow started by a caller racing this very call --
+    /// that has not made its first network call yet: it fails there instead of running to
+    /// completion. `expire_flight()` releases every follower directly rather than waiting on the
+    /// leader's own cleanup in run_leading_challenge() to get there, and reaches the one place
+    /// abort_pending() cannot: a leader parked in the application's own consent callback, which
+    /// holds no cancellable network state of its own.
     static void close(const std::shared_ptr<Impl>& owner) {
         std::shared_ptr<net::steady_timer> flight;
         {
@@ -1645,9 +1691,7 @@ struct OAuthAuthorizationManager::Impl {
             flight = owner->flight;
         }
         owner->http_client->abort_pending();
-        if (flight) {
-            flight->cancel();
-        }
+        expire_flight(owner->executor, std::move(flight));
     }
 };
 
