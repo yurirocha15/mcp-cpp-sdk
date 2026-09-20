@@ -3351,6 +3351,50 @@ bool carries_control_characters(const std::string& text) {
     });
 }
 
+/// Whether `text` is well-formed UTF-8. Deliberately written out rather than delegated to the JSON
+/// library, so the assertion does not depend on the same code the SDK might be using.
+bool is_well_formed_utf8(const std::string& text) {
+    std::size_t index = 0;
+    while (index < text.size()) {
+        const auto lead = static_cast<unsigned char>(text[index]);
+        std::size_t length = 0;
+        std::uint32_t codepoint = 0;
+        if (lead < 0x80) {
+            ++index;
+            continue;
+        }
+        if ((lead & 0xE0) == 0xC0) {
+            length = 2;
+            codepoint = lead & 0x1FU;
+        } else if ((lead & 0xF0) == 0xE0) {
+            length = 3;
+            codepoint = lead & 0x0FU;
+        } else if ((lead & 0xF8) == 0xF0) {
+            length = 4;
+            codepoint = lead & 0x07U;
+        } else {
+            return false;
+        }
+        if (index + length > text.size()) {
+            return false;
+        }
+        for (std::size_t offset = 1; offset < length; ++offset) {
+            const auto continuation = static_cast<unsigned char>(text[index + offset]);
+            if ((continuation & 0xC0) != 0x80) {
+                return false;
+            }
+            codepoint = (codepoint << 6U) | (continuation & 0x3FU);
+        }
+        if ((length == 2 && codepoint < 0x80) || (length == 3 && codepoint < 0x800) ||
+            (length == 4 && codepoint < 0x10000) || codepoint > 0x10FFFF ||
+            (codepoint >= 0xD800 && codepoint <= 0xDFFF)) {
+            return false;
+        }
+        index += length;
+    }
+    return true;
+}
+
 }  // namespace
 
 // Peer-controlled text reaching a diagnostic message is a log-forging vector, and JSON is the sharp
@@ -3485,4 +3529,101 @@ TEST(AuthDiagnosticsSanitizingTest, AnAuthorizationResponseErrorCannotForgeALogL
     EXPECT_FALSE(carries_control_characters(failure)) << failure;
     EXPECT_EQ(failure.find('\n'), std::string::npos) << failure;
     EXPECT_EQ(failure.find('\r'), std::string::npos) << failure;
+}
+
+// The sanitizer's budget is counted in BYTES, so a payload of multi-byte characters can be made to
+// straddle it. Cutting there emitted a half-written character: invalid UTF-8, from the one function
+// whose job is making peer-controlled text safe to log. A JSON log encoder handed invalid UTF-8
+// throws or drops the record, so a peer could still degrade logging, just by a different route than
+// the newline forgery already closed.
+//
+// The payload here is a long run of three-byte characters chosen so the 256-byte limit lands in the
+// middle of one. It also carries ill-formed bytes, which reach the SDK through headers rather than
+// through a parsed document and so have had nothing validate them.
+TEST(AuthDiagnosticsSanitizingTest, ATruncatedMultiByteIssuerStaysWellFormedUtf8) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    // U+4E16 is three bytes in UTF-8. 200 of them is 600 bytes, comfortably past the budget, and
+    // 256 is not a multiple of 3, so the cut necessarily falls inside a character.
+    std::string wide;
+    for (int index = 0; index < 200; ++index) {
+        wide += "\xE4\xB8\x96";
+    }
+    const auto hostile_issuer = "https://evil" + wide + ".test";
+
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm.json") {
+            return json_response({{"resource", base + "/mcp"},
+                                  {"authorization_servers", json::array({hostile_issuer})}});
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    std::promise<std::string> result;
+    auto observed = result.get_future();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            std::string failure;
+            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                         echoing_callback(nullptr));
+            try {
+                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                            R"(/prm.json")");
+                failure = "<no exception>";
+            } catch (const std::exception& error) {
+                failure = error.what();
+            }
+            result.set_value(failure);
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    const auto failure = observed.get();
+    ASSERT_NE(failure, "<no exception>");
+    // The property one level up from "no control characters": the message is something a log
+    // encoder can actually encode.
+    EXPECT_TRUE(is_well_formed_utf8(failure))
+        << "sanitized diagnostic is not valid UTF-8, length " << failure.size();
+    EXPECT_FALSE(carries_control_characters(failure)) << failure.size();
+    // It was genuinely cut, so the boundary case was exercised rather than skipped.
+    EXPECT_NE(failure.find("..."), std::string::npos) << "payload did not reach the budget";
+}
+
+// The same guarantee for bytes that were never valid UTF-8 to begin with. A `Location` header is
+// raw bytes with no parser between it and the SDK, unlike a JSON document, so this is the input
+// class the truncation fix alone would not have covered.
+TEST(AuthDiagnosticsSanitizingTest, IllFormedBytesAreReplacedRatherThanCopiedThrough) {
+    // A lone continuation byte, a truncated three-byte lead, and a surrogate encoding: each is
+    // ill-formed, and none is a control character, so the earlier assertions would all have passed.
+    // Built byte by byte rather than as literals: a hex escape in a C++ string literal swallows
+    // every following hex digit, so "\xC0after" is one out-of-range escape, not a byte and a word.
+    const std::string ill_formed = std::string(1, '\x80') + std::string(1, '\xE4') +
+                                   std::string(1, '\xB8') + std::string(1, '\xED') +
+                                   std::string(1, '\xA0') + std::string(1, '\x80');
+    ASSERT_FALSE(is_well_formed_utf8(ill_formed)) << "the payload must really be ill-formed";
+
+    const auto cleaned = mcp::auth::detail::sanitize_for_diagnostics(ill_formed);
+
+    EXPECT_TRUE(is_well_formed_utf8(cleaned)) << "ill-formed input survived into the diagnostic";
+    EXPECT_FALSE(carries_control_characters(cleaned));
+    // Valid text either side of the damage is preserved, so this is not simply dropping everything.
+    const auto mixed =
+        mcp::auth::detail::sanitize_for_diagnostics(std::string("before") + '\xC0' + "after");
+    EXPECT_TRUE(is_well_formed_utf8(mixed)) << mixed;
+    EXPECT_NE(mixed.find("before"), std::string::npos) << mixed;
+    EXPECT_NE(mixed.find("after"), std::string::npos) << mixed;
 }
