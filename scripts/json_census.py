@@ -328,6 +328,12 @@ def presence_guards(expr: str) -> set[tuple[str, str]]:
         found.add((normalise_doc(m.group(2)), m.group(3)))
     for m in re.finditer(rf"(?:^|[^\w])(\w*::)?find\(\s*{KEY}\s*\)\s*!=", expr):
         found.add(("*", m.group(2)))
+    # A null-safe helper asserts presence as well as non-nullness. Reading it
+    # only as a null check made every field guarded by one look *required*,
+    # which would have reported a fixed site as still defective.
+    for helper in NULL_SAFE_HELPERS:
+        for m in re.finditer(rf"(?<!!){helper}\(\s*([\w\->\.\(\)]+)\s*,\s*{KEY}\s*\)", expr):
+            found.add((normalise_doc(m.group(1)), m.group(2)))
     return found
 
 
@@ -347,6 +353,51 @@ def null_safe_guards(expr: str) -> set[tuple[str, str]]:
     for helper in NULL_SAFE_HELPERS:
         for m in re.finditer(rf"{helper}\(\s*([\w\->\.\(\)]+)\s*,\s*{KEY}\s*\)", expr):
             found.add((normalise_doc(m.group(1)), m.group(2)))
+    return found
+
+
+KEY_HELPER_SIG = re.compile(
+    r"\bbool\s+(\w+)\s*\(\s*const\s+(?:nlohmann::)?json\s*&\s*(\w+)\s*\)\s*$"
+)
+
+
+def discover_key_helpers(text: str, root: Block) -> dict[str, str]:
+    """Local predicates that bake the key in, e.g. `has_error_member(message)`.
+
+    ``detail::has_json_value(j, "error")`` names its key, so the guard regexes
+    see it. A file-local ``has_error_member(message)`` does not, and a census
+    that only knew the first mechanism would report every site fixed with the
+    second as still defective -- sending someone to re-fix working code.
+    Rather than hard-coding the names in use today, a single-return bool
+    function taking one json document, whose body reduces to exactly one
+    null-safe test, IS such a helper and is registered as one.
+    """
+    out: dict[str, str] = {}
+
+    def walk(blk: Block) -> None:
+        m = KEY_HELPER_SIG.search(blk.header.strip())
+        if m:
+            body = text[blk.start : blk.end].strip()
+            # One return and nothing else: `is_valid_response_envelope` also
+            # contains null-safe tests but decides several things, so it is not
+            # a guard for any single key.
+            if re.fullmatch(r"return\s+[^;]+;", body, re.S):
+                pairs = null_safe_guards(body)
+                if len(pairs) == 1:
+                    out[m.group(1)] = next(iter(pairs))[1]
+        for child in blk.children:
+            walk(child)
+
+    walk(root)
+    return out
+
+
+def helper_guards(expr: str, helpers: dict[str, str]) -> set[tuple[str, str]]:
+    """(doc, key) pairs asserted by a call to a discovered key helper."""
+    found = set()
+    for name, key in helpers.items():
+        for m in re.finditer(rf"(?<![\w:])(?<!!){re.escape(name)}\s*\(\s*([\w\->\.]+)\s*\)", expr):
+            found.add((normalise_doc(m.group(1)), key))
     return found
 
 
@@ -853,6 +904,7 @@ def scan_file(
     starts = line_index(text)
     root = parse_blocks(text)
     structs = parse_structs(text, root)
+    helpers = discover_key_helpers(text, root)
     indirect_regions = peer_handler_regions(
         text, root, indirect_dispatch_radius(text, root, index, rel)
     )
@@ -932,6 +984,8 @@ def scan_file(
                 if blk.kind in ("if", "loop"):
                     header = expand_aliases(blk.header, aliases)
                     present |= presence_guards(header)
+                    hg = helper_guards(header, helpers)
+                    present |= hg
                     body = text[blk.start : blk.end]
                     if terminates(body) and re.search(r"!\s*[\w\->\.]+?(?:\.at\(|\[)", header):
                         # `if (contains(k) && !at(k).is_object()) { throw; }`
@@ -942,15 +996,18 @@ def scan_file(
                         rejected |= type_guards(header)
                     else:
                         nonnull |= null_safe_guards(header)
+                        nonnull |= hg
                         typed |= type_guards(header)
             stmt_x = expand_aliases(stmt, aliases)
             present |= presence_guards(stmt_x)
             nonnull |= null_safe_guards(stmt_x)
+            present |= helper_guards(stmt_x, helpers)
+            nonnull |= helper_guards(stmt_x, helpers)
             typed |= type_guards(stmt_x)
             nonnull -= rejected
             typed -= rejected
             present |= early_return_guards(text, chain, off, aliases)
-            nonnull |= early_return_null_guards(text, chain, off)
+            nonnull |= early_return_null_guards(text, chain, off, helpers)
 
             if key is None:
                 # A whole-document get<T>(): the document is handed to T's own
@@ -1045,7 +1102,11 @@ def scan_file(
                 )
             )
 
-    rows.extend(scan_envelope_predicates(text, raw, starts, root, index, rel, indirect_regions))
+    rows.extend(
+        scan_envelope_predicates(
+            text, raw, starts, root, index, rel, indirect_regions, helpers
+        )
+    )
     return rows, structs
 
 
@@ -1060,6 +1121,7 @@ def scan_envelope_predicates(
     index: dict[str, list[FunctionInfo]],
     rel: str,
     indirect_regions: list[tuple[int, int, str]],
+    helpers: dict[str, str],
 ) -> list[Row]:
     """Presence tests on envelope keys, and what an explicit null does to them."""
     lines = raw.splitlines()
@@ -1083,9 +1145,10 @@ def scan_envelope_predicates(
         stmt = statement_prefix(text, m.end(), chain[-1])
         window = text[max(fn_block.start, off - 200) : off + 200]
         aliases = bool_aliases(text[fn_block.start : fn_block.end])
+        expanded = expand_aliases(window, aliases)
         checked = any(
             doc_matches(d, doc) and k == key
-            for d, k in null_safe_guards(expand_aliases(window, aliases))
+            for d, k in (null_safe_guards(expanded) | helper_guards(expanded, helpers))
         )
         if checked:
             verdict, reason = "ok", "presence test is paired with a null check"
@@ -1169,7 +1232,9 @@ def early_return_guards(
     return found
 
 
-def early_return_null_guards(text: str, chain: list[Block], offset: int) -> set[tuple[str, str]]:
+def early_return_null_guards(
+    text: str, chain: list[Block], offset: int, helpers: dict[str, str]
+) -> set[tuple[str, str]]:
     """Keys proven non-null by a preceding early-return type/null test."""
     found = set()
     for blk in chain:
@@ -1189,6 +1254,13 @@ def early_return_null_guards(text: str, chain: list[Block], offset: int) -> set[
                 sib.header,
             ):
                 found.add((normalise_doc(m.group(1)), m.group(2) or m.group(3)))
+            # `if (!has_error_member(m)) { return; }` proves, for everything
+            # after it, that the key is present and not null.
+            for name, key in helpers.items():
+                for m in re.finditer(
+                    rf"!\s*{re.escape(name)}\s*\(\s*([\w\->\.]+)\s*\)", sib.header
+                ):
+                    found.add((normalise_doc(m.group(1)), key))
     return found
 
 
@@ -1572,8 +1644,16 @@ KNOWN_DEFECTS = [
 ]
 
 
-def run_self_test(rows: list[Row], rev: str, stream) -> int:
-    """Require the census to rediscover every defect that was found by hand."""
+def run_self_test(rows: list[Row], rev: str, stream, expect_fixed: bool = False) -> int:
+    """Require the census to rediscover every defect that was found by hand.
+
+    Against the merge base every entry must be found: that is the acceptance
+    criterion, and a miss means the enumeration is incomplete. Against a tree
+    where the fixes have landed the same run inverts -- a row that is still
+    found is a fix that did not take. ``expect_fixed`` says which reading
+    applies, so the exit code means something in both directions instead of
+    reporting success as failure.
+    """
     failures = 0
     stream.write(f"rediscovery gate against {rev}\n")
     for name, component, owner, field_name, expected, note in KNOWN_DEFECTS:
@@ -1592,9 +1672,13 @@ def run_self_test(rows: list[Row], rev: str, stream) -> int:
         if hits:
             h = hits[0]
             stream.write(
-                f"  PASS  {name:22s} {h.file}:{h.line} {h.defect_class} "
-                f"fatality={h.fatality}\n"
+                f"  {'STILL PRESENT' if expect_fixed else 'PASS '}  {name:22s} "
+                f"{h.file}:{h.line} {h.defect_class} fatality={h.fatality}\n"
             )
+            if expect_fixed:
+                failures += 1
+        elif expect_fixed:
+            stream.write(f"  FIXED {name:22s} no {expected} row remains\n")
         else:
             failures += 1
             stream.write(
@@ -1602,9 +1686,11 @@ def run_self_test(rows: list[Row], rev: str, stream) -> int:
                 f"{owner or '*'}.{field_name} anywhere under '{component}'\n"
                 f"        ({note})\n"
             )
-    stream.write(
-        f"rediscovered {len(KNOWN_DEFECTS) - failures}/{len(KNOWN_DEFECTS)}\n"
-    )
+    total = len(KNOWN_DEFECTS)
+    if expect_fixed:
+        stream.write(f"fixed {total - failures}/{total}; {failures} still present\n")
+    else:
+        stream.write(f"rediscovered {total - failures}/{total}\n")
     return failures + check_asymmetry(rows, stream)
 
 
@@ -1893,6 +1979,11 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="require the census to rediscover every hand-found defect (exit 1 if not)",
     )
+    ap.add_argument(
+        "--expect-fixed",
+        action="store_true",
+        help="invert --self-test: every known defect must be GONE (exit 1 if one remains)",
+    )
     args = ap.parse_args(argv)
 
     if args.blind_spots:
@@ -1927,7 +2018,13 @@ def main(argv: list[str]) -> int:
             and (disposition_for(r, rules) or {}).get("disposition") == "fix"
         ]
     if args.self_test:
-        status |= 1 if run_self_test(rows, args.rev or "the working tree", sys.stderr) else 0
+        status |= (
+            1
+            if run_self_test(
+                rows, args.rev or "the working tree", sys.stderr, args.expect_fixed
+            )
+            else 0
+        )
 
     for req in args.require:
         fname, _, lineno = req.rpartition(":")
