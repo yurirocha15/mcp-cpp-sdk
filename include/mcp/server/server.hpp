@@ -322,6 +322,8 @@ class MCP_API Server {
     /**
      * @brief Set the instructions string returned by initialize and server/discover.
      *
+     * @details Read unsynchronized by request handlers; must be called before run().
+     *
      * @param instructions Natural-language guidance for LLMs on how to use this server.
      */
     void set_instructions(std::string instructions);
@@ -329,16 +331,19 @@ class MCP_API Server {
     /**
      * @brief Set the `ttlMs` caching hint returned by server/discover.
      *
-     * @details Unset by default, in which case `ttlMs` is omitted from the result.
+     * @details Defaults to `0` ("do not cache") until overridden. Read unsynchronized by
+     * request handlers; must be called before run().
      *
      * @param ttl_ms How long, in milliseconds, the client MAY consider the discover result fresh.
+     * @throws std::invalid_argument If `ttl_ms` is negative.
      */
     void set_discover_ttl_ms(std::int64_t ttl_ms);
 
     /**
      * @brief Set the `cacheScope` caching hint returned by server/discover.
      *
-     * @details Unset by default, in which case `cacheScope` is omitted from the result.
+     * @details Defaults to `CacheScope::ePrivate` until overridden. Read unsynchronized by
+     * request handlers; must be called before run().
      *
      * @param scope The intended cache scope of the discover result.
      */

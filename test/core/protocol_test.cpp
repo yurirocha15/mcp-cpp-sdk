@@ -1945,6 +1945,92 @@ TEST(ProtocolTest, PingRequestSerialization) {
     EXPECT_EQ(deserialized.method, "ping");
 }
 
+// server/discover, like ping, is a pre-gate method whose handler does not deserialize its
+// params (see Server::handle_discover_wire); DiscoverRequest exists solely for round-trip
+// (de)serialization fidelity, mirroring PingRequestSerialization above.
+TEST(ProtocolTest, DiscoverRequestSerializationRoundTrip) {
+    mcp::DiscoverRequest req;
+    EXPECT_FALSE(req.meta.has_value());
+
+    json j = req;
+    EXPECT_EQ(j, json::object());
+
+    auto deserialized = j.get<mcp::DiscoverRequest>();
+    EXPECT_FALSE(deserialized.meta.has_value());
+}
+
+TEST(ProtocolTest, DiscoverRequestPreservesMetaWithoutInterpretingIt) {
+    json j = {{"_meta",
+               {{"io.modelcontextprotocol/protocolVersion", "2026-07-28"},
+                {"io.modelcontextprotocol/clientInfo", {{"name", "probe-client"}, {"version", "0.1"}}},
+                {"io.modelcontextprotocol/clientCapabilities", json::object()}}}};
+
+    auto req = j.get<mcp::DiscoverRequest>();
+    ASSERT_TRUE(req.meta.has_value());
+    EXPECT_EQ(*req.meta, j["_meta"]);
+
+    json round_tripped = req;
+    EXPECT_EQ(round_tripped["_meta"], j["_meta"]);
+}
+
+// Server::handle_discover_wire always populates ttlMs/cacheScope (see server_core_test.cpp's
+// DiscoverCachingHintsPresentWithDefaultsOverriddenWhenConfigured), but the DiscoverResult TYPE
+// itself must still round-trip the optionals as absent, and distinguish an explicit ttlMs == 0
+// from ttlMs being absent entirely, for interop with other implementations' responses.
+TEST(ProtocolTest, DiscoverResultRoundTripsUnsetOptionalCachingHints) {
+    mcp::DiscoverResult res;
+    res.supportedVersions = {"2026-07-28"};
+    res.serverInfo = {"srv", "1.0"};
+    // ttlMs, cacheScope, and instructions are deliberately left unset.
+
+    json j = res;
+    EXPECT_FALSE(j.contains("ttlMs"));
+    EXPECT_FALSE(j.contains("cacheScope"));
+    EXPECT_FALSE(j.contains("instructions"));
+
+    auto round_tripped = j.get<mcp::DiscoverResult>();
+    EXPECT_FALSE(round_tripped.ttlMs.has_value());
+    EXPECT_FALSE(round_tripped.cacheScope.has_value());
+    EXPECT_FALSE(round_tripped.instructions.has_value());
+}
+
+TEST(ProtocolTest, DiscoverResultRoundTripsExplicitTtlMsZeroDistinctFromAbsent) {
+    mcp::DiscoverResult res;
+    res.supportedVersions = {"2026-07-28"};
+    res.serverInfo = {"srv", "1.0"};
+    res.ttlMs = 0;
+    res.cacheScope = mcp::CacheScope::ePrivate;
+
+    json j = res;
+    ASSERT_TRUE(j.contains("ttlMs"));
+    EXPECT_EQ(j["ttlMs"], 0);
+    ASSERT_TRUE(j.contains("cacheScope"));
+    EXPECT_EQ(j["cacheScope"], "private");
+
+    auto round_tripped = j.get<mcp::DiscoverResult>();
+    ASSERT_TRUE(round_tripped.ttlMs.has_value());
+    EXPECT_EQ(*round_tripped.ttlMs, 0);
+    ASSERT_TRUE(round_tripped.cacheScope.has_value());
+    EXPECT_EQ(*round_tripped.cacheScope, mcp::CacheScope::ePrivate);
+
+    json j2 = round_tripped;
+    EXPECT_EQ(j2, j);
+}
+
+TEST(ProtocolTest, DiscoverResultCacheScopePublicRoundTrips) {
+    mcp::DiscoverResult res;
+    res.supportedVersions = {"2026-07-28"};
+    res.serverInfo = {"srv", "1.0"};
+    res.cacheScope = mcp::CacheScope::ePublic;
+
+    json j = res;
+    EXPECT_EQ(j["cacheScope"], "public");
+
+    auto round_tripped = j.get<mcp::DiscoverResult>();
+    ASSERT_TRUE(round_tripped.cacheScope.has_value());
+    EXPECT_EQ(*round_tripped.cacheScope, mcp::CacheScope::ePublic);
+}
+
 TEST(ProtocolTest, CancelledNotificationSerialization) {
     mcp::CancelledNotification notif;
     notif.params.requestId = "req-1";
