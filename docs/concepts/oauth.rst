@@ -20,6 +20,13 @@ A protected MCP server answers an unauthenticated request with ``401`` and a
 ``WWW-Authenticate`` header naming its protected-resource metadata (RFC 9728).
 Hand that header to the manager and it runs the whole exchange:
 
+.. note::
+
+   The ``https://`` origins below are what a production deployment should
+   use. This build has no TLS support of its own — see
+   :ref:`oauth-security-boundary` before contacting anything but a loopback
+   or internally-trusted ``http://`` target.
+
 .. code-block:: cpp
 
    #include <mcp/auth/oauth.hpp>
@@ -99,6 +106,8 @@ metadata document, or a dynamic registration.
 
 A complete runnable flow, including a mock authorization server, is in
 ``examples/features/oauth_flow.cpp``.
+
+.. _oauth-security-boundary:
 
 Security boundary
 -----------------
