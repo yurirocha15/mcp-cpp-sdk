@@ -34,6 +34,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -352,11 +353,12 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// followed on a fresh connection without discarding the operation.
     struct Exchange {
         Exchange(std::shared_ptr<Impl> state, net::strand<net::any_io_executor> executor,
-                 std::string target)
+                 std::string target, std::uint64_t abort_scope = 0)
             : owner(std::move(state)),
               strand(std::move(executor)),
               url(std::move(target)),
-              resolver(strand) {}
+              resolver(strand),
+              scope(abort_scope) {}
 
         void reset() {
             endpoints.clear();
@@ -381,6 +383,9 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         beast::flat_buffer buffer;
         std::optional<http::response_parser<http::string_body>> parser;
         std::string body;
+        /// Which abort scope this exchange belongs to. 0 is the client's own unscoped work, which
+        /// only abort_pending() ends.
+        std::uint64_t scope{0};
     };
 
     explicit Impl(const net::any_io_executor& executor) : strand(net::make_strand(executor)) {}
@@ -544,14 +549,20 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// (see the sticky `aborted` flag on abort_pending() below).
     static ActiveExchangeGuard track_exchange(const std::shared_ptr<Exchange>& exchange) {
         std::lock_guard lock(exchange->owner->active_mutex);
-        if (exchange->owner->aborted) {
-            // The same error an exchange already in flight sees when abort_pending() closes its
-            // socket underneath it, so a caller cannot tell whether this exchange started before or
-            // after the client closed.
+        if (exchange->owner->is_aborted(exchange->scope)) {
+            // The same error an exchange already in flight sees when the abort closes its socket
+            // underneath it, so a caller cannot tell whether this exchange started before or after
+            // the client -- or its own scope -- was closed.
             throw boost::system::system_error(net::error::operation_aborted);
         }
         exchange->owner->active_exchanges.push_back(exchange);
         return ActiveExchangeGuard(exchange->owner, exchange.get());
+    }
+
+    /// Whether `scope` may still issue requests. The client-wide latch ends everything; a scoped
+    /// latch ends only that scope. Callers hold active_mutex.
+    [[nodiscard]] bool is_aborted(std::uint64_t scope) const {
+        return aborted || (scope != 0 && aborted_scopes.count(scope) != 0);
     }
 
     /// Re-check the sticky abort part-way through an exchange, throwing exactly what
@@ -564,9 +575,9 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// and runs a whole new request for a client that has been torn down, up to
     /// `policy.max_redirects` times. The sticky `aborted` flag cannot catch that on its own because
     /// track_exchange() never runs again.
-    static void throw_if_aborted(const std::shared_ptr<Impl>& owner) {
-        std::lock_guard lock(owner->active_mutex);
-        if (owner->aborted) {
+    static void throw_if_aborted(const std::shared_ptr<Exchange>& exchange) {
+        std::lock_guard lock(exchange->owner->active_mutex);
+        if (exchange->owner->is_aborted(exchange->scope)) {
             throw boost::system::system_error(net::error::operation_aborted);
         }
     }
@@ -577,13 +588,23 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// every exchange that registers with track_exchange() from this point on -- including one that
     /// has not made its first network call yet -- is refused rather than left to run past a client
     /// that has moved on. Idempotent; a no-op when nothing is in flight either way.
-    void abort_pending() {
+    void abort_pending() { abort_matching(0); }
+
+    /// The scoped counterpart, with the same guarantees confined to one scope: `scope` is latched
+    /// and every exchange belonging to it is closed, while other scopes and the client's own
+    /// unscoped work carry on. Pass 0 to mean the whole client, which is what abort_pending() does.
+    void abort_matching(std::uint64_t scope) {
         std::vector<std::shared_ptr<Exchange>> exchanges;
         {
             std::lock_guard lock(active_mutex);
-            aborted = true;
+            if (scope == 0) {
+                aborted = true;
+            } else {
+                aborted_scopes.insert(scope);
+            }
             for (auto& weak : active_exchanges) {
-                if (auto locked = weak.lock()) {
+                auto locked = weak.lock();
+                if (locked && (scope == 0 || locked->scope == scope)) {
                     exchanges.push_back(std::move(locked));
                 }
             }
@@ -599,22 +620,31 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         }
     }
 
-    Task<nlohmann::json> get_json(std::string url) {
-        return run_get(std::make_shared<Exchange>(shared_from_this(), strand, std::move(url)));
+    /// Hand out a fresh scope id. Ids are never reused, so a latched scope stays latched and a new
+    /// scope can never inherit an earlier one's abort.
+    std::uint64_t new_scope() {
+        std::lock_guard lock(active_mutex);
+        return next_scope++;
+    }
+
+    // Every request carries the scope it was issued under, so aborting that scope reaches exactly
+    // these exchanges and no others. Scope 0 is the client's own work.
+    Task<nlohmann::json> get_json(std::string url, std::uint64_t scope = 0) {
+        return run_get(std::make_shared<Exchange>(shared_from_this(), strand, std::move(url), scope));
     }
 
     Task<TokenResponse> post_token_request(std::string token_endpoint, const KeyValuePairList& params,
-                                           std::string authorization) {
+                                           std::string authorization, std::uint64_t scope = 0) {
         return run_post(
-            std::make_shared<Exchange>(shared_from_this(), strand, std::move(token_endpoint)),
+            std::make_shared<Exchange>(shared_from_this(), strand, std::move(token_endpoint), scope),
             std::make_shared<std::string>(detail::build_form_body(params)), std::move(authorization));
     }
 
-    Task<nlohmann::json> post_json(std::string url, std::string body) {
+    Task<nlohmann::json> post_json(std::string url, std::string body, std::uint64_t scope = 0) {
         auto label = "HTTP POST " + url;
-        return run_post_json(std::make_shared<Exchange>(shared_from_this(), strand, std::move(url)),
-                             std::make_shared<std::string>(std::move(body)), "application/json",
-                             std::move(label));
+        return run_post_json(
+            std::make_shared<Exchange>(shared_from_this(), strand, std::move(url), scope),
+            std::make_shared<std::string>(std::move(body)), "application/json", std::move(label));
     }
 
     static Task<nlohmann::json> run_get(std::shared_ptr<Exchange> exchange) {
@@ -625,7 +655,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         for (std::size_t redirect = 0;; ++redirect) {
             // Re-read the abort on every hop, not just at track_exchange() above: abort_pending()
             // can land between two iterations, where it has nothing left to close.
-            throw_if_aborted(exchange->owner);
+            throw_if_aborted(exchange);
             // Every hop, including each redirect target, is validated afresh before it is reached.
             enforce_url_policy(exchange->owner->policy, exchange->url);
             exchange->parsed = parse_url(exchange->url);
@@ -725,6 +755,10 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// Set once by abort_pending(); makes the abort sticky so an exchange started afterward is
     /// refused instead of running to completion. Guarded by active_mutex alongside the list above.
     bool aborted{false};
+    /// Scopes that have been aborted individually. Separate from `aborted`, which ends the whole
+    /// client; a scope id in here ends only that scope's work.
+    std::unordered_set<std::uint64_t> aborted_scopes;
+    std::uint64_t next_scope{1};
 };
 
 OAuthHttpClient::OAuthHttpClient(const net::any_io_executor& executor)
@@ -766,8 +800,18 @@ std::string apply_client_authentication(const OAuthConfig& config, KeyValuePairL
 
 }  // namespace
 
-Task<TokenResponse> OAuthHttpClient::exchange_code(const OAuthConfig& config, const std::string& code,
-                                                   const std::string& code_verifier) {
+namespace {
+
+/// The form body and Authorization header for one token-endpoint request. Built here rather than
+/// inline so the client and a scope on it issue byte-identical requests, differing only in which
+/// abort scope the exchange is tracked under.
+struct TokenRequest {
+    KeyValuePairList params;
+    std::string authorization;
+};
+
+TokenRequest build_authorization_code_request(const OAuthConfig& config, const std::string& code,
+                                              const std::string& code_verifier) {
     KeyValuePairList params = {
         {"grant_type", "authorization_code"},  {"code", code},
         {"redirect_uri", config.redirect_uri}, {"client_id", config.client_id},
@@ -777,11 +821,10 @@ Task<TokenResponse> OAuthHttpClient::exchange_code(const OAuthConfig& config, co
     if (config.resource) {
         params.emplace_back("resource", *config.resource);
     }
-    return impl_->post_token_request(config.token_endpoint, params, std::move(authorization));
+    return {std::move(params), std::move(authorization)};
 }
 
-Task<TokenResponse> OAuthHttpClient::refresh_token(const OAuthConfig& config,
-                                                   const std::string& refresh_token) {
+TokenRequest build_refresh_request(const OAuthConfig& config, const std::string& refresh_token) {
     KeyValuePairList params = {
         {"grant_type", "refresh_token"},
         {"refresh_token", refresh_token},
@@ -791,7 +834,23 @@ Task<TokenResponse> OAuthHttpClient::refresh_token(const OAuthConfig& config,
     if (config.resource) {
         params.emplace_back("resource", *config.resource);
     }
-    return impl_->post_token_request(config.token_endpoint, params, std::move(authorization));
+    return {std::move(params), std::move(authorization)};
+}
+
+}  // namespace
+
+Task<TokenResponse> OAuthHttpClient::exchange_code(const OAuthConfig& config, const std::string& code,
+                                                   const std::string& code_verifier) {
+    auto request = build_authorization_code_request(config, code, code_verifier);
+    return impl_->post_token_request(config.token_endpoint, request.params,
+                                     std::move(request.authorization));
+}
+
+Task<TokenResponse> OAuthHttpClient::refresh_token(const OAuthConfig& config,
+                                                   const std::string& refresh_token) {
+    auto request = build_refresh_request(config, refresh_token);
+    return impl_->post_token_request(config.token_endpoint, request.params,
+                                     std::move(request.authorization));
 }
 
 Task<nlohmann::json> OAuthHttpClient::get_json(const std::string& url) { return impl_->get_json(url); }
@@ -799,6 +858,40 @@ Task<nlohmann::json> OAuthHttpClient::get_json(const std::string& url) { return 
 Task<nlohmann::json> OAuthHttpClient::post_json(const std::string& url, const nlohmann::json& body) {
     return impl_->post_json(url, body.dump());
 }
+
+OAuthHttpClientScope OAuthHttpClient::make_scope() {
+    return OAuthHttpClientScope(impl_, impl_->new_scope());
+}
+
+OAuthHttpClientScope::OAuthHttpClientScope(std::shared_ptr<OAuthHttpClient::Impl> impl,
+                                           std::uint64_t id)
+    : impl_(std::move(impl)), id_(id) {}
+
+Task<TokenResponse> OAuthHttpClientScope::exchange_code(const OAuthConfig& config,
+                                                        const std::string& code,
+                                                        const std::string& code_verifier) {
+    auto request = build_authorization_code_request(config, code, code_verifier);
+    return impl_->post_token_request(config.token_endpoint, request.params,
+                                     std::move(request.authorization), id_);
+}
+
+Task<TokenResponse> OAuthHttpClientScope::refresh_token(const OAuthConfig& config,
+                                                        const std::string& refresh_token) {
+    auto request = build_refresh_request(config, refresh_token);
+    return impl_->post_token_request(config.token_endpoint, request.params,
+                                     std::move(request.authorization), id_);
+}
+
+Task<nlohmann::json> OAuthHttpClientScope::get_json(const std::string& url) {
+    return impl_->get_json(url, id_);
+}
+
+Task<nlohmann::json> OAuthHttpClientScope::post_json(const std::string& url,
+                                                     const nlohmann::json& body) {
+    return impl_->post_json(url, body.dump(), id_);
+}
+
+void OAuthHttpClientScope::abort() { impl_->abort_matching(id_); }
 
 void from_json(const nlohmann::json& json, ProtectedResourceMetadata& metadata) {
     metadata.raw = json;
@@ -1156,6 +1249,7 @@ struct OAuthAuthenticator::Impl {
          OAuthConfig oauth_config, std::string url)
         : token_store(std::move(store)),
           oauth_client(std::move(client)),
+          scope(oauth_client->make_scope()),
           config(std::move(oauth_config)),
           server_url(std::move(url)) {}
 
@@ -1175,7 +1269,7 @@ struct OAuthAuthenticator::Impl {
 
     static Task<bool> run_refresh(std::shared_ptr<RefreshOperation> operation) {
         try {
-            operation->new_token = co_await operation->owner->oauth_client->refresh_token(
+            operation->new_token = co_await operation->owner->scope.refresh_token(
                 operation->owner->config, *operation->stored_token.refresh_token);
             if (!operation->new_token->refresh_token) {
                 operation->new_token->refresh_token = operation->stored_token.refresh_token;
@@ -1189,7 +1283,13 @@ struct OAuthAuthenticator::Impl {
     }
 
     std::shared_ptr<TokenStore> token_store;
+    /// Kept so the client outlives this authenticator, even though every request goes through the
+    /// scope below.
     std::shared_ptr<OAuthHttpClient> oauth_client;
+    /// This authenticator's own slice of the client. The client is supplied by the application and
+    /// may be shared with other authenticators for other servers, so close() must end this
+    /// authenticator's work without ending theirs.
+    OAuthHttpClientScope scope;
     OAuthConfig config;
     std::string server_url;
 };
@@ -1211,7 +1311,12 @@ void OAuthAuthenticator::store_token(TokenResponse token) {
     impl_->token_store->store(impl_->server_url, std::move(token));
 }
 
-void OAuthAuthenticator::close() { impl_->oauth_client->abort_pending(); }
+/// Ends only this authenticator's requests. It used to call abort_pending(), which latches the
+/// whole client irreversibly -- correct for a client its owner created, wrong for one the
+/// application supplied and may share. Two authenticators for two servers sharing one client meant
+/// closing either one silently disabled the other: run_refresh() reports a failed refresh as a
+/// plain `false`, so the survivor got no error, only tokens that quietly stopped renewing.
+void OAuthAuthenticator::close() { impl_->scope.abort(); }
 
 namespace {
 

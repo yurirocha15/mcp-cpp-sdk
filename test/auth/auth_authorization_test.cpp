@@ -2417,6 +2417,85 @@ TEST(AuthTransportCloseTest, AuthenticatorCloseThenRefreshPerformsNoNetworkIO) {
     EXPECT_EQ(authenticator->get_access_token(), "stale-access-token");
 }
 
+// Closing one authenticator must not disable another that merely shares the same HTTP client.
+//
+// OAuthAuthenticator takes its client by shared_ptr, which is an invitation to share one across
+// several servers. close() used to call OAuthHttpClient::abort_pending(), which latches the whole
+// client irreversibly -- right for a client its owner built for itself, wrong for one the
+// application supplied. So closing either authenticator permanently disabled BOTH, and the damage
+// was silent: run_refresh() reports a failed refresh as a plain `false`, so the surviving
+// authenticator raised nothing at all. An application would see tokens quietly stop renewing
+// against a server it never closed.
+//
+// close() now ends only that authenticator's own scope on the client.
+TEST(AuthTransportCloseTest, ClosingOneAuthenticatorLeavesAnotherSharingTheSameClientWorking) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    std::vector<std::string> token_targets;
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        token_targets.emplace_back(request.target());
+        return json_response(token_document());
+    });
+    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    const auto closed_server = base + "/closed-server";
+    const auto surviving_server = base + "/surviving-server";
+    for (const auto& server_url : {closed_server, surviving_server}) {
+        mcp::auth::TokenResponse stored;
+        stored.access_token = "stale-access-token";
+        stored.token_type = "Bearer";
+        stored.refresh_token = "stale-refresh-token";
+        store->store(server_url, stored);
+    }
+
+    // One client, shared. This is the shape the constructor's signature invites.
+    auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+    http_client->set_metadata_policy(loopback_policy(server.origin()));
+
+    mcp::auth::OAuthConfig closed_config;
+    closed_config.client_id = "closed-client";
+    closed_config.token_endpoint = base + "/closed-token";
+    closed_config.redirect_uri = "http://127.0.0.1:9999/callback";
+
+    mcp::auth::OAuthConfig surviving_config;
+    surviving_config.client_id = "surviving-client";
+    surviving_config.token_endpoint = base + "/surviving-token";
+    surviving_config.redirect_uri = "http://127.0.0.1:9999/callback";
+
+    auto closing = std::make_shared<mcp::auth::OAuthAuthenticator>(store, http_client, closed_config,
+                                                                   closed_server);
+    auto surviving = std::make_shared<mcp::auth::OAuthAuthenticator>(
+        store, http_client, surviving_config, surviving_server);
+
+    bool closed_refreshed = true;
+    bool surviving_refreshed = false;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            closing->close();
+            // The closed one is still closed: its own refresh must not reach the network.
+            closed_refreshed = co_await closing->try_refresh_token();
+            // The one nobody closed must be entirely unaffected.
+            surviving_refreshed = co_await surviving->try_refresh_token();
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_FALSE(closed_refreshed);
+    EXPECT_TRUE(surviving_refreshed)
+        << "closing one authenticator disabled another that only shares the client";
+    // Exactly one token request, from the surviving authenticator, at its own endpoint.
+    const std::vector<std::string> expected_targets{"/surviving-token"};
+    EXPECT_EQ(token_targets, expected_targets);
+    EXPECT_EQ(closing->get_access_token(), "stale-access-token");
+    EXPECT_EQ(surviving->get_access_token(), "granted-access-token");
+}
+
 // close() must be safe to call more than once (OAuthClientTransport::close() itself is idempotent
 // and calls it only once per transport, but the manager and authenticator are reachable directly),
 // and a write issued after close() must fail fast rather than hang or reach the network.
