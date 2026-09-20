@@ -254,11 +254,15 @@ const char* validate_request_envelope(const nlohmann::json& message) {
 }
 
 bool is_valid_notification_envelope(const nlohmann::json& message) {
+    // A notification is never answered, so dropping one costs the peer a silent protocol stall
+    // rather than an error. An explicit null for an absent optional is the default shape for
+    // several mainstream JSON serializers, so it is read as "no params" rather than rejected.
     return message.is_object() && !message.contains("id") && message.contains("jsonrpc") &&
            message.at("jsonrpc").is_string() && message.at("jsonrpc") == "2.0" &&
            message.contains("method") && message.at("method").is_string() &&
            !message.contains("result") && !message.contains("error") &&
-           (!message.contains("params") || message.at("params").is_object());
+           (!message.contains("params") || message.at("params").is_null() ||
+            message.at("params").is_object());
 }
 
 bool is_valid_response_envelope(const nlohmann::json& message) {
