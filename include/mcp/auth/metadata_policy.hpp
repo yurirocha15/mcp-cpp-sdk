@@ -25,8 +25,9 @@ namespace detail {
  *
  * @param value Text that came from a peer: a URL, a host, an issuer, a metadata field, a response
  *        body. Anything the SDK did not author itself.
- * @return The text truncated to a fixed budget, with an ellipsis when it was cut, and with every
- *         control character replaced by a space.
+ * @return Well-formed UTF-8, bounded by a fixed budget and ending in an ellipsis when it was cut,
+ *         with every character that could end a line replaced by a space and every ill-formed byte
+ *         replaced by `?`.
  *
  * @details Diagnostics built from peer-controlled text are a log-forging vector: a value carrying
  * newlines can close the SDK's message and open a line of the attacker's own, and an unbounded one
@@ -34,6 +35,13 @@ namespace detail {
  * wire, because a metadata document is decoded before its fields are interpolated, so `\n` and
  * `\r` written as escape sequences arrive as real control bytes. No secret is involved, so this
  * addresses forgery and flooding rather than disclosure.
+ *
+ * The output is always well-formed UTF-8, which is a second requirement rather than a detail of the
+ * first. Truncation stops on a codepoint boundary, so a multi-byte character straddling the budget
+ * is dropped whole rather than cut in half, and bytes that were already ill-formed on the way in
+ * are replaced. Emitting invalid UTF-8 would hand a peer the same flooding it is denied here by
+ * another route, since a JSON log encoder given invalid UTF-8 throws or drops the record. Text
+ * arriving through a header has had nothing validate it, unlike text from a parsed document.
  */
 [[nodiscard]] MCP_API std::string sanitize_for_diagnostics(std::string_view value);
 
