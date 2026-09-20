@@ -1776,6 +1776,44 @@ TEST(AuthProtectedResourceValidationTest, AcceptsAPathPrefixAlignedOnASegmentBou
     EXPECT_EQ(outcome.resolved_resource, "https://example.test/a");
 }
 
+// A single trailing `/` on the PRM's `resource` path is ignored, so a resource value that trails
+// its path with `/` is accepted against a server URL that does not.
+TEST(AuthProtectedResourceValidationTest, AcceptsATrailingSlashOnTheResourceAgainstAnEqualPath) {
+    const auto outcome = try_prm_resource("https://example.test/a/b", "https://example.test/a/b/");
+    EXPECT_FALSE(outcome.threw);
+    EXPECT_TRUE(outcome.authorized);
+    // The PRM's own value (with its trailing `/`) is what travels on the request.
+    EXPECT_EQ(outcome.resolved_resource, "https://example.test/a/b/");
+}
+
+// The mirror of the above: a server URL that trails its path with `/` was already accepted against
+// a resource value that does not, and must remain so.
+TEST(AuthProtectedResourceValidationTest, AcceptsATrailingSlashOnTheServerAgainstAnEqualPath) {
+    const auto outcome = try_prm_resource("https://example.test/a/b/", "https://example.test/a/b");
+    EXPECT_FALSE(outcome.threw);
+    EXPECT_TRUE(outcome.authorized);
+    EXPECT_EQ(outcome.resolved_resource, "https://example.test/a/b");
+}
+
+// Stripping the resource's trailing `/` happens before the segment-boundary-prefix comparison too:
+// "/a/" becomes "/a", which is a boundary-aligned prefix of "/a/b".
+TEST(AuthProtectedResourceValidationTest, AcceptsATrailingSlashResourceAsABoundaryPrefix) {
+    const auto outcome = try_prm_resource("https://example.test/a/b", "https://example.test/a/");
+    EXPECT_FALSE(outcome.threw);
+    EXPECT_TRUE(outcome.authorized);
+    EXPECT_EQ(outcome.resolved_resource, "https://example.test/a/");
+}
+
+// The lone "/" (origin-root) resource value is a distinct case from a trailing slash on a
+// non-empty path, and its any-path-on-this-origin acceptance is unaffected by the trailing-slash
+// stripping above.
+TEST(AuthProtectedResourceValidationTest, AcceptsALoneSlashResourceForAPathedServerUrl) {
+    const auto outcome = try_prm_resource("https://example.test/mcp", "https://example.test/");
+    EXPECT_FALSE(outcome.threw);
+    EXPECT_TRUE(outcome.authorized);
+    EXPECT_EQ(outcome.resolved_resource, "https://example.test/");
+}
+
 // "/ap" textually prefixes "/api", but not on a `/` segment boundary, so it must not be accepted as
 // identifying it.
 TEST(AuthProtectedResourceValidationTest, RejectsANonBoundaryPathPrefix) {
@@ -1814,6 +1852,15 @@ TEST(AuthProtectedResourceValidationTest, RejectsAResourceValueCarryingAQuery) {
     server.close();
 
     const auto outcome = try_prm_resource(base + "/mcp", base + "/mcp?tenant=1");
+    EXPECT_TRUE(outcome.threw);
+    EXPECT_FALSE(outcome.authorized);
+}
+
+// RFC 9728 §2 makes `resource` a required PRM member. An empty value -- indistinguishable, once
+// parsed, from a PRM document that omits the member entirely -- must be rejected rather than
+// silently falling back to the configured server URL.
+TEST(AuthProtectedResourceValidationTest, RejectsAnEmptyPrmResource) {
+    const auto outcome = try_prm_resource("https://example.test/mcp", "");
     EXPECT_TRUE(outcome.threw);
     EXPECT_FALSE(outcome.authorized);
 }
