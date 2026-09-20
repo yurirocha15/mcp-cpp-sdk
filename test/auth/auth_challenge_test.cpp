@@ -429,8 +429,8 @@ TEST(AuthMetadataPolicyTest, AllowListEntryThatIsNotABareOriginStillFailsClosedQ
     }
 }
 
-// The reported case: a deny entry written with a trailing slash used to be discarded in silence,
-// so the origin the author meant to block was admitted. It is now refused as a policy error.
+// A deny entry written with a trailing slash must not be discarded in silence, which would admit
+// the origin the author meant to block. It is refused as a policy error instead.
 TEST(AuthMetadataPolicyTest, DenyListEntryWithATrailingSlashIsRejected) {
     auto policy = allow_origin("https://evil.example");
     policy.denied_origins.emplace_back("https://evil.example/");

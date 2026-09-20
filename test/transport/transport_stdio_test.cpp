@@ -575,8 +575,8 @@ std::filesystem::path scratch_file(const char* name) {
 
 }  // namespace
 
-// The footgun itself, asserted rather than assumed: the default std::cout
-// output shares the protocol channel with the rest of the process.
+// The footgun itself: the default std::cout output shares the protocol
+// channel with the rest of the process.
 TEST_F(StdioTransportTest, DefaultOutputSharesTheProtocolChannelWithTheApplication) {
     const auto out = scratch_file("mcp_stdio_shared_out.txt");
     const auto err = scratch_file("mcp_stdio_shared_err.txt");

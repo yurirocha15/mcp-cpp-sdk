@@ -1730,8 +1730,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
     // replay-store exclusion, so if the prober's chosen id were still the key, the session's OWN
     // response -- which carries that same id 7 -- would be misclassified as sessionless and silently
     // dropped from the replay store. Both the initialize response and the id-7 session response
-    // belong there; only the unanswered sessionless discover does not. This case is reachable
-    // only now that the denial is gone, so it could not have been covered before.
+    // belong there; only the unanswered sessionless discover does not.
     EXPECT_EQ(server_transport.event_store().size(), 2u);
 }
 
