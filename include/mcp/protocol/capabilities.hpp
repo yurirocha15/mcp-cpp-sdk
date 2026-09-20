@@ -776,4 +776,107 @@ inline void from_json(const nlohmann::json& json_obj, InitializeResult& res) {
     }
 }
 
+/**
+ * @brief Represents a server/discover request from the client.
+ *
+ * @details Carries no body parameters beyond the standard `_meta` field. Per the
+ * 2026-07-28 spec, `_meta` may include `io.modelcontextprotocol/protocolVersion`,
+ * `io.modelcontextprotocol/clientInfo`, and `io.modelcontextprotocol/clientCapabilities`;
+ * this type accepts and preserves the raw `_meta` object without interpreting its
+ * contents. Recording those fields is deferred to a later WORK_PLAN item.
+ */
+struct DiscoverRequest {
+    std::optional<nlohmann::json> meta;  ///< Reserved for protocol use; contents not interpreted yet.
+};
+
+inline void to_json(nlohmann::json& json_obj, const DiscoverRequest& req) {
+    json_obj = nlohmann::json::object();
+    if (req.meta) {
+        json_obj["_meta"] = *req.meta;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, DiscoverRequest& req) {
+    if (json_obj.contains("_meta")) {
+        req.meta = json_obj.at("_meta");
+    }
+}
+
+/**
+ * @brief Caching scope hint for a cacheable result, per server/utilities/caching.
+ */
+enum class CacheScope : std::uint8_t {
+    ePublic,   ///< The response does not contain user-specific data and may be shared.
+    ePrivate,  ///< The response is scoped to the caller's authorization context.
+};
+
+NLOHMANN_JSON_SERIALIZE_ENUM(CacheScope,
+                             {{CacheScope::ePublic, "public"}, {CacheScope::ePrivate, "private"}})
+
+/**
+ * @brief Represents the result of a server/discover request.
+ *
+ * @details `resultType` is always "complete" for this result; WORK_PLAN 3.2 will
+ * introduce a shared result-envelope helper that other cacheable results also use, at
+ * which point this field's assignment should be routed through it.
+ */
+struct DiscoverResult {
+    std::string resultType = "complete";         ///< Always "complete" for this result.
+    std::vector<std::string> supportedVersions;  ///< Protocol versions the server supports.
+    ServerCapabilities capabilities;             ///< The capabilities supported by the server.
+    ServerInfo serverInfo;                    ///< Server identity, carried under `_meta` on the wire.
+    std::optional<std::string> instructions;  ///< Optional instructions for the client.
+    std::optional<std::int64_t> ttlMs;        ///< Optional caching TTL hint, in milliseconds.
+    std::optional<CacheScope> cacheScope;     ///< Optional caching scope hint.
+};
+
+/**
+ * @brief Serializes DiscoverResult to JSON.
+ *
+ * @param json_obj The JSON object to populate.
+ * @param res The DiscoverResult object to serialize.
+ */
+inline void to_json(nlohmann::json& json_obj, const DiscoverResult& res) {
+    json_obj = nlohmann::json{
+        {"resultType", res.resultType},
+        {"supportedVersions", res.supportedVersions},
+        {"capabilities", res.capabilities},
+        {"_meta", {{"io.modelcontextprotocol/serverInfo", res.serverInfo}}},
+    };
+    if (res.instructions) {
+        json_obj["instructions"] = *res.instructions;
+    }
+    if (res.ttlMs) {
+        json_obj["ttlMs"] = *res.ttlMs;
+    }
+    if (res.cacheScope) {
+        json_obj["cacheScope"] = *res.cacheScope;
+    }
+}
+
+/**
+ * @brief Deserializes DiscoverResult from JSON.
+ *
+ * @param json_obj The JSON object to read from.
+ * @param res The DiscoverResult object to populate.
+ */
+inline void from_json(const nlohmann::json& json_obj, DiscoverResult& res) {
+    json_obj.at("resultType").get_to(res.resultType);
+    json_obj.at("supportedVersions").get_to(res.supportedVersions);
+    json_obj.at("capabilities").get_to(res.capabilities);
+    if (json_obj.contains("_meta") &&
+        json_obj.at("_meta").contains("io.modelcontextprotocol/serverInfo")) {
+        json_obj.at("_meta").at("io.modelcontextprotocol/serverInfo").get_to(res.serverInfo);
+    }
+    if (json_obj.contains("instructions")) {
+        res.instructions = json_obj.at("instructions").get<std::string>();
+    }
+    if (json_obj.contains("ttlMs")) {
+        res.ttlMs = json_obj.at("ttlMs").get<std::int64_t>();
+    }
+    if (json_obj.contains("cacheScope")) {
+        res.cacheScope = json_obj.at("cacheScope").get<CacheScope>();
+    }
+}
+
 }  // namespace mcp
