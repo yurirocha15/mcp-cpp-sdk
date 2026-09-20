@@ -2804,6 +2804,91 @@ TEST(AuthClientIdentityBindingTest, AuthorizesNormallyWhenTheInjectedSecretNames
     EXPECT_TRUE(outcome.secret_seen_on_the_wire);
 }
 
+// `client_issuer` is NOT a universal remedy for the refusal above, and the refusal has to say so.
+//
+// The manager's constructor copies `client_issuer` into the injected credentials only when
+// `client_identity.pre_registered` was not already populated. A caller who builds that struct
+// themselves is on a path where `client_issuer` is never read, so being told to set it sends them
+// to a field that cannot help -- while they are working to clear a security refusal.
+//
+// This pins both halves: that setting `client_issuer` really does leave a hand-built
+// `pre_registered` refused, and that the message names the field that would actually work.
+TEST(AuthClientIdentityBindingTest, RefusalNamesTheFieldThatAppliesToHandBuiltCredentials) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&base](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            auto metadata = auth_server_metadata(base, true);
+            metadata["token_endpoint_auth_methods_supported"] = json::array({"client_secret_post"});
+            return json_response(metadata);
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    // Hand-built rather than the client_id/client_secret shorthand: this is the path on which
+    // client_issuer is ignored.
+    mcp::auth::OAuthClientInformation injected;
+    injected.client_id = "application-held-client";
+    injected.client_secret = "application-held-secret";
+    injected.issuer.clear();
+    config.client_identity.pre_registered = injected;
+
+    // Set to the RIGHT issuer, and deliberately so: if this were the remedy the message used to
+    // advertise, the flow below would authorize. It does not, because nothing reads it here.
+    config.client_issuer = base;
+
+    std::promise<std::pair<bool, std::string>> result;
+    auto observed = result.get_future();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            bool authorized = false;
+            std::string failure;
+            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                         echoing_callback(nullptr));
+            try {
+                authorized = co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" +
+                                                                   base + R"(/prm")");
+            } catch (const std::exception& error) {
+                failure = error.what();
+            }
+            result.set_value({authorized, failure});
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    const auto [authorized, failure] = observed.get();
+    EXPECT_FALSE(authorized) << "client_issuer is not read on this path, so the refusal must stand";
+    ASSERT_FALSE(failure.empty());
+    EXPECT_NE(failure.find("name no issuer"), std::string::npos) << failure;
+    // The remedy that actually applies here.
+    EXPECT_NE(failure.find("client_identity.pre_registered.issuer"), std::string::npos) << failure;
+    // And the message must say plainly that the field the caller already set does nothing here,
+    // rather than listing it as an equal alternative.
+    EXPECT_NE(failure.find("ignored once"), std::string::npos) << failure;
+    // No token request may have been attempted.
+    EXPECT_FALSE(saw_target(server.targets(), "/token"));
+}
+
 namespace {
 
 /// Drive a challenge whose protected-resource metadata names `prm_resource` against a manager
