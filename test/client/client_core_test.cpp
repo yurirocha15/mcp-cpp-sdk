@@ -1285,3 +1285,164 @@ TEST_F(ClientCoreTest, PeerErrorDiagnosticBoundsThePeerChosenMessage) {
     EXPECT_EQ(outcome.raw_message.size(), forged.size())
         << "the structured message was truncated; only the diagnostic may be";
 }
+
+namespace {
+
+// Drives two requests over one session. The peer answers the first with a caller-supplied burst of
+// messages and the second normally.
+//
+// The second request is the whole point: it separates a failure confined to one message from a
+// failure that took the session down with it. A client that survives a message it cannot use fails
+// at most the first request; a client that does not fails the second too, and every request after
+// it, for the life of the connection.
+struct SecondRequestOutcome {
+    bool first_threw{false};
+    int first_code{0};
+    std::string first_message;
+    bool second_succeeded{false};
+    std::string second_failure;
+    std::vector<mcp::Error> reported;  ///< What ClientOptions::on_protocol_error saw.
+};
+
+SecondRequestOutcome send_two_requests(
+    boost::asio::io_context& io_ctx,
+    const std::function<std::vector<nlohmann::json>(const std::string& id)>& answer_first) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx.get_executor());
+    auto* raw_transport = transport.get();
+
+    SecondRequestOutcome outcome;
+
+    int answered = 0;
+    raw_transport->set_on_write([&](std::string_view msg) {
+        const auto json_msg = nlohmann::json::parse(msg);
+        if (!json_msg.contains("id")) {
+            return;
+        }
+        const auto id = json_msg.at("id").get<std::string>();
+        if (json_msg.value("method", "") == "initialize") {
+            raw_transport->enqueue_message(make_result_response(id, make_initialize_result()).dump());
+            return;
+        }
+        ++answered;
+        if (answered == 1) {
+            for (const auto& message : answer_first(id)) {
+                raw_transport->enqueue_message(message.dump());
+            }
+        } else {
+            raw_transport->enqueue_message(make_result_response(id, nlohmann::json::object()).dump());
+        }
+    });
+
+    mcp::ClientOptions options;
+    // Short enough that a response the client never delivers surfaces as a test failure instead of
+    // a stalled run.
+    options.request_timeout = std::chrono::seconds(5);
+    options.on_protocol_error = [&](const mcp::Error& error) { outcome.reported.push_back(error); };
+    mcp::Client client(transport, io_ctx.get_executor(), options);
+
+    boost::asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            static_cast<void>(co_await client.connect("test-client", "0.1"));
+
+            try {
+                co_await client.ping();
+            } catch (const mcp::McpError& error) {
+                outcome.first_threw = true;
+                outcome.first_code = error.code();
+                outcome.first_message = error.what();
+            }
+
+            try {
+                co_await client.ping();
+                outcome.second_succeeded = true;
+            } catch (const mcp::McpError& error) {
+                outcome.second_failure = error.what();
+            }
+
+            raw_transport->close();
+        },
+        boost::asio::detached);
+
+    io_ctx.run();
+    return outcome;
+}
+
+}  // namespace
+
+// JSON-RPC 2.0 requires `error.message`, but omitting it is an ordinary server-side slip, not an
+// attack. It must cost the peer that one response, not the session.
+TEST_F(ClientCoreTest, ErrorResponseWithoutMessageDoesNotStopReadLoop) {
+    const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
+        return std::vector<nlohmann::json>{
+            {{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", mcp::g_METHOD_NOT_FOUND}}}}};
+    });
+
+    EXPECT_TRUE(outcome.second_succeeded)
+        << "the session died on one malformed response: " << outcome.second_failure;
+    ASSERT_TRUE(outcome.first_threw);
+    EXPECT_EQ(outcome.first_code, mcp::g_METHOD_NOT_FOUND)
+        << "the error code did not survive the missing message: " << outcome.first_message;
+}
+
+// A peer that serializes absent optionals as explicit null -- the default for Go's encoding/json
+// without omitempty -- sends `message: null` rather than omitting the key.
+TEST_F(ClientCoreTest, ErrorResponseWithNullMessageDoesNotStopReadLoop) {
+    const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
+        return std::vector<nlohmann::json>{
+            {{"jsonrpc", "2.0"},
+             {"id", id},
+             {"error", {{"code", mcp::g_METHOD_NOT_FOUND}, {"message", nullptr}, {"data", nullptr}}}}};
+    });
+
+    EXPECT_TRUE(outcome.second_succeeded)
+        << "the session died on one malformed response: " << outcome.second_failure;
+    ASSERT_TRUE(outcome.first_threw);
+    EXPECT_EQ(outcome.first_code, mcp::g_METHOD_NOT_FOUND);
+}
+
+// An `error` member that is not an object yields no code, so the request it answers fails -- but
+// it still answers that request rather than leaving the caller to wait out its deadline, and the
+// session continues.
+TEST_F(ClientCoreTest, ErrorMemberThatIsNotAnObjectFailsOnlyItsOwnRequest) {
+    const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
+        return std::vector<nlohmann::json>{{{"jsonrpc", "2.0"}, {"id", id}, {"error", "oops"}}};
+    });
+
+    EXPECT_TRUE(outcome.second_succeeded)
+        << "the session died on one malformed response: " << outcome.second_failure;
+    ASSERT_TRUE(outcome.first_threw);
+    EXPECT_EQ(outcome.first_code, mcp::g_INVALID_REQUEST) << "actual: " << outcome.first_message;
+}
+
+// A message the client cannot classify at all is dropped. Dropping it silently would leave an
+// application unable to tell a misbehaving peer from a quiet one, so it is reported first.
+TEST_F(ClientCoreTest, UndecodableMessageIsReportedAndDropped) {
+    const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
+        return std::vector<nlohmann::json>{
+            nlohmann::json::array({"not", "an", "object"}),
+            {{"jsonrpc", "2.0"}, {"id", id}, {"result", nlohmann::json::object()}}};
+    });
+
+    EXPECT_TRUE(outcome.second_succeeded)
+        << "the session died on one malformed message: " << outcome.second_failure;
+    EXPECT_FALSE(outcome.first_threw) << "actual: " << outcome.first_message;
+    ASSERT_EQ(outcome.reported.size(), 1U) << "the drop was silent";
+    EXPECT_EQ(outcome.reported.front().code, mcp::g_PARSE_ERROR);
+}
+
+// A request from the peer whose id is neither string nor integer can never be answered. Dispatching
+// it would bury the failure in a detached coroutine; it is rejected where the drop is reported.
+TEST_F(ClientCoreTest, PeerRequestWithUnusableIdDoesNotStopReadLoop) {
+    const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
+        return std::vector<nlohmann::json>{
+            {{"jsonrpc", "2.0"}, {"id", nlohmann::json::object()}, {"method", "ping"}},
+            {{"jsonrpc", "2.0"}, {"id", id}, {"result", nlohmann::json::object()}}};
+    });
+
+    EXPECT_TRUE(outcome.second_succeeded)
+        << "the session died on one malformed request: " << outcome.second_failure;
+    EXPECT_FALSE(outcome.first_threw) << "actual: " << outcome.first_message;
+    ASSERT_EQ(outcome.reported.size(), 1U) << "the drop was silent";
+    EXPECT_EQ(outcome.reported.front().code, mcp::g_PARSE_ERROR);
+}
