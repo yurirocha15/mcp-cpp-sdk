@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 
 struct AddParams {
     int augend = 0;
@@ -728,6 +729,132 @@ TEST_F(ServerHandlersTest, UnknownResourceTemplateReturnsInvalidParams) {
 
     ASSERT_EQ(responses.size(), 2);
     EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+}
+
+TEST_F(ServerHandlersTest, OverlongUriIsRejectedWithoutReachingTemplateMatching) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::ResourceTemplate tmpl;
+    tmpl.uriTemplate = "file:///{+path}";
+    tmpl.name = "files";
+    setup.server.add_resource_template<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        tmpl, [](mcp::ReadResourceRequestParams) { return mcp::ReadResourceResult{}; });
+
+    const std::string uri = "file:///" + std::string(64 * 1024, 'a');
+    auto responses = run_request(
+        setup,
+        nlohmann::json{
+            {"jsonrpc", "2.0"}, {"id", "2"}, {"method", "resources/read"}, {"params", {{"uri", uri}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("error"));
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+    // Says the URI was too long, rather than that no such resource exists, and does not echo it.
+    const auto message = responses[1]["error"]["message"].get<std::string>();
+    EXPECT_NE(message.find("limit"), std::string::npos);
+    EXPECT_EQ(message.find("Unknown resource"), std::string::npos);
+    EXPECT_LT(message.size(), uri.size());
+}
+
+// A URI at the accepted limit is served, so the bound admits what it claims to admit. The match is
+// run on a std::thread, which carries the platform's default stack — the configuration the bound is
+// sized for. On gtest's main thread (8 MB on Linux and macOS) this would prove nothing.
+TEST_F(ServerHandlersTest, UriAtTheLengthLimitIsStillMatchedByTemplate) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::ResourceTemplate tmpl;
+    tmpl.uriTemplate = "file:///{+path}";
+    tmpl.name = "files";
+    setup.server.add_resource_template<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        tmpl, [](mcp::ReadResourceRequestParams params) {
+            mcp::TextResourceContents content;
+            content.uri = params.uri;
+            content.text = "matched";
+            mcp::ReadResourceResult result;
+            result.contents.emplace_back(std::move(content));
+            return result;
+        });
+
+    constexpr std::size_t limit = 512;
+    const std::string prefix = "file:///";
+    const std::string uri = prefix + std::string(limit - prefix.size(), 'a');
+    ASSERT_EQ(uri.size(), limit);
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    setup.raw_transport->enqueue_message(nlohmann::json{
+        {"jsonrpc", "2.0"},
+        {"id", "2"},
+        {"method", "resources/read"},
+        {"params", {{"uri", uri}}}}.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    std::thread pump([this]() { io_ctx_.run(); });
+    pump.join();
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("result"));
+    EXPECT_EQ(responses[1]["result"]["contents"][0]["text"], "matched");
+}
+
+TEST_F(ServerHandlersTest, ExactResourceIsServedRegardlessOfUriLength) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::Resource exact;
+    exact.uri = "file:///" + std::string(64 * 1024, 'a');
+    exact.name = "long";
+    setup.server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        exact, [](mcp::ReadResourceRequestParams params) {
+            mcp::TextResourceContents content;
+            content.uri = params.uri;
+            content.text = "exact";
+            mcp::ReadResourceResult result;
+            result.contents.emplace_back(std::move(content));
+            return result;
+        });
+
+    auto responses = run_request(setup, nlohmann::json{{"jsonrpc", "2.0"},
+                                                       {"id", "2"},
+                                                       {"method", "resources/read"},
+                                                       {"params", {{"uri", exact.uri}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1]["result"]["contents"][0]["text"], "exact");
+}
+
+TEST_F(ServerHandlersTest, AdjacentTemplateExpressionsAreRejectedAtRegistration) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::ResourceTemplate adjacent;
+    adjacent.uriTemplate = "file:///{dir}{name}";
+    adjacent.name = "adjacent";
+    EXPECT_THROW(setup.server.add_resource_template(adjacent), std::invalid_argument);
+
+    mcp::ResourceTemplate separated;
+    separated.uriTemplate = "file:///{dir}/{name}";
+    separated.name = "separated";
+    EXPECT_NO_THROW(setup.server.add_resource_template(separated));
 }
 
 TEST_F(ServerHandlersTest, DuplicateNamedRegistrationsAreRejected) {
