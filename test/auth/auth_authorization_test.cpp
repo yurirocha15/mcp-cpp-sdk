@@ -3730,6 +3730,7 @@ TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDisc
     RawChallenge challenge;
     bool client_authorized = false;
     std::string client_failure;
+    std::atomic<int> discovery_attempts{0};
 
     asio::co_spawn(
         io_ctx,
@@ -3744,6 +3745,12 @@ TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDisc
             config.client_id = "test-client";
             config.redirect_uri = "http://127.0.0.1:9999/callback";
             config.policy = loopback_policy(base);
+            // Called once per exchange, so it counts the discovery requests the client had to
+            // invent for itself.
+            config.host_resolver = [&](const std::string&, const std::string&) {
+                discovery_attempts.fetch_add(1);
+                return std::vector<std::string>{"127.0.0.1"};
+            };
 
             mcp::auth::OAuthAuthorizationManager authorization(io_ctx.get_executor(), store, config,
                                                                echoing_callback(nullptr));
@@ -3767,11 +3774,21 @@ TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDisc
     EXPECT_EQ(challenge.www_authenticate.find("resource_metadata"), std::string::npos)
         << challenge.www_authenticate;
 
-    // And the consequence, executed rather than reasoned about: the client cannot get anywhere.
+    // And the consequence, executed rather than reasoned about.
+    //
+    // Note what the client does NOT do: it does not give up. Told nothing, it falls back to
+    // GUESSING the well-known locations under the URL it was configured with, spends real requests
+    // on them, and only then fails. So the cost of the missing parameter is not one failed
+    // handshake, it is the client probing a server that never advertised anything.
+    EXPECT_GT(discovery_attempts.load(), 0)
+        << "the client should have been driven to guess at well-known locations";
     EXPECT_FALSE(client_authorized)
         << "the client authorized against a challenge that names no metadata location";
-    EXPECT_FALSE(client_failure.empty())
-        << "expected discovery to fail outright when the challenge names nothing";
+    // It reports the configured server URL, because that is all it ever had to go on; a compliant
+    // challenge would have named the document location instead.
+    EXPECT_NE(client_failure.find("Failed to discover protected resource metadata"), std::string::npos)
+        << client_failure;
+    EXPECT_NE(client_failure.find("/mcp"), std::string::npos) << client_failure;
 }
 
 // The end state, written now so the fix has a target rather than a paragraph in a handoff.
