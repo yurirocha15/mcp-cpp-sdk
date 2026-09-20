@@ -1058,3 +1058,109 @@ TEST_F(ClientCoreTest, ConcurrentRequestsRemainCorrelatedOnMultiThreadedExecutor
     EXPECT_EQ(errors.load(), 0);
     EXPECT_EQ(client.pending_request_count(), 0);
 }
+
+namespace {
+
+// Drives a connect() whose peer answers `initialize` with the given protocolVersion, and returns
+// the McpError message the client raised. The version string is entirely the server's choice, so
+// this is the untrusted-peer text that reaches the diagnostic.
+struct RejectedVersionOutcome {
+    bool threw{false};
+    int code{0};
+    std::string message;
+};
+
+RejectedVersionOutcome connect_against_protocol_version(boost::asio::io_context& io_ctx,
+                                                        const std::string& protocol_version) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx.get_executor());
+    auto* raw_transport = transport.get();
+
+    raw_transport->set_on_write([raw_transport, protocol_version](std::string_view msg) {
+        const auto json_msg = nlohmann::json::parse(msg);
+        if (!json_msg.contains("id")) {
+            return;
+        }
+        raw_transport->enqueue_message(
+            make_result_response(
+                json_msg.at("id").get<std::string>(),
+                nlohmann::json{{"protocolVersion", protocol_version},
+                               {"capabilities", nlohmann::json::object()},
+                               {"serverInfo", {{"name", "test-server"}, {"version", "1.0"}}}})
+                .dump());
+    });
+
+    mcp::Client client(transport, io_ctx.get_executor());
+
+    RejectedVersionOutcome outcome;
+    boost::asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            mcp::Implementation info;
+            info.name = "test-client";
+            info.version = "0.1";
+            try {
+                static_cast<void>(co_await client.connect(std::move(info), mcp::ClientCapabilities{}));
+            } catch (const mcp::McpError& error) {
+                outcome.threw = true;
+                outcome.code = error.code();
+                outcome.message = error.message();
+            }
+            raw_transport->close();
+        },
+        boost::asio::detached);
+
+    io_ctx.run();
+    return outcome;
+}
+
+}  // namespace
+
+// The protocol version in an `initialize` result is chosen by the remote server. When the client
+// refuses it, the rejected value is interpolated into the McpError the application logs, so a
+// malicious or broken server that answers with CR/LF forges a line in the application's log and a
+// bidi override reorders the rest of the message.
+TEST_F(ClientCoreTest, UnsupportedProtocolVersionDiagnosticFlattensServerChosenVersion) {
+    // "zqtripwire" is a token no other code path produces; see the tripwire assertions below.
+    // \xe2\x80\xae is U+202E RIGHT-TO-LEFT OVERRIDE, written escaped so this source file does not
+    // itself contain a bidi override.
+    const std::string forged_version =
+        "zqtripwire\r\n2026-09-20 ERROR forged line from the server\xe2\x80\xae reordered tail";
+
+    const auto outcome = connect_against_protocol_version(io_ctx_, forged_version);
+
+    // Tripwire. The rejection must be the strict-protocol-validation site, not a JSON parse
+    // failure, a transport error, or any other throw that never interpolates the peer's bytes --
+    // each of those would make the assertions below pass for a reason unrelated to the site under
+    // test. Dump the message on failure so a vacuous pass cannot hide.
+    ASSERT_TRUE(outcome.threw) << "connect() did not reject the version at all";
+    ASSERT_EQ(outcome.code, mcp::g_INVALID_REQUEST) << "actual message: " << outcome.message;
+    ASSERT_EQ(outcome.message.rfind("Server selected unsupported protocol version: ", 0), 0U)
+        << "actual message: " << outcome.message;
+    ASSERT_NE(outcome.message.find("zqtripwire"), std::string::npos)
+        << "actual message: " << outcome.message;
+
+    EXPECT_EQ(outcome.message.find('\r'), std::string::npos) << "actual message: " << outcome.message;
+    EXPECT_EQ(outcome.message.find('\n'), std::string::npos) << "actual message: " << outcome.message;
+    EXPECT_EQ(outcome.message.find("\xe2\x80\xae"), std::string::npos)
+        << "actual message: " << outcome.message;
+}
+
+// The same site must also bound the value, so a server cannot flood the application's log through
+// a megabyte-long protocol version.
+TEST_F(ClientCoreTest, UnsupportedProtocolVersionDiagnosticBoundsServerChosenVersion) {
+    const std::string forged_version = "zqtripwire" + std::string(64 * 1024, 'A');
+
+    const auto outcome = connect_against_protocol_version(io_ctx_, forged_version);
+
+    ASSERT_TRUE(outcome.threw) << "connect() did not reject the version at all";
+    ASSERT_EQ(outcome.code, mcp::g_INVALID_REQUEST)
+        << "actual message prefix: " << outcome.message.substr(0, 80);
+    ASSERT_EQ(outcome.message.rfind("Server selected unsupported protocol version: ", 0), 0U)
+        << "actual message prefix: " << outcome.message.substr(0, 80);
+    ASSERT_NE(outcome.message.find("zqtripwire"), std::string::npos)
+        << "actual message prefix: " << outcome.message.substr(0, 80);
+
+    EXPECT_LT(outcome.message.size(), forged_version.size())
+        << "message size: " << outcome.message.size();
+    EXPECT_LE(outcome.message.size(), std::size_t{512}) << "message size: " << outcome.message.size();
+}
