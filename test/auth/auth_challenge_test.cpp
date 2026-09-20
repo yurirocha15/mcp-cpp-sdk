@@ -411,6 +411,102 @@ TEST(AuthMetadataPolicyTest, AllowListEntryWithAPathMatchesNothing) {
               mcp::auth::MetadataUrlDecision::origin_not_allowed);
 }
 
+// An allow entry that is not a bare origin grants nothing, and says so by returning a decision
+// rather than throwing: dropping it is fail-closed, so the quiet refusal is the safe outcome and
+// stays the documented one. The deny list, where dropping an entry would be fail-open, is loud
+// instead; see the deny-list tests below.
+TEST(AuthMetadataPolicyTest, AllowListEntryThatIsNotABareOriginStillFailsClosedQuietly) {
+    const char* entries[] = {
+        "https://as.test/",     "https://as.test/realms/foo", "https://as.test?tenant=1",
+        "https://as.test#frag", "https://as.test:44a3",
+    };
+    for (const auto* entry : entries) {
+        const auto policy = allow_origin(entry);
+        mcp::auth::MetadataUrlDecision decision{};
+        EXPECT_NO_THROW(decision = mcp::auth::validate_metadata_url(policy, "https://as.test/prm"))
+            << entry;
+        EXPECT_EQ(decision, mcp::auth::MetadataUrlDecision::origin_not_allowed) << entry;
+    }
+}
+
+// The reported case: a deny entry written with a trailing slash used to be discarded in silence,
+// so the origin the author meant to block was admitted. It is now refused as a policy error.
+TEST(AuthMetadataPolicyTest, DenyListEntryWithATrailingSlashIsRejected) {
+    auto policy = allow_origin("https://evil.example");
+    policy.denied_origins.emplace_back("https://evil.example/");
+    try {
+        const auto decision = mcp::auth::validate_metadata_url(policy, "https://evil.example/prm");
+        FAIL() << "expected MetadataPolicyError, got decision " << static_cast<int>(decision);
+    } catch (const mcp::auth::MetadataPolicyError& error) {
+        EXPECT_EQ(error.decision(), mcp::auth::MetadataUrlDecision::denied_origin_entry_malformed);
+        EXPECT_EQ(error.target(), "https://evil.example/");
+    }
+}
+
+TEST(AuthMetadataPolicyTest, DenyListEntryWithAPathQueryOrFragmentIsRejected) {
+    const char* entries[] = {
+        "https://evil.example/realms/foo", "https://evil.example/?tenant=1",
+        "https://evil.example?tenant=1",   "https://evil.example#frag",
+        "https://evil.example:44a3",
+    };
+    for (const auto* entry : entries) {
+        auto policy = allow_origin("https://evil.example");
+        policy.denied_origins.emplace_back(entry);
+        try {
+            const auto decision = mcp::auth::validate_metadata_url(policy, "https://evil.example/prm");
+            ADD_FAILURE() << entry << " was admitted with decision " << static_cast<int>(decision);
+        } catch (const mcp::auth::MetadataPolicyError& error) {
+            EXPECT_EQ(error.decision(), mcp::auth::MetadataUrlDecision::denied_origin_entry_malformed)
+                << entry;
+            EXPECT_EQ(error.target(), entry);
+        }
+    }
+}
+
+// The refusal is a property of the policy, not of the URL: a malformed deny entry refuses every
+// target, including one that no entry in the list was ever meant to describe.
+TEST(AuthMetadataPolicyTest, MalformedDenyEntryRefusesAnUnrelatedTargetToo) {
+    auto policy = allow_origin("https://as.test");
+    policy.denied_origins.emplace_back("https://evil.example/");
+    EXPECT_THROW((void)mcp::auth::validate_metadata_url(policy, "https://as.test/prm"),
+                 mcp::auth::MetadataPolicyError);
+}
+
+// A malformed entry is reported wherever it sits in the list, even behind an entry that already
+// matched, so a single bad rule cannot hide behind a working one.
+TEST(AuthMetadataPolicyTest, MalformedDenyEntryIsReportedEvenAfterAMatchingEntry) {
+    auto policy = allow_origin("https://evil.example");
+    policy.denied_origins.emplace_back("https://evil.example");
+    policy.denied_origins.emplace_back("https://other.example/");
+    try {
+        (void)mcp::auth::validate_metadata_url(policy, "https://evil.example/prm");
+        FAIL() << "expected MetadataPolicyError";
+    } catch (const mcp::auth::MetadataPolicyError& error) {
+        EXPECT_EQ(error.decision(), mcp::auth::MetadataUrlDecision::denied_origin_entry_malformed);
+        EXPECT_EQ(error.target(), "https://other.example/");
+    }
+}
+
+// The fix must not turn every deny list into an error: a well-formed list still denies exactly
+// what it names, and still admits everything else the allow list permits.
+TEST(AuthMetadataPolicyTest, WellFormedDenyListStillDeniesAndStillAdmits) {
+    auto policy = allow_origin("https://as.test");
+    policy.allowed_origins.emplace_back("https://evil.example");
+    policy.denied_origins.emplace_back("https://evil.example");
+    policy.denied_origins.emplace_back("https://[2606:2800:220:1::1]:8443");
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example/prm"),
+              mcp::auth::MetadataUrlDecision::origin_denied);
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test/prm"),
+              mcp::auth::MetadataUrlDecision::allowed);
+}
+
+// A deny list the caller never populated is the common case and must stay free of policy errors.
+TEST(AuthMetadataPolicyTest, EmptyDenyListIsNotAPolicyError) {
+    const auto policy = allow_origin("https://as.test");
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test/prm"),
+              mcp::auth::MetadataUrlDecision::allowed);
+}
+
 TEST(AuthMetadataPolicyTest, LoopbackOptOutIsCaseInsensitiveOnSchemeAndHost) {
     auto policy = allow_origin("http://localhost:9000");
     policy.allow_plain_http_loopback = true;

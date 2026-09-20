@@ -36,8 +36,11 @@ enum class MetadataUrlDecision {
     address_loopback,    ///< Address is loopback and the loopback opt-out is not enabled.
     address_multicast,   ///< Address is multicast or broadcast.
     address_reserved,    ///< Address is otherwise reserved, unspecified or non-routable.
-    redirect_limit_exceeded,  ///< Redirect chain exceeded the configured bound.
-    response_too_large,       ///< Response body exceeded the configured size cap.
+    redirect_limit_exceeded,        ///< Redirect chain exceeded the configured bound.
+    response_too_large,             ///< Response body exceeded the configured size cap.
+    denied_origin_entry_malformed,  ///< A `denied_origins` entry is not a bare origin, so the rule
+                                    ///< it states cannot be applied. Reported against the offending
+                                    ///< entry, not against the target.
 };
 
 /**
@@ -73,6 +76,19 @@ struct MetadataFetchPolicy {
     /// Origins the application refuses. Consulted before `allowed_origins`, so a denied origin is
     /// refused even when it also appears in the allow list. Compared with the same canonicalization
     /// as `allowed_origins`.
+    ///
+    /// Every entry must be a bare origin. Unlike `allowed_origins`, an entry that is not one — it
+    /// carries a path (a lone trailing `/` included), a query or a fragment, or its port is not a
+    /// plain in-range decimal number — is rejected rather than ignored: `validate_metadata_url`
+    /// throws `MetadataPolicyError` with `MetadataUrlDecision::denied_origin_entry_malformed`,
+    /// naming the offending entry, and refuses every target until the entry is corrected.
+    ///
+    /// The two lists differ here because the consequence of dropping an entry differs. An allow
+    /// entry that cannot be interpreted grants nothing, so ignoring it fails closed. A deny entry
+    /// that cannot be interpreted blocks nothing, so ignoring it would admit the very origin the
+    /// entry was written to refuse. A deny rule the SDK cannot apply is therefore a configuration
+    /// error, not a rule that quietly matches nothing, and it is never reinterpreted into some
+    /// nearby rule the author did not write.
     std::vector<std::string> denied_origins;
 
     /// Consulted only for an origin `allowed_origins` does not list; returning true admits it. The
@@ -119,6 +135,12 @@ struct MetadataFetchPolicy {
  * @return `MetadataUrlDecision::allowed` when the URL may be resolved, otherwise the refusal
  *         reason.
  *
+ * @throws MetadataPolicyError With `MetadataUrlDecision::denied_origin_entry_malformed` when any
+ *         `MetadataFetchPolicy::denied_origins` entry is not a bare origin. The deny list is
+ *         examined before anything else, so such a policy refuses every target, whether or not the
+ *         offending entry describes the one at hand, and the target is never resolved. The thrown
+ *         error names the offending entry rather than the URL.
+ *
  * @details This runs before host resolution. When it refuses, the host is never resolved and no
  * socket is opened. A host written as an IP literal is additionally classified here, so a URL
  * naming `169.254.169.254` or an RFC 1918 address is refused without any lookup at all. The origin
@@ -155,6 +177,10 @@ struct MetadataFetchPolicy {
  * @details Thrown instead of performing the request. When the refusal is a URL or origin decision
  * the target host is never resolved, so no socket is opened; when it is an address decision the
  * address is never connected to.
+ *
+ * The decision may also report the policy itself rather than the target: for
+ * `MetadataUrlDecision::denied_origin_entry_malformed`, `target()` is the offending `denied_origins`
+ * entry, and the request that triggered the check was refused without being issued.
  */
 class MCP_API MetadataPolicyError : public std::runtime_error {
    public:
