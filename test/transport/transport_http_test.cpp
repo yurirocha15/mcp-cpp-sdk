@@ -1026,6 +1026,10 @@ TEST_F(HttpTransportTest, SessionlessDiscoverSucceedsAfterSessionEstablished) {
     EXPECT_FALSE(established_session_id.empty());
     EXPECT_TRUE(discover_request_received);
     EXPECT_EQ(discover_status, http::status::ok) << "body: " << discover_body;
+    // The caller must get its own id back. A sessionless request is carried internally under a
+    // transport-private id so it cannot squat the session's id space; that is an implementation
+    // detail the peer must never see.
+    EXPECT_EQ(nlohmann::json::parse(discover_body).at("id"), 2) << "body: " << discover_body;
 }
 
 TEST_F(HttpTransportTest, SessionlessNonDiscoverRequestRejectedAfterSessionEstablished) {
@@ -1556,6 +1560,169 @@ TEST_F(HttpTransportTest, DiscoverAcceptsDiscoverableOnlyProtocolVersionHeader) 
     EXPECT_FALSE(timed_out);
     EXPECT_TRUE(discover_request_received);
     EXPECT_EQ(discover_status, http::status::ok) << "body: " << discover_body;
+}
+
+TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
+    mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18206);
+
+    asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
+
+    auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
+    deadline->expires_after(std::chrono::seconds(10));
+    bool timed_out = false;
+
+    // Signalled once initialize has produced a session, so the sessionless prober runs while a
+    // session is live.
+    auto session_ready = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
+    session_ready->expires_at(std::chrono::steady_clock::time_point::max());
+    // Signalled once the sessionless discover has reached the server. Registration precedes the
+    // enqueue, so a discover that the server can read is a discover already holding its id.
+    auto discover_registered = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
+    discover_registered->expires_at(std::chrono::steady_clock::time_point::max());
+
+    bool discover_reached_server = false;
+    bool session_request_reached_server = false;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const auto initialize_request = co_await server_transport.read_message();
+            nlohmann::json initialize_response = {
+                {"jsonrpc", "2.0"},
+                {"result",
+                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                  {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
+                  {"capabilities", nlohmann::json::object()}}},
+                {"id", nlohmann::json::parse(initialize_request).at("id")}};
+            co_await server_transport.write_message(initialize_response.dump());
+
+            // The sessionless discover is deliberately left unanswered: it holds its pending
+            // entry for the whole test, which is what gives the session request something to
+            // collide with.
+            const auto discover_request = co_await server_transport.read_message();
+            discover_reached_server = true;
+            discover_registered->cancel();
+
+            const auto session_request = co_await server_transport.read_message();
+            session_request_reached_server = true;
+            nlohmann::json session_response = {{"jsonrpc", "2.0"},
+                                               {"result", {{"tools", nlohmann::json::array()}}},
+                                               {"id", nlohmann::json::parse(session_request).at("id")}};
+            co_await server_transport.write_message(session_response.dump());
+        },
+        [](std::exception_ptr) {});
+
+    // The sessionless prober. It writes its discover and never reads the reply, so the pending
+    // entry it claims stays claimed.
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await session_ready->async_wait(asio::use_awaitable);
+            } catch (const boost::system::system_error&) {
+                // Cancelled: the session is up.
+            }
+
+            auto resolver = asio::ip::tcp::resolver(io_ctx_.get_executor());
+            const auto endpoints =
+                co_await resolver.async_resolve("127.0.0.1", "18206", asio::use_awaitable);
+
+            auto probe_stream = std::make_shared<beast::tcp_stream>(io_ctx_.get_executor());
+            co_await probe_stream->async_connect(*endpoints.begin(), asio::use_awaitable);
+
+            http::request<http::string_body> discover_request{http::verb::post, "/mcp", 11};
+            discover_request.set(http::field::host, "127.0.0.1");
+            discover_request.set(http::field::content_type, "application/json");
+            discover_request.body() = R"({"jsonrpc":"2.0","method":"server/discover","id":7})";
+            discover_request.prepare_payload();
+            co_await http::async_write(*probe_stream, discover_request, asio::use_awaitable);
+
+            // Hold the connection open for the rest of the test.
+            try {
+                co_await deadline->async_wait(asio::use_awaitable);
+            } catch (const boost::system::system_error&) {
+                // Cancelled at teardown.
+            }
+        },
+        [](std::exception_ptr) {});
+
+    auto collision_status = http::status::unknown;
+    std::string collision_body;
+    std::string established_session_id;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            auto resolver = asio::ip::tcp::resolver(io_ctx_.get_executor());
+            const auto endpoints =
+                co_await resolver.async_resolve("127.0.0.1", "18206", asio::use_awaitable);
+
+            beast::tcp_stream session_stream(io_ctx_.get_executor());
+            co_await session_stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+
+            http::request<http::string_body> init_request{http::verb::post, "/mcp", 11};
+            init_request.set(http::field::host, "127.0.0.1");
+            init_request.set(http::field::content_type, "application/json");
+            init_request.body() =
+                R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
+                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})";
+            init_request.prepare_payload();
+            co_await http::async_write(session_stream, init_request, asio::use_awaitable);
+
+            beast::flat_buffer init_buffer;
+            http::response<http::string_body> init_response;
+            co_await http::async_read(session_stream, init_buffer, init_response, asio::use_awaitable);
+            established_session_id = std::string(init_response["MCP-Session-Id"]);
+
+            session_ready->cancel();
+            try {
+                co_await discover_registered->async_wait(asio::use_awaitable);
+            } catch (const boost::system::system_error&) {
+                // Cancelled: the sessionless discover holds id 7.
+            }
+
+            // A legitimate, session-authenticated request that happens to reuse id 7. The
+            // sessionless prober picked that id out of a space the session owns, so this must
+            // still be served.
+            http::request<http::string_body> tools_request{http::verb::post, "/mcp", 11};
+            tools_request.set(http::field::host, "127.0.0.1");
+            tools_request.set(http::field::content_type, "application/json");
+            tools_request.set("MCP-Session-Id", established_session_id);
+            tools_request.body() = R"({"jsonrpc":"2.0","method":"tools/list","id":7})";
+            tools_request.prepare_payload();
+            co_await http::async_write(session_stream, tools_request, asio::use_awaitable);
+
+            beast::flat_buffer tools_buffer;
+            http::response<http::string_body> tools_response;
+            co_await http::async_read(session_stream, tools_buffer, tools_response,
+                                      asio::use_awaitable);
+            collision_status = tools_response.result();
+            collision_body = tools_response.body();
+
+            beast::error_code shutdown_error;
+            session_stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
+
+            deadline->cancel();
+            server_transport.close();
+        },
+        [](std::exception_ptr) {});
+
+    deadline->async_wait([&timed_out, &server_transport](const boost::system::error_code& error) {
+        if (error) {
+            return;
+        }
+        timed_out = true;
+        server_transport.close();
+    });
+
+    io_ctx_.run();
+
+    EXPECT_FALSE(timed_out);
+    EXPECT_FALSE(established_session_id.empty());
+    EXPECT_TRUE(discover_reached_server);
+    EXPECT_TRUE(session_request_reached_server)
+        << "the session request never reached the server: its id was squatted";
+    EXPECT_EQ(collision_status, http::status::ok) << "body: " << collision_body;
+    EXPECT_NE(collision_body.find("\"result\""), std::string::npos) << "body: " << collision_body;
 }
 
 TEST_F(HttpTransportTest, NonAtomicConfigurationLocksWhenListeningStarts) {
