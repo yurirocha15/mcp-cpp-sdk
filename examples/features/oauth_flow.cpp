@@ -395,6 +395,19 @@ auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
 
         state->oauth_http =
             std::make_shared<mcp::auth::OAuthHttpClient>(runtime.io_ctx->get_executor());
+
+        // A default-constructed OAuthHttpClient refuses every metadata target: the allow list is
+        // empty and plain HTTP to a loopback address is not permitted. Discovery URLs are
+        // attacker-influenced, so the application must name the origins it intends to reach before
+        // the first request. This example talks only to its own mock server on loopback, so it
+        // allows that one origin and opts in to plain-HTTP loopback. A real client lists the
+        // origins of its MCP server and of the authorization servers that server names, and leaves
+        // allow_plain_http_loopback false so only https targets are reachable.
+        mcp::auth::MetadataFetchPolicy policy;
+        policy.allowed_origins = {runtime.mock_oauth->issuer()};
+        policy.allow_plain_http_loopback = true;
+        state->oauth_http->set_metadata_policy(std::move(policy));
+
         mcp::auth::OAuthDiscoveryClient discovery(state->oauth_http);
 
         state->protected_metadata = co_await discovery.discover_protected_resource(
