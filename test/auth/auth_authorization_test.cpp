@@ -22,6 +22,7 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <future>
@@ -3627,6 +3628,69 @@ TEST(AuthDiagnosticsSanitizingTest, IllFormedBytesAreReplacedRatherThanCopiedThr
     EXPECT_TRUE(is_well_formed_utf8(mixed)) << mixed;
     EXPECT_NE(mixed.find("before"), std::string::npos) << mixed;
     EXPECT_NE(mixed.find("after"), std::string::npos) << mixed;
+}
+
+namespace {
+
+/// Encode one codepoint as UTF-8, so the bidi tests read as codepoints rather than as byte soup.
+std::string utf8_codepoint(std::uint32_t codepoint) {
+    std::string encoded;
+    if (codepoint < 0x80) {
+        encoded.push_back(static_cast<char>(codepoint));
+    } else if (codepoint < 0x800) {
+        encoded.push_back(static_cast<char>(0xC0U | (codepoint >> 6U)));
+        encoded.push_back(static_cast<char>(0x80U | (codepoint & 0x3FU)));
+    } else if (codepoint < 0x10000) {
+        encoded.push_back(static_cast<char>(0xE0U | (codepoint >> 12U)));
+        encoded.push_back(static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3FU)));
+        encoded.push_back(static_cast<char>(0x80U | (codepoint & 0x3FU)));
+    } else {
+        encoded.push_back(static_cast<char>(0xF0U | (codepoint >> 18U)));
+        encoded.push_back(static_cast<char>(0x80U | ((codepoint >> 12U) & 0x3FU)));
+        encoded.push_back(static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3FU)));
+        encoded.push_back(static_cast<char>(0x80U | (codepoint & 0x3FU)));
+    }
+    return encoded;
+}
+
+}  // namespace
+
+// Forgery without a line break. U+202E reverses the rendering of everything after it, so a peer
+// that gets one into a refusal message can make the message read as its opposite in a terminal or
+// a browser-based log viewer -- the same outcome U+2028/U+2029 were flattened to prevent, reached
+// without ending a line at all.
+TEST(AuthDiagnosticsSanitizingTest, BidirectionalOverridesAreFlattenedToo) {
+    // Every codepoint that can re-order or re-base the run of text that follows it: the explicit
+    // embeddings and overrides, the isolates, and the two implicit marks.
+    const std::vector<std::uint32_t> reordering = {0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066,
+                                                   0x2067, 0x2068, 0x2069, 0x200E, 0x200F};
+
+    for (const auto codepoint : reordering) {
+        const auto raw = "server '" + utf8_codepoint(codepoint) + "denied'";
+        const auto cleaned = mcp::auth::detail::sanitize_for_diagnostics(raw);
+
+        EXPECT_TRUE(is_well_formed_utf8(cleaned)) << std::hex << codepoint;
+        EXPECT_EQ(cleaned.find(utf8_codepoint(codepoint)), std::string::npos)
+            << "U+" << std::hex << std::uppercase << codepoint
+            << " survived sanitization and can still re-order the rest of the line";
+        // Flattened, not dropped: the surrounding text is still readable.
+        EXPECT_NE(cleaned.find("server '"), std::string::npos) << std::hex << codepoint;
+        EXPECT_NE(cleaned.find("denied'"), std::string::npos) << std::hex << codepoint;
+    }
+
+    // Ordinary text that merely lives in the same planes is untouched: this is a targeted flatten,
+    // not a blanket refusal of non-ASCII.
+    const auto japanese = utf8_codepoint(0x65E5) + utf8_codepoint(0x672C);
+    EXPECT_EQ(mcp::auth::detail::sanitize_for_diagnostics(japanese), japanese);
+    const auto adjacent = utf8_codepoint(0x2029) + utf8_codepoint(0x202F) + utf8_codepoint(0x2065) +
+                          utf8_codepoint(0x206A);
+    const auto cleaned_adjacent = mcp::auth::detail::sanitize_for_diagnostics(adjacent);
+    EXPECT_NE(cleaned_adjacent.find(utf8_codepoint(0x202F)), std::string::npos)
+        << "U+202F is a space, not an override, and must not be caught by an off-by-one range";
+    EXPECT_NE(cleaned_adjacent.find(utf8_codepoint(0x2065)), std::string::npos)
+        << "U+2065 sits just below the isolates and must not be caught by an off-by-one range";
+    EXPECT_NE(cleaned_adjacent.find(utf8_codepoint(0x206A)), std::string::npos)
+        << "U+206A sits just above the isolates and must not be caught by an off-by-one range";
 }
 
 // ---------------------------------------------------------------------------
