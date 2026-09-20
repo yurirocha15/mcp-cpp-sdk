@@ -231,18 +231,18 @@ done
 ### 12. OAuth Flow (`oauth_flow.cpp`)
 
 **What it demonstrates:**
-- Loopback OAuth building blocks with a mock authorization server
-- `OAuthAuthenticator` with `InMemoryTokenStore`
+- `OAuthAuthorizationManager` acting on a `WWW-Authenticate` challenge from a mock authorization server: discovery under a `MetadataFetchPolicy`, issuer binding, cryptographic `state`, S256 PKCE, RFC 9207 response validation, and an RFC 8707 resource-indicated code exchange
+- An application-supplied consent callback standing in for a browser
+- `InMemoryTokenStore` holding the acquired token
 - `OAuthClientTransport` for token injection
 - Token refresh on auth failures
 - `make_auth_middleware()` for server-side validation
 
 **Key APIs:**
-- `OAuthAuthenticator`
-- `InMemoryTokenStore`
+- `OAuthAuthorizationManager`
+- `AuthorizationCallback`
+- `MetadataFetchPolicy`
 - `OAuthClientTransport`
-- `make_auth_middleware()`
-- `generate_pkce_pair()`
 
 **Build:** `python scripts/build.py --examples`
 
