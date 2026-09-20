@@ -750,8 +750,8 @@ Context Server::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
             std::move(message_sender)};
 }
 
-// Invalid parameter decoding is reported as -32602. Exceptions raised after decoding (including
-// handler and middleware failures) are reported as -32603.
+// Invalid parameter decoding is reported as -32602. Exceptions raised after decoding are reported
+// as -32603, except from a tool handler: those become a tool result carrying isError.
 Task<void> Server::dispatch_request(nlohmann::json json_msg) {
     auto session = session_snapshot();
     if (!session || !session->writer) {
@@ -833,7 +833,9 @@ Task<std::string> Server::dispatch_request_wire(nlohmann::json json_msg, bool en
         error_payload = error.what();
     } catch (const std::exception& error) {
         if (json_msg.contains("id")) {
-            error_payload = error.what();
+            // Handler text can carry build paths or third-party library detail, and reaches the
+            // peer verbatim from here.
+            error_payload = detail::sanitize_for_diagnostics(error.what());
         }
     }
 
@@ -997,22 +999,32 @@ Task<nlohmann::json> Server::invoke_tool_impl(CallToolParams params,
     auto ctx = make_context(std::move(cancelled), std::move(progress_token));
     nlohmann::json handler_result;
 
-    try {
-        if (impl_->middlewares.empty()) {
-            handler_result = co_await iter->second.handler(ctx, params.arguments);
-        } else {
-            TypeErasedHandler wrapped_handler =
-                [original_handler = iter->second.handler](
-                    Context& inner_ctx, const nlohmann::json& full_params) -> Task<nlohmann::json> {
-                auto call_params = full_params.get<CallToolParams>();
-                co_return co_await original_handler(inner_ctx, call_params.arguments);
-            };
-            auto handler = build_middleware_chain(std::move(wrapped_handler));
-            nlohmann::json params_json = params;
-            handler_result = co_await handler(ctx, params_json);
+    // A tool that throws has failed at its own job, which the protocol reports inside the result as
+    // isError. Middleware is not the tool: it decides whether the call may proceed at all, so it
+    // runs outside this catch and a middleware failure surfaces as a JSON-RPC error instead.
+    TypeErasedHandler guarded_handler = [original_handler = iter->second.handler](
+                                            Context& inner_ctx,
+                                            const nlohmann::json& arguments) -> Task<nlohmann::json> {
+        try {
+            co_return co_await original_handler(inner_ctx, arguments);
+        } catch (const std::exception& error) {
+            co_return nlohmann::json(
+                make_tool_error_result(detail::sanitize_for_diagnostics(error.what())));
         }
-    } catch (const std::exception& error) {
-        co_return nlohmann::json(make_tool_error_result(error.what()));
+    };
+
+    if (impl_->middlewares.empty()) {
+        handler_result = co_await guarded_handler(ctx, params.arguments);
+    } else {
+        TypeErasedHandler wrapped_handler =
+            [guarded_handler](Context& inner_ctx,
+                              const nlohmann::json& full_params) -> Task<nlohmann::json> {
+            auto call_params = full_params.get<CallToolParams>();
+            co_return co_await guarded_handler(inner_ctx, call_params.arguments);
+        };
+        auto handler = build_middleware_chain(std::move(wrapped_handler));
+        nlohmann::json params_json = params;
+        handler_result = co_await handler(ctx, params_json);
     }
 
     if (iter->second.result_mode == detail::ToolResultMode::eValidated) {
