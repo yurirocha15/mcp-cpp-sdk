@@ -2890,3 +2890,82 @@ TEST(AuthProtectedResourceValidationTest,
     EXPECT_EQ(server.targets(), expected_targets);
     EXPECT_EQ(credentials->stores, 0);
 }
+
+// Rejecting the document is only half of it: discovery used to write every document that merely
+// parsed into the resource cache *before* returning it, and the identity check ran afterwards, in
+// run_challenge(). So the first attempt threw as it should while still leaving the attacker's
+// document cached under the challenge's own metadata URL for the whole TTL. A second attempt was
+// then served that entry without touching the network, which is what makes a rejected document
+// worth planting in the first place.
+//
+// Discovery now takes the caller's acceptance test and commits nothing the caller refuses, so the
+// second attempt has nothing to be served and must go back to the server. The request log is the
+// evidence: two PRM fetches, not one.
+TEST(AuthProtectedResourceValidationTest, ARejectedProtectedResourceDocumentIsNotCached) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm.json") {
+            // `resource` names a different origin, so it does not identify our server.
+            return json_response({{"resource", "https://attacker.test/mcp"},
+                                  {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(4), asio::detached);
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    // asio::detached swallows exceptions, which would turn a failed assertion into a hang; the
+    // promise carries both outcomes back to the test body instead.
+    std::promise<std::pair<std::string, std::string>> failures;
+    auto observed = failures.get_future();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            // One manager for both attempts: the discovery cache it owns is the thing under test,
+            // and a second manager would have an empty one for trivial reasons.
+            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                         echoing_callback(nullptr));
+            const std::string header =
+                R"(Bearer realm="mcp", resource_metadata=")" + base + R"(/prm.json")";
+
+            std::pair<std::string, std::string> messages;
+            try {
+                (void)co_await manager.try_handle_challenge(header);
+                messages.first = "<no exception>";
+            } catch (const std::exception& error) {
+                messages.first = error.what();
+            }
+            try {
+                (void)co_await manager.try_handle_challenge(header);
+                messages.second = "<no exception>";
+            } catch (const std::exception& error) {
+                messages.second = error.what();
+            }
+            failures.set_value(messages);
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    const auto messages = observed.get();
+    EXPECT_NE(messages.first.find("does not identify server"), std::string::npos) << messages.first;
+    // The second attempt must fail for the same reason, and must have re-fetched to find out.
+    EXPECT_NE(messages.second.find("does not identify server"), std::string::npos) << messages.second;
+    const std::vector<std::string> expected_targets{"/prm.json", "/prm.json"};
+    EXPECT_EQ(server.targets(), expected_targets)
+        << "the rejected document was served from the cache instead of being re-fetched";
+}
