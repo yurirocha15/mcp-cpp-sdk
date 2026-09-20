@@ -15,6 +15,7 @@
 #include <boost/asio/any_io_executor.hpp>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -216,6 +217,8 @@ using HostResolver =
 /**
  * @brief Minimal HTTP client for OAuth token exchange and metadata retrieval.
  */
+class OAuthHttpClientScope;
+
 class MCP_API OAuthHttpClient {
    public:
     /**
@@ -306,9 +309,75 @@ class MCP_API OAuthHttpClient {
      */
     void abort_pending();
 
+    /**
+     * @brief Open an independently abortable scope on this client.
+     *
+     * @return A scope that issues requests through this client but can be aborted on its own.
+     *
+     * @details `abort_pending()` is client-wide and irreversible, which is correct for a client its
+     * owner created for itself and wrong for one an application shares. Two components sharing a
+     * client have no way to tell it "I am done" without ending it for the other as well.
+     *
+     * A scope separates the two. Requests issued through it are tracked against it, and aborting it
+     * closes those and refuses later ones, leaving every other scope and the client's own unscoped
+     * requests untouched. `abort_pending()` still ends everything, scopes included, and is
+     * unchanged. A scope keeps the underlying client alive for as long as it exists, so it stays
+     * usable even if the `OAuthHttpClient` object it came from is destroyed.
+     */
+    [[nodiscard]] OAuthHttpClientScope make_scope();
+
    private:
     struct Impl;
     std::shared_ptr<Impl> impl_;
+
+    friend class OAuthHttpClientScope;
+};
+
+/**
+ * @brief An independently abortable view of an OAuthHttpClient.
+ *
+ * @details Issues requests exactly as the client does, but tracks them separately so `abort()`
+ * ends this scope's work alone. Obtained from `OAuthHttpClient::make_scope()`.
+ *
+ * Use one wherever the client is shared and the component holding it has its own lifetime: a
+ * component that calls `OAuthHttpClient::abort_pending()` to signal that it is finished disables
+ * the client permanently for every other holder, and because a failed refresh is reported as a
+ * plain `false`, the other holder sees no error at all -- only requests that quietly stop working.
+ *
+ * Copyable, and every copy names the same scope, so aborting through any copy aborts them all.
+ */
+class MCP_API OAuthHttpClientScope {
+   public:
+    /** @see OAuthHttpClient::exchange_code */
+    Task<TokenResponse> exchange_code(const OAuthConfig& config, const std::string& code,
+                                      const std::string& code_verifier);
+
+    /** @see OAuthHttpClient::refresh_token */
+    Task<TokenResponse> refresh_token(const OAuthConfig& config, const std::string& refresh_token);
+
+    /** @see OAuthHttpClient::get_json */
+    Task<nlohmann::json> get_json(const std::string& url);
+
+    /** @see OAuthHttpClient::post_json */
+    Task<nlohmann::json> post_json(const std::string& url, const nlohmann::json& body);
+
+    /**
+     * @brief Abort this scope's in-flight exchanges and refuse every one issued through it after.
+     *
+     * @details The scoped counterpart of `OAuthHttpClient::abort_pending()`, with the same
+     * guarantees within this scope: sockets closed from the client's own strand, safe from any
+     * thread, sticky, irreversible and idempotent. Requests issued through the client directly, or
+     * through any other scope, are unaffected.
+     */
+    void abort();
+
+   private:
+    friend class OAuthHttpClient;
+
+    OAuthHttpClientScope(std::shared_ptr<OAuthHttpClient::Impl> impl, std::uint64_t id);
+
+    std::shared_ptr<OAuthHttpClient::Impl> impl_;
+    std::uint64_t id_;
 };
 
 /**
