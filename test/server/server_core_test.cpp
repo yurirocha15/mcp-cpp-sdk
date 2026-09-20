@@ -25,6 +25,17 @@
 
 namespace {
 
+// Ends its session immediately, then fails the teardown. ITransport::close is not noexcept, so a
+// throwing implementation is the reachable way to make session teardown exit exceptionally.
+class ThrowingCloseTransport final : public mcp::ITransport {
+   public:
+    mcp::Task<std::string> read_message() override { throw std::runtime_error("transport exhausted"); }
+
+    mcp::Task<void> write_message(std::string_view) override { co_return; }
+
+    void close() override { throw std::runtime_error("close failed"); }
+};
+
 class StrandCloseProbeTransport final : public mcp::ITransport {
    public:
     explicit StrandCloseProbeTransport(
@@ -511,6 +522,40 @@ TEST_F(ServerCoreTest, NotificationWithNonObjectParamsIsStillRejected) {
     ASSERT_EQ(responses.size(), 2);
     ASSERT_TRUE(responses[1].contains("error"));
     EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_REQUEST);
+}
+
+TEST_F(ServerCoreTest, FailedSessionTeardownDoesNotStrandTheServer) {
+    mcp::Server server({"teardown-server", "1.0"}, mcp::ServerCapabilities{});
+
+    std::exception_ptr first_error;
+    boost::asio::co_spawn(
+        io_ctx_, server.run(std::make_shared<ThrowingCloseTransport>(), io_ctx_.get_executor()),
+        [&first_error](std::exception_ptr error) { first_error = std::move(error); });
+    io_ctx_.run();
+    EXPECT_NE(first_error, nullptr);
+
+    io_ctx_.restart();
+
+    // The failed teardown must not leave the session registered, or every later run() is refused.
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    std::vector<nlohmann::json> responses;
+    raw_transport->set_on_write([&responses, raw_transport](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        raw_transport->close();
+    });
+    raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"}, {"id", "ping"}, {"method", "ping"}}.dump());
+
+    std::exception_ptr second_error;
+    boost::asio::co_spawn(
+        io_ctx_, server.run(transport, io_ctx_.get_executor()),
+        [&second_error](std::exception_ptr error) { second_error = std::move(error); });
+    io_ctx_.run();
+
+    EXPECT_EQ(second_error, nullptr);
+    ASSERT_EQ(responses.size(), 1);
+    EXPECT_EQ(responses[0]["id"], "ping");
 }
 
 TEST_F(ServerCoreTest, InvalidJsonRpcEnvelopesAreRejected) {
