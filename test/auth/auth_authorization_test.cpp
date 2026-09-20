@@ -1430,13 +1430,10 @@ TEST(AuthTransportCloseTest, CloseDuringTokenExchangeAbortsTheStalledExchange) {
 // A follower must report the outcome of the flight IT joined, and must report why that flight
 // failed.
 //
-// The follower's result channel used to be a single `bool last_flight_succeeded` on the manager,
-// which was wrong in two ways at once. It was not correlated with the attempt the follower waited
-// on, so a follower woken from flight one that read the field after flight two had finished picked
-// up flight two's result. And being a bare bool it carried no reason, so a follower coalesced onto
-// a failing leader got "not authorized" with no message while the leader surfaced the full
-// diagnostic -- which matters now that a credential refusal names exactly what the caller has to
-// change.
+// A follower's result must be read off the flight it joined, not off a manager-wide field: a
+// follower woken from flight one that read such a field after flight two had finished would pick
+// up flight two's result. And it must carry the leader's own reason, because a credential refusal
+// names exactly what the caller has to change and a bare bool would drop that.
 //
 // Both faces are provoked here in one run, and the sequencing is arranged rather than raced:
 //
@@ -1996,12 +1993,10 @@ TEST(AuthTransportCloseTest, CloseWakesEveryFollowerWhileTheyKeepArrivingOnAMult
                         } catch (...) {
                             followers_failed.fetch_add(1);
                         }
-                        // Serialising the timer means await_in_flight() has to initiate its wait on
-                        // the manager's flight strand, which takes the follower off its own
-                        // executor. Everything after the wait has to be handed back, or a real
-                        // caller's write would resume outside the strand that exists to serialise
-                        // it -- the race closed and write serialisation silently broken in its
-                        // place.
+                        // await_in_flight() initiates its wait on the manager's flight strand, so
+                        // the continuation has to be handed back to the follower's own executor;
+                        // AFollowerReleasedFromTheSingleFlightTimerResumesOnItsOwnStrand below
+                        // covers this unconditionally.
                         if (!strands[strand_index].running_in_this_thread()) {
                             resumed_off_own_strand.fetch_add(1);
                         }
@@ -2181,10 +2176,9 @@ TEST(AuthTransportCloseTest, AFollowerReleasedFromTheSingleFlightTimerResumesOnI
 // the same non-thread-safe timer object; close() reaches it synchronously from whatever thread the
 // application calls OAuthClientTransport::close() from, which is not necessarily the thread running
 // the io_context. Runs the io_context on its own thread and calls close() from the main thread with
-// no synchronization beyond the manager's own, while a flow is genuinely in flight -- the shape most
-// likely to surface a data race under ASan/UBSan (and, since Boost.Asio's timer and socket types are
-// not safe under concurrent access from two threads, the shape a thread sanitizer build would target
-// too).
+// no synchronization beyond the manager's own, while a flow is genuinely in flight. Boost.Asio's
+// timer and socket types are not safe under concurrent access from two threads, so this is the
+// shape a sanitizer build targets.
 TEST(AuthTransportCloseTest, CloseFromAnotherThreadWhileAuthorizationIsInFlightTerminatesCleanly) {
     asio::io_context io_ctx;
     StallingServer stalling(io_ctx);
@@ -2263,9 +2257,8 @@ TEST(AuthTransportCloseTest, CloseFromAnotherThreadWhileAuthorizationIsInFlightT
 // The closed check and the flight read-or-create share one critical section in handle_challenge().
 // Split across two, a request that passed the check before close() ran could still create a fresh
 // flight and run a full authorization flow after the transport had closed. One lock closes that
-// window outright: a manager that
-// is already closed refuses a new challenge before it does anything else, including the discovery
-// fetch this asserts never happens.
+// window outright: a manager that is already closed refuses a new challenge before it does anything
+// else, including the discovery fetch this asserts never happens.
 TEST(AuthTransportCloseTest, CloseThenChallengeThrowsPromptlyWithoutAnyDiscoveryOrHttp) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
@@ -2370,9 +2363,9 @@ TEST(AuthTransportCloseTest, ChallengeOnAClosedManagerThrowsFromTheAwaitNotFromT
     EXPECT_TRUE(requested_scopes.empty());
 }
 
-// Constructing a scope means dereferencing the client, so a null one now faults in the constructor
-// where it used to construct fine and fault later. Nonsensical usage either way; the point is that
-// it is refused the way the sibling constructor refuses it, not that it segfaults.
+// Constructing a scope means dereferencing the client, so a null one faults in the constructor
+// rather than later. Nonsensical usage either way; the point is that it is refused the way the
+// sibling constructor refuses it, not that it segfaults.
 TEST(AuthAuthenticatorConstructionTest, RefusesANullHttpClientInsteadOfFaulting) {
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     mcp::auth::OAuthConfig config;
@@ -2571,14 +2564,10 @@ TEST(AuthHttpClientScopeRetentionTest, TheScopeAbortLatchIsReleasedByEveryChurne
 }
 
 // OAuthAuthenticator takes its client by shared_ptr, which is an invitation to share one across
-// several servers. close() used to call OAuthHttpClient::abort_pending(), which latches the whole
-// client irreversibly -- right for a client its owner built for itself, wrong for one the
-// application supplied. So closing either authenticator permanently disabled BOTH, and the damage
-// was silent: run_refresh() reports a failed refresh as a plain `false`, so the surviving
-// authenticator raised nothing at all. An application would see tokens quietly stop renewing
-// against a server it never closed.
-//
-// close() now ends only that authenticator's own scope on the client.
+// several servers, so close() must end only that authenticator's own scope. Latching the whole
+// client instead would disable every other holder, and silently: run_refresh() reports a failed
+// refresh as a plain `false`, so the survivor raises nothing and an application sees tokens
+// quietly stop renewing against a server it never closed.
 TEST(AuthTransportCloseTest, ClosingOneAuthenticatorLeavesAnotherSharingTheSameClientWorking) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
@@ -3009,10 +2998,10 @@ TEST(AuthClientIdentityBindingTest, DoesNotSendTheClientSecretToAnAuthorizationS
     EXPECT_FALSE(outcome.secret_seen_on_the_wire);
 }
 
-// The gap this closes: credentials that name no issuer used to fall through to `use_pre_registered`
-// for every authorization server, so the guard was inert on the shorthand path the SDK itself
-// builds. Refusing at the point of use keeps construction working for every existing caller while
-// still guaranteeing the secret is never transmitted.
+// Credentials that name no issuer must not fall through to `use_pre_registered` for every
+// authorization server, which would leave the guard inert on the shorthand path the SDK itself
+// builds. Refusing at the point of use keeps construction working for every caller while still
+// guaranteeing the secret is never transmitted.
 TEST(AuthClientIdentityBindingTest, RefusesAnInjectedClientSecretThatNamesNoIssuer) {
     const auto outcome = try_injected_secret([](const std::string&) { return std::string{}; });
 
@@ -3080,8 +3069,8 @@ TEST(AuthClientIdentityBindingTest, RefusalNamesTheFieldThatAppliesToHandBuiltCr
     injected.issuer.clear();
     config.client_identity.pre_registered = injected;
 
-    // Set to the RIGHT issuer, and deliberately so: if this were the remedy the message used to
-    // advertise, the flow below would authorize. It does not, because nothing reads it here.
+    // Set to the RIGHT issuer, and deliberately so: if `client_issuer` were the remedy here, the
+    // flow below would authorize. It does not, because nothing reads it here.
     config.client_issuer = base;
 
     std::promise<std::pair<bool, std::string>> result;
@@ -3406,16 +3395,12 @@ TEST(AuthProtectedResourceValidationTest,
     EXPECT_EQ(credentials->stores, 0);
 }
 
-// Rejecting the document is only half of it: discovery used to write every document that merely
-// parsed into the resource cache *before* returning it, and the identity check ran afterwards, in
-// run_challenge(). So the first attempt threw as it should while still leaving the attacker's
-// document cached under the challenge's own metadata URL for the whole TTL. A second attempt was
-// then served that entry without touching the network, which is what makes a rejected document
-// worth planting in the first place.
-//
-// Discovery now takes the caller's acceptance test and commits nothing the caller refuses, so the
-// second attempt has nothing to be served and must go back to the server. The request log is the
-// evidence: two PRM fetches, not one.
+// Rejecting the document is only half of it: it must not be cached either. A document that merely
+// parses must not reach the resource cache ahead of the identity check, or a refused document sits
+// planted under the challenge's own metadata URL for the full TTL and the next attempt is served
+// it without touching the network -- which is what makes an attacker-supplied document worth
+// planting. Discovery takes the caller's acceptance test and commits nothing the caller refuses,
+// so the request log is the evidence: two PRM fetches, not one.
 TEST(AuthProtectedResourceValidationTest, ARejectedProtectedResourceDocumentIsNotCached) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
@@ -3851,10 +3836,8 @@ TEST(AuthDiagnosticsSanitizingTest, BidirectionalOverridesAreFlattenedToo) {
 // ---------------------------------------------------------------------------
 // Client against the real server.
 //
-// Every other test in this file drives LoopbackServer, a Beast server written a few hundred lines
-// above, which answers exactly what the test author decided the protocol looks like. A test double
-// authored alongside the client can never disagree with the client, so this file has never once
-// EXECUTED the pairing it is supposed to be about. The tests below stand up the shipped
+// Every other test in this file drives LoopbackServer, whose answers were written alongside the
+// client, so it can never disagree with the client. The tests below stand up the shipped
 // StreamableHttpSessionManager and point the shipped OAuthAuthorizationManager at the challenge it
 // really emits.
 // ---------------------------------------------------------------------------
@@ -3985,13 +3968,13 @@ TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDisc
 
     ASSERT_EQ(challenge.status, 401U);
     ASSERT_TRUE(challenge.had_www_authenticate);
-    // The whole finding, in one line: the challenge is bare.
+    // The challenge is bare.
     EXPECT_EQ(challenge.www_authenticate, "Bearer")
         << "the server now sends challenge parameters; enable the DISABLED_ test below";
     EXPECT_EQ(challenge.www_authenticate.find("resource_metadata"), std::string::npos)
         << challenge.www_authenticate;
 
-    // And the consequence, executed rather than reasoned about.
+    // And the consequence.
     //
     // Note what the client does NOT do: it does not give up. Told nothing, it falls back to
     // GUESSING the well-known locations under the URL it was configured with, spends real requests
@@ -4008,7 +3991,7 @@ TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDisc
     EXPECT_NE(client_failure.find("/mcp"), std::string::npos) << client_failure;
 }
 
-// The end state, written now so the fix has a target rather than a paragraph in a handoff.
+// The end state, written as a test so the fix has a target.
 //
 // Disabled rather than left red on purpose, and the pair above is why. A permanently failing test
 // is noise that gets muted or deleted, and it cannot tell anyone WHEN it started passing. The
@@ -4048,17 +4031,15 @@ TEST(AuthClientServerPairingTest, DISABLED_ClientDiscoversAuthorizationFromTheSe
         << "RFC 9728 5.1: the challenge must name where the client can discover how to authenticate";
 }
 
-// set_metadata_policy() and set_host_resolver() were plain unsynchronised writes to state the
-// request coroutines read on the client strand, which ThreadSanitizer confirmed as a real race for
-// anyone driving OAuthHttpClient directly -- which is exactly who the public API is for. They are
-// safe in-tree only by accident, because OAuthAuthorizationManager's constructor sets both before
-// anything is spawned.
+// set_metadata_policy() and set_host_resolver() are taken under the mutex that already guards the
+// exchange list, and each exchange reads them ONCE when it is built. Unsynchronised they are a real
+// race for anyone driving OAuthHttpClient directly -- which is exactly who the public API is for;
+// in-tree they would be safe only by accident, because OAuthAuthorizationManager's constructor sets
+// both before anything is spawned.
 //
-// Both are now taken under the mutex that already guards the exchange list, and each exchange reads
-// them ONCE when it is built. That second half is the part with teeth beyond thread safety: an
-// exchange re-validates every redirect hop, so a policy swapped mid-chain would have checked hop
-// one against the old rules and hop two against the new. This test pins that a chain runs under one
-// policy from end to end.
+// Reading them once is the part with teeth beyond thread safety: an exchange re-validates every
+// redirect hop, so a policy swapped mid-chain would have checked hop one against the old rules and
+// hop two against the new. This test pins that a chain runs under one policy from end to end.
 TEST(AuthHttpClientPolicyTest, APolicyInstalledMidExchangeDoesNotChangeTheRulesUnderIt) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
