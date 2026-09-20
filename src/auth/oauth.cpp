@@ -353,12 +353,15 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// followed on a fresh connection without discarding the operation.
     struct Exchange {
         Exchange(std::shared_ptr<Impl> state, net::strand<net::any_io_executor> executor,
-                 std::string target, std::uint64_t abort_scope = 0)
+                 std::string target, std::uint64_t abort_scope, MetadataFetchPolicy fetch_policy,
+                 HostResolver resolver_hook)
             : owner(std::move(state)),
               strand(std::move(executor)),
               url(std::move(target)),
               resolver(strand),
-              scope(abort_scope) {}
+              scope(abort_scope),
+              policy(std::move(fetch_policy)),
+              host_resolver(std::move(resolver_hook)) {}
 
         void reset() {
             endpoints.clear();
@@ -366,7 +369,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             stream.emplace(strand);
             buffer.clear();
             parser.emplace();
-            parser->body_limit(owner->policy.max_response_bytes);
+            parser->body_limit(policy.max_response_bytes);
         }
 
         [[nodiscard]] const http::response<http::string_body>& response() const {
@@ -386,6 +389,9 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         /// Which abort scope this exchange belongs to. 0 is the client's own unscoped work, which
         /// only abort_pending() ends.
         std::uint64_t scope{0};
+        /// Pinned for this exchange's whole life; see Impl::make_exchange().
+        MetadataFetchPolicy policy;
+        HostResolver host_resolver;
     };
 
     explicit Impl(const net::any_io_executor& executor) : strand(net::make_strand(executor)) {}
@@ -455,10 +461,10 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                 exchange->url);
         }
 
-        if (exchange->owner->host_resolver) {
+        if (exchange->host_resolver) {
             const auto port = static_cast<unsigned short>(std::stoul(exchange->parsed.port));
             for (const auto& literal :
-                 exchange->owner->host_resolver(exchange->parsed.host, exchange->parsed.port)) {
+                 exchange->host_resolver(exchange->parsed.host, exchange->parsed.port)) {
                 boost::system::error_code parse_error;
                 const auto address = net::ip::make_address(literal, parse_error);
                 if (parse_error) {
@@ -478,7 +484,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             throw std::runtime_error("No address resolved for " +
                                      sanitize_for_diagnostics(exchange->parsed.host));
         }
-        enforce_address_policy(exchange->owner->policy, exchange->endpoints);
+        enforce_address_policy(exchange->policy, exchange->endpoints);
 
         // Connect only to the addresses this single lookup produced. They are pinned for the
         // exchange, so a name that resolves differently later cannot redirect it.
@@ -629,35 +635,54 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 
     // Every request carries the scope it was issued under, so aborting that scope reaches exactly
     // these exchanges and no others. Scope 0 is the client's own work.
+    /// Build an exchange with the fetch policy and host resolver PINNED for its whole lifetime.
+    ///
+    /// Two reasons, and the second is not about threads at all.
+    ///
+    /// set_metadata_policy() and set_host_resolver() are plain writes to state the exchange
+    /// coroutines read, which ThreadSanitizer confirmed as a real race for anyone driving this
+    /// client directly. Reading them once here, under the mutex that already guards the exchange
+    /// list, closes that without putting a lock on every read.
+    ///
+    /// And an exchange that follows redirects re-validates every hop, so a policy swapped
+    /// mid-chain would check hop one against the old rules and hop two against the new. Pinning
+    /// makes one exchange mean one policy, which is the property the per-hop validation exists to
+    /// deliver.
+    std::shared_ptr<Exchange> make_exchange(std::string url, std::uint64_t scope) {
+        std::lock_guard lock(active_mutex);
+        return std::make_shared<Exchange>(shared_from_this(), strand, std::move(url), scope, policy,
+                                          host_resolver);
+    }
+
     Task<nlohmann::json> get_json(std::string url, std::uint64_t scope = 0) {
-        return run_get(std::make_shared<Exchange>(shared_from_this(), strand, std::move(url), scope));
+        return run_get(make_exchange(std::move(url), scope));
     }
 
     Task<TokenResponse> post_token_request(std::string token_endpoint, const KeyValuePairList& params,
                                            std::string authorization, std::uint64_t scope = 0) {
-        return run_post(
-            std::make_shared<Exchange>(shared_from_this(), strand, std::move(token_endpoint), scope),
-            std::make_shared<std::string>(detail::build_form_body(params)), std::move(authorization));
+        return run_post(make_exchange(std::move(token_endpoint), scope),
+                        std::make_shared<std::string>(detail::build_form_body(params)),
+                        std::move(authorization));
     }
 
     Task<nlohmann::json> post_json(std::string url, std::string body, std::uint64_t scope = 0) {
         auto label = "HTTP POST " + url;
-        return run_post_json(
-            std::make_shared<Exchange>(shared_from_this(), strand, std::move(url), scope),
-            std::make_shared<std::string>(std::move(body)), "application/json", std::move(label));
+        return run_post_json(make_exchange(std::move(url), scope),
+                             std::make_shared<std::string>(std::move(body)), "application/json",
+                             std::move(label));
     }
 
     static Task<nlohmann::json> run_get(std::shared_ptr<Exchange> exchange) {
         co_await net::post(exchange->strand, net::use_awaitable);
         auto guard = track_exchange(exchange);
 
-        const auto redirect_budget = exchange->owner->policy.max_redirects;
+        const auto redirect_budget = exchange->policy.max_redirects;
         for (std::size_t redirect = 0;; ++redirect) {
             // Re-read the abort on every hop, not just at track_exchange() above: abort_pending()
             // can land between two iterations, where it has nothing left to close.
             throw_if_aborted(exchange);
             // Every hop, including each redirect target, is validated afresh before it is reached.
-            enforce_url_policy(exchange->owner->policy, exchange->url);
+            enforce_url_policy(exchange->policy, exchange->url);
             exchange->parsed = parse_url(exchange->url);
             exchange->reset();
 
@@ -707,7 +732,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         co_await net::post(exchange->strand, net::use_awaitable);
         auto guard = track_exchange(exchange);
 
-        enforce_url_policy(exchange->owner->policy, exchange->url);
+        enforce_url_policy(exchange->policy, exchange->url);
         exchange->parsed = parse_url(exchange->url);
         exchange->reset();
 
@@ -748,9 +773,12 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     }
 
     net::strand<net::any_io_executor> strand;
+    std::mutex active_mutex;
+    /// Both guarded by active_mutex: written by the setters, read once per exchange in
+    /// make_exchange(). They used to be plain unsynchronised state that request coroutines read on
+    /// the client strand while an application thread could be writing it.
     MetadataFetchPolicy policy;
     HostResolver host_resolver;
-    std::mutex active_mutex;
     std::vector<std::weak_ptr<Exchange>> active_exchanges;
     /// Set once by abort_pending(); makes the abort sticky so an exchange started afterward is
     /// refused instead of running to completion. Guarded by active_mutex alongside the list above.
@@ -764,11 +792,18 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 OAuthHttpClient::OAuthHttpClient(const net::any_io_executor& executor)
     : impl_(std::make_shared<Impl>(executor)) {}
 
+// Both take active_mutex rather than trusting that nobody calls them after the first request. The
+// doc comments ask for that ordering, but nothing enforced it and nothing told a caller who broke
+// it: the result was a data race, which is silent right up until it is not. Installing either
+// mid-flight is now well defined -- exchanges already running keep what they started with, and the
+// next one picks up the new value.
 void OAuthHttpClient::set_metadata_policy(MetadataFetchPolicy policy) {
+    std::lock_guard lock(impl_->active_mutex);
     impl_->policy = std::move(policy);
 }
 
 void OAuthHttpClient::set_host_resolver(HostResolver resolver) {
+    std::lock_guard lock(impl_->active_mutex);
     impl_->host_resolver = std::move(resolver);
 }
 
