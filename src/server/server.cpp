@@ -45,6 +45,16 @@ struct UriTemplatePattern {
     std::regex matcher;
 };
 
+// The input is bounded because the matcher cannot be trusted with it, not because 512 is a policy
+// anyone chose for resource names. Every std::regex implementation spends stack in proportion to
+// the subject's length, by an amount each decides for itself, and the smallest default thread
+// stack this SDK runs on — 512 KB for a non-main thread on macOS — has to survive the longest URI
+// accepted here. Real resource identifiers sit far below this. A full-length filesystem path does
+// not, but no bound a backtracking matcher could be given would reach it either: matching an
+// RFC 6570 level-2 template ({var}, {+var}) needs no backtracking at all, so a linear, stack-free
+// segment matcher would retire this limit entirely. That replacement is deferred, not rejected.
+constexpr std::size_t g_MAX_TEMPLATE_MATCH_URI_LENGTH = 512;
+
 bool is_uri_template_operator(char ch) {
     constexpr std::string_view operators = "+#./;?&";
     return operators.find(ch) != std::string_view::npos;
@@ -127,12 +137,14 @@ UriTemplatePattern compile_uri_template(std::string_view uri_template) {
     }
 
     std::string pattern = "^";
+    bool previous_token_was_expression = false;
     for (std::size_t index = 0; index < uri_template.size();) {
         if (uri_template[index] == '}') {
             throw std::invalid_argument("Resource URI template contains an unmatched '}'");
         }
         if (uri_template[index] != '{') {
             append_regex_literal(pattern, uri_template[index]);
+            previous_token_was_expression = false;
             ++index;
             continue;
         }
@@ -141,8 +153,16 @@ UriTemplatePattern compile_uri_template(std::string_view uri_template) {
         if (close == std::string_view::npos) {
             throw std::invalid_argument("Resource URI template contains an unmatched '{'");
         }
+        // Two expressions with nothing between them compile to adjacent unbounded runs, which the
+        // regex engine can only resolve by backtracking over every way of splitting the input. The
+        // boundary between such variables is undecidable anyway, so reject the template outright.
+        if (previous_token_was_expression) {
+            throw std::invalid_argument(
+                "Resource URI template must separate adjacent expressions with a literal");
+        }
         auto expression = uri_template.substr(index + 1, close - index - 1);
         append_uri_expression_pattern(pattern, expression);
+        previous_token_was_expression = true;
         index = close + 1;
     }
     pattern += '$';
@@ -1116,6 +1136,16 @@ Task<std::string> Server::handle_resources_read_wire(const nlohmann::json& json_
         auto ctx = make_context();
         nlohmann::json handler_result = co_await handler(ctx, params_json);
         co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
+    }
+
+    // Exact resources are found by lookup and so may be any length; only template matching is
+    // length-sensitive. This reports the limit rather than "Unknown resource", so that a caller
+    // whose URI is merely too long can tell that from one that names nothing.
+    if (params.uri.size() > g_MAX_TEMPLATE_MATCH_URI_LENGTH) {
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+                                  "Resource URI exceeds the " +
+                                      std::to_string(g_MAX_TEMPLATE_MATCH_URI_LENGTH) +
+                                      " character limit for template matching");
     }
 
     const Impl::ResourceTemplateRegistration* match = nullptr;
