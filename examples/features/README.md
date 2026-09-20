@@ -243,6 +243,7 @@ done
 - `AuthorizationCallback`
 - `MetadataFetchPolicy`
 - `OAuthClientTransport`
+- `make_auth_middleware()`
 
 **Build:** `python scripts/build.py --examples`
 

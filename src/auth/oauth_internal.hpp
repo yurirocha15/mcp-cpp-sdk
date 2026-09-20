@@ -28,10 +28,16 @@ MCP_API std::size_t retained_scope_record_count(const OAuthHttpClient& client);
 
 /// How many per-scope abort latches exist right now, across every client in this process.
 ///
-/// A latch is held jointly by its scope and by every exchange issued through it, so during a
-/// request the count is above the number of live scopes and settles back as the exchanges end.
-/// A count that does not return to its starting value after the scopes are destroyed means
-/// something outlived the scope it belongs to -- a capture that escaped, or a reference cycle.
+/// This counts latch OBJECTS, not references to them. It is incremented in
+/// `OAuthScopeState`'s constructor and decremented in its destructor, so it equals the number of
+/// live scopes. An exchange in flight holds a `shared_ptr` copy of an existing object and adds
+/// nothing to it: the count does not rise during a request. Measured, not assumed -- an earlier
+/// version of this comment claimed the opposite and two reviewers believed it.
+///
+/// What the count is good for is the leak check. A count that does not return to its starting
+/// value after the scopes are destroyed means something outlived the scope it belongs to -- a
+/// capture that escaped, or a reference cycle. For a number that does rise while a request is in
+/// flight, report `use_count()` on the shared state instead.
 MCP_API std::size_t live_scope_latch_count();
 
 }  // namespace mcp::auth::internal
