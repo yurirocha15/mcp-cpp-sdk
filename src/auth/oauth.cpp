@@ -288,8 +288,18 @@ bool is_redirect_status(unsigned int status) {
 /// URI prefix of `server_url` under RFC 8707 audience semantics -- same scheme and authority,
 /// compared byte-exact with no normalization (an explicit default port is a different authority
 /// than an implicit one), and a path that is either empty/`"/"` (matches any path on the server
-/// URL) or a prefix of the server URL's path aligned on a `/` segment boundary. `resource` may not
-/// carry a query or fragment.
+/// URL) or a prefix of the server URL's path aligned on a `/` segment boundary. A single trailing
+/// `/` on `resource`'s path is ignored before that comparison, so "https://h/a/b/" and
+/// "https://h/a/b" are treated as the same path -- honest servers that do (or do not) trail their
+/// resource identifiers with `/` are not penalized for it. `resource` may not carry a query or
+/// fragment.
+///
+/// An origin-root resource (empty or `"/"` path) is accepted for *any* path on that origin by
+/// design: this is the root-PRM layout (conformance `auth/metadata-var2`), where the PRM
+/// legitimately identifies the server at coarser granularity than the endpoint URL. This function
+/// only decides whether the value is plausible enough to send as the `resource` parameter on the
+/// authorization/token request -- the authorization server remains the final arbiter of what
+/// audience it actually issues into the token.
 bool resource_identifies_server(const std::string& resource, const std::string& server_url) {
     if (resource == server_url) {
         return true;
@@ -302,9 +312,12 @@ bool resource_identifies_server(const std::string& resource, const std::string& 
     if (resource_origin.empty() || resource_origin != server_origin) {
         return false;
     }
-    const auto resource_path = resource.substr(resource_origin.size());
+    auto resource_path = resource.substr(resource_origin.size());
     if (resource_path.empty() || resource_path == "/") {
         return true;
+    }
+    if (resource_path.back() == '/') {
+        resource_path.pop_back();
     }
     const auto server_path = server_url.substr(server_origin.size());
     if (server_path == resource_path) {
@@ -1372,13 +1385,18 @@ struct OAuthAuthorizationManager::Impl {
         request.redirect_uri = owner.config.redirect_uri;
         request.scope = select_scope(owner, challenge, resource);
         if (resource.resource.empty()) {
-            request.resource = owner.config.server_url;
+            // RFC 9728 §2 makes `resource` a required member; a PRM that omits it (or ships it
+            // empty) does not meet the spec and must not be trusted silently.
+            throw std::runtime_error("Protected resource metadata for server '" +
+                                     sanitize_for_diagnostics(owner.config.server_url) +
+                                     "' is missing the required 'resource' member");
         } else if (resource_identifies_server(resource.resource, owner.config.server_url)) {
             request.resource = resource.resource;
         } else {
             throw std::runtime_error("Protected resource metadata resource '" +
                                      sanitize_for_diagnostics(resource.resource) +
-                                     "' does not identify server '" + owner.config.server_url + "'");
+                                     "' does not identify server '" +
+                                     sanitize_for_diagnostics(owner.config.server_url) + "'");
         }
 
         KeyValuePairList params = {
