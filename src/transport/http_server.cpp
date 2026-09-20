@@ -439,30 +439,22 @@ struct HttpServerTransport::Impl {
             co_return make_empty_json_response(request, http::status::accepted);
         }
 
-        // A sessionless discover is answered on no credential at all, so the JSON-RPC id it
-        // carries is chosen by an unauthenticated party. Registering it under that raw id would
-        // put a stranger in the same key space the established session correlates on, with two
-        // consequences. Whoever registers first owns the id, so a prober could claim an id the
-        // session then needs and force a spurious "Request id already pending" on a legitimate
-        // request. And the raw id would land in sessionless_request_ids, which decides
-        // replay-store exclusion, so the prober's chosen id would steer what the session's
-        // replay history contains -- an unauthenticated party influencing session state, not
-        // merely denying itself service.
+        // A sessionless discover carries an id chosen by an unauthenticated party, so it is given
+        // a transport-private sentinel id here and the caller's own id is restored in run_write
+        // before the response leaves. Registering it under the raw id would share a key space with
+        // the established session: a prober could claim an id the session then needs and force a
+        // spurious "Request id already pending", and the raw id would also land in
+        // sessionless_request_ids, which decides replay-store exclusion, letting the prober steer
+        // what the session's replay history contains.
         //
-        // The discover is therefore carried under a transport-private sentinel id: registered,
-        // correlated and replay-filtered under the sentinel, with the caller's own id restored
-        // in run_write before the response leaves. Only this pre-gate path pays the rewrite and
-        // the re-serialisation; every session-gated request is still registered under, and
-        // forwarded with, the exact bytes the peer sent.
+        // Only this pre-gate path pays the rewrite; session-gated requests are registered under,
+        // and forwarded with, the exact bytes the peer sent.
         //
-        // Do not replace this with a scoped map -- keying pending_responses per session or per
-        // principal and letting both parties hold the same raw id. It looks smaller and it is
-        // wrong: the correlation key is the id the peer echoes back, so a response arriving for
-        // id N could belong to either holder and the transport would have to guess, by arrival
-        // order or by content. Guessing wrong hands one party another party's response body.
-        // That converts today's clean denial, where the reply always reaches the registrant,
-        // into a genuine cross-party confusion -- strictly worse than the defect being fixed.
-        // Rewriting the id is what preserves the correlation property.
+        // Do not replace this with a per-session or per-principal map that lets both parties hold
+        // the same raw id. Correlation keys on the id the peer echoes back, so a response for id N
+        // could belong to either holder and the transport would have to guess -- and guessing
+        // wrong hands one party another party's response body, which is worse than the denial it
+        // replaces.
         std::string request_id_key;
         std::optional<nlohmann::json> client_request_id;
         std::string sentinel_body;
