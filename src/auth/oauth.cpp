@@ -1334,11 +1334,24 @@ struct OAuthAuthenticator::Impl {
     std::string server_url;
 };
 
+namespace {
+
+/// Impl's constructor takes a scope off the client, so a null one faults before the object exists.
+/// Refuse it the way OAuthClientTransport's constructor refuses its own null arguments.
+std::shared_ptr<OAuthHttpClient> require_http_client(std::shared_ptr<OAuthHttpClient> client) {
+    if (!client) {
+        throw std::invalid_argument("OAuthAuthenticator requires an OAuth HTTP client");
+    }
+    return client;
+}
+
+}  // namespace
+
 OAuthAuthenticator::OAuthAuthenticator(std::shared_ptr<TokenStore> token_store,
                                        std::shared_ptr<OAuthHttpClient> oauth_client,
                                        OAuthConfig config, std::string server_url)
-    : impl_(std::make_shared<Impl>(std::move(token_store), std::move(oauth_client), std::move(config),
-                                   std::move(server_url))) {}
+    : impl_(std::make_shared<Impl>(std::move(token_store), require_http_client(std::move(oauth_client)),
+                                   std::move(config), std::move(server_url))) {}
 
 std::string OAuthAuthenticator::get_access_token() const {
     const auto token = impl_->token_store->load(impl_->server_url);
