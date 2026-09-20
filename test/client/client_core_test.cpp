@@ -1164,3 +1164,124 @@ TEST_F(ClientCoreTest, UnsupportedProtocolVersionDiagnosticBoundsServerChosenVer
         << "message size: " << outcome.message.size();
     EXPECT_LE(outcome.message.size(), std::size_t{512}) << "message size: " << outcome.message.size();
 }
+
+namespace {
+
+// Drives a request the peer answers with a JSON-RPC error object, and reports what the client
+// raised.
+//
+// This is the shortest path there is from a peer's bytes to an application's log. `error.message`
+// is deserialized verbatim off the wire (`json_message.at("error").get<Error>()`), carried into
+// McpError, and interpolated into what(). No OAuth, no discovery, no metadata document: an
+// ordinary error response to an ordinary request.
+struct PeerErrorOutcome {
+    bool threw{false};
+    int code{0};
+    std::string what;         ///< McpError::what() -- the human-readable diagnostic.
+    std::string raw_message;  ///< McpError::message() -- the structured field, which stays raw.
+};
+
+PeerErrorOutcome send_request_against_peer_error(boost::asio::io_context& io_ctx,
+                                                 const std::string& peer_message) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx.get_executor());
+    auto* raw_transport = transport.get();
+
+    raw_transport->set_on_write([raw_transport, peer_message](std::string_view msg) {
+        const auto json_msg = nlohmann::json::parse(msg);
+        if (!json_msg.contains("id")) {
+            return;
+        }
+        const auto id = json_msg.at("id").get<std::string>();
+        if (json_msg.value("method", "") == "initialize") {
+            raw_transport->enqueue_message(make_result_response(id, make_initialize_result()).dump());
+            return;
+        }
+        // The message travels as JSON, so CR/LF written here arrive at the client as real control
+        // bytes rather than as the two-character escapes: the encoder escapes them, the decoder
+        // turns them back. That decode is what makes a parsed field sharper than raw wire bytes.
+        raw_transport->enqueue_message(
+            make_error_response(id, mcp::g_INTERNAL_ERROR, peer_message).dump());
+    });
+
+    mcp::Client client(transport, io_ctx.get_executor());
+
+    PeerErrorOutcome outcome;
+    boost::asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            mcp::Implementation info;
+            info.name = "test-client";
+            info.version = "0.1";
+            static_cast<void>(co_await client.connect(std::move(info), mcp::ClientCapabilities{}));
+            try {
+                static_cast<void>(co_await client.send_request("tools/list", std::nullopt));
+            } catch (const mcp::McpError& error) {
+                outcome.threw = true;
+                outcome.code = error.code();
+                outcome.what = error.what();
+                outcome.raw_message = error.message();
+            }
+            raw_transport->close();
+        },
+        boost::asio::detached);
+
+    io_ctx.run();
+    return outcome;
+}
+
+}  // namespace
+
+// The message in a peer's error response is the peer's text, and it reaches what() -- which is
+// what an application logs. A server that answers with CR/LF forges a line in that log, and a bidi
+// override reorders the tail of the diagnostic so a refusal can be made to read as its opposite.
+TEST_F(ClientCoreTest, PeerErrorDiagnosticFlattensThePeerChosenMessage) {
+    // "zqtripwire" is a token no other code path produces; see the tripwire assertions below.
+    // \xe2\x80\xae is U+202E RIGHT-TO-LEFT OVERRIDE, written escaped so this source file does not
+    // itself contain a bidi override.
+    const std::string forged =
+        "denied\r\n2026-09-20 INFO zqtripwire operator approved\xe2\x80\xae reordered tail";
+
+    const auto outcome = send_request_against_peer_error(io_ctx_, forged);
+
+    // Tripwire, ordered before the flattening assertions. The throw has to be the McpError built
+    // from the peer's own error object -- not a request timeout, not an envelope-validation
+    // refusal, not a transport failure. Each of those also raises an McpError, with a message this
+    // SDK authored, and would satisfy everything below without the peer's bytes ever reaching a
+    // diagnostic. Dump what() on failure so a vacuous pass cannot hide.
+    ASSERT_TRUE(outcome.threw) << "send_request() raised nothing at all";
+    ASSERT_EQ(outcome.code, mcp::g_INTERNAL_ERROR) << "actual what(): " << outcome.what;
+    ASSERT_EQ(outcome.what.rfind("JSON-RPC error ", 0), 0U) << "actual what(): " << outcome.what;
+    ASSERT_NE(outcome.what.find("zqtripwire"), std::string::npos) << "actual what(): " << outcome.what;
+
+    EXPECT_EQ(outcome.what.find('\r'), std::string::npos) << "actual what(): " << outcome.what;
+    EXPECT_EQ(outcome.what.find('\n'), std::string::npos) << "actual what(): " << outcome.what;
+    EXPECT_EQ(outcome.what.find("\xe2\x80\xae"), std::string::npos)
+        << "actual what(): " << outcome.what;
+
+    // The split, and it is the point: what() is a diagnostic and is sanitized; error() and the
+    // message() it exposes are structured protocol data a caller may compare or re-encode, so they
+    // must come back exactly as the peer sent them. Sanitizing those instead would silently change
+    // what an application matches on.
+    EXPECT_EQ(outcome.raw_message, forged);
+}
+
+// The same site must bound the value too, so a peer cannot flood the application's log through a
+// megabyte-long error message.
+TEST_F(ClientCoreTest, PeerErrorDiagnosticBoundsThePeerChosenMessage) {
+    const std::string forged = "zqtripwire" + std::string(64 * 1024, 'A');
+
+    const auto outcome = send_request_against_peer_error(io_ctx_, forged);
+
+    ASSERT_TRUE(outcome.threw) << "send_request() raised nothing at all";
+    ASSERT_EQ(outcome.code, mcp::g_INTERNAL_ERROR)
+        << "actual what() prefix: " << outcome.what.substr(0, 80);
+    ASSERT_EQ(outcome.what.rfind("JSON-RPC error ", 0), 0U)
+        << "actual what() prefix: " << outcome.what.substr(0, 80);
+    ASSERT_NE(outcome.what.find("zqtripwire"), std::string::npos)
+        << "actual what() prefix: " << outcome.what.substr(0, 80);
+
+    EXPECT_LT(outcome.what.size(), forged.size()) << "what() size: " << outcome.what.size();
+    EXPECT_LE(outcome.what.size(), std::size_t{512}) << "what() size: " << outcome.what.size();
+    EXPECT_EQ(outcome.raw_message.size(), forged.size())
+        << "the structured message was truncated; only the diagnostic may be";
+}

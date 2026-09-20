@@ -40,8 +40,18 @@ std::optional<nlohmann::json> make_paginated_params(const std::optional<std::str
 
 }  // namespace
 
+// `error` arrives verbatim off the wire -- dispatch_response() deserializes the peer's `error`
+// object with no validation -- so `error.message` is text the peer chose, and what() is what an
+// application logs. Unsanitized it is the shortest log-forgery path in the SDK: no OAuth, no
+// discovery, no metadata document, just an error response to any request.
+//
+// The split is deliberate and matches MetadataPolicyError's. what() is a diagnostic and is
+// flattened and bounded. error(), and the message() it exposes, are structured protocol data a
+// caller may compare or re-encode, and stay exactly as the peer sent them; sanitizing those would
+// silently change what an application matches on.
 McpError::McpError(Error error)
-    : std::runtime_error("JSON-RPC error " + std::to_string(error.code) + ": " + error.message),
+    : std::runtime_error("JSON-RPC error " + std::to_string(error.code) + ": " +
+                         detail::sanitize_for_diagnostics(error.message)),
       error_(std::move(error)) {}
 
 McpError::McpError(int code, std::string message, std::optional<nlohmann::json> data)
