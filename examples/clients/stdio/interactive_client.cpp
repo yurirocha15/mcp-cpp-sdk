@@ -1,3 +1,11 @@
+/// @file interactive_client.cpp
+/// @brief Minimal interactive MCP client over stdio.
+///
+/// @note On the stdio transport, stdout IS the protocol channel: StdioTransport
+///   writes JSON-RPC messages there by default. Every human-readable line in
+///   this file therefore goes to stderr. Diagnostics printed to stdout would
+///   interleave prose with JSON-RPC and corrupt the stream for the peer.
+
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -11,7 +19,7 @@ using namespace mcp;
 Task<void> run_client(const std::string& server_path) {
     auto executor = co_await boost::asio::this_coro::executor;
 
-    std::cout << "Connecting to server: " << server_path << "..." << '\n';
+    std::cerr << "Connecting to server: " << server_path << "..." << '\n';
 
     // Simple stdio transport for demonstration.
     // In a real client, you would spawn the server process and connect its pipes.
@@ -26,21 +34,21 @@ Task<void> run_client(const std::string& server_path) {
         co_return;
     }
 
-    std::cout << "Connected! Listing tools..." << '\n';
+    std::cerr << "Connected! Listing tools..." << '\n';
 
     auto tools_result = co_await client.list_tools();
     for (const auto& tool : tools_result.tools) {
-        std::cout << "- " << tool.name << ": " << tool.description.value_or("(no description)") << '\n';
+        std::cerr << "- " << tool.name << ": " << tool.description.value_or("(no description)") << '\n';
     }
 
     if (!tools_result.tools.empty()) {
         std::string tool_name = tools_result.tools[0].name;
-        std::cout << "Calling first tool: " << tool_name << "..." << '\n';
+        std::cerr << "Calling first tool: " << tool_name << "..." << '\n';
 
         nlohmann::json args = nlohmann::json::object();
         try {
             auto result = co_await client.call_tool(tool_name, args);
-            std::cout << "Result: " << nlohmann::json(result.content).dump(2) << '\n';
+            std::cerr << "Result: " << nlohmann::json(result.content).dump(2) << '\n';
         } catch (const std::exception& e) {
             std::cerr << "Error calling tool: " << e.what() << '\n';
         }

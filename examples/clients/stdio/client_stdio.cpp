@@ -1,6 +1,11 @@
 /// @file client_stdio.cpp
 /// @brief MCP client over stdio demonstrating connect, list/call tools,
 ///   list/read resources, list templates, list/get prompts, complete, and notifications.
+///
+/// @note On the stdio transport, stdout IS the protocol channel: StdioTransport
+///   writes JSON-RPC messages there by default. Every human-readable line in
+///   this file therefore goes to stderr. Diagnostics printed to stdout would
+///   interleave prose with JSON-RPC and corrupt the stream for the peer.
 
 #include <mcp/client/client.hpp>
 #include <mcp/transport/stdio.hpp>
@@ -44,14 +49,14 @@ int main() {  // NOLINT(readability-function-cognitive-complexity)
                 caps.sampling = ClientCapabilities::SamplingCapability{};
 
                 auto init_result = co_await client.connect(client_info, caps);
-                std::cout << "Connected to: " << init_result.serverInfo.name << " "
+                std::cerr << "Connected to: " << init_result.serverInfo.name << " "
                           << init_result.serverInfo.version << "\n";
 
                 // list_tools
                 auto tools = co_await client.list_tools();
-                std::cout << "Tools (" << tools.tools.size() << "):\n";
+                std::cerr << "Tools (" << tools.tools.size() << "):\n";
                 for (const auto& tool : tools.tools) {
-                    std::cout << "  - " << tool.name << "\n";
+                    std::cerr << "  - " << tool.name << "\n";
                 }
 
                 // call_tool with typed arguments
@@ -59,7 +64,7 @@ int main() {  // NOLINT(readability-function-cognitive-complexity)
                     co_await client.call_tool("add", AddArgs{.a = 3.0, .b = 4.0} /* NOLINT */);
                 for (const auto& block : add_result.content) {
                     if (const auto* text = std::get_if<TextContent>(&block)) {
-                        std::cout << "add(3, 4) = " << text->text << "\n";
+                        std::cerr << "add(3, 4) = " << text->text << "\n";
                     }
                 }
 
@@ -68,15 +73,15 @@ int main() {  // NOLINT(readability-function-cognitive-complexity)
                 auto echo_result = co_await client.call_tool("echo_async", echo_args);
                 for (const auto& block : echo_result.content) {
                     if (const auto* text = std::get_if<TextContent>(&block)) {
-                        std::cout << "echo_async: " << text->text << "\n";
+                        std::cerr << "echo_async: " << text->text << "\n";
                     }
                 }
 
                 // list_resources
                 auto resources = co_await client.list_resources();
-                std::cout << "Resources (" << resources.resources.size() << "):\n";
+                std::cerr << "Resources (" << resources.resources.size() << "):\n";
                 for (const auto& res : resources.resources) {
-                    std::cout << "  - " << res.uri << " (" << res.name << ")\n";
+                    std::cerr << "  - " << res.uri << " (" << res.name << ")\n";
                 }
 
                 // read_resource
@@ -84,23 +89,23 @@ int main() {  // NOLINT(readability-function-cognitive-complexity)
                     auto read_result = co_await client.read_resource(resources.resources[0].uri);
                     for (const auto& content : read_result.contents) {
                         if (const auto* text = std::get_if<TextResourceContents>(&content)) {
-                            std::cout << "Resource content: " << text->text << "\n";
+                            std::cerr << "Resource content: " << text->text << "\n";
                         }
                     }
                 }
 
                 // list_resource_templates
                 auto templates = co_await client.list_resource_templates();
-                std::cout << "Resource templates (" << templates.resourceTemplates.size() << "):\n";
+                std::cerr << "Resource templates (" << templates.resourceTemplates.size() << "):\n";
                 for (const auto& tmpl : templates.resourceTemplates) {
-                    std::cout << "  - " << tmpl.uriTemplate << " (" << tmpl.name << ")\n";
+                    std::cerr << "  - " << tmpl.uriTemplate << " (" << tmpl.name << ")\n";
                 }
 
                 // list_prompts
                 auto prompts = co_await client.list_prompts();
-                std::cout << "Prompts (" << prompts.prompts.size() << "):\n";
+                std::cerr << "Prompts (" << prompts.prompts.size() << "):\n";
                 for (const auto& prompt : prompts.prompts) {
-                    std::cout << "  - " << prompt.name << "\n";
+                    std::cerr << "  - " << prompt.name << "\n";
                 }
 
                 // get_prompt
@@ -113,7 +118,7 @@ int main() {  // NOLINT(readability-function-cognitive-complexity)
                         co_await client.get_prompt(prompts.prompts[0].name, std::move(prompt_args));
                     for (const auto& msg : prompt_result.messages) {
                         if (const auto* text = std::get_if<TextContent>(&msg.content)) {
-                            std::cout << "Prompt message: " << text->text << "\n";
+                            std::cerr << "Prompt message: " << text->text << "\n";
                         }
                     }
                 }
@@ -130,11 +135,11 @@ int main() {  // NOLINT(readability-function-cognitive-complexity)
                 complete_params.ref = std::move(prompt_ref);
                 complete_params.argument = std::move(complete_arg);
                 auto complete_result = co_await client.complete(complete_params);
-                std::cout << "Completions: " << complete_result.completion.values.size() << " values\n";
+                std::cerr << "Completions: " << complete_result.completion.values.size() << " values\n";
 
                 // send_notification
                 co_await client.send_notification("notifications/cancelled", std::nullopt);
-                std::cout << "Sent cancellation notification\n";
+                std::cerr << "Sent cancellation notification\n";
             },
             boost::asio::detached);
 
