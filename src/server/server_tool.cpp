@@ -23,15 +23,11 @@ void Server::add_raw_tool(const Tool& tool, TypeErasedHandler handler) {
 
 void Server::add_raw_tool(const Tool& tool,
                           std::function<nlohmann::json(const nlohmann::json&)> handler) {
+    // Exceptions are turned into isError results by the dispatcher, which is also where the
+    // message is made safe to hand to the peer.
     add_raw_tool(tool,
-                 [h = std::move(handler)](Context& /*ctx*/,
-                                          const nlohmann::json& params) -> Task<nlohmann::json> {
-                     try {
-                         co_return h(params);
-                     } catch (const std::exception& e) {
-                         co_return nlohmann::json(make_tool_error_result(e.what()));
-                     }
-                 });
+                 [h = std::move(handler)](Context& /*ctx*/, const nlohmann::json& params)
+                     -> Task<nlohmann::json> { co_return h(params); });
 }
 
 }  // namespace mcp

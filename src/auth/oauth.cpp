@@ -1314,11 +1314,13 @@ struct MiddlewareInvocation {
 };
 
 Task<nlohmann::json> invoke_auth_middleware(std::shared_ptr<MiddlewareInvocation> invocation) {
+    // A rejected token is reported to the caller as a tool result rather than raised: throwing from
+    // middleware is reserved for failures the caller cannot act on, and surfaces as -32603.
     if (invocation->token.empty()) {
-        throw std::runtime_error("Unauthorized: missing Bearer token");
+        co_return nlohmann::json(make_tool_error_result("Unauthorized: missing Bearer token"));
     }
     if (!co_await invocation->validator(invocation->token)) {
-        throw std::runtime_error("Unauthorized: invalid Bearer token");
+        co_return nlohmann::json(make_tool_error_result("Unauthorized: invalid Bearer token"));
     }
     co_return co_await invocation->next(*invocation->context, invocation->params);
 }

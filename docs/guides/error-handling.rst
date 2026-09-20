@@ -36,7 +36,7 @@ Server-side Error Handling
 
 Server handlers (tools, resources, prompts) can report errors in two primary ways:
 
-1. **Throwing Exceptions**: Exceptions from typed or asynchronous handlers propagate as JSON-RPC ``Internal error (-32603)`` responses. The raw synchronous ``add_tool(name, description, schema, std::function<nlohmann::json(const nlohmann::json&)>)`` overload is different: it catches exceptions and converts them into tool results with ``isError: true``.
+1. **Throwing Exceptions**: Exceptions from a tool handler — typed, asynchronous or raw — are converted into tool results with ``isError: true``, because a tool that cannot complete has failed at its own task rather than at the protocol. Exceptions from resource and prompt handlers, which have no such result channel, propagate as JSON-RPC ``Internal error (-32603)`` responses, and so do exceptions from middleware: middleware decides whether a call may proceed at all, so refusing one is a protocol-level answer rather than a tool outcome. Exception messages are flattened and length-bounded before they reach the peer.
 2. **Returning Error Results**: For application-level errors (e.g., "File not found" or "Invalid input"), handlers can return a ``CallToolResult`` with the ``isError`` flag set to ``true``. This allows the client to distinguish between a technical failure (like a crash or timeout) and a logical error within the tool's execution.
 
 Choosing Between Exceptions and Error Results
