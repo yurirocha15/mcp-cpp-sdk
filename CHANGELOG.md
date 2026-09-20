@@ -47,6 +47,21 @@ Versioning; a `0.x` version is a stable release unless its version has an
   that relied on that silence is now a hard failure. `allowed_origins` is
   unchanged: an entry that is not a bare origin still matches nothing, because
   dropping an allow entry grants nothing and so fails closed.
+- Injected OAuth client credentials that carry a `client_secret` must now name
+  the authorization server they are bound to, via the new
+  `OAuthAuthorizationConfig::client_issuer` or
+  `ClientIdentityConfig::pre_registered`'s `issuer`. A secret that names no
+  issuer is refused at the point of use: `select_client_identity` returns
+  `ClientIdentityDecision::unavailable` and the authorization attempt fails
+  with a message naming the missing binding, rather than presenting the secret.
+  Previously an empty `issuer` fell through to `use_pre_registered` for every
+  authorization server, so the existing misbinding guard was inert on both
+  paths the SDK itself constructs, and a hostile-but-policy-allowed
+  authorization server named in a protected-resource document received the
+  application's secret at its token endpoint. "Bound to no issuer" is not
+  "bound to every issuer". Construction is unchanged, so a caller breaks only
+  when it actually attempts the affected flow; a public client (a `client_id`
+  with no secret) is unaffected and still authorizes against any issuer.
 
 ## [0.2.0] - TBD
 
