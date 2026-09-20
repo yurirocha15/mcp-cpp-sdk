@@ -2247,3 +2247,102 @@ TEST(AuthProtectedResourceValidationTest, RejectsAnEmptyPrmResource) {
     EXPECT_TRUE(outcome.threw);
     EXPECT_FALSE(outcome.authorized);
 }
+
+namespace {
+
+/// Credential store that only counts, so a test can assert nothing was ever persisted.
+class CountingCredentialStore final : public mcp::auth::ClientCredentialStore {
+   public:
+    void store(const std::string& issuer, mcp::auth::OAuthClientInformation information) override {
+        (void)issuer;
+        (void)information;
+        ++stores;
+    }
+
+    [[nodiscard]] std::optional<mcp::auth::OAuthClientInformation> load(
+        const std::string& issuer) const override {
+        (void)issuer;
+        return std::nullopt;
+    }
+
+    void remove(const std::string& issuer) override { (void)issuer; }
+
+    int stores{0};
+};
+
+}  // namespace
+
+// Rejecting an unidentified `resource` is not enough on its own: it has to happen before the SDK
+// acts on anything else the same untrusted document names. A PRM that points at an authorization
+// server we would otherwise fetch metadata from, register a client with, and persist credentials
+// for must cause none of those, so the only request this fixture ever sees is the PRM fetch itself.
+TEST(AuthProtectedResourceValidationTest,
+     RejectsABadResourceBeforeDiscoveringTheAuthorizationServerOrRegisteringAClient) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm.json") {
+            // `resource` names a different origin entirely, so it does not identify our server.
+            return json_response({{"resource", "https://attacker.test/mcp"},
+                                  {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            auto metadata = auth_server_metadata(base, true);
+            metadata["registration_endpoint"] = base + "/register";
+            return json_response(metadata);
+        }
+        if (target == "/register") {
+            return json_response(
+                {{"client_id", "attacker-minted-client"}, {"client_secret", "attacker-minted-secret"}});
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(4), asio::detached);
+
+    auto credentials = std::make_shared<CountingCredentialStore>();
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    // No client_id, so identity resolution would reach dynamic registration.
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.credential_store = credentials;
+    config.policy = loopback_policy(server.origin());
+
+    // asio::detached swallows exceptions, which would turn a failed assertion into a hang; the
+    // promise carries the outcome back to the test body instead.
+    std::promise<std::string> failure;
+    auto observed = failure.get_future();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                         echoing_callback(nullptr));
+            std::string message;
+            try {
+                (void)co_await manager.try_handle_challenge(
+                    R"(Bearer realm="mcp", resource_metadata=")" + base + R"(/prm.json")");
+                message = "<no exception>";
+            } catch (const std::exception& error) {
+                message = error.what();
+            }
+            failure.set_value(message);
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    const auto message = observed.get();
+    EXPECT_NE(message.find("does not identify server"), std::string::npos) << message;
+    // The PRM fetch is the only request that may have happened: no authorization-server metadata
+    // discovery, and no dynamic-registration POST.
+    const std::vector<std::string> expected_targets{"/prm.json"};
+    EXPECT_EQ(server.targets(), expected_targets);
+    EXPECT_EQ(credentials->stores, 0);
+}
