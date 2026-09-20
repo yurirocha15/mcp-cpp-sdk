@@ -28,6 +28,7 @@
 #include <mcp/auth/client_identity.hpp>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/transport/http_client.hpp>
+#include <mcp/transport/http_session_manager.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -3626,4 +3627,189 @@ TEST(AuthDiagnosticsSanitizingTest, IllFormedBytesAreReplacedRatherThanCopiedThr
     EXPECT_TRUE(is_well_formed_utf8(mixed)) << mixed;
     EXPECT_NE(mixed.find("before"), std::string::npos) << mixed;
     EXPECT_NE(mixed.find("after"), std::string::npos) << mixed;
+}
+
+// ---------------------------------------------------------------------------
+// Client against the real server.
+//
+// Every other test in this file drives LoopbackServer, a Beast server written a few hundred lines
+// above, which answers exactly what the test author decided the protocol looks like. A test double
+// authored alongside the client can never disagree with the client, so this file has never once
+// EXECUTED the pairing it is supposed to be about. The tests below stand up the shipped
+// StreamableHttpSessionManager and point the shipped OAuthAuthorizationManager at the challenge it
+// really emits.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// The status and challenge of one unauthenticated request, read off the wire.
+struct RawChallenge {
+    unsigned int status{0};
+    bool had_www_authenticate{false};
+    std::string www_authenticate;
+};
+
+mcp::Task<RawChallenge> fetch_unauthenticated_challenge(const asio::any_io_executor& executor,
+                                                        unsigned short port) {
+    const auto body = json{{"jsonrpc", "2.0"},
+                           {"method", "initialize"},
+                           {"params",
+                            {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                             {"clientInfo", {{"name", "auth-pairing-test"}, {"version", "1"}}},
+                             {"capabilities", json::object()}}},
+                           {"id", 1}}
+                          .dump();
+
+    beast::tcp_stream stream(executor);
+    const std::vector<asio::ip::tcp::endpoint> endpoints{{asio::ip::make_address("127.0.0.1"), port}};
+    co_await stream.async_connect(endpoints, asio::use_awaitable);
+
+    http::request<http::string_body> request(http::verb::post, "/mcp",
+                                             mcp::constants::g_http_version_11);
+    request.set(http::field::host, "127.0.0.1:" + std::to_string(port));
+    request.set(http::field::content_type, "application/json");
+    request.set(http::field::accept, "application/json, text/event-stream");
+    request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    request.body() = body;
+    request.prepare_payload();
+    co_await http::async_write(stream, request, asio::use_awaitable);
+
+    beast::flat_buffer buffer;
+    http::response<http::string_body> response;
+    co_await http::async_read(stream, buffer, response, asio::use_awaitable);
+
+    RawChallenge challenge;
+    challenge.status = response.result_int();
+    const auto header = response.find(http::field::www_authenticate);
+    if (header != response.end()) {
+        challenge.had_www_authenticate = true;
+        challenge.www_authenticate = std::string(header->value());
+    }
+
+    beast::error_code ignored;
+    (void)stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+    co_return challenge;
+}
+
+mcp::StreamableHttpSessionManager::ServerFactory make_pairing_server_factory() {
+    return [](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+        mcp::ServerCapabilities caps;
+        caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+        return std::make_unique<mcp::Server>(mcp::Implementation{"auth-pairing-server", "1.0.0"},
+                                             std::move(caps));
+    };
+}
+
+}  // namespace
+
+// EXECUTED, not read: this is the gap as the shipped code actually behaves, pinned so it cannot
+// change unnoticed in either direction.
+//
+// RFC 9728 section 5.1 has the resource server point the client at its metadata with a
+// `resource_metadata` parameter on the challenge. Both emit sites send a bare `Bearer`:
+//
+//     src/transport/http_session_manager.cpp:455
+//     src/transport/http_server.cpp:372
+//
+// So a client that receives this challenge is told it needs a token and nothing about where to get
+// one. It can only fall back to the well-known location derived from the URL it was configured
+// with, which this server does not serve, and discovery fails.
+//
+// When those two emit sites are fixed, THIS test fails and
+// `DISABLED_ClientDiscoversAuthorizationFromTheServersOwnChallenge` below is the one to enable.
+// Read them as a pair.
+TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDiscoveryCannotStart) {
+    constexpr unsigned short port = 19211;
+
+    asio::io_context io_ctx;
+    mcp::StreamableHttpSessionManager manager(io_ctx.get_executor(), "127.0.0.1", port,
+                                              make_pairing_server_factory());
+    manager.set_bearer_token_validator([](std::string_view token) { return token == "valid-token"; });
+    asio::co_spawn(io_ctx, manager.listen(), asio::detached);
+
+    RawChallenge challenge;
+    bool client_authorized = false;
+    std::string client_failure;
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            challenge = co_await fetch_unauthenticated_challenge(io_ctx.get_executor(), port);
+
+            // The shipped client, handed the shipped server's own challenge.
+            const auto base = "http://127.0.0.1:" + std::to_string(port);
+            auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+            mcp::auth::OAuthAuthorizationConfig config;
+            config.server_url = base + "/mcp";
+            config.client_id = "test-client";
+            config.redirect_uri = "http://127.0.0.1:9999/callback";
+            config.policy = loopback_policy(base);
+
+            mcp::auth::OAuthAuthorizationManager authorization(io_ctx.get_executor(), store, config,
+                                                               echoing_callback(nullptr));
+            try {
+                client_authorized =
+                    co_await authorization.try_handle_challenge(challenge.www_authenticate);
+            } catch (const std::exception& error) {
+                client_failure = error.what();
+            }
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    ASSERT_EQ(challenge.status, 401U);
+    ASSERT_TRUE(challenge.had_www_authenticate);
+    // The whole finding, in one line: the challenge is bare.
+    EXPECT_EQ(challenge.www_authenticate, "Bearer")
+        << "the server now sends challenge parameters; enable the DISABLED_ test below";
+    EXPECT_EQ(challenge.www_authenticate.find("resource_metadata"), std::string::npos)
+        << challenge.www_authenticate;
+
+    // And the consequence, executed rather than reasoned about: the client cannot get anywhere.
+    EXPECT_FALSE(client_authorized)
+        << "the client authorized against a challenge that names no metadata location";
+    EXPECT_FALSE(client_failure.empty())
+        << "expected discovery to fail outright when the challenge names nothing";
+}
+
+// The end state, written now so the fix has a target rather than a paragraph in a handoff.
+//
+// Disabled rather than left red on purpose, and the pair above is why. A permanently failing test
+// is noise that gets muted or deleted, and it cannot tell anyone WHEN it started passing. The
+// enabled test above fails the moment either emit site gains a `resource_metadata` parameter, and
+// its failure message says to come here. So the seam is guarded in both directions: the gap cannot
+// be closed silently, and it cannot be reopened silently either.
+//
+// To enable: have both emit sites send
+// `Bearer resource_metadata="<base>/.well-known/oauth-protected-resource"`, serve that document,
+// and delete the DISABLED_ prefix.
+TEST(AuthClientServerPairingTest, DISABLED_ClientDiscoversAuthorizationFromTheServersOwnChallenge) {
+    constexpr unsigned short port = 19212;
+
+    asio::io_context io_ctx;
+    mcp::StreamableHttpSessionManager manager(io_ctx.get_executor(), "127.0.0.1", port,
+                                              make_pairing_server_factory());
+    manager.set_bearer_token_validator([](std::string_view token) { return token == "valid-token"; });
+    asio::co_spawn(io_ctx, manager.listen(), asio::detached);
+
+    RawChallenge challenge;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            challenge = co_await fetch_unauthenticated_challenge(io_ctx.get_executor(), port);
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    ASSERT_EQ(challenge.status, 401U);
+    ASSERT_TRUE(challenge.had_www_authenticate);
+    const auto parsed = mcp::auth::parse_www_authenticate(challenge.www_authenticate);
+    const auto bearer = mcp::auth::select_bearer_challenge(parsed);
+    ASSERT_TRUE(bearer.has_value());
+    EXPECT_TRUE(bearer->resource_metadata.has_value())
+        << "RFC 9728 5.1: the challenge must name where the client can discover how to authenticate";
 }
