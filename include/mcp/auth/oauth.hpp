@@ -219,6 +219,29 @@ using HostResolver =
  */
 class OAuthHttpClientScope;
 
+namespace detail {
+
+/// One scope's abort latch. Opaque here and defined in the implementation: a scope holds its own
+/// latch rather than a name for one the client keeps, which is what lets the latch die with the
+/// scope instead of accumulating on the client for the life of the process.
+struct OAuthScopeState;
+
+/// Reach-in for this SDK's own tests, declared opaque on purpose.
+///
+/// Why a public header knows about a test type at all: the accessors that use it need to read
+/// this client's private state, and granting friendship to one opaque tag is the narrowest way to
+/// allow that. It hands out nothing callable -- the type is defined only inside the
+/// implementation, and the accessors are declared in src/auth/oauth_internal.hpp, which is not
+/// installed, so no consumer can reach them without hand-redeclaring an implementation symbol.
+/// The symbols themselves are exported, because the test binary links the shared library and this
+/// library is built with hidden visibility; "absent from every installed header" and "not
+/// exported" were not both achievable without changing what the tests link against, which is a
+/// far larger change than it would be worth. A friend declaration does not affect layout, so
+/// binary compatibility is unaffected.
+struct OAuthTestAccess;
+
+}  // namespace detail
+
 class MCP_API OAuthHttpClient {
    public:
     /**
@@ -331,6 +354,7 @@ class MCP_API OAuthHttpClient {
     std::shared_ptr<Impl> impl_;
 
     friend class OAuthHttpClientScope;
+    friend struct detail::OAuthTestAccess;
 };
 
 /**
@@ -374,10 +398,14 @@ class MCP_API OAuthHttpClientScope {
    private:
     friend class OAuthHttpClient;
 
-    OAuthHttpClientScope(std::shared_ptr<OAuthHttpClient::Impl> impl, std::uint64_t id);
+    OAuthHttpClientScope(std::shared_ptr<OAuthHttpClient::Impl> impl,
+                         std::shared_ptr<detail::OAuthScopeState> state);
 
     std::shared_ptr<OAuthHttpClient::Impl> impl_;
-    std::uint64_t id_;
+    /// The latch itself, not a name for one held elsewhere. Every exchange issued through this
+    /// scope holds the same control block, so the flag lives exactly as long as someone can
+    /// still consult it and is freed once nobody can.
+    std::shared_ptr<detail::OAuthScopeState> state_;
 };
 
 /**
