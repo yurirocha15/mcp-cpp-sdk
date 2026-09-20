@@ -12,6 +12,11 @@
 //   [scope-before-await] Build SSO-risky objects in {}, serialise to wire string, then co_await.
 //   [wire-builders]      make_result_wire/make_error_wire are synchronous helpers;
 //                        do NOT convert them to Task<T> coroutines.
+//
+// These conventions are the guard against that bug, and they are the only guard. GCC 11 is also
+// sensitive to the shape of the coroutine frames themselves, so an unrelated refactor can move a
+// failure in or out of existence without touching anything the conventions describe. A green
+// ubuntu-22.04 therefore means the bug is not currently being tripped, not that it is fixed.
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -1375,6 +1380,10 @@ Task<void> Server::Impl::send_notification(const std::string& method,
     co_await session->writer->write_message(wire);
 }
 
+// These three await rather than returning the task, and that is load-bearing. The argument is a
+// temporary bound to a reference parameter of a lazy coroutine: under co_await it lives to the end
+// of the full expression, which includes the await, but a plain `return` destroys it before the
+// coroutine body ever runs and leaves the reference dangling. Both forms compile.
 Task<void> Server::notify_tools_list_changed() {
     co_await impl_->send_notification("notifications/tools/list_changed", std::nullopt);
 }
