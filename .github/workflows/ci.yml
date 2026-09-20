@@ -74,6 +74,13 @@ jobs:
         python scripts/build.py --examples --test
         --cppstd ${{ matrix.cppstd }} --linkage ${{ matrix.linkage }}
 
+    # The README is the first code a new user copies, so compile it the way they
+    # would. Skipped on Windows: the check drives the compiler from
+    # compile_commands.json with GCC/Clang flag spellings.
+    - name: Compile README snippets
+      if: runner.os != 'Windows'
+      run: python scripts/check_readme_snippets.py
+
     - name: Run Examples
       run: python scripts/run_examples.py
 
