@@ -121,6 +121,21 @@ class MCP_API StreamableHttpSessionManager {
     void set_bearer_token_validator(BearerTokenValidator validator);
 
     /**
+     * @brief Require an Authorization: Bearer header and validate it asynchronously.
+     *
+     * Use this when the decision needs I/O — token introspection, a JWKS fetch — so it suspends
+     * instead of blocking the executor that is concurrently serving MCP traffic. A manager that
+     * installs only the synchronous validator pays nothing for this path.
+     *
+     * Passing an empty validator disables HTTP authentication.
+     * Configure the validator before listen() starts.
+     *
+     * @throws std::logic_error If a synchronous validator is already installed, or if listen() has
+     *         already been called or the manager is closed.
+     */
+    void set_async_bearer_token_validator(AsyncBearerTokenValidator validator);
+
+    /**
      * @brief Cap the HTTP request body this manager will read.
      *
      * A request whose body exceeds the cap is answered `413 Payload Too Large` and its connection
@@ -135,6 +150,57 @@ class MCP_API StreamableHttpSessionManager {
      * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
     void set_max_request_body_bytes(std::size_t max_bytes);
+
+    /**
+     * @brief Set the parameters sent in the `WWW-Authenticate` header of every 401.
+     *
+     * Without this call the manager sends the bare `Bearer` challenge. A client that has to
+     * discover where to obtain a token needs at least `resource_metadata`; setting protected
+     * resource metadata fills that field in automatically when it is left empty here.
+     *
+     * Configure the challenge before listen() starts.
+     *
+     * @throws std::invalid_argument If a challenge value cannot be sent in a quoted-string.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_bearer_challenge(BearerChallengeConfig challenge);
+
+    /**
+     * @brief Serve an RFC 9728 protected-resource metadata document.
+     *
+     * The document answers GET requests at its configured path without an Authorization header,
+     * ahead of both the bearer check and the custom request handler, so a client holding no token
+     * can read it. When the bearer challenge carries no `resource_metadata`, it is populated with
+     * this document's URL, which is all an unauthorized client needs to start an OAuth flow
+     * against this server.
+     *
+     * Configure the metadata before listen() starts.
+     *
+     * @throws std::invalid_argument If `resource` is empty or is not an absolute URL.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_protected_resource_metadata(ProtectedResourceMetadataConfig metadata);
+
+    /**
+     * @brief Exempt request paths from bearer validation and exclude them from MCP dispatch.
+     *
+     * Both halves matter. An entry is excused from the bearer check, and it is also removed from
+     * the set of paths MCP answers: an exempt request still reaches the protected-resource
+     * metadata route and the custom request handler, but if both decline it is answered
+     * `404 Not Found` rather than dispatched. MCP is otherwise served on every path the custom
+     * handler declines, so exempting one without excluding it would serve MCP there with no
+     * authentication at all — listing the path MCP runs on would silently disable authentication
+     * outright. Answering 404 makes that misconfiguration fail loudly instead.
+     *
+     * Each entry is compared for equality against the path component of the request target, with
+     * any query string or fragment removed first, so `/health` also exempts `/health?probe=1`.
+     * Empty by default.
+     *
+     * Configure the paths before listen() starts.
+     *
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_unauthenticated_paths(std::vector<std::string> paths);
 
     /**
      * @brief Get the number of active sessions.
