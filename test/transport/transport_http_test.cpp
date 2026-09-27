@@ -19,6 +19,7 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1916,6 +1917,41 @@ TEST(ProtectedResourceMetadataTest, AnExplicitPathOverridesTheDerivation) {
 
     EXPECT_EQ(mcp::protected_resource_metadata_path(overridden), "/custom-metadata");
     EXPECT_EQ(mcp::protected_resource_metadata_url(overridden), "https://h/custom-metadata");
+}
+
+TEST(ProtectedResourceMetadataTest, AnExplicitPathWithoutALeadingSlashIsRejected) {
+    // A relative path does not merely produce a bad path: it is concatenated straight onto the
+    // origin, so "https://h" + "evil" advertises the document on a host named "hevil". A typo
+    // that silently changes which host clients are sent to has to be reported, not published.
+    mcp::ProtectedResourceMetadataConfig relative;
+    relative.resource = "https://h/mcp";
+    relative.path = "evil";
+
+    EXPECT_THROW(mcp::protected_resource_metadata_path(relative), std::invalid_argument);
+    EXPECT_THROW(mcp::protected_resource_metadata_url(relative), std::invalid_argument);
+}
+
+TEST(ProtectedResourceMetadataTest, AnExplicitPathWithADotSegmentIsRejected) {
+    // The metadata URL is published to clients as the authoritative location of the document,
+    // and this function does not normalise. A dot segment there is never intentional
+    // configuration, so it is refused rather than advertised unresolved.
+    mcp::ProtectedResourceMetadataConfig parent;
+    parent.resource = "https://h/mcp";
+    parent.path = "/../../x";
+    EXPECT_THROW(mcp::protected_resource_metadata_path(parent), std::invalid_argument);
+
+    mcp::ProtectedResourceMetadataConfig current;
+    current.resource = "https://h/mcp";
+    current.path = "/a/./b";
+    EXPECT_THROW(mcp::protected_resource_metadata_path(current), std::invalid_argument);
+
+    // Only a whole segment is a dot segment. Dots inside a segment are ordinary characters, and
+    // rejecting those would refuse the well-known prefix this module derives itself.
+    mcp::ProtectedResourceMetadataConfig dotted;
+    dotted.resource = "https://h/mcp";
+    dotted.path = "/.well-known/a..b/c.d";
+    EXPECT_EQ(mcp::protected_resource_metadata_path(dotted), "/.well-known/a..b/c.d");
+    EXPECT_EQ(mcp::protected_resource_metadata_url(dotted), "https://h/.well-known/a..b/c.d");
 }
 
 TEST(ProtectedResourceMetadataTest, DocumentUrlIgnoresQueryAndFragmentOnTheResource) {
