@@ -237,6 +237,7 @@ done
 - `OAuthClientTransport` for token injection
 - Token refresh on auth failures
 - `make_auth_middleware()` for server-side validation
+- The server-side challenge API that produces what the client acts on: one `ProtectedResourceMetadataConfig` drives the metadata route via `protected_resource_metadata_path()`, the document body via `format_protected_resource_metadata()`, and the advertised URL via `protected_resource_metadata_url()`, while `format_www_authenticate()` renders the `BearerChallengeConfig` into the 401 header
 
 **Key APIs:**
 - `OAuthAuthorizationManager`
@@ -244,12 +245,16 @@ done
 - `MetadataFetchPolicy`
 - `OAuthClientTransport`
 - `make_auth_middleware()`
+- `BearerChallengeConfig` / `format_www_authenticate()`
+- `ProtectedResourceMetadataConfig` / `protected_resource_metadata_path()` / `protected_resource_metadata_url()` / `format_protected_resource_metadata()`
 
 **Build:** `python scripts/build.py --examples`
 
 **Run:** `./build/release/example-feature-oauth-flow`
 
 **Expected output:** OAuth discovery, token acquisition, injection, refresh on expiry
+
+**Serving the challenge over HTTP:** this example runs over `MemoryTransport`, so it renders the 401 header itself. `StreamableHttpSessionManager` and `HttpServerTransport` send it for you — call `set_protected_resource_metadata()`, `set_bearer_token_validator()` or `set_async_bearer_token_validator()`, and `set_unauthenticated_paths()` before `listen()`. See the "Protecting a server" section of `docs/concepts/oauth.rst`.
 
 ---
 
