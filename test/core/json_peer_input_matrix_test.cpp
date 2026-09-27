@@ -208,7 +208,7 @@ TEST(JsonPeerInputMatrix, CallToolResult) {
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
         {"content", R"json([])json", 0, true, true, true, false},
-        {"isError", R"json(true)json", 0, false, true, true, false},
+        {"isError", R"json(true)json", 0, false, false, true, false},
         {"structuredContent", R"json({})json", 0, false, false, false, false},
     };
     for (const auto& f : fields) {
@@ -365,7 +365,7 @@ TEST(JsonPeerInputMatrix, ClientCapabilities_TasksCapability) {
 TEST(JsonPeerInputMatrix, CompleteContext) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
-        {"arguments", R"json({})json", 0, false, true, true, false},
+        {"arguments", R"json({})json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("CompleteContext.") + f.key);
@@ -599,7 +599,7 @@ TEST(JsonPeerInputMatrix, GetPromptRequestParams) {
     const json baseline = json::parse(R"json({"name":"x"})json");
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
-        {"arguments", R"json({})json", 0, false, true, true, false},
+        {"arguments", R"json({})json", 0, false, false, true, false},
         {"name", R"json("x")json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
@@ -728,12 +728,12 @@ TEST(JsonPeerInputMatrix, ImageContent) {
 TEST(JsonPeerInputMatrix, Implementation) {
     const json baseline = json::parse(R"json({"name":"x","version":"x"})json");
     static const FieldExpect fields[] = {
-        {"description", R"json("x")json", 0, false, true, true, false},
-        {"icons", R"json([{"src":"x"}])json", 0, false, true, true, false},
+        {"description", R"json("x")json", 0, false, false, true, false},
+        {"icons", R"json([{"src":"x"}])json", 0, false, false, true, false},
         {"name", R"json("x")json", 0, true, true, true, false},
-        {"title", R"json("x")json", 0, false, true, true, false},
+        {"title", R"json("x")json", 0, false, false, true, false},
         {"version", R"json("x")json", 0, true, true, true, false},
-        {"websiteUrl", R"json("x")json", 0, false, true, true, false},
+        {"websiteUrl", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("Implementation.") + f.key);
@@ -1207,12 +1207,12 @@ TEST(JsonPeerInputMatrix, Resource) {
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
         {"annotations", R"json({})json", 0, false, false, false, false},
-        {"description", R"json("x")json", 0, false, true, true, false},
-        {"icons", R"json([{"src":"x"}])json", 0, false, true, true, false},
-        {"mimeType", R"json("x")json", 0, false, true, true, false},
+        {"description", R"json("x")json", 0, false, false, true, false},
+        {"icons", R"json([{"src":"x"}])json", 0, false, false, true, false},
+        {"mimeType", R"json("x")json", 0, false, false, true, false},
         {"name", R"json("x")json", 0, true, true, true, false},
-        {"size", R"json(1)json", 0, false, true, true, false},
-        {"title", R"json("x")json", 0, false, true, true, false},
+        {"size", R"json(1)json", 0, false, false, true, false},
+        {"title", R"json("x")json", 0, false, false, true, false},
         {"uri", R"json("x")json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
@@ -1268,11 +1268,11 @@ TEST(JsonPeerInputMatrix, ResourceTemplate) {
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
         {"annotations", R"json({})json", 0, false, false, false, false},
-        {"description", R"json("x")json", 0, false, true, true, false},
-        {"icons", R"json([{"src":"x"}])json", 0, false, true, true, false},
-        {"mimeType", R"json("x")json", 0, false, true, true, false},
+        {"description", R"json("x")json", 0, false, false, true, false},
+        {"icons", R"json([{"src":"x"}])json", 0, false, false, true, false},
+        {"mimeType", R"json("x")json", 0, false, false, true, false},
         {"name", R"json("x")json", 0, true, true, true, false},
-        {"title", R"json("x")json", 0, false, true, true, false},
+        {"title", R"json("x")json", 0, false, false, true, false},
         {"uriTemplate", R"json("x")json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
@@ -1549,13 +1549,13 @@ TEST(JsonPeerInputMatrix, Tool) {
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
         {"annotations", R"json({})json", 0, false, false, false, false},
-        {"description", R"json("x")json", 0, false, true, true, false},
-        {"execution", R"json({"taskSupport":"x"})json", 0, false, true, true, false},
-        {"icons", R"json([{"src":"x"}])json", 0, false, true, true, false},
+        {"description", R"json("x")json", 0, false, false, true, false},
+        {"execution", R"json({"taskSupport":"x"})json", 0, false, false, true, false},
+        {"icons", R"json([{"src":"x"}])json", 0, false, false, true, false},
         {"inputSchema", R"json({})json", 0, true, false, false, false},
         {"name", R"json("x")json", 0, true, true, true, false},
         {"outputSchema", R"json({})json", 0, false, false, false, false},
-        {"title", R"json("x")json", 0, false, true, true, false},
+        {"title", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("Tool.") + f.key);
@@ -1616,7 +1616,7 @@ TEST(JsonPeerInputMatrix, ToolResultContent) {
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
         {"content", R"json({})json", 0, true, false, false, false},
-        {"isError", R"json(true)json", 0, false, true, true, false},
+        {"isError", R"json(true)json", 0, false, false, true, false},
         {"structuredContent", R"json({})json", 0, false, false, false, false},
         {"toolUseId", R"json("x")json", 0, true, true, true, false},
         {"type", R"json("tool_result")json", 0, true, true, true, true},
