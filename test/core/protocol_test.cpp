@@ -2481,12 +2481,82 @@ TEST(ProtocolTest, ToolResultContentDecodesExplicitNullIsError) {
     EXPECT_FALSE(content.isError.has_value());
 }
 
-TEST(ProtocolTest, MetaAndAnnotationsStillAcceptExplicitNull) {
-    // _meta and annotations decode through get<nlohmann::json> or a nested object, both of
-    // which already accept null. Pinned so the guard above is not "made consistent" onto them.
-    json resource_json = {
-        {"uri", "file:///a.txt"}, {"name", "a.txt"}, {"_meta", nullptr}, {"annotations", nullptr}};
-    ASSERT_NO_THROW((void)resource_json.get<mcp::Resource>());
+// An explicitly null member must round-trip as an ABSENT one. Deciding this by "does it
+// throw" is the wrong test: _meta and annotations do not throw, they decode into an ENGAGED
+// optional, so re-encoding fabricates a member the peer never sent -- annotations: null
+// becomes annotations: {}, which a consumer reads as "annotations supplied, none set" rather
+// than "no annotations". Each case below compares against the absent-input control.
+
+TEST(ProtocolTest, ResourceTreatsExplicitNullMetaAndAnnotationsAsAbsent) {
+    const json control = {{"uri", "file:///a.txt"}, {"name", "a.txt"}};
+    const json absent = json(control.get<mcp::Resource>());
+
+    json with_nulls = control;
+    with_nulls["_meta"] = nullptr;
+    with_nulls["annotations"] = nullptr;
+
+    const auto decoded = with_nulls.get<mcp::Resource>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_FALSE(decoded.annotations.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, ResourceTemplateTreatsExplicitNullMetaAndAnnotationsAsAbsent) {
+    const json control = {{"uriTemplate", "file:///{path}"}, {"name", "files"}};
+    const json absent = json(control.get<mcp::ResourceTemplate>());
+
+    json with_nulls = control;
+    with_nulls["_meta"] = nullptr;
+    with_nulls["annotations"] = nullptr;
+
+    const auto decoded = with_nulls.get<mcp::ResourceTemplate>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_FALSE(decoded.annotations.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, ToolTreatsExplicitNullMetaAnnotationsAndSchemaAsAbsent) {
+    const json control = {{"name", "add"}, {"inputSchema", {{"type", "object"}}}};
+    const json absent = json(control.get<mcp::Tool>());
+
+    json with_nulls = control;
+    with_nulls["_meta"] = nullptr;
+    with_nulls["annotations"] = nullptr;
+    with_nulls["outputSchema"] = nullptr;
+
+    const auto decoded = with_nulls.get<mcp::Tool>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_FALSE(decoded.annotations.has_value());
+    EXPECT_FALSE(decoded.outputSchema.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, CallToolResultTreatsExplicitNullMetaAndStructuredAsAbsent) {
+    const json control = {{"content", json::array()}};
+    const json absent = json(control.get<mcp::CallToolResult>());
+
+    json with_nulls = control;
+    with_nulls["_meta"] = nullptr;
+    with_nulls["structuredContent"] = nullptr;
+
+    const auto decoded = with_nulls.get<mcp::CallToolResult>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_FALSE(decoded.structuredContent.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, ToolResultContentTreatsExplicitNullMetaAndStructuredAsAbsent) {
+    const json control = {{"type", "tool_result"}, {"toolUseId", "call-1"}, {"content", json::array()}};
+    const json absent = json(control.get<mcp::ToolResultContent>());
+
+    json with_nulls = control;
+    with_nulls["_meta"] = nullptr;
+    with_nulls["structuredContent"] = nullptr;
+
+    const auto decoded = with_nulls.get<mcp::ToolResultContent>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_FALSE(decoded.structuredContent.has_value());
+    EXPECT_EQ(json(decoded), absent);
 }
 
 TEST(ProtocolTest, ImplementationDecodesExplicitNullOptionals) {

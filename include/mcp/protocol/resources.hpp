@@ -68,10 +68,10 @@ inline void from_json(const nlohmann::json& json_obj, Resource& resource) {
     if (detail::has_json_value(json_obj, "mimeType")) {
         resource.mimeType = json_obj.at("mimeType").get<std::string>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         resource.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
-    if (json_obj.contains("annotations")) {
+    if (detail::has_json_value(json_obj, "annotations")) {
         resource.annotations = json_obj.at("annotations").get<Annotations>();
     }
     if (detail::has_json_value(json_obj, "size")) {
@@ -130,10 +130,10 @@ inline void from_json(const nlohmann::json& json_obj, ResourceTemplate& tmpl) {
     if (detail::has_json_value(json_obj, "mimeType")) {
         tmpl.mimeType = json_obj.at("mimeType").get<std::string>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         tmpl.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
-    if (json_obj.contains("annotations")) {
+    if (detail::has_json_value(json_obj, "annotations")) {
         tmpl.annotations = json_obj.at("annotations").get<Annotations>();
     }
     if (detail::has_json_value(json_obj, "title")) {
