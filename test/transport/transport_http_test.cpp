@@ -1990,7 +1990,8 @@ struct ChallengeProbeResult {
 mcp::Task<ChallengeProbeResult> probe(const asio::any_io_executor& executor, unsigned short port,
                                       http::verb method, const std::string& target,
                                       const std::string& body = {},
-                                      const std::string& bearer_token = {}) {
+                                      const std::string& bearer_token = {},
+                                      const std::string& origin = {}) {
     beast::tcp_stream stream(executor);
     asio::ip::tcp::resolver resolver(executor);
     auto endpoints =
@@ -2002,6 +2003,9 @@ mcp::Task<ChallengeProbeResult> probe(const asio::any_io_executor& executor, uns
     request.set(http::field::content_type, "application/json");
     if (!bearer_token.empty()) {
         request.set(http::field::authorization, "Bearer " + bearer_token);
+    }
+    if (!origin.empty()) {
+        request.set(http::field::origin, origin);
     }
     request.body() = body;
     request.prepare_payload();
@@ -2366,4 +2370,237 @@ TEST_F(HttpTransportTest, ProtectedResourceMetadataRequiresAnAbsoluteResourceUrl
     EXPECT_THROW(server.set_protected_resource_metadata(relative), std::invalid_argument);
 
     server.close();
+}
+
+// ===========================================================================
+// Origin checking (DNS rebinding protection) on HttpServerTransport
+//
+// The conformance runner's dns-rebinding-protection scenario drives
+// StreamableHttpSessionManager, which is what conformance/everything_server.cpp binds. Nothing
+// exercises the same defence on HttpServerTransport, and the two transports do not answer a
+// disallowed origin the same way, so the difference is pinned here rather than assumed away.
+// ===========================================================================
+
+namespace {
+
+/// Post one MCP notification carrying `origin` and report the status the transport answered with.
+mcp::Task<unsigned int> origin_probe_status(const asio::any_io_executor& executor, unsigned short port,
+                                            const std::string& origin) {
+    const auto result = co_await probe(executor, port, http::verb::post, "/mcp",
+                                       std::string(g_notification_body), {}, origin);
+    co_return result.status;
+}
+
+}  // namespace
+
+// A transport that was never told which origins may reach it refuses every request that names
+// one. The check fails closed: an empty allow-list is a deny-all, not an "unconfigured, so skip
+// it", which is what makes the default safe against a rebound DNS name.
+TEST_F(HttpTransportTest, UnconfiguredTransportRefusesAnyOriginHeader) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    const auto port = server->port();
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    unsigned int status = 0;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            status =
+                co_await origin_probe_status(io_ctx_.get_executor(), port, "https://untrusted.example");
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(status, 403u);
+}
+
+// Only a request that names an origin is subject to the check. A browser sends Origin; a CLI, a
+// proxy health probe and the SDK's own HttpClientTransport do not, and refusing those would make
+// the safe default unusable for every non-browser client.
+TEST_F(HttpTransportTest, ARequestWithNoOriginHeaderSkipsTheOriginCheck) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    const auto port = server->port();
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    ChallengeProbeResult result;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            result = co_await probe(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                    std::string(g_notification_body));
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(result.status, 202u);
+}
+
+TEST_F(HttpTransportTest, NamedOriginIsAdmittedAndAnUnlistedOneIsRefused) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server->set_allowed_origins({"https://trusted.example", "https://also-trusted.example"});
+    const auto port = server->port();
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    unsigned int first_allowed = 0;
+    unsigned int second_allowed = 0;
+    unsigned int refused = 0;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            first_allowed =
+                co_await origin_probe_status(io_ctx_.get_executor(), port, "https://trusted.example");
+            second_allowed = co_await origin_probe_status(io_ctx_.get_executor(), port,
+                                                          "https://also-trusted.example");
+            refused =
+                co_await origin_probe_status(io_ctx_.get_executor(), port, "https://untrusted.example");
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(first_allowed, 202u);
+    EXPECT_EQ(second_allowed, 202u);
+    EXPECT_EQ(refused, 403u);
+}
+
+// The allow-list is a set of exact strings, not the canonicalizing comparison the client-side
+// MetadataFetchPolicy performs on the origins it will fetch from. An explicit default port, a
+// different scheme or host case and a trailing slash all denote the same web origin, and all of
+// them are refused here. A deployment that wants them admitted must list every spelling.
+TEST_F(HttpTransportTest, AllowedOriginComparisonIsExactRatherThanCanonicalizing) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server->set_allowed_origins({"https://trusted.example"});
+    const auto port = server->port();
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    const std::vector<std::string> spellings = {"https://trusted.example:443",
+                                                "HTTPS://trusted.example", "https://Trusted.example",
+                                                "https://trusted.example/"};
+    std::vector<unsigned int> statuses;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            for (const auto& origin : spellings) {
+                statuses.push_back(co_await origin_probe_status(io_ctx_.get_executor(), port, origin));
+            }
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    ASSERT_EQ(statuses.size(), spellings.size());
+    for (std::size_t index = 0; index < spellings.size(); ++index) {
+        SCOPED_TRACE(spellings[index]);
+        EXPECT_EQ(statuses[index], 403u);
+    }
+}
+
+// The documented escape hatch for a deployment that fronts the transport with its own origin
+// policy. Nothing else has to be configured for it to take effect.
+TEST_F(HttpTransportTest, AllowAllOriginsAdmitsAnOriginThatWasNeverListed) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server->set_allow_all_origins(true);
+    const auto port = server->port();
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    unsigned int status = 0;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            status =
+                co_await origin_probe_status(io_ctx_.get_executor(), port, "https://untrusted.example");
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(status, 202u);
+}
+
+// set_allowed_origins() names the origins that may connect, so it also revokes a blanket
+// allowance granted earlier. Leaving allow-all in force behind an allow-list would make the
+// narrower call silently do nothing.
+TEST_F(HttpTransportTest, NamingAllowedOriginsRevokesAnEarlierAllowAll) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server->set_allow_all_origins(true);
+    server->set_allowed_origins({"https://trusted.example"});
+    const auto port = server->port();
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    unsigned int allowed = 0;
+    unsigned int refused = 0;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            allowed =
+                co_await origin_probe_status(io_ctx_.get_executor(), port, "https://trusted.example");
+            refused =
+                co_await origin_probe_status(io_ctx_.get_executor(), port, "https://untrusted.example");
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(allowed, 202u);
+    EXPECT_EQ(refused, 403u);
+}
+
+// Where the origin check sits in this transport's pipeline. It is not run once up front the way
+// StreamableHttpSessionManager runs it, but separately on each route that needs it: before the
+// bearer check on the MCP path, and inside the RFC 9728 metadata route, which is public to any
+// allowed origin and to no other. A rebinding attempt is therefore refused 403 on both, and the
+// MCP refusal carries no WWW-Authenticate challenge to act on.
+//
+// The unauthenticated-path list is the one route the check does not reach: handle_request()
+// answers an exempt path 404 before dispatch is ever attempted, so the origin never enters into
+// it. Nothing is disclosed that a disallowed origin could not already infer -- an exempt path is
+// excluded from MCP dispatch, so 404 is what any caller gets -- but the status differs from the
+// 403 the session manager returns for the same request. See the companion test in
+// transport_http_session_manager_test.cpp.
+TEST_F(HttpTransportTest, TheOriginCheckGuardsMcpDispatchAndTheMetadataRouteButNotExemptPaths) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server->set_allowed_origins({"https://trusted.example"});
+    server->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    server->set_unauthenticated_paths({"/health"});
+
+    mcp::ProtectedResourceMetadataConfig metadata;
+    metadata.resource = "https://mcp.example.com/mcp";
+    server->set_protected_resource_metadata(metadata);
+    const auto port = server->port();
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    ChallengeProbeResult mcp_result;
+    ChallengeProbeResult metadata_result;
+    ChallengeProbeResult exempt_result;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            mcp_result =
+                co_await probe(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                               std::string(g_notification_body), {}, "https://untrusted.example");
+            metadata_result = co_await probe(io_ctx_.get_executor(), port, http::verb::get,
+                                             "/.well-known/oauth-protected-resource/mcp", {}, {},
+                                             "https://untrusted.example");
+            exempt_result = co_await probe(io_ctx_.get_executor(), port, http::verb::get, "/health", {},
+                                           {}, "https://untrusted.example");
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(mcp_result.status, 403u);
+    EXPECT_TRUE(mcp_result.www_authenticate.empty());
+
+    EXPECT_EQ(metadata_result.status, 403u);
+
+    EXPECT_EQ(exempt_result.status, 404u);
 }

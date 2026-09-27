@@ -333,6 +333,171 @@ TEST_F(SessionManagerTest, OriginHeadersAreDeniedUntilExplicitlyAllowed) {
     EXPECT_EQ(allowed_response.status, 200);
 }
 
+namespace {
+
+/// The initialize body the origin tests below post; none of them gets far enough to care what is
+/// in it, only whether the origin check let it through.
+std::string make_initialize_body() {
+    return json{{"jsonrpc", "2.0"},
+                {"method", "initialize"},
+                {"params",
+                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                  {"clientInfo", {{"name", "test"}, {"version", "1"}}},
+                  {"capabilities", json::object()}}},
+                {"id", 1}}
+        .dump();
+}
+
+}  // namespace
+
+// The allow-list is a set of exact strings, not the canonicalizing comparison the client-side
+// MetadataFetchPolicy performs on the origins it will fetch from. An explicit default port, a
+// different scheme case and a trailing slash all denote the same web origin, and all three are
+// refused here. A deployment that wants them admitted must list every spelling it will receive.
+TEST_F(SessionManagerTest, AllowedOriginComparisonIsExactRatherThanCanonicalizing) {
+    const unsigned short port = 19150;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_allowed_origins({"https://trusted.example"});
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    const std::vector<std::string> spellings = {"https://trusted.example:443",
+                                                "HTTPS://trusted.example", "https://Trusted.example",
+                                                "https://trusted.example/"};
+    std::vector<unsigned int> statuses;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            for (const auto& origin : spellings) {
+                const auto response = co_await raw_request(
+                    io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
+                    std::string(mcp::g_LATEST_PROTOCOL_VERSION), origin);
+                statuses.push_back(response.status);
+            }
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(statuses.size(), spellings.size());
+    for (std::size_t index = 0; index < spellings.size(); ++index) {
+        SCOPED_TRACE(spellings[index]);
+        EXPECT_EQ(statuses[index], 403u);
+    }
+}
+
+// set_allow_all_origins(true) is the documented escape hatch for a deployment that fronts the
+// transport with its own origin policy. Nothing else has to be configured for it to take effect.
+TEST_F(SessionManagerTest, AllowAllOriginsAdmitsAnOriginThatWasNeverListed) {
+    const unsigned short port = 19151;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_allow_all_origins(true);
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            response = co_await raw_request(
+                io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
+                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(response.status, 200);
+}
+
+// set_allowed_origins() names the origins that may connect, so it also revokes a blanket allowance
+// granted earlier. Leaving allow-all in force behind an allow-list would make the narrower call
+// silently do nothing.
+TEST_F(SessionManagerTest, NamingAllowedOriginsRevokesAnEarlierAllowAll) {
+    const unsigned short port = 19152;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_allow_all_origins(true);
+    manager.set_allowed_origins({"https://trusted.example"});
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse denied_response;
+    RawResponse allowed_response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            denied_response = co_await raw_request(
+                io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
+                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
+            allowed_response = co_await raw_request(
+                io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
+                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://trusted.example");
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(denied_response.status, 403);
+    EXPECT_EQ(allowed_response.status, 200);
+}
+
+// On this transport the origin check runs once, before everything else a request could be
+// refused for, so a rebinding attempt is answered 403 without disclosing whether a token would
+// have been accepted or what the protected-resource metadata says. HttpServerTransport reaches
+// the same two answers by running the check per route instead, and the two diverge only on an
+// unauthenticated path -- see the companion test in transport_http_test.cpp.
+TEST_F(SessionManagerTest, TheOriginCheckPrecedesTheBearerCheckAndTheMetadataRoute) {
+    const unsigned short port = 19153;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_allowed_origins({"https://trusted.example"});
+    manager.set_bearer_token_validator([](std::string_view token) { return token == "valid-token"; });
+    manager.set_unauthenticated_paths({"/health"});
+
+    mcp::ProtectedResourceMetadataConfig metadata;
+    metadata.resource = "https://mcp.example.com/mcp";
+    manager.set_protected_resource_metadata(metadata);
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse untokened_response;
+    RawResponse metadata_response;
+    RawResponse exempt_response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            untokened_response = co_await raw_request(
+                io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
+                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
+            metadata_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get,
+                                                     "/.well-known/oauth-protected-resource/mcp", {},
+                                                     {}, std::string(mcp::g_LATEST_PROTOCOL_VERSION),
+                                                     "https://untrusted.example");
+            exempt_response = co_await raw_request(
+                io_ctx_.get_executor(), port, http::verb::get, "/health", {}, {},
+                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(untokened_response.status, 403);
+    EXPECT_TRUE(untokened_response.www_authenticate.empty());
+    EXPECT_EQ(metadata_response.status, 403);
+
+    // HttpServerTransport answers this same request 404: it decides an exempt path is not served
+    // before any origin check runs. Neither status discloses anything a disallowed origin could
+    // not already infer, but the two transports do not agree on which one to send.
+    EXPECT_EQ(exempt_response.status, 403);
+}
+
 TEST_F(SessionManagerTest, BearerTokensAreValidatedAtHttpBoundary) {
     const unsigned short port = 19095;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
