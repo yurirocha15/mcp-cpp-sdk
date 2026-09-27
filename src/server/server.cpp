@@ -1470,7 +1470,7 @@ std::optional<Server::PaginationSlice> Server::Impl::paginate(std::size_t total,
     }
 
     std::size_t offset = 0;
-    if (json_msg.contains("params") && json_msg.at("params").contains("cursor")) {
+    if (json_msg.contains("params") && detail::has_json_value(json_msg.at("params"), "cursor")) {
         try {
             auto cursor_str = json_msg.at("params").at("cursor").get<std::string>();
             offset = std::stoull(cursor_str);
