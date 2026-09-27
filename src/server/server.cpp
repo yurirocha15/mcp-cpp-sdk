@@ -460,6 +460,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Task<void> notify_resource_updated_on_strand(std::shared_ptr<Session> session,
                                                  std::shared_ptr<const std::string> uri);
 
+    // [gcc11-sso: wire-builders] DO NOT convert to Task<T>.
     static std::string make_result_wire(const RequestId& id, nlohmann::json result);
     static std::string make_error_wire(const RequestId& id, int code, std::string message);
     std::optional<PaginationSlice> paginate(std::size_t total, const nlohmann::json& json_msg);
@@ -1500,6 +1501,9 @@ void Server::reset_session() {
     }
 }
 
+// Fails every outstanding request on a session and wakes whoever is waiting on it. Must run
+// on the session strand: the request maps are plain std::maps that only the strand mutates,
+// and the correlation timers belong to that strand.
 void Server::Impl::abandon_session_work(const std::shared_ptr<Session>& session) {
     for (auto& [id, cancelled] : session->in_flight) {
         static_cast<void>(id);
