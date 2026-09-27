@@ -106,7 +106,7 @@ inline void to_json(nlohmann::json& json_obj, const CompleteContext& context) {
  * @param context The CompleteContext object to populate.
  */
 inline void from_json(const nlohmann::json& json_obj, CompleteContext& context) {
-    if (json_obj.contains("arguments")) {
+    if (detail::has_json_value(json_obj, "arguments")) {
         context.arguments = json_obj.at("arguments").get<std::map<std::string, std::string>>();
     }
 }
