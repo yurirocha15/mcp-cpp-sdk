@@ -145,6 +145,13 @@ resource sitting at the origin root is described at the bare
 ``/.well-known/oauth-protected-resource``. Set ``metadata.path`` to override the
 derivation; leave it empty to get it.
 
+The same derivation is available to a caller serving the document itself:
+:cpp:func:`mcp::protected_resource_metadata_path` returns the path,
+:cpp:func:`mcp::protected_resource_metadata_url` the absolute URL to advertise
+in the challenge, and :cpp:func:`mcp::format_protected_resource_metadata` the
+JSON body. Both path functions throw ``std::invalid_argument`` when ``resource``
+is not an absolute URL with an authority.
+
 .. important::
 
    The advertised URL is never inferred from the address the transport is bound
@@ -227,6 +234,10 @@ these settings is opt-in: a server that sets none of them behaves exactly as
 before, down to the bare ``Bearer`` challenge on a 401. All of them must be
 configured before ``listen()`` starts, and a setter called afterwards throws
 ``std::logic_error``.
+
+``examples/features/oauth_flow.cpp`` builds its challenge and its metadata route
+from one ``ProtectedResourceMetadataConfig`` through these same functions, so it
+shows the derivation running rather than restating its result.
 
 Request body size
 ~~~~~~~~~~~~~~~~~
