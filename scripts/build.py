@@ -209,6 +209,15 @@ def main():
         print("[+] Build directory removed")
         return
 
+    # ENABLE_SANITIZERS only takes effect inside the CMake tests block, so without --test the
+    # flag is accepted and silently does nothing, leaving an unsanitized build in build/sanitize.
+    # Refuse here rather than after a Conan install, so no build time is spent on it.
+    if args.sanitize and not args.test:
+        parser.error(
+            "--sanitize requires --test: the sanitizer flags are only applied to a build with "
+            "tests, so this would produce an unsanitized build in build/sanitize"
+        )
+
     is_debug = args.debug or args.sanitize or args.coverage
     build_type = "Debug" if is_debug else "Release"
 
