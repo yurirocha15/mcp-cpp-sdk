@@ -87,6 +87,65 @@ Clients should always wrap server calls in ``try-catch`` blocks to handle potent
    :start-after: // ========== TEST 1: Catch exception from thrown error ==========
    :end-before: // Wait between tests
 
+Request Timeouts
+~~~~~~~~~~~~~~~~
+
+.. important::
+
+   **Every client request carries a 30-second deadline by default.** Nothing
+   opts into it: ``ClientOptions::request_timeout`` starts at
+   ``std::chrono::seconds(30)``, and a default-constructed ``Client`` uses it
+   for ``call_tool``, ``read_resource``, ``list_tools`` and every other
+   request. A tool that legitimately runs longer than that — a large model
+   call, a slow build, a batch job — fails on the client side while the server
+   is still working on it.
+
+Raise it for the whole client by passing ``ClientOptions`` to the constructor:
+
+.. code-block:: cpp
+
+   mcp::ClientOptions options;
+   options.request_timeout = std::chrono::minutes(5);
+   mcp::Client client(transport, io.get_executor(), options);
+
+A single request can be given its own deadline through ``RequestOptions``, but
+only on the untyped ``send_request`` overload. The typed helpers —
+``call_tool``, ``read_resource``, ``list_tools`` and the rest — take no
+per-request options and always use the client-wide default, so a client that
+makes one slow call among many fast ones either raises the default for all of
+them or drops to ``send_request`` for that one:
+
+.. code-block:: cpp
+
+   mcp::CallToolParams call_params;
+   call_params.name = "render";
+   call_params.arguments = args;
+
+   mcp::RequestOptions slow;
+   slow.timeout = std::chrono::minutes(30);
+
+   auto raw = co_await client.send_request(
+       "tools/call", nlohmann::json(call_params), slow);
+   auto result = raw.get<mcp::CallToolResult>();
+
+When the deadline expires the awaiting coroutine throws
+:cpp:class:`mcp::McpError` with code ``-32001``
+(:cpp:var:`mcp::g_REQUEST_TIMEOUT`) and the message ``Request timed out``.
+Catch it the same way as any other ``McpError``.
+
+.. warning::
+
+   A timeout is a local decision, not a cancellation. A request whose bytes
+   have not been written yet is dropped before transmission, but once transport
+   I/O has started the server may still run the call to completion after the
+   client has given up. Treat a timed-out non-idempotent request as having an
+   unknown outcome, and see the retry guidance below before repeating it.
+
+A non-positive timeout is rejected rather than treated as "no deadline":
+constructing a ``Client`` with one, or passing one in ``RequestOptions``,
+throws ``std::invalid_argument``. The SDK offers no way to disable the deadline
+entirely — use a duration long enough for the slowest call you expect.
+
 Catching Server Errors
 ~~~~~~~~~~~~~~~~~~~~~~
 
