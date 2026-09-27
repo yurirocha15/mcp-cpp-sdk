@@ -38,7 +38,7 @@
 // a member that tolerates being absent but throws when a peer sends it as an
 // explicit null. That is the defect class this project has repeatedly been
 // caught by, and scripts/json_census_dispositions.json dispositions it "fix".
-// 66 of the 314 field entries below still carry it; there were 87 before the
+// 66 of the 317 field entries below still carry it; there were 87 before the
 // explicit-null decoding fixes. Those rows pin behaviour as it is so the
 // suite stays green. They do not endorse it. Fixing one turns this file red
 // until it is regenerated -- the ratchet runs backwards here, so regenerate,
