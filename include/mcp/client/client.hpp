@@ -65,7 +65,16 @@ class MCP_API McpError : public std::runtime_error {
 
 /** @brief Client-wide runtime behavior. */
 struct ClientOptions {
-    /** @brief Default time limit for outgoing requests. */
+    /**
+     * @brief Default time limit for outgoing requests. Thirty seconds unless set.
+     *
+     * Every request the client issues carries this deadline, including the typed helpers such
+     * as call_tool() and read_resource(), which accept no per-request override. A request that
+     * outlives it fails with McpError g_REQUEST_TIMEOUT while the peer may still be running it,
+     * so raise this for a client whose tools legitimately take longer. Must be positive: the
+     * constructor throws std::invalid_argument otherwise, and there is no value that disables
+     * the deadline.
+     */
     std::chrono::milliseconds request_timeout{std::chrono::seconds(30)};
     /** @brief Reject malformed JSON-RPC envelopes received from the peer. */
     bool strict_protocol_validation{true};
