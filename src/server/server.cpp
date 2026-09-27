@@ -1085,6 +1085,13 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
         } catch (const std::exception& error) {
             co_return nlohmann::json(
                 make_tool_error_result(detail::sanitize_for_diagnostics(error.what())));
+        } catch (...) {
+            // Nothing above catches a throw that does not derive from std::exception, and nothing
+            // further out does either: handle_tools_call_wire rethrows and dispatch_request_wire
+            // has no catch-all, so the throw escapes the dispatcher, no response is ever written
+            // and the caller waits out its own request timeout. The text is ours rather than the
+            // thrower's, so there is nothing to sanitize.
+            co_return nlohmann::json(make_tool_error_result("Tool handler failed"));
         }
     };
 
