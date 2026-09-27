@@ -7,6 +7,8 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -153,6 +155,60 @@ TEST_F(ServerToolTest, NonTemplateHandlerExceptionBecomesToolError) {
     ASSERT_FALSE(content_arr.empty());
     auto err_text = content_arr[0]["text"].get<std::string>();
     EXPECT_NE(err_text.find("something broke"), std::string::npos);
+}
+
+TEST_F(ServerToolTest, NonStdExceptionFromHandlerBecomesToolError) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool("fail", "Throws something that is not a std::exception",
+                          nlohmann::json{{"type", "object"}},
+                          [](const nlohmann::json&) -> nlohmann::json { throw 42; });
+
+    std::vector<nlohmann::json> responses;
+    boost::asio::steady_timer watchdog(io_ctx_);
+
+    setup.raw_transport->set_on_write([&responses, &setup, &watchdog](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        if (responses.size() == 2) {
+            watchdog.cancel();
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    setup.raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "fail"}, {"arguments", nlohmann::json::object()}}}}
+            .dump());
+
+    // A throw the tool guard does not catch escapes the dispatcher without writing anything, so
+    // the request is never answered and nothing closes the transport. Bound the wait, or that
+    // regression hangs the suite instead of failing it.
+    watchdog.expires_after(std::chrono::seconds(5));
+    watchdog.async_wait([&setup](const boost::system::error_code& error) {
+        if (!error) {
+            setup.raw_transport->close();
+        }
+    });
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2) << "the tools/call request went unanswered";
+    EXPECT_EQ(responses[1]["id"], "2");
+    ASSERT_TRUE(responses[1].contains("result")) << responses[1].dump();
+    EXPECT_TRUE(responses[1]["result"]["isError"].get<bool>());
 }
 
 TEST_F(ServerToolTest, NonTemplateSyncHandlerReturningCallToolResultIsNotRewrapped) {
