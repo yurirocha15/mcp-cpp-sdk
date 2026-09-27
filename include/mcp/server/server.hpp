@@ -431,6 +431,9 @@ class MCP_API Server {
      * server session for request/response messages. The request envelope is
      * validated, but no stateful initialize/initialized handshake is required.
      *
+     * @details Request parameter decoding failures are returned as `g_INVALID_PARAMS` (-32602).
+     * Exceptions thrown by handlers or middleware are returned as `g_INTERNAL_ERROR` (-32603).
+     *
      * @param json_msg The parsed JSON-RPC request object.
      * @return A task that resolves to the serialized JSON-RPC response.
      */
@@ -504,17 +507,6 @@ class MCP_API Server {
     void register_resource_template(const ResourceTemplate& tmpl, TypeErasedHandler handler);
     void register_prompt(const Prompt& prompt, TypeErasedHandler handler);
 
-    /**
-     * @brief Dispatches an incoming JSON-RPC request to the appropriate registered handler.
-     *
-     * @details Request parameter decoding failures are returned as `g_INVALID_PARAMS` (-32602).
-     * Exceptions thrown by handlers or middleware are returned as `g_INTERNAL_ERROR` (-32603).
-     *
-     * @param json_msg The raw JSON-RPC request object.
-     */
-
-    // [gcc11-sso: wire-builders] DO NOT convert to Task<T>.
-
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
 
     struct PaginationSlice {
@@ -526,10 +518,8 @@ class MCP_API Server {
     struct PendingRequest;
     struct Session;
 
-    /// Fails every outstanding request on a session and wakes whoever is waiting on it. Must run
-    /// on the session strand: the request maps are plain std::maps that only the strand mutates,
-    /// and the correlation timers belong to that strand.
-
+    /// Tears down the current session. Runs on whatever thread destroys the Server, so it is safe
+    /// to call from any thread.
     void reset_session();
 
     struct Impl;
