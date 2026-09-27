@@ -124,7 +124,37 @@ Versioning; a `0.x` version is a stable release unless its version has an
   dispatching a response, and a null notification `params` as no params. The
   client is asymmetric on purpose: a null `error` is the absence of an error,
   while a null `result` is a legitimate empty result and still counts as
-  present.
+  present. The same treatment covers the optional members of the protocol
+  types a peer's payload reaches: `description`, `mimeType`, `size`, `title`
+  and `icons` on `Resource` and `ResourceTemplate`; `description`, `title`,
+  `icons` and `execution` on `Tool`; and `isError` on both `CallToolResult`
+  and `ToolResultContent`.
+- A peer whose serializer writes absent optionals as explicit nulls could not
+  complete initialization at all. `clientInfo` is an `Implementation`, whose
+  `from_json` guarded `title`, `description`, `websiteUrl` and `icons` with a
+  bare presence test, so `"clientInfo": {"name": "x", "version": "1",
+  "title": null}` failed to decode and the `initialize` request was answered
+  `-32602`. Because `initialize` is the peer's first message, the failure was
+  unconditional: no such client could connect at all. Those members are now
+  read as absent when they arrive as null.
+- Explicit nulls in request parameters that previously drew `-32602` are now
+  read as absent: `arguments` on `prompts/get`, `context.arguments` on
+  `completion/complete`, and the pagination `cursor`, where `"cursor": null`
+  on a list request was rejected as an invalid cursor instead of returning the
+  first page. `CallToolParams::arguments` is deliberately unchanged: it is a
+  required member carrying a shape rule rather than an optional one, so
+  rejecting a null there remains correct.
+- An explicit null `_meta` or `annotations` no longer decodes to a value the
+  peer never sent. Unlike the members above these never threw: the guard
+  accepted the null and produced an engaged optional, so the SDK re-emitted
+  `"_meta": null` and turned `"annotations": null` into `"annotations": {}` —
+  a structurally present `Annotations` that a consumer reads as "annotations
+  supplied, carrying no constraints" rather than as none at all. Neither side
+  saw anything wrong, which is what made this worse than a rejection. The
+  affected members are `_meta` and `annotations` on `Resource`,
+  `ResourceTemplate`, `Tool`, `CallToolResult` and `ToolResultContent`,
+  `Tool::outputSchema`, `structuredContent` on `CallToolResult` and
+  `ToolResultContent`, and `CallToolParams::_meta` on the `tools/call` path.
 - A `resources/read` URI longer than 512 characters is now answered
   `-32602` naming the limit, instead of being handed to the regular-expression
   template matcher, whose stack use grows with the subject and can overrun the
