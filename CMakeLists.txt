@@ -192,6 +192,18 @@ endif()
 
 # Build Tests
 option(BUILD_TESTING "Build tests" ON)
+
+# ENABLE_SANITIZERS is declared and applied inside the block below, so with
+# testing off the flag is accepted and does nothing: the build lands in a
+# directory named for sanitizers without being sanitized. Refuse rather than
+# hand back a clean run that proved nothing.
+if(ENABLE_SANITIZERS AND NOT BUILD_TESTING)
+  message(
+    FATAL_ERROR
+      "ENABLE_SANITIZERS requires BUILD_TESTING=ON; with tests off the "
+      "sanitizer flags are never applied and the build is not sanitized")
+endif()
+
 if(BUILD_TESTING)
   find_package(GTest REQUIRED)
   enable_testing()
