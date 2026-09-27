@@ -273,10 +273,10 @@ inline void from_json(const nlohmann::json& json_obj, ToolResultContent& content
     if (detail::has_json_value(json_obj, "isError")) {
         content.isError = json_obj.at("isError").get<bool>();
     }
-    if (json_obj.contains("structuredContent")) {
+    if (detail::has_json_value(json_obj, "structuredContent")) {
         content.structuredContent = json_obj.at("structuredContent").get<nlohmann::json>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         content.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
