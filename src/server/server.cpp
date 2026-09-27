@@ -563,11 +563,19 @@ bool Server::is_shutdown_requested() const {
 
 LoggingLevel Server::get_log_level() const { return impl_->log_level.load(std::memory_order_relaxed); }
 
+// The inverse of the notify_* forwarders below, and safe for the opposite reason: this one returns
+// the task instead of awaiting it, which is only sound because Impl::send_request is not a
+// coroutine. Its body runs to completion inside this call, so neither reference parameter has to
+// outlive the return. Converting Impl::send_request to co_return would leave both dangling here
+// with no diagnostic; change this line to co_await in the same commit if you ever do.
 Task<nlohmann::json> Server::send_request(const std::string& method,
                                           const std::optional<nlohmann::json>& params) {
     return impl_->send_request(method, params);
 }
 
+// Deliberately not a coroutine -- see the note on Server::send_request above. It takes both
+// parameters by reference and its caller forwards with a plain `return`, so the body must run
+// before that return completes.
 Task<nlohmann::json> Server::Impl::send_request(const std::string& method,
                                                 const std::optional<nlohmann::json>& params) {
     // Distinct from the two failures below: a handler still running after its Server was
