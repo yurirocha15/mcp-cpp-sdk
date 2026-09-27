@@ -2397,3 +2397,19 @@ TEST(ProtocolTest, DiscoverableVersionsDoNotLeakIntoLegacyNegotiation) {
     }
     EXPECT_EQ(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.back(), mcp::g_PROTOCOL_VERSION_2026_07_28);
 }
+
+// --- Explicit-null optional members ---
+//
+// A JSON member serialized as explicit `null` says the same thing as an absent one: "no
+// value". nlohmann 3.12.0 has no std::optional support, so a `contains(key)` guard lets the
+// null through and `get<T>()` then throws type_error.302. Each case below decodes a payload
+// that a conforming peer may legitimately send.
+
+TEST(ProtocolTest, GetPromptRequestParamsDecodesExplicitNullArguments) {
+    json params_json = {{"name", "greeting"}, {"arguments", nullptr}};
+
+    mcp::GetPromptRequestParams params;
+    ASSERT_NO_THROW(params = params_json.get<mcp::GetPromptRequestParams>());
+    EXPECT_EQ(params.name, "greeting");
+    EXPECT_FALSE(params.arguments.has_value());
+}

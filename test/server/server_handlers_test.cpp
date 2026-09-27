@@ -1701,3 +1701,125 @@ TEST_F(ServerHandlersTest, InvokeToolUnknownNameDiagnosticIsFlattened) {
     EXPECT_EQ(message.find('\n'), std::string::npos) << "actual message: " << message;
     EXPECT_EQ(message.find("\xe2\x80\xae"), std::string::npos) << "actual message: " << message;
 }
+
+// --- Explicit-null request members ---
+//
+// An absent JSON member and one serialized as explicit `null` are the same statement on the
+// wire. Both requests below are messages a conforming peer may send; neither may be rejected.
+
+TEST_F(ServerHandlersTest, PromptsGetAcceptsExplicitNullArguments) {
+    mcp::ServerCapabilities caps;
+    mcp::ServerCapabilities::PromptsCapability prompts_cap;
+    caps.prompts = std::move(prompts_cap);
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::Prompt prompt;
+    prompt.name = "greeting";
+    setup.server.add_prompt<mcp::GetPromptRequestParams, mcp::GetPromptResult>(
+        std::move(prompt), [](mcp::GetPromptRequestParams params) -> mcp::GetPromptResult {
+            EXPECT_FALSE(params.arguments.has_value());
+
+            mcp::TextContent text;
+            text.text = "Hello, World!";
+
+            mcp::PromptMessage msg;
+            msg.role = mcp::Role::eUser;
+            msg.content = std::move(text);
+
+            mcp::GetPromptResult result;
+            result.messages.push_back(std::move(msg));
+            return result;
+        });
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+
+    nlohmann::json get_req;
+    get_req["jsonrpc"] = "2.0";
+    get_req["id"] = "2";
+    get_req["method"] = "prompts/get";
+    get_req["params"] = nlohmann::json{{"name", "greeting"}, {"arguments", nullptr}};
+    setup.raw_transport->enqueue_message(get_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& get_response = responses[1];
+    EXPECT_EQ(get_response["id"], "2");
+    ASSERT_FALSE(get_response.contains("error")) << "actual error: " << get_response["error"].dump();
+    ASSERT_TRUE(get_response.contains("result"));
+    auto& messages = get_response["result"]["messages"];
+    ASSERT_EQ(messages.size(), 1);
+    EXPECT_EQ(messages[0]["content"]["text"], "Hello, World!");
+}
+
+TEST_F(ServerHandlersTest, ToolsListPaginationAcceptsExplicitNullCursor) {
+    // Only reachable with a page size set and a non-empty collection: paginate() returns the
+    // whole slice before it ever looks at the cursor when either is absent.
+    mcp::ServerCapabilities caps;
+    mcp::ServerCapabilities::ToolsCapability tools_cap;
+    caps.tools = std::move(tools_cap);
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.set_page_size(2);
+
+    for (int i = 0; i < 5; ++i) {
+        auto name = "tool_" + std::to_string(i);
+        setup.server.add_tool<AddParams, AddResult>(
+            name, "Tool " + std::to_string(i), nlohmann::json{{"type", "object"}},
+            [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
+    }
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+
+    nlohmann::json list_req;
+    list_req["jsonrpc"] = "2.0";
+    list_req["id"] = "2";
+    list_req["method"] = "tools/list";
+    list_req["params"] = nlohmann::json{{"cursor", nullptr}};
+    setup.raw_transport->enqueue_message(list_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& list_response = responses[1];
+    ASSERT_FALSE(list_response.contains("error")) << "actual error: " << list_response["error"].dump();
+    auto& result = list_response["result"];
+    ASSERT_EQ(result["tools"].size(), 2);
+    EXPECT_EQ(result["tools"][0]["name"], "tool_0");
+    ASSERT_TRUE(result.contains("nextCursor"));
+    EXPECT_EQ(result["nextCursor"], "2");
+}

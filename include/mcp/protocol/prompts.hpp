@@ -124,7 +124,7 @@ inline void to_json(nlohmann::json& json_obj, const GetPromptRequestParams& para
 
 inline void from_json(const nlohmann::json& json_obj, GetPromptRequestParams& params) {
     json_obj.at("name").get_to(params.name);
-    if (json_obj.contains("arguments")) {
+    if (detail::has_json_value(json_obj, "arguments")) {
         params.arguments = json_obj.at("arguments").get<std::map<std::string, std::string>>();
     }
     if (json_obj.contains("_meta")) {
