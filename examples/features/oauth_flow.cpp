@@ -12,6 +12,11 @@
 /// - Automatic auth-token injection into MCP requests
 /// - Automatic refresh after a server-side auth failure
 /// - make_auth_middleware() protecting MCP tools on the server side
+/// - The server-side challenge API producing what the client acts on: a
+///   ProtectedResourceMetadataConfig whose RFC 9728 3.1 path and URL come from
+///   protected_resource_metadata_path() and protected_resource_metadata_url(), the document
+///   itself from format_protected_resource_metadata(), and the `WWW-Authenticate` header from
+///   a BearerChallengeConfig rendered by format_www_authenticate()
 ///
 /// @warning Authorization goes through OAuthAuthorizationManager. Driving OAuthDiscoveryClient
 /// and OAuthHttpClient::exchange_code() by hand compiles and appears to work, but performs no
@@ -23,6 +28,7 @@
 #include <mcp/client/client.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/server.hpp>
+#include <mcp/transport/http_types.hpp>
 #include <mcp/transport/memory.hpp>
 
 #include <boost/asio/co_spawn.hpp>
@@ -130,11 +136,22 @@ class MockOAuthServer {
         port_ = acceptor_.local_endpoint().port();
         issuer_ = "http://127.0.0.1:" + std::to_string(port_);
         protected_resource_url_ = issuer_ + "/memory-mcp";
+
+        // The one description of this protected resource. Both HTTP server transports take this
+        // same struct; here it drives the mock's metadata route and the challenge the client is
+        // handed, so the example exercises the derivation rather than restating its result.
+        resource_metadata_.resource = protected_resource_url_;
+        resource_metadata_.authorization_servers = {issuer_};
+        resource_metadata_.scopes_supported = {"mcp:demo"};
     }
 
     [[nodiscard]] const std::string& issuer() const { return issuer_; }
 
     [[nodiscard]] const std::string& protected_resource_url() const { return protected_resource_url_; }
+
+    [[nodiscard]] const mcp::ProtectedResourceMetadataConfig& resource_metadata() const {
+        return resource_metadata_;
+    }
 
     [[nodiscard]] const std::vector<std::string>& observed_tokens() const { return observed_tokens_; }
 
@@ -186,13 +203,25 @@ class MockOAuthServer {
         return response;
     }
 
+    static http::response<http::string_body> make_json_body_response(http::status status, int version,
+                                                                     std::string body) {
+        http::response<http::string_body> response{status, version};
+        response.set(http::field::content_type, "application/json");
+        response.keep_alive(false);
+        response.body() = std::move(body);
+        response.prepare_payload();
+        return response;
+    }
+
     http::response<http::string_body> handle_request(const http::request<http::string_body>& request) {
+        // RFC 9728 3.1 puts the well-known segment between the authority and the resource's own
+        // path, so a resource at <issuer>/memory-mcp is described at
+        // /.well-known/oauth-protected-resource/memory-mcp. Deriving the route keeps the mock and
+        // the challenge from drifting apart, exactly as the server transports do.
         if (request.method() == http::verb::get &&
-            request.target() == "/.well-known/oauth-protected-resource/memory-mcp") {
-            return make_json_response(http::status::ok, request.version(),
-                                      json{{"resource", protected_resource_url_},
-                                           {"authorization_servers", json::array({issuer_})},
-                                           {"scopes_supported", json::array({"mcp:demo"})}});
+            request.target() == mcp::protected_resource_metadata_path(resource_metadata_)) {
+            return make_json_body_response(http::status::ok, request.version(),
+                                           mcp::format_protected_resource_metadata(resource_metadata_));
         }
 
         if (request.method() == http::verb::get &&
@@ -288,6 +317,7 @@ class MockOAuthServer {
     unsigned short port_{};
     std::string issuer_;
     std::string protected_resource_url_;
+    mcp::ProtectedResourceMetadataConfig resource_metadata_;
     std::map<std::string, std::string, std::less<>> authorization_codes_;
     std::vector<std::string> observed_tokens_;
     std::string last_observed_token_;
@@ -472,11 +502,15 @@ auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
             std::move(authorize));
 
         // What a conforming MCP resource server returns with its 401, per RFC 9728. Over an HTTP
-        // transport this arrives as a response header; this example runs over MemoryTransport, so
-        // the header the resource server would have sent is written out here.
-        const std::string www_authenticate =
-            "Bearer resource_metadata=\"" + runtime.mock_oauth->issuer() +
-            "/.well-known/oauth-protected-resource/memory-mcp\", scope=\"mcp:demo\"";
+        // transport StreamableHttpSessionManager and HttpServerTransport send this header for you
+        // once set_protected_resource_metadata() and set_bearer_challenge() are configured; this
+        // example runs over MemoryTransport, so it renders the same header through the same public
+        // functions those transports call.
+        mcp::BearerChallengeConfig challenge;
+        challenge.scope = "mcp:demo";
+        challenge.resource_metadata =
+            mcp::protected_resource_metadata_url(runtime.mock_oauth->resource_metadata());
+        const std::string www_authenticate = mcp::format_www_authenticate(challenge);
 
         std::cout << "[Client] Acting on the resource server's WWW-Authenticate challenge\n";
         if (!co_await state->manager->try_handle_challenge(www_authenticate)) {
