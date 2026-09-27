@@ -21,6 +21,54 @@ Versioning; a `0.x` version is a stable release unless its version has an
   (triage SLAs), `VERSIONING.md` (compatibility surface), and
   `DEPENDENCY_POLICY.md` (runtime dependency floors).
 - GitHub issue templates and a label manifest (`.github/labels.yml`).
+- Server-side OAuth challenge support on `HttpServerTransport` and
+  `StreamableHttpSessionManager`. `set_bearer_challenge()` sets the parameters
+  sent in the `WWW-Authenticate` header of every 401, rendered as RFC 7235
+  quoted-strings in the order `realm`, `error`, `scope`, `resource_metadata`;
+  `set_protected_resource_metadata()` serves an RFC 9728 protected-resource
+  metadata document, answered without an `Authorization` header so a client
+  holding no token can read it; and `set_unauthenticated_paths()` exempts
+  request paths from the bearer check while also removing them from MCP
+  dispatch, so an exempt path that no other route claims is answered
+  `404 Not Found` rather than serving MCP without authentication. A challenge
+  that carries no `resource_metadata` is filled in with the metadata
+  document's URL. The document's path defaults to the RFC 9728 3.1 derivation
+  — a resource at `https://host/mcp` is described at
+  `/.well-known/oauth-protected-resource/mcp` — and its URL is built from the
+  configured `resource`, never from the address the listener is bound to.
+  `<mcp/transport/http_types.hpp>` gains `BearerChallengeConfig`,
+  `ProtectedResourceMetadataConfig`, `format_www_authenticate()`,
+  `protected_resource_metadata_path()`, `protected_resource_metadata_url()`,
+  `format_protected_resource_metadata()` and `http_request_path()`.
+- `set_async_bearer_token_validator()` on `HttpServerTransport` and
+  `StreamableHttpSessionManager`, taking the new `AsyncBearerTokenValidator`
+  (`std::function<Task<bool>(std::string)>`), so a token decision that needs
+  I/O — introspection, a JWKS fetch — suspends instead of blocking the
+  executor serving MCP traffic. Installing it alongside the synchronous
+  validator throws `std::logic_error`.
+- `set_max_request_body_bytes()` on `HttpServerTransport` and
+  `StreamableHttpSessionManager`, together with
+  `mcp::constants::g_default_max_request_body_bytes` (8 MiB), the new default.
+  A body over the cap is answered `413 Payload Too Large` and its connection
+  closed before MCP dispatch; zero is rejected with `std::invalid_argument`.
+  The default replaces Beast's own 1 MB limit, which admitted only about
+  750 KB of raw content once base64 inflation inside the JSON body is
+  accounted for.
+- `ClientOptions::on_protocol_error`, invoked when the client discards an
+  incoming message instead of dispatching it: a message the peer sent that
+  could not be decoded, reported as `g_PARSE_ERROR`, or an exception thrown by
+  an application notification callback, reported as `g_INTERNAL_ERROR` with
+  the notification method in the message. It runs on the read loop and must
+  not block.
+- Documentation for the server-side OAuth challenge work: the OAuth guide now
+  names the protected-resource metadata helpers and the exported bearer and
+  request-path helpers, and renders its example challenge through the
+  server-side API rather than hand-writing the header. The client's default
+  30-second request timeout is documented for the first time, including that
+  the typed helpers such as `call_tool()` and `read_resource()` accept no
+  per-request override, that a request outliving it fails with
+  `g_REQUEST_TIMEOUT` while the peer may still be running it, and that no
+  value disables the deadline.
 
 ### Changed
 
@@ -62,6 +110,91 @@ Versioning; a `0.x` version is a stable release unless its version has an
   "bound to every issuer". Construction is unchanged, so a caller breaks only
   when it actually attempts the affected flow; a public client (a `client_id`
   with no secret) is unaffected and still authorizes against any issuer.
+- An optional member serialized as an explicit `null` is now read the same way
+  as an absent one. The protocol `from_json` overloads test presence through
+  the new `detail::has_json_value` helper instead of `contains()`, which
+  previously accepted the null and then threw when the value was extracted;
+  this covers `Error::data`, `RelatedTaskMetadata::title`, `TaskMetadata`'s
+  `ttl` and `relatedTasks`, request and notification `params`, response `id`
+  and `error`, and the notification `_meta`, `reason`, `total`, `message`,
+  `logger` and `metadata` members. An `Error` whose `message` is missing or
+  null now decodes to an empty message rather than throwing, so the `code` a
+  caller acts on survives. The server reads a null `error` member as absent
+  when validating request, notification and response envelopes and when
+  dispatching a response, and a null notification `params` as no params. The
+  client is asymmetric on purpose: a null `error` is the absence of an error,
+  while a null `result` is a legitimate empty result and still counts as
+  present.
+- A `resources/read` URI longer than 512 characters is now answered
+  `-32602` naming the limit, instead of being handed to the regular-expression
+  template matcher, whose stack use grows with the subject and can overrun the
+  smallest thread stack the SDK runs on. Exact resource lookups happen first
+  and are unaffected by the limit.
+- A resource URI template with two expressions and no literal between them
+  (`{a}{b}`) is now rejected at registration with `std::invalid_argument`.
+  Such a template compiled to adjacent unbounded runs that the matcher could
+  only resolve by backtracking over every split of the input, and the boundary
+  between the two variables is undecidable in any case.
+- An exception from a tool handler is reported as a `CallToolResult` carrying
+  `isError`, with the message sanitized before it reaches the peer, and the
+  guard now covers a throw that does not derive from `std::exception`. Such a
+  throw previously escaped every guard on the request path — the tool
+  invocation caught only `std::exception`, and `dispatch_request_wire` has no
+  catch-all — so no response was written at all: a session client waited out
+  its own request timeout, and a stateless connection was closed with nothing
+  sent. It is now reported as a tool error with the fixed text
+  `Tool handler failed`, because such a throw carries no message the SDK can
+  quote. This is the behavior the error-handling guide already documented for
+  handler exceptions, "typed, asynchronous or raw". The change is specific to
+  tool handlers: a throw that does not derive from `std::exception` escaping a
+  resource or prompt handler, or middleware, still drops the response.
+- Middleware now runs outside the tool handler's exception guard, so a
+  middleware that throws surfaces as a JSON-RPC error (`-32603`) rather than
+  as a tool error result; middleware decides whether a call may proceed at
+  all, which is a protocol-level answer rather than a tool outcome. Previously
+  any exception from the middleware chain became a tool error result. The
+  bundled auth middleware no longer throws on a missing or invalid bearer
+  token — it returns a tool error result — so that rejection still reaches
+  the caller as a tool result rather than becoming `-32603`.
+- A handler result that is already a serialized `CallToolResult` is now passed
+  through unwrapped instead of being nested inside a text block. Domain data
+  that merely carries a `content` key fails the full `CallToolResult` check
+  and is still wrapped.
+- An incoming message the client cannot decode no longer ends the session.
+  Only a failure of `read_message()` — the peer hung up, the socket died, the
+  client was closed — fails pending requests and closes the transport;
+  anything that goes wrong after the bytes are off the wire is reported
+  through `ClientOptions::on_protocol_error` and the message is dropped.
+- An explicit `ProtectedResourceMetadataConfig::path` is now validated rather
+  than concatenated onto the origin verbatim. A path that does not begin with
+  `/` is rejected with `std::invalid_argument`, as is one carrying a `.` or
+  `..` whole segment. Previously `path = "evil"` produced `https://hevil` — a
+  corrupted authority rather than merely a bad path — and `path = "/../../x"`
+  was published unresolved. Only whole segments count, so a path such as
+  `/.well-known/a..b/c.d` is still accepted; dots inside a segment are
+  ordinary characters, and refusing them would refuse the well-known prefix
+  the derivation itself produces. The function does not normalize, and its
+  result is published to clients as the authoritative location of the
+  document, so an unusable path is refused rather than advertised. The
+  transport and session-manager setters reject it at configuration time and
+  leave the server unchanged.
+- A `Server` may now be destroyed while handlers are still in flight. The
+  implementation outlives the `Server` until that work finishes, so a handler
+  no longer runs against freed state, and a reverse request issued from a
+  handler whose `Server` is gone throws `std::runtime_error` naming that cause
+  instead of faulting — distinct from the failure reported for a session that
+  is merely closing. Destroying a `Server` from a thread other than the one
+  running its session no longer races on that session's request maps either:
+  those entries are abandoned on the session strand, which is the only
+  executor permitted to touch them.
+- A session is now unregistered even when teardown throws — a transport that
+  throws from `close()`, or a drain wait that fails for any reason other than
+  cancellation. Previously such a failure left the session registered and
+  every later `run()` was refused for the lifetime of the `Server`.
+- Stateless and discover dispatch in the HTTP session manager is spelled as a
+  named coroutine rather than a lambda handed to `co_spawn`, so the request
+  moves into that coroutine's own frame. This avoids the GCC 11 defect that
+  corrupts an object living in a coroutine frame across a suspension.
 
 ## [0.2.0] - TBD
 
