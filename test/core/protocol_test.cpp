@@ -2583,3 +2583,24 @@ TEST(ProtocolTest, CompleteParamsDecodesExplicitNullContextArguments) {
     ASSERT_TRUE(params.context.has_value());
     EXPECT_FALSE(params.context->arguments.has_value());
 }
+
+TEST(ProtocolTest, CallToolParamsTreatsExplicitNullMetaAsAbsent) {
+    // Independent of the deliberate `arguments` rejection below it: to_json emits _meta only
+    // when engaged, so absence is representable and a null must round-trip as absent.
+    const json control = {{"name", "add"}, {"arguments", json::object()}};
+    const json absent = json(control.get<mcp::CallToolParams>());
+
+    json with_null = control;
+    with_null["_meta"] = nullptr;
+
+    const auto decoded = with_null.get<mcp::CallToolParams>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, CallToolParamsStillRejectsNonObjectArguments) {
+    // Pins the deliberate rejection: arguments is emitted unconditionally, so absence is not
+    // representable and a null there can only be malformed. This must NOT become acceptance.
+    EXPECT_THROW((void)(json{{"name", "add"}, {"arguments", nullptr}}).get<mcp::CallToolParams>(),
+                 std::invalid_argument);
+}
