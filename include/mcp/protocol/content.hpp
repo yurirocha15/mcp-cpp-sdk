@@ -270,7 +270,7 @@ inline void from_json(const nlohmann::json& json_obj, ToolResultContent& content
     detail::validate_content_type(content.type, "tool_result");
     json_obj.at("toolUseId").get_to(content.toolUseId);
     json_obj.at("content").get_to(content.content);
-    if (json_obj.contains("isError")) {
+    if (detail::has_json_value(json_obj, "isError")) {
         content.isError = json_obj.at("isError").get<bool>();
     }
     if (json_obj.contains("structuredContent")) {

@@ -2413,3 +2413,78 @@ TEST(ProtocolTest, GetPromptRequestParamsDecodesExplicitNullArguments) {
     EXPECT_EQ(params.name, "greeting");
     EXPECT_FALSE(params.arguments.has_value());
 }
+
+TEST(ProtocolTest, ResourceDecodesExplicitNullOptionals) {
+    json resource_json = {{"uri", "file:///a.txt"}, {"name", "a.txt"}, {"description", nullptr},
+                          {"mimeType", nullptr},    {"size", nullptr}, {"title", nullptr},
+                          {"icons", nullptr}};
+
+    mcp::Resource resource;
+    ASSERT_NO_THROW(resource = resource_json.get<mcp::Resource>());
+    EXPECT_EQ(resource.uri, "file:///a.txt");
+    EXPECT_EQ(resource.name, "a.txt");
+    EXPECT_FALSE(resource.description.has_value());
+    EXPECT_FALSE(resource.mimeType.has_value());
+    EXPECT_FALSE(resource.size.has_value());
+    EXPECT_FALSE(resource.title.has_value());
+    EXPECT_FALSE(resource.icons.has_value());
+}
+
+TEST(ProtocolTest, ResourceTemplateDecodesExplicitNullOptionals) {
+    json tmpl_json = {{"uriTemplate", "file:///{path}"},
+                      {"name", "files"},
+                      {"description", nullptr},
+                      {"mimeType", nullptr},
+                      {"title", nullptr},
+                      {"icons", nullptr}};
+
+    mcp::ResourceTemplate tmpl;
+    ASSERT_NO_THROW(tmpl = tmpl_json.get<mcp::ResourceTemplate>());
+    EXPECT_EQ(tmpl.uriTemplate, "file:///{path}");
+    EXPECT_FALSE(tmpl.description.has_value());
+    EXPECT_FALSE(tmpl.mimeType.has_value());
+    EXPECT_FALSE(tmpl.title.has_value());
+    EXPECT_FALSE(tmpl.icons.has_value());
+}
+
+TEST(ProtocolTest, ToolDecodesExplicitNullOptionals) {
+    json tool_json = {{"name", "add"},          {"inputSchema", {{"type", "object"}}},
+                      {"description", nullptr}, {"title", nullptr},
+                      {"icons", nullptr},       {"execution", nullptr}};
+
+    mcp::Tool tool;
+    ASSERT_NO_THROW(tool = tool_json.get<mcp::Tool>());
+    EXPECT_EQ(tool.name, "add");
+    EXPECT_FALSE(tool.description.has_value());
+    EXPECT_FALSE(tool.title.has_value());
+    EXPECT_FALSE(tool.icons.has_value());
+    EXPECT_FALSE(tool.execution.has_value());
+}
+
+TEST(ProtocolTest, CallToolResultDecodesExplicitNullIsError) {
+    json result_json = {{"content", json::array()}, {"isError", nullptr}};
+
+    mcp::CallToolResult result;
+    ASSERT_NO_THROW(result = result_json.get<mcp::CallToolResult>());
+    EXPECT_FALSE(result.isError.has_value());
+}
+
+TEST(ProtocolTest, ToolResultContentDecodesExplicitNullIsError) {
+    json content_json = {{"type", "tool_result"},
+                         {"toolUseId", "call-1"},
+                         {"content", json::array()},
+                         {"isError", nullptr}};
+
+    mcp::ToolResultContent content;
+    ASSERT_NO_THROW(content = content_json.get<mcp::ToolResultContent>());
+    EXPECT_EQ(content.toolUseId, "call-1");
+    EXPECT_FALSE(content.isError.has_value());
+}
+
+TEST(ProtocolTest, MetaAndAnnotationsStillAcceptExplicitNull) {
+    // _meta and annotations decode through get<nlohmann::json> or a nested object, both of
+    // which already accept null. Pinned so the guard above is not "made consistent" onto them.
+    json resource_json = {
+        {"uri", "file:///a.txt"}, {"name", "a.txt"}, {"_meta", nullptr}, {"annotations", nullptr}};
+    ASSERT_NO_THROW((void)resource_json.get<mcp::Resource>());
+}
