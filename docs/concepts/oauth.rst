@@ -203,6 +203,15 @@ the request buffer is not guaranteed to survive that. A transport accepts one
 validator: installing both throws ``std::logic_error``. A server that installs
 only the synchronous one pays nothing for the asynchronous path.
 
+The two signatures are exported as :cpp:type:`mcp::BearerTokenValidator`
+(``bool(std::string_view)``) and :cpp:type:`mcp::AsyncBearerTokenValidator`
+(``Task<bool>(std::string)``), so a validator can be stored and passed around
+rather than written inline at the call. Neither is ever handed the
+``Authorization`` header itself: the transports strip the scheme first with
+:cpp:func:`mcp::http_bearer_token`, which returns the characters after
+``Bearer`` and an empty view when the scheme is absent, and an empty token is
+rejected before any validator runs.
+
 Health checks and other routes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -214,7 +223,9 @@ Routes that must answer before a token exists are named individually:
 
 Each entry is matched for equality against the path component of the request
 target, with any query string or fragment removed first, so ``/health`` also
-exempts ``/health?probe=1``.
+exempts ``/health?probe=1``. :cpp:func:`mcp::http_request_path` performs that
+split and is exported, so a custom request handler can key off exactly the same
+path the exemption check used.
 
 .. warning::
 
