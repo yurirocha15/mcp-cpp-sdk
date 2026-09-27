@@ -41,6 +41,34 @@ SplitResource split_resource(std::string_view resource) {
     return SplitResource{trimmed.substr(0, authority_end), trimmed.substr(authority_end)};
 }
 
+/// @brief Reject an explicit metadata path that cannot be appended to an origin as it stands.
+///
+/// The path is concatenated onto the origin verbatim, so a relative one does not produce a bad
+/// path but a different authority: "https://h" + "evil" resolves to the host "hevil". Precondition:
+/// `path` is not empty, which the caller treats as "derive the path" instead.
+void validate_metadata_path(std::string_view path) {
+    if (path.front() != '/') {
+        throw std::invalid_argument("Protected-resource metadata path must begin with '/'");
+    }
+
+    // This function does not normalise, and the result is published to clients as the
+    // authoritative location of the document. A dot segment is never intentional here, so it is
+    // refused rather than advertised unresolved. Only a whole segment counts: dots inside a
+    // segment are ordinary characters, and ".well-known" is the prefix this module derives itself.
+    for (std::size_t start = 0; start < path.size();) {
+        auto end = path.find('/', start);
+        if (end == std::string_view::npos) {
+            end = path.size();
+        }
+        const auto segment = path.substr(start, end - start);
+        if (segment == "." || segment == "..") {
+            throw std::invalid_argument(
+                "Protected-resource metadata path must not contain a '.' or '..' segment");
+        }
+        start = end + 1;
+    }
+}
+
 /// @brief True when every byte may appear in an RFC 7235 quoted-string, escaped or not.
 bool is_quotable(std::string_view value) {
     for (const auto character : value) {
@@ -142,6 +170,7 @@ std::string protected_resource_metadata_path(const ProtectedResourceMetadataConf
     // way either way.
     const auto resource = split_resource(metadata.resource);
     if (!metadata.path.empty()) {
+        validate_metadata_path(metadata.path);
         return metadata.path;
     }
 
