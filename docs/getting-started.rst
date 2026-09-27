@@ -220,6 +220,25 @@ server and calls a tool:
        io.run();
    }
 
+.. important::
+
+   **Client requests time out after 30 seconds by default.** The ``Client``
+   above takes no options, so every ``call_tool``, ``read_resource`` and
+   ``list_*`` it issues carries a 30-second deadline and throws
+   ``mcp::McpError`` with code ``-32001`` when it expires — even though the
+   server may still be working on the call. Set
+   ``ClientOptions::request_timeout`` before constructing the client if any of
+   your tools legitimately run longer:
+
+   .. code-block:: cpp
+
+      mcp::ClientOptions options;
+      options.request_timeout = std::chrono::minutes(5);
+      Client client(transport, io.get_executor(), options);
+
+   See :doc:`guides/error-handling` for per-request deadlines and what a
+   timeout does and does not guarantee about the server.
+
 Next Steps
 ----------
 
