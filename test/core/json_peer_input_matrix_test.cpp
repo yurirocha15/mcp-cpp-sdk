@@ -15,6 +15,41 @@
 // scripts/check_json_matrix.py runs as a build step and fails when a protocol
 // type has a from_json but is neither in this matrix nor excluded on the
 // record, so the matrix cannot quietly fall behind the protocol.
+//
+// WHAT THIS CORPUS IS, AND WHAT IT IS NOT
+//
+// It is a consistency oracle, not a correctness one. Every expectation is
+// derived by static analysis of the guard construct at the decode site, and
+// the test then runs the decoder. A case fails when runtime and static
+// analysis disagree. It cannot fail because a field is wrong per the MCP
+// spec. Nothing here is produced by executing the SDK, so the two sides are
+// independent -- but agreement means consistency, not conformance.
+//
+// It follows that once a decode site is fixed and this file is regenerated,
+// the matching cases pass BY CONSTRUCTION: the census re-reads the fixed
+// source and predicts the new behaviour. Green here is not evidence that a
+// field decodes correctly. That evidence lives in the hand-written,
+// red-first tests in test/core/protocol_test.cpp and
+// test/server/server_handlers_test.cpp.
+//
+// A TRUE null_throws ON AN OPTIONAL MEMBER RECORDS A DEFECT, NOT A SPEC
+//
+// The tuple (absent=false, null=true, wrong=true, oversized=false) describes
+// a member that tolerates being absent but throws when a peer sends it as an
+// explicit null. That is the defect class this project has repeatedly been
+// caught by, and scripts/json_census_dispositions.json dispositions it "fix".
+// 66 of the 314 field entries below still carry it; there were 87 before the
+// explicit-null decoding fixes. Those rows pin behaviour as it is so the
+// suite stays green. They do not endorse it. Fixing one turns this file red
+// until it is regenerated -- the ratchet runs backwards here, so regenerate,
+// and never relax a fix to satisfy this file.
+//
+// This column is also blind to the other half of that class. A member that
+// decodes an explicit null into an ENGAGED optional throws nothing, so it is
+// recorded as null_throws = false whether or not it then re-encodes a member
+// the peer never sent. _meta and annotations were corrupt in exactly that way
+// and not one case below changed when they were fixed. Seeing that class
+// needs a round-trip check, which this corpus does not have.
 
 #include <gtest/gtest.h>
 
