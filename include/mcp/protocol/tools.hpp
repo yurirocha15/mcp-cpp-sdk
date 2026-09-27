@@ -178,7 +178,7 @@ inline void from_json(const nlohmann::json& json_obj, CallToolParams& params) {
     }
     params.arguments =
         json_obj.contains("arguments") ? json_obj.at("arguments") : nlohmann::json::object();
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         params.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
