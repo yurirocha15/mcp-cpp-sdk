@@ -2488,3 +2488,28 @@ TEST(ProtocolTest, MetaAndAnnotationsStillAcceptExplicitNull) {
         {"uri", "file:///a.txt"}, {"name", "a.txt"}, {"_meta", nullptr}, {"annotations", nullptr}};
     ASSERT_NO_THROW((void)resource_json.get<mcp::Resource>());
 }
+
+TEST(ProtocolTest, ImplementationDecodesExplicitNullOptionals) {
+    json impl_json = {{"name", "test-client"},  {"version", "0.1"},      {"title", nullptr},
+                      {"description", nullptr}, {"websiteUrl", nullptr}, {"icons", nullptr}};
+
+    mcp::Implementation impl;
+    ASSERT_NO_THROW(impl = impl_json.get<mcp::Implementation>());
+    EXPECT_EQ(impl.name, "test-client");
+    EXPECT_EQ(impl.version, "0.1");
+    EXPECT_FALSE(impl.title.has_value());
+    EXPECT_FALSE(impl.description.has_value());
+    EXPECT_FALSE(impl.websiteUrl.has_value());
+    EXPECT_FALSE(impl.icons.has_value());
+}
+
+TEST(ProtocolTest, CompleteParamsDecodesExplicitNullContextArguments) {
+    json params_json = {{"ref", {{"type", "ref/prompt"}, {"name", "p"}}},
+                        {"argument", {{"name", "a"}, {"value", "v"}}},
+                        {"context", {{"arguments", nullptr}}}};
+
+    mcp::CompleteParams params;
+    ASSERT_NO_THROW(params = params_json.get<mcp::CompleteParams>());
+    ASSERT_TRUE(params.context.has_value());
+    EXPECT_FALSE(params.context->arguments.has_value());
+}
