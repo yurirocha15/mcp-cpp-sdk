@@ -230,16 +230,16 @@ inline void to_json(nlohmann::json& json_obj, const Implementation& impl) {
 inline void from_json(const nlohmann::json& json_obj, Implementation& impl) {
     json_obj.at("name").get_to(impl.name);
     json_obj.at("version").get_to(impl.version);
-    if (json_obj.contains("title")) {
+    if (detail::has_json_value(json_obj, "title")) {
         impl.title = json_obj.at("title").get<std::string>();
     }
-    if (json_obj.contains("description")) {
+    if (detail::has_json_value(json_obj, "description")) {
         impl.description = json_obj.at("description").get<std::string>();
     }
-    if (json_obj.contains("websiteUrl")) {
+    if (detail::has_json_value(json_obj, "websiteUrl")) {
         impl.websiteUrl = json_obj.at("websiteUrl").get<std::string>();
     }
-    if (json_obj.contains("icons")) {
+    if (detail::has_json_value(json_obj, "icons")) {
         impl.icons = json_obj.at("icons").get<std::vector<Icon>>();
     }
 }
