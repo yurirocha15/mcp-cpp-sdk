@@ -1823,3 +1823,36 @@ TEST_F(ServerHandlersTest, ToolsListPaginationAcceptsExplicitNullCursor) {
     ASSERT_TRUE(result.contains("nextCursor"));
     EXPECT_EQ(result["nextCursor"], "2");
 }
+
+TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullClientInfoOptionals) {
+    // clientInfo is an Implementation, so this breaks the handshake on a peer's first message.
+    ServerSetup setup(io_ctx_, mcp::ServerCapabilities{});
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        setup.raw_transport->close();
+    });
+
+    auto init_req = make_initialize_request("1");
+    init_req["params"]["clientInfo"]["title"] = nullptr;
+    init_req["params"]["clientInfo"]["description"] = nullptr;
+    init_req["params"]["clientInfo"]["websiteUrl"] = nullptr;
+    init_req["params"]["clientInfo"]["icons"] = nullptr;
+    setup.raw_transport->enqueue_message(init_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 1);
+    auto& init_response = responses[0];
+    ASSERT_FALSE(init_response.contains("error")) << "actual error: " << init_response["error"].dump();
+    ASSERT_TRUE(init_response.contains("result"));
+    EXPECT_EQ(init_response["result"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+}
