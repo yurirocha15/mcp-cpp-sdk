@@ -45,7 +45,8 @@
 // report this file stale until it is regenerated with the fix. The check reads
 // the other direction as a REGRESSION: a row whose decoder now throws on an
 // explicit null or on an absent key, where this file says it tolerates it.
-// Never relax a fix, or regenerate over a regression, to satisfy this file.
+// The generator refuses to write such a row unless it is named with
+// --accept-regression. Never relax a fix to satisfy this file.
 //
 // This column is also blind to the other half of that class. A member that
 // decodes an explicit null into an ENGAGED optional throws nothing, so it is
