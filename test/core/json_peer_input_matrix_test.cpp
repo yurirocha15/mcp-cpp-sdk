@@ -12,9 +12,10 @@
 // which puts the null column within reach of a careless peer rather than only
 // a hostile one.
 //
-// scripts/check_json_matrix.py runs as a build step and fails when a protocol
+// scripts/check_json_matrix.py runs as a build step. It fails when a protocol
 // type has a from_json but is neither in this matrix nor excluded on the
-// record, so the matrix cannot quietly fall behind the protocol.
+// record, so the matrix cannot quietly fall behind the protocol, and when this
+// file differs from what the generator produces from the current sources.
 //
 // WHAT THIS CORPUS IS, AND WHAT IT IS NOT
 //
@@ -40,9 +41,11 @@
 // caught by, and scripts/json_census_dispositions.json dispositions it "fix".
 // 66 of the 317 field entries below still carry it; there were 87 before the
 // explicit-null decoding fixes. Those rows pin behaviour as it is so the
-// suite stays green. They do not endorse it. Fixing one turns this file red
-// until it is regenerated -- the ratchet runs backwards here, so regenerate,
-// and never relax a fix to satisfy this file.
+// suite stays green. They do not endorse it. Fixing one makes the build check
+// report this file stale until it is regenerated with the fix. The check reads
+// the other direction as a REGRESSION: a row whose decoder now throws on an
+// explicit null or on an absent key, where this file says it tolerates it.
+// Never relax a fix, or regenerate over a regression, to satisfy this file.
 //
 // This column is also blind to the other half of that class. A member that
 // decodes an explicit null into an ENGAGED optional throws nothing, so it is
