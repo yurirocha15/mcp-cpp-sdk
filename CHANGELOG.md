@@ -225,6 +225,16 @@ Versioning; a `0.x` version is a stable release unless its version has an
   named coroutine rather than a lambda handed to `co_spawn`, so the request
   moves into that coroutine's own frame. This avoids the GCC 11 defect that
   corrupts an object living in a coroutine frame across a suspension.
+- The peer-input matrix build check now fails when
+  `test/core/json_peer_input_matrix_test.cpp` differs from what
+  `scripts/gen_json_matrix.py` generates, and exits 2 for a row whose decoder
+  now throws on an explicit null or an absent key. The generator refuses to
+  write such a row unless it is named with `--accept-regression`. The check is
+  governed by the new `MCP_CPP_SDK_CHECK_JSON_MATRIX` option: it defaults to
+  `ON` in a checkout, where a `BUILD_TESTING=ON` build now needs Python 3.9+,
+  and to `OFF` in source archives, which do not ship the scripts. Previously a
+  missing Python skipped the check with a warning, and a source-archive build
+  with tests failed because the scripts were absent.
 
 ## [0.2.0] - TBD
 
