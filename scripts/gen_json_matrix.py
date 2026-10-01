@@ -23,7 +23,10 @@ been added, so the matrix cannot silently fall behind the protocol.
 Regenerating cannot launder a regression either.  When a row would move from
 tolerating an explicit null or an absent key to throwing on it, nothing is
 written unless that row is named with ``--accept-regression Type.key`` (or a
-bare ``Type``), and the reason belongs in the commit message.
+bare ``Type``), and the reason belongs in the commit message.  Rows are judged
+against both the matrix in the working tree and the one committed at git HEAD,
+so editing or deleting the working copy first does not hide a regression.
+Only ``--no-baseline``, for a tree where neither exists, writes unchecked.
 """
 
 from __future__ import annotations
@@ -837,30 +840,42 @@ def committed_matrix(base: str) -> str | None:
     return proc.stdout.decode("utf-8", errors="replace")
 
 
-def guard_baseline(out_text: str | None, head_text: str | None) -> str | None:
-    """The matrix a render is guarded against.
+def guard_baselines(out_text: str | None, head_text: str | None) -> list[str]:
+    """The matrices a render is guarded against: HEAD's and the output file's.
 
-    The output file when it holds a matrix; otherwise the one committed at
-    HEAD, so deleting or emptying the file, or pointing --out somewhere new,
-    does not leave nothing to compare with.  None when neither has a TEST.
+    Both, because neither alone is enough.  Checking only the working copy
+    lets a row deleted from it come back regressed; checking only HEAD misses
+    the regression of a fix that is regenerated but not yet committed.  Texts
+    without a TEST are dropped, so the list is empty when there is nothing to
+    compare with.
     """
-    for text in (out_text, head_text):
-        if text is not None and parse_matrix(text)["tests"]:
-            return text
-    return None
+    baselines: list[str] = []
+    for text in (head_text, out_text):
+        if text is not None and text not in baselines and parse_matrix(text)["tests"]:
+            baselines.append(text)
+    return baselines
 
 
-def guard(committed_text: str, rendered_text: str, accepted: list[str]) -> tuple[int, list[str]]:
+def guard(baselines: list[str], rendered_text: str, accepted: list[str]) -> tuple[int, list[str]]:
     """Refuses a render that would record a regression; returns (exit code, lines).
 
     Regenerating makes the build check pass by definition, so the check alone
     cannot stop a regression from being written down as the expected
-    behaviour.  This can: each regressed row must be named, as ``Type.key`` or
-    as a bare ``Type`` (the TEST name, with ``::`` spelled ``_``), before it
-    is written.
+    behaviour.  This can: each row that regressed against any of `baselines`
+    must be named, as ``Type.key`` or as a bare ``Type`` (the TEST name, with
+    ``::`` spelled ``_``), before it is written.
     """
-    committed = parse_matrix(committed_text)
-    regressions = classify(committed, parse_matrix(rendered_text))[0] if committed["tests"] else []
+    rendered = parse_matrix(rendered_text)
+    regressions: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for text in baselines:
+        committed = parse_matrix(text)
+        if not committed["tests"]:
+            continue
+        for test, key, line, kind in classify(committed, rendered)[0]:
+            if (test, key, kind) not in seen:
+                seen.add((test, key, kind))
+                regressions.append((test, key, line, kind))
     names = {name: name.replace("::", "_") for name in accepted}
     lines = [
         f"--accept-regression {name} matches no regressed row"
@@ -917,16 +932,17 @@ def main(argv: list[str]) -> int:
     if os.path.exists(args.out):
         with open(args.out, encoding="utf-8") as fh:
             out_text = fh.read()
-    committed_text = guard_baseline(out_text, committed_matrix(args.repo))
-    if committed_text is None and not args.no_baseline:
+    baselines = guard_baselines(out_text, committed_matrix(args.repo))
+    if not baselines and not args.no_baseline:
         sys.stderr.write(
-            f"{args.out} is missing or has no TEST(JsonPeerInputMatrix, ...), and no "
-            "matrix is committed at git HEAD, so the new rows cannot be checked for "
-            "regressions. Restore it (git checkout -- "
+            f"{args.out} is missing or has no TEST(JsonPeerInputMatrix, ...), and git "
+            "could not supply one from HEAD (git is unavailable, this is not a "
+            "repository, or no matrix is committed there), so the new rows cannot be "
+            "checked for regressions. Restore it (git checkout -- "
             "test/core/json_peer_input_matrix_test.cpp), or pass --no-baseline.\n"
         )
         return 1
-    code, lines = guard(committed_text or "", text, args.accept_regression)
+    code, lines = guard(baselines, text, args.accept_regression)
     for line in lines:
         sys.stderr.write(line + "\n")
     if code:
