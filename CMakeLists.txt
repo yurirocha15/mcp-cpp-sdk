@@ -312,8 +312,25 @@ if(BUILD_TESTING)
   # worth depends on covering every protocol type. Checking that here means a
   # new type with a from_json breaks the build until it is either in the matrix
   # or excluded with a stated reason, rather than quietly arriving untested.
-  find_package(Python3 COMPONENTS Interpreter QUIET)
-  if(Python3_Interpreter_FOUND)
+  # Source archives ship test/ but not the matrix scripts, so a packager's
+  # BUILD_TESTING=ON build defaults the check off instead of failing on it.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_json_matrix.py")
+    set(_mcp_json_matrix_default ON)
+  else()
+    set(_mcp_json_matrix_default OFF)
+  endif()
+  option(
+    MCP_CPP_SDK_CHECK_JSON_MATRIX
+    "Fail the build when the peer-input matrix is stale (needs Python 3.9+)"
+    ${_mcp_json_matrix_default})
+  if(MCP_CPP_SDK_CHECK_JSON_MATRIX)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_json_matrix.py")
+      message(
+        FATAL_ERROR
+          "MCP_CPP_SDK_CHECK_JSON_MATRIX=ON but scripts/check_json_matrix.py "
+          "is not in this source tree")
+    endif()
+    find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
     add_custom_target(
       mcp-json-matrix-complete ALL
       COMMAND "${Python3_EXECUTABLE}"
@@ -321,11 +338,14 @@ if(BUILD_TESTING)
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       COMMENT "Checking the peer-input matrix covers every protocol type")
     add_dependencies(mcp-sdk-tests mcp-json-matrix-complete)
+  elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_json_matrix.py")
+    message(STATUS "Peer-input matrix check skipped "
+                   "(disabled by MCP_CPP_SDK_CHECK_JSON_MATRIX=OFF)")
   else()
     message(
-      WARNING
-        "Python3 not found; the peer-input matrix completeness check is skipped"
-    )
+      STATUS
+        "Peer-input matrix check skipped (MCP_CPP_SDK_CHECK_JSON_MATRIX=OFF; "
+        "scripts/ is not shipped in source archives)")
   endif()
 
   include(GoogleTest)
