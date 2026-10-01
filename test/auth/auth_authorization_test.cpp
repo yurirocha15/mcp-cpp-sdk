@@ -1031,17 +1031,18 @@ class StallingServer final {
         acceptor_.async_accept([this](boost::system::error_code error, asio::ip::tcp::socket socket) {
             if (!error) {
                 held_socket_ = std::move(socket);
-                ++accepted_;
+                accepted_.fetch_add(1);
             }
         });
     }
 
-    [[nodiscard]] int accepted() const { return accepted_; }
+    /// Safe to poll from a thread other than the one running the io_context.
+    [[nodiscard]] int accepted() const { return accepted_.load(); }
 
    private:
     asio::ip::tcp::acceptor acceptor_;
     std::optional<asio::ip::tcp::socket> held_socket_;
-    int accepted_{0};
+    std::atomic<int> accepted_{0};
 };
 
 }  // namespace
@@ -2248,14 +2249,20 @@ TEST(AuthTransportCloseTest, CloseFromAnotherThreadWhileAuthorizationIsInFlightT
 
     std::thread runner([&io_ctx]() { io_ctx.run(); });
 
-    // A brief head start into the stalled discovery fetch, then close from a thread that never runs
-    // the io_context at all.
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // Wait until the discovery fetch has connected to the stalling server (a fixed head start is
+    // not enough under sanitizer slowdown), then close from a thread that never runs the io_context.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (stalling.accepted() < 1 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    const bool reached_stall = stalling.accepted() >= 1;
     transport->close();
     resource_server.close();
 
     runner.join();
 
+    ASSERT_TRUE(reached_stall)
+        << "the flow never reached the stalling discovery server, so close() raced nothing";
     ASSERT_FALSE(timed_out) << "watchdog: close() from another thread did not unblock the flow";
     EXPECT_TRUE(completed);
     EXPECT_NE(failure, nullptr);
