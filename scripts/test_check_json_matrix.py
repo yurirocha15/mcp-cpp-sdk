@@ -191,15 +191,15 @@ class JsonMatrixCheckTest(unittest.TestCase):
         test, key = self.find_row(lambda r: not r["absent"] and r["null"])
         committed = self.flipped(test, key, null=False)
 
-        code, lines = gen.guard(committed, self.rendered, [])
+        code, lines = gen.guard([committed], self.rendered, [])
         self.assertEqual(code, 2)
         self.assertTrue(any(f"{test}): {key} null false->true" in line for line in lines))
 
         for accepted in (f"{test}.{key}", test):
-            code, lines = gen.guard(committed, self.rendered, [accepted])
+            code, lines = gen.guard([committed], self.rendered, [accepted])
             self.assertEqual((code, lines), (0, []), accepted)
 
-        code, lines = gen.guard(self.rendered, self.rendered, ["NoSuchType.key"])
+        code, lines = gen.guard([self.rendered], self.rendered, ["NoSuchType.key"])
         self.assertEqual(code, 1)
         self.assertEqual(lines, ["--accept-regression NoSuchType.key matches no regressed row"])
 
@@ -212,7 +212,7 @@ class JsonMatrixCheckTest(unittest.TestCase):
             if not r["absent"] and r["null"]
         )
         committed = self.flipped(test, key, null=False)
-        code, lines = gen.guard(committed, self.rendered, [test.replace("_", "::") + "." + key])
+        code, lines = gen.guard([committed], self.rendered, [test.replace("_", "::") + "." + key])
         self.assertEqual((code, lines), (0, []))
 
     # 13
@@ -223,20 +223,43 @@ class JsonMatrixCheckTest(unittest.TestCase):
         self.assertEqual(code, 2, out)
         self.assertIn(f"{test}): {key} became optional but throws on explicit null", out)
         self.assertNotIn("now tolerated", out)
-        self.assertEqual(gen.guard(committed, self.rendered, [])[0], 2)
+        self.assertEqual(gen.guard([committed], self.rendered, [])[0], 2)
 
     # 14
-    def test_guard_falls_back_to_the_committed_matrix(self) -> None:
+    def test_guard_checks_head_as_well_as_the_working_tree(self) -> None:
         test, key = self.find_row(lambda r: not r["absent"] and r["null"])
         head = self.flipped(test, key, null=False)
         # Emptying or deleting the output file must not leave nothing to compare.
         for out_text in ("", None, "// truncated\n"):
-            baseline = gen.guard_baseline(out_text, head)
-            self.assertEqual(baseline, head)
-            self.assertEqual(gen.guard(baseline, self.rendered, [])[0], 2)
-        self.assertEqual(gen.guard_baseline(self.rendered, head), self.rendered)
-        self.assertIsNone(gen.guard_baseline("", None))
-        self.assertIsNone(gen.guard_baseline(None, ""))
+            baselines = gen.guard_baselines(out_text, head)
+            self.assertEqual(baselines, [head])
+            self.assertEqual(gen.guard(baselines, self.rendered, [])[0], 2)
+        self.assertEqual(gen.guard_baselines(self.rendered, head), [head, self.rendered])
+        self.assertEqual(gen.guard_baselines(head, head), [head])
+        self.assertEqual(gen.guard_baselines(self.rendered, None), [self.rendered])
+        self.assertEqual(gen.guard_baselines("", None), [])
+        self.assertEqual(gen.guard_baselines(None, ""), [])
+
+    # 15
+    def test_row_deleted_from_the_working_tree_but_at_head_is_still_a_regression(self) -> None:
+        # A required row with a tolerant past, in a TEST with no null-fragile
+        # row, so a working copy without the row or the TEST reads as stale.
+        test, key = next(
+            (t, k)
+            for t, block in self.parsed["tests"].items()
+            if all(r["absent"] or not r["null"] for r in block["rows"].values())
+            for k, r in block["rows"].items()
+            if r["absent"] and not r["null"]
+        )
+        head = self.flipped(test, key, absent=False)
+        start, end = self.block_span(head, test)
+        for working in (self.edit_row(head, test, key, None), head[:start] + head[end:]):
+            self.assertEqual(gen.guard([working], self.rendered, [])[0], 0)
+            code, lines = gen.guard(gen.guard_baselines(working, head), self.rendered, [])
+            self.assertEqual(code, 2, lines)
+            self.assertTrue(any(f"{test}): {key} absent false->true" in line for line in lines))
+            baselines = gen.guard_baselines(working, head)
+            self.assertEqual(gen.guard(baselines, self.rendered, [f"{test}.{key}"]), (0, []))
 
     # 12
     def test_every_emitted_line_is_ascii(self) -> None:
@@ -255,7 +278,7 @@ class JsonMatrixCheckTest(unittest.TestCase):
             ("no tests here", self.manifest),
         ):
             emitted += check.check(text, man, self.rendered, self.manifest)[1]
-        emitted += gen.guard(regressed, self.rendered, ["NoSuchType"])[1]
+        emitted += gen.guard([regressed], self.rendered, ["NoSuchType"])[1]
         self.assertIn("REGRESSION", "\n".join(emitted))
         self.assertIn("is stale", "\n".join(emitted))
         for line in emitted:
