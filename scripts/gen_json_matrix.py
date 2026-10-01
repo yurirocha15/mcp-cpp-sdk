@@ -133,7 +133,8 @@ def load_protocol(base: str):
     for name in sorted(os.listdir(top)):
         if not name.endswith(".hpp"):
             continue
-        raw = open(os.path.join(top, name), encoding="utf-8").read()
+        with open(os.path.join(top, name), encoding="utf-8") as fh:
+            raw = fh.read()
         text = census.strip_comments(raw)
         root = census.parse_blocks(text)
         for k, v in census.parse_structs(text, root).items():
@@ -500,7 +501,8 @@ void check_field(const json& baseline, const FieldExpect& f) {
 '''
 
 
-def generate(base: str, out_path: str) -> dict:
+def render(base: str) -> tuple[str, dict]:
+    """The matrix source and its manifest, unformatted and without writing."""
     rows = census.build_rows(base)
 
     structs, bases, enums, defaults, from_json_types = load_protocol(base)
@@ -589,15 +591,6 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {{
     for type_name, reason in sorted(skipped.items()):
         body.append(f"//   {type_name}: {reason}")
 
-    with open(out_path, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(body) + "\n")
-
-    # Format on the way out, so regenerating is idempotent against the repo's
-    # pre-commit hook rather than producing a diff every time.
-    formatter = shutil.which("clang-format")
-    if formatter:
-        subprocess.run([formatter, "-i", out_path], check=False)
-
     manifest = {
         "types": [t for t, _, _ in covered],
         "excluded": skipped,
@@ -606,6 +599,19 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {{
         "mode_count": len(MODES),
         "gtest_count": len(covered) + 1,
     }
+    return "\n".join(body) + "\n", manifest
+
+
+def generate(base: str, out_path: str) -> dict:
+    text, manifest = render(base)
+    with open(out_path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+    # Format on the way out, so regenerating is idempotent against the repo's
+    # pre-commit hook rather than producing a diff every time.
+    formatter = shutil.which("clang-format")
+    if formatter:
+        subprocess.run([formatter, "-i", out_path], check=False)
     return manifest
 
 
