@@ -149,6 +149,9 @@ Running Tests
    # Run the GoogleTest binary directly with a filter
    ./build/mcp-sdk-tests --gtest_filter=ServerCoreTest.*
 
+A test build from a checkout needs Python 3.9+ for the peer-input matrix check;
+opt out with ``-DMCP_CPP_SDK_CHECK_JSON_MATRIX=OFF``.
+
 Code Coverage
 ^^^^^^^^^^^^^
 
