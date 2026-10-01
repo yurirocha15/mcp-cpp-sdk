@@ -24,6 +24,10 @@ say which way each one moved:
     REGRESSION  a member now throws on an explicit null while it may be
                 absent, or has become required, where the committed matrix
                 says it tolerated the input -- fix the decoder (exit 2)
+
+Regenerating over a regression would record it as expected behaviour, so
+``gen_json_matrix.py`` refuses to unless the row is named with
+``--accept-regression``.
 """
 
 from __future__ import annotations
