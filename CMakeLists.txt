@@ -338,6 +338,14 @@ if(BUILD_TESTING)
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       COMMENT "Checking the peer-input matrix covers every protocol type")
     add_dependencies(mcp-sdk-tests mcp-json-matrix-complete)
+    # Inside the gate for the same reason as the check: source archives do not
+    # ship these scripts.
+    add_test(
+      NAME json-matrix-check-unittest
+      COMMAND "${Python3_EXECUTABLE}" scripts/test_check_json_matrix.py -v
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(json-matrix-check-unittest
+                         PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
   elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_json_matrix.py")
     message(STATUS "Peer-input matrix check skipped "
                    "(disabled by MCP_CPP_SDK_CHECK_JSON_MATRIX=OFF)")
