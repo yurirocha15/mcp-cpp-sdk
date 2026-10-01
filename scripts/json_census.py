@@ -40,6 +40,7 @@ import sys
 import tarfile
 import tempfile
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Iterator, Optional
 
 # --------------------------------------------------------------------------
@@ -899,7 +900,7 @@ def lambda_block_after(root: Block, offset: int) -> Optional[Block]:
 def scan_file(
     path: str, rel: str, index: dict[str, list[FunctionInfo]]
 ) -> tuple[list[Row], dict[str, list[tuple[str, str]]]]:
-    raw = open(path, "r", encoding="utf-8", errors="replace").read()
+    raw = Path(path).read_text(encoding="utf-8", errors="replace")
     text = strip_comments(raw)
     starts = line_index(text)
     root = parse_blocks(text)
@@ -1268,7 +1269,7 @@ def build_index(files: list[tuple[str, str]]) -> dict[str, list[FunctionInfo]]:
     """Name -> function bodies, for the call-graph walk used by fatality."""
     index: dict[str, list[FunctionInfo]] = {}
     for path, rel in files:
-        raw = open(path, "r", encoding="utf-8", errors="replace").read()
+        raw = Path(path).read_text(encoding="utf-8", errors="replace")
         text = strip_comments(raw)
         root = parse_blocks(text)
 
@@ -1445,7 +1446,7 @@ def strict_serialisers(files: list[tuple[str, str]]) -> set[str]:
     """Types whose from_json raises rather than accepting whatever it is given."""
     strict: set[str] = set()
     for path, _rel in files:
-        text = strip_comments(open(path, encoding="utf-8", errors="replace").read())
+        text = strip_comments(Path(path).read_text(encoding="utf-8", errors="replace"))
         root = parse_blocks(text)
 
         def walk(blk: Block) -> None:
@@ -1912,7 +1913,7 @@ def build_rows(base: str) -> list[Row]:
         for name, members in file_structs.items():
             structs.setdefault(name, members)
         enums.update(
-            enum_table(strip_comments(open(path, encoding="utf-8", errors="replace").read()))
+            enum_table(strip_comments(Path(path).read_text(encoding="utf-8", errors="replace")))
         )
 
     # Types a peer can steer a document into, and what each delegates to.
