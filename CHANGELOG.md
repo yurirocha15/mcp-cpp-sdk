@@ -444,6 +444,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   throws from `close()`, or a drain wait that fails for any reason other than
   cancellation. Previously such a failure left the session registered and
   every later `run()` was refused for the lifetime of the `Server`.
+- Closing an OAuth client transport from a thread that does not run the
+  `io_context` could be lost while a metadata lookup was resolving. The close
+  found no socket to shut, and the flow then went on to connect and blocked
+  until the HTTP timeout. The abort latch is now checked again just before the
+  connection is opened, so such a close ends the flow promptly. This covers an
+  `io_context` run by a single thread.
 
 ### Fixed
 
