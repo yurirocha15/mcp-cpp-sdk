@@ -574,10 +574,10 @@ std::string sanitize_for_diagnostics(std::string_view value) {
 
 }  // namespace detail
 
-// The target is sanitized for the MESSAGE and kept raw in `target_`. Every throw site passes a URL
-// or address that came from a peer, and sanitizing here rather than at each of them means a throw
-// site cannot forget. `target()` still returns the value verbatim, because a caller inspecting it
-// programmatically wants the real URL, not one with its control characters flattened.
+/// The target is sanitized for the MESSAGE and kept raw in `target_`. Every throw site passes a URL
+/// or address that came from a peer, and sanitizing here rather than at each of them means a throw
+/// site cannot forget. `target()` still returns the value verbatim, because a caller inspecting it
+/// programmatically wants the real URL, not one with its control characters flattened.
 MetadataPolicyError::MetadataPolicyError(MetadataUrlDecision decision, std::string target)
     : std::runtime_error("OAuth metadata target refused (" + std::string(describe(decision)) +
                          "): " + detail::sanitize_for_diagnostics(target)),

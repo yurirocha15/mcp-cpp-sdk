@@ -50,8 +50,8 @@ struct HttpServerTransport::Impl {
         std::optional<std::string> response_body;
         std::optional<std::string> session_header;
         std::optional<std::string> event_id;
-        // Set only for a request carried under a sentinel id. Holds the id the caller actually
-        // sent, so run_write can put it back before the response leaves the transport.
+        /// Set only for a request carried under a sentinel id. Holds the id the caller actually
+        /// sent, so run_write can put it back before the response leaves the transport.
         std::optional<nlohmann::json> client_request_id;
         bool response_ready{false};
     };
@@ -308,10 +308,10 @@ struct HttpServerTransport::Impl {
         co_return timer_signal;
     }
 
-    // A transport-private id for a request that arrives with no session credential. The random
-    // prefix is drawn once per transport from the same secure source as the session id, so a
-    // peer cannot construct an id that collides with a live sentinel, and the counter keeps
-    // concurrent sentinels distinct from each other.
+    /// A transport-private id for a request that arrives with no session credential. The random
+    /// prefix is drawn once per transport from the same secure source as the session id, so a
+    /// peer cannot construct an id that collides with a live sentinel, and the counter keeps
+    /// concurrent sentinels distinct from each other.
     std::string next_sentinel_request_id() {
         if (sentinel_id_prefix.empty()) {
             sentinel_id_prefix = "mcp-pregate-" + generate_session_id() + "-";
@@ -877,11 +877,11 @@ struct HttpServerTransport::Impl {
     AsyncBearerTokenValidator async_bearer_token_validator;
     std::size_t max_request_body_bytes{constants::g_default_max_request_body_bytes};
     BearerChallengeConfig bearer_challenge;
-    // Rendered once when the challenge or the metadata changes, so serving a 401 never formats.
+    /// Rendered once when the challenge or the metadata changes, so serving a 401 never formats.
     std::string www_authenticate_value{"Bearer"};
     std::optional<ProtectedResourceMetadataConfig> protected_resource_metadata;
     std::string protected_resource_metadata_body;
-    // The resolved serving path: `path` when set, else derived from `resource`.
+    /// The resolved serving path: `path` when set, else derived from `resource`.
     std::string protected_resource_metadata_path;
     std::unordered_set<std::string> unauthenticated_paths;
 

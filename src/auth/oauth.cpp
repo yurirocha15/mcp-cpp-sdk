@@ -683,8 +683,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         return std::make_shared<detail::OAuthScopeState>();
     }
 
-    // Every request carries the scope it was issued under, so aborting that scope reaches exactly
-    // these exchanges and no others. A null scope is the client's own unscoped work.
+    /// Every request carries the scope it was issued under, so aborting that scope reaches exactly
+    /// these exchanges and no others. A null scope is the client's own unscoped work.
     /// Build an exchange with the fetch policy and host resolver PINNED for its whole lifetime.
     ///
     /// set_metadata_policy() and set_host_resolver() are plain writes to state the exchange
@@ -899,8 +899,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 OAuthHttpClient::OAuthHttpClient(const net::any_io_executor& executor)
     : impl_(std::make_shared<Impl>(executor)) {}
 
-// Safe to call at any time, including mid-flight: exchanges already running keep what they started
-// with, and the next one picks up the new value. See configure() below for changing both together.
+/// Safe to call at any time, including mid-flight: exchanges already running keep what they started
+/// with, and the next one picks up the new value. See configure() below for changing both together.
 void OAuthHttpClient::set_metadata_policy(MetadataFetchPolicy policy) {
     std::lock_guard lock(impl_->active_mutex);
     impl_->policy = std::move(policy);
@@ -911,11 +911,11 @@ void OAuthHttpClient::set_host_resolver(HostResolver resolver) {
     impl_->host_resolver = std::move(resolver);
 }
 
-// Installs both values under one lock. Use this rather than the two setters above whenever both
-// change: calling them in sequence leaves an interval holding one new value and one old one, and
-// make_exchange() pins whatever it finds. Resolver-first is the natural order to write and the
-// dangerous one. See the @warning on set_metadata_policy() in include/mcp/auth/oauth.hpp for why,
-// and for how wide the interval measures.
+/// Installs both values under one lock. Use this rather than the two setters above whenever both
+/// change: calling them in sequence leaves an interval holding one new value and one old one, and
+/// make_exchange() pins whatever it finds. Resolver-first is the natural order to write and the
+/// dangerous one. See the @warning on set_metadata_policy() in include/mcp/auth/oauth.hpp for why,
+/// and for how wide the interval measures.
 void OAuthHttpClient::configure(MetadataFetchPolicy policy, HostResolver resolver) {
     std::lock_guard lock(impl_->active_mutex);
     impl_->policy = std::move(policy);
