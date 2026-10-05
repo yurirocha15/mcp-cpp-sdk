@@ -13,6 +13,8 @@
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -266,9 +268,11 @@ namespace {
 
 /// A raw HTTP peer on its own thread that hands out one MCP session and counts what a client
 /// transport does to it. HttpServerTransport cannot stand in: it does not report a session DELETE.
+/// A request made after initialize is answered only once the test releases it.
 class SessionPeer final {
    public:
-    SessionPeer() : acceptor_(io_ctx_, {asio::ip::make_address("127.0.0.1"), 0}) {
+    SessionPeer() : acceptor_(io_ctx_, {asio::ip::make_address("127.0.0.1"), 0}), hold_(io_ctx_) {
+        hold_.expires_at(std::chrono::steady_clock::time_point::max());
         asio::co_spawn(io_ctx_, accept_loop(), asio::detached);
         thread_ = std::thread([this]() { io_ctx_.run(); });
     }
@@ -298,6 +302,24 @@ class SessionPeer final {
         return changed_.wait_for(lock, limit, [this, count]() { return deletes_ >= count; });
     }
 
+    [[nodiscard]] bool wait_for_held_request(std::chrono::seconds limit) {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(lock, limit, [this]() { return held_requests_ >= 1; });
+    }
+
+    void release_held_response() {
+        asio::post(io_ctx_, [this]() {
+            released_ = true;
+            hold_.cancel();
+        });
+    }
+
+    /// True once the released response has been written out in full.
+    [[nodiscard]] bool wait_for_held_response_sent(std::chrono::seconds limit) {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(lock, limit, [this]() { return held_responses_sent_ >= 1; });
+    }
+
    private:
     void count(int& counter) {
         {
@@ -324,6 +346,7 @@ class SessionPeer final {
 
                 http::response<http::string_body> response{http::status::ok, request.version()};
                 response.keep_alive(true);
+                bool held = false;
                 if (request.method() == http::verb::delete_) {
                     count(deletes_);
                 } else {
@@ -331,7 +354,17 @@ class SessionPeer final {
                     nlohmann::json reply = {{"jsonrpc", "2.0"},
                                             {"id", message.at("id")},
                                             {"result", nlohmann::json::object()}};
-                    if (message.value("method", "") == "initialize") {
+                    const bool initialize = message.value("method", "") == "initialize";
+                    held = !initialize;
+                    if (held) {
+                        count(held_requests_);
+                        while (!released_) {
+                            boost::system::error_code ignored;
+                            co_await hold_.async_wait(
+                                asio::redirect_error(asio::use_awaitable, ignored));
+                        }
+                    }
+                    if (initialize) {
                         response.set("MCP-Session-Id", "session-1");
                         reply["result"] = {
                             {"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
@@ -343,6 +376,9 @@ class SessionPeer final {
                 }
                 response.prepare_payload();
                 co_await http::async_write(socket, response, asio::use_awaitable);
+                if (held) {
+                    count(held_responses_sent_);
+                }
             }
         } catch (const std::exception&) {
             // The client went away; this connection is done.
@@ -352,11 +388,16 @@ class SessionPeer final {
 
     asio::io_context io_ctx_;
     asio::ip::tcp::acceptor acceptor_;
+    // Touched only on the peer's own thread.
+    asio::steady_timer hold_;
+    bool released_{false};
     std::thread thread_;
     std::mutex mutex_;
     std::condition_variable changed_;
     int accepted_{0};
     int deletes_{0};
+    int held_requests_{0};
+    int held_responses_sent_{0};
 };
 
 std::string initialize_request_text() {
@@ -2710,6 +2751,188 @@ TEST_F(HttpTransportTest, TheOriginCheckGuardsMcpDispatchAndTheMetadataRouteButN
     EXPECT_EQ(metadata_result.status, 403u);
 
     EXPECT_EQ(exempt_result.status, 404u);
+}
+
+namespace {
+
+struct CloseAfterResponseAttempt {
+    bool session_started{false};
+    bool request_held{false};
+    bool close_ran{false};
+    bool response_sent{false};
+    bool write_finished{false};
+    bool write_succeeded{false};
+    bool delete_received{false};
+    int deletes{0};
+    int accepted{0};
+};
+
+/// One run of the scenario below. `settle` is how long the io thread stays held after the peer has
+/// written the response, before close() is called.
+CloseAfterResponseAttempt close_after_the_response_arrived(std::chrono::milliseconds settle) {
+    CloseAfterResponseAttempt attempt;
+    SessionPeer peer;
+    asio::io_context io_ctx;
+    auto transport = std::make_shared<mcp::HttpClientTransport>(
+        io_ctx.get_executor(), "http://127.0.0.1:" + std::to_string(peer.port()) + "/mcp");
+
+    std::exception_ptr initialize_failure;
+    std::exception_ptr write_failure;
+    std::promise<void> initialize_done;
+    std::promise<void> write_done;
+    auto initialized = initialize_done.get_future();
+    auto write_finished = write_done.get_future();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await transport->write_message(initialize_request_text());
+                co_await transport->read_message();
+            } catch (...) {
+                initialize_failure = std::current_exception();
+            }
+            initialize_done.set_value();
+            if (initialize_failure) {
+                co_return;
+            }
+            try {
+                co_await transport->write_message(R"({"jsonrpc":"2.0","id":2,"method":"ping"})");
+            } catch (...) {
+                write_failure = std::current_exception();
+            }
+            write_done.set_value();
+        },
+        asio::detached);
+
+    auto work = asio::make_work_guard(io_ctx);
+    std::thread runner([&io_ctx]() { io_ctx.run(); });
+
+    const auto limit = std::chrono::seconds(10);
+    attempt.session_started = initialized.wait_for(limit) == std::future_status::ready;
+    attempt.request_held = attempt.session_started && peer.wait_for_held_request(limit);
+
+    // The peer has the whole request, so the handler that wrote it has run. Two hops through the
+    // io_context later the write has also resumed from it and is parked in its response read.
+    std::promise<void> parked;
+    auto write_parked = parked.get_future();
+    std::promise<void> closed;
+    auto close_queued = closed.get_future();
+    bool response_sent = false;
+    bool close_posted = false;
+    if (attempt.request_held) {
+        asio::post(io_ctx, [&]() { asio::post(io_ctx, [&]() { parked.set_value(); }); });
+        if (write_parked.wait_for(limit) == std::future_status::ready) {
+            close_posted = true;
+            asio::post(io_ctx, [&]() {
+                // The io thread is held here: nothing of the transport runs.
+                peer.release_held_response();
+                response_sent = peer.wait_for_held_response_sent(limit);
+                std::this_thread::sleep_for(settle);
+                std::thread closer([&]() { transport->close(); });
+                closer.join();
+                closed.set_value();
+            });
+        }
+    }
+    attempt.close_ran =
+        close_posted && close_queued.wait_for(std::chrono::seconds(30)) == std::future_status::ready;
+    attempt.write_finished =
+        attempt.close_ran && write_finished.wait_for(limit) == std::future_status::ready;
+    attempt.delete_received = attempt.write_finished && peer.wait_for_deletes(1, limit);
+
+    // Everything below reads state the runner thread wrote, so it stops first.
+    io_ctx.stop();
+    runner.join();
+
+    attempt.response_sent = response_sent;
+    attempt.write_succeeded = attempt.write_finished && !initialize_failure && write_failure == nullptr;
+    attempt.deletes = peer.deletes();
+    attempt.accepted = peer.accepted();
+    return attempt;
+}
+
+}  // namespace
+
+// close() called from another thread when the response to the write in flight has already arrived
+// but the io thread has not read it yet. A handler holds the single io thread while the peer sends
+// the response and a second thread calls close(), so close()'s work is queued ahead of the read's
+// completion: it closes the socket of a write that then finishes successfully. The session DELETE
+// that follows must not be attempted on that closed socket, where it would fail and be dropped.
+//
+// Nothing the test can observe says when the bytes the peer wrote have become readable on the
+// transport's socket, only that the peer's write returned. If close() runs before they are, it cuts
+// the read short instead: the write fails and drops its own connection, and the DELETE is sent
+// whatever close() did with the stream. Such a run proves nothing, so it is not judged; the
+// scenario is run again holding the io thread longer, until the write has succeeded.
+TEST_F(HttpTransportTest, CloseAfterTheResponseArrivedStillSendsTheSessionDelete) {
+    CloseAfterResponseAttempt attempt;
+    auto settle = std::chrono::milliseconds(0);
+    for (int run = 0; run < 6 && !attempt.write_succeeded; ++run) {
+        attempt = close_after_the_response_arrived(settle);
+        ASSERT_TRUE(attempt.session_started);
+        ASSERT_TRUE(attempt.request_held) << "the second write never reached the peer";
+        ASSERT_TRUE(attempt.close_ran);
+        ASSERT_TRUE(attempt.response_sent);
+        ASSERT_TRUE(attempt.write_finished);
+        settle = settle.count() == 0 ? std::chrono::milliseconds(50) : settle * 4;
+    }
+
+    ASSERT_TRUE(attempt.write_succeeded)
+        << "the write did not complete in any run, including the ones that held the io thread for "
+           "seconds after the peer had sent the response: suspect the transport's read or its "
+           "close(), not the timing of this test";
+    EXPECT_TRUE(attempt.delete_received) << "close() dropped the session DELETE";
+    EXPECT_EQ(attempt.deletes, 1);
+    EXPECT_EQ(attempt.accepted, 2) << "the DELETE is expected on a connection of its own";
+}
+
+// close() called from another thread while the write is between two socket operations: connected,
+// nothing pending. The bearer provider runs on the transport's strand right before the request is
+// written, so calling close() from a second thread inside it puts close()'s work behind exactly
+// that point. A close() that only cancels what is pending finds nothing, the request is written,
+// and the write then waits on the stalling server until the HTTP timeout.
+TEST_F(HttpTransportTest, CloseBetweenTwoSocketOperationsEndsTheWrite) {
+    StallingServer stalling(io_ctx_);
+    stalling.accept_and_stall();
+
+    auto transport = std::make_shared<mcp::HttpClientTransport>(
+        io_ctx_.get_executor(), "http://127.0.0.1:" + std::to_string(stalling.port()) + "/mcp");
+    std::weak_ptr<mcp::HttpClientTransport> weak_transport = transport;
+    transport->set_bearer_token_provider([weak_transport]() {
+        if (auto locked = weak_transport.lock()) {
+            std::thread closer([locked]() { locked->close(); });
+            closer.join();
+        }
+        return std::string("token");
+    });
+
+    std::exception_ptr failure;
+    std::promise<void> write_done;
+    auto write_finished = write_done.get_future();
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            write_done.set_value();
+        },
+        asio::detached);
+
+    std::thread runner([this]() { io_ctx_.run(); });
+
+    const bool finished =
+        write_finished.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+
+    // Everything below reads state the runner thread wrote, so it stops first.
+    io_ctx_.stop();
+    runner.join();
+
+    ASSERT_TRUE(finished) << "close() was lost: the write went on to wait for a response after "
+                             "the transport closed and is still running";
+    EXPECT_NE(failure, nullptr) << "a write cut short by close() must report an error";
 }
 
 #ifdef __linux__
