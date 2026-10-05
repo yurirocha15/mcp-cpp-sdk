@@ -21,6 +21,8 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -34,12 +36,18 @@
 #include "../../src/auth/oauth_internal.hpp"
 
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifdef __linux__
+#include <dlfcn.h>
+#include <netdb.h>
+#endif
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -2253,6 +2261,249 @@ TEST(AuthTransportCloseTest, CloseFromAnotherThreadWhileAuthorizationIsInFlightT
     EXPECT_NE(failure, nullptr);
     EXPECT_GE(stalling.accepted(), 1);
 }
+
+// abort_pending() closes whatever an exchange has live at the moment its posted abort runs, and
+// between the per-hop latch check and the socket opening inside async_connect() there is nothing
+// live to close. An abort that lands there must still stop the exchange, so connect() re-reads the
+// latch once the addresses are known. The resolver hook runs synchronously at exactly that point,
+// which makes the window an exact place rather than a race.
+//
+// The fetch reports operation_aborted either way, so the error cannot tell the two apart. What can
+// is the listener's accept queue: the test connects a probe of its own after the fetch has failed,
+// and the first connection the listener hands out must be that probe and not one the aborted
+// exchange opened ahead of it.
+TEST(AuthTransportCloseTest, AbortBetweenResolutionAndConnectOpensNoConnection) {
+    asio::io_context io_ctx;
+    asio::ip::tcp::acceptor acceptor(io_ctx, {asio::ip::make_address("127.0.0.1"), 0});
+    const auto listening = acceptor.local_endpoint();
+    const auto base = "http://127.0.0.1:" + std::to_string(listening.port());
+
+    auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+    client->set_metadata_policy(loopback_policy(base));
+
+    int resolver_calls = 0;
+    auto* raw_client = client.get();
+    client->set_host_resolver([&resolver_calls, raw_client](const std::string&, const std::string&) {
+        ++resolver_calls;
+        raw_client->abort_pending();
+        return std::vector<std::string>{"127.0.0.1"};
+    });
+
+    bool completed = false;
+    bool timed_out = false;
+    boost::system::error_code fetch_error;
+    asio::ip::tcp::endpoint probe_endpoint;
+    asio::ip::tcp::endpoint first_accepted_endpoint;
+
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error && !completed) {
+            timed_out = true;
+            io_ctx.stop();
+        }
+    });
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                (void)co_await client->get_json(base + "/prm");
+            } catch (const boost::system::system_error& error) {
+                fetch_error = error.code();
+            }
+
+            asio::ip::tcp::socket probe(io_ctx);
+            co_await probe.async_connect(listening, asio::use_awaitable);
+            probe_endpoint = probe.local_endpoint();
+
+            asio::ip::tcp::socket accepted(io_ctx);
+            co_await acceptor.async_accept(accepted, first_accepted_endpoint, asio::use_awaitable);
+
+            completed = true;
+            watchdog.cancel();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    ASSERT_FALSE(timed_out) << "watchdog: the aborted fetch or the probe connection never finished";
+    ASSERT_TRUE(completed);
+    EXPECT_EQ(resolver_calls, 1) << "the abort must have been issued from inside connect()";
+    EXPECT_TRUE(fetch_error == asio::error::operation_aborted) << fetch_error.message();
+    EXPECT_EQ(first_accepted_endpoint, probe_endpoint)
+        << "the exchange opened a connection after abort_pending() had already run: the listener "
+           "accepted it ahead of the probe";
+}
+
+#ifdef __linux__
+
+namespace {
+
+/// Holds one getaddrinfo() call for an armed port inside the call, which is past the only point at
+/// which Asio's resolver thread looks at its cancel token. Calls for any other port pass straight
+/// through, so only the test that arms the gate is affected. Every wait is bounded.
+class ResolveGate final {
+   public:
+    void arm(unsigned short port) {
+        std::lock_guard lock(mutex_);
+        entered_ = false;
+        released_ = false;
+        armed_port_.store(port);
+    }
+
+    /// Let a held call go and stop holding new ones.
+    void release() {
+        armed_port_.store(0);
+        {
+            std::lock_guard lock(mutex_);
+            released_ = true;
+        }
+        changed_.notify_all();
+    }
+
+    [[nodiscard]] bool wait_until_entered(std::chrono::seconds limit) {
+        std::unique_lock lock(mutex_);
+        return changed_.wait_for(lock, limit, [this]() { return entered_; });
+    }
+
+    void hold_if_armed(const char* service) {
+        const auto port = armed_port_.load();
+        if (port == 0 || service == nullptr || std::to_string(port) != service) {
+            return;
+        }
+        std::unique_lock lock(mutex_);
+        entered_ = true;
+        changed_.notify_all();
+        // Longer than any wait in the test, and still bounded: a test that fails without
+        // releasing cannot leave the resolver thread parked forever.
+        changed_.wait_for(lock, std::chrono::seconds(30), [this]() { return released_; });
+    }
+
+   private:
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    std::atomic<int> armed_port_{0};
+    bool entered_{false};
+    bool released_{false};
+};
+
+ResolveGate& resolve_gate() {
+    static ResolveGate gate;
+    return gate;
+}
+
+}  // namespace
+
+// Interposes the libc symbol for this test binary only. A definition in the executable is found
+// ahead of libc by the SDK's getaddrinfo() calls, whether the SDK is linked shared or static;
+// everything is forwarded to the next definition in line, which is libc or a sanitizer's own
+// interceptor.
+extern "C" int getaddrinfo(const char* node, const char* service, const struct addrinfo* hints,
+                           struct addrinfo** result) {
+    using GetAddrInfo = int (*)(const char*, const char*, const struct addrinfo*, struct addrinfo**);
+    static const auto next = reinterpret_cast<GetAddrInfo>(dlsym(RTLD_NEXT, "getaddrinfo"));
+    if (next == nullptr) {
+        return EAI_FAIL;
+    }
+    resolve_gate().hold_if_armed(service);
+    return next(node, service, hints, result);
+}
+
+// The window the test above pins, reached the way an application reaches it: with the system
+// resolver and close() called from a thread that does not run the io_context. Asio's resolver
+// thread checks its cancel token once, before it calls getaddrinfo(), so a close() that arrives
+// while that call is in progress finds a resolve it can no longer cancel and a socket that is not
+// open yet, and its posted abort does nothing. The gate holds the lookup inside getaddrinfo() until
+// that abort has run, so the flow resumes with usable addresses on a transport that is already
+// closed. It must stop there. Without the latch check in connect() it connects to the stalling
+// server and stays blocked on it until the HTTP timeout.
+TEST(AuthTransportCloseTest, CloseWhileTheResolverIsPastItsCancelCheckOpensNoConnection) {
+    asio::io_context io_ctx;
+    StallingServer stalling(io_ctx);
+    stalling.accept_and_stall();
+    const auto stalling_base = stalling.base_url();
+
+    LoopbackServer resource_server(io_ctx);
+    const auto resource_base = resource_server.base_url();
+    resource_server.set_handler([&](const http::request<http::string_body>&) {
+        http::response<http::string_body> challenge{http::status::unauthorized, 11};
+        challenge.set(http::field::www_authenticate,
+                      R"(Bearer resource_metadata=")" + stalling_base + R"(/prm")");
+        return challenge;
+    });
+    asio::co_spawn(io_ctx, resource_server.serve(5), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = resource_base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allowed_origins = {resource_base, stalling_base};
+    policy.allow_plain_http_loopback = true;
+    config.policy = policy;
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    std::vector<std::string> requested_scopes;
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+        io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+    auto inner =
+        std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), resource_base + "/mcp");
+    auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, manager);
+
+    // Only the discovery fetch resolves the stalling server's port, so only that lookup is held.
+    resolve_gate().arm(stalling.port());
+
+    std::exception_ptr failure;
+    std::promise<void> flow_done;
+    auto flow_finished = flow_done.get_future();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            flow_done.set_value();
+        },
+        asio::detached);
+
+    std::thread runner([&io_ctx]() { io_ctx.run(); });
+
+    const auto limit = std::chrono::seconds(10);
+    const bool lookup_held = resolve_gate().wait_until_entered(limit);
+
+    // close() posts its abort to the io_context. Two further hops through the same queue cannot
+    // complete before it has, including when the abort had to wait its turn on the client's strand.
+    std::promise<void> abort_done;
+    auto abort_finished = abort_done.get_future();
+    bool abort_ran = false;
+    if (lookup_held) {
+        transport->close();
+        asio::post(io_ctx, [&]() { asio::post(io_ctx, [&]() { abort_done.set_value(); }); });
+        abort_ran = abort_finished.wait_for(limit) == std::future_status::ready;
+    }
+
+    resolve_gate().release();
+    const bool finished = flow_finished.wait_for(limit) == std::future_status::ready;
+
+    // Everything below reads state the runner thread wrote, so it stops first.
+    io_ctx.stop();
+    runner.join();
+
+    ASSERT_TRUE(lookup_held) << "the discovery fetch never reached getaddrinfo()";
+    ASSERT_TRUE(abort_ran) << "the abort posted by close() never ran on the io_context";
+    EXPECT_TRUE(finished) << "close() was lost: the flow resumed from the lookup after the "
+                             "transport closed and is still running";
+    EXPECT_EQ(stalling.accepted(), 0)
+        << "the flow connected to the metadata server after the transport had closed";
+    if (finished) {
+        EXPECT_NE(failure, nullptr) << "a flow cut short by close() must report an error";
+    }
+}
+
+#endif  // __linux__
 
 // The closed check and the flight read-or-create share one critical section in handle_challenge().
 // Split across two, a request that passed the check before close() ran could still create a fresh
