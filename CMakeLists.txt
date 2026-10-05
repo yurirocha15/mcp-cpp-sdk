@@ -300,8 +300,9 @@ if(BUILD_TESTING)
   add_executable(mcp-sdk-tests ${TEST_SRCS})
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    # The auth suite interposes getaddrinfo() and forwards with dlsym(), which
+    # The resolve gate interposes getaddrinfo() and forwards with dlsym(), which
     # lives in libdl before glibc 2.34.
+    target_sources(mcp-sdk-tests PRIVATE test/support/resolve_gate.cpp)
     target_link_libraries(mcp-sdk-tests PRIVATE ${CMAKE_DL_LIBS})
   endif()
   if(MSVC)
