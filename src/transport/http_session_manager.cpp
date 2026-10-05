@@ -201,11 +201,11 @@ struct StreamableHttpSessionManager::Impl {
     AsyncBearerTokenValidator async_bearer_token_validator_;
     std::size_t max_request_body_bytes_{constants::g_default_max_request_body_bytes};
     BearerChallengeConfig bearer_challenge_;
-    // Rendered once when the challenge or the metadata changes, so serving a 401 never formats.
+    /// Rendered once when the challenge or the metadata changes, so serving a 401 never formats.
     std::string www_authenticate_value_{"Bearer"};
     std::optional<ProtectedResourceMetadataConfig> protected_resource_metadata_;
     std::string protected_resource_metadata_body_;
-    // The resolved serving path: `path` when set, else derived from `resource`.
+    /// The resolved serving path: `path` when set, else derived from `resource`.
     std::string protected_resource_metadata_path_;
     std::unordered_set<std::string> unauthenticated_paths_;
 
@@ -589,11 +589,11 @@ struct StreamableHttpSessionManager::Impl {
                    detail_session_mgr::protocol_header_value(protocol_header_it));
     }
 
-    // Dispatching on another executor is spelled as a named coroutine rather than a lambda handed
-    // to co_spawn. A closure is built in the caller's frame and carries its captures there, and on
-    // GCC 11 an object that lives in a coroutine frame across a suspension can be corrupted -- see
-    // the SSO note in docs/contributing.rst. Taking the arguments by value moves them into this
-    // coroutine's own frame instead, leaving nothing of the request in the caller's.
+    /// Dispatching on another executor is spelled as a named coroutine rather than a lambda handed
+    /// to co_spawn. A closure is built in the caller's frame and carries its captures there, and on
+    /// GCC 11 an object that lives in a coroutine frame across a suspension can be corrupted -- see
+    /// the SSO note in docs/contributing.rst. Taking the arguments by value moves them into this
+    /// coroutine's own frame instead, leaving nothing of the request in the caller's.
     static Task<std::string> dispatch_on_executor(Server* server, nlohmann::json request_json) {
         co_return co_await server->dispatch_request_direct(std::move(request_json));
     }
@@ -633,10 +633,10 @@ struct StreamableHttpSessionManager::Impl {
                                                          std::move(response_body));
     }
 
-    // server/discover is a pre-gate method: it MUST be reachable with zero prior state, so a
-    // sessionless discover request in stateful mode is dispatched directly against a
-    // throwaway Server instance instead of going through resolve_session_for_post — no
-    // session is created, registered, or otherwise touched, and no Mcp-Session-Id is issued.
+    /// server/discover is a pre-gate method: it MUST be reachable with zero prior state, so a
+    /// sessionless discover request in stateful mode is dispatched directly against a
+    /// throwaway Server instance instead of going through resolve_session_for_post — no
+    /// session is created, registered, or otherwise touched, and no Mcp-Session-Id is issued.
     Task<StringResponse> handle_sessionless_discover(const StringRequest& request,
                                                      nlohmann::json request_json) {
         if (closed.load(std::memory_order_acquire)) {

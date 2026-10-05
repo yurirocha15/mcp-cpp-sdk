@@ -483,8 +483,8 @@ std::string HttpClientTransport::last_event_id() const {
     return impl_->state->last_event_id;
 }
 
-// Safe to call at any time, including mid-flight: a request already started keeps the provider it
-// pinned, and the next one picks up the new value.
+/// Safe to call at any time, including mid-flight: a request already started keeps the provider it
+/// pinned, and the next one picks up the new value.
 void HttpClientTransport::set_bearer_token_provider(std::function<std::string()> provider) {
     std::lock_guard lock(impl_->provider_mutex);
     impl_->bearer_token_provider = std::move(provider);

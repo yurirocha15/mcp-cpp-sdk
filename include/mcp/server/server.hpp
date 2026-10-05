@@ -500,7 +500,7 @@ class MCP_API Server {
     [[nodiscard]] LoggingLevel get_log_level() const;
 
    private:
-    // Non-template registration helpers called by the template add_* methods above.
+    /// Non-template registration helpers called by the template add_* methods above.
     void register_tool(const Tool& tool, const std::string& name, TypeErasedHandler handler,
                        detail::ToolResultMode result_mode);
     void register_resource(const Resource& resource, TypeErasedHandler handler);
@@ -523,8 +523,8 @@ class MCP_API Server {
     void reset_session();
 
     struct Impl;
-    // Shared rather than owned outright: work already in flight when this Server is destroyed
-    // keeps the implementation alive until it finishes, so it never runs against freed state.
+    /// Shared rather than owned outright: work already in flight when this Server is destroyed
+    /// keeps the implementation alive until it finishes, so it never runs against freed state.
     std::shared_ptr<Impl> impl_;
 };
 

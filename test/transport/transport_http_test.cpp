@@ -388,7 +388,7 @@ class SessionPeer final {
 
     asio::io_context io_ctx_;
     asio::ip::tcp::acceptor acceptor_;
-    // Touched only on the peer's own thread.
+    /// Touched only on the peer's own thread.
     asio::steady_timer hold_;
     bool released_{false};
     std::thread thread_;
