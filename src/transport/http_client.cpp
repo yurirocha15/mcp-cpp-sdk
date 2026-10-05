@@ -441,6 +441,11 @@ struct HttpClientTransport::Impl {
             }
             impl->reset_connection();
             complete_operation(impl->state);
+            // close() closes the socket under the write, and what the socket layer then reports
+            // depends on the platform and on which operation the close landed in.
+            if (state.closed.load(std::memory_order_acquire)) {
+                throw boost::system::system_error(net::error::operation_aborted);
+            }
             throw;
         }
     }
