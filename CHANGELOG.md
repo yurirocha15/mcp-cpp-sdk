@@ -239,8 +239,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `io_context` could be lost while a metadata lookup was resolving. The close
   found no socket to shut, and the flow then went on to connect and blocked
   until the HTTP timeout. The abort latch is now checked again just before the
-  connection is opened, so such a close ends the flow promptly. This covers an
-  `io_context` run by a single thread.
+  connection is opened, so such a close ends the flow promptly.
+  `OAuthHttpClient` also keeps every request on the client's one strand now, so
+  this holds when several threads run the `io_context`. Previously a request
+  left that strand at its first suspension, and a close could then run on
+  another thread at the same time as the request: a data race on the socket that
+  could crash, or a close lost in the instant before the socket opened. Callers
+  are still resumed on their own executor and never on the client's strand,
+  including a caller that has been cancelled.
 - Closing `HttpClientTransport` or `WebSocketClientTransport` from a thread
   that does not run the `io_context` could be lost while the transport was
   resolving its server's address. The close found no socket to act on, and the
