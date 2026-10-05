@@ -261,9 +261,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   had completed, cancelled nothing and the write carried on until the HTTP
   timeout; with several threads running the `io_context` that included a
   close racing the connect. The write now fails promptly in each of these
-  cases, however many threads run the `io_context`, and may report a closed
-  socket (`bad_descriptor`) instead of a cancelled operation. The session
-  `DELETE` that
+  cases, however many threads run the `io_context`, and reports a cancelled
+  operation (`operation_aborted`) on every platform, whatever the closed
+  socket itself reported. The session `DELETE` that
   `close()` sends afterwards uses a new connection. It already did after a
   cancelled write; when the response had already arrived as `close()` ran, it
   used to reuse the write's connection and now opens a new one as well.
