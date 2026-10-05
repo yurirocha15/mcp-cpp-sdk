@@ -299,6 +299,11 @@ if(BUILD_TESTING)
       test/core/json_peer_input_matrix_test.cpp)
   add_executable(mcp-sdk-tests ${TEST_SRCS})
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # The auth suite interposes getaddrinfo() and forwards with dlsym(), which
+    # lives in libdl before glibc 2.34.
+    target_link_libraries(mcp-sdk-tests PRIVATE ${CMAKE_DL_LIBS})
+  endif()
   if(MSVC)
     # A gtest translation unit emits a COMDAT section per template
     # instantiation, and the suites built on nlohmann::json and Boost.Asio

@@ -520,6 +520,12 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         }
         enforce_address_policy(exchange->policy, exchange->endpoints);
 
+        // Last look at the abort before a socket exists. An abort_pending() that ran while the
+        // lookup was past cancelling found nothing to close. With one thread running the
+        // io_context nothing else runs between here and the socket opening inside
+        // async_connect(), so a later abort finds that socket and closes it.
+        throw_if_aborted(exchange);
+
         // Connect only to the addresses this single lookup produced. They are pinned for the
         // exchange, so a name that resolves differently later cannot redirect it.
         exchange->stream->expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
