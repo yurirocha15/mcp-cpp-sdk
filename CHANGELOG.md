@@ -236,37 +236,35 @@ Versioning; a `0.x` version is a stable release unless its version has an
   missing Python skipped the check with a warning, and a source-archive build
   with tests failed because the scripts were absent.
 - Closing an OAuth client transport from a thread that does not run the
-  `io_context` could be lost while a metadata lookup was resolving. The close
-  found no socket to shut, and the flow then went on to connect and blocked
-  until the HTTP timeout. The abort latch is now checked again just before the
-  connection is opened, so such a close ends the flow promptly.
-  `OAuthHttpClient` also keeps every request on the client's one strand now, so
-  this holds when several threads run the `io_context`. Previously a request
-  left that strand at its first suspension, and a close could then run on
-  another thread at the same time as the request: a data race on the socket that
-  could crash, or a close lost in the instant before the socket opened. Callers
-  are still resumed on their own executor and never on the client's strand,
+  `io_context` could be lost while a metadata lookup was resolving: the close
+  found no socket to shut, and the flow went on to connect and blocked until
+  the HTTP timeout. The abort latch is now checked again just before the
+  connection is opened. `OAuthHttpClient` also keeps every request on the
+  client's one strand, so this holds when several threads run the `io_context`.
+  A request used to leave that strand at its first suspension, so a close could
+  run on another thread at the same time: a data race on the socket that could
+  crash, or a close lost in the instant before the socket opened. Callers are
+  still resumed on their own executor and never on the client's strand,
   including a caller that has been cancelled.
 - Closing `HttpClientTransport` or `WebSocketClientTransport` from a thread
   that does not run the `io_context` could be lost while the transport was
-  resolving its server's address. The close found no socket to act on, and the
-  transport then went on to connect: the HTTP write blocked until the HTTP
-  timeout, and the WebSocket connect waited on its handshake with no limit.
-  Both transports now check for the close again once the address is known and
-  fail the pending call instead of connecting. For `WebSocketClientTransport`
-  this holds however many threads run the `io_context`.
+  resolving its server's address: the close found no socket to act on, and the
+  transport went on to connect. The HTTP write blocked until the HTTP timeout,
+  and the WebSocket connect waited on its handshake with no limit. Both
+  transports now check for the close again once the address is known and fail
+  the pending call instead of connecting. For `WebSocketClientTransport` this
+  holds however many threads run the `io_context`.
 - `HttpClientTransport::close()` now closes the socket of a write that is in
-  flight instead of cancelling its pending operation once. A close that
-  arrived while the write was between two socket operations, or just after one
-  had completed, cancelled nothing and the write carried on until the HTTP
-  timeout; with several threads running the `io_context` that included a
-  close racing the connect. The write now fails promptly in each of these
-  cases, however many threads run the `io_context`, and reports a cancelled
-  operation (`operation_aborted`) on every platform, whatever the closed
-  socket itself reported. The session `DELETE` that
-  `close()` sends afterwards uses a new connection. It already did after a
-  cancelled write; when the response had already arrived as `close()` ran, it
-  used to reuse the write's connection and now opens a new one as well.
+  flight instead of cancelling its pending operation once. A close that arrived
+  between two socket operations, or just after one had completed, cancelled
+  nothing and the write carried on until the HTTP timeout; with several threads
+  running the `io_context` that included a close racing the connect. The write
+  now fails promptly in each of these cases, however many threads run the
+  `io_context`, and reports `operation_aborted` on every platform, whatever the
+  closed socket itself reported. The session `DELETE` that `close()` sends
+  afterwards uses a new connection. It already did after a cancelled write;
+  when the response had already arrived as `close()` ran, it used to reuse the
+  write's connection and now opens a new one as well.
 
 ## [0.2.0] - TBD
 
