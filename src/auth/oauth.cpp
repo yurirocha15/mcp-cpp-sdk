@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <boost/asio/bind_executor.hpp>
+#include <boost/asio/co_spawn.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/ip/address.hpp>
@@ -20,10 +21,12 @@
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/system/error_code.hpp>
+#include <boost/version.hpp>
 #include <chrono>
 #include <cstdint>
 #include <ctime>
@@ -521,9 +524,10 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         enforce_address_policy(exchange->policy, exchange->endpoints);
 
         // Last look at the abort before a socket exists. An abort_pending() that ran while the
-        // lookup was past cancelling found nothing to close. With one thread running the
-        // io_context nothing else runs between here and the socket opening inside
-        // async_connect(), so a later abort finds that socket and closes it.
+        // lookup was past cancelling found nothing to close. This coroutine holds the client's
+        // strand from here until it suspends inside async_connect(), which opens the socket
+        // first, and the close a later abort posts runs on that strand: it cannot run before the
+        // socket is open, whichever thread it runs on, so it finds the socket and closes it.
         throw_if_aborted(exchange);
 
         // Connect only to the addresses this single lookup produced. They are pinned for the
@@ -699,17 +703,74 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                                           policy, host_resolver);
     }
 
+    /// Run one exchange on the client's strand and hand its outcome back to the caller off it.
+    ///
+    /// The strand is what keeps an exchange apart from the close abort_matching() posts when
+    /// several threads run the io_context. Posting the exchange's coroutine to the strand does not
+    /// put it there: an awaitable's executor is fixed when it is spawned, so the coroutine is back
+    /// on its caller's executor after its first suspension. Spawning the exchange on the strand
+    /// makes the strand its executor, and every resumption lands there.
+    ///
+    /// co_spawn() completes by dispatching to the caller's executor, and on an io_context thread
+    /// that runs the caller in place, inside the strand handler that finished the exchange. The
+    /// caller would hold the strand for as long as it kept running, so it is posted off it first.
+    ///
+    /// The result waits out that post on the heap, not in this frame; see the GCC 11 note at the
+    /// top of this file.
+    template <typename Result>
+    static Task<Result> on_strand(net::strand<net::any_io_executor> strand, Task<Result> exchange) {
+        std::shared_ptr<Result> result;
+        std::exception_ptr failure;
+        try {
+            result = std::make_shared<Result>(
+                co_await net::co_spawn(strand, std::move(exchange), net::use_awaitable));
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        if (strand.running_in_this_thread()) {
+#if BOOST_VERSION >= 107700
+            // A caller that has been cancelled still has to leave the strand, and co_await throws
+            // for a cancelled coroutine before it initiates anything. The outcome is already
+            // decided either way: the cancellation reached the exchange through co_spawn(), or
+            // arrived too late to matter to it.
+            //
+            // The setting belongs to the caller's whole coroutine, so it goes back as it was
+            // found even if the post throws. Restoring it is itself a co_await, which rules out
+            // a destructor or a catch block.
+            const bool throws_if_cancelled = co_await net::this_coro::throw_if_cancelled();
+            co_await net::this_coro::throw_if_cancelled(false);
+            std::exception_ptr hop_failure;
+            try {
+                co_await net::post(net::use_awaitable);
+            } catch (...) {
+                hop_failure = std::current_exception();
+            }
+            co_await net::this_coro::throw_if_cancelled(throws_if_cancelled);
+            if (hop_failure) {
+                std::rethrow_exception(hop_failure);
+            }
+#else
+            co_await net::post(net::use_awaitable);
+#endif
+        }
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
+        co_return std::move(*result);
+    }
+
     Task<nlohmann::json> get_json(std::string url,
                                   std::shared_ptr<detail::OAuthScopeState> scope = nullptr) {
-        return run_get(make_exchange(std::move(url), std::move(scope)));
+        return on_strand(strand, run_get(make_exchange(std::move(url), std::move(scope))));
     }
 
     Task<TokenResponse> post_token_request(std::string token_endpoint, const KeyValuePairList& params,
                                            std::string authorization,
                                            std::shared_ptr<detail::OAuthScopeState> scope = nullptr) {
-        return run_post(make_exchange(std::move(token_endpoint), std::move(scope)),
-                        std::make_shared<std::string>(detail::build_form_body(params)),
-                        std::move(authorization));
+        return on_strand(strand,
+                         run_post(make_exchange(std::move(token_endpoint), std::move(scope)),
+                                  std::make_shared<std::string>(detail::build_form_body(params)),
+                                  std::move(authorization)));
     }
 
     Task<nlohmann::json> post_json(std::string url, std::string body,
@@ -717,13 +778,12 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         // Sanitized where the label is built, not where it is thrown: `url` is moved into the
         // exchange on the next line, and the throw site only ever sees the label.
         auto label = "HTTP POST " + sanitize_for_diagnostics(url);
-        return run_post_json(make_exchange(std::move(url), std::move(scope)),
-                             std::make_shared<std::string>(std::move(body)), "application/json",
-                             std::move(label));
+        return on_strand(strand, run_post_json(make_exchange(std::move(url), std::move(scope)),
+                                               std::make_shared<std::string>(std::move(body)),
+                                               "application/json", std::move(label)));
     }
 
     static Task<nlohmann::json> run_get(std::shared_ptr<Exchange> exchange) {
-        co_await net::post(exchange->strand, net::use_awaitable);
         auto guard = track_exchange(exchange);
 
         const auto redirect_budget = exchange->policy.max_redirects;
@@ -779,7 +839,6 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                                               std::shared_ptr<std::string> body,
                                               std::string content_type, std::string failure_label,
                                               std::string authorization = {}) {
-        co_await net::post(exchange->strand, net::use_awaitable);
         auto guard = track_exchange(exchange);
 
         enforce_url_policy(exchange->policy, exchange->url);
