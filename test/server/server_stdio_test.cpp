@@ -105,11 +105,9 @@ class BlockingStreambuf : public std::streambuf {
 /// A streambuf that collects what the server writes under a mutex and lets the test thread block
 /// until whole response lines have arrived.
 ///
-/// The tests used to poll a std::ostringstream that the server thread was writing into, which is
-/// a data race on the stream's own buffer. They polled because run_stdio() offers its caller no
-/// way to learn that a response has been produced; that missing happens-before edge is recorded
-/// separately and is not addressed here. This only removes the race the tests were
-/// creating for themselves.
+/// Polling a std::ostringstream that the server thread is writing into would be a data race on the
+/// stream's own buffer, and run_stdio() offers its caller no way to learn that a response has been
+/// produced.
 class CollectingStreambuf : public std::streambuf {
    public:
     /// Blocks until `count` newline-terminated lines have been written or the budget expires.

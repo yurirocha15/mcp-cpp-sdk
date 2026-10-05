@@ -107,18 +107,15 @@ struct CanonicalOrigin {
 
 /// Decompose and canonicalize an origin (`scheme://authority`) for comparison.
 ///
-/// Lowercases the scheme and, for a non-IP-literal host, the host; strips every trailing dot from
-/// such a host (an FQDN dot run), and returns `nullopt` if that leaves it empty. For a host that
-/// parses as an IP literal (IPv4, or IPv6 with or without brackets), replaces it with its normalized
-/// textual form instead of lowercasing it, so an expanded and a compressed IPv6 spelling of the same
-/// address compare equal; a literal is never dot-stripped. Parses an explicit port strictly and
-/// numerically (see `parse_strict_port`) and drops it when it equals the scheme's default (`443` for
-/// `https`, `80` for `http`); a malformed port makes the whole origin fail to canonicalize.
+/// Lowercases the scheme and a non-IP-literal host, and strips every trailing dot from such a host. A
+/// host that parses as an IP literal (IPv4, or IPv6 with or without brackets) is replaced by its
+/// normalized textual form, so expanded and compressed IPv6 spellings compare equal; a literal is
+/// never dot-stripped. An explicit port is parsed strictly (see `parse_strict_port`) and dropped when
+/// it equals the scheme's default (`443` for `https`, `80` for `http`).
 ///
-/// Returns `nullopt` — meaning "does not canonicalize to a bare origin" — when `origin` does not
-/// decompose into `scheme://authority` with nothing following (a path, query or fragment means it was
-/// never a bare origin to begin with), when the host is malformed, or when a port is present but is
-/// not a plain in-range decimal number.
+/// Returns `nullopt` when `origin` is not `scheme://authority` with nothing following (a path, query
+/// or fragment), when the host is malformed or empty after dot-stripping, or when a port is not a
+/// plain in-range decimal number.
 std::optional<CanonicalOrigin> canonicalize_origin_parts(const std::string& origin) {
     std::string scheme;
     std::string authority;
@@ -224,15 +221,10 @@ bool contains_origin(const std::vector<std::string>& origins, const std::string&
 
 /// Compare a canonicalized origin against the deny list, requiring every entry to be a bare origin.
 ///
-/// Silently discarding a deny entry the way `contains_origin` discards an allow entry would be
-/// fail-open: an author who writes `https://evil.example/` would block nothing while believing the
-/// origin was refused. Nor is such an entry quietly reinterpreted as the origin it resembles;
-/// guessing at a security rule the author did not write trades one silent misapplication for
-/// another. An entry that does not canonicalize is a configuration error, so it is reported as one.
-///
-/// The whole list is examined before a match can be returned, so a malformed entry is reported even
-/// when an earlier entry already matched and even when no entry describes the target at hand. A
-/// policy carrying one therefore refuses every target until it is corrected.
+/// An entry that does not canonicalize is a configuration error and is reported, not discarded (which
+/// would be fail-open) or reinterpreted as the origin it resembles. The whole list is examined before
+/// a match is returned, so a malformed entry is reported even when an earlier entry matched; a policy
+/// carrying one refuses every target until it is corrected.
 ///
 /// @throws MetadataPolicyError With `denied_origin_entry_malformed`, naming the offending entry.
 bool denies_origin(const std::vector<std::string>& origins, const std::string& canonical_origin) {
@@ -520,16 +512,11 @@ bool breaks_a_line(std::uint32_t codepoint) {
            codepoint == 0x2028 || codepoint == 0x2029;
 }
 
-/// Codepoints that re-order the text after them without ending the line. The explicit embeddings
-/// and overrides (U+202A-U+202E), the isolates (U+2066-U+2069) and all three implicit marks -- LRM
-/// (U+200E), RLM (U+200F) and ALM (U+061C) -- let a peer reverse the rendering of the rest of a
-/// diagnostic, so a refusal can be made to read as its opposite. Same forgery as a line break, by
-/// a route that never breaks one.
-///
-/// ALM is easy to leave out, because it lives in the Arabic block rather than beside the other two
-/// marks. It is the same class as RLM: a strong invisible directional character that re-bases the
-/// neutral run after it. Bounded impact next to U+202E, which reverses a whole run, but there is
-/// no reason to admit it once RLM is refused.
+/// Codepoints that re-order the text after them without ending the line: the explicit embeddings and
+/// overrides (U+202A-U+202E), the isolates (U+2066-U+2069) and the implicit marks LRM (U+200E), RLM
+/// (U+200F) and ALM (U+061C). They let a peer reverse the rendering of the rest of a diagnostic, so a
+/// refusal can be made to read as its opposite. ALM sits in the Arabic block but is the same class as
+/// RLM.
 bool reorders_the_line(std::uint32_t codepoint) {
     return (codepoint >= 0x202a && codepoint <= 0x202e) ||
            (codepoint >= 0x2066 && codepoint <= 0x2069) || codepoint == 0x200e || codepoint == 0x200f ||

@@ -13,10 +13,9 @@
 //   [wire-builders]      make_result_wire/make_error_wire are synchronous helpers;
 //                        do NOT convert them to Task<T> coroutines.
 //
-// These conventions are the guard against that bug, and they are the only guard. GCC 11 is also
-// sensitive to the shape of the coroutine frames themselves, so an unrelated refactor can move a
-// failure in or out of existence without touching anything the conventions describe. A green
-// ubuntu-22.04 therefore means the bug is not currently being tripped, not that it is fixed.
+// These conventions are the only guard. GCC 11 is also sensitive to the shape of the coroutine
+// frames, so an unrelated refactor can move a failure in or out of existence; a green ubuntu-22.04
+// means the bug is not currently tripped, not that it is fixed.
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -51,14 +50,12 @@ struct UriTemplatePattern {
     std::regex matcher;
 };
 
-// The input is bounded because the matcher cannot be trusted with it, not because 512 is a policy
-// anyone chose for resource names. Every std::regex implementation spends stack in proportion to
-// the subject's length, by an amount each decides for itself, and the smallest default thread
-// stack this SDK runs on — 512 KB for a non-main thread on macOS — has to survive the longest URI
-// accepted here. Real resource identifiers sit far below this. A full-length filesystem path does
-// not, but no bound a backtracking matcher could be given would reach it either: matching an
-// RFC 6570 level-2 template ({var}, {+var}) needs no backtracking at all, so a linear, stack-free
-// segment matcher would retire this limit entirely. That replacement is deferred, not rejected.
+// The input is bounded because the matcher cannot be trusted with it, not as a policy on resource
+// names. Every std::regex implementation spends stack in proportion to the subject's length, by an
+// amount each decides for itself, and the smallest default thread stack this SDK runs on -- 512 KB
+// for a non-main thread on macOS -- has to survive the longest URI accepted here. Matching an RFC
+// 6570 level-2 template ({var}, {+var}) needs no backtracking, so a linear, stack-free segment
+// matcher would retire this limit entirely.
 constexpr std::size_t g_MAX_TEMPLATE_MATCH_URI_LENGTH = 512;
 
 bool is_uri_template_operator(char ch) {
@@ -1540,15 +1537,10 @@ void Server::Impl::reset_session(const std::shared_ptr<Session>& session) {
     }
 
     // Runs on whatever thread destroys the Server, so it does only what is safe from any thread:
-    // `stopping` is atomic, the session pointer is mutex-guarded, and ITransport::close() is what
-    // wakes a blocked reader. The request maps are plain std::maps that only the session strand
-    // may touch, so abandoning their entries is handed to that strand instead.
-    //
-    // The hand-off is a post that is never waited on. Waiting would deadlock when the destructor
-    // runs on the session strand itself, and would never return at all when the io_context is
-    // stopped or was never run -- which is the ordinary way a Server reaches its destructor. On a
-    // stopped context the posted work simply never runs, which is the same outcome as before:
-    // cancelling a timer whose executor has nothing driving it delivers nothing either.
+    // `stopping` is atomic, the session pointer is mutex-guarded, and ITransport::close() wakes a
+    // blocked reader. The request maps belong to the session strand, so abandoning their entries is
+    // posted there and never waited on: waiting would deadlock on the session strand itself, and
+    // would never return when the io_context is stopped or was never run.
     session->stopping.store(true, std::memory_order_release);
     if (session->strand) {
         // Guarded for the same reason as the close below: queueing the hand-off allocates, and an

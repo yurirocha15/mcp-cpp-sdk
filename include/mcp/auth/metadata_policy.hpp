@@ -29,19 +29,9 @@ namespace detail {
  *         with every character that could end a line replaced by a space and every ill-formed byte
  *         replaced by `?`.
  *
- * @details Diagnostics built from peer-controlled text are a log-forging vector: a value carrying
- * newlines can close the SDK's message and open a line of the attacker's own, and an unbounded one
- * floods whatever the message lands in. Parsed JSON is the sharp edge rather than raw bytes on the
- * wire, because a metadata document is decoded before its fields are interpolated, so `\n` and
- * `\r` written as escape sequences arrive as real control bytes. No secret is involved, so this
- * addresses forgery and flooding rather than disclosure.
- *
- * The output is always well-formed UTF-8, which is a second requirement rather than a detail of the
- * first. Truncation stops on a codepoint boundary, so a multi-byte character straddling the budget
- * is dropped whole rather than cut in half, and bytes that were already ill-formed on the way in
- * are replaced. Emitting invalid UTF-8 would hand a peer the same flooding it is denied here by
- * another route, since a JSON log encoder given invalid UTF-8 throws or drops the record. Text
- * arriving through a header has had nothing validate it, unlike text from a parsed document.
+ * @details Keeps a peer-chosen value from forging a log line with embedded newlines or flooding the
+ * message. Truncation stops on a codepoint boundary, so a multi-byte character straddling the budget
+ * is dropped whole.
  */
 [[nodiscard]] MCP_API std::string sanitize_for_diagnostics(std::string_view value);
 
@@ -83,53 +73,38 @@ enum class MetadataUrlDecision {
 /**
  * @brief Application-controlled policy governing outbound OAuth metadata requests.
  *
- * @details A challenge-supplied `resource_metadata` URL is attacker-influenced input, so every
- * OAuth metadata, protected-resource and token request derived from it is an outbound-request
- * primitive. This policy is consulted before any such request is issued.
+ * @details Consulted before any OAuth metadata, protected-resource or token request is issued; a
+ * challenge-supplied `resource_metadata` URL is attacker-influenced input.
  *
- * A default-constructed policy denies every origin: `allowed_origins` is empty, and an origin that
- * is not listed is refused. Applications must opt in to the origins they intend to talk to.
+ * A default-constructed policy denies every origin: `allowed_origins` is empty, and an origin that is
+ * not listed is refused.
  */
 struct MetadataFetchPolicy {
-    /// Origins the application permits, each written as `scheme://host[:port]` with nothing else
-    /// after the authority. An empty list denies every origin. Compared after canonicalizing scheme
-    /// and host case, a trailing run of host dots, a strictly-numeric explicit port (so `:00443` and
-    /// `:0443` both canonicalize the same as `:443`) that equals the scheme's default (`443` for
-    /// `https`, `80` for `http`), and an IP literal's textual form (so an expanded and a compressed
-    /// IPv6 spelling of the same address compare equal). A non-default port and a genuinely different
-    /// host otherwise still distinguish origins exactly. An entry that carries a path, query or
-    /// fragment after the authority, or whose port is not a plain in-range decimal number, is not a
-    /// bare origin and matches nothing rather than being widened or truncated into one.
+    /// Origins the application permits, each written as `scheme://host[:port]` with nothing after the
+    /// authority. An empty list denies every origin. Compared after canonicalizing scheme and host
+    /// case, trailing host dots, an explicit port equal to the scheme's default (`:443` for `https`,
+    /// `:80` for `http`, also when written as `:0443`), and an IP literal's textual form (expanded
+    /// and compressed IPv6 spellings compare equal). An entry that carries a path, query or fragment,
+    /// or whose port is not a plain in-range decimal number, matches nothing.
     std::vector<std::string> allowed_origins;
 
     /// Origins the application refuses. Consulted before `allowed_origins`, so a denied origin is
     /// refused even when it also appears in the allow list. Compared with the same canonicalization
     /// as `allowed_origins`.
     ///
-    /// Every entry must be a bare origin. Unlike `allowed_origins`, an entry that is not one — it
+    /// Every entry must be a bare origin. Unlike `allowed_origins`, an entry that is not one -- it
     /// carries a path (a lone trailing `/` included), a query or a fragment, or its port is not a
-    /// plain in-range decimal number — is rejected rather than ignored: `validate_metadata_url`
-    /// throws `MetadataPolicyError` with `MetadataUrlDecision::denied_origin_entry_malformed`,
-    /// naming the offending entry, and refuses every target until the entry is corrected.
-    ///
-    /// The two lists differ here because the consequence of dropping an entry differs. An allow
-    /// entry that cannot be interpreted grants nothing, so ignoring it fails closed. A deny entry
-    /// that cannot be interpreted blocks nothing, so ignoring it would admit the very origin the
-    /// entry was written to refuse. A deny rule the SDK cannot apply is therefore a configuration
-    /// error, not a rule that quietly matches nothing, and it is never reinterpreted into some
-    /// nearby rule the author did not write.
+    /// plain in-range decimal number -- is rejected rather than ignored: `validate_metadata_url`
+    /// throws `MetadataPolicyError` with `MetadataUrlDecision::denied_origin_entry_malformed`, naming
+    /// the offending entry, and refuses every target until the entry is corrected.
     std::vector<std::string> denied_origins;
 
     /// Consulted only for an origin `allowed_origins` does not list; returning true admits it. The
     /// origin passed to the callback is the canonicalized form (see `allowed_origins`), not the raw
     /// text of the URL.
     ///
-    /// An application generally cannot enumerate its authorization servers in advance, because a
-    /// protected resource names them in metadata at run time. Rather than force such an application
-    /// to abandon the allow list altogether, it may state the rule it would have written. The hook
-    /// can only widen: `denied_origins` is consulted first and still refuses, and the decision is
-    /// still made before host resolution, so an origin this hook rejects is never contacted. An
-    /// unset hook leaves the allow list as the only way in.
+    /// The hook can only widen: `denied_origins` is consulted first and still refuses, and the
+    /// decision is made before host resolution, so an origin this hook rejects is never contacted.
     std::function<bool(const std::string& origin)> origin_allowance;
 
     /// Permit plain `http://` and loopback addresses. This is a narrow opt-out for loopback
@@ -166,20 +141,16 @@ struct MetadataFetchPolicy {
  *
  * @throws MetadataPolicyError With `MetadataUrlDecision::denied_origin_entry_malformed` when any
  *         `MetadataFetchPolicy::denied_origins` entry is not a bare origin. The deny list is
- *         examined before anything else, so such a policy refuses every target, whether or not the
- *         offending entry describes the one at hand, and the target is never resolved. The thrown
- *         error names the offending entry rather than the URL.
+ *         examined first, so such a policy refuses every target. The error names the offending
+ *         entry rather than the URL.
  *
- * @details This runs before host resolution. When it refuses, the host is never resolved and no
- * socket is opened. A host written as an IP literal is additionally classified here, so a URL
- * naming `169.254.169.254` or an RFC 1918 address is refused without any lookup at all. The origin
- * derived from `url` is canonicalized (see `MetadataFetchPolicy::allowed_origins`) once, before the
- * deny list, allow list or `origin_allowance` sees it; a URL whose port or host does not canonicalize
- * at all (a malformed port, or a host that is nothing but dots) is refused as `malformed_url`. The
- * https-required check and the loopback opt-out that follow the origin decision also run on that same
- * canonical scheme and host, not on the raw URL text, so they see exactly what the origin decision and
- * `origin_allowance` saw. This canonicalization is purely internal to `validate_metadata_url` and does
- * not affect `metadata_url_origin`, which never normalizes its result.
+ * @details Runs before host resolution: when it refuses, the host is never resolved and no socket is
+ * opened. A host written as an IP literal is classified here, so a URL naming `169.254.169.254` or an
+ * RFC 1918 address is refused without any lookup. The origin derived from `url` is canonicalized (see
+ * `MetadataFetchPolicy::allowed_origins`) before the deny list, allow list or `origin_allowance` sees
+ * it, and the https-required check and loopback opt-out run on the same canonical scheme and host; a
+ * URL whose port or host does not canonicalize is refused as `malformed_url`. `metadata_url_origin`
+ * is unaffected and never normalizes its result.
  */
 [[nodiscard]] MCP_API MetadataUrlDecision validate_metadata_url(const MetadataFetchPolicy& policy,
                                                                 const std::string& url);
@@ -192,10 +163,8 @@ struct MetadataFetchPolicy {
  * @return `MetadataUrlDecision::allowed` when the address may be connected to, otherwise the
  *         refusal reason.
  *
- * @details Applied to every address produced by resolution. The SDK connects only to addresses
- * that pass this check, and it pins the addresses obtained from that single resolution rather than
- * resolving again, so a name that resolves differently on a later lookup cannot redirect an
- * established fetch.
+ * @details Applied to every address produced by resolution. The SDK connects only to addresses that
+ * pass, and pins the addresses from that single resolution rather than resolving again.
  */
 [[nodiscard]] MCP_API MetadataUrlDecision validate_metadata_address(const MetadataFetchPolicy& policy,
                                                                     const std::string& address_literal);
@@ -203,13 +172,10 @@ struct MetadataFetchPolicy {
 /**
  * @brief Error raised when a metadata target is refused by the fetch policy.
  *
- * @details Thrown instead of performing the request. When the refusal is a URL or origin decision
- * the target host is never resolved, so no socket is opened; when it is an address decision the
- * address is never connected to.
- *
- * The decision may also report the policy itself rather than the target: for
+ * @details Thrown instead of performing the request: for a URL or origin decision the host is never
+ * resolved, and for an address decision the address is never connected to. For
  * `MetadataUrlDecision::denied_origin_entry_malformed`, `target()` is the offending `denied_origins`
- * entry, and the request that triggered the check was refused without being issued.
+ * entry rather than the request target.
  */
 class MCP_API MetadataPolicyError : public std::runtime_error {
    public:
