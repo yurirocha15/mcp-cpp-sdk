@@ -708,6 +708,7 @@ TEST_F(HttpTransportTest, ClientCloseCancelsInFlightPostAfterSessionInitializati
         bool write_completed{false};
         bool write_cancelled{false};
         bool cleanup_completed{false};
+        std::string write_outcome{"not completed"};
         std::exception_ptr server_error;
         std::exception_ptr client_error;
     };
@@ -784,13 +785,19 @@ TEST_F(HttpTransportTest, ClientCloseCancelsInFlightPostAfterSessionInitializati
             asio::co_spawn(write_signal->get_executor(), client->write_message(pending_request.dump()),
                            [client, test_state, write_signal](std::exception_ptr error) {
                                test_state->write_completed = true;
+                               test_state->write_outcome = "no error";
                                if (error) {
                                    try {
                                        std::rethrow_exception(error);
                                    } catch (const boost::system::system_error& system_error) {
                                        test_state->write_cancelled =
                                            system_error.code() == asio::error::operation_aborted;
+                                       test_state->write_outcome =
+                                           "system_error: " + system_error.code().message();
+                                   } catch (const std::exception& other) {
+                                       test_state->write_outcome = other.what();
                                    } catch (...) {
+                                       test_state->write_outcome = "unknown exception";
                                    }
                                }
                                write_signal->cancel();
@@ -851,7 +858,7 @@ TEST_F(HttpTransportTest, ClientCloseCancelsInFlightPostAfterSessionInitializati
     EXPECT_TRUE(state->initialized);
     EXPECT_TRUE(state->post_received);
     EXPECT_TRUE(state->write_completed);
-    EXPECT_TRUE(state->write_cancelled);
+    EXPECT_TRUE(state->write_cancelled) << "the write ended with: " << state->write_outcome;
     EXPECT_TRUE(state->cleanup_completed);
     EXPECT_TRUE(event_loop_drained);
 }
@@ -2890,7 +2897,9 @@ TEST_F(HttpTransportTest, CloseAfterTheResponseArrivedStillSendsTheSessionDelete
 // nothing pending. The bearer provider runs on the transport's strand right before the request is
 // written, so calling close() from a second thread inside it puts close()'s work behind exactly
 // that point. A close() that only cancels what is pending finds nothing, the request is written,
-// and the write then waits on the stalling server until the HTTP timeout.
+// and the write then waits on the stalling server until the HTTP timeout. The close lands on no
+// pending operation, so the socket layer reports a closed socket rather than a cancelled operation;
+// the write reports the cancellation all the same.
 TEST_F(HttpTransportTest, CloseBetweenTwoSocketOperationsEndsTheWrite) {
     StallingServer stalling(io_ctx_);
     stalling.accept_and_stall();
@@ -2932,7 +2941,15 @@ TEST_F(HttpTransportTest, CloseBetweenTwoSocketOperationsEndsTheWrite) {
 
     ASSERT_TRUE(finished) << "close() was lost: the write went on to wait for a response after "
                              "the transport closed and is still running";
-    EXPECT_NE(failure, nullptr) << "a write cut short by close() must report an error";
+    ASSERT_NE(failure, nullptr) << "a write cut short by close() must report an error";
+    try {
+        std::rethrow_exception(failure);
+    } catch (const boost::system::system_error& error) {
+        EXPECT_EQ(error.code(), asio::error::operation_aborted)
+            << "the write ended with: " << error.code().message();
+    } catch (const std::exception& other) {
+        ADD_FAILURE() << "the write ended with: " << other.what();
+    }
 }
 
 #ifdef __linux__
