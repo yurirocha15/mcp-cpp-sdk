@@ -127,7 +127,7 @@ struct HttpClientTransport::Impl {
             co_await state->resolver.async_resolve(host, port, net::use_awaitable);
         // A close() that ran while the resolve could no longer be cancelled found no socket to
         // cancel either. From here to the socket opening inside async_connect() nothing suspends,
-        // so a later close() runs on the strand after it and cancels the connect.
+        // so a later close() runs on the strand after it and closes that socket.
         if (state->closed.load(std::memory_order_acquire)) {
             throw std::runtime_error("HttpClientTransport is closed");
         }
@@ -516,8 +516,11 @@ void HttpClientTransport::close() {
             if (shared_state->operation_active) {
                 shared_state->resolver.cancel();
                 if (shared_state->stream) {
+                    // Closed, not cancelled: a cancel reaches only an operation that is pending
+                    // right now, and the write may be between two of them or have one already
+                    // completed and waiting to resume. A closed socket fails the next one too.
                     beast::error_code ignored;
-                    shared_state->stream->socket().cancel(ignored);
+                    shared_state->stream->socket().close(ignored);
                 }
                 while (shared_state->operation_active) {
                     try {
@@ -527,6 +530,10 @@ void HttpClientTransport::close() {
                             co_return;
                         }
                     }
+                }
+                // A write that had already finished keeps its stream, now with a closed socket.
+                if (shared_state->stream && !shared_state->stream->socket().is_open()) {
+                    shared_state->stream.reset();
                 }
             }
 
