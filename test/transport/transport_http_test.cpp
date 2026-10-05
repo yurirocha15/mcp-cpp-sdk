@@ -3,6 +3,9 @@
 
 #include <gtest/gtest.h>
 
+#include "../support/resolve_gate.hpp"
+#include "../support/stalling_server.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
@@ -16,6 +19,7 @@
 #include <boost/beast/http.hpp>
 #include <chrono>
 #include <exception>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -2604,3 +2608,71 @@ TEST_F(HttpTransportTest, TheOriginCheckGuardsMcpDispatchAndTheMetadataRouteButN
 
     EXPECT_EQ(exempt_result.status, 404u);
 }
+
+#ifdef __linux__
+
+// close() called from a thread that does not run the io_context, while the write is suspended in
+// its resolve. Asio's resolver thread checks its cancel token once, before it calls getaddrinfo(),
+// so a close() that arrives while that call is in progress finds a resolve it can no longer cancel
+// and no socket to cancel either. The gate holds the lookup inside getaddrinfo() until close() has
+// done its cancelling, so the write resumes with usable addresses on a transport that is already
+// closed. It must stop there. Without the closed check in ensure_connected() it connects to the
+// stalling server and stays blocked on it until the HTTP timeout.
+TEST_F(HttpTransportTest, CloseWhileTheResolverIsPastItsCancelCheckOpensNoConnection) {
+    StallingServer stalling(io_ctx_);
+    stalling.accept_and_stall();
+
+    auto transport = std::make_shared<mcp::HttpClientTransport>(
+        io_ctx_.get_executor(), "http://127.0.0.1:" + std::to_string(stalling.port()) + "/mcp");
+
+    resolve_gate().arm(stalling.port());
+
+    std::exception_ptr failure;
+    std::promise<void> write_done;
+    auto write_finished = write_done.get_future();
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            write_done.set_value();
+        },
+        asio::detached);
+
+    std::thread runner([this]() { io_ctx_.run(); });
+
+    const auto limit = std::chrono::seconds(10);
+    const bool lookup_held = resolve_gate().wait_until_entered(limit);
+
+    // close() spawns its cancelling onto the transport's strand, which is one hop through the
+    // io_context. Two further hops through the same queue cannot complete before it has.
+    std::promise<void> cancel_done;
+    auto cancel_finished = cancel_done.get_future();
+    bool cancel_ran = false;
+    if (lookup_held) {
+        transport->close();
+        asio::post(io_ctx_, [&]() { asio::post(io_ctx_, [&]() { cancel_done.set_value(); }); });
+        cancel_ran = cancel_finished.wait_for(limit) == std::future_status::ready;
+    }
+
+    resolve_gate().release();
+    const bool finished = write_finished.wait_for(limit) == std::future_status::ready;
+
+    // Everything below reads state the runner thread wrote, so it stops first.
+    io_ctx_.stop();
+    runner.join();
+
+    ASSERT_TRUE(lookup_held) << "the write never reached getaddrinfo()";
+    ASSERT_TRUE(cancel_ran) << "the cancelling spawned by close() never ran on the io_context";
+    EXPECT_TRUE(finished) << "close() was lost: the write resumed from the lookup after the "
+                             "transport closed and is still running";
+    EXPECT_EQ(stalling.accepted(), 0) << "the write connected after the transport had closed";
+    if (finished) {
+        EXPECT_NE(failure, nullptr) << "a write cut short by close() must report an error";
+    }
+}
+
+#endif  // __linux__
