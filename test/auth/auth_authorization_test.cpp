@@ -24,7 +24,6 @@
 #include <boost/beast/http.hpp>
 #include <boost/version.hpp>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -40,7 +39,6 @@
 #include "../support/socket_gate.hpp"
 
 #include <memory>
-#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
