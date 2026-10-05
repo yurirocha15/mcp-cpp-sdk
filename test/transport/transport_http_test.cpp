@@ -2708,18 +2708,14 @@ TEST_F(HttpTransportTest, NamingAllowedOriginsRevokesAnEarlierAllowAll) {
     EXPECT_EQ(refused, 403u);
 }
 
-// Where the origin check sits in this transport's pipeline. It is not run once up front the way
-// StreamableHttpSessionManager runs it, but separately on each route that needs it: before the
-// bearer check on the MCP path, and inside the RFC 9728 metadata route, which is public to any
-// allowed origin and to no other. A rebinding attempt is therefore refused 403 on both, and the
-// MCP refusal carries no WWW-Authenticate challenge to act on.
+// Where the origin check sits in this transport's pipeline: not once up front as in
+// StreamableHttpSessionManager, but on each route that needs it -- before the bearer check on the MCP
+// path, and inside the RFC 9728 metadata route. A rebinding attempt is refused 403 on both, and the
+// MCP refusal carries no WWW-Authenticate challenge.
 //
-// The unauthenticated-path list is the one route the check does not reach: handle_request()
-// answers an exempt path 404 before dispatch is ever attempted, so the origin never enters into
-// it. Nothing is disclosed that a disallowed origin could not already infer -- an exempt path is
-// excluded from MCP dispatch, so 404 is what any caller gets -- but the status differs from the
-// 403 the session manager returns for the same request. See the companion test in
-// transport_http_session_manager_test.cpp.
+// The unauthenticated-path list is the one route the check does not reach: handle_request() answers
+// an exempt path 404 before dispatch, where the session manager returns 403 for the same request. See
+// the companion test in transport_http_session_manager_test.cpp.
 TEST_F(HttpTransportTest, TheOriginCheckGuardsMcpDispatchAndTheMetadataRouteButNotExemptPaths) {
     auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
     server->set_allowed_origins({"https://trusted.example"});
@@ -2866,11 +2862,9 @@ CloseAfterResponseAttempt close_after_the_response_arrived(std::chrono::millisec
 // completion: it closes the socket of a write that then finishes successfully. The session DELETE
 // that follows must not be attempted on that closed socket, where it would fail and be dropped.
 //
-// Nothing the test can observe says when the bytes the peer wrote have become readable on the
-// transport's socket, only that the peer's write returned. If close() runs before they are, it cuts
-// the read short instead: the write fails and drops its own connection, and the DELETE is sent
-// whatever close() did with the stream. Such a run proves nothing, so it is not judged; the
-// scenario is run again holding the io thread longer, until the write has succeeded.
+// The test cannot observe when the peer's bytes become readable on the transport's socket. If close()
+// runs before they are, the write fails instead and the run proves nothing, so the scenario is run
+// again holding the io thread longer, until the write has succeeded.
 TEST_F(HttpTransportTest, CloseAfterTheResponseArrivedStillSendsTheSessionDelete) {
     CloseAfterResponseAttempt attempt;
     auto settle = std::chrono::milliseconds(0);

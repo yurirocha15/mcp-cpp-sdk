@@ -283,23 +283,17 @@ bool is_redirect_status(unsigned int status) {
            status == static_cast<unsigned int>(http::status::permanent_redirect);
 }
 
-/// RFC 9728 §3.3: does a protected-resource metadata `resource` value identify the server this
-/// client is configured for? Accepted when the two are byte-exact, or when `resource` is a proper
-/// URI prefix of `server_url` under RFC 8707 audience semantics -- same scheme and authority,
-/// compared byte-exact with no normalization (an explicit default port is a different authority
-/// than an implicit one), and a path that is either empty/`"/"` (matches any path on the server
-/// URL) or a prefix of the server URL's path aligned on a `/` segment boundary. A single trailing
-/// `/` on `resource`'s path is ignored before that comparison, so "https://h/a/b/" and
-/// "https://h/a/b" are treated as the same path -- honest servers that do (or do not) trail their
-/// resource identifiers with `/` are not penalized for it. `resource` may not carry a query or
-/// fragment.
+/// RFC 9728 section 3.3: does a protected-resource metadata `resource` value identify the server this
+/// client is configured for? Accepted when the two are byte-exact, or when `resource` is a proper URI
+/// prefix of `server_url` under RFC 8707 audience semantics: same scheme and authority, compared
+/// byte-exact with no normalization (an explicit default port differs from an implicit one), and a
+/// path that is empty/`"/"` (matches any path) or a prefix of the server URL's path on a `/` segment
+/// boundary. A single trailing `/` on `resource`'s path is ignored. `resource` may not carry a query
+/// or fragment.
 ///
-/// An origin-root resource (empty or `"/"` path) is accepted for *any* path on that origin by
-/// design: this is the root-PRM layout (conformance `auth/metadata-var2`), where the PRM
-/// legitimately identifies the server at coarser granularity than the endpoint URL. This function
-/// only decides whether the value is plausible enough to send as the `resource` parameter on the
-/// authorization/token request -- the authorization server remains the final arbiter of what
-/// audience it actually issues into the token.
+/// An origin-root resource is accepted for any path by design: the root-PRM layout (conformance
+/// `auth/metadata-var2`). This only decides whether the value may be sent as the `resource`
+/// parameter; the authorization server remains the arbiter of the audience it issues.
 bool resource_identifies_server(const std::string& resource, const std::string& server_url) {
     if (resource == server_url) {
         return true;
@@ -623,13 +617,10 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// Re-check the sticky abort part-way through an exchange, throwing exactly what
     /// track_exchange() throws.
     ///
-    /// track_exchange() runs once per exchange, before the first request, but run_get() follows
-    /// redirects in a loop and every iteration builds a fresh socket through Exchange::reset(). So
-    /// an abort_pending() that lands while an iteration's read is completing closes a socket that
-    /// is already finished with -- no effect -- and the resumed coroutine then follows the redirect
-    /// and runs a whole new request for a client that has been torn down, up to
-    /// `policy.max_redirects` times. The sticky `aborted` flag cannot catch that on its own because
-    /// track_exchange() never runs again.
+    /// track_exchange() runs once per exchange, but run_get() follows redirects in a loop with a
+    /// fresh socket per iteration. An abort that lands as an iteration's read completes closes a
+    /// finished socket, so without this check the coroutine would follow the redirect and run a new
+    /// request for a torn-down client.
     static void throw_if_aborted(const std::shared_ptr<Exchange>& exchange) {
         std::lock_guard lock(exchange->owner->active_mutex);
         if (exchange->owner->is_aborted(exchange->scope)) {
@@ -683,19 +674,12 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         return std::make_shared<detail::OAuthScopeState>();
     }
 
-    /// Every request carries the scope it was issued under, so aborting that scope reaches exactly
-    /// these exchanges and no others. A null scope is the client's own unscoped work.
-    /// Build an exchange with the fetch policy and host resolver PINNED for its whole lifetime.
-    ///
-    /// set_metadata_policy() and set_host_resolver() are plain writes to state the exchange
-    /// coroutines read, which ThreadSanitizer confirmed as a real race for anyone driving this
-    /// client directly. Reading them once here, under the mutex that already guards the exchange
-    /// list, closes that without putting a lock on every read.
-    ///
-    /// And an exchange that follows redirects re-validates every hop, so a policy swapped
-    /// mid-chain would check hop one against the old rules and hop two against the new. Pinning
-    /// makes one exchange mean one policy, which is the property the per-hop validation exists to
-    /// deliver.
+    /// Build an exchange with the fetch policy and host resolver pinned for its whole lifetime, read
+    /// once under the mutex that guards the exchange list: the setters are plain writes to state the
+    /// exchange coroutines read, and an exchange re-validates every redirect hop, so a policy swapped
+    /// mid-chain would otherwise check later hops against different rules. Every request carries the
+    /// scope it was issued under, so aborting that scope reaches exactly these exchanges; a null
+    /// scope is the client's own unscoped work.
     std::shared_ptr<Exchange> make_exchange(std::string url,
                                             std::shared_ptr<detail::OAuthScopeState> scope) {
         std::lock_guard lock(active_mutex);
@@ -705,18 +689,14 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 
     /// Run one exchange on the client's strand and hand its outcome back to the caller off it.
     ///
-    /// The strand is what keeps an exchange apart from the close abort_matching() posts when
-    /// several threads run the io_context. Posting the exchange's coroutine to the strand does not
-    /// put it there: an awaitable's executor is fixed when it is spawned, so the coroutine is back
-    /// on its caller's executor after its first suspension. Spawning the exchange on the strand
-    /// makes the strand its executor, and every resumption lands there.
+    /// The strand keeps an exchange apart from the close abort_matching() posts when several threads
+    /// run the io_context. Posting the coroutine to the strand is not enough: an awaitable's executor
+    /// is fixed when it is spawned, so it is spawned on the strand and every resumption lands there.
     ///
-    /// co_spawn() completes by dispatching to the caller's executor, and on an io_context thread
-    /// that runs the caller in place, inside the strand handler that finished the exchange. The
-    /// caller would hold the strand for as long as it kept running, so it is posted off it first.
-    ///
-    /// The result waits out that post on the heap, not in this frame; see the GCC 11 note at the
-    /// top of this file.
+    /// co_spawn() completes by dispatching to the caller's executor, which on an io_context thread
+    /// runs the caller in place inside the strand handler; the caller is posted off the strand first
+    /// so it does not hold it. The result waits out that post on the heap, not in this frame; see the
+    /// GCC 11 note at the top of this file.
     template <typename Result>
     static Task<Result> on_strand(net::strand<net::any_io_executor> strand, Task<Result> exchange) {
         std::shared_ptr<Result> result;
@@ -1279,14 +1259,10 @@ struct OAuthDiscoveryClient::Impl {
                 continue;
             }
 
-            // Deliberately outside the try above, and before the cache is written.
-            //
-            // Outside, because the caller refusing a document that was fetched and parsed is a
-            // verdict on that document, not a candidate that missed; letting `catch (...)` swallow
-            // it would silently move on to the next well-known URL. Before, because a document the
-            // caller refuses must never become a cache entry that a later attempt is served from
-            // without ever reaching the network -- which is exactly what made an attacker-supplied
-            // document worth planting for the full TTL.
+            // Outside the try above, because a caller refusing a fetched and parsed document is a
+            // verdict on it, not a candidate that missed: `catch (...)` would move on to the next
+            // well-known URL. Before the cache write, because a refused document must never become a
+            // cache entry served to a later attempt without reaching the network.
             if (operation->accept) {
                 operation->accept(*operation->metadata);
             }
@@ -1602,16 +1578,11 @@ struct OAuthAuthorizationManager::Impl {
     /// One coalescing authorization attempt, and the channel every follower of it reads its result
     /// from.
     ///
-    /// The outcome lives here, on the attempt, rather than on the manager. Holding it per-attempt
-    /// is what keeps a follower's result correlated with the flight it actually joined: a
-    /// manager-wide field would let a follower that wakes after a later flight finished read that
-    /// flight's result as its own. Carrying the exception rather than a bool is what lets a
-    /// coalesced follower see the same diagnostic as the leader, which for an issuer-bound
-    /// credential refusal names exactly what the caller has to change.
-    ///
-    /// `succeeded` and `failure` are written once by the leader in run_leading_challenge() and read
-    /// by followers after they wake, both under `state_mutex`. `expire_flight()` is what wakes
-    /// them, and it is always called after that write.
+    /// The outcome lives on the attempt, not the manager, so a follower that wakes after a later
+    /// flight finished cannot read that flight's result as its own. It carries the exception rather
+    /// than a bool so a follower sees the leader's diagnostic. `succeeded` and `failure` are written
+    /// once by the leader in run_leading_challenge() and read by followers after they wake, both
+    /// under `state_mutex`; `expire_flight()` wakes them and is always called after that write.
     struct Flight {
         explicit Flight(const net::strand<net::any_io_executor>& flight_strand)
             : timer(flight_strand, net::steady_timer::time_point::max()) {}
@@ -1683,26 +1654,20 @@ struct OAuthAuthorizationManager::Impl {
     static Task<bool> return_false() { co_return false; }
 
     /// Fails the same way return_false() succeeds: lazily, when the returned awaitable is awaited.
-    ///
-    /// handle_challenge() contains no co_await or co_return, so it is a plain function returning an
-    /// awaitable, and a bare `throw` in its body fires when try_handle_challenge() is *called*
-    /// rather than when its result is awaited -- unlike the virtual it overrides, whose contract is
-    /// the lazy one. Returning this instead moves only the throw; handle_challenge() stays a plain
-    /// function, which matters because it returns its awaitables in tail position and making it a
-    /// coroutine would add a frame and a suspension to a path that runs on every 401.
+    /// handle_challenge() is a plain function returning an awaitable, so a bare `throw` in its body
+    /// would fire when try_handle_challenge() is *called*, unlike the virtual it overrides, whose
+    /// contract is the lazy one. It stays a plain function because making it a coroutine would add a
+    /// frame and a suspension to a path that runs on every 401.
     static Task<bool> throw_closed() {
         throw std::runtime_error("OAuth authorization manager closed");
         co_return false;
     }
 
     /// Challenge scope is authoritative; `scopes_supported` is the fallback; otherwise no scope is
-    /// requested at all. An explicit configured scope overrides both.
-    ///
-    /// The two sources are never merged with each other: the spec forbids assuming any particular
-    /// set relationship between a challenge scope and `scopes_supported`, so whichever one applies
-    /// is used whole. Scope already granted by an earlier authorization *is* merged in, because a
-    /// 403 step-up challenge names only what the refused operation needed and re-authorizing on it
-    /// alone would silently drop the rest of the grant.
+    /// requested at all. An explicit configured scope overrides both. The two sources are never
+    /// merged with each other: the spec forbids assuming any set relationship between them. Scope
+    /// already granted by an earlier authorization *is* merged in, because a 403 step-up challenge
+    /// names only what the refused operation needed.
     static std::optional<std::string> select_scope(const Impl& owner, const BearerChallenge& challenge,
                                                    const ProtectedResourceMetadata& resource) {
         if (owner.config.scope) {
@@ -1788,11 +1753,10 @@ struct OAuthAuthorizationManager::Impl {
                 if (injected && !injected->client_id.empty() && injected->issuer.empty() &&
                     injected->client_secret && !injected->client_secret->empty()) {
                     // Both spellings are named, with the condition on each, because they are not
-                    // interchangeable. The constructor copies `client_issuer` into the injected
-                    // credentials only when `client_identity.pre_registered` was not already set,
-                    // so a caller who built that struct themselves can set `client_issuer` and
-                    // watch it be ignored -- while working to clear a security refusal, which is
-                    // the worst moment to be sent to the wrong field.
+                    // interchangeable: the constructor copies `client_issuer` into the injected
+                    // credentials only when `client_identity.pre_registered` was not already set, so
+                    // a caller who built that struct themselves can set `client_issuer` and watch it
+                    // be ignored.
                     throw std::runtime_error(
                         "Injected client credentials carry a client_secret but name no issuer, so "
                         "they cannot be presented to authorization server " +
@@ -1890,16 +1854,10 @@ struct OAuthAuthorizationManager::Impl {
         auto& owner = *operation->owner;
 
         // Both checks that decide whether this document may be acted on, handed to discovery as its
-        // acceptance test rather than applied after the fact.
-        //
-        // Handed to discovery rather than applied afterwards, because discovery writes a parsed
-        // document to the resource cache before returning it: applied after the fact, a refused
-        // document would already be planted for the full TTL and the next attempt served it without
-        // a fetch. As the acceptor they gate the cache write, and they run on a cache hit too.
-        //
-        // The order of the two is load-bearing: a document that both lists no authorization servers
-        // and carries a resource that is not ours must still report the missing authorization
-        // servers.
+        // acceptor so they gate the cache write and also run on a cache hit: applied afterwards, a
+        // refused document would already be cached for the full TTL. Order matters: a document that
+        // both lists no authorization servers and carries a resource that is not ours must report the
+        // missing authorization servers.
         auto accept = [owner = operation->owner](const ProtectedResourceMetadata& resource) {
             if (resource.authorization_servers.empty()) {
                 throw std::runtime_error("Protected resource metadata listed no authorization servers");
@@ -1966,19 +1924,14 @@ struct OAuthAuthorizationManager::Impl {
         co_return true;
     }
 
-    /// Push `flight`'s deadline into the past, on `flight_strand` so the change is never raced with
-    /// the timer's own operations (a pending async_wait() elsewhere, or one just about to start).
-    /// await_in_flight() initiates its wait on the same strand, which is what makes that true: the
-    /// timer's associated executor governs only where its completion handler runs, while
-    /// expires_at() and async_wait() both execute on the thread that calls them.
+    /// Push `flight`'s deadline into the past, on `flight_strand` so it never races the timer's own
+    /// operations: expires_at() and async_wait() both execute on the calling thread (the timer's
+    /// executor governs only its completion handler), and await_in_flight() initiates its wait on the
+    /// same strand.
     ///
-    /// expires_at() -- unlike cancel() -- both cancels whatever is currently pending on the timer
-    /// *and* moves its deadline, so a wait that starts only after this call still sees an
-    /// already-passed deadline and completes immediately instead of parking on one that never moved
-    /// off time_point::max(). That covers a follower that has joined `flight` but has not yet called
-    /// async_wait when this runs: joining and waiting are two separate steps, not one atomic one, so
-    /// cancel() alone -- which only affects a wait already pending -- can miss it, and the follower
-    /// hangs forever. A null `flight` is a no-op.
+    /// expires_at() rather than cancel(): it also moves the deadline, so a follower that has joined
+    /// `flight` but not yet called async_wait() completes immediately instead of parking on
+    /// time_point::max() forever. A null `flight` is a no-op.
     static void expire_flight(const net::strand<net::any_io_executor>& flight_strand,
                               std::shared_ptr<Flight> flight) {
         if (!flight) {
@@ -1993,15 +1946,12 @@ struct OAuthAuthorizationManager::Impl {
     /// burst of concurrent requests that all hit the same challenge authorizes exactly once.
     static Task<bool> await_in_flight(std::shared_ptr<Impl> owner, std::shared_ptr<Flight> flight) {
         // async_wait() touches the timer synchronously on the thread that calls it, so it has to be
-        // initiated on the same strand expire_flight() dispatches its expires_at() onto; the
-        // timer's associated executor governs only where its completion handler runs. This is the
-        // step that actually closes the race -- putting the timer and expire_flight() on a strand
-        // relocates the completion handler and nothing else.
+        // initiated on the same strand expire_flight() dispatches its expires_at() onto; the timer's
+        // associated executor governs only where its completion handler runs.
         //
         // bind_executor() rather than a bare post(flight_strand, use_awaitable): a bare post leaves
         // the resumption on this coroutine's own executor and only happens to land inside the strand
-        // when the two share one io_context, which is exactly the configuration that does not need
-        // the fix in the first place.
+        // when the two share one io_context.
         co_await net::dispatch(net::bind_executor(owner->flight_strand, net::use_awaitable));
         boost::system::error_code ignored;
         co_await flight->timer.async_wait(net::redirect_error(net::use_awaitable, ignored));
@@ -2011,8 +1961,7 @@ struct OAuthAuthorizationManager::Impl {
         // handler carries that executor, so the caller is back on its own executor here and no
         // explicit hop back is needed. That matters -- Client spawns its write onto its own strand
         // and SerializedTransportWriter builds another to serialise writes, and both would be
-        // bypassed by a continuation left on flight_strand. It is load-bearing rather than
-        // incidental, so two tests assert it directly; see
+        // bypassed by a continuation left on flight_strand. Asserted by
         // AFollowerReleasedFromTheSingleFlightTimerResumesOnItsOwnStrand.
         std::exception_ptr failure;
         bool succeeded = false;
@@ -2030,10 +1979,9 @@ struct OAuthAuthorizationManager::Impl {
             // here would let a late waker report a different attempt's outcome.
             //
             // `finished` is a guard rather than a case that arises today: the only two things that
-            // expire this timer are the leader recording its result and close(), and the closed
-            // check above already took the second. It is here so that a third wake-up added later
-            // cannot reintroduce the failure mode this whole channel exists to remove -- a follower
-            // reporting a flat "not authorized" that is indistinguishable from a real refusal.
+            // expire this timer are the leader recording its result and close(), and the closed check
+            // above already took the second. It keeps a wake-up added later from making a follower
+            // report a flat "not authorized" that is indistinguishable from a real refusal.
             if (!flight->finished) {
                 throw std::runtime_error(
                     "OAuth authorization attempt ended without recording an outcome");
@@ -2042,16 +1990,10 @@ struct OAuthAuthorizationManager::Impl {
             succeeded = flight->succeeded;
         }
 
-        // Rethrown outside the lock: the leader's exception is what a follower has to report, and
-        // it must not travel through a destructor while state_mutex is held. Every follower
-        // rethrows the same exception_ptr, which is safe -- the object it refers to is shared and
-        // read-only.
-        //
-        // Nothing between here and the application swallows this throw on the follower path.
-        // run_write() catches (...) only to erase_pending() and rethrow, and run_leading_challenge()
-        // is not on a follower's path at all. The catch-alls that discard and move to the next
-        // candidate live in the discovery fallback loops, which a follower never enters, and the one
-        // in the refresh path is a different call entirely.
+        // Rethrown outside the lock: the leader's exception must not travel through a destructor
+        // while state_mutex is held. Every follower rethrows the same exception_ptr, which is safe --
+        // the object it refers to is shared and read-only. Nothing on the follower path swallows it:
+        // run_write() catches (...) only to erase_pending() and rethrow.
         if (failure) {
             std::rethrow_exception(failure);
         }
@@ -2184,14 +2126,11 @@ struct OAuthAuthorizationManager::Impl {
 
     /// Abort whatever this manager has in flight and release every parked follower with an error.
     ///
-    /// `http_client->abort_pending()` unblocks the leader's own coroutine wherever it is parked in
-    /// an HTTP call (discovery, registration and token exchange all share the one client), and being
-    /// sticky, also stops a leader -- or a fresh flow started by a caller racing this very call --
-    /// that has not made its first network call yet: it fails there instead of running to
-    /// completion. `expire_flight()` releases every follower directly rather than waiting on the
-    /// leader's own cleanup in run_leading_challenge() to get there, and reaches the one place
-    /// abort_pending() cannot: a leader parked in the application's own consent callback, which
-    /// holds no cancellable network state of its own.
+    /// `http_client->abort_pending()` unblocks a leader parked in an HTTP call (discovery,
+    /// registration and token exchange share the one client) and, being sticky, fails a leader or a
+    /// racing fresh flow at its first network call. `expire_flight()` releases followers directly,
+    /// which also covers a leader parked in the application's consent callback, where there is no
+    /// network state to cancel.
     static void close(const std::shared_ptr<Impl>& owner) {
         std::shared_ptr<Flight> flight;
         {

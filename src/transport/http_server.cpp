@@ -466,18 +466,13 @@ struct HttpServerTransport::Impl {
             }
         }
 
-        // server/discover is a pre-gate method: it MUST stay reachable with zero prior session
-        // state, so a discover REQUEST that carries no MCP-Session-Id header skips the POST
-        // session gate — mirroring HttpSessionManager, which intercepts sessionless discover
-        // before resolve_session_for_post. Nothing else is exempted: any other method, and
-        // discover WITH a session header, still goes through validate_post_session unchanged,
-        // and this path neither creates nor mutates session state.
+        // server/discover is a pre-gate method: it MUST stay reachable with zero prior session state,
+        // so a discover request with no MCP-Session-Id header skips the POST session gate. Any other
+        // method, and discover with a session header, still goes through validate_post_session, and
+        // this path neither creates nor mutates session state.
         //
-        // The "id" requirement is deliberate and does NOT mirror the sibling transport. Without
-        // it a sessionless JSON-RPC *notification* named server/discover would skip the gate and
-        // push its whole body onto the unbounded incoming queue below, answering 202 without
-        // ever waiting for the server. server/discover is a request method, so demanding an id
-        // costs nothing and keeps that unbounded enqueue behind the session gate.
+        // The "id" requirement keeps a sessionless *notification* named server/discover from skipping
+        // the gate and pushing its body onto the unbounded incoming queue below.
         const bool is_sessionless_discover = is_discover_request(request_json) &&
                                              request_json.contains("id") &&
                                              request.find("MCP-Session-Id") == request.end();
@@ -496,22 +491,12 @@ struct HttpServerTransport::Impl {
             co_return make_empty_json_response(request, http::status::accepted);
         }
 
-        // A sessionless discover carries an id chosen by an unauthenticated party, so it is given
-        // a transport-private sentinel id here and the caller's own id is restored in run_write
-        // before the response leaves. Registering it under the raw id would share a key space with
-        // the established session: a prober could claim an id the session then needs and force a
-        // spurious "Request id already pending", and the raw id would also land in
-        // sessionless_request_ids, which decides replay-store exclusion, letting the prober steer
-        // what the session's replay history contains.
-        //
-        // Only this pre-gate path pays the rewrite; session-gated requests are registered under,
-        // and forwarded with, the exact bytes the peer sent.
-        //
-        // Do not replace this with a per-session or per-principal map that lets both parties hold
-        // the same raw id. Correlation keys on the id the peer echoes back, so a response for id N
-        // could belong to either holder and the transport would have to guess -- and guessing
-        // wrong hands one party another party's response body, which is worse than the denial it
-        // replaces.
+        // A sessionless discover carries an id chosen by an unauthenticated party, so it is
+        // registered under a transport-private sentinel id and the caller's own id is restored in
+        // run_write. The raw id would share a key space with the established session: a prober could
+        // claim an id the session then needs ("Request id already pending"), and could steer
+        // replay-store exclusion through sessionless_request_ids. Session-gated requests keep the
+        // exact bytes the peer sent.
         std::string request_id_key;
         std::optional<nlohmann::json> client_request_id;
         std::string sentinel_body;

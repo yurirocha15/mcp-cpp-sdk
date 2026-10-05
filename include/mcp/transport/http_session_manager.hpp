@@ -123,9 +123,8 @@ class MCP_API StreamableHttpSessionManager {
     /**
      * @brief Require an Authorization: Bearer header and validate it asynchronously.
      *
-     * Use this when the decision needs I/O — token introspection, a JWKS fetch — so it suspends
-     * instead of blocking the executor that is concurrently serving MCP traffic. A manager that
-     * installs only the synchronous validator pays nothing for this path.
+     * Use this when the decision needs I/O -- token introspection, a JWKS fetch -- so it suspends
+     * instead of blocking the executor that is concurrently serving MCP traffic.
      *
      * Passing an empty validator disables HTTP authentication.
      * Configure the validator before listen() starts.
@@ -138,11 +137,10 @@ class MCP_API StreamableHttpSessionManager {
     /**
      * @brief Cap the HTTP request body this manager will read.
      *
-     * A request whose body exceeds the cap is answered `413 Payload Too Large` and its connection
-     * is closed; it never reaches MCP dispatch. Defaults to
-     * mcp::constants::g_default_max_request_body_bytes. Lower it only deliberately: binary content
-     * travels as base64 inside the JSON body, so a cap near the size of the raw content rejects
-     * payloads that previously worked.
+     * A request whose body exceeds the cap is answered `413 Payload Too Large` and its connection is
+     * closed; it never reaches MCP dispatch. Defaults to
+     * mcp::constants::g_default_max_request_body_bytes. Binary content travels as base64 inside the
+     * JSON body, so a cap near the size of the raw content rejects it.
      *
      * Configure the cap before listen() starts.
      *
@@ -168,11 +166,9 @@ class MCP_API StreamableHttpSessionManager {
     /**
      * @brief Serve an RFC 9728 protected-resource metadata document.
      *
-     * The document answers GET requests at its configured path without an Authorization header,
-     * ahead of both the bearer check and the custom request handler, so a client holding no token
-     * can read it. When the bearer challenge carries no `resource_metadata`, it is populated with
-     * this document's URL, which is all an unauthorized client needs to start an OAuth flow
-     * against this server.
+     * The document answers GET requests at its configured path without an Authorization header, ahead
+     * of both the bearer check and the custom request handler. When the bearer challenge carries no
+     * `resource_metadata`, it is populated with this document's URL.
      *
      * Configure the metadata before listen() starts.
      *
@@ -184,17 +180,14 @@ class MCP_API StreamableHttpSessionManager {
     /**
      * @brief Exempt request paths from bearer validation and exclude them from MCP dispatch.
      *
-     * Both halves matter. An entry is excused from the bearer check, and it is also removed from
-     * the set of paths MCP answers: an exempt request still reaches the protected-resource
-     * metadata route and the custom request handler, but if both decline it is answered
-     * `404 Not Found` rather than dispatched. MCP is otherwise served on every path the custom
-     * handler declines, so exempting one without excluding it would serve MCP there with no
-     * authentication at all — listing the path MCP runs on would silently disable authentication
-     * outright. Answering 404 makes that misconfiguration fail loudly instead.
+     * An entry is excused from the bearer check and also removed from the set of paths MCP answers:
+     * an exempt request still reaches the protected-resource metadata route and the custom request
+     * handler, but if both decline it is answered `404 Not Found` rather than dispatched, so MCP is
+     * never served without authentication on an exempt path.
      *
-     * Each entry is compared for equality against the path component of the request target, with
-     * any query string or fragment removed first, so `/health` also exempts `/health?probe=1`.
-     * Empty by default.
+     * Each entry is compared for equality against the path component of the request target, with any
+     * query string or fragment removed first, so `/health` also exempts `/health?probe=1`. Empty by
+     * default.
      *
      * Configure the paths before listen() starts.
      *

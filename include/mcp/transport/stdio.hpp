@@ -22,13 +22,10 @@ namespace mcp {
  * but accepts arbitrary streams for testing.
  *
  * @warning On the stdio transport the output stream *is* the protocol channel.
- * With the default std::cout the application shares that channel: a stray
- * printf, a logging library whose default sink is stdout, or a dependency's
- * debug line lands between framed messages and the peer's parser rejects it.
- * The transport cannot detect this, because such writes never pass through it.
- * Applications that cannot guarantee a silent stdout should use
- * create_owning_stdout(), which moves the protocol onto a private descriptor
- * and points the process's stdout at stderr for the transport's lifetime.
+ * With the default std::cout, any other write to stdout (a stray printf, a
+ * logging library's default sink) lands between framed messages and the peer's
+ * parser rejects it; the transport cannot detect this. Applications that cannot
+ * guarantee a silent stdout should use create_owning_stdout().
  */
 class MCP_API StdioTransport final : public ITransport {
    public:
@@ -52,12 +49,11 @@ class MCP_API StdioTransport final : public ITransport {
      * @brief Construct a StdioTransport that owns the process's standard output.
      *
      * Duplicates the current standard output onto a private descriptor, writes
-     * the protocol to that descriptor, and points the process's standard output
-     * at standard error. Everything the application subsequently writes to
-     * stdout - std::cout, printf, a logging library's default sink, a
-     * dependency's debug line - is then diagnostics on stderr instead of
-     * corruption in the middle of the message stream. The original standard
-     * output is restored when the transport is destroyed.
+     * the protocol there, and points the process's standard output at standard
+     * error, so anything the application writes to stdout (std::cout, printf, a
+     * logging library's default sink) lands on stderr instead of in the message
+     * stream. The original standard output is restored when the transport is
+     * destroyed.
      *
      * @param executor The executor to use for async operations.
      * @param input    Input stream to read messages from (default: std::cin).

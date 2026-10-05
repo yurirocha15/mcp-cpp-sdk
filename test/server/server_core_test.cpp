@@ -1481,13 +1481,10 @@ TEST_F(ServerCoreTest, DiscoverWorksAgainAfterInitializeIdempotently) {
 namespace {
 
 // Drives one server-initiated request that the client answers with a JSON-RPC error object, and
-// reports the diagnostic the server raised.
-//
-// Same defect as the peer-controlled text in the client's McpError, opposite direction: here the
-// untrusted side is the client. Every server-initiated request -- sampling/createMessage,
-// elicitation, roots/list -- can be answered with an error whose `message` the client writes, and
-// that message is deserialized verbatim and interpolated into the runtime_error the server
-// operator logs. There is no authorization step in the way.
+// reports the diagnostic the server raised. Here the untrusted side is the client: every
+// server-initiated request -- sampling/createMessage, elicitation, roots/list -- can be answered with
+// an error whose `message` is deserialized verbatim and interpolated into the runtime_error the
+// server operator logs.
 struct ReverseErrorOutcome {
     bool threw{false};
     std::string what;

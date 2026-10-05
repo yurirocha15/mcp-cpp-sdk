@@ -1213,13 +1213,12 @@ class NamedLoopbackServer {
 
 /// Whether this environment has promised a second loopback address.
 ///
-/// Every OAuthSetterPairAtomicity test needs a port free on both 127.0.0.1 and 127.0.0.2, and
-/// skips when there is none. On a host or container without 127.0.0.2 that silently deletes the
-/// entire regression evidence for the setter-pair atomicity fix while the suite still reports
-/// green -- the failure mode where a guard disappears and nothing says so. Where the second
-/// address is known to exist (Linux, where 127.0.0.0/8 is bound whole), set
-/// MCP_REQUIRE_TWIN_LOOPBACK=1 and a missing port fails the run instead of skipping it. CI sets it
-/// on Linux; the default stays a skip so the suite remains runnable anywhere.
+/// Every OAuthSetterPairAtomicity test needs a port free on both 127.0.0.1 and 127.0.0.2, and skips
+/// when there is none. On a host or container without 127.0.0.2 that silently skips every one of them
+/// while the suite still reports green. Where the second address is known to exist (Linux, where
+/// 127.0.0.0/8 is bound whole), set MCP_REQUIRE_TWIN_LOOPBACK=1 and a missing port fails the run
+/// instead of skipping it. CI sets it on Linux; the default stays a skip so the suite remains
+/// runnable anywhere.
 [[nodiscard]] bool twin_loopback_is_required() {
     const char* const flag = std::getenv("MCP_REQUIRE_TWIN_LOOPBACK");
     return flag != nullptr && std::string_view(flag) == "1";
