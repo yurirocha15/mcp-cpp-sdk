@@ -24,7 +24,6 @@
 #include <boost/beast/http.hpp>
 #include <boost/version.hpp>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <exception>
 #include <functional>
