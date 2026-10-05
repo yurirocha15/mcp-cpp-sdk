@@ -125,6 +125,12 @@ struct HttpClientTransport::Impl {
 
         auto resolved_endpoints =
             co_await state->resolver.async_resolve(host, port, net::use_awaitable);
+        // A close() that ran while the resolve could no longer be cancelled found no socket to
+        // cancel either. From here to the socket opening inside async_connect() nothing suspends,
+        // so a later close() runs on the strand after it and cancels the connect.
+        if (state->closed.load(std::memory_order_acquire)) {
+            throw std::runtime_error("HttpClientTransport is closed");
+        }
         if (!state->stream) {
             state->stream.emplace(strand);
         }
