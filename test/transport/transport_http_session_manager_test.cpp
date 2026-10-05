@@ -2081,12 +2081,11 @@ TEST_F(SessionManagerTest, RequestBodyLimitIsConfigurable) {
 // End to end: the SDK's own client completes discovery against the SDK's own server
 // ===========================================================================
 
-// The gap this API closes was that the SDK's client could not be driven by the SDK's server: the
-// challenge named no metadata location, so discovery had nothing to start from. This exercises the
-// whole path on real sockets — an unauthenticated request draws a 401, the challenge is parsed by
-// the SDK's own parser, the URL it names is fetched by the SDK's own discovery client, and the
-// document that comes back is the one the server was configured with. Nothing here is a string
-// comparison against a hand-written header.
+// Without a metadata location in the challenge the SDK's client cannot be driven by the SDK's server:
+// discovery has nothing to start from. This exercises the whole path on real sockets -- an
+// unauthenticated request draws a 401, the challenge is parsed by the SDK's own parser, the URL it
+// names is fetched by the SDK's own discovery client, and the document that comes back is the one the
+// server was configured with. Nothing here is a string comparison against a hand-written header.
 TEST_F(SessionManagerTest, SdkClientDiscoversAuthorizationFromTheSdkServersOwnChallenge) {
     const unsigned short port = 19142;
     const auto origin = "http://127.0.0.1:" + std::to_string(port);

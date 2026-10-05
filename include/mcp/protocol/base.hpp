@@ -118,9 +118,8 @@ NLOHMANN_JSON_SERIALIZE_ENUM(Role, {{Role::eUser, "user"}, {Role::eAssistant, "a
 /**
  * @brief JSON-RPC request identifier: either a string or an integer.
  *
- * Wraps `std::variant<std::string, int64_t>` as a named type so that ADL-based
- * `to_json`/`from_json` can live directly in `namespace mcp` without closing
- * and reopening the namespace to specialize `nlohmann::adl_serializer`.
+ * Wraps `std::variant<std::string, int64_t>` as a named type so that `to_json`/`from_json` are found
+ * by ADL in `namespace mcp`.
  *
  * Implicit constructors allow transparent assignment from string and integer literals:
  * @code
