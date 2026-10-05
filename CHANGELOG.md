@@ -241,6 +241,26 @@ Versioning; a `0.x` version is a stable release unless its version has an
   until the HTTP timeout. The abort latch is now checked again just before the
   connection is opened, so such a close ends the flow promptly. This covers an
   `io_context` run by a single thread.
+- Closing `HttpClientTransport` or `WebSocketClientTransport` from a thread
+  that does not run the `io_context` could be lost while the transport was
+  resolving its server's address. The close found no socket to act on, and the
+  transport then went on to connect: the HTTP write blocked until the HTTP
+  timeout, and the WebSocket connect waited on its handshake with no limit.
+  Both transports now check for the close again once the address is known and
+  fail the pending call instead of connecting. For `WebSocketClientTransport`
+  this holds however many threads run the `io_context`.
+- `HttpClientTransport::close()` now closes the socket of a write that is in
+  flight instead of cancelling its pending operation once. A close that
+  arrived while the write was between two socket operations, or just after one
+  had completed, cancelled nothing and the write carried on until the HTTP
+  timeout; with several threads running the `io_context` that included a
+  close racing the connect. The write now fails promptly in each of these
+  cases, however many threads run the `io_context`, and may report a closed
+  socket (`bad_descriptor`) instead of a cancelled operation. The session
+  `DELETE` that
+  `close()` sends afterwards uses a new connection. It already did after a
+  cancelled write; when the response had already arrived as `close()` ran, it
+  used to reuse the write's connection and now opens a new one as well.
 
 ## [0.2.0] - TBD
 
