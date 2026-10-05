@@ -389,6 +389,10 @@ struct WebSocketClientTransport::Impl {
         try {
             auto results =
                 co_await state->resolver.async_resolve(state->host, state->port, asio::use_awaitable);
+            // A close() that ran while the resolve could no longer be cancelled closed a socket
+            // that was not open yet. From here to the socket opening inside async_connect()
+            // nothing suspends, so a later close() runs on the strand after it and closes it.
+            throw_if_closed(state);
             co_await state->ws.next_layer().async_connect(results, asio::use_awaitable);
             co_await state->ws.async_handshake(state->host + ":" + state->port, state->path,
                                                asio::use_awaitable);
