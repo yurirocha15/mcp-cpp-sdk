@@ -2,8 +2,9 @@
 # this SDK; keep the list this short and add nothing without the reasoning beside it.
 
 # Asio frees a shared executor after a release decrement of its reference count followed by
-# atomic_thread_fence(acquire). GCC's ThreadSanitizer does not model standalone fences (-Wtsan), so
-# it reports the delete as racing with the last use. Seen wherever co_spawn() runs on a strand.
+# atomic_thread_fence(acquire), the standard pattern. ThreadSanitizer still reports the delete as
+# racing with the decrement, under both GCC 13 and Clang 18, so it does not credit the standalone
+# fence. Seen wherever co_spawn() runs on a strand.
 race:boost::asio::execution::detail::shared_target_executor
 
 # Asio's signal handler reads the write end of its self-pipe, which the signal_set_service
