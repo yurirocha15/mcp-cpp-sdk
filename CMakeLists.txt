@@ -397,7 +397,12 @@ if(BUILD_TESTING)
   endif()
   if(ENABLE_TSAN)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-      set(TSAN_FLAGS -fsanitize=thread -fno-omit-frame-pointer -g -O1)
+      # -g1 keeps the line tables a report needs and drops the rest.
+      # ThreadSanitizer stops every thread while it symbolizes a report,
+      # including one a suppression then discards, and that pause grows with the
+      # debug information it has to read: with full -g it outlasted the tests'
+      # own time bounds on CI.
+      set(TSAN_FLAGS -fsanitize=thread -fno-omit-frame-pointer -g1 -O1)
       foreach(sdk_target IN LISTS MCP_CPP_SDK_INSTALL_TARGETS)
         target_compile_options(${sdk_target} PUBLIC ${TSAN_FLAGS})
         target_link_options(${sdk_target} PUBLIC -fsanitize=thread)
