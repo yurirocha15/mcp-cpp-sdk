@@ -1,4 +1,5 @@
 #include <mcp/core/constants.hpp>
+#include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 #include <mcp/transport/memory.hpp>
 
@@ -17,16 +18,17 @@
 #include <chrono>
 #include <cstddef>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <random>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -44,55 +46,60 @@ namespace detail_session_mgr {
 struct PendingResponse {
     std::shared_ptr<boost::asio::steady_timer> ready_timer;
     std::optional<std::string> response_body;
-    std::optional<std::string> event_id;
+    SseEventList stream_events;
     bool response_ready{false};
 };
 
 struct PendingResult {
     std::optional<std::string> response_body;
-    std::optional<std::string> event_id;
+    SseEventList stream_events;
 };
 
 struct SessionRuntime {
     std::string session_id;
+
+    std::shared_ptr<MemoryTransport> client_transport;
+
+    mutable std::mutex protocol_mutex;
     std::string negotiated_protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
 
-    std::shared_ptr<ITransport> client_transport;
-    MemoryTransport* client_transport_ptr{nullptr};
-    Server* server{nullptr};
-
-    boost::asio::strand<boost::asio::any_io_executor> session_strand;
-
+    mutable std::mutex response_mutex;
     EventStore event_store;
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
+    SseEventList unassigned_stream_events;
 
     explicit SessionRuntime(
-        std::string id, boost::asio::strand<boost::asio::any_io_executor> strand,
-        std::size_t event_store_capacity = constants::g_event_store_default_capacity)
-        : session_id(std::move(id)), session_strand(strand), event_store(event_store_capacity) {}
+        std::string id, std::size_t event_store_capacity = constants::g_event_store_default_capacity)
+        : session_id(std::move(id)), event_store(event_store_capacity) {}
+
+    [[nodiscard]] std::string protocol_version() const {
+        std::lock_guard lock(protocol_mutex);
+        return negotiated_protocol_version;
+    }
+
+    void set_protocol_version(std::string version) {
+        std::lock_guard lock(protocol_mutex);
+        negotiated_protocol_version = std::move(version);
+    }
 };
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
-inline std::string generate_session_id() {
-    thread_local std::random_device random_device;
-    thread_local std::mt19937 generator(random_device());
-    thread_local std::uniform_int_distribution<int> distribution(
-        0, static_cast<int>(constants::g_hex_digits.size() - 1));
-
-    std::string session_identifier(constants::g_session_id_length, '0');
-    for (char& current_char : session_identifier) {
-        current_char = constants::g_hex_digits[distribution(generator)];
-    }
-    return session_identifier;
-}
+inline std::string generate_session_id() { return detail::generate_secure_session_id(); }
 
 inline bool is_initialize_request(const nlohmann::json& request_json) {
     return request_json.is_object() && request_json.contains("method") &&
+           request_json.at("method").is_string() &&
            request_json.at("method").get<std::string>() == "initialize";
+}
+
+inline bool is_discover_request(const nlohmann::json& request_json) {
+    return request_json.is_object() && request_json.contains("method") &&
+           request_json.at("method").is_string() &&
+           request_json.at("method").get<std::string>() == "server/discover";
 }
 
 inline std::optional<std::string> initialize_protocol_version(const nlohmann::json& request_json) {
@@ -146,21 +153,7 @@ inline StringResponse make_empty_json_response(const StringRequest& request, htt
     return response;
 }
 
-inline StringResponse make_sse_response(const StringRequest& request, const std::string& event_id,
-                                        const std::string& data) {
-    std::string sse_body = "id: " + event_id + "\ndata: " + data + "\n\n";
-    StringResponse response{http::status::ok, request.version()};
-    response.set(http::field::server, "mcp-cpp-sdk");
-    response.set(http::field::content_type, "text/event-stream");
-    response.set(http::field::cache_control, "no-cache");
-    response.keep_alive(request.keep_alive());
-    response.body() = std::move(sse_body);
-    response.prepare_payload();
-    return response;
-}
-
-inline StringResponse make_sse_replay_response(const StringRequest& request,
-                                               const SseEventList& events) {
+inline StringResponse make_sse_response(const StringRequest& request, const SseEventList& events) {
     std::string sse_body;
     for (const auto& [id, data] : events) {
         sse_body += "id: ";
@@ -186,6 +179,7 @@ inline StringResponse make_sse_replay_response(const StringRequest& request,
 // ============================================================================
 
 struct StreamableHttpSessionManager::Impl {
+    using Connection = beast::tcp_stream;
     using SessionMap =
         std::unordered_map<std::string, std::shared_ptr<detail_session_mgr::SessionRuntime>>;
 
@@ -193,15 +187,33 @@ struct StreamableHttpSessionManager::Impl {
     unsigned short port;
     boost::asio::any_io_executor executor;
     boost::asio::any_io_executor tool_executor_;
+    boost::asio::strand<boost::asio::any_io_executor> listener_strand;
     boost::asio::ip::tcp::acceptor acceptor;
 
     StreamableHttpSessionManager::ServerFactory factory;
     StreamableHttpSessionManager::CustomRequestHandler custom_handler;
     std::size_t event_store_capacity;
-    bool json_only_{false};
+    std::shared_ptr<std::atomic<bool>> json_only_mode_ = std::make_shared<std::atomic<bool>>(false);
     bool stateless_json_mode_{false};
+    bool allow_all_origins_{false};
+    std::unordered_set<std::string> allowed_origins_;
+    BearerTokenValidator bearer_token_validator_;
+    AsyncBearerTokenValidator async_bearer_token_validator_;
+    std::size_t max_request_body_bytes_{constants::g_default_max_request_body_bytes};
+    BearerChallengeConfig bearer_challenge_;
+    /// Rendered once when the challenge or the metadata changes, so serving a 401 never formats.
+    std::string www_authenticate_value_{"Bearer"};
+    std::optional<ProtectedResourceMetadataConfig> protected_resource_metadata_;
+    std::string protected_resource_metadata_body_;
+    /// The resolved serving path: `path` when set, else derived from `resource`.
+    std::string protected_resource_metadata_path_;
+    std::unordered_set<std::string> unauthenticated_paths_;
 
     std::atomic<bool> closed{false};
+    mutable std::mutex configuration_mutex_;
+    bool listening_started_{false};
+    mutable std::mutex connections_mutex_;
+    std::unordered_set<std::shared_ptr<Connection>> active_connections_;
     mutable std::shared_mutex sessions_mutex_;
     SessionMap sessions;
 
@@ -210,7 +222,8 @@ struct StreamableHttpSessionManager::Impl {
         : host(std::move(host_arg)),
           port(port_arg),
           executor(exec),
-          acceptor(exec),
+          listener_strand(boost::asio::make_strand(exec)),
+          acceptor(listener_strand),
           factory(std::move(factory_arg)),
           event_store_capacity(capacity) {
         boost::system::error_code ec;
@@ -241,23 +254,94 @@ struct StreamableHttpSessionManager::Impl {
         }
     }
 
+    void ensure_configurable() const {
+        if (listening_started_ || closed.load(std::memory_order_acquire)) {
+            throw std::logic_error(
+                "StreamableHttpSessionManager configuration must be set before listen()");
+        }
+    }
+
+    bool begin_listening() {
+        std::lock_guard lock(configuration_mutex_);
+        if (closed.load(std::memory_order_acquire)) {
+            return false;
+        }
+        if (listening_started_) {
+            throw std::logic_error("StreamableHttpSessionManager::listen() may only be called once");
+        }
+        listening_started_ = true;
+        return true;
+    }
+
+    static void close_connection_now(const std::shared_ptr<Connection>& connection) {
+        boost::system::error_code ignored;
+        (void)connection->socket().cancel(ignored);
+        (void)connection->socket().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ignored);
+        (void)connection->socket().close(ignored);
+    }
+
+    static void request_connection_close(const std::shared_ptr<Connection>& connection) {
+        boost::asio::post(connection->get_executor(),
+                          [connection]() { close_connection_now(connection); });
+    }
+
+    bool register_connection(const std::shared_ptr<Connection>& connection) {
+        std::lock_guard lock(connections_mutex_);
+        if (closed.load(std::memory_order_acquire)) {
+            return false;
+        }
+        active_connections_.insert(connection);
+        return true;
+    }
+
+    void unregister_connection(const std::shared_ptr<Connection>& connection) {
+        std::lock_guard lock(connections_mutex_);
+        active_connections_.erase(connection);
+    }
+
+    void close_active_connections() {
+        std::vector<std::shared_ptr<Connection>> connections;
+        {
+            std::lock_guard lock(connections_mutex_);
+            connections.reserve(active_connections_.size());
+            connections.insert(connections.end(), active_connections_.begin(),
+                               active_connections_.end());
+        }
+        for (const auto& connection : connections) {
+            request_connection_close(connection);
+        }
+    }
+
     // Session lifecycle
 
     std::shared_ptr<detail_session_mgr::SessionRuntime> create_session(
         boost::asio::strand<boost::asio::any_io_executor> conn_strand) {
+        if (closed.load(std::memory_order_acquire)) {
+            return nullptr;
+        }
+
         auto session_id = detail_session_mgr::generate_session_id();
 
         auto client_mem = std::make_shared<MemoryTransport>(conn_strand);
         auto server_mem = std::make_shared<MemoryTransport>(conn_strand);
         client_mem->set_peer(server_mem);
         server_mem->set_peer(client_mem);
-
-        auto* client_mem_ptr = client_mem.get();
         auto server = factory(executor);
-        Server* server_ptr = server.get();
-        std::shared_ptr<ITransport> server_transport = server_mem;
 
-        // Use tool_executor_ if set, otherwise fall back to executor
+        auto runtime =
+            std::make_shared<detail_session_mgr::SessionRuntime>(session_id, event_store_capacity);
+        runtime->client_transport = client_mem;
+
+        {
+            std::unique_lock lock(sessions_mutex_);
+            if (closed.load(std::memory_order_acquire)) {
+                client_mem->close();
+                return nullptr;
+            }
+            sessions.emplace(session_id, runtime);
+        }
+
+        std::shared_ptr<ITransport> server_transport = server_mem;
         auto server_exec = tool_executor_ ? tool_executor_ : executor;
 
         boost::asio::co_spawn(
@@ -268,18 +352,8 @@ struct StreamableHttpSessionManager::Impl {
             },
             boost::asio::detached);
 
-        auto runtime = std::make_shared<detail_session_mgr::SessionRuntime>(session_id, conn_strand,
-                                                                            event_store_capacity);
-        runtime->client_transport = client_mem;
-        runtime->client_transport_ptr = client_mem_ptr;
-        runtime->server = server_ptr;
-
-        auto* runtime_ptr = runtime.get();
-        (void)runtime_ptr;
-        {
-            std::unique_lock lock(sessions_mutex_);
-            sessions.emplace(session_id, runtime);
-        }
+        boost::asio::co_spawn(conn_strand, read_outbound_messages(runtime, json_only_mode_),
+                              boost::asio::detached);
         return runtime;
     }
 
@@ -293,44 +367,95 @@ struct StreamableHttpSessionManager::Impl {
     }
 
     void destroy_session(const std::string& session_id) {
-        std::unique_lock lock(sessions_mutex_);
-        auto it = sessions.find(session_id);
-        if (it == sessions.end()) {
-            return;
+        std::shared_ptr<detail_session_mgr::SessionRuntime> session;
+        {
+            std::unique_lock lock(sessions_mutex_);
+            auto it = sessions.find(session_id);
+            if (it == sessions.end()) {
+                return;
+            }
+            session = std::move(it->second);
+            sessions.erase(it);
         }
-        for (auto& [key, pending] : it->second->pending_responses) {
-            (void)pending.ready_timer->cancel();
+
+        std::vector<std::shared_ptr<boost::asio::steady_timer>> timers;
+        {
+            std::lock_guard lock(session->response_mutex);
+            timers.reserve(session->pending_responses.size());
+            for (auto& [key, pending] : session->pending_responses) {
+                (void)key;
+                pending.response_ready = true;
+                timers.push_back(pending.ready_timer);
+            }
         }
-        if (it->second->client_transport) {
-            it->second->client_transport->close();
+        for (const auto& timer : timers) {
+            signal_timer(timer);
         }
-        sessions.erase(it);
+        if (session->client_transport) {
+            session->client_transport->close();
+        }
     }
 
     // HTTP connection / request handling
 
-    Task<void> handle_connection(boost::asio::ip::tcp::socket socket,
+    /// @brief Report a body that exceeded max_request_body_bytes_, ignoring a dead peer.
+    static Task<void> write_payload_too_large(Connection& stream) {
+        StringResponse response{http::status::payload_too_large, 11};
+        response.set(http::field::server, "mcp-cpp-sdk");
+        response.set(http::field::content_type, "application/json");
+        response.keep_alive(false);
+        response.body() = nlohmann::json{{"error", "Request body too large"}}.dump();
+        response.prepare_payload();
+        try {
+            co_await http::async_write(stream, response, boost::asio::use_awaitable);
+        } catch (const boost::system::system_error&) {
+            // The peer that overran the limit may already be gone; nothing more to report to it.
+            (void)0;
+        }
+    }
+
+    Task<void> handle_connection(const std::shared_ptr<Connection>& connection,
                                  boost::asio::strand<boost::asio::any_io_executor> conn_strand) {
         namespace beast = boost::beast;
 
-        beast::tcp_stream stream(std::move(socket));
+        auto& stream = *connection;
         beast::flat_buffer request_buffer;
         std::unique_ptr<Server> stateless_server;
 
         for (;;) {
-            StringRequest request;
+            http::request_parser<http::string_body> parser;
+            parser.body_limit(max_request_body_bytes_);
+            bool body_too_large = false;
             try {
-                co_await http::async_read(stream, request_buffer, request, boost::asio::use_awaitable);
+                co_await http::async_read(stream, request_buffer, parser, boost::asio::use_awaitable);
             } catch (const boost::system::system_error& err) {
                 if (err.code() == boost::asio::error::eof ||
                     err.code() == boost::asio::error::connection_reset ||
                     err.code() == boost::asio::error::operation_aborted) {
                     break;
                 }
-                throw;
+                if (err.code() != http::error::body_limit) {
+                    throw;
+                }
+                body_too_large = true;
+            }
+
+            if (body_too_large) {
+                // The parser cannot resynchronize after a truncated body, so the connection ends
+                // with this answer rather than reading another request from it.
+                co_await write_payload_too_large(stream);
+                break;
+            }
+            StringRequest request = parser.release();
+
+            if (closed.load(std::memory_order_acquire)) {
+                break;
             }
 
             auto response = co_await handle_request(request, conn_strand, stateless_server);
+            if (closed.load(std::memory_order_acquire)) {
+                break;
+            }
             const bool keep_connection_alive = response.keep_alive();
             co_await http::async_write(stream, response, boost::asio::use_awaitable);
 
@@ -343,14 +468,93 @@ struct StreamableHttpSessionManager::Impl {
         (void)stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
     }
 
+    /// @brief Render the challenge a 401 will carry, borrowing the metadata URL when unset.
+    std::string render_challenge(const BearerChallengeConfig& challenge) const {
+        auto effective = challenge;
+        if (effective.resource_metadata.empty() && protected_resource_metadata_.has_value()) {
+            effective.resource_metadata =
+                protected_resource_metadata_url(*protected_resource_metadata_);
+        }
+        return format_www_authenticate(effective);
+    }
+
+    bool is_unauthenticated_path(const StringRequest& request) const {
+        if (unauthenticated_paths_.empty()) {
+            return false;
+        }
+        const auto path = http_request_path(std::string_view(request.target()));
+        return unauthenticated_paths_.contains(std::string(path));
+    }
+
+    /// @brief Answer a GET for the configured RFC 9728 document, which needs no bearer token.
+    std::optional<StringResponse> serve_protected_resource_metadata(
+        const StringRequest& request) const {
+        if (!protected_resource_metadata_.has_value() || request.method() != http::verb::get) {
+            return std::nullopt;
+        }
+        if (http_request_path(std::string_view(request.target())) !=
+            protected_resource_metadata_path_) {
+            return std::nullopt;
+        }
+        return detail_session_mgr::make_json_response(request, http::status::ok,
+                                                      protected_resource_metadata_body_);
+    }
+
     Task<StringResponse> handle_request(const StringRequest& request,
                                         boost::asio::strand<boost::asio::any_io_executor> conn_strand,
                                         std::unique_ptr<Server>& stateless_server) {
+        if (closed.load(std::memory_order_acquire)) {
+            co_return detail_session_mgr::make_error_response(
+                request, http::status::service_unavailable, "Transport closed");
+        }
+
+        const auto origin_it = request.find(http::field::origin);
+        if (origin_it != request.end() && !allow_all_origins_ &&
+            !allowed_origins_.contains(std::string(origin_it->value()))) {
+            co_return detail_session_mgr::make_error_response(request, http::status::forbidden,
+                                                              "Origin not allowed");
+        }
+
+        if (auto document = serve_protected_resource_metadata(request)) {
+            co_return std::move(*document);
+        }
+
+        const bool unauthenticated_path = is_unauthenticated_path(request);
+        if (!unauthenticated_path && (bearer_token_validator_ || async_bearer_token_validator_)) {
+            const auto authorization_it = request.find(http::field::authorization);
+            const auto token = authorization_it == request.end()
+                                   ? std::string_view{}
+                                   : http_bearer_token(std::string_view(authorization_it->value()));
+            // The synchronous path neither copies the token nor suspends; only an async validator
+            // pays for either.
+            bool accepted = false;
+            if (async_bearer_token_validator_) {
+                accepted = !token.empty() && co_await async_bearer_token_validator_(std::string(token));
+            } else if (bearer_token_validator_) {
+                accepted = !token.empty() && bearer_token_validator_(token);
+            }
+            if (!accepted) {
+                auto response = detail_session_mgr::make_error_response(
+                    request, http::status::unauthorized, "Invalid bearer token");
+                response.set(http::field::www_authenticate, www_authenticate_value_);
+                co_return response;
+            }
+        }
+
         if (custom_handler) {
             auto custom_response = custom_handler(request);
             if (custom_response.has_value()) {
                 co_return std::move(*custom_response);
             }
+        }
+
+        if (unauthenticated_path) {
+            // An exempt path is excluded from MCP dispatch, not merely excused from the bearer
+            // check. Serving MCP here would answer it with no authentication at all, so once the
+            // metadata route and the custom handler have both declined, nothing is left to answer
+            // it.
+            co_return detail_session_mgr::make_error_response(request, http::status::not_found,
+                                                              "Not found");
         }
 
         if (request.method() == http::verb::post) {
@@ -385,11 +589,30 @@ struct StreamableHttpSessionManager::Impl {
                    detail_session_mgr::protocol_header_value(protocol_header_it));
     }
 
+    /// Dispatching on another executor is spelled as a named coroutine rather than a lambda handed
+    /// to co_spawn. A closure is built in the caller's frame and carries its captures there, and on
+    /// GCC 11 an object that lives in a coroutine frame across a suspension can be corrupted -- see
+    /// the SSO note in docs/contributing.rst. Taking the arguments by value moves them into this
+    /// coroutine's own frame instead, leaving nothing of the request in the caller's.
+    static Task<std::string> dispatch_on_executor(Server* server, nlohmann::json request_json) {
+        co_return co_await server->dispatch_request_direct(std::move(request_json));
+    }
+
     Task<StringResponse> handle_stateless_post(const StringRequest& request,
                                                nlohmann::json request_json,
                                                std::unique_ptr<Server>& stateless_server) {
+        if (closed.load(std::memory_order_acquire)) {
+            co_return detail_session_mgr::make_error_response(
+                request, http::status::service_unavailable, "Transport closed");
+        }
+
         const bool is_initialize = detail_session_mgr::is_initialize_request(request_json);
-        if (!is_initialize && !has_valid_protocol_header(request)) {
+        const bool is_discover = detail_session_mgr::is_discover_request(request_json);
+        // server/discover advertises protocol versions (see g_DISCOVERABLE_PROTOCOL_VERSIONS)
+        // outside g_SUPPORTED_PROTOCOL_VERSIONS, which alone backs has_valid_protocol_header;
+        // exempt it from that check exactly like initialize is exempted, rather than widening
+        // the check itself for every method.
+        if (!is_initialize && !is_discover && !has_valid_protocol_header(request)) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid MCP-Protocol-Version header");
         }
@@ -398,12 +621,35 @@ struct StreamableHttpSessionManager::Impl {
             co_return detail_session_mgr::make_empty_json_response(request, http::status::accepted);
         }
 
+        const auto dispatch_executor = tool_executor_ ? tool_executor_ : executor;
         if (!stateless_server) {
-            stateless_server = factory(executor);
+            stateless_server = factory(dispatch_executor);
         }
 
-        auto response_body =
-            co_await stateless_server->dispatch_request_direct(std::move(request_json));
+        auto response_body = co_await boost::asio::co_spawn(
+            dispatch_executor, dispatch_on_executor(stateless_server.get(), std::move(request_json)),
+            boost::asio::use_awaitable);
+        co_return detail_session_mgr::make_json_response(request, http::status::ok,
+                                                         std::move(response_body));
+    }
+
+    /// server/discover is a pre-gate method: it MUST be reachable with zero prior state, so a
+    /// sessionless discover request in stateful mode is dispatched directly against a
+    /// throwaway Server instance instead of going through resolve_session_for_post — no
+    /// session is created, registered, or otherwise touched, and no Mcp-Session-Id is issued.
+    Task<StringResponse> handle_sessionless_discover(const StringRequest& request,
+                                                     nlohmann::json request_json) {
+        if (closed.load(std::memory_order_acquire)) {
+            co_return detail_session_mgr::make_error_response(
+                request, http::status::service_unavailable, "Transport closed");
+        }
+
+        const auto dispatch_executor = tool_executor_ ? tool_executor_ : executor;
+        auto discover_server = factory(dispatch_executor);
+
+        auto response_body = co_await boost::asio::co_spawn(
+            dispatch_executor, dispatch_on_executor(discover_server.get(), std::move(request_json)),
+            boost::asio::use_awaitable);
         co_return detail_session_mgr::make_json_response(request, http::status::ok,
                                                          std::move(response_body));
     }
@@ -411,6 +657,11 @@ struct StreamableHttpSessionManager::Impl {
     std::variant<std::shared_ptr<detail_session_mgr::SessionRuntime>, StringResponse>
     resolve_session_for_post(const StringRequest& request, const nlohmann::json& request_json,
                              boost::asio::strand<boost::asio::any_io_executor> conn_strand) {
+        if (closed.load(std::memory_order_acquire)) {
+            return detail_session_mgr::make_error_response(request, http::status::service_unavailable,
+                                                           "Transport closed");
+        }
+
         const auto session_header_it = request.find("Mcp-Session-Id");
         if (session_header_it == request.end()) {
             if (!detail_session_mgr::is_initialize_request(request_json)) {
@@ -442,13 +693,18 @@ struct StreamableHttpSessionManager::Impl {
                     "Transport closed while waiting response");
             }
 
-            auto pending_it = session->pending_responses.find(request_id_key);
-            if (pending_it != session->pending_responses.end() && pending_it->second.response_ready) {
-                break;
+            bool response_ready = false;
+            {
+                std::lock_guard lock(session->response_mutex);
+                auto pending_it = session->pending_responses.find(request_id_key);
+                if (pending_it == session->pending_responses.end()) {
+                    co_return detail_session_mgr::make_error_response(
+                        request, http::status::internal_server_error, "Response lost");
+                }
+                response_ready = pending_it->second.response_ready;
             }
-            if (pending_it == session->pending_responses.end()) {
-                co_return detail_session_mgr::make_error_response(
-                    request, http::status::internal_server_error, "Response lost");
+            if (response_ready) {
+                break;
             }
 
             try {
@@ -471,9 +727,9 @@ struct StreamableHttpSessionManager::Impl {
             accept_it != request.end() &&
             std::string_view(accept_it->value()).find("text/event-stream") != std::string_view::npos;
 
-        if (!json_only_ && client_accepts_sse && result.event_id.has_value()) {
-            auto response =
-                detail_session_mgr::make_sse_response(request, *result.event_id, *result.response_body);
+        if (!json_only_mode_->load(std::memory_order_acquire) && client_accepts_sse &&
+            !result.stream_events.empty()) {
+            auto response = detail_session_mgr::make_sse_response(request, result.stream_events);
             response.set("Mcp-Session-Id", session->session_id);
             co_return response;
         }
@@ -487,6 +743,11 @@ struct StreamableHttpSessionManager::Impl {
     Task<StringResponse> handle_post(const StringRequest& request,
                                      boost::asio::strand<boost::asio::any_io_executor> conn_strand,
                                      std::unique_ptr<Server>& stateless_server) {
+        if (closed.load(std::memory_order_acquire)) {
+            co_return detail_session_mgr::make_error_response(
+                request, http::status::service_unavailable, "Transport closed");
+        }
+
         auto request_json = nlohmann::json::parse(request.body(), nullptr, false);
         if (request_json.is_discarded() || !request_json.is_object()) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
@@ -507,17 +768,25 @@ struct StreamableHttpSessionManager::Impl {
                                                      stateless_server);
         }
 
+        if (detail_session_mgr::is_discover_request(request_json) &&
+            request.find("Mcp-Session-Id") == request.end()) {
+            co_return co_await handle_sessionless_discover(request, std::move(request_json));
+        }
+
         auto session_var = resolve_session_for_post(request, request_json, conn_strand);
         if (std::holds_alternative<StringResponse>(session_var)) {
             co_return std::get<StringResponse>(session_var);
         }
         auto session = std::get<std::shared_ptr<detail_session_mgr::SessionRuntime>>(session_var);
-        auto* session_raw = session.get();
+        if (session == nullptr || session->client_transport == nullptr) {
+            co_return detail_session_mgr::make_error_response(
+                request, http::status::service_unavailable, "Transport closed");
+        }
 
         if (!is_initialize) {
             if (protocol_header_it != request.end() &&
                 detail_session_mgr::protocol_header_value(protocol_header_it) !=
-                    session->negotiated_protocol_version) {
+                    session->protocol_version()) {
                 co_return detail_session_mgr::make_error_response(
                     request, http::status::bad_request, "Invalid MCP-Protocol-Version header");
             }
@@ -525,48 +794,12 @@ struct StreamableHttpSessionManager::Impl {
             const auto requested_protocol_version =
                 detail_session_mgr::initialize_protocol_version(request_json)
                     .value_or(std::string(g_LATEST_PROTOCOL_VERSION));
-            session->negotiated_protocol_version =
-                std::string(negotiate_protocol_version(requested_protocol_version));
-        }
-
-        if (session == nullptr || session->client_transport_ptr == nullptr) {
-            co_return detail_session_mgr::make_error_response(
-                request, http::status::internal_server_error, "Session or transport not found");
-        }
-
-        // Fast path for json_only mode: bypass MemoryTransport for tools/call
-        if (json_only_ && request_json.contains("method") &&
-            request_json.at("method").get<std::string>() == "tools/call") {
-            if (!request_json.contains("id")) {
-                co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
-                                                                  "tools/call requires a request id");
-            }
-
-            auto params = request_json.at("params").get<CallToolParams>();
-
-            try {
-                auto result = co_await session->server->invoke_tool(params.name, params.arguments);
-                JSONRPCResultResponse rpc_response;
-                rpc_response.id = request_json.at("id").get<RequestId>();
-                rpc_response.result = std::move(result);
-                auto response = detail_session_mgr::make_json_response(
-                    request, http::status::ok, nlohmann::json(std::move(rpc_response)).dump());
-                response.set("Mcp-Session-Id", session->session_id);
-                co_return response;
-            } catch (const std::exception& e) {
-                JSONRPCErrorResponse rpc_error;
-                rpc_error.id = request_json.at("id").get<RequestId>();
-                rpc_error.error.code = g_INTERNAL_ERROR;
-                rpc_error.error.message = e.what();
-                auto response = detail_session_mgr::make_json_response(
-                    request, http::status::ok, nlohmann::json(std::move(rpc_error)).dump());
-                response.set("Mcp-Session-Id", session->session_id);
-                co_return response;
-            }
+            session->set_protocol_version(
+                std::string(negotiate_protocol_version(requested_protocol_version)));
         }
 
         if (!request_json.contains("id") || !request_json.contains("method")) {
-            co_await session->client_transport_ptr->write_json(std::move(request_json));
+            co_await session->client_transport->write_json(std::move(request_json));
             auto response =
                 detail_session_mgr::make_empty_json_response(request, http::status::accepted);
             response.set("Mcp-Session-Id", session->session_id);
@@ -575,46 +808,23 @@ struct StreamableHttpSessionManager::Impl {
 
         const auto request_id_key = request_json.at("id").dump();
 
-        if (session->pending_responses.contains(request_id_key)) {
-            co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
-                                                              "Request id already pending");
-        }
-
         auto timer_signal = std::make_shared<boost::asio::steady_timer>(conn_strand);
         timer_signal->expires_at(std::chrono::steady_clock::time_point::max());
 
-        session->pending_responses.emplace(
-            request_id_key,
-            detail_session_mgr::PendingResponse{timer_signal, std::nullopt, std::nullopt, false});
+        {
+            std::lock_guard lock(session->response_mutex);
+            if (session->pending_responses.contains(request_id_key)) {
+                co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
+                                                                  "Request id already pending");
+            }
+            session->pending_responses.emplace(
+                request_id_key,
+                detail_session_mgr::PendingResponse{timer_signal, std::nullopt, {}, false});
+        }
 
-        co_await session->client_transport_ptr->write_json(std::move(request_json));
+        co_await session->client_transport->write_json(std::move(request_json));
 
-        boost::asio::co_spawn(
-            conn_strand,
-            [this, session_ptr = session_raw, request_id_key]() -> Task<void> {
-                try {
-                    auto response_str = co_await session_ptr->client_transport_ptr->read_message();
-                    boost::asio::post(
-                        session_ptr->session_strand,
-                        [session_ptr, response_str = std::move(response_str), request_id_key]() {
-                            auto it = session_ptr->pending_responses.find(request_id_key);
-                            if (it != session_ptr->pending_responses.end()) {
-                                it->second.response_body = std::move(response_str);
-                                it->second.response_ready = true;
-                                (void)it->second.ready_timer->cancel();
-                            }
-                        });
-                } catch (...) {
-                    boost::asio::post(session_ptr->session_strand, [session_ptr]() {
-                        for (auto& [k, p] : session_ptr->pending_responses) {
-                            (void)p.ready_timer->cancel();
-                        }
-                    });
-                }
-            },
-            boost::asio::detached);
-
-        co_return co_await wait_for_response(session_raw, request, request_id_key, timer_signal);
+        co_return co_await wait_for_response(session.get(), request, request_id_key, timer_signal);
     }
 
     Task<StringResponse> handle_delete(const StringRequest& request) {
@@ -634,7 +844,7 @@ struct StreamableHttpSessionManager::Impl {
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         if (protocol_header_it != request.end() &&
             detail_session_mgr::protocol_header_value(protocol_header_it) !=
-                session->negotiated_protocol_version) {
+                session->protocol_version()) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid MCP-Protocol-Version header");
         }
@@ -660,7 +870,7 @@ struct StreamableHttpSessionManager::Impl {
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         if (protocol_header_it != request.end() &&
             detail_session_mgr::protocol_header_value(protocol_header_it) !=
-                session->negotiated_protocol_version) {
+                session->protocol_version()) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid MCP-Protocol-Version header");
         }
@@ -668,65 +878,118 @@ struct StreamableHttpSessionManager::Impl {
         const auto last_event_id_it = request.find("Last-Event-ID");
         if (last_event_id_it != request.end()) {
             auto last_id = std::string(last_event_id_it->value());
-            auto missed_events = session->event_store.events_after(last_id);
+            std::optional<SseEventList> missed_events;
+            {
+                std::lock_guard lock(session->response_mutex);
+                missed_events = session->event_store.events_after(last_id);
+            }
             if (!missed_events.has_value()) {
                 co_return detail_session_mgr::make_error_response(
                     request, http::status::gone, "Event ID has been evicted from store");
             }
             if (!missed_events->empty()) {
-                co_return detail_session_mgr::make_sse_replay_response(request, *missed_events);
+                co_return detail_session_mgr::make_sse_response(request, *missed_events);
             }
         }
 
         co_return detail_session_mgr::make_empty_json_response(request, http::status::ok);
     }
 
-    static Task<void> dispatch_response_to_pending(detail_session_mgr::SessionRuntime* session,
-                                                   std::string response_str, bool json_only,
-                                                   const std::string& request_id_key) {
-        if (!json_only) {
-            // Non-json_only mode: parse response and validate id matches
-            const auto response_json = nlohmann::json::parse(response_str, nullptr, false);
-            if (response_json.is_discarded() || !response_json.is_object()) {
-                co_return;
+    static void signal_timer(const std::shared_ptr<boost::asio::steady_timer>& timer) {
+        boost::asio::post(timer->get_executor(), [timer]() { (void)timer->cancel(); });
+    }
+
+    static void dispatch_response_to_pending(detail_session_mgr::SessionRuntime* session,
+                                             std::string message, bool json_only) {
+        const auto message_json = nlohmann::json::parse(message, nullptr, false);
+        if (message_json.is_discarded() || !message_json.is_object()) {
+            return;
+        }
+
+        const bool is_response = message_json.contains("id") &&
+                                 (message_json.contains("result") || message_json.contains("error"));
+        std::shared_ptr<boost::asio::steady_timer> timer_to_signal;
+
+        {
+            std::lock_guard lock(session->response_mutex);
+
+            std::optional<std::pair<std::string, std::string>> stream_event;
+            if (!json_only) {
+                auto event_id = session->event_store.append(message);
+                stream_event.emplace(std::move(event_id), message);
             }
 
-            auto event_id = session->event_store.append(response_str);
-
-            if (!response_json.contains("id") || response_json.at("id").dump() != request_id_key) {
-                co_return;
+            if (!is_response) {
+                if (stream_event.has_value()) {
+                    if (session->pending_responses.size() == 1) {
+                        session->pending_responses.begin()->second.stream_events.push_back(
+                            std::move(*stream_event));
+                    } else if (!session->pending_responses.empty()) {
+                        session->unassigned_stream_events.push_back(std::move(*stream_event));
+                    }
+                }
+                return;
             }
 
+            const auto request_id_key = message_json.at("id").dump();
             auto pending_it = session->pending_responses.find(request_id_key);
             if (pending_it == session->pending_responses.end()) {
-                co_return;
+                session->unassigned_stream_events.clear();
+                return;
             }
 
-            pending_it->second.response_body = std::move(response_str);
-            pending_it->second.event_id = std::move(event_id);
-            pending_it->second.response_ready = true;
-            (void)pending_it->second.ready_timer->cancel();
-        } else {
-            // json_only mode: skip parsing, use request_id_key directly
-            auto pending_it = session->pending_responses.find(request_id_key);
-            if (pending_it == session->pending_responses.end()) {
-                co_return;
+            if (!json_only) {
+                auto& events = pending_it->second.stream_events;
+                events.insert(events.end(),
+                              std::make_move_iterator(session->unassigned_stream_events.begin()),
+                              std::make_move_iterator(session->unassigned_stream_events.end()));
+                session->unassigned_stream_events.clear();
+                events.push_back(std::move(*stream_event));
             }
 
-            pending_it->second.response_body = std::move(response_str);
+            pending_it->second.response_body = std::move(message);
             pending_it->second.response_ready = true;
-            (void)pending_it->second.ready_timer->cancel();
+            timer_to_signal = pending_it->second.ready_timer;
+        }
+
+        signal_timer(timer_to_signal);
+    }
+
+    static Task<void> read_outbound_messages(
+        std::shared_ptr<detail_session_mgr::SessionRuntime> session,
+        std::shared_ptr<std::atomic<bool>> json_only_mode) {
+        try {
+            for (;;) {
+                auto message = co_await session->client_transport->read_message();
+                dispatch_response_to_pending(session.get(), std::move(message),
+                                             json_only_mode->load(std::memory_order_acquire));
+            }
+        } catch (...) {
+            std::vector<std::shared_ptr<boost::asio::steady_timer>> timers;
+            {
+                std::lock_guard lock(session->response_mutex);
+                timers.reserve(session->pending_responses.size());
+                for (auto& [key, pending] : session->pending_responses) {
+                    (void)key;
+                    pending.response_ready = true;
+                    timers.push_back(pending.ready_timer);
+                }
+            }
+            for (const auto& timer : timers) {
+                signal_timer(timer);
+            }
         }
     }
 
     static detail_session_mgr::PendingResult consume_pending_response(
         detail_session_mgr::SessionRuntime* session, const std::string& request_id_key) {
+        std::lock_guard lock(session->response_mutex);
         auto pending_it = session->pending_responses.find(request_id_key);
         if (pending_it == session->pending_responses.end()) {
             return {};
         }
         detail_session_mgr::PendingResult result{std::move(pending_it->second.response_body),
-                                                 std::move(pending_it->second.event_id)};
+                                                 std::move(pending_it->second.stream_events)};
         session->pending_responses.erase(pending_it);
         return result;
     }
@@ -740,7 +1003,7 @@ StreamableHttpSessionManager::StreamableHttpSessionManager(const boost::asio::an
                                                            std::string host, unsigned short port,
                                                            ServerFactory factory,
                                                            std::size_t event_store_capacity)
-    : impl_(std::make_unique<Impl>(executor, std::move(host), port, std::move(factory),
+    : impl_(std::make_shared<Impl>(executor, std::move(host), port, std::move(factory),
                                    event_store_capacity)) {}
 
 StreamableHttpSessionManager::~StreamableHttpSessionManager() {
@@ -753,74 +1016,216 @@ StreamableHttpSessionManager::~StreamableHttpSessionManager() {
 }
 
 void StreamableHttpSessionManager::set_custom_request_handler(CustomRequestHandler handler) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
     impl_->custom_handler = std::move(handler);
 }
 
-std::size_t StreamableHttpSessionManager::session_count() const { return impl_->sessions.size(); }
+void StreamableHttpSessionManager::set_allowed_origins(std::vector<std::string> origins) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    impl_->allowed_origins_.clear();
+    impl_->allowed_origins_.reserve(origins.size());
+    for (auto& origin : origins) {
+        impl_->allowed_origins_.insert(std::move(origin));
+    }
+    impl_->allow_all_origins_ = false;
+}
 
-void StreamableHttpSessionManager::set_json_only(bool json_only) { impl_->json_only_ = json_only; }
+void StreamableHttpSessionManager::set_allow_all_origins(bool allow_all) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    impl_->allow_all_origins_ = allow_all;
+}
+
+void StreamableHttpSessionManager::set_bearer_token_validator(BearerTokenValidator validator) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    if (validator && impl_->async_bearer_token_validator_) {
+        throw std::logic_error("StreamableHttpSessionManager accepts one bearer token validator");
+    }
+    impl_->bearer_token_validator_ = std::move(validator);
+}
+
+void StreamableHttpSessionManager::set_async_bearer_token_validator(
+    AsyncBearerTokenValidator validator) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    if (validator && impl_->bearer_token_validator_) {
+        throw std::logic_error("StreamableHttpSessionManager accepts one bearer token validator");
+    }
+    impl_->async_bearer_token_validator_ = std::move(validator);
+}
+
+void StreamableHttpSessionManager::set_max_request_body_bytes(std::size_t max_bytes) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    if (max_bytes == 0) {
+        throw std::invalid_argument("Maximum request body size must be greater than zero");
+    }
+    impl_->max_request_body_bytes_ = max_bytes;
+}
+
+void StreamableHttpSessionManager::set_bearer_challenge(BearerChallengeConfig challenge) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    auto rendered = impl_->render_challenge(challenge);
+    impl_->bearer_challenge_ = std::move(challenge);
+    impl_->www_authenticate_value_ = std::move(rendered);
+}
+
+void StreamableHttpSessionManager::set_protected_resource_metadata(
+    ProtectedResourceMetadataConfig metadata) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    if (metadata.resource.empty()) {
+        throw std::invalid_argument("Protected-resource metadata requires a resource URL");
+    }
+
+    auto metadata_url = protected_resource_metadata_url(metadata);
+    auto document = format_protected_resource_metadata(metadata);
+    auto challenge = impl_->bearer_challenge_;
+    if (challenge.resource_metadata.empty()) {
+        challenge.resource_metadata = std::move(metadata_url);
+    }
+    auto rendered = format_www_authenticate(challenge);
+
+    auto document_path = protected_resource_metadata_path(metadata);
+
+    impl_->protected_resource_metadata_ = std::move(metadata);
+    impl_->protected_resource_metadata_path_ = std::move(document_path);
+    impl_->protected_resource_metadata_body_ = std::move(document);
+    impl_->www_authenticate_value_ = std::move(rendered);
+}
+
+void StreamableHttpSessionManager::set_unauthenticated_paths(std::vector<std::string> paths) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    impl_->unauthenticated_paths_.clear();
+    impl_->unauthenticated_paths_.reserve(paths.size());
+    for (auto& path : paths) {
+        impl_->unauthenticated_paths_.insert(std::move(path));
+    }
+}
+
+std::size_t StreamableHttpSessionManager::session_count() const {
+    std::shared_lock lock(impl_->sessions_mutex_);
+    return impl_->sessions.size();
+}
+
+void StreamableHttpSessionManager::set_json_only(bool json_only) {
+    impl_->json_only_mode_->store(json_only, std::memory_order_release);
+}
 
 void StreamableHttpSessionManager::set_stateless_json_mode(bool enabled) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
     impl_->stateless_json_mode_ = enabled;
     if (enabled) {
-        impl_->json_only_ = true;
+        impl_->json_only_mode_->store(true, std::memory_order_release);
     }
 }
 
 void StreamableHttpSessionManager::set_tool_executor(const boost::asio::any_io_executor& exec) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
     impl_->tool_executor_ = exec;
 }
 
 void StreamableHttpSessionManager::close() {
-    if (impl_->closed.exchange(true, std::memory_order_acq_rel)) {
-        return;
+    auto impl = impl_;
+    {
+        std::lock_guard lock(impl->configuration_mutex_);
+        if (impl->closed.exchange(true, std::memory_order_acq_rel)) {
+            return;
+        }
     }
 
-    boost::asio::post(impl_->executor, [this]() {
+    boost::asio::post(impl->listener_strand, [impl]() {
         boost::system::error_code ec;
-        (void)impl_->acceptor.cancel(ec);
-        (void)impl_->acceptor.close(ec);
+        (void)impl->acceptor.cancel(ec);
+        (void)impl->acceptor.close(ec);
+    });
+    impl->close_active_connections();
 
-        std::unique_lock lock(impl_->sessions_mutex_);
-        for (auto& [id, session] : impl_->sessions) {
+    std::vector<std::shared_ptr<detail_session_mgr::SessionRuntime>> active_sessions;
+    {
+        std::unique_lock lock(impl->sessions_mutex_);
+        active_sessions.reserve(impl->sessions.size());
+        for (auto& [id, session] : impl->sessions) {
+            (void)id;
+            active_sessions.push_back(std::move(session));
+        }
+        impl->sessions.clear();
+    }
+
+    for (const auto& session : active_sessions) {
+        std::vector<std::shared_ptr<boost::asio::steady_timer>> timers;
+        {
+            std::lock_guard lock(session->response_mutex);
+            timers.reserve(session->pending_responses.size());
             for (auto& [key, pending] : session->pending_responses) {
-                (void)pending.ready_timer->cancel();
-            }
-            if (session->client_transport) {
-                session->client_transport->close();
+                (void)key;
+                pending.response_ready = true;
+                timers.push_back(pending.ready_timer);
             }
         }
-        impl_->sessions.clear();
-    });
+        for (const auto& timer : timers) {
+            Impl::signal_timer(timer);
+        }
+        if (session->client_transport) {
+            session->client_transport->close();
+        }
+    }
 }
 
 Task<void> StreamableHttpSessionManager::listen() {
+    auto impl = impl_;
+    (void)impl->begin_listening();
+    return boost::asio::co_spawn(impl->listener_strand, listen_impl(impl), boost::asio::use_awaitable);
+}
+
+Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl) {
     for (;;) {
-        if (impl_->closed.load(std::memory_order_acquire)) {
+        if (impl->closed.load(std::memory_order_acquire)) {
             co_return;
         }
 
-        boost::asio::ip::tcp::socket socket(impl_->executor);
+        boost::asio::ip::tcp::socket socket(impl->listener_strand);
         try {
-            socket = co_await impl_->acceptor.async_accept(boost::asio::use_awaitable);
+            socket = co_await impl->acceptor.async_accept(boost::asio::use_awaitable);
         } catch (const boost::system::system_error& err) {
-            if (impl_->closed.load(std::memory_order_acquire) ||
+            if (impl->closed.load(std::memory_order_acquire) ||
                 err.code() == boost::asio::error::operation_aborted) {
                 co_return;
             }
             throw;
         }
 
-        auto conn_strand = boost::asio::make_strand(impl_->executor);
+        auto conn_strand = boost::asio::make_strand(impl->executor);
         auto native_handle = socket.release();
         boost::asio::ip::tcp::socket conn_socket(conn_strand, boost::asio::ip::tcp::v4(),
                                                  native_handle);
-        boost::asio::co_spawn(conn_strand,
-                              impl_->handle_connection(std::move(conn_socket), conn_strand),
-                              [](const std::exception_ptr&) {
-                                  // Connection errors (EOF, client disconnect) are normal;
-                                  // handled per-connection, not propagated to the accept loop.
-                              });
+        auto connection = std::make_shared<Impl::Connection>(std::move(conn_socket));
+        if (!impl->register_connection(connection)) {
+            Impl::request_connection_close(connection);
+            co_return;
+        }
+        boost::asio::co_spawn(
+            conn_strand,
+            [impl, connection, conn_strand]() mutable -> Task<void> {
+                try {
+                    co_await impl->handle_connection(connection, conn_strand);
+                } catch (...) {
+                    impl->unregister_connection(connection);
+                    throw;
+                }
+                impl->unregister_connection(connection);
+            },
+            [](const std::exception_ptr&) {
+                // Connection errors (EOF, client disconnect) are normal;
+                // handled per-connection, not propagated to the accept loop.
+            });
     }
 }
 

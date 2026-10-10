@@ -85,11 +85,21 @@ configure_file(
 set(MCP_CPP_SDK_SOURCES
     src/core/version.cpp
     src/core/runtime.cpp
+    src/core/secure_random.cpp
+    src/core/serialized_transport_writer.cpp
+    src/protocol/tools.cpp
+    src/auth/challenge.cpp
+    src/auth/client_identity.cpp
+    src/auth/metadata_policy.cpp
+    src/auth/oauth.cpp
+    src/client/client.cpp
     src/server/server_stdio.cpp
     src/server/server_http.cpp
     src/server/server_tool.cpp
     src/server/server.cpp
     src/transport/stdio.cpp
+    src/transport/memory.cpp
+    src/transport/http_types.cpp
     src/transport/http_server.cpp
     src/transport/http_client.cpp
     src/transport/http_session_manager.cpp
@@ -155,6 +165,14 @@ target_link_libraries(mcp-cpp-sdk
                       INTERFACE "mcp-cpp-sdk-${MCP_CPP_SDK_DEFAULT_LINKAGE}")
 add_library(mcp::sdk ALIAS mcp-cpp-sdk)
 
+option(
+  MCP_CPP_SDK_BUILD_CONFORMANCE
+  "Build client and server fixtures for the official MCP conformance runner"
+  OFF)
+if(MCP_CPP_SDK_BUILD_CONFORMANCE)
+  add_subdirectory(conformance)
+endif()
+
 # Documentation target
 option(BUILD_DOCS "Add the Doxygen documentation target" ON)
 if(BUILD_DOCS)
@@ -174,6 +192,25 @@ endif()
 
 # Build Tests
 option(BUILD_TESTING "Build tests" ON)
+
+# ENABLE_SANITIZERS is declared and applied inside the block below, so with
+# testing off the flag is accepted and does nothing: the build lands in a
+# directory named for sanitizers without being sanitized. Refuse rather than
+# hand back a clean run that proved nothing.
+if(ENABLE_SANITIZERS AND NOT BUILD_TESTING)
+  message(
+    FATAL_ERROR
+      "ENABLE_SANITIZERS requires BUILD_TESTING=ON; with tests off the "
+      "sanitizer flags are never applied and the build is not sanitized")
+endif()
+
+if(ENABLE_TSAN AND NOT BUILD_TESTING)
+  message(
+    FATAL_ERROR
+      "ENABLE_TSAN requires BUILD_TESTING=ON; with tests off the "
+      "sanitizer flags are never applied and the build is not sanitized")
+endif()
+
 if(BUILD_TESTING)
   find_package(GTest REQUIRED)
   enable_testing()
@@ -227,14 +264,20 @@ if(BUILD_TESTING)
         -P "${MCP_CPP_SDK_PC_TEST_SCRIPT}")
   endif()
   set(TEST_SRCS
+      test/auth/auth_authorization_test.cpp
+      test/auth/auth_challenge_test.cpp
+      test/auth/auth_client_identity_test.cpp
       test/auth/auth_integration_test.cpp
       test/auth/auth_oauth_test.cpp
+      test/auth/auth_token_endpoint_auth_test.cpp
       test/client/client_core_test.cpp
       test/client/client_features_test.cpp
       test/client/client_notifications_test.cpp
+      test/core/capabilities_extensions_test.cpp
       test/core/concepts_test.cpp
       test/core/core_test.cpp
       test/core/protocol_test.cpp
+      test/core/serialized_transport_writer_test.cpp
       test/server/roots_test.cpp
       test/server/sampling_test.cpp
       test/server/server_core_test.cpp
@@ -259,12 +302,81 @@ if(BUILD_TESTING)
       test/server/server_http_test.cpp
       test/server/server_tool_test.cpp
       test/transport/transport_factory_test.cpp
-      test/core/gcc11_sso_crash_test.cpp)
+      test/core/gcc11_sso_crash_test.cpp
+      test/core/json_peer_input_matrix_test.cpp)
   add_executable(mcp-sdk-tests ${TEST_SRCS})
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # The resolve and socket gates interpose getaddrinfo() and socket() and
+    # forward with dlsym(), which lives in libdl before glibc 2.34.
+    target_sources(mcp-sdk-tests PRIVATE test/support/resolve_gate.cpp
+                                         test/support/socket_gate.cpp)
+    target_link_libraries(mcp-sdk-tests PRIVATE ${CMAKE_DL_LIBS})
+  endif()
+  if(MSVC)
+    # A gtest translation unit emits a COMDAT section per template
+    # instantiation, and the suites built on nlohmann::json and Boost.Asio
+    # instantiate enough of them to pass the 65,279 sections a COFF object can
+    # hold (error C1128). The flag lifts that limit to 2^32; the only cost is a
+    # larger object file.
+    target_compile_options(mcp-sdk-tests PRIVATE /bigobj)
+  endif()
+
+  # The peer-input matrix is generated from scripts/json_census.py, and its
+  # worth depends on covering every protocol type. Checking that here means a
+  # new type with a from_json breaks the build until it is either in the matrix
+  # or excluded with a stated reason, rather than quietly arriving untested.
+  # Source archives ship test/ but not the matrix scripts, so a packager's
+  # BUILD_TESTING=ON build defaults the check off instead of failing on it.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_json_matrix.py")
+    set(_mcp_json_matrix_default ON)
+  else()
+    set(_mcp_json_matrix_default OFF)
+  endif()
+  option(
+    MCP_CPP_SDK_CHECK_JSON_MATRIX
+    "Fail the build when the peer-input matrix is stale (needs Python 3.9+)"
+    ${_mcp_json_matrix_default})
+  if(MCP_CPP_SDK_CHECK_JSON_MATRIX)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_json_matrix.py")
+      message(
+        FATAL_ERROR
+          "MCP_CPP_SDK_CHECK_JSON_MATRIX=ON but scripts/check_json_matrix.py "
+          "is not in this source tree")
+    endif()
+    find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
+    add_custom_target(
+      mcp-json-matrix-complete ALL
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_json_matrix.py"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      COMMENT "Checking the peer-input matrix covers every protocol type")
+    add_dependencies(mcp-sdk-tests mcp-json-matrix-complete)
+    # Inside the gate for the same reason as the check: source archives do not
+    # ship these scripts.
+    add_test(
+      NAME json-matrix-check-unittest
+      COMMAND "${Python3_EXECUTABLE}" scripts/test_check_json_matrix.py -v
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(json-matrix-check-unittest
+                         PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
+  elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_json_matrix.py")
+    message(STATUS "Peer-input matrix check skipped "
+                   "(disabled by MCP_CPP_SDK_CHECK_JSON_MATRIX=OFF)")
+  else()
+    message(
+      STATUS
+        "Peer-input matrix check skipped (MCP_CPP_SDK_CHECK_JSON_MATRIX=OFF; "
+        "scripts/ is not shipped in source archives)")
+  endif()
 
   include(GoogleTest)
-  gtest_discover_tests(mcp-sdk-tests)
+  # Default per-test timeout so one deadlocked test cannot stall a ctest run for
+  # the 25-minute ctest default (or forever without --timeout).
+  gtest_discover_tests(
+    mcp-sdk-tests
+    PROPERTIES
+    TIMEOUT 120)
 
   option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
   if(ENABLE_COVERAGE)
@@ -276,6 +388,31 @@ if(BUILD_TESTING)
 
   option(ENABLE_SANITIZERS
          "Enable AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
+  option(ENABLE_TSAN "Enable ThreadSanitizer" OFF)
+  if(ENABLE_TSAN AND ENABLE_SANITIZERS)
+    message(
+      FATAL_ERROR
+        "ENABLE_TSAN and ENABLE_SANITIZERS cannot be combined: ThreadSanitizer "
+        "does not run with AddressSanitizer")
+  endif()
+  if(ENABLE_TSAN)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+      # -g1 keeps the line tables a report needs and drops the rest.
+      # ThreadSanitizer stops every thread while it symbolizes a report,
+      # including one a suppression then discards, and that pause grows with the
+      # debug information it has to read: with full -g it outlasted the tests'
+      # own time bounds on CI.
+      set(TSAN_FLAGS -fsanitize=thread -fno-omit-frame-pointer -g1 -O1)
+      foreach(sdk_target IN LISTS MCP_CPP_SDK_INSTALL_TARGETS)
+        target_compile_options(${sdk_target} PUBLIC ${TSAN_FLAGS})
+        target_link_options(${sdk_target} PUBLIC -fsanitize=thread)
+      endforeach()
+      target_compile_options(mcp-sdk-tests PRIVATE ${TSAN_FLAGS})
+      target_link_options(mcp-sdk-tests PRIVATE -fsanitize=thread)
+    else()
+      message(WARNING "ENABLE_TSAN is only supported with GCC or Clang")
+    endif()
+  endif()
   if(ENABLE_SANITIZERS)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
       set(SANITIZER_FLAGS -fsanitize=address,undefined -fno-omit-frame-pointer

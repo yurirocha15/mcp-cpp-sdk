@@ -1,3 +1,4 @@
+#include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/http_types.hpp>
 
@@ -12,11 +13,12 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
+#include <cstdint>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <queue>
-#include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -31,6 +33,8 @@ namespace beast = boost::beast;
 namespace http = boost::beast::http;
 
 struct HttpServerTransport::Impl {
+    using Connection = beast::tcp_stream;
+
     struct SharedState {
         explicit SharedState(boost::asio::strand<boost::asio::any_io_executor>& execution_strand)
             : timer(execution_strand) {}
@@ -38,6 +42,7 @@ struct HttpServerTransport::Impl {
         boost::asio::steady_timer timer;
         std::queue<std::string> queue;
         std::atomic<bool> closed{false};
+        bool read_active{false};
     };
 
     struct PendingResponse {
@@ -45,6 +50,9 @@ struct HttpServerTransport::Impl {
         std::optional<std::string> response_body;
         std::optional<std::string> session_header;
         std::optional<std::string> event_id;
+        /// Set only for a request carried under a sentinel id. Holds the id the caller actually
+        /// sent, so run_write can put it back before the response leaves the transport.
+        std::optional<nlohmann::json> client_request_id;
         bool response_ready{false};
     };
 
@@ -111,21 +119,64 @@ struct HttpServerTransport::Impl {
                request_json.at("method").get<std::string>() == "initialize";
     }
 
+    static bool is_discover_request(const nlohmann::json& request_json) {
+        return request_json.is_object() && request_json.contains("method") &&
+               request_json.at("method").is_string() &&
+               request_json.at("method").get<std::string>() == "server/discover";
+    }
+
     static std::string_view header_value(const StringRequest::const_iterator& header_it) {
         return {header_it->value().data(), header_it->value().size()};
     }
 
-    static std::string generate_session_id() {
-        std::random_device random_device;
-        std::mt19937 generator(random_device());
-        std::uniform_int_distribution<std::size_t> distribution(0, constants::g_hex_digits.size() - 1);
+    static std::string generate_session_id() { return detail::generate_secure_session_id(); }
 
-        std::string session_identifier;
-        session_identifier.reserve(constants::g_session_id_length);
-        for (std::size_t i = 0; i < constants::g_session_id_length; i++) {
-            session_identifier.push_back(constants::g_hex_digits[distribution(generator)]);
+    void ensure_configurable() const {
+        if (listening_started || state->closed.load(std::memory_order_acquire)) {
+            throw std::logic_error("HttpServerTransport configuration must be set before listen()");
         }
-        return session_identifier;
+    }
+
+    bool begin_listening() {
+        std::lock_guard lock(configuration_mutex);
+        if (state->closed.load(std::memory_order_acquire)) {
+            return false;
+        }
+        if (listening_started) {
+            throw std::logic_error("HttpServerTransport::listen() may only be called once");
+        }
+        listening_started = true;
+        return true;
+    }
+
+    static void close_connection(const std::shared_ptr<Connection>& connection) {
+        boost::system::error_code ignored;
+        (void)connection->socket().cancel(ignored);
+        (void)connection->socket().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ignored);
+        (void)connection->socket().close(ignored);
+    }
+
+    void close_active_connections() {
+        for (const auto& connection : active_connections) {
+            close_connection(connection);
+        }
+    }
+
+    /// @brief Render the challenge a 401 will carry, borrowing the metadata URL when unset.
+    std::string render_challenge(const BearerChallengeConfig& challenge) const {
+        auto effective = challenge;
+        if (effective.resource_metadata.empty() && protected_resource_metadata.has_value()) {
+            effective.resource_metadata = protected_resource_metadata_url(*protected_resource_metadata);
+        }
+        return format_www_authenticate(effective);
+    }
+
+    bool is_unauthenticated_path(const StringRequest& request) const {
+        if (unauthenticated_paths.empty()) {
+            return false;
+        }
+        const auto path = http_request_path(std::string_view(request.target()));
+        return unauthenticated_paths.contains(std::string(path));
     }
 
     bool is_origin_allowed(std::string_view origin_value) const {
@@ -136,12 +187,8 @@ struct HttpServerTransport::Impl {
     }
 
     void enqueue_incoming_message(std::string message_payload) const {
-        auto shared_state = state;
-        boost::asio::post(shared_state->timer.get_executor(),
-                          [shared_state, payload = std::move(message_payload)]() mutable {
-                              shared_state->queue.push(std::move(payload));
-                              shared_state->timer.cancel();
-                          });
+        state->queue.push(std::move(message_payload));
+        state->timer.cancel();
     }
 
     static void set_common_headers(StringResponse& response, bool keep_alive) {
@@ -204,8 +251,6 @@ struct HttpServerTransport::Impl {
     }
 
     Task<SessionCheckResult> validate_post_session(const StringRequest& request) {
-        co_await boost::asio::post(strand, boost::asio::use_awaitable);
-
         const auto session_header_it = request.find("MCP-Session-Id");
         const bool session_header_present = session_header_it != request.end();
 
@@ -231,8 +276,6 @@ struct HttpServerTransport::Impl {
     }
 
     Task<SessionCheckResult> validate_delete_session(const StringRequest& request) {
-        co_await boost::asio::post(strand, boost::asio::use_awaitable);
-
         if (!session_id.has_value()) {
             co_return SessionCheckResult{true, {}};
         }
@@ -250,9 +293,8 @@ struct HttpServerTransport::Impl {
     }
 
     Task<std::optional<std::shared_ptr<boost::asio::steady_timer>>> register_pending_request(
-        const std::string& request_id_key) {
-        co_await boost::asio::post(strand, boost::asio::use_awaitable);
-
+        const std::string& request_id_key,
+        std::optional<nlohmann::json> client_request_id = std::nullopt) {
         if (pending_responses.contains(request_id_key)) {
             co_return std::nullopt;
         }
@@ -260,14 +302,24 @@ struct HttpServerTransport::Impl {
         auto timer_signal = std::make_shared<boost::asio::steady_timer>(strand);
         timer_signal->expires_at(std::chrono::steady_clock::time_point::max());
 
-        pending_responses.emplace(request_id_key, PendingResponse{timer_signal, std::nullopt,
-                                                                  std::nullopt, std::nullopt, false});
+        pending_responses.emplace(
+            request_id_key, PendingResponse{timer_signal, std::nullopt, std::nullopt, std::nullopt,
+                                            std::move(client_request_id), false});
         co_return timer_signal;
     }
 
-    Task<bool> is_response_ready(const std::string& request_id_key) {
-        co_await boost::asio::post(strand, boost::asio::use_awaitable);
+    /// A transport-private id for a request that arrives with no session credential. The random
+    /// prefix is drawn once per transport from the same secure source as the session id, so a
+    /// peer cannot construct an id that collides with a live sentinel, and the counter keeps
+    /// concurrent sentinels distinct from each other.
+    std::string next_sentinel_request_id() {
+        if (sentinel_id_prefix.empty()) {
+            sentinel_id_prefix = "mcp-pregate-" + generate_session_id() + "-";
+        }
+        return sentinel_id_prefix + std::to_string(++sentinel_id_counter);
+    }
 
+    Task<bool> is_response_ready(const std::string& request_id_key) {
         const auto pending_it = pending_responses.find(request_id_key);
         if (pending_it == pending_responses.end()) {
             co_return true;
@@ -277,8 +329,6 @@ struct HttpServerTransport::Impl {
     }
 
     Task<PendingResult> consume_pending_response(const std::string& request_id_key) {
-        co_await boost::asio::post(strand, boost::asio::use_awaitable);
-
         const auto pending_it = pending_responses.find(request_id_key);
         if (pending_it == pending_responses.end()) {
             co_return PendingResult{};
@@ -288,11 +338,11 @@ struct HttpServerTransport::Impl {
                                      std::move(pending_it->second.session_header),
                                      std::move(pending_it->second.event_id)};
         pending_responses.erase(pending_it);
+        sessionless_request_ids.erase(request_id_key);
         co_return pending_result;
     }
 
     Task<void> terminate_session() {
-        co_await boost::asio::post(strand, boost::asio::use_awaitable);
         session_id.reset();
         session_active = false;
         co_return;
@@ -311,6 +361,14 @@ struct HttpServerTransport::Impl {
             }
             return make_error_response(request, http::status::bad_request,
                                        "Invalid MCP-Protocol-Version header");
+        }
+
+        if (is_discover_request(request_json)) {
+            // server/discover advertises protocol versions (see g_DISCOVERABLE_PROTOCOL_VERSIONS)
+            // outside g_SUPPORTED_PROTOCOL_VERSIONS, and is reachable with zero prior session
+            // state, so it is exempted from header validation here exactly like initialize is
+            // exempted from the negotiated-version check below.
+            return std::nullopt;
         }
 
         if (protocol_header_it == request.end() ||
@@ -333,6 +391,59 @@ struct HttpServerTransport::Impl {
         return std::nullopt;
     }
 
+    /// @brief Answer a GET for the configured RFC 9728 document, which needs no bearer token.
+    std::optional<StringResponse> serve_protected_resource_metadata(
+        const StringRequest& request) const {
+        if (!protected_resource_metadata.has_value() || request.method() != http::verb::get) {
+            return std::nullopt;
+        }
+        if (http_request_path(std::string_view(request.target())) != protected_resource_metadata_path) {
+            return std::nullopt;
+        }
+        if (auto error = check_origin(request)) {
+            return error;
+        }
+        return make_json_response(request, http::status::ok, protected_resource_metadata_body);
+    }
+
+    StringResponse make_unauthorized_response(const StringRequest& request) const {
+        auto response =
+            make_error_response(request, http::status::unauthorized, "Invalid bearer token");
+        response.set(http::field::www_authenticate, www_authenticate_value);
+        return response;
+    }
+
+    static std::string_view request_bearer_token(const StringRequest& request) {
+        const auto authorization_it = request.find(http::field::authorization);
+        return authorization_it == request.end() ? std::string_view{}
+                                                 : http_bearer_token(header_value(authorization_it));
+    }
+
+    /// @brief Run the bearer check when it can be decided without suspending.
+    /// @details Returns nothing when an async validator is installed, because that decision
+    ///          belongs to check_authorization_async; keeping the two apart leaves the far more
+    ///          common synchronous path free of a coroutine frame and of copying the token.
+    std::optional<StringResponse> check_authorization(const StringRequest& request) const {
+        if (async_bearer_token_validator || !bearer_token_validator) {
+            return std::nullopt;
+        }
+
+        const auto token = request_bearer_token(request);
+        if (token.empty() || !bearer_token_validator(token)) {
+            return make_unauthorized_response(request);
+        }
+        return std::nullopt;
+    }
+
+    /// @brief Run the bearer check against an async validator. Only entered when one is installed.
+    Task<std::optional<StringResponse>> check_authorization_async(const StringRequest& request) const {
+        const auto token = request_bearer_token(request);
+        if (token.empty() || !co_await async_bearer_token_validator(std::string(token))) {
+            co_return make_unauthorized_response(request);
+        }
+        co_return std::nullopt;
+    }
+
     Task<StringResponse> handle_post(const StringRequest& request) {
         const auto request_json = nlohmann::json::parse(request.body(), nullptr, false);
         if (request_json.is_discarded() || !request_json.is_object()) {
@@ -346,11 +457,31 @@ struct HttpServerTransport::Impl {
         if (auto error = check_origin(request)) {
             co_return std::move(*error);
         }
+        if (auto error = check_authorization(request)) {
+            co_return std::move(*error);
+        }
+        if (async_bearer_token_validator) {
+            if (auto error = co_await check_authorization_async(request)) {
+                co_return std::move(*error);
+            }
+        }
 
-        const auto session_check = co_await validate_post_session(request);
-        if (!session_check.ok) {
-            co_return make_error_response(request, http::status::bad_request,
-                                          session_check.error_message);
+        // server/discover is a pre-gate method: it MUST stay reachable with zero prior session state,
+        // so a discover request with no MCP-Session-Id header skips the POST session gate. Any other
+        // method, and discover with a session header, still goes through validate_post_session, and
+        // this path neither creates nor mutates session state.
+        //
+        // The "id" requirement keeps a sessionless *notification* named server/discover from skipping
+        // the gate and pushing its body onto the unbounded incoming queue below.
+        const bool is_sessionless_discover = is_discover_request(request_json) &&
+                                             request_json.contains("id") &&
+                                             request.find("MCP-Session-Id") == request.end();
+        if (!is_sessionless_discover) {
+            const auto session_check = co_await validate_post_session(request);
+            if (!session_check.ok) {
+                co_return make_error_response(request, http::status::bad_request,
+                                              session_check.error_message);
+            }
         }
 
         const bool has_request_id = request_json.contains("id");
@@ -360,14 +491,38 @@ struct HttpServerTransport::Impl {
             co_return make_empty_json_response(request, http::status::accepted);
         }
 
-        const auto request_id_key = request_json.at("id").dump();
-        const auto timer_signal = co_await register_pending_request(request_id_key);
+        // A sessionless discover carries an id chosen by an unauthenticated party, so it is
+        // registered under a transport-private sentinel id and the caller's own id is restored in
+        // run_write. The raw id would share a key space with the established session: a prober could
+        // claim an id the session then needs ("Request id already pending"), and could steer
+        // replay-store exclusion through sessionless_request_ids. Session-gated requests keep the
+        // exact bytes the peer sent.
+        std::string request_id_key;
+        std::optional<nlohmann::json> client_request_id;
+        std::string sentinel_body;
+        if (is_sessionless_discover) {
+            client_request_id = request_json.at("id");
+            auto sentinel_json = request_json;
+            sentinel_json["id"] = next_sentinel_request_id();
+            request_id_key = sentinel_json.at("id").dump();
+            sentinel_body = sentinel_json.dump();
+        } else {
+            request_id_key = request_json.at("id").dump();
+        }
+
+        const auto timer_signal = co_await register_pending_request(request_id_key, client_request_id);
         if (!timer_signal.has_value()) {
             co_return make_error_response(request, http::status::bad_request,
                                           "Request id already pending");
         }
-
-        enqueue_incoming_message(request.body());
+        if (is_sessionless_discover) {
+            // Tracked so run_write can keep this response out of the shared replay store. The
+            // entry is dropped again in consume_pending_response and in close().
+            sessionless_request_ids.insert(request_id_key);
+            enqueue_incoming_message(std::move(sentinel_body));
+        } else {
+            enqueue_incoming_message(request.body());
+        }
 
         for (;;) {
             if (state->closed.load(std::memory_order_acquire)) {
@@ -400,7 +555,8 @@ struct HttpServerTransport::Impl {
             accept_it != request.end() &&
             std::string_view(accept_it->value()).find("text/event-stream") != std::string_view::npos;
 
-        if (!json_only_ && client_accepts_sse && pending_result.event_id.has_value()) {
+        if (!json_only_.load(std::memory_order_acquire) && client_accepts_sse &&
+            pending_result.event_id.has_value()) {
             auto response =
                 make_sse_response(request, *pending_result.event_id, *pending_result.response_body);
             if (pending_result.session_header.has_value()) {
@@ -424,6 +580,14 @@ struct HttpServerTransport::Impl {
         if (auto error = check_origin(request)) {
             co_return std::move(*error);
         }
+        if (auto error = check_authorization(request)) {
+            co_return std::move(*error);
+        }
+        if (async_bearer_token_validator) {
+            if (auto error = co_await check_authorization_async(request)) {
+                co_return std::move(*error);
+            }
+        }
 
         const auto session_check = co_await validate_delete_session(request);
         if (!session_check.ok) {
@@ -439,6 +603,17 @@ struct HttpServerTransport::Impl {
         const nlohmann::json request_json = {"method", "get"};
         if (auto error = check_protocol_version(request, request_json)) {
             co_return std::move(*error);
+        }
+        if (auto error = check_origin(request)) {
+            co_return std::move(*error);
+        }
+        if (auto error = check_authorization(request)) {
+            co_return std::move(*error);
+        }
+        if (async_bearer_token_validator) {
+            if (auto error = co_await check_authorization_async(request)) {
+                co_return std::move(*error);
+            }
         }
 
         if (!session_id.has_value()) {
@@ -468,6 +643,19 @@ struct HttpServerTransport::Impl {
     }
 
     Task<StringResponse> handle_request(const StringRequest& request) {
+        if (state->closed.load(std::memory_order_acquire)) {
+            co_return make_error_response(request, http::status::service_unavailable,
+                                          "Transport closed");
+        }
+        if (auto document = serve_protected_resource_metadata(request)) {
+            co_return std::move(*document);
+        }
+        if (is_unauthenticated_path(request)) {
+            // An exempt path is excluded from MCP dispatch, not merely excused from the bearer
+            // check. Serving MCP here would answer it with no authentication at all, so a path the
+            // metadata route did not claim has nothing left to answer it.
+            co_return make_error_response(request, http::status::not_found, "Not found");
+        }
         if (request.method() == http::verb::post) {
             co_return co_await handle_post(request);
         }
@@ -484,24 +672,59 @@ struct HttpServerTransport::Impl {
         co_return response;
     }
 
-    Task<void> handle_connection(boost::asio::ip::tcp::socket socket) {
-        beast::tcp_stream stream(std::move(socket));
+    /// @brief Report a body that exceeded max_request_body_bytes, ignoring a dead peer.
+    static Task<void> write_payload_too_large(Connection& stream) {
+        StringResponse response{http::status::payload_too_large, 11};
+        set_common_headers(response, false);
+        response.set(http::field::content_type, "application/json");
+        response.body() = nlohmann::json{{"error", "Request body too large"}}.dump();
+        response.prepare_payload();
+        try {
+            co_await http::async_write(stream, response, boost::asio::use_awaitable);
+        } catch (const boost::system::system_error&) {
+            // The peer that overran the limit may already be gone; nothing more to report to it.
+            (void)0;
+        }
+    }
+
+    Task<void> handle_connection(const std::shared_ptr<Connection>& connection) {
+        auto& stream = *connection;
         beast::flat_buffer request_buffer;
 
         for (;;) {
-            StringRequest request;
+            http::request_parser<http::string_body> parser;
+            parser.body_limit(max_request_body_bytes);
+            bool body_too_large = false;
             try {
-                co_await http::async_read(stream, request_buffer, request, boost::asio::use_awaitable);
+                co_await http::async_read(stream, request_buffer, parser, boost::asio::use_awaitable);
             } catch (const boost::system::system_error& err) {
                 if (err.code() == boost::asio::error::eof ||
                     err.code() == boost::asio::error::connection_reset ||
                     err.code() == boost::asio::error::operation_aborted) {
                     break;
                 }
-                throw;
+                if (err.code() != http::error::body_limit) {
+                    throw;
+                }
+                body_too_large = true;
+            }
+
+            if (body_too_large) {
+                // The parser cannot resynchronize after a truncated body, so the connection ends
+                // with this answer rather than reading another request from it.
+                co_await write_payload_too_large(stream);
+                break;
+            }
+            StringRequest request = parser.release();
+
+            if (state->closed.load(std::memory_order_acquire)) {
+                break;
             }
 
             auto response = co_await handle_request(request);
+            if (state->closed.load(std::memory_order_acquire)) {
+                break;
+            }
             const bool keep_connection_alive = response.keep_alive();
             co_await http::async_write(stream, response, boost::asio::use_awaitable);
 
@@ -514,27 +737,146 @@ struct HttpServerTransport::Impl {
         (void)stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
     }
 
+    static Task<std::string> run_read(std::shared_ptr<Impl> impl) {
+        auto& state = *impl->state;
+        if (state.read_active) {
+            throw std::logic_error("HttpServerTransport supports one pending read");
+        }
+        state.read_active = true;
+
+        try {
+            for (;;) {
+                if (state.closed.load(std::memory_order_acquire)) {
+                    throw std::runtime_error("HttpServerTransport is closed");
+                }
+
+                if (!state.queue.empty()) {
+                    auto message_payload = std::move(state.queue.front());
+                    state.queue.pop();
+                    state.read_active = false;
+                    co_return message_payload;
+                }
+
+                state.timer.expires_at(std::chrono::steady_clock::time_point::max());
+                try {
+                    co_await state.timer.async_wait(boost::asio::use_awaitable);
+                } catch (const boost::system::system_error& error) {
+                    if (error.code() != boost::asio::error::operation_aborted) {
+                        throw;
+                    }
+                }
+            }
+        } catch (...) {
+            state.read_active = false;
+            throw;
+        }
+    }
+
+    static Task<void> run_write(std::shared_ptr<Impl> impl, std::string message) {
+        if (impl->state->closed.load(std::memory_order_acquire)) {
+            throw std::runtime_error("HttpServerTransport is closed");
+        }
+
+        const auto response_json = nlohmann::json::parse(message, nullptr, false);
+        if (response_json.is_discarded() || !response_json.is_object()) {
+            co_return;
+        }
+
+        std::optional<std::string> response_id_key;
+        if (response_json.contains("id")) {
+            response_id_key = response_json.at("id").dump();
+        }
+
+        // Responses to sessionless pre-gate requests must never reach the replay store. That
+        // store is a bounded ring shared with the established session, so appending them would
+        // evict the session's own replay history and turn its next Last-Event-ID resume into a
+        // 410 Gone. Sessionless requests are unauthenticated by construction, so their traffic
+        // must not be able to consume replay capacity that belongs to a real session.
+        const bool skip_event_store =
+            response_id_key.has_value() && impl->sessionless_request_ids.contains(*response_id_key);
+
+        std::optional<std::string> event_id;
+        if (!impl->json_only_.load(std::memory_order_acquire) && !skip_event_store) {
+            event_id = impl->event_store.append(message);
+        }
+
+        if (!response_id_key.has_value()) {
+            co_return;
+        }
+
+        const auto& request_id_key = *response_id_key;
+        const auto pending_it = impl->pending_responses.find(request_id_key);
+        if (pending_it == impl->pending_responses.end()) {
+            co_return;
+        }
+
+        // The request was carried under a sentinel id, so the server answered the sentinel. Put
+        // the caller's own id back before the response leaves the transport; the peer must see
+        // the id it sent, and must never see the sentinel.
+        if (pending_it->second.client_request_id.has_value()) {
+            auto restored_response = response_json;
+            restored_response["id"] = *pending_it->second.client_request_id;
+            message = restored_response.dump();
+        }
+
+        pending_it->second.response_body = std::move(message);
+        pending_it->second.event_id = std::move(event_id);
+        pending_it->second.response_ready = true;
+
+        if (is_initialize_result_response(response_json)) {
+            const auto& result = response_json.at("result");
+            if (!impl->session_id.has_value()) {
+                impl->session_id = generate_session_id();
+            }
+            if (result.contains("protocolVersion") && result.at("protocolVersion").is_string()) {
+                impl->negotiated_protocol_version = result.at("protocolVersion").get<std::string>();
+            }
+            pending_it->second.session_header = impl->session_id;
+            impl->session_active = true;
+        }
+
+        pending_it->second.ready_timer->cancel();
+    }
+
     std::string host;
     unsigned short port;
     boost::asio::strand<boost::asio::any_io_executor> strand;
     boost::asio::ip::tcp::acceptor acceptor;
     std::shared_ptr<SharedState> state;
+    std::unordered_set<std::shared_ptr<Connection>> active_connections;
+
+    mutable std::mutex configuration_mutex;
+    bool listening_started{false};
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
+    std::unordered_set<std::string> sessionless_request_ids;
+    std::string sentinel_id_prefix;
+    std::uint64_t sentinel_id_counter{0};
     std::optional<std::string> session_id;
     std::string negotiated_protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
     bool session_active{false};
 
-    bool allow_all_origins{true};
+    bool allow_all_origins{false};
     std::unordered_set<std::string> allowed_origins;
+    BearerTokenValidator bearer_token_validator;
+    AsyncBearerTokenValidator async_bearer_token_validator;
+    std::size_t max_request_body_bytes{constants::g_default_max_request_body_bytes};
+    BearerChallengeConfig bearer_challenge;
+    /// Rendered once when the challenge or the metadata changes, so serving a 401 never formats.
+    std::string www_authenticate_value{"Bearer"};
+    std::optional<ProtectedResourceMetadataConfig> protected_resource_metadata;
+    std::string protected_resource_metadata_body;
+    /// The resolved serving path: `path` when set, else derived from `resource`.
+    std::string protected_resource_metadata_path;
+    std::unordered_set<std::string> unauthenticated_paths;
 
     EventStore event_store;
-    bool json_only_{false};
+    std::atomic<bool> json_only_{false};
 };
 
 HttpServerTransport::HttpServerTransport(const boost::asio::any_io_executor& executor, std::string host,
                                          unsigned short port, std::size_t event_store_capacity)
-    : impl_(std::make_unique<Impl>(executor, std::move(host), port, event_store_capacity)) {}
+    : impl_(std::make_shared<Impl>(executor, std::move(host), port, event_store_capacity)) {}
 
 HttpServerTransport::~HttpServerTransport() {
     try {
@@ -556,126 +898,183 @@ unsigned short HttpServerTransport::port() const {
     return endpoint.port();
 }
 
-void HttpServerTransport::set_json_only(bool json_only) { impl_->json_only_ = json_only; }
+void HttpServerTransport::set_json_only(bool json_only) {
+    impl_->json_only_.store(json_only, std::memory_order_release);
+}
+
+void HttpServerTransport::set_allowed_origins(std::vector<std::string> origins) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->allowed_origins.clear();
+    impl_->allowed_origins.reserve(origins.size());
+    for (auto& origin : origins) {
+        impl_->allowed_origins.insert(std::move(origin));
+    }
+    impl_->allow_all_origins = false;
+}
+
+void HttpServerTransport::set_allow_all_origins(bool allow_all) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->allow_all_origins = allow_all;
+}
+
+void HttpServerTransport::set_bearer_token_validator(BearerTokenValidator validator) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    if (validator && impl_->async_bearer_token_validator) {
+        throw std::logic_error("HttpServerTransport accepts one bearer token validator");
+    }
+    impl_->bearer_token_validator = std::move(validator);
+}
+
+void HttpServerTransport::set_async_bearer_token_validator(AsyncBearerTokenValidator validator) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    if (validator && impl_->bearer_token_validator) {
+        throw std::logic_error("HttpServerTransport accepts one bearer token validator");
+    }
+    impl_->async_bearer_token_validator = std::move(validator);
+}
+
+void HttpServerTransport::set_max_request_body_bytes(std::size_t max_bytes) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    if (max_bytes == 0) {
+        throw std::invalid_argument("Maximum request body size must be greater than zero");
+    }
+    impl_->max_request_body_bytes = max_bytes;
+}
+
+void HttpServerTransport::set_bearer_challenge(BearerChallengeConfig challenge) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    auto rendered = impl_->render_challenge(challenge);
+    impl_->bearer_challenge = std::move(challenge);
+    impl_->www_authenticate_value = std::move(rendered);
+}
+
+void HttpServerTransport::set_protected_resource_metadata(ProtectedResourceMetadataConfig metadata) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    if (metadata.resource.empty()) {
+        throw std::invalid_argument("Protected-resource metadata requires a resource URL");
+    }
+
+    auto metadata_url = protected_resource_metadata_url(metadata);
+    auto document = format_protected_resource_metadata(metadata);
+    auto challenge = impl_->bearer_challenge;
+    if (challenge.resource_metadata.empty()) {
+        challenge.resource_metadata = std::move(metadata_url);
+    }
+    auto rendered = format_www_authenticate(challenge);
+
+    auto document_path = protected_resource_metadata_path(metadata);
+
+    impl_->protected_resource_metadata = std::move(metadata);
+    impl_->protected_resource_metadata_path = std::move(document_path);
+    impl_->protected_resource_metadata_body = std::move(document);
+    impl_->www_authenticate_value = std::move(rendered);
+}
+
+void HttpServerTransport::set_unauthenticated_paths(std::vector<std::string> paths) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->unauthenticated_paths.clear();
+    impl_->unauthenticated_paths.reserve(paths.size());
+    for (auto& path : paths) {
+        impl_->unauthenticated_paths.insert(std::move(path));
+    }
+}
 
 Task<std::string> HttpServerTransport::read_message() {
-    auto& state = *impl_->state;
-    for (;;) {
-        if (!state.queue.empty()) {
-            auto message_payload = std::move(state.queue.front());
-            state.queue.pop();
-            co_return message_payload;
-        }
-
-        if (state.closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("HttpServerTransport is closed");
-        }
-
-        state.timer.expires_at(std::chrono::steady_clock::time_point::max());
-        try {
-            co_await state.timer.async_wait(boost::asio::use_awaitable);
-        } catch (const boost::system::system_error& err) {
-            if (err.code() != boost::asio::error::operation_aborted) {
-                throw;
-            }
-        }
-    }
+    auto impl = impl_;
+    return boost::asio::co_spawn(impl->strand, Impl::run_read(impl), boost::asio::use_awaitable);
 }
 
 Task<void> HttpServerTransport::write_message(std::string_view message) {
-    std::string msg(message);
-    co_await boost::asio::post(impl_->strand, boost::asio::use_awaitable);
-
-    if (impl_->state->closed.load(std::memory_order_acquire)) {
-        throw std::runtime_error("HttpServerTransport is closed");
-    }
-
-    const auto response_json = nlohmann::json::parse(msg, nullptr, false);
-    if (response_json.is_discarded() || !response_json.is_object()) {
-        co_return;
-    }
-
-    std::optional<std::string> event_id;
-    if (!impl_->json_only_) {
-        event_id = impl_->event_store.append(msg);
-    }
-
-    if (!response_json.contains("id")) {
-        co_return;
-    }
-
-    const auto request_id_key = response_json.at("id").dump();
-    const auto pending_it = impl_->pending_responses.find(request_id_key);
-    if (pending_it == impl_->pending_responses.end()) {
-        co_return;
-    }
-
-    pending_it->second.response_body = msg;
-    pending_it->second.event_id = std::move(event_id);
-    pending_it->second.response_ready = true;
-
-    if (Impl::is_initialize_result_response(response_json)) {
-        const auto& result = response_json.at("result");
-        if (!impl_->session_id.has_value()) {
-            impl_->session_id = Impl::generate_session_id();
-        }
-        if (result.contains("protocolVersion") && result.at("protocolVersion").is_string()) {
-            impl_->negotiated_protocol_version = result.at("protocolVersion").get<std::string>();
-        }
-        pending_it->second.session_header = impl_->session_id;
-        impl_->session_active = true;
-    }
-
-    pending_it->second.ready_timer->cancel();
-    co_return;
+    auto impl = impl_;
+    return boost::asio::co_spawn(impl->strand, Impl::run_write(impl, std::string(message)),
+                                 boost::asio::use_awaitable);
 }
 
 void HttpServerTransport::close() {
-    if (impl_->state->closed.exchange(true, std::memory_order_acq_rel)) {
-        return;
+    auto impl = impl_;
+    {
+        std::lock_guard lock(impl->configuration_mutex);
+        if (impl->state->closed.exchange(true, std::memory_order_acq_rel)) {
+            return;
+        }
     }
 
-    boost::asio::post(impl_->strand, [this]() {
+    boost::asio::post(impl->strand, [impl]() {
         boost::system::error_code ec;
-        (void)impl_->acceptor.cancel(ec);
-        (void)impl_->acceptor.close(ec);
+        (void)impl->acceptor.cancel(ec);
+        (void)impl->acceptor.close(ec);
+        impl->close_active_connections();
 
-        for (auto& pending_entry : impl_->pending_responses) {
+        for (auto& pending_entry : impl->pending_responses) {
             pending_entry.second.ready_timer->cancel();
         }
-        impl_->pending_responses.clear();
+        impl->pending_responses.clear();
+        impl->sessionless_request_ids.clear();
 
-        impl_->session_id.reset();
-        impl_->negotiated_protocol_version = std::string(g_LATEST_PROTOCOL_VERSION);
-        impl_->session_active = false;
+        impl->session_id.reset();
+        impl->negotiated_protocol_version = std::string(g_LATEST_PROTOCOL_VERSION);
+        impl->session_active = false;
     });
 
-    boost::asio::post(impl_->state->timer.get_executor(),
-                      [state = impl_->state]() { state->timer.cancel(); });
+    boost::asio::post(impl->state->timer.get_executor(),
+                      [state = impl->state]() { state->timer.cancel(); });
 }
 
 Task<void> HttpServerTransport::listen() {
+    auto impl = impl_;
+    (void)impl->begin_listening();
+    return boost::asio::co_spawn(impl->strand, listen_impl(impl), boost::asio::use_awaitable);
+}
+
+Task<void> HttpServerTransport::listen_impl(std::shared_ptr<Impl> impl) {
     for (;;) {
-        if (impl_->state->closed.load(std::memory_order_acquire)) {
+        if (impl->state->closed.load(std::memory_order_acquire)) {
             co_return;
         }
 
-        boost::asio::ip::tcp::socket socket(impl_->strand);
+        boost::asio::ip::tcp::socket socket(impl->strand);
         try {
-            socket = co_await impl_->acceptor.async_accept(boost::asio::use_awaitable);
+            socket = co_await impl->acceptor.async_accept(boost::asio::use_awaitable);
         } catch (const boost::system::system_error& err) {
-            if (impl_->state->closed.load(std::memory_order_acquire) ||
+            if (impl->state->closed.load(std::memory_order_acquire) ||
                 err.code() == boost::asio::error::operation_aborted) {
                 co_return;
             }
             throw;
         }
 
-        boost::asio::co_spawn(impl_->strand, impl_->handle_connection(std::move(socket)),
-                              [](const std::exception_ptr&) {
-                                  // Connection errors (EOF, client disconnect) are normal;
-                                  // handled per-connection, not propagated to the accept loop.
-                              });
+        if (impl->state->closed.load(std::memory_order_acquire)) {
+            boost::system::error_code ignored;
+            (void)socket.close(ignored);
+            co_return;
+        }
+
+        auto connection = std::make_shared<Impl::Connection>(std::move(socket));
+        impl->active_connections.insert(connection);
+
+        boost::asio::co_spawn(
+            impl->strand,
+            [impl, connection]() -> Task<void> {
+                try {
+                    co_await impl->handle_connection(connection);
+                } catch (...) {
+                    impl->active_connections.erase(connection);
+                    throw;
+                }
+                impl->active_connections.erase(connection);
+            },
+            [](const std::exception_ptr&) {
+                // Connection errors (EOF, client disconnect) are normal;
+                // handled per-connection, not propagated to the accept loop.
+            });
     }
 }
 

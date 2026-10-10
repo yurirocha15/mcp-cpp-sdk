@@ -1,0 +1,14 @@
+# Pinned runner: @modelcontextprotocol/conformance 0.1.16
+# Protocol baseline: 2025-11-25
+#
+# Every core client scenario is still executed. Unsupported scenarios stay
+# visible here so CI catches both new regressions and stale entries after fixes.
+client:
+  - elicitation-sep1034-client-defaults
+  - sse-retry
+server:
+  - tools-call-sampling
+  - tools-call-elicitation
+  - elicitation-sep1034-defaults
+  - server-sse-multiple-streams
+  - elicitation-sep1330-enums

@@ -5,17 +5,29 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/redirect_error.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <chrono>
+#include <cstdint>
+#include <cstdlib>
+#include <future>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/core/constants.hpp>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -43,6 +55,17 @@ using AcceptorCallback =
 asio::awaitable<void> run_mock_server(asio::ip::tcp::acceptor& acceptor, AcceptorCallback handler) {
     auto socket = co_await acceptor.async_accept(asio::use_awaitable);
     co_await handler(std::move(socket), acceptor);
+}
+
+/// A policy admitting exactly the plain-http loopback fixture these tests drive directly. A
+/// policy-less `OAuthHttpClient` defaults to deny-all, so every test that talks to a mock
+/// server without going through `OAuthAuthorizationManager` (which always installs its own policy)
+/// must opt in explicitly.
+mcp::auth::MetadataFetchPolicy loopback_policy(unsigned short port) {
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allowed_origins.push_back("http://127.0.0.1:" + std::to_string(port));
+    policy.allow_plain_http_loopback = true;
+    return policy;
 }
 
 }  // namespace
@@ -295,6 +318,7 @@ TEST_F(MockTokenServer, ExchangeCodeProducesValidToken) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthConfig config;
             config.client_id = "test_client";
             config.token_endpoint = "http://127.0.0.1:" + std::to_string(port) + "/token";
@@ -356,6 +380,7 @@ TEST_F(MockTokenServer, ExchangeCodeWithClientSecret) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthConfig config;
             config.client_id = "test_client";
             config.client_secret = "super_secret";
@@ -413,6 +438,7 @@ TEST_F(MockTokenServer, RefreshTokenProducesNewToken) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthConfig config;
             config.client_id = "test_client";
             config.token_endpoint = "http://127.0.0.1:" + std::to_string(port) + "/token";
@@ -465,6 +491,7 @@ TEST_F(MockTokenServer, TokenExchangeErrorThrows) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthConfig config;
             config.client_id = "test_client";
             config.token_endpoint = "http://127.0.0.1:" + std::to_string(port) + "/token";
@@ -481,6 +508,71 @@ TEST_F(MockTokenServer, TokenExchangeErrorThrows) {
     io_ctx_.run();
 
     EXPECT_TRUE(threw);
+}
+
+TEST_F(MockTokenServer, DoesNotReplayThePostAfterAnAmbiguousMidResponseFailure) {
+    // The connection dies after the request is fully read but before any response is written: from
+    // the client's point of view the server may or may not have acted on it, so this POST must never
+    // be silently replayed within the same exchange_code() call. Redirects are already never
+    // followed for a POST (src/auth/oauth.cpp: run_post_json) for the same reason; this proves there
+    // is no other path that re-sends it.
+    constexpr unsigned short port = 18111;
+
+    asio::ip::tcp::acceptor acceptor(io_ctx_, {asio::ip::make_address("127.0.0.1"), port});
+    int requests_seen = 0;
+
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> asio::awaitable<void> {
+            auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+            beast::tcp_stream stream(std::move(socket));
+            beast::flat_buffer buffer;
+            http::request<http::string_body> req;
+            co_await http::async_read(stream, buffer, req, asio::use_awaitable);
+            ++requests_seen;
+            beast::error_code ec;
+            stream.socket().close(ec);
+
+            // Give a bounded window for a (forbidden) replay to arrive, then cancel the accept so
+            // the test never hangs waiting for a connection that -- correctly -- never comes.
+            asio::steady_timer cutoff(io_ctx_);
+            cutoff.expires_after(std::chrono::milliseconds(300));
+            cutoff.async_wait([&](boost::system::error_code) { acceptor.cancel(); });
+
+            boost::system::error_code accept_error;
+            (void)co_await acceptor.async_accept(
+                asio::redirect_error(asio::use_awaitable, accept_error));
+            if (!accept_error) {
+                ++requests_seen;
+            }
+            cutoff.cancel();
+        },
+        asio::detached);
+
+    bool threw = false;
+
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> asio::awaitable<void> {
+            mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
+            mcp::auth::OAuthConfig config;
+            config.client_id = "test_client";
+            config.token_endpoint = "http://127.0.0.1:" + std::to_string(port) + "/token";
+            config.redirect_uri = "http://localhost/callback";
+
+            try {
+                co_await client.exchange_code(config, "a-code", "verifier");
+            } catch (const std::exception&) {
+                threw = true;
+            }
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_TRUE(threw);
+    EXPECT_EQ(requests_seen, 1);
 }
 
 TEST_F(MockTokenServer, GetJsonReturnsValidJson) {
@@ -518,6 +610,7 @@ TEST_F(MockTokenServer, GetJsonReturnsValidJson) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             result =
                 co_await client.get_json("http://127.0.0.1:" + std::to_string(port) + "/well-known");
         },
@@ -560,6 +653,7 @@ TEST_F(MockTokenServer, GetJsonErrorThrows) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             try {
                 co_await client.get_json("http://127.0.0.1:" + std::to_string(port) + "/nope");
             } catch (const std::runtime_error&) {
@@ -630,6 +724,36 @@ TEST(AuthDiscoveryMetadataTest, AuthServerMinimalFields) {
     EXPECT_FALSE(metadata.scopes_supported.has_value());
 }
 
+TEST(AuthDiscoveryMetadataTest, AuthServerW5ExtensionFieldsParsedWhenPresent) {
+    json j = {{"issuer", "https://auth.example.com"},
+              {"authorization_endpoint", "https://auth.example.com/authorize"},
+              {"token_endpoint", "https://auth.example.com/token"},
+              {"authorization_response_iss_parameter_supported", true},
+              {"client_id_metadata_document_supported", true},
+              {"token_endpoint_auth_methods_supported", {"client_secret_basic", "none"}}};
+
+    auto metadata = j.get<mcp::auth::AuthServerMetadata>();
+    ASSERT_TRUE(metadata.authorization_response_iss_parameter_supported.has_value());
+    EXPECT_TRUE(metadata.authorization_response_iss_parameter_supported.value());
+    ASSERT_TRUE(metadata.client_id_metadata_document_supported.has_value());
+    EXPECT_TRUE(metadata.client_id_metadata_document_supported.value());
+    ASSERT_TRUE(metadata.token_endpoint_auth_methods_supported.has_value());
+    ASSERT_EQ(metadata.token_endpoint_auth_methods_supported->size(), 2);
+    EXPECT_EQ(metadata.token_endpoint_auth_methods_supported->at(0), "client_secret_basic");
+    EXPECT_EQ(metadata.token_endpoint_auth_methods_supported->at(1), "none");
+}
+
+TEST(AuthDiscoveryMetadataTest, AuthServerW5ExtensionFieldsAbsentByDefault) {
+    json j = {{"issuer", "https://auth.example.com"},
+              {"authorization_endpoint", "https://auth.example.com/authorize"},
+              {"token_endpoint", "https://auth.example.com/token"}};
+
+    auto metadata = j.get<mcp::auth::AuthServerMetadata>();
+    EXPECT_FALSE(metadata.authorization_response_iss_parameter_supported.has_value());
+    EXPECT_FALSE(metadata.client_id_metadata_document_supported.has_value());
+    EXPECT_FALSE(metadata.token_endpoint_auth_methods_supported.has_value());
+}
+
 TEST(AuthCacheTest, CachedEntryNotExpired) {
     mcp::auth::CachedEntry<int> entry{42, std::chrono::steady_clock::now() + std::chrono::hours(1)};
     EXPECT_FALSE(entry.is_expired());
@@ -682,6 +806,7 @@ TEST_F(DiscoveryTest, DiscoverProtectedResource) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
 
             result = co_await discovery.discover_protected_resource("http://127.0.0.1:" +
@@ -735,6 +860,7 @@ TEST_F(DiscoveryTest, DiscoverProtectedResourceWithPath) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
 
             result = co_await discovery.discover_protected_resource(
@@ -787,6 +913,7 @@ TEST_F(DiscoveryTest, DiscoverAuthServer) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
 
             result =
@@ -863,6 +990,7 @@ TEST_F(DiscoveryTest, DiscoverAuthServerFallsBackToOIDC) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
 
             result =
@@ -916,6 +1044,7 @@ TEST_F(DiscoveryTest, CacheHitSkipsNetworkCall) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(300));
 
             result1 =
@@ -971,6 +1100,7 @@ TEST_F(DiscoveryTest, ClearCacheInvalidatesEntries) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(300));
 
             co_await discovery.discover_auth_server("http://127.0.0.1:" + std::to_string(port));
@@ -982,4 +1112,419 @@ TEST_F(DiscoveryTest, ClearCacheInvalidatesEntries) {
     io_ctx_.run();
 
     EXPECT_EQ(request_count, 2);
+}
+
+// A policy-less client denies every origin: no origin is on the (empty) allow list, and plain http
+// is refused outright. Refusal happens in `enforce_url_policy` before any lookup, so the host
+// resolver this test installs must never run.
+TEST(AuthOAuthHttpClientDefaultPolicyTest, PolicyLessClientRefusesAnHttpLoopbackUrlWithoutResolving) {
+    asio::io_context io_ctx;
+    mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+
+    int resolver_calls = 0;
+    client.set_host_resolver(
+        [&resolver_calls](const std::string&, const std::string&) -> std::vector<std::string> {
+            ++resolver_calls;
+            return {"127.0.0.1"};
+        });
+
+    bool threw = false;
+    auto decision = mcp::auth::MetadataUrlDecision::allowed;
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> asio::awaitable<void> {
+            try {
+                (void)co_await client.get_json("http://127.0.0.1:18199/probe");
+            } catch (const mcp::auth::MetadataPolicyError& error) {
+                threw = true;
+                decision = error.decision();
+            }
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_TRUE(threw);
+    EXPECT_TRUE(decision == mcp::auth::MetadataUrlDecision::origin_not_allowed ||
+                decision == mcp::auth::MetadataUrlDecision::scheme_not_allowed)
+        << "unexpected decision: " << mcp::auth::describe(decision);
+    EXPECT_EQ(resolver_calls, 0);
+}
+
+// -------------------------------------------------------------------------------------------
+// The metadata policy and the host resolver must be installable as ONE change.
+//
+// The fixture is two HTTP servers sharing a port on two loopback addresses, each naming itself
+// in its body. Every request targets `http://localhost:<port>/doc`, so the installed resolver
+// alone decides which server answers, and the body IS the classification: a body of "new" can
+// only be produced by the NEW resolver under the OLD, wider allow list -- the defect, on the wire.
+// -------------------------------------------------------------------------------------------
+namespace {
+
+/// One loopback HTTP server that answers every request with its own name.
+class NamedLoopbackServer {
+   public:
+    NamedLoopbackServer(asio::io_context& ctx, const std::string& address, unsigned short port,
+                        std::string name)
+        : acceptor_(ctx, {asio::ip::make_address(address), port}), name_(std::move(name)) {
+        asio::co_spawn(ctx, accept_loop(), asio::detached);
+    }
+
+    void close() {
+        boost::system::error_code ec;
+        acceptor_.close(ec);
+    }
+
+   private:
+    asio::awaitable<void> accept_loop() {
+        for (;;) {
+            boost::system::error_code ec;
+            auto socket =
+                co_await acceptor_.async_accept(asio::redirect_error(asio::use_awaitable, ec));
+            if (ec) {
+                co_return;
+            }
+            asio::co_spawn(socket.get_executor(), serve(std::move(socket)), asio::detached);
+        }
+    }
+
+    asio::awaitable<void> serve(asio::ip::tcp::socket socket) {
+        beast::tcp_stream stream(std::move(socket));
+        beast::flat_buffer buffer;
+        http::request<http::string_body> request;
+        boost::system::error_code ec;
+        co_await http::async_read(stream, buffer, request,
+                                  asio::redirect_error(asio::use_awaitable, ec));
+        if (ec) {
+            co_return;
+        }
+        http::response<http::string_body> response{http::status::ok, request.version()};
+        response.set(http::field::content_type, "application/json");
+        response.body() = json{{"server", name_}}.dump();
+        response.prepare_payload();
+        co_await http::async_write(stream, response, asio::redirect_error(asio::use_awaitable, ec));
+        stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+    }
+
+    asio::ip::tcp::acceptor acceptor_;
+    std::string name_;
+};
+
+/// Whether this environment has promised a second loopback address.
+///
+/// Every OAuthSetterPairAtomicity test needs a port free on both 127.0.0.1 and 127.0.0.2, and skips
+/// when there is none. On a host or container without 127.0.0.2 that silently skips every one of them
+/// while the suite still reports green. Where the second address is known to exist (Linux, where
+/// 127.0.0.0/8 is bound whole), set MCP_REQUIRE_TWIN_LOOPBACK=1 and a missing port fails the run
+/// instead of skipping it. CI sets it on Linux; the default stays a skip so the suite remains
+/// runnable anywhere.
+[[nodiscard]] bool twin_loopback_is_required() {
+    const char* const flag = std::getenv("MCP_REQUIRE_TWIN_LOOPBACK");
+    return flag != nullptr && std::string_view(flag) == "1";
+}
+
+mcp::auth::MetadataFetchPolicy origin_policy(const std::string& origin) {
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allowed_origins.push_back(origin);
+    policy.allow_plain_http_loopback = true;
+    return policy;
+}
+
+/// What one completed exchange was observed to do.
+enum class Observed {
+    old_server,
+    new_server,
+    refused_origin,
+    other
+};
+
+Observed classify_exchange(const std::exception_ptr& failure, const json& body) {
+    if (failure == nullptr) {
+        const auto name = body.value("server", std::string{});
+        if (name == "old") {
+            return Observed::old_server;
+        }
+        if (name == "new") {
+            return Observed::new_server;
+        }
+        return Observed::other;
+    }
+    try {
+        std::rethrow_exception(failure);
+    } catch (const mcp::auth::MetadataPolicyError& error) {
+        return error.decision() == mcp::auth::MetadataUrlDecision::origin_not_allowed
+                   ? Observed::refused_origin
+                   : Observed::other;
+    } catch (const std::exception&) {
+        return Observed::other;
+    }
+}
+
+void busy_wait_micros(int micros) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(micros);
+    while (std::chrono::steady_clock::now() < deadline) {
+    }
+}
+
+/// The two servers plus the two configurations the application moves between.
+struct TwinFixture {
+    explicit TwinFixture(unsigned short port)
+        : old_server(ctx, "127.0.0.1", port, "old"),
+          new_server(ctx, "127.0.0.2", port, "new"),
+          url("http://localhost:" + std::to_string(port) + "/doc"),
+          wide(origin_policy("http://localhost:" + std::to_string(port))),
+          narrow(origin_policy("http://127.0.0.9:1")) {
+        thread = std::thread([this]() { ctx.run(); });
+    }
+
+    ~TwinFixture() {
+        asio::post(ctx, [this]() {
+            old_server.close();
+            new_server.close();
+        });
+        work.reset();
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+
+    asio::io_context ctx;
+    asio::executor_work_guard<asio::io_context::executor_type> work{asio::make_work_guard(ctx)};
+    NamedLoopbackServer old_server;
+    NamedLoopbackServer new_server;
+    std::thread thread;
+    std::string url;
+    mcp::auth::MetadataFetchPolicy wide;
+    mcp::auth::MetadataFetchPolicy narrow;
+    mcp::auth::HostResolver resolver_old = [](const std::string&, const std::string&) {
+        return std::vector<std::string>{"127.0.0.1"};
+    };
+    mcp::auth::HostResolver resolver_new = [](const std::string&, const std::string&) {
+        return std::vector<std::string>{"127.0.0.2"};
+    };
+};
+
+/// The fixture on the first port free on BOTH loopback addresses, or null when there is none
+/// because the second address is unavailable.
+///
+/// The fixture binds the port itself and keeps it. Probing for a free port and binding it
+/// afterwards leaves a gap, and ctest runs these tests as parallel processes that all search the
+/// same range: two of them found the same port free and the slower one failed to bind it.
+std::unique_ptr<TwinFixture> open_twin_fixture() {
+    for (unsigned short port = 18140; port < 18200; ++port) {
+        try {
+            return std::make_unique<TwinFixture>(port);
+        } catch (const boost::system::system_error&) {
+            continue;
+        }
+    }
+    return nullptr;
+}
+
+/// Skip the calling test when no twin loopback port is available -- or fail it, when the
+/// environment declared that one must be. Declares `fixture_name` as the fixture to use.
+#define MCP_TWIN_FIXTURE_OR_SKIP(fixture_name)                                                         \
+    const std::unique_ptr<TwinFixture> fixture_name##_owner = open_twin_fixture();                     \
+    if (fixture_name##_owner == nullptr) {                                                             \
+        if (twin_loopback_is_required()) {                                                             \
+            FAIL() << "MCP_REQUIRE_TWIN_LOOPBACK=1, but no port in [18140, 18200) is free on "         \
+                      "both 127.0.0.1 and 127.0.0.2, so this test would have skipped and the "         \
+                      "setter-pair atomicity evidence would have vanished silently";                   \
+        }                                                                                              \
+        GTEST_SKIP() << "no port free on both 127.0.0.1 and 127.0.0.2";                                \
+    }                                                                                                  \
+    TwinFixture& fixture_name = *fixture_name##_owner
+
+}  // namespace
+
+// The hazard itself, with the race taken out of it: the exchange is started at a point the test
+// chooses, inside the gap between the two setter calls. It sees the new resolver under the old,
+// wider allow list every time, because that is simply what the client's state is at that instant.
+TEST(OAuthSetterPairAtomicity, TheTwoSingleSettersLeaveAWindowAnExchangeCanFallInto) {
+    MCP_TWIN_FIXTURE_OR_SKIP(fixture);
+
+    asio::io_context client_ctx;
+    auto client = std::make_shared<mcp::auth::OAuthHttpClient>(client_ctx.get_executor());
+    client->set_host_resolver(fixture.resolver_old);
+    client->set_metadata_policy(fixture.wide);
+
+    std::promise<void> resolver_installed;
+    std::promise<void> exchange_finished;
+    auto installed = resolver_installed.get_future();
+    auto finished = exchange_finished.get_future();
+
+    std::thread reconfigurer([&]() {
+        client->set_host_resolver(fixture.resolver_new);
+        resolver_installed.set_value();
+        finished.wait();
+        client->set_metadata_policy(fixture.narrow);
+    });
+
+    installed.wait();
+
+    std::exception_ptr failure;
+    json body;
+    asio::co_spawn(
+        client_ctx,
+        [&]() -> asio::awaitable<void> {
+            try {
+                body = co_await client->get_json(fixture.url);
+            } catch (...) {
+                failure = std::current_exception();
+            }
+        },
+        asio::detached);
+    client_ctx.run();
+    exchange_finished.set_value();
+    reconfigurer.join();
+
+    EXPECT_EQ(classify_exchange(failure, body), Observed::new_server) << "body was " << body.dump();
+}
+
+// The regression. An application that moves between two whole configurations with a millisecond
+// of its own work between the two calls admits, on nearly every narrowing, an exchange directed
+// by the new resolver and validated against the old allow list. Applied as one unit there is no
+// instant at which that state exists, so the count is zero rather than small.
+TEST(OAuthSetterPairAtomicity, ReconfiguringAsOnePairNeverExposesTheNewResolverUnderTheOldPolicy) {
+    MCP_TWIN_FIXTURE_OR_SKIP(fixture);
+
+    asio::io_context client_ctx;
+    auto work = asio::make_work_guard(client_ctx);
+    auto client = std::make_shared<mcp::auth::OAuthHttpClient>(client_ctx.get_executor());
+
+    auto reconfigure = [&](const mcp::auth::MetadataFetchPolicy& policy,
+                           const mcp::auth::HostResolver& resolver) {
+        client->configure(policy, resolver);
+    };
+
+    reconfigure(fixture.wide, fixture.resolver_old);
+
+    std::atomic<std::uint64_t> old_server{0};
+    std::atomic<std::uint64_t> new_server{0};
+    std::atomic<std::uint64_t> refused{0};
+    std::atomic<std::uint64_t> other{0};
+    std::atomic<std::uint64_t> in_flight{0};
+    std::atomic<std::uint64_t> transitions{0};
+    std::atomic<bool> stop{false};
+
+    std::vector<std::thread> io_threads;
+    io_threads.reserve(2);
+    for (int index = 0; index < 2; ++index) {
+        io_threads.emplace_back([&client_ctx]() { client_ctx.run(); });
+    }
+
+    std::thread writer([&]() {
+        while (!stop.load(std::memory_order_relaxed)) {
+            reconfigure(fixture.narrow, fixture.resolver_new);
+            transitions.fetch_add(1, std::memory_order_relaxed);
+            busy_wait_micros(1000);
+            reconfigure(fixture.wide, fixture.resolver_old);
+            busy_wait_micros(1000);
+        }
+    });
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (transitions.load() >= 25 && old_server.load() >= 25 && refused.load() >= 25) {
+            break;
+        }
+        if (in_flight.load(std::memory_order_relaxed) >= 2) {
+            std::this_thread::yield();
+            continue;
+        }
+        in_flight.fetch_add(1, std::memory_order_relaxed);
+        asio::co_spawn(
+            client_ctx,
+            [&]() -> asio::awaitable<void> {
+                std::exception_ptr failure;
+                json body;
+                try {
+                    body = co_await client->get_json(fixture.url);
+                } catch (...) {
+                    failure = std::current_exception();
+                }
+                switch (classify_exchange(failure, body)) {
+                    case Observed::old_server:
+                        old_server.fetch_add(1, std::memory_order_relaxed);
+                        break;
+                    case Observed::new_server:
+                        new_server.fetch_add(1, std::memory_order_relaxed);
+                        break;
+                    case Observed::refused_origin:
+                        refused.fetch_add(1, std::memory_order_relaxed);
+                        break;
+                    case Observed::other:
+                        other.fetch_add(1, std::memory_order_relaxed);
+                        break;
+                }
+                in_flight.fetch_sub(1, std::memory_order_relaxed);
+            },
+            asio::detached);
+    }
+
+    stop.store(true);
+    writer.join();
+    const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (in_flight.load() > 0 && std::chrono::steady_clock::now() < drain_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_EQ(in_flight.load(), 0u) << "an exchange never completed; the run proves nothing";
+    work.reset();
+    client_ctx.stop();
+    for (auto& thread : io_threads) {
+        thread.join();
+    }
+
+    // Non-vacuity: the traffic must have straddled BOTH whole configurations, or a zero mixed count
+    // would only mean the requests all landed in one steady state.
+    EXPECT_GT(old_server.load(), 0u) << "no exchange ever ran under the wide configuration";
+    EXPECT_GT(refused.load(), 0u) << "no exchange ever ran under the narrow configuration";
+    EXPECT_GE(transitions.load(), 25u) << "the run did not reach enough narrowings to mean much";
+    EXPECT_EQ(new_server.load(), 0u)
+        << new_server.load() << " of "
+        << (old_server.load() + new_server.load() + refused.load() + other.load())
+        << " exchanges were directed by the NEW resolver while validated against the OLD, wider "
+           "allow list, across "
+        << transitions.load() << " narrowings";
+}
+
+// Guards the regression above from passing for the wrong reason: a configure() that quietly
+// dropped its resolver argument would also never produce a "new" body. Each call here installs a
+// configuration and the exchange that follows must show BOTH halves of it.
+TEST(OAuthSetterPairAtomicity, ConfigureInstallsBothOfItsArguments) {
+    MCP_TWIN_FIXTURE_OR_SKIP(fixture);
+
+    asio::io_context client_ctx;
+    mcp::auth::OAuthHttpClient client(client_ctx.get_executor());
+
+    auto observe = [&]() {
+        std::exception_ptr failure;
+        json body;
+        client_ctx.restart();
+        asio::co_spawn(
+            client_ctx,
+            [&]() -> asio::awaitable<void> {
+                try {
+                    body = co_await client.get_json(fixture.url);
+                } catch (...) {
+                    failure = std::current_exception();
+                }
+            },
+            asio::detached);
+        client_ctx.run();
+        return classify_exchange(failure, body);
+    };
+
+    client.configure(fixture.wide, fixture.resolver_old);
+    EXPECT_EQ(observe(), Observed::old_server);
+
+    // Only the resolver changes: the policy half must still be the wide one, or this would be a
+    // refusal rather than a body from the second server.
+    client.configure(fixture.wide, fixture.resolver_new);
+    EXPECT_EQ(observe(), Observed::new_server);
+
+    // Only the policy changes: the narrowing must take effect on the very next exchange.
+    client.configure(fixture.narrow, fixture.resolver_new);
+    EXPECT_EQ(observe(), Observed::refused_origin);
 }

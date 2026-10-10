@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/export.hpp>
 #include <mcp/protocol/base.hpp>
 #include <mcp/protocol/capabilities.hpp>
 #include <mcp/protocol/content.hpp>
@@ -131,25 +132,25 @@ inline void to_json(nlohmann::json& json_obj, const Tool& tool) {
 inline void from_json(const nlohmann::json& json_obj, Tool& tool) {
     json_obj.at("name").get_to(tool.name);
     json_obj.at("inputSchema").get_to(tool.inputSchema);
-    if (json_obj.contains("description")) {
+    if (detail::has_json_value(json_obj, "description")) {
         tool.description = json_obj.at("description").get<std::string>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         tool.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
-    if (json_obj.contains("annotations")) {
+    if (detail::has_json_value(json_obj, "annotations")) {
         tool.annotations = json_obj.at("annotations").get<ToolAnnotations>();
     }
-    if (json_obj.contains("outputSchema")) {
+    if (detail::has_json_value(json_obj, "outputSchema")) {
         tool.outputSchema = json_obj.at("outputSchema").get<nlohmann::json>();
     }
-    if (json_obj.contains("title")) {
+    if (detail::has_json_value(json_obj, "title")) {
         tool.title = json_obj.at("title").get<std::string>();
     }
-    if (json_obj.contains("icons")) {
+    if (detail::has_json_value(json_obj, "icons")) {
         tool.icons = json_obj.at("icons").get<std::vector<Icon>>();
     }
-    if (json_obj.contains("execution")) {
+    if (detail::has_json_value(json_obj, "execution")) {
         tool.execution = json_obj.at("execution").get<ToolExecution>();
     }
 }
@@ -158,9 +159,9 @@ inline void from_json(const nlohmann::json& json_obj, Tool& tool) {
  * @brief Parameters for calling a tool.
  */
 struct CallToolParams {
-    std::string name;                    ///< The name of the tool to call.
-    nlohmann::json arguments;            ///< The arguments for the tool call.
-    std::optional<nlohmann::json> meta;  ///< Reserved for protocol use.
+    std::string name;                                     ///< The name of the tool to call.
+    nlohmann::json arguments = nlohmann::json::object();  ///< Optional tool arguments.
+    std::optional<nlohmann::json> meta;                   ///< Reserved for protocol use.
 };
 
 inline void to_json(nlohmann::json& json_obj, const CallToolParams& params) {
@@ -172,8 +173,12 @@ inline void to_json(nlohmann::json& json_obj, const CallToolParams& params) {
 
 inline void from_json(const nlohmann::json& json_obj, CallToolParams& params) {
     json_obj.at("name").get_to(params.name);
-    json_obj.at("arguments").get_to(params.arguments);
-    if (json_obj.contains("_meta")) {
+    if (json_obj.contains("arguments") && !json_obj.at("arguments").is_object()) {
+        throw std::invalid_argument("CallToolParams arguments must be a JSON object");
+    }
+    params.arguments =
+        json_obj.contains("arguments") ? json_obj.at("arguments") : nlohmann::json::object();
+    if (detail::has_json_value(json_obj, "_meta")) {
         params.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
@@ -187,6 +192,37 @@ struct CallToolResult {
     std::optional<nlohmann::json> meta;               ///< Reserved for protocol use.
     std::optional<nlohmann::json> structuredContent;  ///< Optional structured content.
 };
+
+/**
+ * @brief Create a successful tool result containing a text block.
+ *
+ * @param text Human-readable tool output.
+ * @return A protocol-valid CallToolResult.
+ */
+MCP_API CallToolResult make_tool_text_result(std::string text);
+
+/**
+ * @brief Create a failed tool result containing a text block.
+ *
+ * @param message Human-readable error description.
+ * @return A protocol-valid CallToolResult with isError set to true.
+ */
+MCP_API CallToolResult make_tool_error_result(std::string message);
+
+/**
+ * @brief Create a successful tool result containing structured output.
+ *
+ * structuredContent accepts any JSON value (object, array, string, number,
+ * boolean, or null), per MCP SEP-2106. A JSON serialization is also emitted
+ * as text for clients that do not consume structuredContent.
+ *
+ * @param structured_content Structured tool output.
+ * @param text Optional human-readable representation. When omitted, the
+ *             structured value is serialized as JSON.
+ * @return A protocol-valid CallToolResult.
+ */
+MCP_API CallToolResult make_tool_structured_result(nlohmann::json structured_content,
+                                                   std::optional<std::string> text = std::nullopt);
 
 /**
  * @brief Serializes CallToolResult to JSON.
@@ -215,13 +251,13 @@ inline void to_json(nlohmann::json& json_obj, const CallToolResult& result) {
  */
 inline void from_json(const nlohmann::json& json_obj, CallToolResult& result) {
     json_obj.at("content").get_to(result.content);
-    if (json_obj.contains("isError")) {
+    if (detail::has_json_value(json_obj, "isError")) {
         result.isError = json_obj.at("isError").get<bool>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         result.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
-    if (json_obj.contains("structuredContent")) {
+    if (detail::has_json_value(json_obj, "structuredContent")) {
         result.structuredContent = json_obj.at("structuredContent").get<nlohmann::json>();
     }
 }

@@ -149,6 +149,9 @@ Running Tests
    # Run the GoogleTest binary directly with a filter
    ./build/mcp-sdk-tests --gtest_filter=ServerCoreTest.*
 
+A test build from a checkout needs Python 3.9+ for the peer-input matrix check;
+opt out with ``-DMCP_CPP_SDK_CHECK_JSON_MATRIX=OFF``.
+
 Code Coverage
 ^^^^^^^^^^^^^
 
@@ -161,6 +164,41 @@ Aim for >80% code coverage for new features:
 
    # View report
    open build/coverage/index.html
+
+Sanitizers
+^^^^^^^^^^
+
+CI runs the test suite under each sanitizer on every push. The same builds run
+locally:
+
+.. code-block:: bash
+
+   # AddressSanitizer + UndefinedBehaviorSanitizer
+   python scripts/build.py --sanitize --test
+
+   # ThreadSanitizer
+   python scripts/build.py --tsan --test
+
+   # Either of the two, compiled with Clang
+   python scripts/build.py --tsan --compiler clang --test
+
+   # MemorySanitizer (Clang only)
+   python scripts/build.py --msan --test
+
+Run ThreadSanitizer for code that runs on several threads or is closed from
+another thread. The two reports that are not defects (Asio's fence-based
+reference count and its signal handler) are suppressed in ``test/tsan.supp``,
+each with its reason.
+
+MemorySanitizer reports a read of any memory that uninstrumented code wrote,
+so ``--msan`` builds its own libc++ from a pinned LLVM commit into
+``build/msan-libcxx`` on first use, and has Conan rebuild Boost, OpenSSL and
+GoogleTest against it. The first run is slow; later runs reuse both. It needs
+``clang-18`` and ``git``.
+
+The ThreadSanitizer and MemorySanitizer builds run under ``setarch -R`` where
+it is available, because neither can start on kernels with a high ASLR
+entropy.
 
 Pull Request Process
 --------------------
@@ -300,7 +338,7 @@ Example bug report:
    **Steps to Reproduce**
    ```cpp
    mcp::Client client(transport, executor);
-   co_await client.call_tool("nonexistent", {});  // Hangs forever
+   co_await client.call_tool("nonexistent", nlohmann::json::object());  // Hangs forever
    ```
 
    **Expected**: Exception thrown or timeout
@@ -383,6 +421,50 @@ callee's suspensions.
 **Detection**: Run tests on Ubuntu 22.04 / GCC 11.
 The crash manifests as ``munmap_chunk(): invalid pointer`` at process exit, not at the
 point of access, making it hard to debug without valgrind.
+
+GCC 12 and 13 Initializer-List Coroutine ICE
+---------------------------------------------
+
+**Never write an initializer list inside a co_await expression when its elements
+have non-trivial destructors.** GCC 12 and GCC 13 crash outright:
+
+.. code-block:: text
+
+   internal compiler error: in build_special_member_call, at cp/call.cc:11096
+
+Unlike the GCC 11 bug above, this is a compile-time failure, not a runtime one, and the
+diagnostic points at the closing brace of the enclosing lambda rather than the offending
+argument. GCC 13 is the default compiler on Ubuntu 24.04.
+
+**Affected** (each crashes GCC 12 and 13):
+
+.. code-block:: cpp
+
+   co_await client.call_tool("hello", nlohmann::json{{"name", "World"}});
+   co_await client.call_tool("hello", nlohmann::json({{"name", "World"}}));  // parens do not help
+   co_await client.get_prompt("greet", std::map<std::string, std::string>{{"who", "you"}});
+   co_await client.call_tool("e", std::vector<std::string>{"a", "b"});
+
+**Not affected**: ``nlohmann::json::object()``, ``std::vector<int>{1, 2, 3}`` (trivially
+destructible elements), a ``std::string`` temporary, and aggregate initialization such as
+``mcp::ClientCapabilities{}`` or ``AddArgs{.a = 3.0, .b = 4.0}``. The trigger is the
+initializer-list backing array, not the type.
+
+**Fix pattern — hoist-before-await**: bind the value to a named variable before the
+co_await expression.
+
+.. code-block:: cpp
+
+   // DO NOT: co_await client.call_tool("hello", nlohmann::json{{"name", "World"}});
+   nlohmann::json arguments{{"name", "World"}};
+   auto result = co_await client.call_tool("hello", arguments);
+
+Changing the SDK's own signatures does not help: a parameter taken by value instead of by
+const reference still crashes. Avoiding the construct at the call site is the only fix.
+
+**Detection**: ``scripts/check_readme_snippets.py`` compiles the README's complete
+examples with the toolchain that built the SDK, and CI runs it on the Linux matrix
+entries, where that toolchain is GCC.
 
 Feature Requests
 ----------------

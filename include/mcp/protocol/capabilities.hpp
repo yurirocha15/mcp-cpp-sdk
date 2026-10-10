@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -33,6 +34,15 @@ constexpr std::string_view g_PROTOCOL_VERSION_2025_06_18 = "2025-06-18";
 constexpr std::string_view g_PROTOCOL_VERSION_2025_11_25 = "2025-11-25";
 
 /**
+ * @brief Protocol version 2026-07-28 (stateless protocol revision).
+ *
+ * @details Deliberately absent from g_SUPPORTED_PROTOCOL_VERSIONS: legacy initialize
+ * negotiation must only resolve to versions whose semantics this SDK fully serves. This
+ * constant feeds the discovery surface until dual-era dispatch lands.
+ */
+constexpr std::string_view g_PROTOCOL_VERSION_2026_07_28 = "2026-07-28";
+
+/**
  * @brief The latest supported protocol version.
  */
 constexpr std::string_view g_LATEST_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2025_11_25;
@@ -43,6 +53,19 @@ constexpr std::string_view g_LATEST_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2025_1
 constexpr std::array<std::string_view, 4> g_SUPPORTED_PROTOCOL_VERSIONS = {
     g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
     g_PROTOCOL_VERSION_2025_11_25};
+
+/**
+ * @brief Protocol versions advertised through the 2026-07-28 discovery surface.
+ *
+ * @details Consumed only by server/discover; deliberately distinct from
+ * g_SUPPORTED_PROTOCOL_VERSIONS, which alone governs legacy initialize negotiation.
+ * Advertising a version here makes no promise to the negotiation path: a legacy peer
+ * requesting 2026-07-28 still negotiates g_LATEST_PROTOCOL_VERSION until dual-era dispatch
+ * serves the new semantics.
+ */
+constexpr std::array<std::string_view, 5> g_DISCOVERABLE_PROTOCOL_VERSIONS = {
+    g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
+    g_PROTOCOL_VERSION_2025_11_25, g_PROTOCOL_VERSION_2026_07_28};
 
 /**
  * @brief Check whether a protocol version is supported by this SDK.
@@ -207,16 +230,16 @@ inline void to_json(nlohmann::json& json_obj, const Implementation& impl) {
 inline void from_json(const nlohmann::json& json_obj, Implementation& impl) {
     json_obj.at("name").get_to(impl.name);
     json_obj.at("version").get_to(impl.version);
-    if (json_obj.contains("title")) {
+    if (detail::has_json_value(json_obj, "title")) {
         impl.title = json_obj.at("title").get<std::string>();
     }
-    if (json_obj.contains("description")) {
+    if (detail::has_json_value(json_obj, "description")) {
         impl.description = json_obj.at("description").get<std::string>();
     }
-    if (json_obj.contains("websiteUrl")) {
+    if (detail::has_json_value(json_obj, "websiteUrl")) {
         impl.websiteUrl = json_obj.at("websiteUrl").get<std::string>();
     }
-    if (json_obj.contains("icons")) {
+    if (detail::has_json_value(json_obj, "icons")) {
         impl.icons = json_obj.at("icons").get<std::vector<Icon>>();
     }
 }
@@ -298,6 +321,8 @@ struct ClientCapabilities {
     std::optional<RootsCapability> roots;        ///< Support for roots/list requests.
     std::optional<SamplingCapability> sampling;  ///< Support for sampling/createMessage requests.
     std::optional<TasksCapability> tasks;        ///< Support for task lifecycle endpoints.
+    std::optional<std::map<std::string, nlohmann::json>>
+        extensions;  ///< Extension capability negotiation, keyed by extension name.
 };
 
 inline void to_json(nlohmann::json& j, const ClientCapabilities::ElicitationCapability& cap) {
@@ -445,6 +470,9 @@ inline void to_json(nlohmann::json& j, const ClientCapabilities& cap) {
     if (cap.tasks) {
         j["tasks"] = *cap.tasks;
     }
+    if (cap.extensions) {
+        j["extensions"] = *cap.extensions;
+    }
 }
 
 inline void from_json(const nlohmann::json& j, ClientCapabilities& cap) {
@@ -462,6 +490,9 @@ inline void from_json(const nlohmann::json& j, ClientCapabilities& cap) {
     }
     if (j.contains("tasks")) {
         cap.tasks = j.at("tasks").get<ClientCapabilities::TasksCapability>();
+    }
+    if (j.contains("extensions")) {
+        cap.extensions = j.at("extensions").get<std::map<std::string, nlohmann::json>>();
     }
 }
 
@@ -528,6 +559,8 @@ struct ServerCapabilities {
     std::optional<ResourcesCapability> resources;  ///< Support for resource endpoints.
     std::optional<TasksCapability> tasks;          ///< Support for task lifecycle endpoints.
     std::optional<ToolsCapability> tools;          ///< Support for tool endpoints.
+    std::optional<std::map<std::string, nlohmann::json>>
+        extensions;  ///< Extension capability negotiation, keyed by extension name.
 };
 
 inline void to_json(nlohmann::json& j, const ServerCapabilities::PromptsCapability& cap) {
@@ -652,6 +685,9 @@ inline void to_json(nlohmann::json& j, const ServerCapabilities& cap) {
     if (cap.tools) {
         j["tools"] = *cap.tools;
     }
+    if (cap.extensions) {
+        j["extensions"] = *cap.extensions;
+    }
 }
 
 inline void from_json(const nlohmann::json& j, ServerCapabilities& cap) {
@@ -675,6 +711,9 @@ inline void from_json(const nlohmann::json& j, ServerCapabilities& cap) {
     }
     if (j.contains("tools")) {
         cap.tools = j.at("tools").get<ServerCapabilities::ToolsCapability>();
+    }
+    if (j.contains("extensions")) {
+        cap.extensions = j.at("extensions").get<std::map<std::string, nlohmann::json>>();
     }
 }
 
@@ -734,6 +773,107 @@ inline void from_json(const nlohmann::json& json_obj, InitializeResult& res) {
     json_obj.at("serverInfo").get_to(res.serverInfo);
     if (json_obj.contains("instructions")) {
         res.instructions = json_obj.at("instructions").get<std::string>();
+    }
+}
+
+/**
+ * @brief Represents a server/discover request from the client.
+ *
+ * @details Carries no body parameters beyond the standard `_meta` field. Per the
+ * 2026-07-28 spec, `_meta` may include `io.modelcontextprotocol/protocolVersion`,
+ * `io.modelcontextprotocol/clientInfo`, and `io.modelcontextprotocol/clientCapabilities`;
+ * this type accepts and preserves the raw `_meta` object without interpreting its
+ * contents.
+ */
+struct DiscoverRequest {
+    std::optional<nlohmann::json> meta;  ///< Reserved for protocol use; contents not interpreted yet.
+};
+
+inline void to_json(nlohmann::json& json_obj, const DiscoverRequest& req) {
+    json_obj = nlohmann::json::object();
+    if (req.meta) {
+        json_obj["_meta"] = *req.meta;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, DiscoverRequest& req) {
+    if (json_obj.contains("_meta")) {
+        req.meta = json_obj.at("_meta");
+    }
+}
+
+/**
+ * @brief Caching scope hint for a cacheable result, per server/utilities/caching.
+ */
+enum class CacheScope : std::uint8_t {
+    ePublic,   ///< The response does not contain user-specific data and may be shared.
+    ePrivate,  ///< The response is scoped to the caller's authorization context.
+};
+
+NLOHMANN_JSON_SERIALIZE_ENUM(CacheScope,
+                             {{CacheScope::ePublic, "public"}, {CacheScope::ePrivate, "private"}})
+
+/**
+ * @brief Represents the result of a server/discover request.
+ *
+ * @details `resultType` is always "complete" for this result.
+ */
+struct DiscoverResult {
+    std::string resultType = "complete";         ///< Always "complete" for this result.
+    std::vector<std::string> supportedVersions;  ///< Protocol versions the server supports.
+    ServerCapabilities capabilities;             ///< The capabilities supported by the server.
+    ServerInfo serverInfo;                    ///< Server identity, carried under `_meta` on the wire.
+    std::optional<std::string> instructions;  ///< Optional instructions for the client.
+    std::optional<std::int64_t> ttlMs;        ///< Optional caching TTL hint, in milliseconds.
+    std::optional<CacheScope> cacheScope;     ///< Optional caching scope hint.
+};
+
+/**
+ * @brief Serializes DiscoverResult to JSON.
+ *
+ * @param json_obj The JSON object to populate.
+ * @param res The DiscoverResult object to serialize.
+ */
+inline void to_json(nlohmann::json& json_obj, const DiscoverResult& res) {
+    json_obj = nlohmann::json{
+        {"resultType", res.resultType},
+        {"supportedVersions", res.supportedVersions},
+        {"capabilities", res.capabilities},
+        {"_meta", {{"io.modelcontextprotocol/serverInfo", res.serverInfo}}},
+    };
+    if (res.instructions) {
+        json_obj["instructions"] = *res.instructions;
+    }
+    if (res.ttlMs) {
+        json_obj["ttlMs"] = *res.ttlMs;
+    }
+    if (res.cacheScope) {
+        json_obj["cacheScope"] = *res.cacheScope;
+    }
+}
+
+/**
+ * @brief Deserializes DiscoverResult from JSON.
+ *
+ * @param json_obj The JSON object to read from.
+ * @param res The DiscoverResult object to populate.
+ */
+inline void from_json(const nlohmann::json& json_obj, DiscoverResult& res) {
+    json_obj.at("resultType").get_to(res.resultType);
+    json_obj.at("supportedVersions").get_to(res.supportedVersions);
+    json_obj.at("capabilities").get_to(res.capabilities);
+    if (json_obj.contains("_meta") &&
+        json_obj.at("_meta").contains("io.modelcontextprotocol/serverInfo")) {
+        json_obj.at("_meta").at("io.modelcontextprotocol/serverInfo").get_to(res.serverInfo);
+    }
+    if (json_obj.contains("instructions")) {
+        res.instructions = json_obj.at("instructions").get<std::string>();
+    }
+    if (json_obj.contains("ttlMs")) {
+        res.ttlMs = json_obj.at("ttlMs").get<std::int64_t>();
+    }
+    if (json_obj.contains("cacheScope")) {
+        res.cacheScope = json_obj.at("cacheScope").get<CacheScope>();
     }
 }
 

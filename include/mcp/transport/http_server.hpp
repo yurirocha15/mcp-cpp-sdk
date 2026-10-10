@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace mcp {
 
@@ -179,10 +180,114 @@ class MCP_API HttpServerTransport final : public ITransport {
      *
      * When enabled, HTTP POST responses always use `application/json` and
      * outbound responses are not copied into the SSE replay event store.
+     * This option is atomic and may be changed while the listener is running.
      *
      * @param json_only True to bypass SSE framing and event storage.
      */
     void set_json_only(bool json_only);
+
+    /**
+     * @brief Replace the allowlist used for requests carrying an Origin header.
+     *
+     * Requests without an Origin header remain valid for non-browser MCP clients. An Origin header
+     * is rejected by default until its exact value appears in this allowlist.
+     * Configure the allowlist before listen() or run() starts.
+     *
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_allowed_origins(std::vector<std::string> origins);
+
+    /**
+     * @brief Explicitly opt into accepting every Origin header value.
+     *
+     * Configure this before listen() or run() starts.
+     *
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_allow_all_origins(bool allow_all);
+
+    /**
+     * @brief Require and validate an HTTP Authorization: Bearer header.
+     *
+     * Passing an empty validator disables HTTP authentication.
+     * Configure the validator before listen() or run() starts.
+     *
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_bearer_token_validator(BearerTokenValidator validator);
+
+    /**
+     * @brief Require an Authorization: Bearer header and validate it asynchronously.
+     *
+     * Use this when the decision needs I/O -- token introspection, a JWKS fetch -- so it suspends
+     * instead of blocking the executor that is concurrently serving MCP traffic.
+     *
+     * Passing an empty validator disables HTTP authentication.
+     * Configure the validator before listen() or run() starts.
+     *
+     * @throws std::logic_error If a synchronous validator is already installed, or if listen() has
+     *         already been called or the transport is closed.
+     */
+    void set_async_bearer_token_validator(AsyncBearerTokenValidator validator);
+
+    /**
+     * @brief Cap the HTTP request body this transport will read.
+     *
+     * A request whose body exceeds the cap is answered `413 Payload Too Large` and its connection is
+     * closed; it never reaches MCP dispatch. Defaults to
+     * mcp::constants::g_default_max_request_body_bytes. Binary content travels as base64 inside the
+     * JSON body, so a cap near the size of the raw content rejects it.
+     *
+     * Configure the cap before listen() or run() starts.
+     *
+     * @throws std::invalid_argument If `max_bytes` is zero.
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_max_request_body_bytes(std::size_t max_bytes);
+
+    /**
+     * @brief Set the parameters sent in the `WWW-Authenticate` header of every 401.
+     *
+     * Without this call the transport sends the bare `Bearer` challenge. A client that has to
+     * discover where to obtain a token needs at least `resource_metadata`; setting protected
+     * resource metadata fills that field in automatically when it is left empty here.
+     *
+     * Configure the challenge before listen() or run() starts.
+     *
+     * @throws std::invalid_argument If a challenge value cannot be sent in a quoted-string.
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_bearer_challenge(BearerChallengeConfig challenge);
+
+    /**
+     * @brief Serve an RFC 9728 protected-resource metadata document.
+     *
+     * The document answers GET requests at its configured path without an Authorization header. When
+     * the bearer challenge carries no `resource_metadata`, it is populated with this document's URL.
+     *
+     * Configure the metadata before listen() or run() starts.
+     *
+     * @throws std::invalid_argument If `resource` is empty or is not an absolute URL.
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_protected_resource_metadata(ProtectedResourceMetadataConfig metadata);
+
+    /**
+     * @brief Exempt request paths from bearer validation and exclude them from MCP dispatch.
+     *
+     * An entry is excused from the bearer check and also removed from the set of paths MCP answers:
+     * if the protected-resource metadata route does not claim it, the request is answered `404 Not
+     * Found` rather than dispatched, so MCP is never served without authentication on an exempt path.
+     *
+     * Each entry is compared for equality against the path component of the request target, with any
+     * query string or fragment removed first, so `/health` also exempts `/health?probe=1`. Empty by
+     * default.
+     *
+     * Configure the paths before listen() or run() starts.
+     *
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_unauthenticated_paths(std::vector<std::string> paths);
 
     /**
      * @brief Read the next queued JSON-RPC message from HTTP POST bodies.
@@ -210,7 +315,8 @@ class MCP_API HttpServerTransport final : public ITransport {
 
    private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    static Task<void> listen_impl(std::shared_ptr<Impl> impl);
+    std::shared_ptr<Impl> impl_;
 };
 
 }  // namespace mcp

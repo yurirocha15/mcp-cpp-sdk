@@ -1,0 +1,2562 @@
+#include <mcp/auth/oauth.hpp>
+
+#include "oauth_internal.hpp"
+
+#include <mcp/transport/http_client.hpp>
+
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+
+#include <mcp/detail/secure_random.hpp>
+
+#include <algorithm>
+#include <atomic>
+#include <boost/asio/bind_executor.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/dispatch.hpp>
+#include <boost/asio/error.hpp>
+#include <boost/asio/ip/address.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/redirect_error.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
+#include <boost/system/error_code.hpp>
+#include <boost/version.hpp>
+#include <chrono>
+#include <cstdint>
+#include <ctime>
+#include <exception>
+#include <iterator>
+#include <list>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// GCC 11 SSO Coroutine Safety -- see docs/contributing.rst "Known Issues".
+// Strings and string-containing protocol values that cross a suspension point
+// live in shared operation state rather than directly in coroutine frames.
+
+namespace mcp::auth {
+
+namespace beast = boost::beast;
+namespace http = beast::http;
+namespace net = boost::asio;
+
+namespace detail {
+
+std::string base64_encode(const unsigned char* data, std::size_t len) {
+    std::string result;
+    result.reserve(((len + 2) / 3) * 4);
+
+    for (std::size_t i = 0; i < len; i += 3) {
+        unsigned int value = static_cast<unsigned int>(data[i]) << constants::g_shift16;
+        if (i + 1 < len) {
+            value |= static_cast<unsigned int>(data[i + 1]) << constants::g_shift8;
+        }
+        if (i + 2 < len) {
+            value |= static_cast<unsigned int>(data[i + 2]);
+        }
+
+        result.push_back(
+            mcp::constants::g_alphabet[(value >> constants::g_shift18) & constants::g_mask0x3F]);
+        result.push_back(
+            mcp::constants::g_alphabet[(value >> constants::g_shift12) & constants::g_mask0x3F]);
+        result.push_back(
+            (i + 1 < len)
+                ? mcp::constants::g_alphabet[(value >> constants::g_shift6) & constants::g_mask0x3F]
+                : '=');
+        result.push_back((i + 2 < len) ? mcp::constants::g_alphabet[value & constants::g_mask0x3F]
+                                       : '=');
+    }
+
+    return result;
+}
+
+std::string base64url_encode(const unsigned char* data, std::size_t len) {
+    auto encoded = base64_encode(data, len);
+
+    for (auto& ch : encoded) {
+        if (ch == '+') {
+            ch = '-';
+        } else if (ch == '/') {
+            ch = '_';
+        }
+    }
+    encoded.erase(std::remove(encoded.begin(), encoded.end(), '='), encoded.end());
+    return encoded;
+}
+
+std::array<unsigned char, constants::g_sha256_digest_length> sha256(const std::string& input) {
+    std::array<unsigned char, constants::g_sha256_digest_length> digest{};
+    unsigned int digest_len = 0;
+
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+    if (!context || EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1 ||
+        EVP_DigestUpdate(context.get(), input.data(), input.size()) != 1 ||
+        EVP_DigestFinal_ex(context.get(), digest.data(), &digest_len) != 1) {
+        throw std::runtime_error("OpenSSL SHA-256 failed");
+    }
+
+    return digest;
+}
+
+std::string generate_random_string(std::size_t length) {
+    static const std::size_t s_charset_size = mcp::constants::g_unreserved_chars.size();
+    static const auto s_bias_limit =
+        static_cast<unsigned char>((256 / s_charset_size) * s_charset_size);
+
+    std::string result;
+    result.reserve(length);
+    while (result.size() < length) {
+        unsigned char byte = 0;
+        if (RAND_bytes(&byte, 1) != 1) {
+            throw std::runtime_error("RAND_bytes failed");
+        }
+        if (byte < s_bias_limit) {
+            result.push_back(mcp::constants::g_unreserved_chars[byte % s_charset_size]);
+        }
+    }
+    return result;
+}
+
+std::string url_encode(const std::string& value) {
+    std::string result;
+    result.reserve(value.size() * 3);
+
+    for (unsigned char ch : value) {
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+            ch == '-' || ch == '_' || ch == '.' || ch == '~') {
+            result.push_back(static_cast<char>(ch));
+        } else {
+            result.push_back('%');
+            result.push_back(mcp::constants::g_hex_digits_upper[ch >> constants::g_shift4]);
+            result.push_back(mcp::constants::g_hex_digits_upper[ch & constants::g_mask0x0F]);
+        }
+    }
+    return result;
+}
+
+std::string build_form_body(const KeyValuePairList& params) {
+    std::string body;
+    for (const auto& [key, value] : params) {
+        if (!body.empty()) {
+            body.push_back('&');
+        }
+        body += url_encode(key) + "=" + url_encode(value);
+    }
+    return body;
+}
+
+}  // namespace detail
+
+PkcePair generate_pkce_pair(std::size_t verifier_length) {
+    if (verifier_length < constants::g_min_verifier_length ||
+        verifier_length > constants::g_max_verifier_length) {
+        throw std::invalid_argument("PKCE verifier length must be 43-128 characters");
+    }
+
+    PkcePair pair;
+    pair.code_verifier = detail::generate_random_string(verifier_length);
+    pair.challenge_method = "S256";
+
+    const auto hash = detail::sha256(pair.code_verifier);
+    pair.code_challenge = detail::base64url_encode(hash.data(), hash.size());
+    return pair;
+}
+
+bool TokenResponse::is_expired(int margin) const {
+    if (!expires_in.has_value()) {
+        return false;
+    }
+    const auto expiry = received_at + std::chrono::seconds(*expires_in) - std::chrono::seconds(margin);
+    return std::chrono::steady_clock::now() >= expiry;
+}
+
+void from_json(const nlohmann::json& json, TokenResponse& token) {
+    json.at("access_token").get_to(token.access_token);
+    token.token_type = json.value("token_type", "Bearer");
+    if (json.contains("refresh_token")) {
+        token.refresh_token = json.at("refresh_token").get<std::string>();
+    }
+    if (json.contains("expires_in")) {
+        token.expires_in = json.at("expires_in").get<int>();
+    }
+    if (json.contains("scope")) {
+        token.scope = json.at("scope").get<std::string>();
+    }
+    token.received_at = std::chrono::steady_clock::now();
+}
+
+void to_json(nlohmann::json& json, const TokenResponse& token) {
+    json = nlohmann::json{{"access_token", token.access_token}, {"token_type", token.token_type}};
+    if (token.refresh_token) {
+        json["refresh_token"] = *token.refresh_token;
+    }
+    if (token.expires_in) {
+        json["expires_in"] = *token.expires_in;
+    }
+    if (token.scope) {
+        json["scope"] = *token.scope;
+    }
+}
+
+struct InMemoryTokenStore::Impl {
+    mutable std::mutex mutex;
+    std::unordered_map<std::string, TokenResponse> tokens;
+};
+
+InMemoryTokenStore::InMemoryTokenStore() : impl_(std::make_unique<Impl>()) {}
+
+InMemoryTokenStore::~InMemoryTokenStore() = default;
+
+void InMemoryTokenStore::store(const std::string& server_url, TokenResponse token) {
+    std::lock_guard lock(impl_->mutex);
+    impl_->tokens[server_url] = std::move(token);
+}
+
+std::optional<TokenResponse> InMemoryTokenStore::load(const std::string& server_url) const {
+    std::lock_guard lock(impl_->mutex);
+    const auto iter = impl_->tokens.find(server_url);
+    if (iter == impl_->tokens.end()) {
+        return std::nullopt;
+    }
+    return iter->second;
+}
+
+void InMemoryTokenStore::remove(const std::string& server_url) {
+    std::lock_guard lock(impl_->mutex);
+    impl_->tokens.erase(server_url);
+}
+
+namespace {
+
+constexpr std::string_view g_https_prefix = "https://";
+
+/// Flattens peer-controlled text -- control characters, bidi overrides and ill-formed UTF-8 -- and
+/// caps it, so a value a peer chose cannot forge or reorder a line of a diagnostic. Every throw
+/// site in this file that interpolates a value originating from a peer must route it through here;
+/// `MetadataPolicyError` does the same inside its own constructor, so its throw sites do not repeat
+/// it. This is a convention, not something the compiler checks: a new throw site that forgets it
+/// re-opens the hole silently.
+using detail::sanitize_for_diagnostics;
+
+/// Resolve a `Location` header against the URL that produced it.
+std::string resolve_redirect_target(const std::string& base, const std::string& location) {
+    if (location.find("://") != std::string::npos) {
+        return location;
+    }
+    const auto origin = metadata_url_origin(base);
+    if (origin.empty()) {
+        return location;
+    }
+    if (!location.empty() && location.front() == '/') {
+        return origin + location;
+    }
+
+    auto directory = base;
+    if (const auto query = directory.find_first_of("?#"); query != std::string::npos) {
+        directory.erase(query);
+    }
+    const auto last_slash = directory.rfind('/');
+    if (last_slash == std::string::npos || last_slash < origin.size()) {
+        return origin + "/" + location;
+    }
+    return directory.substr(0, last_slash + 1) + location;
+}
+
+bool is_redirect_status(unsigned int status) {
+    return status == static_cast<unsigned int>(http::status::moved_permanently) ||
+           status == static_cast<unsigned int>(http::status::found) ||
+           status == static_cast<unsigned int>(http::status::see_other) ||
+           status == static_cast<unsigned int>(http::status::temporary_redirect) ||
+           status == static_cast<unsigned int>(http::status::permanent_redirect);
+}
+
+/// RFC 9728 section 3.3: does a protected-resource metadata `resource` value identify the server this
+/// client is configured for? Accepted when the two are byte-exact, or when `resource` is a proper URI
+/// prefix of `server_url` under RFC 8707 audience semantics: same scheme and authority, compared
+/// byte-exact with no normalization (an explicit default port differs from an implicit one), and a
+/// path that is empty/`"/"` (matches any path) or a prefix of the server URL's path on a `/` segment
+/// boundary. A single trailing `/` on `resource`'s path is ignored. `resource` may not carry a query
+/// or fragment.
+///
+/// An origin-root resource is accepted for any path by design: the root-PRM layout (conformance
+/// `auth/metadata-var2`). This only decides whether the value may be sent as the `resource`
+/// parameter; the authorization server remains the arbiter of the audience it issues.
+bool resource_identifies_server(const std::string& resource, const std::string& server_url) {
+    if (resource == server_url) {
+        return true;
+    }
+    if (resource.find('?') != std::string::npos || resource.find('#') != std::string::npos) {
+        return false;
+    }
+    const auto resource_origin = metadata_url_origin(resource);
+    const auto server_origin = metadata_url_origin(server_url);
+    if (resource_origin.empty() || resource_origin != server_origin) {
+        return false;
+    }
+    auto resource_path = resource.substr(resource_origin.size());
+    if (resource_path.empty() || resource_path == "/") {
+        return true;
+    }
+    if (resource_path.back() == '/') {
+        resource_path.pop_back();
+    }
+    const auto server_path = server_url.substr(server_origin.size());
+    if (server_path == resource_path) {
+        return true;
+    }
+    return server_path.size() > resource_path.size() &&
+           server_path.compare(0, resource_path.size(), resource_path) == 0 &&
+           server_path[resource_path.size()] == '/';
+}
+
+/// Throws unless `resource` is present and identifies `server_url`.
+///
+/// Called before the SDK contacts anything the protected-resource document names, so a document
+/// that does not identify our configured server cannot make us fetch attacker-named authorization
+/// server metadata, register a client with it, or persist those credentials.
+void require_resource_identifies_server(const std::string& resource, const std::string& server_url) {
+    if (resource.empty()) {
+        // RFC 9728 §2 makes `resource` a required member; a PRM that omits it (or ships it
+        // empty) does not meet the spec and must not be trusted silently.
+        throw std::runtime_error("Protected resource metadata for server '" +
+                                 sanitize_for_diagnostics(server_url) +
+                                 "' is missing the required 'resource' member");
+    }
+    if (!resource_identifies_server(resource, server_url)) {
+        throw std::runtime_error("Protected resource metadata resource '" +
+                                 sanitize_for_diagnostics(resource) + "' does not identify server '" +
+                                 sanitize_for_diagnostics(server_url) + "'");
+    }
+}
+
+}  // namespace
+
+namespace detail {
+
+/// One scope's abort latch, owned jointly by the scope object and by every exchange issued
+/// through it. `aborted` is guarded by the owning client's `active_mutex`, the same mutex the
+/// client-wide latch is read and written under, so the scoped and unscoped checks keep the
+/// single synchronisation discipline they have always had.
+struct OAuthScopeState {
+    OAuthScopeState() { live().fetch_add(1, std::memory_order_relaxed); }
+    OAuthScopeState(const OAuthScopeState&) = delete;
+    OAuthScopeState& operator=(const OAuthScopeState&) = delete;
+    ~OAuthScopeState() { live().fetch_sub(1, std::memory_order_relaxed); }
+
+    bool aborted{false};
+
+    /// How many latches exist right now, across every client in the process. Instrumentation for
+    /// the retention test: the count returning to its starting value after a churn of scopes is
+    /// what says the latches were released rather than parked somewhere.
+    static std::atomic<std::size_t>& live() {
+        static std::atomic<std::size_t> count{0};
+        return count;
+    }
+    static std::size_t live_count() { return live().load(std::memory_order_relaxed); }
+};
+
+}  // namespace detail
+
+struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Impl> {
+    struct ParsedUrl {
+        std::string scheme;
+        std::string host;
+        std::string port;
+        std::string path;
+    };
+
+    /// State for one HTTP exchange. `reset` rebuilds the per-hop pieces so a redirect can be
+    /// followed on a fresh connection without discarding the operation.
+    struct Exchange {
+        Exchange(std::shared_ptr<Impl> state, net::strand<net::any_io_executor> executor,
+                 std::string target, std::shared_ptr<detail::OAuthScopeState> abort_scope,
+                 MetadataFetchPolicy fetch_policy, HostResolver resolver_hook)
+            : owner(std::move(state)),
+              strand(std::move(executor)),
+              url(std::move(target)),
+              resolver(strand),
+              scope(std::move(abort_scope)),
+              policy(std::move(fetch_policy)),
+              host_resolver(std::move(resolver_hook)) {}
+
+        void reset() {
+            endpoints.clear();
+            // A redirect is followed on a fresh connection; tcp_stream is not reassignable.
+            stream.emplace(strand);
+            buffer.clear();
+            parser.emplace();
+            parser->body_limit(policy.max_response_bytes);
+        }
+
+        [[nodiscard]] const http::response<http::string_body>& response() const {
+            return parser->get();
+        }
+
+        std::shared_ptr<Impl> owner;
+        net::strand<net::any_io_executor> strand;
+        ParsedUrl parsed;
+        std::string url;
+        net::ip::tcp::resolver resolver;
+        std::vector<net::ip::tcp::endpoint> endpoints;
+        std::optional<beast::tcp_stream> stream;
+        beast::flat_buffer buffer;
+        std::optional<http::response_parser<http::string_body>> parser;
+        std::string body;
+        /// The abort latch this exchange answers to, held for the exchange's whole life so the
+        /// latch cannot be freed while this exchange can still read it. Null is the client's own
+        /// unscoped work, which only abort_pending() ends.
+        std::shared_ptr<detail::OAuthScopeState> scope;
+        /// Pinned for this exchange's whole life; see Impl::make_exchange().
+        MetadataFetchPolicy policy;
+        HostResolver host_resolver;
+    };
+
+    explicit Impl(const net::any_io_executor& executor) : strand(net::make_strand(executor)) {}
+
+    static ParsedUrl parse_url(const std::string& url) {
+        std::string scheme;
+        std::string default_port;
+        std::size_t prefix_length = 0;
+        if (url.starts_with(mcp::constants::g_http_prefix)) {
+            scheme = "http";
+            default_port = "80";
+            prefix_length = mcp::constants::g_http_prefix.size();
+        } else if (url.starts_with(g_https_prefix)) {
+            scheme = "https";
+            default_port = "443";
+            prefix_length = g_https_prefix.size();
+        } else {
+            throw std::invalid_argument(
+                "OAuth HTTP client URL must use the http:// or https:// scheme");
+        }
+
+        auto authority_and_path = url.substr(prefix_length);
+        const auto path_separator = authority_and_path.find('/');
+        auto authority = authority_and_path.substr(0, path_separator);
+        auto path =
+            path_separator == std::string::npos ? "/" : authority_and_path.substr(path_separator);
+
+        std::string host;
+        auto port = std::move(default_port);
+        const auto colon = authority.find(':');
+        if (colon == std::string::npos) {
+            host = std::move(authority);
+        } else {
+            host = authority.substr(0, colon);
+            port = authority.substr(colon + 1);
+        }
+
+        return {std::move(scheme), std::move(host), std::move(port), std::move(path)};
+    }
+
+    /// Validate a target before any lookup. Refusal happens here, so the host of a refused target
+    /// is never resolved and no socket is opened for it.
+    static void enforce_url_policy(const MetadataFetchPolicy& policy, const std::string& url) {
+        const auto decision = validate_metadata_url(policy, url);
+        if (decision != MetadataUrlDecision::allowed) {
+            throw MetadataPolicyError(decision, url);
+        }
+    }
+
+    /// Classify every address a lookup produced. One blocked answer refuses the whole fetch, so a
+    /// resolver that mixes a routable answer with a hostile one cannot smuggle the hostile one in.
+    static void enforce_address_policy(const MetadataFetchPolicy& policy,
+                                       const std::vector<net::ip::tcp::endpoint>& endpoints) {
+        for (const auto& endpoint : endpoints) {
+            auto literal = endpoint.address().to_string();
+            const auto decision = validate_metadata_address(policy, literal);
+            if (decision != MetadataUrlDecision::allowed) {
+                throw MetadataPolicyError(decision, std::move(literal));
+            }
+        }
+    }
+
+    static Task<void> connect(const std::shared_ptr<Exchange>& exchange) {
+        if (exchange->parsed.scheme != "http") {
+            throw std::runtime_error(
+                "OAuth over https requires TLS support, which this build does not provide: " +
+                sanitize_for_diagnostics(exchange->url));
+        }
+
+        if (exchange->host_resolver) {
+            const auto port = static_cast<unsigned short>(std::stoul(exchange->parsed.port));
+            for (const auto& literal :
+                 exchange->host_resolver(exchange->parsed.host, exchange->parsed.port)) {
+                boost::system::error_code parse_error;
+                const auto address = net::ip::make_address(literal, parse_error);
+                if (parse_error) {
+                    throw std::runtime_error("Host resolver returned an unusable address: " +
+                                             sanitize_for_diagnostics(literal));
+                }
+                exchange->endpoints.emplace_back(address, port);
+            }
+        } else {
+            const auto results = co_await exchange->resolver.async_resolve(
+                exchange->parsed.host, exchange->parsed.port, net::use_awaitable);
+            for (const auto& entry : results) {
+                exchange->endpoints.push_back(entry.endpoint());
+            }
+        }
+
+        if (exchange->endpoints.empty()) {
+            throw std::runtime_error("No address resolved for " +
+                                     sanitize_for_diagnostics(exchange->parsed.host));
+        }
+        enforce_address_policy(exchange->policy, exchange->endpoints);
+
+        // Last look at the abort before a socket exists. An abort_pending() that ran while the
+        // lookup was past cancelling found nothing to close. This coroutine holds the client's
+        // strand from here until it suspends inside async_connect(), which opens the socket
+        // first, and the close a later abort posts runs on that strand: it cannot run before the
+        // socket is open, whichever thread it runs on, so it finds the socket and closes it.
+        throw_if_aborted(exchange);
+
+        // Connect only to the addresses this single lookup produced. They are pinned for the
+        // exchange, so a name that resolves differently later cannot redirect it.
+        exchange->stream->expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
+        co_await exchange->stream->async_connect(exchange->endpoints, net::use_awaitable);
+    }
+
+    template <typename Request>
+    static Task<void> exchange_once(const std::shared_ptr<Exchange>& exchange, Request& request) {
+        co_await connect(exchange);
+
+        exchange->stream->expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
+        co_await http::async_write(*exchange->stream, request, net::use_awaitable);
+        try {
+            co_await http::async_read(*exchange->stream, exchange->buffer, *exchange->parser,
+                                      net::use_awaitable);
+        } catch (const boost::system::system_error& error) {
+            beast::error_code discard_error;
+            (void)exchange->stream->socket().shutdown(net::ip::tcp::socket::shutdown_both,
+                                                      discard_error);
+            if (error.code() == http::error::body_limit) {
+                // The body is abandoned mid-read rather than buffered to completion.
+                throw MetadataPolicyError(MetadataUrlDecision::response_too_large, exchange->url);
+            }
+            throw;
+        }
+
+        beast::error_code shutdown_error;
+        (void)exchange->stream->socket().shutdown(net::ip::tcp::socket::shutdown_both, shutdown_error);
+    }
+
+    /// RAII membership in `active_exchanges` for the lifetime of one HTTP exchange, so
+    /// `abort_pending()` can reach a stalled connect/write/read and never targets one that finished.
+    struct ActiveExchangeGuard {
+        ActiveExchangeGuard(std::shared_ptr<Impl> owner_in, Exchange* exchange_in)
+            : owner(std::move(owner_in)), exchange(exchange_in) {}
+        ActiveExchangeGuard(const ActiveExchangeGuard&) = delete;
+        ActiveExchangeGuard& operator=(const ActiveExchangeGuard&) = delete;
+        ActiveExchangeGuard& operator=(ActiveExchangeGuard&&) = delete;
+
+        ActiveExchangeGuard(ActiveExchangeGuard&& other) noexcept
+            : owner(std::move(other.owner)), exchange(other.exchange) {
+            other.exchange = nullptr;
+        }
+
+        ~ActiveExchangeGuard() {
+            if (!owner || exchange == nullptr) {
+                return;
+            }
+            std::lock_guard lock(owner->active_mutex);
+            auto& list = owner->active_exchanges;
+            list.erase(std::remove_if(list.begin(), list.end(),
+                                      [this](const std::weak_ptr<Exchange>& weak) {
+                                          const auto locked = weak.lock();
+                                          return !locked || locked.get() == exchange;
+                                      }),
+                       list.end());
+        }
+
+        std::shared_ptr<Impl> owner;
+        Exchange* exchange;
+    };
+
+    /// Registers `exchange` as in flight, unless `abort_pending()` has already run -- in which case
+    /// this exchange is refused before it opens a connection, the same as one abort_pending() closes
+    /// out from under. Without this check, an exchange that starts registering after abort_pending()
+    /// already swept `active_exchanges` would never be reached by it and would run to completion
+    /// (see the sticky `aborted` flag on abort_pending() below).
+    static ActiveExchangeGuard track_exchange(const std::shared_ptr<Exchange>& exchange) {
+        std::lock_guard lock(exchange->owner->active_mutex);
+        if (exchange->owner->is_aborted(exchange->scope)) {
+            // The same error an exchange already in flight sees when the abort closes its socket
+            // underneath it, so a caller cannot tell whether this exchange started before or after
+            // the client -- or its own scope -- was closed.
+            throw boost::system::system_error(net::error::operation_aborted);
+        }
+        exchange->owner->active_exchanges.push_back(exchange);
+        return ActiveExchangeGuard(exchange->owner, exchange.get());
+    }
+
+    /// Whether `scope` may still issue requests. The client-wide latch ends everything; a scoped
+    /// latch ends only that scope. Callers hold active_mutex.
+    [[nodiscard]] static bool is_aborted_locked(bool client_aborted,
+                                                const std::shared_ptr<detail::OAuthScopeState>& scope) {
+        return client_aborted || (scope && scope->aborted);
+    }
+
+    [[nodiscard]] bool is_aborted(const std::shared_ptr<detail::OAuthScopeState>& scope) const {
+        return is_aborted_locked(aborted, scope);
+    }
+
+    /// Re-check the sticky abort part-way through an exchange, throwing exactly what
+    /// track_exchange() throws.
+    ///
+    /// track_exchange() runs once per exchange, but run_get() follows redirects in a loop with a
+    /// fresh socket per iteration. An abort that lands as an iteration's read completes closes a
+    /// finished socket, so without this check the coroutine would follow the redirect and run a new
+    /// request for a torn-down client.
+    static void throw_if_aborted(const std::shared_ptr<Exchange>& exchange) {
+        std::lock_guard lock(exchange->owner->active_mutex);
+        if (exchange->owner->is_aborted(exchange->scope)) {
+            throw boost::system::system_error(net::error::operation_aborted);
+        }
+    }
+
+    /// Close the underlying socket of every exchange currently in flight, posted onto the client's
+    /// strand so the closure is never raced with the coroutine using it. A pending resolve, connect,
+    /// write, or read then completes with an error instead of hanging. Also latches `aborted`, so
+    /// every exchange that registers with track_exchange() from this point on -- including one that
+    /// has not made its first network call yet -- is refused rather than left to run past a client
+    /// that has moved on. Idempotent; a no-op when nothing is in flight either way.
+    void abort_pending() { abort_matching(nullptr); }
+
+    /// The scoped counterpart, with the same guarantees confined to one scope: `scope` is latched
+    /// and every exchange belonging to it is closed, while other scopes and the client's own
+    /// unscoped work carry on. Pass `nullptr` to mean the whole client, which is what
+    /// abort_pending() does.
+    void abort_matching(const std::shared_ptr<detail::OAuthScopeState>& scope) {
+        std::vector<std::shared_ptr<Exchange>> exchanges;
+        {
+            std::lock_guard lock(active_mutex);
+            if (!scope) {
+                aborted = true;
+            } else {
+                scope->aborted = true;
+            }
+            for (auto& weak : active_exchanges) {
+                auto locked = weak.lock();
+                if (locked && (!scope || locked->scope == scope)) {
+                    exchanges.push_back(std::move(locked));
+                }
+            }
+        }
+        for (auto& exchange : exchanges) {
+            net::post(strand, [exchange]() {
+                exchange->resolver.cancel();
+                if (exchange->stream) {
+                    beast::error_code ec;
+                    exchange->stream->socket().close(ec);
+                }
+            });
+        }
+    }
+
+    /// Hand out a fresh latch. A scope is identified by the control block itself, which every party
+    /// that can consult it keeps alive, so a new scope can never alias a latched one the way a
+    /// recycled id could. Do not reintroduce scope ids.
+    static std::shared_ptr<detail::OAuthScopeState> new_scope() {
+        return std::make_shared<detail::OAuthScopeState>();
+    }
+
+    /// Build an exchange with the fetch policy and host resolver pinned for its whole lifetime, read
+    /// once under the mutex that guards the exchange list: the setters are plain writes to state the
+    /// exchange coroutines read, and an exchange re-validates every redirect hop, so a policy swapped
+    /// mid-chain would otherwise check later hops against different rules. Every request carries the
+    /// scope it was issued under, so aborting that scope reaches exactly these exchanges; a null
+    /// scope is the client's own unscoped work.
+    std::shared_ptr<Exchange> make_exchange(std::string url,
+                                            std::shared_ptr<detail::OAuthScopeState> scope) {
+        std::lock_guard lock(active_mutex);
+        return std::make_shared<Exchange>(shared_from_this(), strand, std::move(url), std::move(scope),
+                                          policy, host_resolver);
+    }
+
+    /// Run one exchange on the client's strand and hand its outcome back to the caller off it.
+    ///
+    /// The strand keeps an exchange apart from the close abort_matching() posts when several threads
+    /// run the io_context. Posting the coroutine to the strand is not enough: an awaitable's executor
+    /// is fixed when it is spawned, so it is spawned on the strand and every resumption lands there.
+    ///
+    /// co_spawn() completes by dispatching to the caller's executor, which on an io_context thread
+    /// runs the caller in place inside the strand handler; the caller is posted off the strand first
+    /// so it does not hold it. The result waits out that post on the heap, not in this frame; see the
+    /// GCC 11 note at the top of this file.
+    template <typename Result>
+    static Task<Result> on_strand(net::strand<net::any_io_executor> strand, Task<Result> exchange) {
+        std::shared_ptr<Result> result;
+        std::exception_ptr failure;
+        try {
+            result = std::make_shared<Result>(
+                co_await net::co_spawn(strand, std::move(exchange), net::use_awaitable));
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        if (strand.running_in_this_thread()) {
+#if BOOST_VERSION >= 107700
+            // A caller that has been cancelled still has to leave the strand, and co_await throws
+            // for a cancelled coroutine before it initiates anything. The outcome is already
+            // decided either way: the cancellation reached the exchange through co_spawn(), or
+            // arrived too late to matter to it.
+            //
+            // The setting belongs to the caller's whole coroutine, so it goes back as it was
+            // found even if the post throws. Restoring it is itself a co_await, which rules out
+            // a destructor or a catch block.
+            const bool throws_if_cancelled = co_await net::this_coro::throw_if_cancelled();
+            co_await net::this_coro::throw_if_cancelled(false);
+            std::exception_ptr hop_failure;
+            try {
+                co_await net::post(net::use_awaitable);
+            } catch (...) {
+                hop_failure = std::current_exception();
+            }
+            co_await net::this_coro::throw_if_cancelled(throws_if_cancelled);
+            if (hop_failure) {
+                std::rethrow_exception(hop_failure);
+            }
+#else
+            co_await net::post(net::use_awaitable);
+#endif
+        }
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
+        co_return std::move(*result);
+    }
+
+    Task<nlohmann::json> get_json(std::string url,
+                                  std::shared_ptr<detail::OAuthScopeState> scope = nullptr) {
+        return on_strand(strand, run_get(make_exchange(std::move(url), std::move(scope))));
+    }
+
+    Task<TokenResponse> post_token_request(std::string token_endpoint, const KeyValuePairList& params,
+                                           std::string authorization,
+                                           std::shared_ptr<detail::OAuthScopeState> scope = nullptr) {
+        return on_strand(strand,
+                         run_post(make_exchange(std::move(token_endpoint), std::move(scope)),
+                                  std::make_shared<std::string>(detail::build_form_body(params)),
+                                  std::move(authorization)));
+    }
+
+    Task<nlohmann::json> post_json(std::string url, std::string body,
+                                   std::shared_ptr<detail::OAuthScopeState> scope = nullptr) {
+        // Sanitized where the label is built, not where it is thrown: `url` is moved into the
+        // exchange on the next line, and the throw site only ever sees the label.
+        auto label = "HTTP POST " + sanitize_for_diagnostics(url);
+        return on_strand(strand, run_post_json(make_exchange(std::move(url), std::move(scope)),
+                                               std::make_shared<std::string>(std::move(body)),
+                                               "application/json", std::move(label)));
+    }
+
+    static Task<nlohmann::json> run_get(std::shared_ptr<Exchange> exchange) {
+        auto guard = track_exchange(exchange);
+
+        const auto redirect_budget = exchange->policy.max_redirects;
+        for (std::size_t redirect = 0;; ++redirect) {
+            // Re-read the abort on every hop, not just at track_exchange() above: abort_pending()
+            // can land between two iterations, where it has nothing left to close.
+            throw_if_aborted(exchange);
+            // Every hop, including each redirect target, is validated afresh before it is reached.
+            enforce_url_policy(exchange->policy, exchange->url);
+            exchange->parsed = parse_url(exchange->url);
+            exchange->reset();
+
+            http::request<http::empty_body> request(http::verb::get, exchange->parsed.path,
+                                                    mcp::constants::g_http_version_11);
+            request.set(http::field::host, exchange->parsed.host);
+            request.set(http::field::accept, "application/json");
+            co_await exchange_once(exchange, request);
+
+            const auto status = exchange->response().result_int();
+            if (!is_redirect_status(status)) {
+                break;
+            }
+            if (redirect >= redirect_budget) {
+                throw MetadataPolicyError(MetadataUrlDecision::redirect_limit_exceeded, exchange->url);
+            }
+            const auto location = exchange->response().find(http::field::location);
+            if (location == exchange->response().end()) {
+                throw std::runtime_error("HTTP GET " + sanitize_for_diagnostics(exchange->url) +
+                                         " returned a redirect without a Location header");
+            }
+            exchange->url = resolve_redirect_target(exchange->url, std::string(location->value()));
+        }
+
+        if (exchange->response().result_int() >= mcp::constants::g_http_bad_request) {
+            throw std::runtime_error("HTTP GET " + sanitize_for_diagnostics(exchange->url) +
+                                     " failed with status " +
+                                     std::to_string(exchange->response().result_int()));
+        }
+
+        exchange->body = exchange->response().body();
+        auto response_json = nlohmann::json::parse(exchange->body, nullptr, false);
+        if (response_json.is_discarded()) {
+            throw std::runtime_error("Failed to parse JSON from " +
+                                     sanitize_for_diagnostics(exchange->url));
+        }
+        co_return response_json;
+    }
+
+    /// One POST exchange returning the parsed JSON reply. Redirects are deliberately not followed:
+    /// replaying a token or registration body at a redirect target would hand its contents to
+    /// whatever the first hop nominated.
+    static Task<nlohmann::json> run_post_json(std::shared_ptr<Exchange> exchange,
+                                              std::shared_ptr<std::string> body,
+                                              std::string content_type, std::string failure_label,
+                                              std::string authorization = {}) {
+        auto guard = track_exchange(exchange);
+
+        enforce_url_policy(exchange->policy, exchange->url);
+        exchange->parsed = parse_url(exchange->url);
+        exchange->reset();
+
+        http::request<http::string_body> request(http::verb::post, exchange->parsed.path,
+                                                 mcp::constants::g_http_version_11);
+        request.set(http::field::host, exchange->parsed.host);
+        request.set(http::field::content_type, content_type);
+        request.set(http::field::accept, "application/json");
+        if (!authorization.empty()) {
+            request.set(http::field::authorization, authorization);
+        }
+        request.body() = *body;
+        request.prepare_payload();
+        co_await exchange_once(exchange, request);
+
+        if (exchange->response().result_int() >= mcp::constants::g_http_bad_request) {
+            throw std::runtime_error(failure_label + " failed with status " +
+                                     std::to_string(exchange->response().result_int()) + ": " +
+                                     sanitize_for_diagnostics(exchange->response().body()));
+        }
+
+        exchange->body = exchange->response().body();
+        auto response_json = nlohmann::json::parse(exchange->body, nullptr, false);
+        if (response_json.is_discarded()) {
+            throw std::runtime_error("Failed to parse JSON from " +
+                                     sanitize_for_diagnostics(exchange->url));
+        }
+        co_return response_json;
+    }
+
+    static Task<TokenResponse> run_post(std::shared_ptr<Exchange> exchange,
+                                        std::shared_ptr<std::string> form_body,
+                                        std::string authorization) {
+        auto response_json = co_await run_post_json(std::move(exchange), std::move(form_body),
+                                                    "application/x-www-form-urlencoded",
+                                                    "Token request", std::move(authorization));
+        co_return response_json.get<TokenResponse>();
+    }
+
+    net::strand<net::any_io_executor> strand;
+    std::mutex active_mutex;
+    /// Both guarded by active_mutex: written by the setters, read once per exchange in
+    /// make_exchange().
+    MetadataFetchPolicy policy;
+    HostResolver host_resolver;
+    std::vector<std::weak_ptr<Exchange>> active_exchanges;
+    /// Set once by abort_pending(); makes the abort sticky so an exchange started afterward is
+    /// refused instead of running to completion. Guarded by active_mutex alongside the list above.
+    bool aborted{false};
+    // A scope's abort latch lives on the scope itself (detail::OAuthScopeState). Do not add a
+    // container of scope state here: it would have to outlive every exchange that could still
+    // consult it, which in practice means never being cleaned up.
+};
+
+OAuthHttpClient::OAuthHttpClient(const net::any_io_executor& executor)
+    : impl_(std::make_shared<Impl>(executor)) {}
+
+/// Safe to call at any time, including mid-flight: exchanges already running keep what they started
+/// with, and the next one picks up the new value. See configure() below for changing both together.
+void OAuthHttpClient::set_metadata_policy(MetadataFetchPolicy policy) {
+    std::lock_guard lock(impl_->active_mutex);
+    impl_->policy = std::move(policy);
+}
+
+void OAuthHttpClient::set_host_resolver(HostResolver resolver) {
+    std::lock_guard lock(impl_->active_mutex);
+    impl_->host_resolver = std::move(resolver);
+}
+
+/// Installs both values under one lock. Use this rather than the two setters above whenever both
+/// change: calling them in sequence leaves an interval holding one new value and one old one, and
+/// make_exchange() pins whatever it finds. Resolver-first is the natural order to write and the
+/// dangerous one. See the @warning on set_metadata_policy() in include/mcp/auth/oauth.hpp for why,
+/// and for how wide the interval measures.
+void OAuthHttpClient::configure(MetadataFetchPolicy policy, HostResolver resolver) {
+    std::lock_guard lock(impl_->active_mutex);
+    impl_->policy = std::move(policy);
+    impl_->host_resolver = std::move(resolver);
+}
+
+void OAuthHttpClient::abort_pending() { impl_->abort_pending(); }
+
+namespace {
+
+/// Place the client secret where the negotiated method says it belongs, and nowhere else.
+///
+/// @return The `Authorization` header value, empty when the secret does not travel in a header.
+std::string apply_client_authentication(const OAuthConfig& config, KeyValuePairList& params) {
+    const auto& method = config.token_endpoint_auth_method;
+    if (method && *method == "none") {
+        return {};
+    }
+    if (!config.client_secret) {
+        return {};
+    }
+    if (method && *method == "client_secret_basic") {
+        const auto credentials =
+            detail::url_encode(config.client_id) + ":" + detail::url_encode(*config.client_secret);
+        return "Basic " +
+               detail::base64_encode(reinterpret_cast<const unsigned char*>(credentials.data()),
+                                     credentials.size());
+    }
+    params.emplace_back("client_secret", *config.client_secret);
+    return {};
+}
+
+}  // namespace
+
+namespace {
+
+/// The form body and Authorization header for one token-endpoint request. Built here rather than
+/// inline so the client and a scope on it issue byte-identical requests, differing only in which
+/// abort scope the exchange is tracked under.
+struct TokenRequest {
+    KeyValuePairList params;
+    std::string authorization;
+};
+
+TokenRequest build_authorization_code_request(const OAuthConfig& config, const std::string& code,
+                                              const std::string& code_verifier) {
+    KeyValuePairList params = {
+        {"grant_type", "authorization_code"},  {"code", code},
+        {"redirect_uri", config.redirect_uri}, {"client_id", config.client_id},
+        {"code_verifier", code_verifier},
+    };
+    auto authorization = apply_client_authentication(config, params);
+    if (config.resource) {
+        params.emplace_back("resource", *config.resource);
+    }
+    return {std::move(params), std::move(authorization)};
+}
+
+TokenRequest build_refresh_request(const OAuthConfig& config, const std::string& refresh_token) {
+    KeyValuePairList params = {
+        {"grant_type", "refresh_token"},
+        {"refresh_token", refresh_token},
+        {"client_id", config.client_id},
+    };
+    auto authorization = apply_client_authentication(config, params);
+    if (config.resource) {
+        params.emplace_back("resource", *config.resource);
+    }
+    return {std::move(params), std::move(authorization)};
+}
+
+}  // namespace
+
+Task<TokenResponse> OAuthHttpClient::exchange_code(const OAuthConfig& config, const std::string& code,
+                                                   const std::string& code_verifier) {
+    auto request = build_authorization_code_request(config, code, code_verifier);
+    return impl_->post_token_request(config.token_endpoint, request.params,
+                                     std::move(request.authorization));
+}
+
+Task<TokenResponse> OAuthHttpClient::refresh_token(const OAuthConfig& config,
+                                                   const std::string& refresh_token) {
+    auto request = build_refresh_request(config, refresh_token);
+    return impl_->post_token_request(config.token_endpoint, request.params,
+                                     std::move(request.authorization));
+}
+
+Task<nlohmann::json> OAuthHttpClient::get_json(const std::string& url) { return impl_->get_json(url); }
+
+Task<nlohmann::json> OAuthHttpClient::post_json(const std::string& url, const nlohmann::json& body) {
+    return impl_->post_json(url, body.dump());
+}
+
+namespace detail {
+
+/// Defined here and nowhere else; the public header only grants it friendship.
+struct OAuthTestAccess {
+    static std::size_t retained_scope_records(const OAuthHttpClient& client) {
+        // Structural, not a stubbed zero: there is no per-scope container to count. A change
+        // that reintroduces one has to answer here, and the retention test will see it.
+        std::lock_guard lock(client.impl_->active_mutex);
+        return 0;
+    }
+};
+
+}  // namespace detail
+
+namespace internal {
+
+std::size_t retained_scope_record_count(const OAuthHttpClient& client) {
+    return detail::OAuthTestAccess::retained_scope_records(client);
+}
+
+std::size_t live_scope_latch_count() { return detail::OAuthScopeState::live_count(); }
+
+}  // namespace internal
+
+OAuthHttpClientScope OAuthHttpClient::make_scope() {
+    return OAuthHttpClientScope(impl_, impl_->new_scope());
+}
+
+OAuthHttpClientScope::OAuthHttpClientScope(std::shared_ptr<OAuthHttpClient::Impl> impl,
+                                           std::shared_ptr<detail::OAuthScopeState> state)
+    : impl_(std::move(impl)), state_(std::move(state)) {}
+
+Task<TokenResponse> OAuthHttpClientScope::exchange_code(const OAuthConfig& config,
+                                                        const std::string& code,
+                                                        const std::string& code_verifier) {
+    auto request = build_authorization_code_request(config, code, code_verifier);
+    return impl_->post_token_request(config.token_endpoint, request.params,
+                                     std::move(request.authorization), state_);
+}
+
+Task<TokenResponse> OAuthHttpClientScope::refresh_token(const OAuthConfig& config,
+                                                        const std::string& refresh_token) {
+    auto request = build_refresh_request(config, refresh_token);
+    return impl_->post_token_request(config.token_endpoint, request.params,
+                                     std::move(request.authorization), state_);
+}
+
+Task<nlohmann::json> OAuthHttpClientScope::get_json(const std::string& url) {
+    return impl_->get_json(url, state_);
+}
+
+Task<nlohmann::json> OAuthHttpClientScope::post_json(const std::string& url,
+                                                     const nlohmann::json& body) {
+    return impl_->post_json(url, body.dump(), state_);
+}
+
+void OAuthHttpClientScope::abort() { impl_->abort_matching(state_); }
+
+void from_json(const nlohmann::json& json, ProtectedResourceMetadata& metadata) {
+    metadata.raw = json;
+    if (json.contains("resource")) {
+        json.at("resource").get_to(metadata.resource);
+    }
+    if (json.contains("authorization_servers")) {
+        json.at("authorization_servers").get_to(metadata.authorization_servers);
+    }
+    if (json.contains("scopes_supported")) {
+        metadata.scopes_supported = json.at("scopes_supported").get<std::vector<std::string>>();
+    }
+}
+
+void from_json(const nlohmann::json& json, AuthServerMetadata& metadata) {
+    metadata.raw = json;
+    if (json.contains("issuer")) {
+        json.at("issuer").get_to(metadata.issuer);
+    }
+    if (json.contains("authorization_endpoint")) {
+        json.at("authorization_endpoint").get_to(metadata.authorization_endpoint);
+    }
+    if (json.contains("token_endpoint")) {
+        json.at("token_endpoint").get_to(metadata.token_endpoint);
+    }
+    if (json.contains("revocation_endpoint")) {
+        metadata.revocation_endpoint = json.at("revocation_endpoint").get<std::string>();
+    }
+    if (json.contains("registration_endpoint")) {
+        metadata.registration_endpoint = json.at("registration_endpoint").get<std::string>();
+    }
+    if (json.contains("scopes_supported")) {
+        metadata.scopes_supported = json.at("scopes_supported").get<std::vector<std::string>>();
+    }
+    if (json.contains("response_types_supported")) {
+        metadata.response_types_supported =
+            json.at("response_types_supported").get<std::vector<std::string>>();
+    }
+    if (json.contains("grant_types_supported")) {
+        metadata.grant_types_supported =
+            json.at("grant_types_supported").get<std::vector<std::string>>();
+    }
+    if (json.contains("code_challenge_methods_supported")) {
+        metadata.code_challenge_methods_supported =
+            json.at("code_challenge_methods_supported").get<std::vector<std::string>>();
+    }
+    if (json.contains("authorization_response_iss_parameter_supported")) {
+        metadata.authorization_response_iss_parameter_supported =
+            json.at("authorization_response_iss_parameter_supported").get<bool>();
+    }
+    if (json.contains("client_id_metadata_document_supported")) {
+        metadata.client_id_metadata_document_supported =
+            json.at("client_id_metadata_document_supported").get<bool>();
+    }
+    if (json.contains("token_endpoint_auth_methods_supported")) {
+        metadata.token_endpoint_auth_methods_supported =
+            json.at("token_endpoint_auth_methods_supported").get<std::vector<std::string>>();
+    }
+}
+
+struct OAuthDiscoveryClient::Impl {
+    struct UrlComponents {
+        std::string scheme;
+        std::string authority;
+        std::string path;
+    };
+
+    template <typename Metadata>
+    struct DiscoveryOperation {
+        std::shared_ptr<Impl> owner;
+        std::string cache_key;
+        std::vector<std::string> urls;
+        std::size_t next_url{0};
+        nlohmann::json response;
+        std::optional<Metadata> metadata;
+        /// Caller's verdict, consulted before the document is cached or returned. Empty means
+        /// accept everything that parsed, which is the contract of the overloads that take no
+        /// acceptor.
+        std::function<void(const Metadata&)> accept;
+    };
+
+    Impl(std::shared_ptr<OAuthHttpClient> client, std::chrono::seconds ttl)
+        : http_client(std::move(client)), cache_ttl(ttl) {}
+
+    static UrlComponents parse_url_components(const std::string& url) {
+        UrlComponents result;
+        const auto scheme_end = url.find("://");
+        if (scheme_end == std::string::npos) {
+            // The authorization server identifier a protected-resource document names arrives here
+            // with nothing having validated it, so this is the throw site a peer reaches first.
+            throw std::invalid_argument("URL missing scheme: " + sanitize_for_diagnostics(url));
+        }
+        result.scheme = url.substr(0, scheme_end);
+        auto rest = url.substr(scheme_end + 3);
+
+        const auto path_start = rest.find('/');
+        if (path_start == std::string::npos) {
+            result.authority = std::move(rest);
+            result.path = "/";
+        } else {
+            result.authority = rest.substr(0, path_start);
+            result.path = rest.substr(path_start);
+        }
+        return result;
+    }
+
+    template <typename Metadata>
+    static Task<Metadata> return_cached(std::shared_ptr<Metadata> metadata) {
+        co_return std::move(*metadata);
+    }
+
+    /// Serve a cached document, but only if the caller still accepts it.
+    ///
+    /// A coroutine rather than a plain check at the call site so that a rejection surfaces from the
+    /// await like every other discovery failure, instead of throwing out of the call that merely
+    /// builds the awaitable.
+    static Task<ProtectedResourceMetadata> return_accepted_cached(
+        std::shared_ptr<ProtectedResourceMetadata> metadata, ProtectedResourceAcceptor accept) {
+        if (accept) {
+            accept(*metadata);
+        }
+        co_return std::move(*metadata);
+    }
+
+    static Task<ProtectedResourceMetadata> discover_protected_resource(
+        std::shared_ptr<Impl> owner, std::string resource_url,
+        const std::optional<std::string>& challenge_metadata_url,
+        ProtectedResourceAcceptor accept = {}) {
+        // A challenge-supplied URL is its own cache key, so a server that moves its metadata is
+        // never served an entry discovered through the well-known fallback.
+        auto cache_key = challenge_metadata_url.value_or(resource_url);
+        {
+            std::lock_guard lock(owner->cache_mutex);
+            const auto iter = owner->resource_cache.find(cache_key);
+            if (iter != owner->resource_cache.end() && !iter->second.is_expired()) {
+                return return_accepted_cached(
+                    std::make_shared<ProtectedResourceMetadata>(iter->second.data), std::move(accept));
+            }
+        }
+
+        auto operation = std::make_shared<DiscoveryOperation<ProtectedResourceMetadata>>();
+        operation->owner = std::move(owner);
+        operation->cache_key = std::move(cache_key);
+        operation->accept = std::move(accept);
+
+        if (challenge_metadata_url) {
+            // The challenge named the location; take the server at its word and try nothing else.
+            operation->urls.push_back(*challenge_metadata_url);
+            return run_protected_discovery(std::move(operation));
+        }
+
+        const auto parsed = parse_url_components(resource_url);
+        const auto base = parsed.scheme + "://" + parsed.authority;
+        if (!parsed.path.empty() && parsed.path != "/") {
+            auto path_part = parsed.path;
+            if (path_part.front() == '/') {
+                path_part.erase(0, 1);
+            }
+            operation->urls.push_back(base + "/.well-known/oauth-protected-resource/" + path_part);
+        }
+        operation->urls.push_back(base + "/.well-known/oauth-protected-resource");
+        return run_protected_discovery(std::move(operation));
+    }
+
+    static Task<AuthServerMetadata> discover_auth_server(std::shared_ptr<Impl> owner,
+                                                         std::string issuer_url) {
+        {
+            std::lock_guard lock(owner->cache_mutex);
+            const auto iter = owner->auth_cache.find(issuer_url);
+            if (iter != owner->auth_cache.end() && !iter->second.is_expired()) {
+                return return_cached(std::make_shared<AuthServerMetadata>(iter->second.data));
+            }
+        }
+
+        const auto parsed = parse_url_components(issuer_url);
+        const auto base = parsed.scheme + "://" + parsed.authority;
+        auto operation = std::make_shared<DiscoveryOperation<AuthServerMetadata>>();
+        operation->owner = std::move(owner);
+        operation->cache_key = std::move(issuer_url);
+
+        if (!parsed.path.empty() && parsed.path != "/") {
+            auto path_part = parsed.path;
+            if (path_part.front() == '/') {
+                path_part.erase(0, 1);
+            }
+            if (!path_part.empty() && path_part.back() == '/') {
+                path_part.pop_back();
+            }
+            operation->urls.push_back(base + "/.well-known/oauth-authorization-server/" + path_part);
+            operation->urls.push_back(base + "/.well-known/openid-configuration/" + path_part);
+            operation->urls.push_back(operation->cache_key + "/.well-known/openid-configuration");
+        } else {
+            operation->urls.push_back(base + "/.well-known/oauth-authorization-server");
+            operation->urls.push_back(base + "/.well-known/openid-configuration");
+        }
+        return run_auth_discovery(std::move(operation));
+    }
+
+    static Task<ProtectedResourceMetadata> run_protected_discovery(
+        std::shared_ptr<DiscoveryOperation<ProtectedResourceMetadata>> operation) {
+        while (operation->next_url < operation->urls.size()) {
+            try {
+                const auto index = operation->next_url++;
+                operation->response =
+                    co_await operation->owner->http_client->get_json(operation->urls[index]);
+                operation->metadata = operation->response.get<ProtectedResourceMetadata>();
+            } catch (const MetadataPolicyError&) {
+                // A refused target is a security decision, not a candidate that missed.
+                throw;
+            } catch (...) {
+                continue;
+            }
+
+            // Outside the try above, because a caller refusing a fetched and parsed document is a
+            // verdict on it, not a candidate that missed: `catch (...)` would move on to the next
+            // well-known URL. Before the cache write, because a refused document must never become a
+            // cache entry served to a later attempt without reaching the network.
+            if (operation->accept) {
+                operation->accept(*operation->metadata);
+            }
+
+            {
+                std::lock_guard lock(operation->owner->cache_mutex);
+                operation->owner->resource_cache[operation->cache_key] = {
+                    *operation->metadata,
+                    std::chrono::steady_clock::now() + operation->owner->cache_ttl,
+                };
+            }
+            co_return *operation->metadata;
+        }
+        throw std::runtime_error("Failed to discover protected resource metadata for " +
+                                 sanitize_for_diagnostics(operation->cache_key));
+    }
+
+    static Task<AuthServerMetadata> run_auth_discovery(
+        std::shared_ptr<DiscoveryOperation<AuthServerMetadata>> operation) {
+        while (operation->next_url < operation->urls.size()) {
+            try {
+                const auto index = operation->next_url++;
+                operation->response =
+                    co_await operation->owner->http_client->get_json(operation->urls[index]);
+                operation->metadata = operation->response.get<AuthServerMetadata>();
+
+                std::lock_guard lock(operation->owner->cache_mutex);
+                operation->owner->auth_cache[operation->cache_key] = {
+                    *operation->metadata,
+                    std::chrono::steady_clock::now() + operation->owner->cache_ttl,
+                };
+                co_return *operation->metadata;
+            } catch (const MetadataPolicyError&) {
+                // A refused target is a security decision, not a candidate that missed.
+                throw;
+            } catch (...) {
+                continue;
+            }
+        }
+        throw std::runtime_error("Failed to discover authorization server metadata for " +
+                                 sanitize_for_diagnostics(operation->cache_key));
+    }
+
+    std::shared_ptr<OAuthHttpClient> http_client;
+    std::chrono::seconds cache_ttl;
+    std::mutex cache_mutex;
+    std::unordered_map<std::string, CachedEntry<ProtectedResourceMetadata>> resource_cache;
+    std::unordered_map<std::string, CachedEntry<AuthServerMetadata>> auth_cache;
+};
+
+OAuthDiscoveryClient::OAuthDiscoveryClient(std::shared_ptr<OAuthHttpClient> http_client,
+                                           std::chrono::seconds cache_ttl)
+    : impl_(std::make_shared<Impl>(std::move(http_client), cache_ttl)) {}
+
+Task<ProtectedResourceMetadata> OAuthDiscoveryClient::discover_protected_resource(
+    const std::string& resource_url) {
+    return Impl::discover_protected_resource(impl_, resource_url, std::nullopt);
+}
+
+Task<ProtectedResourceMetadata> OAuthDiscoveryClient::discover_protected_resource(
+    const std::string& resource_url, const std::optional<std::string>& challenge_metadata_url) {
+    return Impl::discover_protected_resource(impl_, resource_url, challenge_metadata_url);
+}
+
+Task<ProtectedResourceMetadata> OAuthDiscoveryClient::discover_protected_resource(
+    const std::string& resource_url, const std::optional<std::string>& challenge_metadata_url,
+    ProtectedResourceAcceptor accept) {
+    return Impl::discover_protected_resource(impl_, resource_url, challenge_metadata_url,
+                                             std::move(accept));
+}
+
+Task<AuthServerMetadata> OAuthDiscoveryClient::discover_auth_server(const std::string& issuer_url) {
+    return Impl::discover_auth_server(impl_, issuer_url);
+}
+
+void OAuthDiscoveryClient::clear_cache() {
+    std::lock_guard lock(impl_->cache_mutex);
+    impl_->resource_cache.clear();
+    impl_->auth_cache.clear();
+}
+
+namespace {
+
+struct MiddlewareInvocation {
+    TokenValidator validator;
+    mcp::Context* context;
+    nlohmann::json params;
+    TypeErasedHandler next;
+    std::string token;
+};
+
+Task<nlohmann::json> invoke_auth_middleware(std::shared_ptr<MiddlewareInvocation> invocation) {
+    // A rejected token is reported to the caller as a tool result rather than raised: throwing from
+    // middleware is reserved for failures the caller cannot act on, and surfaces as -32603.
+    if (invocation->token.empty()) {
+        co_return nlohmann::json(make_tool_error_result("Unauthorized: missing Bearer token"));
+    }
+    if (!co_await invocation->validator(invocation->token)) {
+        co_return nlohmann::json(make_tool_error_result("Unauthorized: invalid Bearer token"));
+    }
+    co_return co_await invocation->next(*invocation->context, invocation->params);
+}
+
+}  // namespace
+
+Middleware make_auth_middleware(TokenValidator validator) {
+    return [validator = std::move(validator)](mcp::Context& context, const nlohmann::json& params,
+                                              TypeErasedHandler next) -> Task<nlohmann::json> {
+        auto invocation = std::make_shared<MiddlewareInvocation>();
+        invocation->validator = validator;
+        invocation->context = &context;
+        invocation->params = params;
+        invocation->next = std::move(next);
+        if (params.contains("_meta") && params["_meta"].contains("auth_token")) {
+            invocation->token = params["_meta"]["auth_token"].get<std::string>();
+        }
+        return invoke_auth_middleware(std::move(invocation));
+    };
+}
+
+std::string extract_bearer_token(std::string_view auth_header_value) {
+    constexpr std::string_view prefix = "Bearer ";
+    if (auth_header_value.size() > prefix.size() &&
+        auth_header_value.substr(0, prefix.size()) == prefix) {
+        return std::string(auth_header_value.substr(prefix.size()));
+    }
+    return {};
+}
+
+struct OAuthAuthenticator::Impl {
+    struct RefreshOperation {
+        std::shared_ptr<Impl> owner;
+        TokenResponse stored_token;
+        std::optional<TokenResponse> new_token;
+    };
+
+    Impl(std::shared_ptr<TokenStore> store, std::shared_ptr<OAuthHttpClient> client,
+         OAuthConfig oauth_config, std::string url)
+        : token_store(std::move(store)),
+          oauth_client(std::move(client)),
+          scope(oauth_client->make_scope()),
+          config(std::move(oauth_config)),
+          server_url(std::move(url)) {}
+
+    static Task<bool> return_false() { co_return false; }
+
+    static Task<bool> try_refresh(std::shared_ptr<Impl> owner) {
+        auto stored = owner->token_store->load(owner->server_url);
+        if (!stored || !stored->refresh_token) {
+            return return_false();
+        }
+
+        auto operation = std::make_shared<RefreshOperation>();
+        operation->owner = std::move(owner);
+        operation->stored_token = std::move(*stored);
+        return run_refresh(std::move(operation));
+    }
+
+    static Task<bool> run_refresh(std::shared_ptr<RefreshOperation> operation) {
+        try {
+            operation->new_token = co_await operation->owner->scope.refresh_token(
+                operation->owner->config, *operation->stored_token.refresh_token);
+            if (!operation->new_token->refresh_token) {
+                operation->new_token->refresh_token = operation->stored_token.refresh_token;
+            }
+            operation->owner->token_store->store(operation->owner->server_url,
+                                                 std::move(*operation->new_token));
+            co_return true;
+        } catch (...) {
+            co_return false;
+        }
+    }
+
+    std::shared_ptr<TokenStore> token_store;
+    /// Kept so the client outlives this authenticator, even though every request goes through the
+    /// scope below.
+    std::shared_ptr<OAuthHttpClient> oauth_client;
+    /// This authenticator's own slice of the client. The client is supplied by the application and
+    /// may be shared with other authenticators for other servers, so close() must end this
+    /// authenticator's work without ending theirs.
+    OAuthHttpClientScope scope;
+    OAuthConfig config;
+    std::string server_url;
+};
+
+namespace {
+
+/// Impl's constructor takes a scope off the client, so a null one faults before the object exists.
+/// Refuse it the way OAuthClientTransport's constructor refuses its own null arguments.
+std::shared_ptr<OAuthHttpClient> require_http_client(std::shared_ptr<OAuthHttpClient> client) {
+    if (!client) {
+        throw std::invalid_argument("OAuthAuthenticator requires an OAuth HTTP client");
+    }
+    return client;
+}
+
+}  // namespace
+
+OAuthAuthenticator::OAuthAuthenticator(std::shared_ptr<TokenStore> token_store,
+                                       std::shared_ptr<OAuthHttpClient> oauth_client,
+                                       OAuthConfig config, std::string server_url)
+    : impl_(std::make_shared<Impl>(std::move(token_store), require_http_client(std::move(oauth_client)),
+                                   std::move(config), std::move(server_url))) {}
+
+std::string OAuthAuthenticator::get_access_token() const {
+    const auto token = impl_->token_store->load(impl_->server_url);
+    return token ? token->access_token : std::string{};
+}
+
+Task<bool> OAuthAuthenticator::try_refresh_token() { return Impl::try_refresh(impl_); }
+
+void OAuthAuthenticator::store_token(TokenResponse token) {
+    impl_->token_store->store(impl_->server_url, std::move(token));
+}
+
+/// Ends only this authenticator's requests. Do not reach for abort_pending() here: it latches the
+/// whole client irreversibly, which is correct for a client its owner created and wrong for one the
+/// application supplied and may share. Two authenticators for two servers on one client would then
+/// silently disable each other -- run_refresh() reports a failed refresh as a plain `false`, so the
+/// survivor gets no error, only tokens that quietly stop renewing.
+void OAuthAuthenticator::close() { impl_->scope.abort(); }
+
+namespace {
+
+/// Join scopes into the space-delimited form an authorization request carries.
+std::string join_scopes(const std::vector<std::string>& scopes) {
+    std::string joined;
+    for (const auto& scope : scopes) {
+        if (!joined.empty()) {
+            joined.push_back(' ');
+        }
+        joined += scope;
+    }
+    return joined;
+}
+
+std::vector<std::string> split_scopes(std::string_view scopes) {
+    std::vector<std::string> split;
+    std::size_t cursor = 0;
+    while (cursor < scopes.size()) {
+        const auto next = scopes.find(' ', cursor);
+        const auto token = scopes.substr(cursor, next == std::string_view::npos ? next : next - cursor);
+        if (!token.empty()) {
+            split.emplace_back(token);
+        }
+        if (next == std::string_view::npos) {
+            break;
+        }
+        cursor = next + 1;
+    }
+    return split;
+}
+
+/// Union of two scope strings, preserving the order of `primary` and appending whatever only
+/// `secondary` carries. Step-up authorization re-authorizes on a challenge that names only what the
+/// refused operation needed, so without the union an earlier grant's scopes would be dropped.
+std::optional<std::string> union_scopes(const std::optional<std::string>& primary,
+                                        const std::optional<std::string>& secondary) {
+    if (!primary || primary->empty()) {
+        return secondary && !secondary->empty() ? secondary : std::nullopt;
+    }
+    if (!secondary || secondary->empty()) {
+        return primary;
+    }
+    auto merged = split_scopes(*primary);
+    for (auto& candidate : split_scopes(*secondary)) {
+        if (std::find(merged.begin(), merged.end(), candidate) == merged.end()) {
+            merged.push_back(std::move(candidate));
+        }
+    }
+    return join_scopes(merged);
+}
+
+/// Choose the token endpoint authentication method from what the server advertises.
+///
+/// A server that publishes the list has told the client which methods it will accept, so the
+/// client picks the strongest one it can actually satisfy rather than guessing. A server that
+/// publishes nothing leaves the decision unset, which sends the secret, when there is one, in the
+/// request body.
+std::optional<std::string> select_token_endpoint_auth_method(
+    const std::optional<std::vector<std::string>>& supported, bool has_client_secret) {
+    if (!supported || supported->empty()) {
+        return std::nullopt;
+    }
+    const auto advertises = [&supported](std::string_view method) {
+        return std::find(supported->begin(), supported->end(), method) != supported->end();
+    };
+    if (has_client_secret) {
+        if (advertises("client_secret_basic")) {
+            return "client_secret_basic";
+        }
+        if (advertises("client_secret_post")) {
+            return "client_secret_post";
+        }
+    }
+    if (advertises("none")) {
+        return "none";
+    }
+    return std::nullopt;
+}
+
+std::string append_query(const std::string& endpoint, const std::string& query) {
+    if (query.empty()) {
+        return endpoint;
+    }
+    const auto separator = endpoint.find('?') == std::string::npos ? '?' : '&';
+    return endpoint + separator + query;
+}
+
+}  // namespace
+
+struct OAuthAuthorizationManager::Impl {
+    /// One coalescing authorization attempt, and the channel every follower of it reads its result
+    /// from.
+    ///
+    /// The outcome lives on the attempt, not the manager, so a follower that wakes after a later
+    /// flight finished cannot read that flight's result as its own. It carries the exception rather
+    /// than a bool so a follower sees the leader's diagnostic. `succeeded` and `failure` are written
+    /// once by the leader in run_leading_challenge() and read by followers after they wake, both
+    /// under `state_mutex`; `expire_flight()` wakes them and is always called after that write.
+    struct Flight {
+        explicit Flight(const net::strand<net::any_io_executor>& flight_strand)
+            : timer(flight_strand, net::steady_timer::time_point::max()) {}
+
+        /// Never waited on to expire naturally: it parks at time_point::max() and is pushed into
+        /// the past to release the followers. See expire_flight().
+        net::steady_timer timer;
+        /// Set when the leader has recorded its result below. A follower woken by close() rather
+        /// than by its leader finishing sees this false.
+        bool finished{false};
+        bool succeeded{false};
+        /// The leader's own exception, rethrown by every follower so they all report the same
+        /// reason the leader does. Null when the flight finished without throwing.
+        std::exception_ptr failure;
+    };
+
+    struct ChallengeOperation {
+        std::shared_ptr<Impl> owner;
+        BearerChallenge challenge;
+        std::optional<ProtectedResourceMetadata> resource_metadata;
+        std::optional<AuthServerMetadata> auth_metadata;
+        ClientIdentityServerFacts facts;
+        std::optional<OAuthClientInformation> stored_identity;
+        OAuthClientInformation identity;
+        nlohmann::json registration_response;
+        AuthorizationRequest request;
+        AuthorizationResponse response;
+        OAuthConfig token_config;
+        TokenResponse token;
+    };
+
+    struct RefreshOperation {
+        std::shared_ptr<Impl> owner;
+        OAuthConfig token_config;
+        TokenResponse stored_token;
+        std::optional<TokenResponse> new_token;
+    };
+
+    Impl(const net::any_io_executor& executor, std::shared_ptr<TokenStore> store,
+         OAuthAuthorizationConfig authorization_config, AuthorizationCallback authorization_callback)
+        : token_store(std::move(store)),
+          http_client(std::make_shared<OAuthHttpClient>(executor)),
+          flight_strand(net::make_strand(executor)),
+          config(std::move(authorization_config)),
+          callback(std::move(authorization_callback)) {
+        // A bare `client_id` is the shorthand form of injected credentials, so the two spellings
+        // reach the same terminal decision instead of one of them quietly permitting registration.
+        if (!config.client_identity.pre_registered && !config.client_id.empty()) {
+            OAuthClientInformation injected;
+            injected.client_id = config.client_id;
+            injected.client_secret = config.client_secret;
+            // Without this the issuer binding in `select_client_identity` is inert on the
+            // shorthand path: an empty issuer would make every authorization server look like
+            // the one these credentials belong to.
+            injected.issuer = config.client_issuer;
+            injected.source = ClientIdentitySource::pre_registered;
+            config.client_identity.pre_registered = std::move(injected);
+        }
+        if (config.client_identity.metadata.redirect_uris.empty() && !config.redirect_uri.empty()) {
+            config.client_identity.metadata.redirect_uris.push_back(config.redirect_uri);
+        }
+        // One call rather than two, even here where the client has not yet issued a request: the
+        // pair method is what a reader should find at a site that installs both. An empty
+        // `host_resolver` leaves this client on the executor's system resolver.
+        http_client->configure(config.policy, config.host_resolver);
+        discovery = std::make_shared<OAuthDiscoveryClient>(http_client);
+    }
+
+    static Task<bool> return_false() { co_return false; }
+
+    /// Fails the same way return_false() succeeds: lazily, when the returned awaitable is awaited.
+    /// handle_challenge() is a plain function returning an awaitable, so a bare `throw` in its body
+    /// would fire when try_handle_challenge() is *called*, unlike the virtual it overrides, whose
+    /// contract is the lazy one. It stays a plain function because making it a coroutine would add a
+    /// frame and a suspension to a path that runs on every 401.
+    static Task<bool> throw_closed() {
+        throw std::runtime_error("OAuth authorization manager closed");
+        co_return false;
+    }
+
+    /// Challenge scope is authoritative; `scopes_supported` is the fallback; otherwise no scope is
+    /// requested at all. An explicit configured scope overrides both. The two sources are never
+    /// merged with each other: the spec forbids assuming any set relationship between them. Scope
+    /// already granted by an earlier authorization *is* merged in, because a 403 step-up challenge
+    /// names only what the refused operation needed.
+    static std::optional<std::string> select_scope(const Impl& owner, const BearerChallenge& challenge,
+                                                   const ProtectedResourceMetadata& resource) {
+        if (owner.config.scope) {
+            return owner.config.scope;
+        }
+        std::optional<std::string> selected;
+        if (challenge.scope && !challenge.scope->empty()) {
+            selected = challenge.scope;
+        } else if (resource.scopes_supported && !resource.scopes_supported->empty()) {
+            selected = join_scopes(*resource.scopes_supported);
+        }
+        std::optional<std::string> granted;
+        {
+            std::lock_guard lock(owner.state_mutex);
+            granted = owner.granted_scope;
+        }
+        return union_scopes(selected, granted);
+    }
+
+    /// Record the four authorization-server facts client identity selection turns on.
+    static ClientIdentityServerFacts server_facts(const AuthServerMetadata& auth_server) {
+        ClientIdentityServerFacts facts;
+        facts.issuer = auth_server.issuer;
+        facts.client_id_metadata_document_supported =
+            auth_server.client_id_metadata_document_supported.value_or(false);
+        facts.registration_endpoint = auth_server.registration_endpoint;
+        if (auth_server.scopes_supported) {
+            facts.scopes_supported = *auth_server.scopes_supported;
+        }
+        return facts;
+    }
+
+    /// Load the credentials held for this issuer, discarding any entry that is not usable for it.
+    static std::optional<OAuthClientInformation> load_stored_identity(
+        const Impl& owner, const ClientIdentityServerFacts& facts) {
+        if (!owner.config.credential_store || facts.issuer.empty()) {
+            return std::nullopt;
+        }
+        auto stored = owner.config.credential_store->load(facts.issuer);
+        if (!stored) {
+            return std::nullopt;
+        }
+        // A stored entry that disagrees with its own key, or whose secret the server has already
+        // retired, is worse than no entry at all: presenting it would either misbind the
+        // credential or fail the exchange with a stale one.
+        const auto now = static_cast<std::int64_t>(std::time(nullptr));
+        if (stored->issuer != facts.issuer || stored->secret_expired(now)) {
+            return std::nullopt;
+        }
+        return stored;
+    }
+
+    static Task<OAuthClientInformation> resolve_identity(
+        std::shared_ptr<ChallengeOperation> operation) {
+        auto& owner = *operation->owner;
+        const auto decision = select_client_identity(owner.config.client_identity, operation->facts,
+                                                     operation->stored_identity);
+        switch (decision) {
+            case ClientIdentityDecision::use_pre_registered: {
+                auto identity = *owner.config.client_identity.pre_registered;
+                identity.source = ClientIdentitySource::pre_registered;
+                identity.issuer = operation->facts.issuer;
+                co_return identity;
+            }
+            case ClientIdentityDecision::use_client_id_metadata_document: {
+                // The document URL is the client identifier itself, so there is nothing to
+                // register and nothing to persist.
+                OAuthClientInformation identity;
+                identity.client_id = *owner.config.client_identity.client_metadata_url;
+                identity.issuer = operation->facts.issuer;
+                identity.source = ClientIdentitySource::client_id_metadata_document;
+                co_return identity;
+            }
+            case ClientIdentityDecision::reuse_stored_registration:
+                co_return *operation->stored_identity;
+            case ClientIdentityDecision::register_dynamically:
+                break;
+            case ClientIdentityDecision::unavailable: {
+                // `unavailable` covers several causes; say which one, because the unbound-secret
+                // refusal is a configuration mistake the caller can fix and the generic message
+                // would send them looking in the wrong place.
+                const auto& injected = owner.config.client_identity.pre_registered;
+                if (injected && !injected->client_id.empty() && injected->issuer.empty() &&
+                    injected->client_secret && !injected->client_secret->empty()) {
+                    // Both spellings are named, with the condition on each, because they are not
+                    // interchangeable: the constructor copies `client_issuer` into the injected
+                    // credentials only when `client_identity.pre_registered` was not already set, so
+                    // a caller who built that struct themselves can set `client_issuer` and watch it
+                    // be ignored.
+                    throw std::runtime_error(
+                        "Injected client credentials carry a client_secret but name no issuer, so "
+                        "they cannot be presented to authorization server " +
+                        sanitize_for_diagnostics(operation->facts.issuer) +
+                        "; set the issuer these credentials are bound to. Set "
+                        "client_identity.pre_registered.issuer if you populated "
+                        "client_identity.pre_registered yourself; client_issuer applies only to "
+                        "credentials given as client_id and client_secret, and is ignored once "
+                        "client_identity.pre_registered is set");
+                }
+                throw std::runtime_error("No client identity is available for authorization server " +
+                                         sanitize_for_diagnostics(operation->facts.issuer));
+            }
+        }
+
+        operation->registration_response = co_await owner.http_client->post_json(
+            *operation->facts.registration_endpoint,
+            build_registration_request(owner.config.client_identity.metadata, operation->facts));
+
+        auto registered = operation->registration_response.get<OAuthClientInformation>();
+        if (registered.client_id.empty()) {
+            throw std::runtime_error("Client registration response omitted client_id");
+        }
+        registered.issuer = operation->facts.issuer;
+        registered.source = ClientIdentitySource::dynamic_registration;
+        if (owner.config.credential_store) {
+            owner.config.credential_store->store(operation->facts.issuer, registered);
+        }
+        co_return registered;
+    }
+
+    static AuthorizationRequest build_request(const Impl& owner, const BearerChallenge& challenge,
+                                              const ProtectedResourceMetadata& resource,
+                                              const AuthServerMetadata& auth_server,
+                                              const OAuthClientInformation& identity) {
+        const auto pkce = generate_pkce_pair();
+
+        AuthorizationRequest request;
+        request.state = mcp::detail::generate_secure_session_id();
+        request.code_verifier = pkce.code_verifier;
+        request.code_challenge = pkce.code_challenge;
+        // Recorded from the metadata document this client fetched itself. Response validation is
+        // only as trustworthy as this value's provenance.
+        request.issuer = auth_server.issuer;
+        request.issuer_parameter_supported =
+            auth_server.authorization_response_iss_parameter_supported.value_or(false);
+        request.client_id = identity.client_id;
+        request.redirect_uri = owner.config.redirect_uri;
+        request.scope = select_scope(owner, challenge, resource);
+        // Defence in depth: `run_challenge` already rejected an unidentified resource before any
+        // outbound request. Re-checking here is a pure string comparison that cannot fail on that
+        // path, and keeps `build_request` correct if a second caller ever appears.
+        require_resource_identifies_server(resource.resource, owner.config.server_url);
+        request.resource = resource.resource;
+
+        KeyValuePairList params = {
+            {"response_type", "code"},
+            {"client_id", request.client_id},
+            {"redirect_uri", request.redirect_uri},
+            {"state", request.state},
+            {"code_challenge", request.code_challenge},
+            {"code_challenge_method", pkce.challenge_method},
+        };
+        if (request.scope) {
+            params.emplace_back("scope", *request.scope);
+        }
+        // RFC 8707: the resource indicator travels on the authorization request as well as the
+        // token request.
+        if (request.resource) {
+            params.emplace_back("resource", *request.resource);
+        }
+        request.authorization_url =
+            append_query(auth_server.authorization_endpoint, detail::build_form_body(params));
+        return request;
+    }
+
+    static OAuthConfig build_token_config(const Impl& owner, const AuthServerMetadata& auth_server,
+                                          const AuthorizationRequest& request,
+                                          const OAuthClientInformation& identity) {
+        OAuthConfig token_config;
+        token_config.client_id = identity.client_id;
+        token_config.client_secret = identity.client_secret;
+        token_config.token_endpoint = auth_server.token_endpoint;
+        token_config.authorization_endpoint = auth_server.authorization_endpoint;
+        token_config.revocation_endpoint = auth_server.revocation_endpoint;
+        token_config.redirect_uri = owner.config.redirect_uri;
+        token_config.scope = request.scope;
+        token_config.resource = request.resource;
+        token_config.token_endpoint_auth_method = select_token_endpoint_auth_method(
+            auth_server.token_endpoint_auth_methods_supported, identity.client_secret.has_value());
+        return token_config;
+    }
+
+    static Task<bool> run_challenge(std::shared_ptr<ChallengeOperation> operation) {
+        auto& owner = *operation->owner;
+
+        // Both checks that decide whether this document may be acted on, handed to discovery as its
+        // acceptor so they gate the cache write and also run on a cache hit: applied afterwards, a
+        // refused document would already be cached for the full TTL. Order matters: a document that
+        // both lists no authorization servers and carries a resource that is not ours must report the
+        // missing authorization servers.
+        auto accept = [owner = operation->owner](const ProtectedResourceMetadata& resource) {
+            if (resource.authorization_servers.empty()) {
+                throw std::runtime_error("Protected resource metadata listed no authorization servers");
+            }
+            // Refused before the first outbound request this document would drive, so a PRM that
+            // does not identify our configured server cannot make us fetch the authorization server
+            // metadata it names, register a client with that server, or persist those credentials.
+            require_resource_identifies_server(resource.resource, owner->config.server_url);
+        };
+
+        // The challenge's own metadata URL wins over the well-known fallback order.
+        operation->resource_metadata = co_await owner.discovery->discover_protected_resource(
+            owner.config.server_url, operation->challenge.resource_metadata, std::move(accept));
+
+        operation->auth_metadata = co_await owner.discovery->discover_auth_server(
+            operation->resource_metadata->authorization_servers.front());
+        // RFC 8414 §3.3: the issuer a metadata document claims MUST be the location it was fetched
+        // from, compared byte-exact. Normalizing here would re-open the AS mix-up this closes.
+        if (operation->auth_metadata->issuer.empty() ||
+            operation->auth_metadata->issuer !=
+                operation->resource_metadata->authorization_servers.front()) {
+            throw std::runtime_error(
+                "Authorization server metadata issuer does not identify the server it was fetched "
+                "from");
+        }
+        if (operation->auth_metadata->authorization_endpoint.empty() ||
+            operation->auth_metadata->token_endpoint.empty()) {
+            throw std::runtime_error(
+                "Authorization server metadata omitted an authorization or token endpoint");
+        }
+
+        operation->facts = server_facts(*operation->auth_metadata);
+        operation->stored_identity = load_stored_identity(owner, operation->facts);
+        operation->identity = co_await resolve_identity(operation);
+
+        operation->request = build_request(owner, operation->challenge, *operation->resource_metadata,
+                                           *operation->auth_metadata, operation->identity);
+        operation->token_config = build_token_config(owner, *operation->auth_metadata,
+                                                     operation->request, operation->identity);
+        {
+            std::lock_guard lock(owner.state_mutex);
+            owner.last_request = operation->request;
+            owner.last_identity = operation->identity;
+            owner.token_config = operation->token_config;
+        }
+
+        operation->response = co_await owner.callback(operation->request);
+        const auto validation =
+            validate_authorization_response(operation->request, operation->response);
+        if (!validation.accepted()) {
+            throw std::runtime_error("Authorization response rejected: " + validation.message);
+        }
+
+        operation->token = co_await owner.http_client->exchange_code(
+            operation->token_config, *operation->response.code, operation->request.code_verifier);
+        {
+            std::lock_guard lock(owner.state_mutex);
+            // What the server actually granted, falling back to what was asked for when the token
+            // response stays silent (RFC 6749 §5.1 makes `scope` optional in that case).
+            owner.granted_scope =
+                operation->token.scope ? operation->token.scope : operation->request.scope;
+        }
+        owner.token_store->store(owner.config.server_url, operation->token);
+        co_return true;
+    }
+
+    /// Push `flight`'s deadline into the past, on `flight_strand` so it never races the timer's own
+    /// operations: expires_at() and async_wait() both execute on the calling thread (the timer's
+    /// executor governs only its completion handler), and await_in_flight() initiates its wait on the
+    /// same strand.
+    ///
+    /// expires_at() rather than cancel(): it also moves the deadline, so a follower that has joined
+    /// `flight` but not yet called async_wait() completes immediately instead of parking on
+    /// time_point::max() forever. A null `flight` is a no-op.
+    static void expire_flight(const net::strand<net::any_io_executor>& flight_strand,
+                              std::shared_ptr<Flight> flight) {
+        if (!flight) {
+            return;
+        }
+        net::dispatch(flight_strand, [flight = std::move(flight)]() {
+            flight->timer.expires_at(net::steady_timer::time_point::min());
+        });
+    }
+
+    /// Waiters share the leader's outcome instead of opening a second authorization flow, so a
+    /// burst of concurrent requests that all hit the same challenge authorizes exactly once.
+    static Task<bool> await_in_flight(std::shared_ptr<Impl> owner, std::shared_ptr<Flight> flight) {
+        // async_wait() touches the timer synchronously on the thread that calls it, so it has to be
+        // initiated on the same strand expire_flight() dispatches its expires_at() onto; the timer's
+        // associated executor governs only where its completion handler runs.
+        //
+        // bind_executor() rather than a bare post(flight_strand, use_awaitable): a bare post leaves
+        // the resumption on this coroutine's own executor and only happens to land inside the strand
+        // when the two share one io_context.
+        co_await net::dispatch(net::bind_executor(owner->flight_strand, net::use_awaitable));
+        boost::system::error_code ignored;
+        co_await flight->timer.async_wait(net::redirect_error(net::use_awaitable, ignored));
+
+        // The dispatch above moves this coroutine onto flight_strand, but only until the next
+        // suspension: an awaitable's executor is fixed when it is spawned, and the wait's completion
+        // handler carries that executor, so the caller is back on its own executor here and no
+        // explicit hop back is needed. That matters -- Client spawns its write onto its own strand
+        // and SerializedTransportWriter builds another to serialise writes, and both would be
+        // bypassed by a continuation left on flight_strand. Asserted by
+        // AFollowerReleasedFromTheSingleFlightTimerResumesOnItsOwnStrand.
+        std::exception_ptr failure;
+        bool succeeded = false;
+        {
+            std::lock_guard lock(owner->state_mutex);
+            // close() expires the same timer to release a follower parked here; a follower that
+            // wakes because the manager closed gets a clear error rather than the misleading "not
+            // authorized" that the leader's own outcome would otherwise report. Checked before the
+            // flight's own result because a closed manager is the more specific answer: the flight
+            // it joined may never have finished at all.
+            if (owner->closed) {
+                throw std::runtime_error("OAuth authorization manager closed");
+            }
+            // Read off the flight this follower actually waited on. Reading a manager-wide field
+            // here would let a late waker report a different attempt's outcome.
+            //
+            // `finished` is a guard rather than a case that arises today: the only two things that
+            // expire this timer are the leader recording its result and close(), and the closed check
+            // above already took the second. It keeps a wake-up added later from making a follower
+            // report a flat "not authorized" that is indistinguishable from a real refusal.
+            if (!flight->finished) {
+                throw std::runtime_error(
+                    "OAuth authorization attempt ended without recording an outcome");
+            }
+            failure = flight->failure;
+            succeeded = flight->succeeded;
+        }
+
+        // Rethrown outside the lock: the leader's exception must not travel through a destructor
+        // while state_mutex is held. Every follower rethrows the same exception_ptr, which is safe --
+        // the object it refers to is shared and read-only. Nothing on the follower path swallows it:
+        // run_write() catches (...) only to erase_pending() and rethrow.
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
+        co_return succeeded;
+    }
+
+    static Task<bool> run_leading_challenge(std::shared_ptr<ChallengeOperation> operation) {
+        auto owner = operation->owner;
+        bool succeeded = false;
+        std::exception_ptr failure;
+        try {
+            succeeded = co_await run_challenge(std::move(operation));
+        } catch (...) {
+            failure = std::current_exception();
+        }
+
+        std::shared_ptr<Flight> finished;
+        {
+            std::lock_guard lock(owner->state_mutex);
+            finished = std::move(owner->flight);
+            owner->flight.reset();
+            if (finished) {
+                // Recorded on the attempt itself, before any follower is woken, so each follower
+                // reads the result of the flight it joined and gets the leader's own reason for it
+                // rather than a bare false. The same exception_ptr is rethrown below.
+                finished->succeeded = succeeded;
+                finished->failure = failure;
+                finished->finished = true;
+            }
+        }
+        // A late joiner may have read the old `flight` out of the lock above just before this reset
+        // and not yet be waiting on it (see expire_flight()'s comment); expires_at(), not cancel(),
+        // is what still reaches it.
+        expire_flight(owner->flight_strand, std::move(finished));
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
+        co_return succeeded;
+    }
+
+    static Task<bool> handle_challenge(std::shared_ptr<Impl> owner, const std::string& header) {
+        auto challenge = select_bearer_challenge(parse_www_authenticate(header));
+        if (!challenge) {
+            return return_false();
+        }
+
+        std::shared_ptr<Flight> joined;
+        {
+            std::lock_guard lock(owner->state_mutex);
+            // Checked in the same critical section that reads or creates `flight`: close() also
+            // takes this lock, so the two can never interleave as a new flight being created right
+            // after close() already ran past it, unnoticed. (http_client's own sticky abort would
+            // still stop that flight's first network call either way, but this keeps a closed
+            // manager from starting one at all.)
+            if (owner->closed) {
+                return throw_closed();
+            }
+            if (owner->flight) {
+                joined = owner->flight;
+            } else {
+                owner->flight = std::make_shared<Flight>(owner->flight_strand);
+            }
+        }
+        if (joined) {
+            return await_in_flight(std::move(owner), std::move(joined));
+        }
+
+        auto operation = std::make_shared<ChallengeOperation>();
+        operation->owner = std::move(owner);
+        operation->challenge = std::move(*challenge);
+        return run_leading_challenge(std::move(operation));
+    }
+
+    static Task<bool> try_refresh(std::shared_ptr<Impl> owner) {
+        auto stored = owner->token_store->load(owner->config.server_url);
+        if (!stored || !stored->refresh_token) {
+            return return_false();
+        }
+
+        auto operation = std::make_shared<RefreshOperation>();
+        {
+            std::lock_guard lock(owner->state_mutex);
+            if (!owner->token_config) {
+                return return_false();
+            }
+            operation->token_config = *owner->token_config;
+        }
+        operation->owner = std::move(owner);
+        operation->stored_token = std::move(*stored);
+        return run_refresh(std::move(operation));
+    }
+
+    static Task<bool> run_refresh(std::shared_ptr<RefreshOperation> operation) {
+        try {
+            operation->new_token = co_await operation->owner->http_client->refresh_token(
+                operation->token_config, *operation->stored_token.refresh_token);
+            if (!operation->new_token->refresh_token) {
+                operation->new_token->refresh_token = operation->stored_token.refresh_token;
+            }
+            operation->owner->token_store->store(operation->owner->config.server_url,
+                                                 std::move(*operation->new_token));
+            co_return true;
+        } catch (const MetadataPolicyError&) {
+            throw;
+        } catch (...) {
+            co_return false;
+        }
+    }
+
+    std::shared_ptr<TokenStore> token_store;
+    std::shared_ptr<OAuthHttpClient> http_client;
+    std::shared_ptr<OAuthDiscoveryClient> discovery;
+    /// Serialises every access to `flight`. A boost::asio::steady_timer is not safe for concurrent
+    /// use, and its two touch points -- expire_flight()'s expires_at() and await_in_flight()'s
+    /// async_wait() -- both execute synchronously on whatever thread calls them, so nothing but a
+    /// strand shared by both of them keeps them apart on a multi-threaded io_context. The timer is
+    /// constructed on this strand as well, so its completion handlers run here too.
+    net::strand<net::any_io_executor> flight_strand;
+    OAuthAuthorizationConfig config;
+    AuthorizationCallback callback;
+    mutable std::mutex state_mutex;
+    std::optional<AuthorizationRequest> last_request;
+    std::optional<OAuthClientInformation> last_identity;
+    std::optional<OAuthConfig> token_config;
+    std::optional<std::string> granted_scope;
+    /// Non-null exactly while one authorization flow is running; cancelling it releases the
+    /// requests that coalesced onto it.
+    std::shared_ptr<Flight> flight;
+    bool closed{false};
+
+    /// Abort whatever this manager has in flight and release every parked follower with an error.
+    ///
+    /// `http_client->abort_pending()` unblocks a leader parked in an HTTP call (discovery,
+    /// registration and token exchange share the one client) and, being sticky, fails a leader or a
+    /// racing fresh flow at its first network call. `expire_flight()` releases followers directly,
+    /// which also covers a leader parked in the application's consent callback, where there is no
+    /// network state to cancel.
+    static void close(const std::shared_ptr<Impl>& owner) {
+        std::shared_ptr<Flight> flight;
+        {
+            std::lock_guard lock(owner->state_mutex);
+            if (owner->closed) {
+                return;
+            }
+            owner->closed = true;
+            flight = owner->flight;
+        }
+        owner->http_client->abort_pending();
+        expire_flight(owner->flight_strand, std::move(flight));
+    }
+};
+
+OAuthAuthorizationManager::OAuthAuthorizationManager(const net::any_io_executor& executor,
+                                                     std::shared_ptr<TokenStore> token_store,
+                                                     OAuthAuthorizationConfig config,
+                                                     AuthorizationCallback callback) {
+    if (!token_store || !callback) {
+        throw std::invalid_argument(
+            "OAuthAuthorizationManager requires a token store and an authorization callback");
+    }
+    impl_ = std::make_shared<Impl>(executor, std::move(token_store), std::move(config),
+                                   std::move(callback));
+}
+
+std::string OAuthAuthorizationManager::get_access_token() const {
+    const auto token = impl_->token_store->load(impl_->config.server_url);
+    return token ? token->access_token : std::string{};
+}
+
+Task<bool> OAuthAuthorizationManager::try_refresh_token() { return Impl::try_refresh(impl_); }
+
+Task<bool> OAuthAuthorizationManager::try_handle_challenge(const std::string& www_authenticate) {
+    return Impl::handle_challenge(impl_, www_authenticate);
+}
+
+void OAuthAuthorizationManager::close() { Impl::close(impl_); }
+
+std::optional<AuthorizationRequest> OAuthAuthorizationManager::last_authorization_request() const {
+    std::lock_guard lock(impl_->state_mutex);
+    return impl_->last_request;
+}
+
+std::optional<OAuthClientInformation> OAuthAuthorizationManager::last_client_identity() const {
+    std::lock_guard lock(impl_->state_mutex);
+    return impl_->last_identity;
+}
+
+struct OAuthClientTransport::Impl {
+    using Clock = std::chrono::steady_clock;
+    using PendingOrder = std::list<std::string>;
+
+    struct PendingRequest {
+        std::shared_ptr<const std::string> wire;
+        Clock::time_point expires_at;
+        PendingOrder::iterator order_position;
+        std::size_t retained_bytes{0};
+        std::uint64_t generation{0};
+    };
+
+    using PendingMap = std::unordered_map<std::string, PendingRequest>;
+
+    struct WriteOperation {
+        std::shared_ptr<Impl> owner;
+        std::shared_ptr<const std::string> original;
+        std::shared_ptr<const std::string> outgoing;
+        std::optional<std::string> request_key;
+        std::optional<std::uint64_t> request_generation;
+        std::exception_ptr write_error;
+        std::string authenticate_challenge;
+        bool authentication_challenge{false};
+        bool refresh_allowed{false};
+        int authorization_attempts{0};
+    };
+
+    /// At most three authorization challenges are honoured per logical request, so a server that
+    /// keeps refusing a scope it will never grant cannot drive an unbounded authorization loop.
+    static constexpr int g_max_authorization_challenges = 3;
+
+    explicit Impl(std::shared_ptr<ITransport> wrapped,
+                  std::shared_ptr<Authenticator> token_authenticator,
+                  OAuthClientTransportOptions replay_options)
+        : inner(std::move(wrapped)),
+          authenticator(std::move(token_authenticator)),
+          options(std::move(replay_options)) {}
+
+    static void erase_pending_locked(Impl& owner, PendingMap::iterator iter) {
+        owner.pending_bytes -= iter->second.retained_bytes;
+        owner.pending_order.erase(iter->second.order_position);
+        owner.pending_requests.erase(iter);
+    }
+
+    static void prune_expired_locked(Impl& owner, Clock::time_point now) {
+        while (!owner.pending_order.empty()) {
+            const auto iter = owner.pending_requests.find(owner.pending_order.front());
+            if (iter == owner.pending_requests.end()) {
+                owner.pending_order.pop_front();
+                continue;
+            }
+            if (iter->second.expires_at > now) {
+                break;
+            }
+            erase_pending_locked(owner, iter);
+        }
+    }
+
+    static void evict_oldest_locked(Impl& owner) {
+        if (owner.pending_order.empty()) {
+            return;
+        }
+        const auto iter = owner.pending_requests.find(owner.pending_order.front());
+        if (iter == owner.pending_requests.end()) {
+            owner.pending_order.pop_front();
+            return;
+        }
+        erase_pending_locked(owner, iter);
+    }
+
+    static std::optional<std::size_t> retained_size(const Impl& owner, std::string_view key,
+                                                    std::string_view wire) {
+        auto remaining = owner.options.max_pending_request_bytes;
+        if (wire.size() > remaining) {
+            return std::nullopt;
+        }
+        remaining -= wire.size();
+        for (int key_copy = 0; key_copy < 2; ++key_copy) {
+            if (key.size() > remaining) {
+                return std::nullopt;
+            }
+            remaining -= key.size();
+        }
+        return owner.options.max_pending_request_bytes - remaining;
+    }
+
+    static std::optional<std::uint64_t> remember_request(
+        const std::shared_ptr<Impl>& owner, const std::string& key,
+        const std::shared_ptr<const std::string>& wire) {
+        std::lock_guard lock(owner->pending_mutex);
+        const auto now = Clock::now();
+        prune_expired_locked(*owner, now);
+
+        if (owner->closed || owner->options.max_pending_requests == 0 ||
+            owner->options.pending_request_ttl <= std::chrono::milliseconds::zero()) {
+            return std::nullopt;
+        }
+        const auto bytes = retained_size(*owner, key, *wire);
+        if (!bytes) {
+            return std::nullopt;
+        }
+
+        if (const auto existing = owner->pending_requests.find(key);
+            existing != owner->pending_requests.end()) {
+            erase_pending_locked(*owner, existing);
+        }
+        while (owner->pending_requests.size() >= owner->options.max_pending_requests ||
+               *bytes > owner->options.max_pending_request_bytes - owner->pending_bytes) {
+            evict_oldest_locked(*owner);
+        }
+
+        ++owner->next_generation;
+        if (owner->next_generation == 0) {
+            ++owner->next_generation;
+        }
+        const auto generation = owner->next_generation;
+        const auto max_ttl =
+            std::chrono::duration_cast<std::chrono::milliseconds>(Clock::time_point::max() - now);
+        const auto expires_at = owner->options.pending_request_ttl >= max_ttl
+                                    ? Clock::time_point::max()
+                                    : now + owner->options.pending_request_ttl;
+
+        owner->pending_order.push_back(key);
+        try {
+            owner->pending_requests.emplace(
+                key, PendingRequest{wire, expires_at, std::prev(owner->pending_order.end()), *bytes,
+                                    generation});
+        } catch (...) {
+            owner->pending_order.pop_back();
+            throw;
+        }
+        owner->pending_bytes += *bytes;
+        return generation;
+    }
+
+    static std::string inject_token(const std::shared_ptr<Impl>& owner, JSONRPCRequest request) {
+        const auto token = owner->authenticator->get_access_token();
+        if (token.empty()) {
+            return nlohmann::json(request).dump();
+        }
+        if (!request.params) {
+            request.params = nlohmann::json::object();
+        }
+        auto& params = *request.params;
+        if (!params.is_object()) {
+            params = nlohmann::json::object();
+        }
+        if (!params.contains("_meta")) {
+            params["_meta"] = nlohmann::json::object();
+        }
+        params["_meta"]["auth_token"] = token;
+        return nlohmann::json(request).dump();
+    }
+
+    static std::shared_ptr<WriteOperation> prepare_write(std::shared_ptr<Impl> owner,
+                                                         std::shared_ptr<const std::string> original) {
+        auto operation = std::make_shared<WriteOperation>();
+        operation->owner = std::move(owner);
+        operation->original = std::move(original);
+        auto outgoing = std::make_shared<std::string>(*operation->original);
+
+        try {
+            const auto json_message = nlohmann::json::parse(*operation->original);
+            const auto message = json_message.get<JSONRPCMessage>();
+            if (const auto* request = std::get_if<JSONRPCRequest>(&message)) {
+                operation->request_key = request->id.correlation_key();
+                if (!operation->owner->uses_http_authorization_header) {
+                    *outgoing = inject_token(operation->owner, *request);
+                }
+            }
+        } catch (const std::exception&) {
+            // Non-JSON messages pass through unchanged.
+        }
+
+        operation->outgoing = std::move(outgoing);
+        if (operation->request_key) {
+            operation->request_generation =
+                remember_request(operation->owner, *operation->request_key, operation->original);
+        }
+        return operation;
+    }
+
+    static Task<void> write(std::shared_ptr<Impl> owner, std::shared_ptr<const std::string> original) {
+        return run_write(prepare_write(std::move(owner), std::move(original)));
+    }
+
+    static void erase_pending(const std::shared_ptr<WriteOperation>& operation) {
+        if (!operation->request_key || !operation->request_generation) {
+            return;
+        }
+        std::lock_guard lock(operation->owner->pending_mutex);
+        const auto iter = operation->owner->pending_requests.find(*operation->request_key);
+        if (iter != operation->owner->pending_requests.end() &&
+            iter->second.generation == *operation->request_generation) {
+            erase_pending_locked(*operation->owner, iter);
+        }
+    }
+
+    static Task<void> run_write(std::shared_ptr<WriteOperation> operation) {
+        while (true) {
+            operation->write_error = nullptr;
+            operation->authentication_challenge = false;
+            operation->refresh_allowed = false;
+            operation->authenticate_challenge.clear();
+
+            try {
+                co_await operation->owner->inner->write_message(*operation->outgoing);
+            } catch (const mcp::HttpStatusError& error) {
+                // 401 says the request was not authenticated at all. 403 that carries a challenge
+                // is the step-up case: the token is valid but its scope does not cover this
+                // operation, so the challenge drives a fresh authorization rather than a refresh.
+                const auto unauthorized =
+                    error.status() == static_cast<unsigned int>(http::status::unauthorized);
+                const auto stepped_up =
+                    error.status() == static_cast<unsigned int>(http::status::forbidden) &&
+                    !error.authenticate_challenge().empty();
+                operation->authentication_challenge =
+                    operation->owner->uses_http_authorization_header && (unauthorized || stepped_up);
+                if (operation->authentication_challenge) {
+                    operation->authenticate_challenge = error.authenticate_challenge();
+                    operation->refresh_allowed = unauthorized;
+                }
+                operation->write_error = std::current_exception();
+            } catch (...) {
+                operation->write_error = std::current_exception();
+            }
+
+            if (!operation->write_error) {
+                co_return;
+            }
+            if (!operation->authentication_challenge ||
+                operation->authorization_attempts >= g_max_authorization_challenges) {
+                break;
+            }
+            ++operation->authorization_attempts;
+
+            bool authorized = false;
+            try {
+                // A challenge that names its metadata can drive a full authorization exchange;
+                // renewing an existing grant is the fallback when it cannot. Renewal is pointless
+                // against an insufficient-scope refusal, so it is offered only for a 401.
+                if (!operation->authenticate_challenge.empty()) {
+                    authorized = co_await operation->owner->authenticator->try_handle_challenge(
+                        operation->authenticate_challenge);
+                }
+                if (!authorized && operation->refresh_allowed) {
+                    authorized = co_await operation->owner->authenticator->try_refresh_token();
+                }
+            } catch (...) {
+                erase_pending(operation);
+                throw;
+            }
+            if (!authorized) {
+                break;
+            }
+        }
+
+        erase_pending(operation);
+        std::rethrow_exception(operation->write_error);
+    }
+
+    static std::shared_ptr<const std::string> take_retry_wire(const std::shared_ptr<Impl>& owner,
+                                                              std::string_view raw) {
+        try {
+            const auto json_message = nlohmann::json::parse(raw);
+            const auto message = json_message.get<JSONRPCMessage>();
+
+            std::optional<std::string> key;
+            bool unauthorized = false;
+            if (const auto* result = std::get_if<JSONRPCResultResponse>(&message)) {
+                key = result->id.correlation_key();
+            } else if (const auto* error = std::get_if<JSONRPCErrorResponse>(&message);
+                       error && error->id) {
+                key = error->id->correlation_key();
+                unauthorized = error->error.code == g_UNAUTHORIZED;
+            }
+            if (!key) {
+                return {};
+            }
+
+            std::lock_guard lock(owner->pending_mutex);
+            prune_expired_locked(*owner, Clock::now());
+            const auto iter = owner->pending_requests.find(*key);
+            if (iter == owner->pending_requests.end()) {
+                return {};
+            }
+            auto wire = unauthorized ? iter->second.wire : std::shared_ptr<const std::string>{};
+            erase_pending_locked(*owner, iter);
+            return wire;
+        } catch (const std::exception&) {
+            return {};
+        }
+    }
+
+    struct ReadOperation {
+        explicit ReadOperation(std::shared_ptr<Impl> state) : owner(std::move(state)) {}
+
+        std::shared_ptr<Impl> owner;
+        std::string raw;
+        std::shared_ptr<const std::string> retry_wire;
+    };
+
+    static Task<std::string> read(std::shared_ptr<Impl> owner) {
+        auto operation = std::make_shared<ReadOperation>(std::move(owner));
+        return run_read(std::move(operation));
+    }
+
+    static Task<std::string> run_read(std::shared_ptr<ReadOperation> operation) {
+        operation->raw = co_await operation->owner->inner->read_message();
+        operation->retry_wire = take_retry_wire(operation->owner, operation->raw);
+        if (operation->retry_wire && co_await operation->owner->authenticator->try_refresh_token()) {
+            co_await write(operation->owner, operation->retry_wire);
+            operation->raw = co_await operation->owner->inner->read_message();
+            (void)take_retry_wire(operation->owner, operation->raw);
+        }
+        co_return operation->raw;
+    }
+
+    std::shared_ptr<ITransport> inner;
+    std::shared_ptr<Authenticator> authenticator;
+    OAuthClientTransportOptions options;
+    std::mutex pending_mutex;
+    PendingMap pending_requests;
+    PendingOrder pending_order;
+    std::size_t pending_bytes{0};
+    std::uint64_t next_generation{0};
+    bool closed{false};
+    bool uses_http_authorization_header{false};
+};
+
+OAuthClientTransport::OAuthClientTransport(std::shared_ptr<ITransport> inner,
+                                           std::shared_ptr<Authenticator> authenticator)
+    : OAuthClientTransport(std::move(inner), std::move(authenticator), {}) {}
+
+OAuthClientTransport::OAuthClientTransport(std::shared_ptr<ITransport> inner,
+                                           std::shared_ptr<Authenticator> authenticator,
+                                           OAuthClientTransportOptions options) {
+    if (!inner || !authenticator) {
+        throw std::invalid_argument(
+            "OAuthClientTransport requires an inner transport and authenticator");
+    }
+
+    impl_ = std::make_shared<Impl>(std::move(inner), std::move(authenticator), std::move(options));
+    if (const auto http_transport = std::dynamic_pointer_cast<mcp::HttpClientTransport>(impl_->inner)) {
+        std::weak_ptr<Authenticator> weak_authenticator = impl_->authenticator;
+        http_transport->set_bearer_token_provider([weak_authenticator]() {
+            const auto active_authenticator = weak_authenticator.lock();
+            return active_authenticator ? active_authenticator->get_access_token() : std::string{};
+        });
+        impl_->uses_http_authorization_header = true;
+    }
+}
+
+Task<std::string> OAuthClientTransport::read_message() { return Impl::read(impl_); }
+
+Task<void> OAuthClientTransport::write_message(std::string_view message) {
+    return Impl::write(impl_, std::make_shared<const std::string>(message));
+}
+
+void OAuthClientTransport::close() {
+    {
+        std::lock_guard lock(impl_->pending_mutex);
+        if (impl_->closed) {
+            return;
+        }
+        impl_->closed = true;
+        impl_->pending_requests.clear();
+        impl_->pending_order.clear();
+        impl_->pending_bytes = 0;
+    }
+    // Releases anything the authenticator has parked -- an in-flight discovery/token exchange, or a
+    // follower waiting on a single-flight timer -- before the inner transport is torn down, so a
+    // write() still working its way through the authorization retry loop fails promptly instead of
+    // outliving this call.
+    impl_->authenticator->close();
+    impl_->inner->close();
+}
+
+}  // namespace mcp::auth

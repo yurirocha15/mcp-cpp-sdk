@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace mcp {
 
@@ -40,8 +41,9 @@ namespace mcp {
  * auto server_factory = [](const asio::any_io_executor&) {
  *     ServerCapabilities caps;
  *     caps.tools = ServerCapabilities::ToolsCapability{};
- *     Server server({"my-server", "1.0"}, std::move(caps));
- *     server.add_tool<json, json>("echo", "Echo tool", schema, handler);
+ *     Implementation info{"my-server", "1.0"};
+ *     auto server = std::make_unique<Server>(info, std::move(caps));
+ *     server->add_tool<json, json>("echo", "Echo tool", schema, handler);
  *     return server;
  * };
  *
@@ -87,8 +89,111 @@ class MCP_API StreamableHttpSessionManager {
      * @param handler A function that receives the HTTP request and optionally returns
      *                a response. If it returns std::nullopt, the request is handled
      *                as MCP protocol.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
     void set_custom_request_handler(CustomRequestHandler handler);
+
+    /**
+     * @brief Replace the allowlist used for requests carrying an Origin header.
+     *
+     * Requests without an Origin header remain valid. Browser-originated requests are denied by
+     * default until their exact Origin value is present in this list.
+     * Configure the allowlist before listen() starts.
+     *
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_allowed_origins(std::vector<std::string> origins);
+
+    /**
+     * @brief Explicitly opt into accepting every Origin header value before listen() starts.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_allow_all_origins(bool allow_all);
+
+    /**
+     * @brief Require and validate an HTTP Authorization: Bearer header.
+     *
+     * Passing an empty validator disables HTTP authentication.
+     * Configure the validator before listen() starts.
+     *
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_bearer_token_validator(BearerTokenValidator validator);
+
+    /**
+     * @brief Require an Authorization: Bearer header and validate it asynchronously.
+     *
+     * Use this when the decision needs I/O -- token introspection, a JWKS fetch -- so it suspends
+     * instead of blocking the executor that is concurrently serving MCP traffic.
+     *
+     * Passing an empty validator disables HTTP authentication.
+     * Configure the validator before listen() starts.
+     *
+     * @throws std::logic_error If a synchronous validator is already installed, or if listen() has
+     *         already been called or the manager is closed.
+     */
+    void set_async_bearer_token_validator(AsyncBearerTokenValidator validator);
+
+    /**
+     * @brief Cap the HTTP request body this manager will read.
+     *
+     * A request whose body exceeds the cap is answered `413 Payload Too Large` and its connection is
+     * closed; it never reaches MCP dispatch. Defaults to
+     * mcp::constants::g_default_max_request_body_bytes. Binary content travels as base64 inside the
+     * JSON body, so a cap near the size of the raw content rejects it.
+     *
+     * Configure the cap before listen() starts.
+     *
+     * @throws std::invalid_argument If `max_bytes` is zero.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_max_request_body_bytes(std::size_t max_bytes);
+
+    /**
+     * @brief Set the parameters sent in the `WWW-Authenticate` header of every 401.
+     *
+     * Without this call the manager sends the bare `Bearer` challenge. A client that has to
+     * discover where to obtain a token needs at least `resource_metadata`; setting protected
+     * resource metadata fills that field in automatically when it is left empty here.
+     *
+     * Configure the challenge before listen() starts.
+     *
+     * @throws std::invalid_argument If a challenge value cannot be sent in a quoted-string.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_bearer_challenge(BearerChallengeConfig challenge);
+
+    /**
+     * @brief Serve an RFC 9728 protected-resource metadata document.
+     *
+     * The document answers GET requests at its configured path without an Authorization header, ahead
+     * of both the bearer check and the custom request handler. When the bearer challenge carries no
+     * `resource_metadata`, it is populated with this document's URL.
+     *
+     * Configure the metadata before listen() starts.
+     *
+     * @throws std::invalid_argument If `resource` is empty or is not an absolute URL.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_protected_resource_metadata(ProtectedResourceMetadataConfig metadata);
+
+    /**
+     * @brief Exempt request paths from bearer validation and exclude them from MCP dispatch.
+     *
+     * An entry is excused from the bearer check and also removed from the set of paths MCP answers:
+     * an exempt request still reaches the protected-resource metadata route and the custom request
+     * handler, but if both decline it is answered `404 Not Found` rather than dispatched, so MCP is
+     * never served without authentication on an exempt path.
+     *
+     * Each entry is compared for equality against the path component of the request target, with any
+     * query string or fragment removed first, so `/health` also exempts `/health?probe=1`. Empty by
+     * default.
+     *
+     * Configure the paths before listen() starts.
+     *
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_unauthenticated_paths(std::vector<std::string> paths);
 
     /**
      * @brief Get the number of active sessions.
@@ -102,6 +207,7 @@ class MCP_API StreamableHttpSessionManager {
      *
      * When enabled, POST responses always use `application/json` and session
      * replay events are not stored.
+     * This option is atomic and may be changed while the listener is running.
      *
      * @param json_only True to bypass SSE framing and replay storage.
      */
@@ -119,6 +225,7 @@ class MCP_API StreamableHttpSessionManager {
      * behavior unchanged.
      *
      * @param enabled True to use stateless direct JSON handling.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
     void set_stateless_json_mode(bool enabled);
 
@@ -130,6 +237,7 @@ class MCP_API StreamableHttpSessionManager {
      * If not set, tool handlers fall back to the HTTP executor (backward compatible).
      *
      * @param exec The executor to use for tool execution.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
     void set_tool_executor(const boost::asio::any_io_executor& exec);
 
@@ -147,7 +255,8 @@ class MCP_API StreamableHttpSessionManager {
 
    private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    static Task<void> listen_impl(std::shared_ptr<Impl> impl);
+    std::shared_ptr<Impl> impl_;
 };
 
 }  // namespace mcp

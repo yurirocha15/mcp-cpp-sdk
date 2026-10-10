@@ -109,6 +109,10 @@ inline nlohmann::json make_shutdown_request(std::string_view id) {
     return {{"jsonrpc", "2.0"}, {"id", id}, {"method", "shutdown"}};
 }
 
+inline nlohmann::json make_initialized_notification() {
+    return {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
+}
+
 inline nlohmann::json make_tool_call_request(std::string_view id, const std::string& tool_name,
                                              nlohmann::json arguments = nlohmann::json::object()) {
     return {{"jsonrpc", "2.0"},

@@ -22,6 +22,9 @@ namespace mcp {
 /// @brief Type alias for a function that sends a JSON-RPC request and returns the result.
 using RequestSender = std::function<Task<nlohmann::json>(std::string, std::optional<nlohmann::json>)>;
 
+/// @brief Type alias for a function that serializes outbound notification writes.
+using MessageSender = std::function<Task<void>(std::string_view)>;
+
 /**
  * @brief Request-scoped context provided to server handlers.
  *
@@ -59,14 +62,18 @@ class Context {
      * @param cancelled Shared cancellation flag set by the server on notifications/cancelled.
      * @param progress_token Optional progress token from the request's _meta.
      * @param log_level Pointer to the server's current log level (shared across all contexts).
+     * @param message_sender Optional serialized notification sender. When omitted, Context writes
+     *                       directly to the transport.
      */
     Context(ITransport& transport, RequestSender sender, std::shared_ptr<std::atomic<bool>> cancelled,
-            std::optional<ProgressToken> progress_token, const std::atomic<LoggingLevel>* log_level)
+            std::optional<ProgressToken> progress_token, const std::atomic<LoggingLevel>* log_level,
+            MessageSender message_sender = {})
         : transport_(transport),
           sender_(std::move(sender)),
           cancelled_(std::move(cancelled)),
           progress_token_(std::move(progress_token)),
-          log_level_(log_level) {}
+          log_level_(log_level),
+          message_sender_(std::move(message_sender)) {}
 
     /**
      * @brief Sends an informational log message to the client.
@@ -99,7 +106,7 @@ class Context {
         }
 
         // [gcc11-sso: scope-before-await]
-        std::string wire;
+        std::shared_ptr<const std::string> wire;
         {
             LoggingMessageNotificationParams params;
             params.level = level;
@@ -109,9 +116,13 @@ class Context {
             JSONRPCNotification notification;
             notification.method = "notifications/message";
             notification.params = nlohmann::json(std::move(params));
-            wire = nlohmann::json(std::move(notification)).dump();
+            wire = std::make_shared<const std::string>(nlohmann::json(std::move(notification)).dump());
         }
-        co_await transport_.write_message(wire);
+        if (message_sender_) {
+            co_await message_sender_(*wire);
+        } else {
+            co_await transport_.write_message(*wire);
+        }
     }
 
     /**
@@ -145,7 +156,7 @@ class Context {
         }
 
         // [gcc11-sso: scope-before-await]
-        std::string wire;
+        std::shared_ptr<const std::string> wire;
         {
             ProgressNotificationParams params;
             params.progressToken = *progress_token_;
@@ -156,9 +167,13 @@ class Context {
             JSONRPCNotification notification;
             notification.method = "notifications/progress";
             notification.params = nlohmann::json(std::move(params));
-            wire = nlohmann::json(std::move(notification)).dump();
+            wire = std::make_shared<const std::string>(nlohmann::json(std::move(notification)).dump());
         }
-        co_await transport_.write_message(wire);
+        if (message_sender_) {
+            co_await message_sender_(*wire);
+        } else {
+            co_await transport_.write_message(*wire);
+        }
     }
 
     /**
@@ -227,6 +242,7 @@ class Context {
     std::shared_ptr<std::atomic<bool>> cancelled_;
     std::optional<ProgressToken> progress_token_;
     const std::atomic<LoggingLevel>* log_level_ = nullptr;
+    MessageSender message_sender_;
 };
 
 }  // namespace mcp

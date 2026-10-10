@@ -1,0 +1,58 @@
+name: Bug report
+description: Report incorrect SDK behavior or interoperability
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a security vulnerability, stop here and use the private process in SECURITY.md.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: input
+    id: sdk-version
+    attributes:
+      label: SDK version or commit
+      placeholder: v0.2.0 or a full commit SHA
+    validations:
+      required: true
+  - type: input
+    id: protocol-version
+    attributes:
+      label: MCP protocol revision
+      placeholder: "2025-11-25"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, compiler and version, build type, transport, and dependency versions.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest source, build command, and request sequence that reproduces the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or wire messages
+      description: Remove credentials, tokens, personal data, and other secrets.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I removed secrets and sensitive data from the report.
+          required: true

@@ -231,24 +231,30 @@ done
 ### 12. OAuth Flow (`oauth_flow.cpp`)
 
 **What it demonstrates:**
-- Full OAuth flow with mock auth server
-- `OAuthAuthenticator` with `InMemoryTokenStore`
+- `OAuthAuthorizationManager` acting on a `WWW-Authenticate` challenge from a mock authorization server: discovery under a `MetadataFetchPolicy`, issuer binding, cryptographic `state`, S256 PKCE, RFC 9207 response validation, and an RFC 8707 resource-indicated code exchange
+- An application-supplied consent callback standing in for a browser
+- `InMemoryTokenStore` holding the acquired token
 - `OAuthClientTransport` for token injection
 - Token refresh on auth failures
 - `make_auth_middleware()` for server-side validation
+- The server-side challenge API that produces what the client acts on: one `ProtectedResourceMetadataConfig` drives the metadata route via `protected_resource_metadata_path()`, the document body via `format_protected_resource_metadata()`, and the advertised URL via `protected_resource_metadata_url()`, while `format_www_authenticate()` renders the `BearerChallengeConfig` into the 401 header
 
 **Key APIs:**
-- `OAuthAuthenticator`
-- `InMemoryTokenStore`
+- `OAuthAuthorizationManager`
+- `AuthorizationCallback`
+- `MetadataFetchPolicy`
 - `OAuthClientTransport`
 - `make_auth_middleware()`
-- `generate_pkce_pair()`
+- `BearerChallengeConfig` / `format_www_authenticate()`
+- `ProtectedResourceMetadataConfig` / `protected_resource_metadata_path()` / `protected_resource_metadata_url()` / `format_protected_resource_metadata()`
 
 **Build:** `python scripts/build.py --examples`
 
 **Run:** `./build/release/example-feature-oauth-flow`
 
 **Expected output:** OAuth discovery, token acquisition, injection, refresh on expiry
+
+**Serving the challenge over HTTP:** this example runs over `MemoryTransport`, so it renders the 401 header itself. `StreamableHttpSessionManager` and `HttpServerTransport` send it for you — call `set_protected_resource_metadata()`, `set_bearer_token_validator()` or `set_async_bearer_token_validator()`, and `set_unauthenticated_paths()` before `listen()`. See the "Protecting a server" section of `docs/concepts/oauth.rst`.
 
 ---
 
@@ -284,16 +290,16 @@ Examples such as ``http_server_convenience.cpp`` and ``graceful_shutdown.cpp`` d
 Async tool handlers with Context:
 
 ```cpp
-server.add_tool<nlohmann::json, nlohmann::json>("my_tool", "Description", schema,
-    [](mcp::Context& ctx, nlohmann::json args) -> mcp::Task<nlohmann::json> {
+server.add_tool<nlohmann::json, mcp::CallToolResult>("my_tool", "Description", schema,
+    [](mcp::Context& ctx, nlohmann::json args) -> mcp::Task<mcp::CallToolResult> {
         co_await ctx.log_info("Starting work...");
 
         if (ctx.is_cancelled()) {
-            co_return make_error_result("Cancelled");
+            co_return mcp::make_tool_error_result("Cancelled");
         }
 
         co_await ctx.report_progress(50, 100);
-        co_return make_success_result("Done");
+        co_return mcp::make_tool_text_result("Done");
     });
 ```
 

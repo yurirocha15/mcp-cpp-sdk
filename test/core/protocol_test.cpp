@@ -1247,6 +1247,14 @@ TEST(ProtocolTest, RequestIdInvalidTypeThrows) {
     EXPECT_THROW(j2.get<mcp::RequestId>(), std::invalid_argument);
 }
 
+TEST(ProtocolTest, RequestIdCorrelationKeyPreservesType) {
+    const mcp::RequestId string_id = "1";
+    const mcp::RequestId integer_id = int64_t{1};
+
+    EXPECT_NE(string_id.correlation_key(), integer_id.correlation_key());
+    EXPECT_EQ(string_id.to_string(), integer_id.to_string());
+}
+
 TEST(ProtocolTest, ProgressTokenIsRequestId) {
     static_assert(std::is_same_v<mcp::ProgressToken, mcp::RequestId>);
 
@@ -1286,6 +1294,24 @@ TEST(ProtocolTest, ErrorSerialization) {
     auto deserialized2 = j2.get<mcp::Error>();
     EXPECT_EQ(deserialized2.code, mcp::g_METHOD_NOT_FOUND);
     EXPECT_FALSE(deserialized2.data.has_value());
+}
+
+TEST(ProtocolTest, SpecReservedErrorCodesAreDistinctFromLegacyBand) {
+    EXPECT_EQ(mcp::g_HEADER_MISMATCH, -32020);
+    EXPECT_EQ(mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY, -32021);
+    EXPECT_EQ(mcp::g_UNSUPPORTED_PROTOCOL_VERSION, -32022);
+
+    EXPECT_NE(mcp::g_HEADER_MISMATCH, mcp::g_CONNECTION_CLOSED);
+
+    mcp::Error error;
+    error.code = mcp::g_UNSUPPORTED_PROTOCOL_VERSION;
+    error.message = "Unsupported protocol version";
+
+    nlohmann::json j = error;
+    EXPECT_EQ(j["code"], -32022);
+
+    auto deserialized = j.get<mcp::Error>();
+    EXPECT_EQ(deserialized.code, mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
 }
 
 TEST(ProtocolTest, JSONRPCRequestSerialization) {
@@ -1401,10 +1427,23 @@ TEST(ProtocolTest, JSONRPCErrorResponseSerialization) {
     no_id.error = {.code = mcp::g_PARSE_ERROR, .message = "Parse error"};
 
     nlohmann::json j2 = no_id;
-    EXPECT_FALSE(j2.contains("id"));
+    EXPECT_TRUE(j2.contains("id"));
+    EXPECT_TRUE(j2["id"].is_null());
 
     auto deserialized2 = j2.get<mcp::JSONRPCErrorResponse>();
     EXPECT_FALSE(deserialized2.id.has_value());
+}
+
+TEST(ProtocolTest, CallToolArgumentsDefaultToObjectAndRejectOtherJsonTypes) {
+    const auto omitted = nlohmann::json{{"name", "echo"}}.get<mcp::CallToolParams>();
+    EXPECT_TRUE(omitted.arguments.is_object());
+    EXPECT_TRUE(omitted.arguments.empty());
+
+    for (const auto& invalid_arguments : {nlohmann::json(nullptr), nlohmann::json::array(),
+                                          nlohmann::json("text"), nlohmann::json(7)}) {
+        const auto input = nlohmann::json{{"name", "echo"}, {"arguments", invalid_arguments}};
+        EXPECT_THROW(static_cast<void>(input.get<mcp::CallToolParams>()), std::invalid_argument);
+    }
 }
 
 TEST(ProtocolTest, JSONRPCResponseVariantDispatch) {
@@ -1906,6 +1945,92 @@ TEST(ProtocolTest, PingRequestSerialization) {
     EXPECT_EQ(deserialized.method, "ping");
 }
 
+// server/discover, like ping, is a pre-gate method whose handler does not deserialize its
+// params (see Server::handle_discover_wire); DiscoverRequest exists solely for round-trip
+// (de)serialization fidelity, mirroring PingRequestSerialization above.
+TEST(ProtocolTest, DiscoverRequestSerializationRoundTrip) {
+    mcp::DiscoverRequest req;
+    EXPECT_FALSE(req.meta.has_value());
+
+    json j = req;
+    EXPECT_EQ(j, json::object());
+
+    auto deserialized = j.get<mcp::DiscoverRequest>();
+    EXPECT_FALSE(deserialized.meta.has_value());
+}
+
+TEST(ProtocolTest, DiscoverRequestPreservesMetaWithoutInterpretingIt) {
+    json j = {{"_meta",
+               {{"io.modelcontextprotocol/protocolVersion", "2026-07-28"},
+                {"io.modelcontextprotocol/clientInfo", {{"name", "probe-client"}, {"version", "0.1"}}},
+                {"io.modelcontextprotocol/clientCapabilities", json::object()}}}};
+
+    auto req = j.get<mcp::DiscoverRequest>();
+    ASSERT_TRUE(req.meta.has_value());
+    EXPECT_EQ(*req.meta, j["_meta"]);
+
+    json round_tripped = req;
+    EXPECT_EQ(round_tripped["_meta"], j["_meta"]);
+}
+
+// Server::handle_discover_wire always populates ttlMs/cacheScope (see server_core_test.cpp's
+// DiscoverCachingHintsPresentWithDefaultsOverriddenWhenConfigured), but the DiscoverResult TYPE
+// itself must still round-trip the optionals as absent, and distinguish an explicit ttlMs == 0
+// from ttlMs being absent entirely, for interop with other implementations' responses.
+TEST(ProtocolTest, DiscoverResultRoundTripsUnsetOptionalCachingHints) {
+    mcp::DiscoverResult res;
+    res.supportedVersions = {"2026-07-28"};
+    res.serverInfo = {"srv", "1.0"};
+    // ttlMs, cacheScope, and instructions are deliberately left unset.
+
+    json j = res;
+    EXPECT_FALSE(j.contains("ttlMs"));
+    EXPECT_FALSE(j.contains("cacheScope"));
+    EXPECT_FALSE(j.contains("instructions"));
+
+    auto round_tripped = j.get<mcp::DiscoverResult>();
+    EXPECT_FALSE(round_tripped.ttlMs.has_value());
+    EXPECT_FALSE(round_tripped.cacheScope.has_value());
+    EXPECT_FALSE(round_tripped.instructions.has_value());
+}
+
+TEST(ProtocolTest, DiscoverResultRoundTripsExplicitTtlMsZeroDistinctFromAbsent) {
+    mcp::DiscoverResult res;
+    res.supportedVersions = {"2026-07-28"};
+    res.serverInfo = {"srv", "1.0"};
+    res.ttlMs = 0;
+    res.cacheScope = mcp::CacheScope::ePrivate;
+
+    json j = res;
+    ASSERT_TRUE(j.contains("ttlMs"));
+    EXPECT_EQ(j["ttlMs"], 0);
+    ASSERT_TRUE(j.contains("cacheScope"));
+    EXPECT_EQ(j["cacheScope"], "private");
+
+    auto round_tripped = j.get<mcp::DiscoverResult>();
+    ASSERT_TRUE(round_tripped.ttlMs.has_value());
+    EXPECT_EQ(*round_tripped.ttlMs, 0);
+    ASSERT_TRUE(round_tripped.cacheScope.has_value());
+    EXPECT_EQ(*round_tripped.cacheScope, mcp::CacheScope::ePrivate);
+
+    json j2 = round_tripped;
+    EXPECT_EQ(j2, j);
+}
+
+TEST(ProtocolTest, DiscoverResultCacheScopePublicRoundTrips) {
+    mcp::DiscoverResult res;
+    res.supportedVersions = {"2026-07-28"};
+    res.serverInfo = {"srv", "1.0"};
+    res.cacheScope = mcp::CacheScope::ePublic;
+
+    json j = res;
+    EXPECT_EQ(j["cacheScope"], "public");
+
+    auto round_tripped = j.get<mcp::DiscoverResult>();
+    ASSERT_TRUE(round_tripped.cacheScope.has_value());
+    EXPECT_EQ(*round_tripped.cacheScope, mcp::CacheScope::ePublic);
+}
+
 TEST(ProtocolTest, CancelledNotificationSerialization) {
     mcp::CancelledNotification notif;
     notif.params.requestId = "req-1";
@@ -2238,4 +2363,244 @@ TEST(ProtocolTest, ElicitationCompleteNotificationSerialization) {
     nlohmann::json j = notif;
     EXPECT_EQ(j["method"], "notifications/elicitation/complete");
     EXPECT_EQ(j["params"]["requestId"], "req1");
+}
+
+TEST(ProtocolTest, RejectsInvalidJsonRpcVersion) {
+    nlohmann::json request = {{"jsonrpc", "1.0"}, {"id", 1}, {"method", "ping"}, {"params", nullptr}};
+    EXPECT_THROW((void)request.get<mcp::JSONRPCRequest>(), std::invalid_argument);
+
+    nlohmann::json response = {{"jsonrpc", "3.0"}, {"id", 1}, {"result", json::object()}};
+    EXPECT_THROW((void)response.get<mcp::JSONRPCResultResponse>(), std::invalid_argument);
+}
+
+TEST(ProtocolTest, RejectsMismatchedContentDiscriminator) {
+    nlohmann::json invalid_text = {{"type", "image"}, {"text", "not an image"}};
+    EXPECT_THROW((void)invalid_text.get<mcp::TextContent>(), std::invalid_argument);
+
+    nlohmann::json unknown_content = {{"type", "unknown"}};
+    EXPECT_THROW((void)unknown_content.get<mcp::ContentBlock>(), std::invalid_argument);
+}
+
+TEST(ProtocolTest, DiscoverableVersionsDoNotLeakIntoLegacyNegotiation) {
+    // 2026-07-28 is discoverable but not negotiable: a legacy initialize requesting it must
+    // fall back to the latest fully-served version, not be echoed back.
+    EXPECT_FALSE(mcp::is_supported_protocol_version(mcp::g_PROTOCOL_VERSION_2026_07_28));
+    EXPECT_EQ(mcp::negotiate_protocol_version(mcp::g_PROTOCOL_VERSION_2026_07_28),
+              mcp::g_LATEST_PROTOCOL_VERSION);
+
+    ASSERT_EQ(mcp::g_SUPPORTED_PROTOCOL_VERSIONS.size(), 4u);
+    ASSERT_EQ(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.size(), 5u);
+    for (const auto version : mcp::g_SUPPORTED_PROTOCOL_VERSIONS) {
+        EXPECT_NE(std::find(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.begin(),
+                            mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.end(), version),
+                  mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.end());
+    }
+    EXPECT_EQ(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.back(), mcp::g_PROTOCOL_VERSION_2026_07_28);
+}
+
+// --- Explicit-null optional members ---
+//
+// A JSON member serialized as explicit `null` says the same thing as an absent one: "no
+// value". nlohmann 3.12.0 has no std::optional support, so a `contains(key)` guard lets the
+// null through and `get<T>()` then throws type_error.302. Each case below decodes a payload
+// that a conforming peer may legitimately send.
+
+TEST(ProtocolTest, GetPromptRequestParamsDecodesExplicitNullArguments) {
+    json params_json = {{"name", "greeting"}, {"arguments", nullptr}};
+
+    mcp::GetPromptRequestParams params;
+    ASSERT_NO_THROW(params = params_json.get<mcp::GetPromptRequestParams>());
+    EXPECT_EQ(params.name, "greeting");
+    EXPECT_FALSE(params.arguments.has_value());
+}
+
+TEST(ProtocolTest, ResourceDecodesExplicitNullOptionals) {
+    json resource_json = {{"uri", "file:///a.txt"}, {"name", "a.txt"}, {"description", nullptr},
+                          {"mimeType", nullptr},    {"size", nullptr}, {"title", nullptr},
+                          {"icons", nullptr}};
+
+    mcp::Resource resource;
+    ASSERT_NO_THROW(resource = resource_json.get<mcp::Resource>());
+    EXPECT_EQ(resource.uri, "file:///a.txt");
+    EXPECT_EQ(resource.name, "a.txt");
+    EXPECT_FALSE(resource.description.has_value());
+    EXPECT_FALSE(resource.mimeType.has_value());
+    EXPECT_FALSE(resource.size.has_value());
+    EXPECT_FALSE(resource.title.has_value());
+    EXPECT_FALSE(resource.icons.has_value());
+}
+
+TEST(ProtocolTest, ResourceTemplateDecodesExplicitNullOptionals) {
+    json tmpl_json = {{"uriTemplate", "file:///{path}"},
+                      {"name", "files"},
+                      {"description", nullptr},
+                      {"mimeType", nullptr},
+                      {"title", nullptr},
+                      {"icons", nullptr}};
+
+    mcp::ResourceTemplate tmpl;
+    ASSERT_NO_THROW(tmpl = tmpl_json.get<mcp::ResourceTemplate>());
+    EXPECT_EQ(tmpl.uriTemplate, "file:///{path}");
+    EXPECT_FALSE(tmpl.description.has_value());
+    EXPECT_FALSE(tmpl.mimeType.has_value());
+    EXPECT_FALSE(tmpl.title.has_value());
+    EXPECT_FALSE(tmpl.icons.has_value());
+}
+
+TEST(ProtocolTest, ToolDecodesExplicitNullOptionals) {
+    json tool_json = {{"name", "add"},          {"inputSchema", {{"type", "object"}}},
+                      {"description", nullptr}, {"title", nullptr},
+                      {"icons", nullptr},       {"execution", nullptr}};
+
+    mcp::Tool tool;
+    ASSERT_NO_THROW(tool = tool_json.get<mcp::Tool>());
+    EXPECT_EQ(tool.name, "add");
+    EXPECT_FALSE(tool.description.has_value());
+    EXPECT_FALSE(tool.title.has_value());
+    EXPECT_FALSE(tool.icons.has_value());
+    EXPECT_FALSE(tool.execution.has_value());
+}
+
+TEST(ProtocolTest, CallToolResultDecodesExplicitNullIsError) {
+    json result_json = {{"content", json::array()}, {"isError", nullptr}};
+
+    mcp::CallToolResult result;
+    ASSERT_NO_THROW(result = result_json.get<mcp::CallToolResult>());
+    EXPECT_FALSE(result.isError.has_value());
+}
+
+TEST(ProtocolTest, ToolResultContentDecodesExplicitNullIsError) {
+    json content_json = {{"type", "tool_result"},
+                         {"toolUseId", "call-1"},
+                         {"content", json::array()},
+                         {"isError", nullptr}};
+
+    mcp::ToolResultContent content;
+    ASSERT_NO_THROW(content = content_json.get<mcp::ToolResultContent>());
+    EXPECT_EQ(content.toolUseId, "call-1");
+    EXPECT_FALSE(content.isError.has_value());
+}
+
+// An explicitly null member must round-trip as an ABSENT one. Deciding this by "does it
+// throw" is the wrong test: _meta and annotations do not throw, they decode into an ENGAGED
+// optional, so re-encoding fabricates a member the peer never sent -- annotations: null
+// becomes annotations: {}, which a consumer reads as "annotations supplied, none set" rather
+// than "no annotations". Each case below compares against the absent-input control.
+
+TEST(ProtocolTest, ResourceTreatsExplicitNullMetaAndAnnotationsAsAbsent) {
+    const json control = {{"uri", "file:///a.txt"}, {"name", "a.txt"}};
+    const json absent = json(control.get<mcp::Resource>());
+
+    json with_nulls = control;
+    with_nulls["_meta"] = nullptr;
+    with_nulls["annotations"] = nullptr;
+
+    const auto decoded = with_nulls.get<mcp::Resource>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_FALSE(decoded.annotations.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, ResourceTemplateTreatsExplicitNullMetaAndAnnotationsAsAbsent) {
+    const json control = {{"uriTemplate", "file:///{path}"}, {"name", "files"}};
+    const json absent = json(control.get<mcp::ResourceTemplate>());
+
+    json with_nulls = control;
+    with_nulls["_meta"] = nullptr;
+    with_nulls["annotations"] = nullptr;
+
+    const auto decoded = with_nulls.get<mcp::ResourceTemplate>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_FALSE(decoded.annotations.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, ToolTreatsExplicitNullMetaAnnotationsAndSchemaAsAbsent) {
+    const json control = {{"name", "add"}, {"inputSchema", {{"type", "object"}}}};
+    const json absent = json(control.get<mcp::Tool>());
+
+    json with_nulls = control;
+    with_nulls["_meta"] = nullptr;
+    with_nulls["annotations"] = nullptr;
+    with_nulls["outputSchema"] = nullptr;
+
+    const auto decoded = with_nulls.get<mcp::Tool>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_FALSE(decoded.annotations.has_value());
+    EXPECT_FALSE(decoded.outputSchema.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, CallToolResultTreatsExplicitNullMetaAndStructuredAsAbsent) {
+    const json control = {{"content", json::array()}};
+    const json absent = json(control.get<mcp::CallToolResult>());
+
+    json with_nulls = control;
+    with_nulls["_meta"] = nullptr;
+    with_nulls["structuredContent"] = nullptr;
+
+    const auto decoded = with_nulls.get<mcp::CallToolResult>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_FALSE(decoded.structuredContent.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, ToolResultContentTreatsExplicitNullMetaAndStructuredAsAbsent) {
+    const json control = {{"type", "tool_result"}, {"toolUseId", "call-1"}, {"content", json::array()}};
+    const json absent = json(control.get<mcp::ToolResultContent>());
+
+    json with_nulls = control;
+    with_nulls["_meta"] = nullptr;
+    with_nulls["structuredContent"] = nullptr;
+
+    const auto decoded = with_nulls.get<mcp::ToolResultContent>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_FALSE(decoded.structuredContent.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, ImplementationDecodesExplicitNullOptionals) {
+    json impl_json = {{"name", "test-client"},  {"version", "0.1"},      {"title", nullptr},
+                      {"description", nullptr}, {"websiteUrl", nullptr}, {"icons", nullptr}};
+
+    mcp::Implementation impl;
+    ASSERT_NO_THROW(impl = impl_json.get<mcp::Implementation>());
+    EXPECT_EQ(impl.name, "test-client");
+    EXPECT_EQ(impl.version, "0.1");
+    EXPECT_FALSE(impl.title.has_value());
+    EXPECT_FALSE(impl.description.has_value());
+    EXPECT_FALSE(impl.websiteUrl.has_value());
+    EXPECT_FALSE(impl.icons.has_value());
+}
+
+TEST(ProtocolTest, CompleteParamsDecodesExplicitNullContextArguments) {
+    json params_json = {{"ref", {{"type", "ref/prompt"}, {"name", "p"}}},
+                        {"argument", {{"name", "a"}, {"value", "v"}}},
+                        {"context", {{"arguments", nullptr}}}};
+
+    mcp::CompleteParams params;
+    ASSERT_NO_THROW(params = params_json.get<mcp::CompleteParams>());
+    ASSERT_TRUE(params.context.has_value());
+    EXPECT_FALSE(params.context->arguments.has_value());
+}
+
+TEST(ProtocolTest, CallToolParamsTreatsExplicitNullMetaAsAbsent) {
+    // Independent of the deliberate `arguments` rejection below it: to_json emits _meta only
+    // when engaged, so absence is representable and a null must round-trip as absent.
+    const json control = {{"name", "add"}, {"arguments", json::object()}};
+    const json absent = json(control.get<mcp::CallToolParams>());
+
+    json with_null = control;
+    with_null["_meta"] = nullptr;
+
+    const auto decoded = with_null.get<mcp::CallToolParams>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, CallToolParamsStillRejectsNonObjectArguments) {
+    // Pins the deliberate rejection: arguments is emitted unconditionally, so absence is not
+    // representable and a null there can only be malformed. This must NOT become acceptance.
+    EXPECT_THROW((void)(json{{"name", "add"}, {"arguments", nullptr}}).get<mcp::CallToolParams>(),
+                 std::invalid_argument);
 }

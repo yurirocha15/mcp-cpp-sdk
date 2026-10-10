@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  # Manual runs only. The automatic triggers below stay scoped to `main` on purpose; this
+  # lets a feature branch be checked on the full matrix without spending CI on every push.
+  workflow_dispatch:
   push:
     branches: [ main ]
   pull_request:
@@ -69,16 +72,42 @@ jobs:
         restore-keys: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-${{ matrix.linkage }}-ccache-
         max-size: 500M
 
+    # MCP_REQUIRE_TWIN_LOOPBACK turns the OAuthSetterPairAtomicity skips into failures. Those tests
+    # need a port free on both 127.0.0.1 and 127.0.0.2, and skip when the second address is
+    # missing -- which would delete the whole setter-pair atomicity regression suite while the run
+    # still reported green. Linux binds 127.0.0.0/8 as a whole, so there the address is always
+    # there and its absence is a broken runner, not an unsupported host. macOS gives lo0 only
+    # 127.0.0.1 unless an alias is added, so the skip stays available there.
     - name: Build and Test
+      env:
+        MCP_REQUIRE_TWIN_LOOPBACK: ${{ runner.os == 'Linux' && '1' || '' }}
       run: >-
         python scripts/build.py --examples --test
         --cppstd ${{ matrix.cppstd }} --linkage ${{ matrix.linkage }}
 
+    # The README is the first code a new user copies, so compile it the way they
+    # would. Skipped on Windows: the check drives the compiler from
+    # compile_commands.json with GCC/Clang flag spellings.
+    - name: Compile README snippets
+      if: runner.os != 'Windows'
+      run: python scripts/check_readme_snippets.py
+
     - name: Run Examples
       run: python scripts/run_examples.py
 
+    # On the stdio transport stdout is the protocol channel. Running an example
+    # and checking its exit code does not notice prose printed there, so assert
+    # the stream separately. run_examples.py builds into build/release.
+    - name: Check stdio protocol streams
+      run: python scripts/check_stdio_streams.py build/release
+
   sanitize:
+    name: sanitize (${{ matrix.compiler }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [default, clang]
 
     steps:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -108,12 +137,108 @@ jobs:
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
       with:
-        key: ubuntu-24.04-sanitize-ccache-${{ github.ref }}
-        restore-keys: ubuntu-24.04-sanitize-ccache-
+        key: ubuntu-24.04-sanitize-${{ matrix.compiler }}-ccache-${{ github.ref }}
+        restore-keys: ubuntu-24.04-sanitize-${{ matrix.compiler }}-ccache-
         max-size: 500M
 
     - name: Build and Test with Sanitizers
-      run: python scripts/build.py --sanitize --test
+      env:
+        MCP_REQUIRE_TWIN_LOOPBACK: '1'
+      run: python scripts/build.py --sanitize --compiler ${{ matrix.compiler }} --test
+
+  tsan:
+    name: tsan (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [default, clang]
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        persist-credentials: false
+
+    - name: Set up Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: '3.12'
+
+    - name: Install CMake
+      uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
+      with:
+        cmake-version: '3.25'
+
+    - name: Cache Conan packages
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: ~/.conan2/p
+        key: ubuntu-24.04-conan-tsan-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
+        restore-keys: ubuntu-24.04-conan-
+
+    - name: Install Dependencies
+      run: python scripts/init.py
+
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@e42e6681d2906409c5dde4a315af6214eaa890ee # v1.2
+      with:
+        key: ubuntu-24.04-tsan-${{ matrix.compiler }}-ccache-${{ github.ref }}
+        restore-keys: ubuntu-24.04-tsan-${{ matrix.compiler }}-ccache-
+        max-size: 500M
+
+    - name: Build and Test with ThreadSanitizer
+      env:
+        MCP_REQUIRE_TWIN_LOOPBACK: '1'
+      run: python scripts/build.py --tsan --compiler ${{ matrix.compiler }} --test
+
+  msan:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        persist-credentials: false
+
+    - name: Set up Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: '3.12'
+
+    - name: Install CMake
+      uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
+      with:
+        cmake-version: '3.25'
+
+    # The dependencies are rebuilt instrumented, so this cache shares nothing with the other jobs.
+    - name: Cache Conan packages
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: ~/.conan2/p
+        key: ubuntu-24.04-conan-msan-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
+        restore-keys: ubuntu-24.04-conan-msan-
+
+    # Keyed on MSAN_LLVM_COMMIT in scripts/build.py. A cache from another commit is rebuilt by
+    # build.py rather than used, so a key left behind costs time and nothing else.
+    - name: Cache instrumented libc++
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: build/msan-libcxx
+        key: ubuntu-24.04-msan-libcxx-3b5b5c1ec4a3
+
+    - name: Install Dependencies
+      run: python scripts/init.py
+
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@e42e6681d2906409c5dde4a315af6214eaa890ee # v1.2
+      with:
+        key: ubuntu-24.04-msan-ccache-${{ github.ref }}
+        restore-keys: ubuntu-24.04-msan-ccache-
+        max-size: 500M
+
+    - name: Build and Test with MemorySanitizer
+      env:
+        MCP_REQUIRE_TWIN_LOOPBACK: '1'
+      run: python scripts/build.py --msan --test
 
   release-safety:
     name: Release safety contracts
@@ -134,7 +259,8 @@ jobs:
         python3 scripts/check_release_workflow.py
         PYTHONPATH=scripts python3 -m unittest -v \
           scripts.test_release_dispatch_contract \
-          scripts.test_release_workflow_policy
+          scripts.test_release_workflow_policy \
+          scripts.test_check_json_matrix
 
     - name: Validate release artifacts and package templates
       run: |

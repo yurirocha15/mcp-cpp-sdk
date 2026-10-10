@@ -62,25 +62,25 @@ inline void to_json(nlohmann::json& json_obj, const Resource& resource) {
 inline void from_json(const nlohmann::json& json_obj, Resource& resource) {
     json_obj.at("uri").get_to(resource.uri);
     json_obj.at("name").get_to(resource.name);
-    if (json_obj.contains("description")) {
+    if (detail::has_json_value(json_obj, "description")) {
         resource.description = json_obj.at("description").get<std::string>();
     }
-    if (json_obj.contains("mimeType")) {
+    if (detail::has_json_value(json_obj, "mimeType")) {
         resource.mimeType = json_obj.at("mimeType").get<std::string>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         resource.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
-    if (json_obj.contains("annotations")) {
+    if (detail::has_json_value(json_obj, "annotations")) {
         resource.annotations = json_obj.at("annotations").get<Annotations>();
     }
-    if (json_obj.contains("size")) {
+    if (detail::has_json_value(json_obj, "size")) {
         resource.size = json_obj.at("size").get<int64_t>();
     }
-    if (json_obj.contains("title")) {
+    if (detail::has_json_value(json_obj, "title")) {
         resource.title = json_obj.at("title").get<std::string>();
     }
-    if (json_obj.contains("icons")) {
+    if (detail::has_json_value(json_obj, "icons")) {
         resource.icons = json_obj.at("icons").get<std::vector<Icon>>();
     }
 }
@@ -124,22 +124,22 @@ inline void to_json(nlohmann::json& json_obj, const ResourceTemplate& tmpl) {
 inline void from_json(const nlohmann::json& json_obj, ResourceTemplate& tmpl) {
     json_obj.at("uriTemplate").get_to(tmpl.uriTemplate);
     json_obj.at("name").get_to(tmpl.name);
-    if (json_obj.contains("description")) {
+    if (detail::has_json_value(json_obj, "description")) {
         tmpl.description = json_obj.at("description").get<std::string>();
     }
-    if (json_obj.contains("mimeType")) {
+    if (detail::has_json_value(json_obj, "mimeType")) {
         tmpl.mimeType = json_obj.at("mimeType").get<std::string>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         tmpl.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
-    if (json_obj.contains("annotations")) {
+    if (detail::has_json_value(json_obj, "annotations")) {
         tmpl.annotations = json_obj.at("annotations").get<Annotations>();
     }
-    if (json_obj.contains("title")) {
+    if (detail::has_json_value(json_obj, "title")) {
         tmpl.title = json_obj.at("title").get<std::string>();
     }
-    if (json_obj.contains("icons")) {
+    if (detail::has_json_value(json_obj, "icons")) {
         tmpl.icons = json_obj.at("icons").get<std::vector<Icon>>();
     }
 }
