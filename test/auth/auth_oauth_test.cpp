@@ -1224,35 +1224,6 @@ class NamedLoopbackServer {
     return flag != nullptr && std::string_view(flag) == "1";
 }
 
-/// Skip the calling test when no twin loopback port is available -- or fail it, when the
-/// environment declared that one must be. Declares `port_name` as the port to use.
-#define MCP_TWIN_LOOPBACK_PORT_OR_SKIP(port_name)                                                      \
-    const unsigned short port_name = find_twin_loopback_port();                                        \
-    if ((port_name) == 0) {                                                                            \
-        if (twin_loopback_is_required()) {                                                             \
-            FAIL() << "MCP_REQUIRE_TWIN_LOOPBACK=1, but no port in [18140, 18200) is free on "         \
-                      "both 127.0.0.1 and 127.0.0.2, so this test would have skipped and the "         \
-                      "setter-pair atomicity evidence would have vanished silently";                   \
-        }                                                                                              \
-        GTEST_SKIP() << "no port free on both 127.0.0.1 and 127.0.0.2";                                \
-    }                                                                                                  \
-    static_cast<void>(0)
-
-/// A port free on BOTH loopback addresses, or 0 when the second address is unavailable.
-unsigned short find_twin_loopback_port() {
-    asio::io_context probe_ctx;
-    for (unsigned short port = 18140; port < 18200; ++port) {
-        try {
-            asio::ip::tcp::acceptor first(probe_ctx, {asio::ip::make_address("127.0.0.1"), port});
-            asio::ip::tcp::acceptor second(probe_ctx, {asio::ip::make_address("127.0.0.2"), port});
-            return port;
-        } catch (const boost::system::system_error&) {
-            continue;
-        }
-    }
-    return 0;
-}
-
 mcp::auth::MetadataFetchPolicy origin_policy(const std::string& origin) {
     mcp::auth::MetadataFetchPolicy policy;
     policy.allowed_origins.push_back(origin);
@@ -1334,14 +1305,44 @@ struct TwinFixture {
     };
 };
 
+/// The fixture on the first port free on BOTH loopback addresses, or null when there is none
+/// because the second address is unavailable.
+///
+/// The fixture binds the port itself and keeps it. Probing for a free port and binding it
+/// afterwards leaves a gap, and ctest runs these tests as parallel processes that all search the
+/// same range: two of them found the same port free and the slower one failed to bind it.
+std::unique_ptr<TwinFixture> open_twin_fixture() {
+    for (unsigned short port = 18140; port < 18200; ++port) {
+        try {
+            return std::make_unique<TwinFixture>(port);
+        } catch (const boost::system::system_error&) {
+            continue;
+        }
+    }
+    return nullptr;
+}
+
+/// Skip the calling test when no twin loopback port is available -- or fail it, when the
+/// environment declared that one must be. Declares `fixture_name` as the fixture to use.
+#define MCP_TWIN_FIXTURE_OR_SKIP(fixture_name)                                                         \
+    const std::unique_ptr<TwinFixture> fixture_name##_owner = open_twin_fixture();                     \
+    if (fixture_name##_owner == nullptr) {                                                             \
+        if (twin_loopback_is_required()) {                                                             \
+            FAIL() << "MCP_REQUIRE_TWIN_LOOPBACK=1, but no port in [18140, 18200) is free on "         \
+                      "both 127.0.0.1 and 127.0.0.2, so this test would have skipped and the "         \
+                      "setter-pair atomicity evidence would have vanished silently";                   \
+        }                                                                                              \
+        GTEST_SKIP() << "no port free on both 127.0.0.1 and 127.0.0.2";                                \
+    }                                                                                                  \
+    TwinFixture& fixture_name = *fixture_name##_owner
+
 }  // namespace
 
 // The hazard itself, with the race taken out of it: the exchange is started at a point the test
 // chooses, inside the gap between the two setter calls. It sees the new resolver under the old,
 // wider allow list every time, because that is simply what the client's state is at that instant.
 TEST(OAuthSetterPairAtomicity, TheTwoSingleSettersLeaveAWindowAnExchangeCanFallInto) {
-    MCP_TWIN_LOOPBACK_PORT_OR_SKIP(port);
-    TwinFixture fixture(port);
+    MCP_TWIN_FIXTURE_OR_SKIP(fixture);
 
     asio::io_context client_ctx;
     auto client = std::make_shared<mcp::auth::OAuthHttpClient>(client_ctx.get_executor());
@@ -1386,8 +1387,7 @@ TEST(OAuthSetterPairAtomicity, TheTwoSingleSettersLeaveAWindowAnExchangeCanFallI
 // by the new resolver and validated against the old allow list. Applied as one unit there is no
 // instant at which that state exists, so the count is zero rather than small.
 TEST(OAuthSetterPairAtomicity, ReconfiguringAsOnePairNeverExposesTheNewResolverUnderTheOldPolicy) {
-    MCP_TWIN_LOOPBACK_PORT_OR_SKIP(port);
-    TwinFixture fixture(port);
+    MCP_TWIN_FIXTURE_OR_SKIP(fixture);
 
     asio::io_context client_ctx;
     auto work = asio::make_work_guard(client_ctx);
@@ -1493,8 +1493,7 @@ TEST(OAuthSetterPairAtomicity, ReconfiguringAsOnePairNeverExposesTheNewResolverU
 // dropped its resolver argument would also never produce a "new" body. Each call here installs a
 // configuration and the exchange that follows must show BOTH halves of it.
 TEST(OAuthSetterPairAtomicity, ConfigureInstallsBothOfItsArguments) {
-    MCP_TWIN_LOOPBACK_PORT_OR_SKIP(port);
-    TwinFixture fixture(port);
+    MCP_TWIN_FIXTURE_OR_SKIP(fixture);
 
     asio::io_context client_ctx;
     mcp::auth::OAuthHttpClient client(client_ctx.get_executor());
