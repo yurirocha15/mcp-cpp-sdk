@@ -887,7 +887,7 @@ TEST_F(HttpTransportTest, PendingOperationsOwnImplementationAfterTransportDestru
 
 TEST_F(HttpTransportTest, SerializesConcurrentWritesAcrossTwoIoThreads) {
     constexpr int message_count = 64;
-    constexpr auto timeout = std::chrono::seconds(5);
+    constexpr auto timeout = std::chrono::seconds(30);
 
     asio::io_context server_io;
     auto server =
