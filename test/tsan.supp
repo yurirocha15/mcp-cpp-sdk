@@ -1,5 +1,8 @@
 # ThreadSanitizer suppressions for the test suite. Each entry names a report that is not a defect in
 # this SDK; keep the list this short and add nothing without the reasoning beside it.
+#
+# A suppression discards a report after ThreadSanitizer has built it, so it hides the text and not
+# the cost: every thread still stops while the stacks are symbolized.
 
 # Asio frees a shared executor after a release decrement of its reference count followed by
 # atomic_thread_fence(acquire), the standard pattern. ThreadSanitizer still reports the delete as
