@@ -1,0 +1,13 @@
+# ThreadSanitizer suppressions for the test suite. Each entry names a report that is not a defect in
+# this SDK; keep the list this short and add nothing without the reasoning beside it.
+
+# Asio frees a shared executor after a release decrement of its reference count followed by
+# atomic_thread_fence(acquire). GCC's ThreadSanitizer does not model standalone fences (-Wtsan), so
+# it reports the delete as racing with the last use. Seen wherever co_spawn() runs on a strand.
+race:boost::asio::execution::detail::shared_target_executor
+
+# Asio's signal handler reads the write end of its self-pipe, which the signal_set_service
+# constructor wrote on another thread. The tests raise the signal after a sleep that follows the
+# construction, an ordering ThreadSanitizer cannot see; the service is never used before it is
+# built.
+race:boost_asio_signal_handler
