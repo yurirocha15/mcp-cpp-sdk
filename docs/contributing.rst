@@ -165,6 +165,21 @@ Aim for >80% code coverage for new features:
    # View report
    open build/coverage/index.html
 
+Thread Sanitizer
+^^^^^^^^^^^^^^^^
+
+Code that runs on several threads or is closed from another thread should
+also pass ThreadSanitizer, which CI runs on every push:
+
+.. code-block:: bash
+
+   python scripts/build.py --tsan --test
+
+The build runs under ``setarch -R`` where it is available, because
+ThreadSanitizer cannot start on kernels with a high ASLR entropy. The two
+reports that are not defects (Asio's fence-based reference count and its signal
+handler) are suppressed in ``test/tsan.supp``, each with its reason.
+
 Pull Request Process
 --------------------
 
