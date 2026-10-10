@@ -1019,8 +1019,10 @@ TEST_F(ServerCoreTest, ConcurrentReverseRequestsRemainCorrelatedOnMultiThreadedE
     };
     launch_requests();
 
+    // Wide for the same reason as in the client's twin of this test: a sanitizer can stop every
+    // thread for seconds, and the bound only ends a run that has gone wrong.
     boost::asio::steady_timer watchdog(io_ctx_);
-    watchdog.expires_after(5s);
+    watchdog.expires_after(60s);
     watchdog.async_wait(
         [&completed, &stop_poll, client_transport](const boost::system::error_code& error) {
             if (!error && completed.load(std::memory_order_acquire) != request_count) {
