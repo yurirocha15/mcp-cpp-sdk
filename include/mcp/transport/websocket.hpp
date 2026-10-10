@@ -6,6 +6,7 @@
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/ip/tcp.hpp>
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -77,9 +78,14 @@ class MCP_API WebSocketClientTransport final : public ITransport {
      * @param host     Remote hostname or IP address.
      * @param port     Remote port number.
      * @param path     WebSocket request path (default: "/").
+     * @param connect_timeout Limit on the whole connection setup, from the TCP connect to the
+     *                 end of the WebSocket handshake. A peer that accepts the connection and
+     *                 then stalls fails the pending call after this long instead of hanging it.
+     *                 Zero disables the limit. Established connections are not subject to it.
      */
     WebSocketClientTransport(const boost::asio::any_io_executor& executor, std::string host,
-                             std::string port, std::string path = "/");
+                             std::string port, std::string path = "/",
+                             std::chrono::milliseconds connect_timeout = std::chrono::seconds(30));
 
     ~WebSocketClientTransport() override;
 

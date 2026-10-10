@@ -18,6 +18,8 @@
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
+#include <boost/beast/core/error.hpp>
+#include <boost/system/system_error.hpp>
 #include <chrono>
 #include <exception>
 #include <future>
@@ -613,6 +615,38 @@ TEST_F(WebSocketTransportTest, CanceledQueuedWriteDoesNotBlockSubsequentWrites) 
     EXPECT_NO_THROW(client.get());
     EXPECT_NO_THROW(server.get());
     EXPECT_TRUE(canceled_write_failed);
+}
+
+// A peer that accepts the connection and then never answers the upgrade request must not hold a
+// pending call forever: the connect timeout ends it.
+TEST_F(WebSocketTransportTest, StalledHandshakeFailsAfterTheConnectTimeout) {
+    StallingServer stalling(io_ctx_);
+    stalling.accept_and_stall();
+
+    mcp::WebSocketClientTransport transport(io_ctx_.get_executor(), "127.0.0.1",
+                                            std::to_string(stalling.port()), "/",
+                                            std::chrono::milliseconds(200));
+
+    auto result = asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<bool> {
+            try {
+                co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
+            } catch (const boost::system::system_error& error) {
+                co_return error.code() == boost::beast::error::timeout;
+            }
+            co_return false;
+        },
+        asio::use_future);
+
+    std::thread runner([this]() { io_ctx_.run(); });
+    const bool finished = result.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    io_ctx_.stop();
+    runner.join();
+
+    ASSERT_TRUE(finished) << "the stalled handshake was never cut off";
+    EXPECT_TRUE(result.get()) << "the pending call must fail with a timeout";
+    EXPECT_EQ(stalling.accepted(), 1);
 }
 
 #ifdef __linux__
