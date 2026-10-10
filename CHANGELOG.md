@@ -70,7 +70,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `g_REQUEST_TIMEOUT` while the peer may still be running it, and that no
   value disables the deadline.
 - `python scripts/build.py --tsan --test` builds and runs the tests under
-  ThreadSanitizer (CMake option `ENABLE_TSAN`), and CI runs it on every push.
+  ThreadSanitizer (CMake option `ENABLE_TSAN`), and `--msan --test` under
+  MemorySanitizer, against a libc++ and dependencies it builds instrumented.
+  `--compiler clang` compiles the AddressSanitizer and ThreadSanitizer builds
+  with Clang. CI runs all of them on every push, and the AddressSanitizer run
+  now also checks for stack use after return.
 - `WebSocketClientTransport` takes a `connect_timeout` (default 30 seconds,
   zero disables it) that bounds the TCP connect and the WebSocket handshake
   together. A peer that accepts the connection and then stalls now fails the

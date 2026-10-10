@@ -165,20 +165,40 @@ Aim for >80% code coverage for new features:
    # View report
    open build/coverage/index.html
 
-Thread Sanitizer
-^^^^^^^^^^^^^^^^
+Sanitizers
+^^^^^^^^^^
 
-Code that runs on several threads or is closed from another thread should
-also pass ThreadSanitizer, which CI runs on every push:
+CI runs the test suite under each sanitizer on every push. The same builds run
+locally:
 
 .. code-block:: bash
 
+   # AddressSanitizer + UndefinedBehaviorSanitizer
+   python scripts/build.py --sanitize --test
+
+   # ThreadSanitizer
    python scripts/build.py --tsan --test
 
-The build runs under ``setarch -R`` where it is available, because
-ThreadSanitizer cannot start on kernels with a high ASLR entropy. The two
-reports that are not defects (Asio's fence-based reference count and its signal
-handler) are suppressed in ``test/tsan.supp``, each with its reason.
+   # Either of the two, compiled with Clang
+   python scripts/build.py --tsan --compiler clang --test
+
+   # MemorySanitizer (Clang only)
+   python scripts/build.py --msan --test
+
+Run ThreadSanitizer for code that runs on several threads or is closed from
+another thread. The two reports that are not defects (Asio's fence-based
+reference count and its signal handler) are suppressed in ``test/tsan.supp``,
+each with its reason.
+
+MemorySanitizer reports a read of any memory that uninstrumented code wrote,
+so ``--msan`` builds its own libc++ from a pinned LLVM commit into
+``build/msan-libcxx`` on first use, and has Conan rebuild Boost, OpenSSL and
+GoogleTest against it. The first run is slow; later runs reuse both. It needs
+``clang-18`` and ``git``.
+
+The ThreadSanitizer and MemorySanitizer builds run under ``setarch -R`` where
+it is available, because neither can start on kernels with a high ASLR
+entropy.
 
 Pull Request Process
 --------------------
