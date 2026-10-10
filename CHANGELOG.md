@@ -69,6 +69,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   per-request override, that a request outliving it fails with
   `g_REQUEST_TIMEOUT` while the peer may still be running it, and that no
   value disables the deadline.
+- `python scripts/build.py --tsan --test` builds and runs the tests under
+  ThreadSanitizer (CMake option `ENABLE_TSAN`), and CI runs it on every push.
+- `WebSocketClientTransport` takes a `connect_timeout` (default 30 seconds,
+  zero disables it) that bounds the TCP connect and the WebSocket handshake
+  together. A peer that accepts the connection and then stalls now fails the
+  pending call with a timeout instead of holding it forever.
 
 ### Changed
 
