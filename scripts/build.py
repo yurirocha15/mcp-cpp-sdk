@@ -129,8 +129,19 @@ def cmake_configure(build_dir, build_type, toolchain, *extra_args):
     )
 
 
-def cmake_build(build_dir, jobs):
-    run("cmake", "--build", build_dir, f"-j{jobs}")
+def no_aslr():
+    """Command prefix that disables ASLR, which ThreadSanitizer needs on kernels with high mmap entropy.
+
+    The test binary also runs at build time (gtest_discover_tests), so the build and ctest both use it.
+    """
+    setarch = shutil.which("setarch")
+    if setarch and sys.platform.startswith("linux"):
+        return [setarch, os.uname().machine, "-R"]
+    return []
+
+
+def cmake_build(build_dir, jobs, prefix=()):
+    run(*prefix, "cmake", "--build", build_dir, f"-j{jobs}")
 
 
 def write_user_presets(generators_dir):
@@ -153,6 +164,7 @@ examples:
   python scripts/build.py --test                   release build + run tests
   python scripts/build.py --debug --test           debug build + run tests
   python scripts/build.py --sanitize --test        ASan/UBSan build + run tests
+  python scripts/build.py --tsan --test            ThreadSanitizer build + run tests
   python scripts/build.py --coverage --test        gcov build + run tests + report
   python scripts/build.py --test                   skip examples, run tests
   python scripts/build.py --sanitize --test        sanitized tests, no examples
@@ -175,6 +187,8 @@ def main():
                         help="Debug build (default: Release)")
     parser.add_argument("--sanitize", action="store_true",
                         help="Enable ASan + UBSan (implies --debug)")
+    parser.add_argument("--tsan", action="store_true",
+                        help="Enable ThreadSanitizer (implies --debug; excludes --sanitize)")
     parser.add_argument("--coverage", action="store_true",
                         help="Enable gcov coverage (implies --debug)")
     parser.add_argument("--test", action="store_true",
@@ -212,17 +226,26 @@ def main():
     # ENABLE_SANITIZERS only takes effect inside the CMake tests block, so without --test the
     # flag is accepted and silently does nothing, leaving an unsanitized build in build/sanitize.
     # Refuse here rather than after a Conan install, so no build time is spent on it.
+    if args.tsan and args.sanitize:
+        parser.error("--tsan and --sanitize cannot be combined: ThreadSanitizer does not run with ASan")
+    if args.tsan and not args.test:
+        parser.error(
+            "--tsan requires --test: the sanitizer flags are only applied to a build with "
+            "tests, so this would produce an unsanitized build in build/tsan"
+        )
     if args.sanitize and not args.test:
         parser.error(
             "--sanitize requires --test: the sanitizer flags are only applied to a build with "
             "tests, so this would produce an unsanitized build in build/sanitize"
         )
 
-    is_debug = args.debug or args.sanitize or args.coverage
+    is_debug = args.debug or args.sanitize or args.tsan or args.coverage
     build_type = "Debug" if is_debug else "Release"
 
     if args.sanitize:
         build_name = "sanitize"
+    elif args.tsan:
+        build_name = "tsan"
     elif args.coverage:
         build_name = "coverage"
     elif is_debug:
@@ -244,6 +267,8 @@ def main():
     ]
     if args.sanitize:
         extra_cmake.append("-DENABLE_SANITIZERS=ON")
+    if args.tsan:
+        extra_cmake.append("-DENABLE_TSAN=ON")
     if args.coverage:
         extra_cmake.append("-DENABLE_COVERAGE=ON")
 
@@ -256,7 +281,8 @@ def main():
         generators_dir / "conan_toolchain.cmake",
         *extra_cmake,
     )
-    cmake_build(build_dir, args.jobs)
+    aslr_prefix = no_aslr() if args.tsan else []
+    cmake_build(build_dir, args.jobs, aslr_prefix)
     write_user_presets(generators_dir)
 
     if args.test:
@@ -266,7 +292,10 @@ def main():
              "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1"}
             if args.sanitize else None
         )
-        run("ctest", "--test-dir", build_dir, f"-j{test_jobs}", "--output-on-failure",
+        if args.tsan:
+            suppressions = Path("test/tsan.supp").resolve()
+            extra_env = {"TSAN_OPTIONS": f"halt_on_error=1:second_deadlock_stack=1:suppressions={suppressions}"}
+        run(*aslr_prefix, "ctest", "--test-dir", build_dir, f"-j{test_jobs}", "--output-on-failure",
             extra_env=extra_env)
 
         if args.coverage:

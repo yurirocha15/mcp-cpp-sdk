@@ -204,6 +204,13 @@ if(ENABLE_SANITIZERS AND NOT BUILD_TESTING)
       "sanitizer flags are never applied and the build is not sanitized")
 endif()
 
+if(ENABLE_TSAN AND NOT BUILD_TESTING)
+  message(
+    FATAL_ERROR
+      "ENABLE_TSAN requires BUILD_TESTING=ON; with tests off the "
+      "sanitizer flags are never applied and the build is not sanitized")
+endif()
+
 if(BUILD_TESTING)
   find_package(GTest REQUIRED)
   enable_testing()
@@ -381,6 +388,26 @@ if(BUILD_TESTING)
 
   option(ENABLE_SANITIZERS
          "Enable AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
+  option(ENABLE_TSAN "Enable ThreadSanitizer" OFF)
+  if(ENABLE_TSAN AND ENABLE_SANITIZERS)
+    message(
+      FATAL_ERROR
+        "ENABLE_TSAN and ENABLE_SANITIZERS cannot be combined: ThreadSanitizer "
+        "does not run with AddressSanitizer")
+  endif()
+  if(ENABLE_TSAN)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+      set(TSAN_FLAGS -fsanitize=thread -fno-omit-frame-pointer -g -O1)
+      foreach(sdk_target IN LISTS MCP_CPP_SDK_INSTALL_TARGETS)
+        target_compile_options(${sdk_target} PUBLIC ${TSAN_FLAGS})
+        target_link_options(${sdk_target} PUBLIC -fsanitize=thread)
+      endforeach()
+      target_compile_options(mcp-sdk-tests PRIVATE ${TSAN_FLAGS})
+      target_link_options(mcp-sdk-tests PRIVATE -fsanitize=thread)
+    else()
+      message(WARNING "ENABLE_TSAN is only supported with GCC or Clang")
+    endif()
+  endif()
   if(ENABLE_SANITIZERS)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
       set(SANITIZER_FLAGS -fsanitize=address,undefined -fno-omit-frame-pointer
