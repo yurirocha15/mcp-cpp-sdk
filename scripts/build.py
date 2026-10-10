@@ -85,7 +85,7 @@ def ensure_conan_profile():
         print("[+] Conan profile created")
 
 
-def conan_install(output_folder, jobs, cppstd, build_type="Release"):
+def conan_install(output_folder, jobs, cppstd, build_type="Release", extra_args=()):
     ensure_conan_profile()
     run(
         "conan", "install", ".",
@@ -95,6 +95,7 @@ def conan_install(output_folder, jobs, cppstd, build_type="Release"):
         "-s", f"build_type={build_type}",
         "-c", "tools.cmake.cmaketoolchain:generator=Ninja",
         "-c", f"tools.build:jobs={jobs}",
+        *extra_args,
     )
     generators = Path(output_folder) / "build" / build_type / "generators"
     toolchain = generators / "conan_toolchain.cmake"
@@ -130,7 +131,8 @@ def cmake_configure(build_dir, build_type, toolchain, *extra_args):
 
 
 def no_aslr():
-    """Command prefix that disables ASLR, which ThreadSanitizer needs on kernels with high mmap entropy.
+    """Command prefix that disables ASLR, which ThreadSanitizer and MemorySanitizer need on kernels
+    with high mmap entropy.
 
     The test binary also runs at build time (gtest_discover_tests), so the build and ctest both use it.
     """
@@ -142,6 +144,112 @@ def no_aslr():
 
 def cmake_build(build_dir, jobs, prefix=()):
     run(*prefix, "cmake", "--build", build_dir, f"-j{jobs}")
+
+
+# The Clang release the Clang builds look for first, and the LLVM commit (llvmorg-18.1.8) whose
+# libc++ the MemorySanitizer build compiles with it. Keep the two on the same major version.
+CLANG_VERSION = "18"
+MSAN_LLVM_COMMIT = "3b5b5c1ec4a3095ab096dd780e84d7ab81f3d7ff"
+MSAN_LIBCXX_DIR = "build/msan-libcxx"
+
+
+def find_clang():
+    """Return (C compiler, C++ compiler) for Clang, or None if there is no complete pair."""
+    for suffix in (f"-{CLANG_VERSION}", ""):
+        c_compiler = shutil.which(f"clang{suffix}")
+        cxx_compiler = shutil.which(f"clang++{suffix}")
+        if c_compiler and cxx_compiler:
+            return c_compiler, cxx_compiler
+    return None
+
+
+def build_msan_libcxx(prefix, clang, jobs):
+    """Build libc++ and libc++abi instrumented for MemorySanitizer and install them under prefix.
+
+    MemorySanitizer tracks which bytes have been initialised, and only instrumented code tells it.
+    Memory a prebuilt standard library writes stays "uninitialised" to it and every later read is
+    reported, so the standard library has to be an instrumented build as well.
+    """
+    prefix = Path(prefix).resolve()
+    # Written last, so it also marks a build that ran to the end. A prefix from another commit,
+    # such as a stale CI cache, is rebuilt.
+    stamp = prefix / "llvm-commit"
+    if stamp.is_file() and stamp.read_text().strip() == MSAN_LLVM_COMMIT:
+        return prefix
+
+    work = prefix.with_name(prefix.name + "-work")
+    shutil.rmtree(work, ignore_errors=True)
+    shutil.rmtree(prefix, ignore_errors=True)
+    source = work / "llvm-project"
+    source.mkdir(parents=True)
+    # Only the runtimes and the CMake modules they share with LLVM, at one pinned commit.
+    run("git", "init", "-q", str(source))
+    run("git", "-C", str(source), "remote", "add", "origin",
+        "https://github.com/llvm/llvm-project.git")
+    run("git", "-C", str(source), "sparse-checkout", "set",
+        "runtimes", "libcxx", "libcxxabi", "llvm/cmake", "llvm/utils/llvm-lit", "cmake",
+        "third-party")
+    run("git", "-C", str(source), "fetch", "-q", "--depth", "1", "--filter=blob:none",
+        "origin", MSAN_LLVM_COMMIT)
+    run("git", "-C", str(source), "-c", "advice.detachedHead=false", "checkout", "-q", "FETCH_HEAD")
+
+    c_compiler, cxx_compiler = clang
+    launcher_args = []
+    launcher = compiler_launcher()
+    if launcher:
+        launcher_args = [f"-DCMAKE_C_COMPILER_LAUNCHER={launcher}",
+                         f"-DCMAKE_CXX_COMPILER_LAUNCHER={launcher}"]
+    run(
+        "cmake", "-S", str(source / "runtimes"), "-B", str(work / "build"), "-G", "Ninja",
+        "-DCMAKE_BUILD_TYPE=Release",
+        f"-DCMAKE_C_COMPILER={c_compiler}",
+        f"-DCMAKE_CXX_COMPILER={cxx_compiler}",
+        f"-DCMAKE_INSTALL_PREFIX={prefix}",
+        "-DLLVM_ENABLE_RUNTIMES=libcxx;libcxxabi",
+        "-DLLVM_USE_SANITIZER=MemoryWithOrigins",
+        # Unwind with the system's libgcc. An instrumented libunwind reads registers that its own
+        # assembly saved, reports them as uninitialised, and unwinds again to print the report.
+        "-DLIBCXXABI_USE_LLVM_UNWINDER=OFF",
+        "-DLIBCXX_INCLUDE_TESTS=OFF",
+        "-DLIBCXX_INCLUDE_BENCHMARKS=OFF",
+        "-DLIBCXXABI_INCLUDE_TESTS=OFF",
+        *launcher_args,
+    )
+    run("cmake", "--build", str(work / "build"), f"-j{jobs}",
+        "--target", "install-cxx", "install-cxxabi")
+    shutil.rmtree(work, ignore_errors=True)
+    stamp.write_text(MSAN_LLVM_COMMIT + "\n")
+    return prefix
+
+
+def msan_conan_args(libcxx, clang):
+    """Conan arguments that build the SDK and every dependency against the instrumented libc++.
+
+    The flags reach the dependencies through Conan and the SDK through the toolchain file it
+    generates, so CMake needs no option of its own for this mode.
+    """
+    c_compiler, cxx_compiler = clang
+    compile_flags = ["-fsanitize=memory", "-fsanitize-memory-track-origins=2",
+                     "-fno-omit-frame-pointer", "-g"]
+    # Conan adds -stdlib=libc++ for the libc++ setting. -nostdinc++ then makes the instrumented
+    # headers the only ones, which leaves -stdlib with nothing to do when compiling.
+    quiet = "-Wno-unused-command-line-argument"
+    cxx_flags = compile_flags + ["-nostdinc++", f"-isystem{libcxx}/include/c++/v1", quiet]
+    link_flags = ["-fsanitize=memory", "-stdlib=libc++", f"-L{libcxx}/lib",
+                  f"-Wl,-rpath,{libcxx}/lib", "-lc++abi", quiet]
+    executables = {"c": c_compiler, "cpp": cxx_compiler}
+    return [
+        "-s", "compiler=clang",
+        "-s", f"compiler.version={CLANG_VERSION}",
+        "-s", "compiler.libcxx=libc++",
+        # MemorySanitizer cannot see what OpenSSL's hand-written assembly initialises.
+        "-o", "openssl/*:no_asm=True",
+        "-c", f"tools.build:compiler_executables={json.dumps(executables)}",
+        "-c", f"tools.build:cflags={json.dumps(compile_flags)}",
+        "-c", f"tools.build:cxxflags={json.dumps(cxx_flags)}",
+        "-c", f"tools.build:exelinkflags={json.dumps(link_flags)}",
+        "-c", f"tools.build:sharedlinkflags={json.dumps(link_flags)}",
+    ]
 
 
 def write_user_presets(generators_dir):
@@ -165,6 +273,8 @@ examples:
   python scripts/build.py --debug --test           debug build + run tests
   python scripts/build.py --sanitize --test        ASan/UBSan build + run tests
   python scripts/build.py --tsan --test            ThreadSanitizer build + run tests
+  python scripts/build.py --tsan --compiler clang --test   same, compiled with Clang
+  python scripts/build.py --msan --test            MemorySanitizer build + run tests
   python scripts/build.py --coverage --test        gcov build + run tests + report
   python scripts/build.py --test                   skip examples, run tests
   python scripts/build.py --sanitize --test        sanitized tests, no examples
@@ -189,6 +299,13 @@ def main():
                         help="Enable ASan + UBSan (implies --debug)")
     parser.add_argument("--tsan", action="store_true",
                         help="Enable ThreadSanitizer (implies --debug; excludes --sanitize)")
+    parser.add_argument("--msan", action="store_true",
+                        help="Enable MemorySanitizer (implies --debug and Clang; excludes the "
+                             "other sanitizers). Builds an instrumented libc++ on first use and "
+                             "rebuilds the Conan dependencies against it")
+    parser.add_argument("--compiler", choices=("default", "clang"), default="default",
+                        help="Compile the SDK and tests with Clang (Conan dependencies keep "
+                             "the detected profile); the build directory gains a -clang suffix")
     parser.add_argument("--coverage", action="store_true",
                         help="Enable gcov coverage (implies --debug)")
     parser.add_argument("--test", action="store_true",
@@ -226,8 +343,11 @@ def main():
     # ENABLE_SANITIZERS only takes effect inside the CMake tests block, so without --test the
     # flag is accepted and silently does nothing, leaving an unsanitized build in build/sanitize.
     # Refuse here rather than after a Conan install, so no build time is spent on it.
-    if args.tsan and args.sanitize:
-        parser.error("--tsan and --sanitize cannot be combined: ThreadSanitizer does not run with ASan")
+    if sum((args.sanitize, args.tsan, args.msan)) > 1:
+        parser.error("--sanitize, --tsan and --msan cannot be combined: each sanitizer needs a "
+                     "build of its own")
+    if args.msan and args.coverage:
+        parser.error("--msan and --coverage cannot be combined")
     if args.tsan and not args.test:
         parser.error(
             "--tsan requires --test: the sanitizer flags are only applied to a build with "
@@ -239,19 +359,23 @@ def main():
             "tests, so this would produce an unsanitized build in build/sanitize"
         )
 
-    is_debug = args.debug or args.sanitize or args.tsan or args.coverage
+    is_debug = args.debug or args.sanitize or args.tsan or args.msan or args.coverage
     build_type = "Debug" if is_debug else "Release"
 
     if args.sanitize:
         build_name = "sanitize"
     elif args.tsan:
         build_name = "tsan"
+    elif args.msan:
+        build_name = "msan"
     elif args.coverage:
         build_name = "coverage"
     elif is_debug:
         build_name = "debug"
     else:
         build_name = "release"
+    if args.compiler == "clang" and not args.msan:
+        build_name += "-clang"
     if args.cppstd != "20":
         build_name += f"-cxx{args.cppstd}"
     build_dir = f"build/{build_name}"
@@ -265,6 +389,18 @@ def main():
         f"-DMCP_CPP_SDK_BUILD_STATIC={'ON' if args.linkage in ('both', 'static') else 'OFF'}",
         f"-DMCP_CPP_SDK_DEFAULT_LINKAGE={'static' if args.linkage == 'static' else 'shared'}",
     ]
+    clang = None
+    if args.compiler == "clang" or args.msan:
+        clang = find_clang()
+        if clang is None:
+            parser.error(f"this build needs clang and clang++ (or clang-{CLANG_VERSION} and "
+                         f"clang++-{CLANG_VERSION}) on PATH")
+    conan_args = []
+    if args.msan:
+        # The Conan toolchain file names the compiler and carries the flags.
+        conan_args = msan_conan_args(build_msan_libcxx(MSAN_LIBCXX_DIR, clang, args.jobs), clang)
+    elif clang:
+        extra_cmake += [f"-DCMAKE_C_COMPILER={clang[0]}", f"-DCMAKE_CXX_COMPILER={clang[1]}"]
     if args.sanitize:
         extra_cmake.append("-DENABLE_SANITIZERS=ON")
     if args.tsan:
@@ -273,7 +409,7 @@ def main():
         extra_cmake.append("-DENABLE_COVERAGE=ON")
 
     generators_dir = conan_install(
-        build_dir, args.jobs, args.cppstd, build_type
+        build_dir, args.jobs, args.cppstd, build_type, conan_args
     )
     cmake_configure(
         build_dir,
@@ -281,7 +417,7 @@ def main():
         generators_dir / "conan_toolchain.cmake",
         *extra_cmake,
     )
-    aslr_prefix = no_aslr() if args.tsan else []
+    aslr_prefix = no_aslr() if args.tsan or args.msan else []
     cmake_build(build_dir, args.jobs, aslr_prefix)
     write_user_presets(generators_dir)
 
@@ -296,8 +432,14 @@ def main():
         if args.tsan:
             suppressions = Path("test/tsan.supp").resolve()
             extra_env = {"TSAN_OPTIONS": f"halt_on_error=1:second_deadlock_stack=1:suppressions={suppressions}"}
+        ctest_args = []
+        if args.msan:
+            extra_env = {"MSAN_OPTIONS": "halt_on_error=1"}
+            # This test compiles a consumer with the compiler's own standard library, which
+            # cannot link against an SDK built on the instrumented libc++.
+            ctest_args = ["-E", "^packaging-pkgconfig-static-consumer$"]
         run(*aslr_prefix, "ctest", "--test-dir", build_dir, f"-j{test_jobs}", "--output-on-failure",
-            extra_env=extra_env)
+            *ctest_args, extra_env=extra_env)
 
         if args.coverage:
             run("gcovr", "-r", ".", "--html", "--html-details",
