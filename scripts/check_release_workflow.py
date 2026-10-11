@@ -16,7 +16,7 @@ ACTION_ALLOWLIST = {
     "actions/checkout": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
     "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-    "actions/attest": "a1948c3f048ba23858d222213b7c278aabede763",
+    "actions/attest": "f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6",
     "actions/create-github-app-token": "bcd2ba49218906704ab6c1aa796996da409d3eb1",
     "cloudsmith-io/cloudsmith-cli-action": "159f1619275d5d3147f059c3cc110938ec221d16",
 }
