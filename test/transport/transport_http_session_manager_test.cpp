@@ -1184,7 +1184,7 @@ TEST_F(SessionManagerTest, StatelessBadProtocolVersionReturns400) {
 }
 
 TEST_F(SessionManagerTest, CloseCancelsIdleKeepAliveAndCannotCreatePostCloseSession) {
-    const unsigned short port = 19115;
+    const unsigned short port = 19122;
     std::atomic<int> factory_calls{0};
     std::atomic<int> custom_handler_calls{0};
     auto echo_factory = make_echo_server_factory();
