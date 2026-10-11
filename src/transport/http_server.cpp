@@ -574,15 +574,15 @@ struct HttpServerTransport::Impl {
 
         try {
             for (;;) {
-                if (state.closed.load(std::memory_order_acquire)) {
-                    throw std::runtime_error("HttpServerTransport is closed");
-                }
-
                 if (!state.queue.empty()) {
                     auto message_payload = std::move(state.queue.front());
                     state.queue.pop();
                     state.read_active = false;
                     co_return message_payload;
+                }
+
+                if (state.closed.load(std::memory_order_acquire)) {
+                    throw std::runtime_error("HttpServerTransport is closed");
                 }
 
                 state.timer.expires_at(std::chrono::steady_clock::time_point::max());

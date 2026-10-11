@@ -18,6 +18,7 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -88,6 +89,42 @@ TEST_F(HttpTransportTest, SendMessageServerReceives) {
     nlohmann::json expected_notification = {{"jsonrpc", "2.0"},
                                             {"method", "notifications/initialized"}};
     EXPECT_EQ(nlohmann::json::parse(server_received), expected_notification);
+}
+
+TEST_F(HttpTransportTest, ReadAfterCloseDeliversMessageQueuedBeforeClose) {
+    mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 0);
+    const std::string url = "http://127.0.0.1:" + std::to_string(server_transport.port()) + "/mcp";
+
+    asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
+
+    const nlohmann::json notification_payload = {{"jsonrpc", "2.0"},
+                                                 {"method", "notifications/initialized"}};
+    std::string server_received;
+    bool read_after_drain_threw = false;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            mcp::HttpClientTransport client_transport(io_ctx_.get_executor(), url);
+            co_await client_transport.write_message(notification_payload.dump());
+            client_transport.close();
+
+            // The notification is queued and nothing has read it yet.
+            server_transport.close();
+
+            server_received = co_await server_transport.read_message();
+            try {
+                (void)co_await server_transport.read_message();
+            } catch (const std::runtime_error&) {
+                read_after_drain_threw = true;
+            }
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_FALSE(server_received.empty());
+    EXPECT_EQ(nlohmann::json::parse(server_received), notification_payload);
+    EXPECT_TRUE(read_after_drain_threw);
 }
 
 TEST_F(HttpTransportTest, ServerWriteClientReceives) {
