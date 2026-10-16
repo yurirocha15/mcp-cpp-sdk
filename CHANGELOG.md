@@ -78,7 +78,17 @@ Versioning; a `0.x` version is a stable release unless its version has an
   A `denied_origins` entry that is not a bare origin is rejected with
   `MetadataPolicyError` (`denied_origin_entry_malformed`), and every target is
   refused until it is corrected. `OAuthHttpClient::set_metadata_policy()` and
-  `set_host_resolver()` configure a client.
+  `set_host_resolver()` configure a client, and `configure()` installs both as
+  one change, so no request can run with the new resolver and the old policy.
+  A request keeps the policy and resolver it started with across every
+  redirect hop.
+- `OAuthHttpClient::make_scope()` and `OAuthHttpClientScope`, a view of a
+  shared client whose requests `abort()` ends without touching other scopes or
+  the client's own requests. `abort_pending()` still ends everything.
+- A `discover_protected_resource()` overload taking a
+  `ProtectedResourceAcceptor`, called with the document before it is cached or
+  returned, including on a cache hit. Throwing rejects the document, and
+  nothing is cached.
 - `parse_www_authenticate()`, `select_bearer_challenge()` and
   `BearerChallenge` for reading `WWW-Authenticate` headers.
 - The `server/discover` method, answered over HTTP before and after a session
@@ -101,6 +111,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
   The new members change the layout of `OAuthConfig` and `AuthServerMetadata`.
 - The conformance harness runs the client authorization scenarios, and all 14
   of them pass.
+- `StdioTransport::create_owning_stdout()`, which writes the protocol to a
+  private copy of the process's standard output and points standard output at
+  standard error while the transport lives, so stray output from the
+  application or a dependency cannot corrupt the message stream. Standard
+  output is restored when the transport is destroyed, and only one such
+  transport may exist at a time.
+- CI compiles the README code snippets and checks that the stdio examples
+  write nothing but protocol messages to standard output.
 
 ### Changed
 
@@ -221,6 +239,13 @@ Versioning; a `0.x` version is a stable release unless its version has an
   carries `error="insufficient_scope"` goes straight to that flow. Previously an authentication failure got one refresh
   and one retry. `Authenticator` gains `try_handle_challenge()` and `close()`,
   which changes its layout.
+- `OAuthAuthenticator` rejects a null `OAuthHttpClient` with
+  `std::invalid_argument` when constructed, and its `close()` ends only the
+  requests it issued, leaving the client usable by anyone else sharing it.
+- Challenges that arrive while `OAuthAuthorizationManager` is already
+  authorizing wait for that attempt, and each of them reports its outcome,
+  rethrowing the same exception when it fails.
+- `scripts/build.py --sanitize --test` runs with LeakSanitizer enabled.
 
 ### Fixed
 
@@ -235,6 +260,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - HTTP session ids for `HttpServerTransport` and
   `StreamableHttpSessionManager` are generated with OpenSSL's `RAND_bytes`
   instead of `std::mt19937`, which is not a cryptographic generator.
+- Text a peer controls (URLs, hosts, issuers, metadata fields, response
+  bodies) is cleaned before it appears in an OAuth exception message: cut to
+  256 bytes, with line breaks and bidirectional controls replaced by spaces and
+  ill-formed UTF-8 replaced by `?`, so it cannot forge or reorder log lines.
+  The helper is `mcp::detail::sanitize_for_diagnostics()`.
 
 ## [0.2.0] - TBD
 
