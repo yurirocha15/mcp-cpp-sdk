@@ -1,5 +1,6 @@
 #include <mcp/auth/oauth.hpp>
 
+#include "../detail/middleware_rejection.hpp"
 #include "../detail/peer_json.hpp"
 #include "oauth_internal.hpp"
 
@@ -1352,13 +1353,13 @@ struct MiddlewareInvocation {
 };
 
 Task<nlohmann::json> invoke_auth_middleware(std::shared_ptr<MiddlewareInvocation> invocation) {
-    // A rejected token is reported to the caller as a tool result rather than raised: throwing from
-    // middleware is reserved for failures the caller cannot act on, and surfaces as -32603.
+    // A tool call reports the refusal as a tool error result; other requests answer it as a
+    // JSON-RPC error. See MiddlewareRejection.
     if (invocation->token.empty()) {
-        co_return nlohmann::json(make_tool_error_result("Unauthorized: missing Bearer token"));
+        throw mcp::detail::MiddlewareRejection("Unauthorized: missing Bearer token");
     }
     if (!co_await invocation->validator(invocation->token)) {
-        co_return nlohmann::json(make_tool_error_result("Unauthorized: invalid Bearer token"));
+        throw mcp::detail::MiddlewareRejection("Unauthorized: invalid Bearer token");
     }
     co_return co_await invocation->next(*invocation->context, invocation->params);
 }

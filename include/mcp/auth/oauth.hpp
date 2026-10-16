@@ -588,6 +588,10 @@ using TokenValidator = std::function<Task<bool>(const std::string& token)>;
  * For Streamable HTTP servers, prefer set_bearer_token_validator() on the HTTP transport or
  * session manager so authentication is enforced at the HTTP boundary.
  *
+ * A missing or refused token is answered with a tool error result (`isError: true`) on
+ * `tools/call`, and with a JSON-RPC `-32603` error on every other request the middleware wraps,
+ * such as `resources/read` and `prompts/get`. The handler is not invoked.
+ *
  * @param validator Async callback that returns true when the token is accepted.
  * @return Middleware enforcing presence and validity of `_meta.auth_token`.
  */

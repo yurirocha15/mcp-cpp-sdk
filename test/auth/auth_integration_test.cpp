@@ -269,6 +269,88 @@ TEST(AuthMiddlewareTest, RejectsMissingToken) {
     EXPECT_NE(text.find("missing"), std::string::npos);
 }
 
+// The middleware wraps every handler kind, and only a tool has an error shape inside its result.
+// A rejected resource read or prompt fetch has to be a JSON-RPC error, or the caller is handed a
+// result it cannot decode as the type it asked for.
+TEST(AuthMiddlewareTest, RejectsResourceAndPromptRequestsWithAJsonRpcError) {
+    asio::io_context io;
+
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    caps.prompts = mcp::ServerCapabilities::PromptsCapability{};
+
+    mcp::Implementation info;
+    info.name = "test-server";
+    info.version = "1.0";
+
+    mcp::Server server(std::move(info), std::move(caps));
+
+    server.use(mcp::auth::make_auth_middleware(
+        [](const std::string& token) -> mcp::Task<bool> { co_return token == "valid_token"; }));
+
+    int handler_calls = 0;
+    mcp::Resource resource;
+    resource.uri = "file:///secret.txt";
+    resource.name = "secret.txt";
+    server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        resource, [&handler_calls](const mcp::ReadResourceRequestParams& params) {
+            ++handler_calls;
+            mcp::TextResourceContents contents;
+            contents.uri = params.uri;
+            contents.text = "secret";
+            mcp::ReadResourceResult result;
+            result.contents.emplace_back(std::move(contents));
+            return result;
+        });
+    mcp::Prompt prompt;
+    prompt.name = "greeting";
+    server.add_prompt<mcp::GetPromptRequestParams, mcp::GetPromptResult>(
+        prompt, [&handler_calls](const mcp::GetPromptRequestParams&) {
+            ++handler_calls;
+            return mcp::GetPromptResult{};
+        });
+
+    auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
+    auto* transport_ptr = transport.get();
+
+    std::vector<json> responses;
+    transport_ptr->set_on_write([&responses, transport_ptr](std::string_view msg) {
+        responses.push_back(json::parse(msg));
+        if (responses.size() >= 3) {
+            transport_ptr->close();
+        }
+    });
+
+    transport_ptr->enqueue_message(make_initialize_request("1").dump());
+    transport_ptr->enqueue_message(make_initialized_notification().dump());
+    transport_ptr->enqueue_message(json{{"jsonrpc", "2.0"},
+                                        {"id", "2"},
+                                        {"method", "resources/read"},
+                                        {"params", {{"uri", "file:///secret.txt"}}}}
+                                       .dump());
+    transport_ptr->enqueue_message(
+        json{{"jsonrpc", "2.0"},
+             {"id", "3"},
+             {"method", "prompts/get"},
+             {"params", {{"name", "greeting"}, {"_meta", {{"auth_token", "wrong_token"}}}}}}
+            .dump());
+
+    asio::co_spawn(io, server.run(transport, io.get_executor()), asio::detached);
+    io.run();
+
+    EXPECT_EQ(handler_calls, 0);
+    for (const auto* id : {"2", "3"}) {
+        auto it = std::find_if(responses.begin(), responses.end(),
+                               [id](const json& msg) { return msg.contains("id") && msg["id"] == id; });
+        ASSERT_NE(it, responses.end()) << "no response to request " << id;
+        EXPECT_FALSE(it->contains("result")) << it->dump();
+        ASSERT_TRUE(it->contains("error")) << it->dump();
+        EXPECT_EQ((*it)["error"]["code"], mcp::g_INTERNAL_ERROR);
+        EXPECT_NE((*it)["error"]["message"].get<std::string>().find("Unauthorized"), std::string::npos)
+            << it->dump();
+    }
+}
+
 TEST(AuthClientTransportTest, StoreAndRetrieveToken) {
     asio::io_context io;
 

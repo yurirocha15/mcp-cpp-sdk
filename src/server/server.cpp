@@ -1,5 +1,6 @@
 #include "../detail/diagnostic_text.hpp"
 #include "../detail/memory_transport_read.hpp"
+#include "../detail/middleware_rejection.hpp"
 #include "../detail/peer_json.hpp"
 
 #include <mcp/detail/serialized_transport_writer.hpp>
@@ -1229,7 +1230,11 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
         };
         auto handler = build_middleware_chain(std::move(wrapped_handler));
         nlohmann::json params_json = params;
-        handler_result = co_await handler(ctx, params_json);
+        try {
+            handler_result = co_await handler(ctx, params_json);
+        } catch (const detail::MiddlewareRejection& rejection) {
+            handler_result = nlohmann::json(make_tool_error_result(rejection.what()));
+        }
     }
 
     if (iter->second.result_mode == detail::ToolResultMode::eValidated) {
