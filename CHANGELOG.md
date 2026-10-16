@@ -147,7 +147,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   (`std::function<Task<bool>(std::string)>`), so a token decision that needs
   I/O — introspection, a JWKS fetch — suspends instead of blocking the
   executor serving MCP traffic. Installing it alongside the synchronous
-  validator throws `std::logic_error`.
+  validator throws `std::logic_error`. A validator of either kind that throws
+  is answered `500 Internal Server Error` without a challenge, so a failing
+  introspection endpoint does not send clients into re-authorization.
 - `set_max_request_body_bytes()` on `HttpServerTransport` and
   `StreamableHttpSessionManager`, together with
   `mcp::constants::g_default_max_request_body_bytes` (8 MiB), the new default.
@@ -162,6 +164,15 @@ Versioning; a `0.x` version is a stable release unless its version has an
   an application notification callback, reported as `g_INTERNAL_ERROR` with
   the notification method in the message. It runs on the read loop and must
   not block.
+- A build check that every protocol type with a `from_json` is either covered
+  by the peer-input matrix test (`test/core/json_peer_input_matrix_test.cpp`)
+  or excluded with a stated reason, and that the test matches what
+  `scripts/gen_json_matrix.py` generates. It exits 2 for a row whose decoder
+  now throws on an explicit null or an absent key, and the generator refuses
+  to write such a row unless it is named with `--accept-regression`. The
+  check is governed by the new `MCP_CPP_SDK_CHECK_JSON_MATRIX` option: `ON` in
+  a checkout, where a `BUILD_TESTING=ON` build needs Python 3.9+, and `OFF` in
+  source archives, which do not ship the scripts.
 - Documentation for the server-side OAuth challenge work: the OAuth guide now
   names the protected-resource metadata helpers and the exported bearer and
   request-path helpers, and renders its example challenge through the
@@ -232,11 +243,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `add_raw_tool()` handlers must return a valid `CallToolResult`, and a tool
   with an `outputSchema` must return `structuredContent`.
 - A `std::exception` thrown by any tool handler, typed and asynchronous ones
-  included, or by middleware during `tools/call`, is answered with a tool
-  error result (`isError: true`) carrying the exception message. Previously
-  only the synchronous JSON `add_tool()` overload did this, and other tool
-  handlers' exceptions were answered with `-32603`. Resource and prompt
-  handler exceptions are still answered with `-32603`.
+  included, is answered with a tool error result (`isError: true`) carrying
+  the exception message. Previously only the synchronous JSON `add_tool()`
+  overload did this, and other tool handlers' exceptions were answered with
+  `-32603`. Resource and prompt handler exceptions are still answered with
+  `-32603`.
 - Request params that fail to decode are answered with `-32602` (previously
   `-32603`). A message the server cannot parse is answered with `-32700` and
   the session stays open; previously the session ended.
@@ -382,27 +393,20 @@ Versioning; a `0.x` version is a stable release unless its version has an
   runs that the matcher could only resolve by backtracking over every split of
   the input. Adjacent expressions with a decidable boundary, such as
   `{+path}{?query}` and `{id}{#section}`, are accepted.
-- An exception from a tool handler is reported as a `CallToolResult` carrying
-  `isError`, with the message sanitized before it reaches the peer, and the
-  guard now covers a throw that does not derive from `std::exception`. Such a
-  throw previously escaped every guard on the request path — the tool
-  invocation caught only `std::exception`, and `dispatch_request_wire` has no
-  catch-all — so no response was written at all: a session client waited out
-  its own request timeout, and a stateless connection was closed with nothing
-  sent. It is now reported as a tool error with the fixed text
-  `Tool handler failed`, because such a throw carries no message the SDK can
-  quote. This is the behavior the error-handling guide already documented for
-  handler exceptions, "typed, asynchronous or raw". The change is specific to
-  tool handlers: a throw that does not derive from `std::exception` escaping a
-  resource or prompt handler, or middleware, still drops the response.
-- Middleware now runs outside the tool handler's exception guard, so a
-  middleware that throws surfaces as a JSON-RPC error (`-32603`) rather than
-  as a tool error result; middleware decides whether a call may proceed at
-  all, which is a protocol-level answer rather than a tool outcome. Previously
-  any exception from the middleware chain became a tool error result. The
-  bundled auth middleware no longer throws on a missing or invalid bearer
-  token — it returns a tool error result — so that rejection still reaches
-  the caller as a tool result rather than becoming `-32603`.
+- A tool handler that throws something not derived from `std::exception` is
+  answered with a tool error result carrying the fixed text
+  `Tool handler failed`, and every tool exception message is flattened and
+  length-bounded before it reaches the peer. Such a throw from a resource or
+  prompt handler, or from middleware, still ends the request without a
+  response.
+- Middleware runs outside the tool handler's exception guard. An exception
+  thrown by middleware is answered with `-32603` for every request kind,
+  `tools/call` included, since middleware decides whether a call may proceed
+  at all. A tool handler's exception reaches middleware as an `isError`
+  result rather than as an exception. `make_auth_middleware()` answers a
+  missing or refused token with a tool error result on `tools/call` and with
+  `-32603` on `resources/read` and `prompts/get`, without invoking the
+  handler.
 - An incoming message the client cannot decode no longer ends the session.
   Only a failure of `read_message()` — the peer hung up, the socket died, the
   client was closed — fails pending requests and closes the transport;
@@ -421,33 +425,21 @@ Versioning; a `0.x` version is a stable release unless its version has an
   document, so an unusable path is refused rather than advertised. The
   transport and session-manager setters reject it at configuration time and
   leave the server unchanged.
-- A `Server` may now be destroyed while handlers are still in flight. The
-  implementation outlives the `Server` until that work finishes, so a handler
-  no longer runs against freed state, and a reverse request issued from a
-  handler whose `Server` is gone throws `std::runtime_error` naming that cause
-  instead of faulting — distinct from the failure reported for a session that
-  is merely closing. Destroying a `Server` from a thread other than the one
-  running its session no longer races on that session's request maps either:
-  those entries are abandoned on the session strand, which is the only
-  executor permitted to touch them.
+- A `Server` may now be destroyed while a session started with `run()` still
+  has handlers in flight. The implementation outlives the `Server` until that
+  work finishes, so such a handler no longer runs against freed state. Work
+  started through `dispatch()`, `dispatch_request_direct()` or the
+  `notify_*()` calls does not extend it, so the `Server` must outlive those. A
+  reverse request issued from a handler whose `Server` is gone throws
+  `std::runtime_error` naming that cause instead of faulting — distinct from
+  the failure reported for a session that is merely closing. Destroying a
+  `Server` from a thread other than the one running its session no longer
+  races on that session's request maps either: those entries are abandoned on
+  the session strand, which is the only executor permitted to touch them.
 - A session is now unregistered even when teardown throws — a transport that
   throws from `close()`, or a drain wait that fails for any reason other than
   cancellation. Previously such a failure left the session registered and
   every later `run()` was refused for the lifetime of the `Server`.
-- Stateless and discover dispatch in the HTTP session manager is spelled as a
-  named coroutine rather than a lambda handed to `co_spawn`, so the request
-  moves into that coroutine's own frame. This avoids the GCC 11 defect that
-  corrupts an object living in a coroutine frame across a suspension.
-- The peer-input matrix build check now fails when
-  `test/core/json_peer_input_matrix_test.cpp` differs from what
-  `scripts/gen_json_matrix.py` generates, and exits 2 for a row whose decoder
-  now throws on an explicit null or an absent key. The generator refuses to
-  write such a row unless it is named with `--accept-regression`. The check is
-  governed by the new `MCP_CPP_SDK_CHECK_JSON_MATRIX` option: it defaults to
-  `ON` in a checkout, where a `BUILD_TESTING=ON` build now needs Python 3.9+,
-  and to `OFF` in source archives, which do not ship the scripts. Previously a
-  missing Python skipped the check with a warning, and a source-archive build
-  with tests failed because the scripts were absent.
 
 ### Fixed
 
