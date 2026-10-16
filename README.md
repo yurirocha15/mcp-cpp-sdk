@@ -86,8 +86,8 @@ int main() {
 
     boost::asio::co_spawn(io, [&]() -> mcp::Task<void> {
         co_await client.connect("my-client", "1.0.0");
-        auto result =
-            co_await client.call_tool("hello", nlohmann::json{{"name", "World"}});
+        nlohmann::json arguments{{"name", "World"}};
+        auto result = co_await client.call_tool("hello", arguments);
         std::cerr << nlohmann::json(result).dump(2) << '\n';
         client.close();
     }, boost::asio::detached);
@@ -95,6 +95,9 @@ int main() {
     io.run();
 }
 ```
+
+Note the named `arguments` variable. See [Compiler
+Notes](#compiler-notes) for why it is not built inline.
 
 ## Usage Highlights
 
@@ -118,6 +121,48 @@ server.add_tool<nlohmann::json, nlohmann::json>("long_task", "A task with progre
         co_return nlohmann::json{{"status", "done"}};
     });
 ```
+
+## Compiler Notes
+
+### GCC 12 and 13: initializer lists inside a `co_await` expression
+
+GCC 12 and GCC 13 crash with an internal compiler error when a `co_await`
+expression contains an initializer list whose elements have non-trivial
+destructors. GCC 13 is the default compiler on Ubuntu 24.04, so this is easy to
+hit on a stock toolchain. The error looks like this, and names the closing brace
+of the enclosing lambda rather than the offending argument:
+
+```
+internal compiler error: in build_special_member_call, at cp/call.cc:11096
+```
+
+Build the container into a named variable first:
+
+```cpp
+// Crashes GCC 12 and GCC 13
+auto result = co_await client.call_tool("hello", nlohmann::json{{"name", "World"}});
+auto prompt = co_await client.get_prompt("greet", std::map<std::string, std::string>{{"who", "you"}});
+
+// Compiles
+nlohmann::json arguments{{"name", "World"}};
+auto result = co_await client.call_tool("hello", arguments);
+```
+
+The trigger is the initializer list, not the type, so it is not specific to
+`nlohmann::json`: `std::map<std::string, std::string>{{"a", "b"}}` and
+`std::vector<std::string>{"a", "b"}` crash the same way, while
+`std::vector<int>{1, 2, 3}` and `nlohmann::json::object()` do not. Parentheses
+do not help, because `nlohmann::json({{"a", 1}})` still forms an initializer
+list. Only hoisting the value out of the `co_await` expression avoids it.
+
+This is a compiler defect rather than an SDK one, and no change to the SDK's
+signatures avoids it: taking the argument by value instead of by reference
+still crashes.
+
+The contributing guide's [Known
+Issues](https://yurirocha15.github.io/mcp-cpp-sdk/contributing.html#known-issues)
+section carries the full case list, alongside the separate GCC 11 coroutine bug
+this codebase also works around.
 
 ## Documentation
 

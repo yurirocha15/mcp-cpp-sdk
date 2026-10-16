@@ -456,9 +456,131 @@ MetadataUrlDecision validate_metadata_address(const MetadataFetchPolicy& policy,
     return classify_v4(policy, address.to_v4());
 }
 
+namespace detail {
+
+namespace {
+
+/// One decoded UTF-8 sequence. `length` is 0 when the bytes at the offset are not a well-formed
+/// sequence, in which case `codepoint` is meaningless.
+struct Utf8Sequence {
+    std::size_t length{0};
+    std::uint32_t codepoint{0};
+};
+
+/// Decode the UTF-8 sequence starting at `index`, rejecting every ill-formed encoding rather than
+/// accepting the bytes and hoping: a truncated tail, a bad continuation byte, an overlong form, a
+/// surrogate, or a value past U+10FFFF. Ill-formed input is what a peer sends when it wants the
+/// consumer of the log, not the log line itself, to misbehave.
+Utf8Sequence decode_utf8(std::string_view value, std::size_t index) {
+    const auto lead = static_cast<unsigned char>(value[index]);
+    if (lead < 0x80) {
+        return {1, lead};
+    }
+
+    std::size_t length = 0;
+    std::uint32_t codepoint = 0;
+    if ((lead & 0xE0) == 0xC0) {
+        length = 2;
+        codepoint = lead & 0x1FU;
+    } else if ((lead & 0xF0) == 0xE0) {
+        length = 3;
+        codepoint = lead & 0x0FU;
+    } else if ((lead & 0xF8) == 0xF0) {
+        length = 4;
+        codepoint = lead & 0x07U;
+    } else {
+        return {};  // A continuation byte with no lead, or an invalid lead.
+    }
+
+    if (index + length > value.size()) {
+        return {};
+    }
+    for (std::size_t offset = 1; offset < length; ++offset) {
+        const auto continuation = static_cast<unsigned char>(value[index + offset]);
+        if ((continuation & 0xC0) != 0x80) {
+            return {};
+        }
+        codepoint = (codepoint << 6U) | (continuation & 0x3FU);
+    }
+
+    const bool overlong = (length == 2 && codepoint < 0x80) || (length == 3 && codepoint < 0x800) ||
+                          (length == 4 && codepoint < 0x10000);
+    const bool surrogate = codepoint >= 0xD800 && codepoint <= 0xDFFF;
+    if (overlong || surrogate || codepoint > 0x10FFFF) {
+        return {};
+    }
+    return {length, codepoint};
+}
+
+/// Codepoints that can end a line somewhere downstream. C0 and DEL are the obvious ones; C1 and
+/// U+2028/U+2029 are here because a JSON encoder emits them literally and JavaScript-based log
+/// viewers treat the last two as line terminators, which is the same forgery by another route.
+bool breaks_a_line(std::uint32_t codepoint) {
+    return codepoint < 0x20 || codepoint == 0x7f || (codepoint >= 0x80 && codepoint <= 0x9f) ||
+           codepoint == 0x2028 || codepoint == 0x2029;
+}
+
+/// Codepoints that re-order the text after them without ending the line. The explicit embeddings
+/// and overrides (U+202A-U+202E), the isolates (U+2066-U+2069) and all three implicit marks -- LRM
+/// (U+200E), RLM (U+200F) and ALM (U+061C) -- let a peer reverse the rendering of the rest of a
+/// diagnostic, so a refusal can be made to read as its opposite. Same forgery as a line break, by
+/// a route that never breaks one.
+///
+/// ALM is easy to leave out, because it lives in the Arabic block rather than beside the other two
+/// marks. It is the same class as RLM: a strong invisible directional character that re-bases the
+/// neutral run after it. Bounded impact next to U+202E, which reverses a whole run, but there is
+/// no reason to admit it once RLM is refused.
+bool reorders_the_line(std::uint32_t codepoint) {
+    return (codepoint >= 0x202a && codepoint <= 0x202e) ||
+           (codepoint >= 0x2066 && codepoint <= 0x2069) || codepoint == 0x200e || codepoint == 0x200f ||
+           codepoint == 0x061c;
+}
+
+}  // namespace
+
+std::string sanitize_for_diagnostics(std::string_view value) {
+    constexpr std::size_t max_length = 256;
+    std::string cleaned;
+    cleaned.reserve(std::min(value.size(), max_length));
+
+    std::size_t index = 0;
+    bool truncated = false;
+    while (index < value.size()) {
+        const auto decoded = decode_utf8(value, index);
+
+        // Ill-formed bytes are replaced one for one rather than copied, so the result is always
+        // well-formed UTF-8 even when the input was not. Text that reaches here through a header
+        // rather than through a JSON document has had nothing validate it.
+        const std::size_t width = decoded.length == 0 ? 1 : decoded.length;
+        if (cleaned.size() + width > max_length) {
+            truncated = true;
+            break;
+        }
+        if (decoded.length == 0) {
+            cleaned.push_back('?');
+        } else if (breaks_a_line(decoded.codepoint) || reorders_the_line(decoded.codepoint)) {
+            cleaned.push_back(' ');
+        } else {
+            cleaned.append(value.substr(index, decoded.length));
+        }
+        index += width;
+    }
+
+    if (truncated) {
+        cleaned += "...";
+    }
+    return cleaned;
+}
+
+}  // namespace detail
+
+// The target is sanitized for the MESSAGE and kept raw in `target_`. Every throw site passes a URL
+// or address that came from a peer, and sanitizing here rather than at each of them means a throw
+// site cannot forget. `target()` still returns the value verbatim, because a caller inspecting it
+// programmatically wants the real URL, not one with its control characters flattened.
 MetadataPolicyError::MetadataPolicyError(MetadataUrlDecision decision, std::string target)
     : std::runtime_error("OAuth metadata target refused (" + std::string(describe(decision)) +
-                         "): " + target),
+                         "): " + detail::sanitize_for_diagnostics(target)),
       decision_(decision),
       target_(std::move(target)) {}
 

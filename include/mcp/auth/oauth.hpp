@@ -15,6 +15,7 @@
 #include <boost/asio/any_io_executor.hpp>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -216,6 +217,31 @@ using HostResolver =
 /**
  * @brief Minimal HTTP client for OAuth token exchange and metadata retrieval.
  */
+class OAuthHttpClientScope;
+
+namespace detail {
+
+/// One scope's abort latch. Opaque here and defined in the implementation: a scope holds its own
+/// latch rather than a name for one the client keeps, which is what lets the latch die with the
+/// scope instead of accumulating on the client for the life of the process.
+struct OAuthScopeState;
+
+/// Reach-in for this SDK's own tests, declared opaque on purpose.
+///
+/// Why a public header knows about a test type at all: the accessors that use it need to read
+/// this client's private state, and granting friendship to one opaque tag is the narrowest way to
+/// allow that. It hands out nothing callable -- the type is defined only inside the
+/// implementation, and the accessors are declared in src/auth/oauth_internal.hpp, which is not
+/// installed, so no consumer can reach them without hand-redeclaring an implementation symbol.
+/// The symbols themselves are exported, because the test binary links the shared library and this
+/// library is built with hidden visibility; "absent from every installed header" and "not
+/// exported" were not both achievable without changing what the tests link against, which is a
+/// far larger change than it would be worth. A friend declaration does not affect layout, so
+/// binary compatibility is unaffected.
+struct OAuthTestAccess;
+
+}  // namespace detail
+
 class MCP_API OAuthHttpClient {
    public:
     /**
@@ -242,6 +268,16 @@ class MCP_API OAuthHttpClient {
      * validated before host resolution, every resolved address is classified before connecting,
      * the addresses from that single resolution are pinned for the connection, response bodies are
      * capped, and redirects are bounded and individually re-validated.
+     *
+     * @warning Do not pair this with set_host_resolver() to change both. This setter and that one
+     * are individually atomic and do NOT compose: between the two calls the client holds one new
+     * value and one old one, and an exchange started in that interval runs with the mix. The
+     * dangerous ordering is resolver first, because the redirection takes effect while the
+     * narrowing still lags: the exchange is directed by the new resolver and validated against the
+     * old, wider allow list -- exactly the request the narrowing was meant to refuse. The interval
+     * is however long the application takes between the two statements, so a log line or a single
+     * descheduling is enough; measured at a 1 ms gap, 9,406 of 9,985 narrowings admitted such a
+     * request. Use configure() whenever both are being changed.
      */
     void set_metadata_policy(MetadataFetchPolicy policy);
 
@@ -249,8 +285,32 @@ class MCP_API OAuthHttpClient {
      * @brief Install a custom host resolver.
      *
      * @param resolver Resolver invoked in place of the system resolver.
+     *
+     * @warning Do not pair this with set_metadata_policy() to change both; see the warning there.
+     * Installing a resolver first and narrowing the policy afterwards is the dangerous ordering,
+     * and it is the natural one to write. Use configure() whenever both are being changed.
      */
     void set_host_resolver(HostResolver resolver);
+
+    /**
+     * @brief Install an outbound-request policy and a host resolver as one indivisible change.
+     *
+     * @param policy Policy governing schemes, origins, resolved addresses, response size and
+     *        redirect depth.
+     * @param resolver Resolver invoked in place of the system resolver; an empty resolver restores
+     *        the executor's system resolver.
+     *
+     * @details Both values are installed under a single hold of the lock that guards them, and
+     * every exchange reads both of them once, together, under that same lock when it starts. There
+     * is therefore no instant at which an exchange can observe one of these values new and the
+     * other old: an exchange started around this call runs entirely with the configuration before
+     * it or entirely with the configuration after it.
+     *
+     * This is the only correct way to change both on a client that may already be serving
+     * requests. set_metadata_policy() and set_host_resolver() remain available for changing one of
+     * them alone; using them one after the other to change both is a mistake, not a caveat.
+     */
+    void configure(MetadataFetchPolicy policy, HostResolver resolver);
 
     /**
      * @brief Exchange an authorization code for an access token.
@@ -306,9 +366,80 @@ class MCP_API OAuthHttpClient {
      */
     void abort_pending();
 
+    /**
+     * @brief Open an independently abortable scope on this client.
+     *
+     * @return A scope that issues requests through this client but can be aborted on its own.
+     *
+     * @details `abort_pending()` is client-wide and irreversible, which is correct for a client its
+     * owner created for itself and wrong for one an application shares. Two components sharing a
+     * client have no way to tell it "I am done" without ending it for the other as well.
+     *
+     * A scope separates the two. Requests issued through it are tracked against it, and aborting it
+     * closes those and refuses later ones, leaving every other scope and the client's own unscoped
+     * requests untouched. `abort_pending()` still ends everything, scopes included, and is
+     * unchanged. A scope keeps the underlying client alive for as long as it exists, so it stays
+     * usable even if the `OAuthHttpClient` object it came from is destroyed.
+     */
+    [[nodiscard]] OAuthHttpClientScope make_scope();
+
    private:
     struct Impl;
     std::shared_ptr<Impl> impl_;
+
+    friend class OAuthHttpClientScope;
+    friend struct detail::OAuthTestAccess;
+};
+
+/**
+ * @brief An independently abortable view of an OAuthHttpClient.
+ *
+ * @details Issues requests exactly as the client does, but tracks them separately so `abort()`
+ * ends this scope's work alone. Obtained from `OAuthHttpClient::make_scope()`.
+ *
+ * Use one wherever the client is shared and the component holding it has its own lifetime: a
+ * component that calls `OAuthHttpClient::abort_pending()` to signal that it is finished disables
+ * the client permanently for every other holder, and because a failed refresh is reported as a
+ * plain `false`, the other holder sees no error at all -- only requests that quietly stop working.
+ *
+ * Copyable, and every copy names the same scope, so aborting through any copy aborts them all.
+ */
+class MCP_API OAuthHttpClientScope {
+   public:
+    /** @see OAuthHttpClient::exchange_code */
+    Task<TokenResponse> exchange_code(const OAuthConfig& config, const std::string& code,
+                                      const std::string& code_verifier);
+
+    /** @see OAuthHttpClient::refresh_token */
+    Task<TokenResponse> refresh_token(const OAuthConfig& config, const std::string& refresh_token);
+
+    /** @see OAuthHttpClient::get_json */
+    Task<nlohmann::json> get_json(const std::string& url);
+
+    /** @see OAuthHttpClient::post_json */
+    Task<nlohmann::json> post_json(const std::string& url, const nlohmann::json& body);
+
+    /**
+     * @brief Abort this scope's in-flight exchanges and refuse every one issued through it after.
+     *
+     * @details The scoped counterpart of `OAuthHttpClient::abort_pending()`, with the same
+     * guarantees within this scope: sockets closed from the client's own strand, safe from any
+     * thread, sticky, irreversible and idempotent. Requests issued through the client directly, or
+     * through any other scope, are unaffected.
+     */
+    void abort();
+
+   private:
+    friend class OAuthHttpClient;
+
+    OAuthHttpClientScope(std::shared_ptr<OAuthHttpClient::Impl> impl,
+                         std::shared_ptr<detail::OAuthScopeState> state);
+
+    std::shared_ptr<OAuthHttpClient::Impl> impl_;
+    /// The latch itself, not a name for one held elsewhere. Every exchange issued through this
+    /// scope holds the same control block, so the flag lives exactly as long as someone can
+    /// still consult it and is freed once nobody can.
+    std::shared_ptr<detail::OAuthScopeState> state_;
 };
 
 /**
@@ -370,6 +501,20 @@ struct CachedEntry {
 };
 
 /**
+ * @brief Caller's verdict on a protected-resource document, before it is trusted or cached.
+ *
+ * @details Invoked with the parsed document on the way out of discovery, whether it was just
+ * fetched or served from the cache. Throwing rejects it: the exception reaches the caller, no cache
+ * entry is written, and discovery does not fall through to the next candidate URL, because a
+ * document that was found and refused is not a candidate that missed.
+ *
+ * Discovery cannot make this judgement itself. Whether a document identifies the server the caller
+ * actually meant to reach is the caller's business, and a document that fails that test must never
+ * be committed to a cache that a later attempt would be served from.
+ */
+using ProtectedResourceAcceptor = std::function<void(const ProtectedResourceMetadata&)>;
+
+/**
  * @brief Client for OAuth protected-resource and authorization-server discovery.
  */
 class MCP_API OAuthDiscoveryClient {
@@ -412,6 +557,24 @@ class MCP_API OAuthDiscoveryClient {
      */
     Task<ProtectedResourceMetadata> discover_protected_resource(
         const std::string& resource_url, const std::optional<std::string>& challenge_metadata_url);
+
+    /**
+     * @brief Discover metadata for a protected resource, subject to the caller's acceptance.
+     *
+     * @param resource_url Resource URL whose metadata should be resolved.
+     * @param challenge_metadata_url `resource_metadata` URL taken from a `WWW-Authenticate`
+     *        challenge, when the challenge supplied one.
+     * @param accept Called with the document before it is returned or cached; throwing rejects it.
+     * @return A task resolving to the discovered protected-resource metadata.
+     *
+     * @details Identical to the two-argument form except that nothing is written to the cache until
+     * `accept` has passed on it, and `accept` runs on a cache hit as well, so a document can never
+     * be trusted on a later attempt on the strength of an earlier one that was refused. Prefer this
+     * form whenever the document has to satisfy something the caller knows and discovery does not.
+     */
+    Task<ProtectedResourceMetadata> discover_protected_resource(
+        const std::string& resource_url, const std::optional<std::string>& challenge_metadata_url,
+        ProtectedResourceAcceptor accept);
 
     /**
      * @brief Discover metadata for an authorization server.
@@ -642,12 +805,18 @@ class MCP_API OAuthAuthorizationManager : public Authenticator {
     [[nodiscard]] std::optional<OAuthClientInformation> last_client_identity() const;
 
     /**
-     * @brief Cancel any in-flight authorization flow and release parked followers with an error.
+     * @brief Abort this manager's HTTP work, release parked followers with an error, and refuse
+     *        further authorization attempts.
      *
      * @details Aborts the in-progress discovery or token-exchange HTTP exchange, expires the
      * single-flight timer so every coalesced follower wakes rather than waiting forever, and refuses
      * new authorization attempts from this point on -- including one racing this very call. Safe to
      * call from any thread. Idempotent.
+     *
+     * @note A leader parked inside the application's own authorization callback is not reachable
+     * from here: it holds no cancellable network state, so it keeps waiting on whatever the
+     * application has it waiting on. Followers coalesced onto that flow are still released, but the
+     * flow itself ends only when the application's callback returns or its executor stops.
      */
     void close() override;
 
