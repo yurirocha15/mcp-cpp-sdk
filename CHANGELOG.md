@@ -48,9 +48,38 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `ServerCapabilities`, keyed by extension name. Adding it changes the layout
   of both structs.
 - `g_PROTOCOL_VERSION_2026_07_28` and `g_DISCOVERABLE_PROTOCOL_VERSIONS`, the
-  version list for a `server/discover` response, which the SDK does not serve
-  yet. `g_SUPPORTED_PROTOCOL_VERSIONS`, which governs `initialize` negotiation,
-  is unchanged.
+  version list for `server/discover`. `g_SUPPORTED_PROTOCOL_VERSIONS`, which
+  governs `initialize` negotiation, is unchanged.
+- `OAuthAuthorizationManager`, an `Authenticator` that runs the MCP
+  authorization flow from a `WWW-Authenticate` challenge: protected-resource
+  and authorization-server discovery, client identity selection
+  (pre-registered credentials, a client ID metadata document, a stored
+  registration or dynamic registration, with `ClientCredentialStore` keyed by
+  issuer), PKCE, issuer binding, the authorization-code exchange, refresh, and
+  scope step-up. The application supplies consent as an
+  `AuthorizationCallback`. An authorization server whose metadata does not
+  list `S256` in `code_challenge_methods_supported` is refused, as the MCP
+  authorization specification requires. Injected credentials that carry a
+  `client_secret` must name their authorization server
+  (`OAuthAuthorizationConfig::client_issuer` or the pre-registered `issuer`);
+  a secret bound to no issuer is never presented. The built-in client has no
+  TLS support, so in this release it can reach only an authorization server
+  on a loopback address.
+- `MetadataFetchPolicy`, which every `OAuthHttpClient` request passes: allowed
+  and denied origins, an `origin_allowance` hook, address classification that
+  refuses private, link-local and reserved targets and loopback unless
+  `allow_plain_http_loopback` is set, and redirect and response-size limits.
+  A `denied_origins` entry that is not a bare origin is rejected with
+  `MetadataPolicyError` (`denied_origin_entry_malformed`), and every target is
+  refused until it is corrected. `OAuthHttpClient::set_metadata_policy()` and
+  `set_host_resolver()` configure a client.
+- `parse_www_authenticate()`, `select_bearer_challenge()` and
+  `BearerChallenge` for reading `WWW-Authenticate` headers.
+- The `server/discover` method, answered over HTTP before and after a session
+  exists, with `Server::set_instructions()`, `set_discover_ttl_ms()` and
+  `set_discover_cache_scope()`.
+- The conformance harness runs the client authorization scenarios, and all 14
+  of them pass.
 
 ### Changed
 
@@ -154,50 +183,20 @@ Versioning; a `0.x` version is a stable release unless its version has an
   writes go straight to the peer's strand. Tool results and typed tool
   registrations are moved rather than copied, and a `tools/list` page is
   serialized from the registered tools without first copying them.
-- OAuth protected-resource metadata that omits the RFC 9728 `resource`
-  member is now rejected instead of falling back to the configured server
-  URL; a `resource` value must identify the configured server (exact match
-  or an origin/segment-boundary prefix).
+- OAuth protected-resource metadata must carry the RFC 9728 `resource`
+  member, and it must identify the configured server (an exact match or an
+  origin/segment-boundary prefix); a document that fails either check is
+  rejected. Previously any document was accepted.
 - `OAuthHttpClient` constructed without a `MetadataFetchPolicy` now refuses
   every request (deny-all default) instead of allowing any target; callers
   must supply an explicit policy.
-- A `MetadataFetchPolicy::denied_origins` entry that is not a bare origin — it
-  carries a path (a lone trailing `/` included), a query or a fragment, or its
-  port is not a plain in-range decimal number — is now rejected instead of
-  silently ignored. `validate_metadata_url` throws `MetadataPolicyError` with
-  the new `MetadataUrlDecision::denied_origin_entry_malformed`, naming the
-  offending entry, and refuses every target until the policy is corrected.
-  Previously such an entry denied nothing, so `denied_origins` of
-  `{"https://evil.example/"}` admitted `https://evil.example`. A configuration
-  that relied on that silence is now a hard failure. `allowed_origins` is
-  unchanged: an entry that is not a bare origin still matches nothing, because
-  dropping an allow entry grants nothing and so fails closed.
-- Injected OAuth client credentials that carry a `client_secret` must now name
-  the authorization server they are bound to, via the new
-  `OAuthAuthorizationConfig::client_issuer` or
-  `ClientIdentityConfig::pre_registered`'s `issuer`. A secret that names no
-  issuer is refused at the point of use: `select_client_identity` returns
-  `ClientIdentityDecision::unavailable` and the authorization attempt fails
-  with a message naming the missing binding, rather than presenting the secret.
-  Previously an empty `issuer` fell through to `use_pre_registered` for every
-  authorization server, so the existing misbinding guard was inert on both
-  paths the SDK itself constructs, and a hostile-but-policy-allowed
-  authorization server named in a protected-resource document received the
-  application's secret at its token endpoint. "Bound to no issuer" is not
-  "bound to every issuer". Construction is unchanged, so a caller breaks only
-  when it actually attempts the affected flow; a public client (a `client_id`
-  with no secret) is unaffected and still authorizes against any issuer.
-- `OAuthAuthorizationManager` refuses an authorization server whose metadata
-  does not list `S256` in `code_challenge_methods_supported`, including one
-  that omits the member, before it builds an authorization request. The MCP
-  authorization specification requires the client to verify PKCE support
-  this way.
-- A `401` is answered by renewing the access token with the stored refresh
-  token first; the authorization flow named by the challenge runs only when
-  there is no refresh token or the renewal fails. Previously a `401` carrying
-  a Bearer challenge always started a new authorization, so the user was asked
-  to consent again whenever an access token expired. A `403` still goes
-  straight to the challenge.
+- `OAuthClientTransport` follows an HTTP `401` into the authorization flow its
+  `WWW-Authenticate` challenge names when renewing the access token is not
+  possible or the renewed token is refused too, renewing at most once per
+  request; a `403` whose challenge carries `error="insufficient_scope"` goes
+  straight to that flow. Previously an authentication failure got one refresh
+  and one retry. `Authenticator` gains `try_handle_challenge()` and `close()`,
+  which changes its layout.
 
 ### Fixed
 
