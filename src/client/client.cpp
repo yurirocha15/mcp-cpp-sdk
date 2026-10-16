@@ -143,6 +143,10 @@ struct Client::Impl {
         });
     }
 
+    static std::string request_correlation_key(int64_t id) {
+        return RequestId{std::to_string(id)}.correlation_key();
+    }
+
     static Task<nlohmann::json> send_request_wire(std::shared_ptr<Impl> state,
                                                   std::shared_ptr<const std::string> wire, int64_t id,
                                                   std::chrono::milliseconds timeout) {
@@ -150,30 +154,34 @@ struct Client::Impl {
             throw McpError(g_CONNECTION_CLOSED, "Client transport is closed");
         }
 
-        const auto id_key = RequestId{std::to_string(id)}.correlation_key();
+        // [gcc11-sso: scope-before-await] The correlation key is a short std::string, so it is
+        // built in this scope and rebuilt from `id` after the suspension rather than kept across it.
         PendingRequest* pending_request = nullptr;
         {
-            std::lock_guard lock(state->pending_requests_mutex);
-            auto [iter, inserted] = state->pending_requests.try_emplace(
-                id_key, std::make_unique<PendingRequest>(state->strand, timeout));
-            if (!inserted) {
-                throw McpError(g_INVALID_REQUEST, "Duplicate pending request id: " + id_key);
+            auto id_key = request_correlation_key(id);
+            {
+                std::lock_guard lock(state->pending_requests_mutex);
+                auto [iter, inserted] = state->pending_requests.try_emplace(
+                    id_key, std::make_unique<PendingRequest>(state->strand, timeout));
+                if (!inserted) {
+                    throw McpError(g_INVALID_REQUEST, "Duplicate pending request id: " + id_key);
+                }
+                pending_request = iter->second.get();
             }
-            pending_request = iter->second.get();
-        }
 
-        boost::asio::co_spawn(
-            state->strand,
-            state->writer.write_message(std::move(wire), pending_request->cancel_write_before_start),
-            [state, id_key](std::exception_ptr write_error) {
-                complete_request_write(state, id_key, std::move(write_error));
-            });
+            boost::asio::co_spawn(state->strand,
+                                  state->writer.write_message(
+                                      std::move(wire), pending_request->cancel_write_before_start),
+                                  [state, id_key = std::move(id_key)](std::exception_ptr write_error) {
+                                      complete_request_write(state, id_key, std::move(write_error));
+                                  });
+        }
 
         try {
             co_await pending_request->timer.async_wait(boost::asio::use_awaitable);
         } catch (const boost::system::system_error& error) {
             if (error.code() != boost::asio::error::operation_aborted) {
-                erase_pending_request(state, id_key);
+                erase_pending_request(state, request_correlation_key(id));
                 throw;
             }
         }
@@ -182,6 +190,7 @@ struct Client::Impl {
         std::optional<Error> error;
         std::exception_ptr write_error;
         {
+            const auto id_key = request_correlation_key(id);
             std::lock_guard lock(state->pending_requests_mutex);
             auto iter = state->pending_requests.find(id_key);
             if (iter == state->pending_requests.end()) {
