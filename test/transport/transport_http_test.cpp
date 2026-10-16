@@ -1430,6 +1430,95 @@ TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsStillRejected) {
         << "body: " << notification_body;
 }
 
+// The sessionless discover exemption replaces the caller's id with a sentinel before the server
+// sees the request, so the server's own id validation never runs on it. An id JSON-RPC does not
+// allow therefore must not take the exemption: it goes through the session gate like any other
+// request.
+TEST_F(HttpTransportTest, SessionlessDiscoverWithAnInvalidIdIsStillRejected) {
+    mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 0);
+    const auto port = std::to_string(server_transport.port());
+
+    asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
+
+    // If the request took the exemption it would wait for a response nobody writes.
+    auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
+    deadline->expires_after(std::chrono::seconds(10));
+    bool timed_out = false;
+    deadline->async_wait([&timed_out, &server_transport](const boost::system::error_code& error) {
+        if (error) {
+            return;
+        }
+        timed_out = true;
+        server_transport.close();
+    });
+
+    bool discover_reached_server = false;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const auto initialize_request = co_await server_transport.read_message();
+            nlohmann::json initialize_response = {
+                {"jsonrpc", "2.0"},
+                {"result",
+                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                  {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
+                  {"capabilities", nlohmann::json::object()}}},
+                {"id", nlohmann::json::parse(initialize_request).at("id")}};
+            co_await server_transport.write_message(initialize_response.dump());
+
+            co_await server_transport.read_message();
+            discover_reached_server = true;
+        },
+        [](std::exception_ptr) {});
+
+    auto discover_status = http::status::unknown;
+    std::string discover_body;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            auto resolver = asio::ip::tcp::resolver(io_ctx_.get_executor());
+            const auto endpoints =
+                co_await resolver.async_resolve("127.0.0.1", port, asio::use_awaitable);
+
+            const auto post = [&](std::string body) -> mcp::Task<http::response<http::string_body>> {
+                beast::tcp_stream stream(io_ctx_.get_executor());
+                co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+                http::request<http::string_body> request{http::verb::post, "/mcp", 11};
+                request.set(http::field::host, "127.0.0.1");
+                request.set(http::field::content_type, "application/json");
+                request.body() = std::move(body);
+                request.prepare_payload();
+                co_await http::async_write(stream, request, asio::use_awaitable);
+                beast::flat_buffer buffer;
+                http::response<http::string_body> response;
+                co_await http::async_read(stream, buffer, response, asio::use_awaitable);
+                beast::error_code ignored;
+                stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+                co_return response;
+            };
+
+            (void)co_await post(
+                R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
+                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})");
+
+            const auto response =
+                co_await post(R"({"jsonrpc":"2.0","method":"server/discover","id":{"x":1}})");
+            discover_status = response.result();
+            discover_body = response.body();
+            deadline->cancel();
+            server_transport.close();
+        },
+        [](std::exception_ptr) {});
+
+    io_ctx_.run();
+
+    EXPECT_FALSE(timed_out);
+    EXPECT_FALSE(discover_reached_server);
+    EXPECT_EQ(discover_status, http::status::bad_request) << "body: " << discover_body;
+    EXPECT_NE(discover_body.find("Session active"), std::string::npos) << "body: " << discover_body;
+}
+
 // Sessionless server/discover is unauthenticated by construction, so its responses must never
 // be appended to the replay EventStore. That store is a bounded ring shared with the
 // established session: a flood of sessionless requests would evict the session's replay

@@ -439,9 +439,14 @@ struct HttpServerTransport::Impl {
         // it a sessionless JSON-RPC *notification* named server/discover would skip the gate and
         // push its whole body onto the unbounded incoming queue below, answering 202 without
         // ever waiting for the server. server/discover is a request method, so demanding an id
-        // costs nothing and keeps that unbounded enqueue behind the session gate.
-        const bool is_sessionless_discover = is_discover_request(request_json) &&
-                                             request_json.contains("id") &&
+        // costs nothing and keeps that unbounded enqueue behind the session gate. The id must also
+        // be one JSON-RPC allows (a string or an integer): this path replaces it with a sentinel
+        // before the server sees it, so the server's own id check would never run, and anything
+        // else is left to the path every other request takes.
+        const bool has_valid_id =
+            request_json.contains("id") &&
+            (request_json.at("id").is_string() || request_json.at("id").is_number_integer());
+        const bool is_sessionless_discover = is_discover_request(request_json) && has_valid_id &&
                                              request.find("MCP-Session-Id") == request.end();
         if (!is_sessionless_discover) {
             const auto session_check = co_await validate_post_session(request);
