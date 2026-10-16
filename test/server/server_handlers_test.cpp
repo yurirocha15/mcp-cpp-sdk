@@ -856,6 +856,33 @@ TEST_F(ServerHandlersTest, AdjacentTemplateExpressionsAreRejectedAtRegistration)
     separated.uriTemplate = "file:///{dir}/{name}";
     separated.name = "separated";
     EXPECT_NO_THROW(setup.server.add_resource_template(separated));
+
+    // Ambiguous: the second expression has no leading literal, or its literal can occur inside
+    // the first expression's value.
+    for (const char* uri_template : {"file:///{dir}{+name}", "file:///{name}{.ext}",
+                                     "file:///{+path}{/segment}", "file:///{?q}{&r}"}) {
+        SCOPED_TRACE(uri_template);
+        mcp::ResourceTemplate ambiguous;
+        ambiguous.uriTemplate = uri_template;
+        ambiguous.name = uri_template;
+        EXPECT_THROW(setup.server.add_resource_template(ambiguous), std::invalid_argument);
+    }
+}
+
+TEST_F(ServerHandlersTest, AdjacentExpressionsWithADecidableBoundaryAreAccepted) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    // The second expression starts with a character the first can never contain.
+    for (const char* uri_template : {"file:///{+path}{?format}", "users://{id}{#section}",
+                                     "users://{id}{/detail}", "file:///{+path}{#fragment}"}) {
+        SCOPED_TRACE(uri_template);
+        mcp::ResourceTemplate decidable;
+        decidable.uriTemplate = uri_template;
+        decidable.name = uri_template;
+        EXPECT_NO_THROW(setup.server.add_resource_template(decidable));
+    }
 }
 
 TEST_F(ServerHandlersTest, DuplicateNamedRegistrationsAreRejected) {
