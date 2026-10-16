@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose an SDK capability or usability improvement
+title: "[Feature]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or interoperability problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the public API and observable behavior you would expect.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Client
+        - Server
+        - Protocol types
+        - Transport
+        - Authentication or security
+        - Packaging or build
+        - Documentation or examples
+    validations:
+      required: true
+  - type: input
+    id: specification
+    attributes:
+      label: Specification or SEP
+      description: Link the relevant MCP specification or SEP when applicable.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: What workarounds or alternative designs have you considered?

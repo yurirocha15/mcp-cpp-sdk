@@ -1296,6 +1296,24 @@ TEST(ProtocolTest, ErrorSerialization) {
     EXPECT_FALSE(deserialized2.data.has_value());
 }
 
+TEST(ProtocolTest, SpecReservedErrorCodesAreDistinctFromLegacyBand) {
+    EXPECT_EQ(mcp::g_HEADER_MISMATCH, -32020);
+    EXPECT_EQ(mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY, -32021);
+    EXPECT_EQ(mcp::g_UNSUPPORTED_PROTOCOL_VERSION, -32022);
+
+    EXPECT_NE(mcp::g_HEADER_MISMATCH, mcp::g_CONNECTION_CLOSED);
+
+    mcp::Error error;
+    error.code = mcp::g_UNSUPPORTED_PROTOCOL_VERSION;
+    error.message = "Unsupported protocol version";
+
+    nlohmann::json j = error;
+    EXPECT_EQ(j["code"], -32022);
+
+    auto deserialized = j.get<mcp::Error>();
+    EXPECT_EQ(deserialized.code, mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+}
+
 TEST(ProtocolTest, JSONRPCRequestSerialization) {
     mcp::JSONRPCRequest req;
     req.id = std::string("req-1");
@@ -2275,4 +2293,21 @@ TEST(ProtocolTest, RejectsMismatchedContentDiscriminator) {
 
     nlohmann::json unknown_content = {{"type", "unknown"}};
     EXPECT_THROW((void)unknown_content.get<mcp::ContentBlock>(), std::invalid_argument);
+}
+
+TEST(ProtocolTest, DiscoverableVersionsDoNotLeakIntoLegacyNegotiation) {
+    // 2026-07-28 is discoverable but not negotiable: a legacy initialize requesting it must
+    // fall back to the latest fully-served version, not be echoed back.
+    EXPECT_FALSE(mcp::is_supported_protocol_version(mcp::g_PROTOCOL_VERSION_2026_07_28));
+    EXPECT_EQ(mcp::negotiate_protocol_version(mcp::g_PROTOCOL_VERSION_2026_07_28),
+              mcp::g_LATEST_PROTOCOL_VERSION);
+
+    ASSERT_EQ(mcp::g_SUPPORTED_PROTOCOL_VERSIONS.size(), 4u);
+    ASSERT_EQ(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.size(), 5u);
+    for (const auto version : mcp::g_SUPPORTED_PROTOCOL_VERSIONS) {
+        EXPECT_NE(std::find(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.begin(),
+                            mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.end(), version),
+                  mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.end());
+    }
+    EXPECT_EQ(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.back(), mcp::g_PROTOCOL_VERSION_2026_07_28);
 }
