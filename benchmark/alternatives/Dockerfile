@@ -2,6 +2,7 @@ FROM ubuntu@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG SDK_NAME
+ARG HTTPLIB_TCP_NODELAY=OFF
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ca-certificates \
@@ -23,6 +24,8 @@ RUN cmake -S /src/alternatives -B /build \
       -DBENCHMARK_SDK="${SDK_NAME}" \
       -DBENCHMARK_SDK_SOURCE="/src/alternative-sdks/${SDK_NAME}" \
       -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+      -DBENCHMARK_HTTPLIB_TCP_NODELAY="${HTTPLIB_TCP_NODELAY}" \
     && cmake --build /build --target alternative-benchmark-server -j"$(nproc)"
 
 ENV PORT=8080

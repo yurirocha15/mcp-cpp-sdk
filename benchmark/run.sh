@@ -72,6 +72,10 @@ acquire_benchmark_lock() {
 }
 
 declare -A SERVICE_NAME=(
+    [neumann-nodelay]="neumann-nodelay-server"
+    [cxxmcp-nodelay]="cxxmcp-nodelay-server"
+    [fastmcpp-nodelay]="fastmcpp-nodelay-server"
+    [hkr04-nodelay]="hkr04-nodelay-server"
     [cpp]="cpp-server"
     [ours-comparable]="ours-comparable-server"
     [python]="python-server"
@@ -84,6 +88,10 @@ declare -A SERVICE_NAME=(
 )
 
 declare -A CONTAINER_NAME=(
+    [neumann-nodelay]="mcp-neumann-nodelay-server"
+    [cxxmcp-nodelay]="mcp-cxxmcp-nodelay-server"
+    [fastmcpp-nodelay]="mcp-fastmcpp-nodelay-server"
+    [hkr04-nodelay]="mcp-hkr04-nodelay-server"
     [cpp]="mcp-cpp-server"
     [ours-comparable]="mcp-ours-comparable-server"
     [python]="mcp-python-server"
@@ -96,6 +104,10 @@ declare -A CONTAINER_NAME=(
 )
 
 declare -A MCP_URL=(
+    [neumann-nodelay]="http://localhost:8097/mcp"
+    [cxxmcp-nodelay]="http://localhost:8096/mcp"
+    [fastmcpp-nodelay]="http://localhost:8095/mcp"
+    [hkr04-nodelay]="http://localhost:8094/mcp"
     [cpp]="http://localhost:8080/mcp"
     [ours-comparable]="http://localhost:8089/mcp"
     [python]="http://localhost:8081/mcp"
@@ -108,6 +120,10 @@ declare -A MCP_URL=(
 )
 
 declare -A HEALTH_URL=(
+    [neumann-nodelay]="http://localhost:8097/mcp"
+    [cxxmcp-nodelay]="http://localhost:8096/mcp"
+    [fastmcpp-nodelay]="http://localhost:8095/mcp"
+    [hkr04-nodelay]="http://localhost:8094/mcp"
     [cpp]="http://localhost:8080/health"
     [ours-comparable]="http://localhost:8089/mcp"
     [python]="http://localhost:8081/health"
@@ -120,6 +136,10 @@ declare -A HEALTH_URL=(
 )
 
 declare -A HEALTH_KIND=(
+    [neumann-nodelay]="mcp"
+    [cxxmcp-nodelay]="mcp"
+    [fastmcpp-nodelay]="mcp"
+    [hkr04-nodelay]="mcp"
     [cpp]="get"
     [ours-comparable]="mcp"
     [python]="get"
@@ -132,6 +152,10 @@ declare -A HEALTH_KIND=(
 )
 
 declare -A EXPECTED_SERVER_TYPE=(
+    [neumann-nodelay]="cpp-sdk"
+    [cxxmcp-nodelay]="cpp-sdk"
+    [fastmcpp-nodelay]="cpp-sdk"
+    [hkr04-nodelay]="cpp-sdk"
     [cpp]="cpp"
     [ours-comparable]="cpp-sdk"
     [hkr04]="cpp-sdk"
@@ -146,11 +170,16 @@ declare -A EXPECTED_SERVER_TYPE=(
 ALL_MCP_SERVICES=(
     cpp-server ours-comparable-server python-server go-server rust-server
     hkr04-server fastmcpp-server cxxmcp-server neumann-server
+    hkr04-nodelay-server fastmcpp-nodelay-server cxxmcp-nodelay-server neumann-nodelay-server
 )
 CPP_SDK_SERVERS=(ours-comparable hkr04 fastmcpp cxxmcp neumann)
 BASELINE_SERVERS=(python go rust)
 
 declare -A REQUIRE_SUPPLEMENTAL=(
+    [neumann-nodelay]=1
+    [cxxmcp-nodelay]=1
+    [fastmcpp-nodelay]=1
+    [hkr04-nodelay]=1
     [ours-comparable]=1
     [hkr04]=1
     [fastmcpp]=1
@@ -850,6 +879,7 @@ declare -A seen_servers=()
 for server in "${selected_servers[@]}"; do
     case "$server" in
         cpp|ours-comparable|python|go|rust|hkr04|fastmcpp|cxxmcp|neumann) ;;
+        hkr04-nodelay|fastmcpp-nodelay|cxxmcp-nodelay|neumann-nodelay) ;;
         gopher-mcp)
             error "gopher-mcp exposes legacy HTTP+SSE rather than the shared /mcp Streamable HTTP contract"
             exit 2
@@ -965,12 +995,13 @@ chmod 0444 "$RUNTIME_COMPOSE_FILE" "$K6_RUNTIME_SCRIPT_DIR/benchmark.js" \
 
 ensure_upstream_sources
 for server in "${selected_servers[@]}"; do
-    if [[ -n "${ALTERNATIVE_REPO[$server]:-}" ]]; then
-        [[ "${ALTERNATIVE_STATUS[$server]}" == "supported" ]] || {
-            error "$server is not runnable: ${ALTERNATIVE_STATUS[$server]}"
+    source_id="${server%-nodelay}"
+    if [[ -n "${ALTERNATIVE_REPO[$source_id]:-}" ]]; then
+        [[ "${ALTERNATIVE_STATUS[$source_id]}" == "supported" ]] || {
+            error "$server is not runnable: ${ALTERNATIVE_STATUS[$source_id]}"
             exit 2
         }
-        ensure_alternative_source "$server"
+        ensure_alternative_source "$source_id"
     fi
 done
 

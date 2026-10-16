@@ -308,6 +308,118 @@ services:
     networks:
       - mcp-network
 
+  hkr04-nodelay-server:
+    build:
+      context: .
+      dockerfile: alternatives/Dockerfile
+      args:
+        SDK_NAME: hkr04
+        HTTPLIB_TCP_NODELAY: "ON"
+    container_name: mcp-hkr04-nodelay-server
+    cpuset: "${BENCHMARK_CPUSET:-}"
+    ports:
+      - "8094:8080"
+    environment:
+      - PORT=8080
+      - REDIS_URL=redis://redis:6379
+      - API_SERVICE_URL=http://api-service:8100
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    networks:
+      - mcp-network
+
+  fastmcpp-nodelay-server:
+    build:
+      context: .
+      dockerfile: alternatives/Dockerfile
+      args:
+        SDK_NAME: fastmcpp
+        HTTPLIB_TCP_NODELAY: "ON"
+    container_name: mcp-fastmcpp-nodelay-server
+    cpuset: "${BENCHMARK_CPUSET:-}"
+    ports:
+      - "8095:8080"
+    environment:
+      - PORT=8080
+      - REDIS_URL=redis://redis:6379
+      - API_SERVICE_URL=http://api-service:8100
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    networks:
+      - mcp-network
+
+  cxxmcp-nodelay-server:
+    build:
+      context: .
+      dockerfile: alternatives/Dockerfile
+      args:
+        SDK_NAME: cxxmcp
+        HTTPLIB_TCP_NODELAY: "ON"
+    container_name: mcp-cxxmcp-nodelay-server
+    cpuset: "${BENCHMARK_CPUSET:-}"
+    ports:
+      - "8096:8080"
+    environment:
+      - PORT=8080
+      - REDIS_URL=redis://redis:6379
+      - API_SERVICE_URL=http://api-service:8100
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    networks:
+      - mcp-network
+
+  neumann-nodelay-server:
+    build:
+      context: .
+      dockerfile: alternatives/Dockerfile
+      args:
+        SDK_NAME: neumann
+        HTTPLIB_TCP_NODELAY: "ON"
+    container_name: mcp-neumann-nodelay-server
+    cpuset: "${BENCHMARK_CPUSET:-}"
+    ports:
+      - "8097:8080"
+    environment:
+      - PORT=8080
+      - REDIS_URL=redis://redis:6379
+      - API_SERVICE_URL=http://api-service:8100
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    networks:
+      - mcp-network
+
 networks:
   mcp-network:
     driver: bridge

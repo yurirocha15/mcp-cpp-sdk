@@ -120,6 +120,17 @@ direct Redis side-effect gate; Python and Rust simply record the corresponding
 differences are why language baselines must not appear in the publishable C++
 SDK ranking.
 
+## TCP_NODELAY builds
+
+hkr04, FastMCPP, cxxmcp, and Neumann serve HTTP through cpp-httplib, which
+leaves `TCP_NODELAY` off unless `CPPHTTPLIB_TCP_NODELAY` is defined as true.
+None of the four turns it on. The `hkr04-nodelay`, `fastmcpp-nodelay`,
+`cxxmcp-nodelay`, and `neumann-nodelay` targets build the same adapters with
+`CPPHTTPLIB_TCP_NODELAY=true`, listen on ports 8094 to 8097, and must pass the
+same supplemental adapter checks as the default builds. They measure how much
+of each SDK's result depends on that one socket option. They are not part of
+`cpp-sdks` and are never ranked against the default builds.
+
 ## Workload
 
 Every comparable adapter registers the same three tools and uses the shared
