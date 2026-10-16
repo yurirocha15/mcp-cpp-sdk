@@ -63,9 +63,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - Documentation for the server-side OAuth challenge work: the OAuth guide now
   names the protected-resource metadata helpers and the exported bearer and
   request-path helpers, and renders its example challenge through the
-  server-side API rather than hand-writing the header. The client's default
-  30-second request timeout is documented for the first time, including that
-  the typed helpers such as `call_tool()` and `read_resource()` accept no
+  server-side API rather than hand-writing the header. The client guide now
+  covers the default 30-second request timeout, including that the typed
+  helpers such as `call_tool()` and `read_resource()` accept no
   per-request override, that a request outliving it fails with
   `g_REQUEST_TIMEOUT` while the peer may still be running it, and that no
   value disables the deadline.
