@@ -6,6 +6,7 @@
 #include "../support/stalling_server.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/cancellation_signal.hpp>
@@ -660,6 +661,44 @@ TEST_F(WebSocketTransportTest, StalledHandshakeFailsAfterTheConnectTimeout) {
     ASSERT_TRUE(finished) << "the stalled handshake was never cut off";
     EXPECT_TRUE(result.get()) << "the pending call must fail with a timeout";
     EXPECT_EQ(stalling.accepted(), 1);
+}
+
+// milliseconds::max() is the usual way to spell "no limit", and it does not fit the timer's
+// nanosecond duration. It must mean no limit rather than overflow into a deadline already passed.
+TEST_F(WebSocketTransportTest, ConnectTimeoutTooLongForTheClockMeansNoLimit) {
+    StallingServer stalling(io_ctx_);
+    stalling.accept_and_stall();
+
+    mcp::WebSocketClientTransport transport(io_ctx_.get_executor(), "127.0.0.1",
+                                            std::to_string(stalling.port()), "/",
+                                            std::chrono::milliseconds::max());
+
+    std::atomic<bool> timed_out{false};
+    auto result = asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
+            } catch (const boost::system::system_error& error) {
+                timed_out = error.code() == boost::beast::error::timeout;
+                throw;
+            }
+        },
+        asio::use_future);
+
+    std::thread runner([this]() { io_ctx_.run(); });
+    // Still waiting on the stalled handshake after a while: no deadline fired.
+    const bool still_pending =
+        result.wait_for(std::chrono::milliseconds(300)) == std::future_status::timeout;
+    transport.close();
+    const bool finished = result.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    io_ctx_.stop();
+    runner.join();
+
+    EXPECT_TRUE(still_pending) << "the handshake was cut off although no limit was set";
+    ASSERT_TRUE(finished) << "close() did not end the pending connect";
+    EXPECT_ANY_THROW(result.get());
+    EXPECT_FALSE(timed_out.load());
 }
 
 #ifdef __linux__

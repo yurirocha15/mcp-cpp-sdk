@@ -103,7 +103,9 @@ class MCP_API WebSocketClientTransport final : public ITransport {
      * @param connect_timeout Limit on the whole connection setup, from the TCP connect to the
      *                 end of the WebSocket handshake. A peer that accepts the connection and
      *                 then stalls fails the pending call after this long instead of hanging it.
-     *                 Zero disables the limit. Established connections are not subject to it.
+     *                 Zero, a negative value, or one too long for the clock to represent
+     *                 (such as `std::chrono::milliseconds::max()`) disables the limit.
+     *                 Established connections are not subject to it.
      */
     WebSocketClientTransport(const boost::asio::any_io_executor& executor, std::string host,
                              std::string port, std::string path = "/",

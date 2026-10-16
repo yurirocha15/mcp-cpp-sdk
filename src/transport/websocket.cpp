@@ -38,6 +38,16 @@ using WsStream = beast::websocket::stream<beast::tcp_stream>;
 
 namespace {
 
+// The timer counts in its own, finer duration, so a limit beyond half its range -- about 146 years
+// -- would overflow on conversion or when added to the current time. Such a value, including
+// milliseconds::max(), can only mean "no limit", so it becomes zero, which is how no limit is
+// spelled here.
+std::chrono::milliseconds effective_connect_timeout(std::chrono::milliseconds requested) {
+    constexpr auto longest =
+        std::chrono::duration_cast<std::chrono::milliseconds>(asio::steady_timer::duration::max() / 2);
+    return requested > longest ? std::chrono::milliseconds::zero() : requested;
+}
+
 constexpr auto kNever = std::chrono::steady_clock::time_point::max();
 
 struct OperationWaiter {
@@ -402,7 +412,7 @@ struct WebSocketClientTransport::Impl {
 
     Impl(const asio::any_io_executor& executor, std::string host_arg, std::string port_arg,
          std::string path_arg, std::chrono::milliseconds connect_timeout_arg)
-        : connect_timeout(connect_timeout_arg),
+        : connect_timeout(effective_connect_timeout(connect_timeout_arg)),
           strand(asio::make_strand(executor)),
           resolver(strand),
           ws(strand),
