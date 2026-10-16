@@ -2020,7 +2020,7 @@ TEST_F(SessionManagerTest, ExemptingTheMcpPathRefusesToServeMcpUnauthenticated) 
     EXPECT_EQ(manager.session_count(), 0U) << "an exempt path created an unauthenticated session";
 }
 
-TEST_F(SessionManagerTest, AsyncBearerValidatorDecidesWithoutBlocking) {
+TEST_F(SessionManagerTest, AsyncBearerValidatorCanSuspendBeforeDeciding) {
     const unsigned short port = 19139;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());

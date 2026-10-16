@@ -2633,7 +2633,7 @@ TEST_F(HttpTransportTest, AnExemptPathTheMetadataRouteClaimsIsStillServed) {
     EXPECT_EQ(nlohmann::json::parse(document.body).at("resource"), "https://mcp.example.com/mcp");
 }
 
-TEST_F(HttpTransportTest, AsyncBearerValidatorDecidesWithoutBlocking) {
+TEST_F(HttpTransportTest, AsyncBearerValidatorCanSuspendBeforeDeciding) {
     auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
     std::atomic<int> validator_calls{0};
     server->set_async_bearer_token_validator([&validator_calls](std::string token) -> mcp::Task<bool> {
