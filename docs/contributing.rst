@@ -168,8 +168,8 @@ Aim for >80% code coverage for new features:
 Sanitizers
 ^^^^^^^^^^
 
-CI runs the test suite under each sanitizer on every push. The same builds run
-locally:
+CI runs the test suite under each sanitizer on pushes to ``main`` and on pull
+requests into it. The same builds run locally:
 
 .. code-block:: bash
 
