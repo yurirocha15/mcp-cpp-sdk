@@ -602,8 +602,9 @@ void emit_stray_application_output() {
     std::cout << kStrayCout << std::endl;
 }
 
+// Named per process so concurrent test runs on one machine do not share files.
 std::filesystem::path scratch_file(const char* name) {
-    return std::filesystem::temp_directory_path() / name;
+    return std::filesystem::temp_directory_path() / (std::to_string(::getpid()) + "_" + name);
 }
 
 }  // namespace
