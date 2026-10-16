@@ -1518,6 +1518,16 @@ struct OAuthAuthorizationManager::Impl {
             throw std::runtime_error(
                 "Authorization server metadata omitted an authorization or token endpoint");
         }
+        // MCP authorization: PKCE support is known only from the metadata, and a server that does
+        // not list S256 in code_challenge_methods_supported must not receive an authorization
+        // request.
+        const auto& pkce_methods = operation->auth_metadata->code_challenge_methods_supported;
+        if (!pkce_methods ||
+            std::find(pkce_methods->begin(), pkce_methods->end(), "S256") == pkce_methods->end()) {
+            throw std::runtime_error(
+                "Authorization server metadata does not list S256 in "
+                "code_challenge_methods_supported");
+        }
 
         operation->facts = server_facts(*operation->auth_metadata);
         operation->stored_identity = load_stored_identity(owner, operation->facts);

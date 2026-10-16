@@ -95,6 +95,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   "bound to every issuer". Construction is unchanged, so a caller breaks only
   when it actually attempts the affected flow; a public client (a `client_id`
   with no secret) is unaffected and still authorizes against any issuer.
+- `OAuthAuthorizationManager` refuses an authorization server whose metadata
+  does not list `S256` in `code_challenge_methods_supported`, including one
+  that omits the member, before it builds an authorization request. The MCP
+  authorization specification requires the client to verify PKCE support
+  this way.
 
 ## [0.2.0] - TBD
 
