@@ -207,6 +207,10 @@ struct OAuthConfig {
  *
  * @details When the fetch policy refuses a target the resolver is never invoked. When none is
  * installed the executor's system resolver is used.
+ *
+ * The resolver is called synchronously on the client's strand, so it must return promptly: while
+ * it runs, every other request on the client, in every scope, waits behind it, and so does the
+ * socket close that abort_pending() and a scope's abort() rely on.
  */
 using HostResolver =
     std::function<std::vector<std::string>(const std::string& host, const std::string& port)>;
@@ -234,7 +238,9 @@ class MCP_API OAuthHttpClient {
      *
      * @note Without an explicit fetch policy the client holds a default-constructed
      * `MetadataFetchPolicy` (empty origin allow list, https-only, non-loopback), so every request is
-     * refused until a policy is installed via set_metadata_policy().
+     * refused until a policy is installed via set_metadata_policy(). A client that follows
+     * `WWW-Authenticate` challenges must be given a policy naming the origins it is meant to reach,
+     * because the URLs it then visits are influenced by the server it talks to.
      */
     explicit OAuthHttpClient(const net::any_io_executor& executor);
 
@@ -355,7 +361,9 @@ class MCP_API OAuthHttpClient {
  *
  * @details Issues requests exactly as the client does, but tracks them separately so `abort()` ends
  * this scope's work alone. Obtained from `OAuthHttpClient::make_scope()`. Use one wherever the client
- * is shared: `OAuthHttpClient::abort_pending()` disables the client permanently for every holder.
+ * is shared: `OAuthHttpClient::abort_pending()` disables the client permanently for every holder,
+ * and since a failed refresh is reported as a plain `false`, the other holders see no error, only
+ * requests that stop working.
  *
  * Copyable, and every copy names the same scope, so aborting through any copy aborts them all.
  */

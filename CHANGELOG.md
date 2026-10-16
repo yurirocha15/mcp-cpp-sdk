@@ -467,7 +467,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   run on another thread at the same time: a data race on the socket that could
   crash, or a close lost in the instant before the socket opened. Callers are
   still resumed on their own executor and never on the client's strand,
-  including a caller that has been cancelled.
+  including a caller that has been cancelled. An installed `HostResolver` is
+  called on that strand too, so one that blocks holds up every other request
+  on the client and the closes that end them; it must return promptly.
 - Closing `HttpClientTransport` or `WebSocketClientTransport` from a thread
   that does not run the `io_context` could be lost while the transport was
   resolving its server's address: the close found no socket to act on, and the
