@@ -1220,6 +1220,83 @@ TEST(AuthChallengeReplayTest, AuthorizesAgainWhenTheRenewedTokenIsAlsoRefused) {
     EXPECT_EQ(server.authorizations().back(), "Bearer second-grant-token");
 }
 
+// Only a 403 whose challenge asks for more scope is a step-up. Any other 403 is an authorization
+// decision that a new grant cannot change, so it reaches the caller without a new consent prompt.
+TEST(AuthChallengeReplayTest, AForbiddenChallengeWithoutInsufficientScopeIsNotAStepUp) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&base](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/mcp") {
+            http::response<http::string_body> refusal{http::status::forbidden, 11};
+            refusal.set(http::field::www_authenticate,
+                        R"(Bearer error="invalid_token", resource_metadata=")" + base + R"(/prm")");
+            return refusal;
+        }
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(16), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    int callbacks = 0;
+    auto callback = [&callbacks](const mcp::auth::AuthorizationRequest& request)
+        -> mcp::Task<mcp::auth::AuthorizationResponse> {
+        ++callbacks;
+        mcp::auth::AuthorizationResponse response;
+        response.code = "test-authorization-code";
+        response.state = request.state;
+        response.iss = request.issuer;
+        co_return response;
+    };
+    const std::string wire = R"({"jsonrpc":"2.0","method":"notifications/initialized"})";
+    std::optional<unsigned int> refused_status;
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+                io_ctx.get_executor(), store, config, callback);
+            auto inner =
+                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+            mcp::auth::OAuthClientTransport transport(inner, manager);
+            try {
+                (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                             R"(/prm")");
+                co_await transport.write_message(wire);
+            } catch (const mcp::HttpStatusError& error) {
+                refused_status = error.status();
+            } catch (const std::exception&) {
+            }
+            transport.close();
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    ASSERT_TRUE(refused_status.has_value());
+    EXPECT_EQ(*refused_status, 403U);
+    EXPECT_EQ(callbacks, 1);
+}
+
 namespace {
 
 /// Consent callback that records the scope of every authorization request it is asked to run.

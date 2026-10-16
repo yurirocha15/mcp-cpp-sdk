@@ -1977,6 +1977,16 @@ struct OAuthClientTransport::Impl {
         }
     }
 
+    /// Whether a 403's challenge asks for more scope. Any other 403 is an authorization decision a
+    /// new grant cannot change, so it is reported to the caller rather than asking the user again.
+    static bool is_insufficient_scope(const std::string& www_authenticate) {
+        if (www_authenticate.empty()) {
+            return false;
+        }
+        const auto challenge = select_bearer_challenge(parse_www_authenticate(www_authenticate));
+        return challenge && challenge->error == "insufficient_scope";
+    }
+
     static Task<void> run_write(std::shared_ptr<WriteOperation> operation) {
         while (true) {
             operation->write_error = nullptr;
@@ -1987,14 +1997,15 @@ struct OAuthClientTransport::Impl {
             try {
                 co_await operation->owner->inner->write_message(*operation->outgoing);
             } catch (const mcp::HttpStatusError& error) {
-                // 401 says the request was not authenticated at all. 403 that carries a challenge
-                // is the step-up case: the token is valid but its scope does not cover this
-                // operation, so the challenge drives a fresh authorization rather than a refresh.
+                // 401 says the request was not authenticated at all. A 403 whose challenge carries
+                // error="insufficient_scope" is the step-up case: the token is valid but its scope
+                // does not cover this operation, so the challenge drives a fresh authorization
+                // rather than a refresh.
                 const auto unauthorized =
                     error.status() == static_cast<unsigned int>(http::status::unauthorized);
                 const auto stepped_up =
                     error.status() == static_cast<unsigned int>(http::status::forbidden) &&
-                    !error.authenticate_challenge().empty();
+                    is_insufficient_scope(error.authenticate_challenge());
                 operation->authentication_challenge =
                     operation->owner->uses_http_authorization_header && (unauthorized || stepped_up);
                 if (operation->authentication_challenge) {
