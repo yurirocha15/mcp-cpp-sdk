@@ -1,4 +1,5 @@
 #include "../detail/diagnostic_text.hpp"
+#include "../detail/peer_json.hpp"
 
 #include <mcp/detail/serialized_transport_writer.hpp>
 #include <mcp/server/server.hpp>
@@ -731,7 +732,8 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
                     json_msg = co_await session->memory_transport->read_json();
                 } else {
                     auto raw = co_await session->transport->read_message();
-                    json_msg = nlohmann::json::parse(raw);
+                    json_msg = detail::parse_peer_json(raw);
+                    parse_failed = json_msg.is_discarded();
                 }
             } catch (const nlohmann::json::parse_error&) {
                 parse_failed = true;

@@ -1,3 +1,5 @@
+#include "../detail/peer_json.hpp"
+
 #include <mcp/core/constants.hpp>
 #include <mcp/transport/http_client.hpp>
 #include <mcp/transport/http_types.hpp>
@@ -231,7 +233,7 @@ struct HttpClientTransport::Impl {
         }
 
         try {
-            const auto response = nlohmann::json::parse(message);
+            const auto response = detail::parse_peer_json(message);
             if (!response.is_object() || !response.contains("id") ||
                 (!response.at("id").is_string() && !response.at("id").is_number_integer()) ||
                 response.at("id").get<RequestId>().correlation_key() !=

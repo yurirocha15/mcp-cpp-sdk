@@ -1,3 +1,5 @@
+#include "../detail/peer_json.hpp"
+
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_session_manager.hpp>
@@ -748,7 +750,7 @@ struct StreamableHttpSessionManager::Impl {
                 request, http::status::service_unavailable, "Transport closed");
         }
 
-        auto request_json = nlohmann::json::parse(request.body(), nullptr, false);
+        auto request_json = detail::parse_peer_json(request.body());
         if (request_json.is_discarded() || !request_json.is_object()) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid JSON-RPC payload");

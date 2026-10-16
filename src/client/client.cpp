@@ -1,4 +1,5 @@
 #include "../detail/diagnostic_text.hpp"
+#include "../detail/peer_json.hpp"
 
 #include <mcp/client/client.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
@@ -275,6 +276,11 @@ struct Client::Impl {
     /// and dropped so that a single bad message cannot end the session.
     static void dispatch_message(const std::shared_ptr<Impl>& state, const std::string& raw) {
         try {
+            if (detail::exceeds_json_depth(raw)) {
+                throw McpError(g_PARSE_ERROR, "JSON-RPC message nests deeper than " +
+                                                  std::to_string(detail::g_MAX_PEER_JSON_DEPTH) +
+                                                  " levels");
+            }
             auto json_message = nlohmann::json::parse(raw);
 
             if (!json_message.is_object()) {

@@ -399,6 +399,31 @@ TEST_F(ClientNotificationsTest, MalformedProgressNotificationIsReportedNotFatal)
         << "actual: " << outcome.reported.front().message;
 }
 
+// Copying a parsed document recurses once per level, so a message made of nothing but brackets
+// could exhaust the stack. One nested past the limit is dropped and reported like any other
+// undecodable message; one at the limit is delivered.
+TEST_F(ClientNotificationsTest, MessageNestedBeyondTheDepthLimitIsDroppedNotFatal) {
+    const auto log_nested_to = [](std::size_t depth) {
+        // The envelope and params are two of the levels.
+        nlohmann::json data = nlohmann::json::array();
+        for (std::size_t level = 3; level < depth; ++level) {
+            data = nlohmann::json::array({std::move(data)});
+        }
+        return nlohmann::json{{"jsonrpc", "2.0"},
+                              {"method", "notifications/message"},
+                              {"params", {{"level", "info"}, {"data", std::move(data)}}}};
+    };
+
+    const auto outcome =
+        deliver_notifications(io_ctx_, {log_nested_to(128), log_nested_to(129)}, [](mcp::Client&) {});
+
+    EXPECT_TRUE(outcome.survived) << "the session died on a deeply nested message: " << outcome.failure;
+    ASSERT_EQ(outcome.reported.size(), 1U) << "expected only the message over the limit to be dropped";
+    EXPECT_EQ(outcome.reported.front().code, mcp::g_PARSE_ERROR);
+    EXPECT_NE(outcome.reported.front().message.find("nests deeper than 128 levels"), std::string::npos)
+        << "actual: " << outcome.reported.front().message;
+}
+
 // The notification callback is application code and it runs on the read loop. A bug in it is the
 // application's to fix, not grounds for the SDK to tear down the connection -- but it must not
 // vanish either, or the application cannot find the bug.

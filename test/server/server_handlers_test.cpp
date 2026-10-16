@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -1855,4 +1856,48 @@ TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullClientInfoOptionals) {
     ASSERT_FALSE(init_response.contains("error")) << "actual error: " << init_response["error"].dump();
     ASSERT_TRUE(init_response.contains("result"));
     EXPECT_EQ(init_response["result"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+}
+
+TEST_F(ServerHandlersTest, MessageNestedBeyondTheDepthLimitIsAParseError) {
+    ServerSetup setup(io_ctx_, mcp::ServerCapabilities{});
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    // A ping whose whole document nests `depth` levels: the envelope and params are two of them.
+    const auto ping_nested_to = [](const std::string& id, std::size_t depth) {
+        const std::size_t arrays = depth - 2;
+        return R"({"jsonrpc":"2.0","id":")" + id + R"(","method":"ping","params":{"data":)" +
+               std::string(arrays, '[') + std::string(arrays, ']') + "}}";
+    };
+    setup.raw_transport->enqueue_message(ping_nested_to("at-limit", 128));
+    setup.raw_transport->enqueue_message(ping_nested_to("over-limit", 129));
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2U);
+    const auto with_id = [&responses](const nlohmann::json& id) {
+        const auto found = std::find_if(responses.begin(), responses.end(),
+                                        [&id](const nlohmann::json& r) { return r.at("id") == id; });
+        return found == responses.end() ? nlohmann::json() : *found;
+    };
+    const auto answered = with_id("at-limit");
+    ASSERT_TRUE(answered.is_object()) << "the ping at the limit got no response";
+    EXPECT_TRUE(answered.contains("result")) << answered.dump();
+    // The id of a message that was never decoded is unknown, so the error carries a null id.
+    const auto refused = with_id(nullptr);
+    ASSERT_TRUE(refused.is_object()) << "the ping over the limit got no parse error";
+    EXPECT_EQ(refused.at("error").at("code"), mcp::g_PARSE_ERROR);
 }

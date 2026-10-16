@@ -1,3 +1,5 @@
+#include "../detail/peer_json.hpp"
+
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/http_types.hpp>
@@ -445,7 +447,7 @@ struct HttpServerTransport::Impl {
     }
 
     Task<StringResponse> handle_post(const StringRequest& request) {
-        const auto request_json = nlohmann::json::parse(request.body(), nullptr, false);
+        const auto request_json = detail::parse_peer_json(request.body());
         if (request_json.is_discarded() || !request_json.is_object()) {
             co_return make_error_response(request, http::status::bad_request,
                                           "Invalid JSON-RPC payload");
