@@ -535,12 +535,25 @@ struct StreamableHttpSessionManager::Impl {
                                    ? std::string_view{}
                                    : http_bearer_token(std::string_view(authorization_it->value()));
             // The synchronous path neither copies the token nor suspends; only an async validator
-            // pays for either.
+            // pays for either. A validator that throws has failed to decide, which is the server's
+            // failure rather than the client's: answered 500, not with a challenge that would send
+            // the client into re-authorization.
             bool accepted = false;
-            if (async_bearer_token_validator_) {
-                accepted = !token.empty() && co_await async_bearer_token_validator_(std::string(token));
-            } else if (bearer_token_validator_) {
-                accepted = !token.empty() && bearer_token_validator_(token);
+            bool validator_failed = false;
+            try {
+                if (token.empty()) {
+                    accepted = false;
+                } else if (async_bearer_token_validator_) {
+                    accepted = co_await async_bearer_token_validator_(std::string(token));
+                } else {
+                    accepted = bearer_token_validator_(token);
+                }
+            } catch (...) {
+                validator_failed = true;
+            }
+            if (validator_failed) {
+                co_return detail_session_mgr::make_error_response(
+                    request, http::status::internal_server_error, "Bearer token validation failed");
             }
             if (!accepted) {
                 auto response = detail_session_mgr::make_error_response(

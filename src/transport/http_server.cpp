@@ -437,6 +437,14 @@ struct HttpServerTransport::Impl {
         return response;
     }
 
+    /// A validator that throws has failed to decide. That is the server's failure, not the
+    /// client's, so it is answered 500 rather than with a challenge that would send the client into
+    /// re-authorization.
+    static StringResponse make_validator_failure_response(const StringRequest& request) {
+        return make_error_response(request, http::status::internal_server_error,
+                                   "Bearer token validation failed");
+    }
+
     static std::string_view request_bearer_token(const StringRequest& request) {
         const auto authorization_it = request.find(http::field::authorization);
         return authorization_it == request.end() ? std::string_view{}
@@ -453,7 +461,16 @@ struct HttpServerTransport::Impl {
         }
 
         const auto token = request_bearer_token(request);
-        if (token.empty() || !bearer_token_validator(token)) {
+        if (token.empty()) {
+            return make_unauthorized_response(request);
+        }
+        bool accepted = false;
+        try {
+            accepted = bearer_token_validator(token);
+        } catch (...) {
+            return make_validator_failure_response(request);
+        }
+        if (!accepted) {
             return make_unauthorized_response(request);
         }
         return std::nullopt;
@@ -462,7 +479,16 @@ struct HttpServerTransport::Impl {
     /// @brief Run the bearer check against an async validator. Only entered when one is installed.
     Task<std::optional<StringResponse>> check_authorization_async(const StringRequest& request) const {
         const auto token = request_bearer_token(request);
-        if (token.empty() || !co_await async_bearer_token_validator(std::string(token))) {
+        if (token.empty()) {
+            co_return make_unauthorized_response(request);
+        }
+        bool accepted = false;
+        try {
+            accepted = co_await async_bearer_token_validator(std::string(token));
+        } catch (...) {
+            co_return make_validator_failure_response(request);
+        }
+        if (!accepted) {
             co_return make_unauthorized_response(request);
         }
         co_return std::nullopt;

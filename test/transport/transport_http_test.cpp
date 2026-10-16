@@ -2668,6 +2668,49 @@ TEST_F(HttpTransportTest, AsyncBearerValidatorDecidesWithoutBlocking) {
     EXPECT_EQ(validator_calls.load(std::memory_order_relaxed), 2);
 }
 
+// A validator that throws has failed to decide, which is the server's failure rather than the
+// client's: answered 500, and never 401, which would send the client into re-authorization.
+TEST_F(HttpTransportTest, ThrowingBearerValidatorIsAnsweredWithAServerError) {
+    auto async_server =
+        std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    async_server->set_async_bearer_token_validator([](std::string) -> mcp::Task<bool> {
+        throw std::runtime_error("introspection endpoint unreachable");
+        co_return false;
+    });
+    auto sync_server =
+        std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    sync_server->set_bearer_token_validator(
+        [](std::string_view) -> bool { throw std::runtime_error("token cache unavailable"); });
+
+    asio::co_spawn(io_ctx_, async_server->listen(), asio::detached);
+    asio::co_spawn(io_ctx_, sync_server->listen(), asio::detached);
+
+    unsigned int async_status = 0;
+    unsigned int sync_status = 0;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            for (auto [server, status] :
+                 {std::pair{async_server, &async_status}, std::pair{sync_server, &sync_status}}) {
+                try {
+                    const auto result =
+                        co_await probe(io_ctx_.get_executor(), server->port(), http::verb::post, "/mcp",
+                                       std::string(g_notification_body), "token");
+                    *status = result.status;
+                } catch (const std::exception&) {
+                    // The connection was dropped without a response; status stays 0.
+                }
+            }
+            async_server->close();
+            sync_server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(async_status, 500U);
+    EXPECT_EQ(sync_status, 500U);
+}
+
 TEST_F(HttpTransportTest, OnlyOneBearerValidatorMayBeInstalled) {
     mcp::HttpServerTransport sync_first(io_ctx_.get_executor(), "127.0.0.1", 0);
     sync_first.set_bearer_token_validator([](std::string_view) { return true; });

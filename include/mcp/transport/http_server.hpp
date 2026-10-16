@@ -220,6 +220,10 @@ class MCP_API HttpServerTransport final : public ITransport {
      * Passing an empty validator disables HTTP authentication.
      * Configure the validator before listen() or run() starts.
      *
+     * A request whose token the validator refuses is answered 401 with the bearer challenge. A
+     * validator that throws is answered 500, without a challenge, so a failing introspection
+     * endpoint does not send clients into re-authorization.
+     *
      * @throws std::logic_error If listen() has already been called or the transport is closed.
      */
     void set_bearer_token_validator(BearerTokenValidator validator);
@@ -233,6 +237,10 @@ class MCP_API HttpServerTransport final : public ITransport {
      *
      * Passing an empty validator disables HTTP authentication.
      * Configure the validator before listen() or run() starts.
+     *
+     * A request whose token the validator refuses is answered 401 with the bearer challenge. A
+     * validator that throws is answered 500, without a challenge, so a failing introspection
+     * endpoint does not send clients into re-authorization.
      *
      * @throws std::logic_error If a synchronous validator is already installed, or if listen() has
      *         already been called or the transport is closed.

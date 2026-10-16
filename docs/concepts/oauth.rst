@@ -203,6 +203,12 @@ the request buffer is not guaranteed to survive that. A transport accepts one
 validator: installing both throws ``std::logic_error``. A server that installs
 only the synchronous one pays nothing for the asynchronous path.
 
+A validator that returns ``false`` gets the client a ``401`` with the bearer
+challenge. One that throws, because an introspection endpoint is down for
+example, gets it a ``500`` with no challenge: the server failed to decide, and
+a ``401`` would send the client into re-authorization for a token that may be
+perfectly valid.
+
 The two signatures are exported as :cpp:type:`mcp::BearerTokenValidator`
 (``bool(std::string_view)``) and :cpp:type:`mcp::AsyncBearerTokenValidator`
 (``Task<bool>(std::string)``), so a validator can be stored and passed around

@@ -2065,6 +2065,62 @@ TEST_F(SessionManagerTest, AsyncBearerValidatorDecidesWithoutBlocking) {
     EXPECT_EQ(validator_calls.load(std::memory_order_relaxed), 2);
 }
 
+// A validator that throws has failed to decide, which is the server's failure rather than the
+// client's: answered 500, and never 401, which would send the client into re-authorization.
+TEST_F(SessionManagerTest, ThrowingBearerValidatorIsAnsweredWithAServerError) {
+    const unsigned short async_port = 19154;
+    const unsigned short sync_port = 19155;
+    mcp::StreamableHttpSessionManager async_manager(io_ctx_.get_executor(), "127.0.0.1", async_port,
+                                                    make_echo_server_factory());
+    async_manager.set_async_bearer_token_validator([](std::string) -> mcp::Task<bool> {
+        throw std::runtime_error("introspection endpoint unreachable");
+        co_return false;
+    });
+    mcp::StreamableHttpSessionManager sync_manager(io_ctx_.get_executor(), "127.0.0.1", sync_port,
+                                                   make_echo_server_factory());
+    sync_manager.set_bearer_token_validator(
+        [](std::string_view) -> bool { throw std::runtime_error("token cache unavailable"); });
+
+    asio::co_spawn(io_ctx_, async_manager.listen(), asio::detached);
+    asio::co_spawn(io_ctx_, sync_manager.listen(), asio::detached);
+
+    unsigned int async_status = 0;
+    unsigned int sync_status = 0;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const auto init_body =
+                json{{"jsonrpc", "2.0"},
+                     {"method", "initialize"},
+                     {"params",
+                      {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                       {"clientInfo", {{"name", "test"}, {"version", "1"}}},
+                       {"capabilities", json::object()}}},
+                     {"id", 1}}
+                    .dump();
+            for (auto [port, status] :
+                 {std::pair{async_port, &async_status}, std::pair{sync_port, &sync_status}}) {
+                try {
+                    const auto response = co_await raw_request(
+                        io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
+                        std::string(mcp::g_LATEST_PROTOCOL_VERSION), std::nullopt, "token");
+                    *status = response.status;
+                } catch (const std::exception&) {
+                    // The connection was dropped without a response; status stays 0.
+                }
+            }
+            async_manager.close();
+            sync_manager.close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(async_status, 500U);
+    EXPECT_EQ(sync_status, 500U);
+    EXPECT_EQ(async_manager.session_count(), 0U);
+    EXPECT_EQ(sync_manager.session_count(), 0U);
+}
+
 TEST_F(SessionManagerTest, OnlyOneBearerValidatorMayBeInstalled) {
     const unsigned short port = 19140;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
