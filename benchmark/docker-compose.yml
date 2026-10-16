@@ -114,7 +114,7 @@ services:
   # Upstream servers for comparison
   python-server:
     build:
-      context: ./benchmark-mcp-servers-v2/python-server
+      context: ./baselines/python-server
       dockerfile: Dockerfile
     container_name: mcp-python-server
     cpuset: "${BENCHMARK_CPUSET:-}"

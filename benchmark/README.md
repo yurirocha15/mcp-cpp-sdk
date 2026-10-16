@@ -7,9 +7,11 @@ application operations for every comparable C++ SDK.
 The application workload is based on
 [TM Dev Lab v2](https://github.com/thiagomendes/benchmark-mcp-servers-v2), pinned
 to commit `8a9a5f8ef505f46b6079072ef4603304ca672e33`. That repository supplies the API
-service, Redis seeder, and language-baseline server sources. Load generation
-uses the audited local profile in `alternatives/benchmark.js`; it does not use
-the upstream k6 script.
+service, Redis seeder, and the Go and Rust baseline server sources. The Python
+baseline is its Python server ported to the official Python SDK 2.x; see
+[Language baselines](#language-baselines). Load generation uses the audited
+local profile in `alternatives/benchmark.js`; it does not use the upstream k6
+script.
 
 ## Prerequisites
 
@@ -89,18 +91,34 @@ Streamable HTTP endpoint exercised here, so including it would test a different
 transport contract. cxxmcp is included: the local client sends the required
 negotiated protocol-version header after initialization.
 
-The baseline group is separate from the comparable C++ group. The pinned
-upstream repository supplies the Python, Go, and Rust baseline servers and the
-shared infrastructure. The optimized `cpp` baseline is retained as a separate
-application implementation and must not be presented as an SDK-adapter result.
+## Language baselines
+
+The baseline group is separate from the comparable C++ group. Each baseline is
+a standalone server application written against its language's official MCP
+SDK, not an adapter over the shared C++ workload:
+
+| Benchmark name | SDK | Host port |
+|---|---|---:|
+| `python` | Python SDK (`mcp` 2.3.0) | 8081 |
+| `go` | Go SDK (`github.com/modelcontextprotocol/go-sdk`) | 8082 |
+| `rust` | Rust SDK (`rmcp`) | 8083 |
+
+The pinned upstream repository supplies the Go and Rust servers and the shared
+infrastructure. Its Python server was written for the 1.x `mcp` API, which the
+2.x releases removed, and its version ranges now resolve to 2.x. The
+`baselines/python-server` copy makes only the changes 2.x requires: `FastMCP`
+became `MCPServer`, the stateless JSON transport options moved to
+`streamable_http_app()`, and the server passes the `mcp` package version as its
+own because 2.x no longer fills it in. It also pins its dependencies and base
+image. The optimized `cpp` baseline is retained as a separate application
+implementation and must not be presented as an SDK-adapter result.
 
 Python, Go, and Rust are rerun after harness changes, but their results remain
-diagnostic. Their upstream Docker builds contain floating inputs: Python uses
-version ranges, Go regenerates dependency resolution during the image build,
-Rust does not copy its lockfile into the build, and the baseline Dockerfiles use
-unpinned base-image tags. Exact built image identities are retained with every
-run, but these inputs prevent a source commit from defining a bit-for-bit
-rebuild.
+diagnostic. The Go and Rust upstream Docker builds contain floating inputs: Go
+regenerates dependency resolution during the image build, Rust does not copy its
+lockfile into the build, and both Dockerfiles use unpinned base-image tags.
+Exact built image identities are retained with every run, but these inputs
+prevent a source commit from defining a bit-for-bit rebuild.
 
 Every target uses the same `upstream-v2-strict-mcp-v1` measurement eligibility
 contract. It preserves the pinned benchmark's observable business predicates
