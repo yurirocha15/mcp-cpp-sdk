@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace mcp {
 
@@ -87,8 +88,36 @@ class MCP_API StreamableHttpSessionManager {
      * @param handler A function that receives the HTTP request and optionally returns
      *                a response. If it returns std::nullopt, the request is handled
      *                as MCP protocol.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
     void set_custom_request_handler(CustomRequestHandler handler);
+
+    /**
+     * @brief Replace the allowlist used for requests carrying an Origin header.
+     *
+     * Requests without an Origin header remain valid. Browser-originated requests are denied by
+     * default until their exact Origin value is present in this list.
+     * Configure the allowlist before listen() starts.
+     *
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_allowed_origins(std::vector<std::string> origins);
+
+    /**
+     * @brief Explicitly opt into accepting every Origin header value before listen() starts.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_allow_all_origins(bool allow_all);
+
+    /**
+     * @brief Require and validate an HTTP Authorization: Bearer header.
+     *
+     * Passing an empty validator disables HTTP authentication.
+     * Configure the validator before listen() starts.
+     *
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_bearer_token_validator(BearerTokenValidator validator);
 
     /**
      * @brief Get the number of active sessions.
@@ -102,6 +131,7 @@ class MCP_API StreamableHttpSessionManager {
      *
      * When enabled, POST responses always use `application/json` and session
      * replay events are not stored.
+     * This option is atomic and may be changed while the listener is running.
      *
      * @param json_only True to bypass SSE framing and replay storage.
      */
@@ -119,6 +149,7 @@ class MCP_API StreamableHttpSessionManager {
      * behavior unchanged.
      *
      * @param enabled True to use stateless direct JSON handling.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
     void set_stateless_json_mode(bool enabled);
 
@@ -130,6 +161,7 @@ class MCP_API StreamableHttpSessionManager {
      * If not set, tool handlers fall back to the HTTP executor (backward compatible).
      *
      * @param exec The executor to use for tool execution.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
     void set_tool_executor(const boost::asio::any_io_executor& exec);
 
@@ -147,7 +179,8 @@ class MCP_API StreamableHttpSessionManager {
 
    private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    static Task<void> listen_impl(std::shared_ptr<Impl> impl);
+    std::shared_ptr<Impl> impl_;
 };
 
 }  // namespace mcp

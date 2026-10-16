@@ -5,10 +5,40 @@
 #include <mcp/transport/transport.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
+#include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace mcp {
+
+/** @brief HTTP-layer error returned by a remote MCP endpoint. */
+class MCP_API HttpStatusError : public std::runtime_error {
+   public:
+    /**
+     * @brief Construct an error for a non-success HTTP response.
+     * @param status Numeric HTTP response status.
+     * @param message Human-readable error description.
+     * @param authenticate_challenge Optional WWW-Authenticate header value.
+     */
+    HttpStatusError(unsigned int status, std::string message, std::string authenticate_challenge = {})
+        : std::runtime_error(std::move(message)),
+          status_(status),
+          authenticate_challenge_(std::move(authenticate_challenge)) {}
+
+    /** @return Numeric HTTP response status. */
+    [[nodiscard]] unsigned int status() const noexcept { return status_; }
+
+    /** @return WWW-Authenticate header value, or an empty string when absent. */
+    [[nodiscard]] const std::string& authenticate_challenge() const noexcept {
+        return authenticate_challenge_;
+    }
+
+   private:
+    unsigned int status_;
+    std::string authenticate_challenge_;
+};
 
 /**
  * @brief HTTP transport implementation for MCP client message exchange.
@@ -42,7 +72,7 @@ class MCP_API HttpClientTransport final : public ITransport {
      * @return The session identifier captured from server responses, or an empty string if no
      * session exists.
      */
-    [[nodiscard]] const std::string& session_id() const;
+    [[nodiscard]] std::string session_id() const;
 
     /**
      * @brief Get the most recent SSE event identifier seen from the server.
@@ -50,7 +80,14 @@ class MCP_API HttpClientTransport final : public ITransport {
      * @return The last event ID used for resumable HTTP replay, or an empty string if none was
      * received.
      */
-    [[nodiscard]] const std::string& last_event_id() const;
+    [[nodiscard]] std::string last_event_id() const;
+
+    /**
+     * @brief Configure a provider for HTTP Authorization: Bearer headers.
+     *
+     * Configure this before starting client operations. Returning an empty string omits the header.
+     */
+    void set_bearer_token_provider(std::function<std::string()> provider);
 
     /**
      * @brief Dequeue the next MCP message received from the server.
@@ -75,7 +112,7 @@ class MCP_API HttpClientTransport final : public ITransport {
 
    private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
 };
 
 }  // namespace mcp

@@ -66,6 +66,7 @@ TEST_F(ServerProgressTest, ProgressNotificationSentWithToken) {
     });
 
     raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";
@@ -130,6 +131,7 @@ TEST_F(ServerProgressTest, ProgressSilentWithoutToken) {
     });
 
     raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
 
     // No _meta.progressToken in this request
     nlohmann::json call_req;
@@ -185,6 +187,7 @@ TEST_F(ServerProgressTest, MultipleProgressNotifications) {
     });
 
     raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";
