@@ -4481,8 +4481,8 @@ mcp::StreamableHttpSessionManager::ServerFactory make_pairing_server_factory() {
 // RFC 9728 section 5.1 has the resource server point the client at its metadata with a
 // `resource_metadata` parameter on the challenge. Both emit sites send a bare `Bearer`:
 //
-//     src/transport/http_session_manager.cpp:455
-//     src/transport/http_server.cpp:372
+//     HttpServerTransport::Impl::check_authorization() in src/transport/http_server.cpp
+//     handle_request() in src/transport/http_session_manager.cpp
 //
 // So a client that receives this challenge is told it needs a token and nothing about where to get
 // one. It can only fall back to the well-known location derived from the URL it was configured
