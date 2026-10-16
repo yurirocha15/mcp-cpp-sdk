@@ -18,12 +18,10 @@ namespace constants {
 /**
  * @brief Default cap on an HTTP request body accepted by the server transports, in bytes.
  *
- * Binary content reaches an MCP server as base64 inside the JSON body — `ImageContent::data`,
- * `BlobResourceContents::blob` and `AudioContent` have no out-of-band or streaming path — and
- * base64 inflates by 4/3. Beast's own 1 MB default therefore admits only about 750 KB of raw
- * bytes, which ordinary phone photos and screenshots at 1-3 MB already exceed. Eight mebibytes
- * carries roughly 6 MB of raw content, so those payloads keep working, while still bounding what
- * one unauthenticated connection can make a server allocate.
+ * Binary content reaches an MCP server as base64 inside the JSON body -- `ImageContent::data`,
+ * `BlobResourceContents::blob` and `AudioContent` have no out-of-band or streaming path -- and base64
+ * inflates by 4/3. Eight mebibytes carries roughly 6 MB of raw content, while still bounding what one
+ * unauthenticated connection can make a server allocate.
  */
 constexpr std::size_t g_default_max_request_body_bytes = 8 * 1024 * 1024;
 
@@ -58,9 +56,8 @@ using BearerTokenValidator = std::function<bool(std::string_view)>;
  * Use this when deciding on a token requires I/O — token introspection, a JWKS fetch — so the
  * decision suspends instead of blocking the executor that is concurrently serving MCP traffic.
  *
- * The token is passed by value on purpose. A view would point into the Beast request buffer,
- * which is not guaranteed to outlive a suspension; one allocation is immaterial on a path that
- * is about to make a network call.
+ * The token is passed by value: a view would point into the Beast request buffer, which is not
+ * guaranteed to outlive a suspension.
  */
 using AsyncBearerTokenValidator = std::function<Task<bool>(std::string)>;
 
@@ -122,12 +119,10 @@ struct ProtectedResourceMetadataConfig {
 /**
  * @brief Path the metadata document is served at.
  *
- * Returns `path` when it is set. Otherwise derives it the way RFC 9728 3.1 requires, by inserting
- * the well-known segment between the authority and the resource's own path: a resource at
+ * Returns `path` when it is set. Otherwise derives it the way RFC 9728 3.1 requires, by inserting the
+ * well-known segment between the authority and the resource's own path: a resource at
  * `https://host/mcp` is described at `/.well-known/oauth-protected-resource/mcp`, and one at
- * `https://host` at `/.well-known/oauth-protected-resource`. Defaulting to the bare well-known
- * path instead is correct only for a resource sitting at the origin root, and would leave every
- * other server publishing where clients do not look.
+ * `https://host` at `/.well-known/oauth-protected-resource`.
  *
  * @param metadata Metadata whose `resource` supplies the path component.
  * @return The path, always beginning with `/`.

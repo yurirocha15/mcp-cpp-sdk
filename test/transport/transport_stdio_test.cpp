@@ -322,7 +322,7 @@ TEST_F(StdioTransportTest, RejectsASecondOutstandingRead) {
     std::thread first_runner([this]() { io_ctx_.run(); });
     std::thread second_runner([this]() { io_ctx_.run(); });
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     bool one_completed = false;
     while (std::chrono::steady_clock::now() < deadline) {
         one_completed = first.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready ||

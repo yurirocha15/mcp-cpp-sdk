@@ -66,11 +66,10 @@ struct BearerChallenge {
 /**
  * @brief Per-attempt record of an authorization request.
  *
- * @details One record is created per authorization attempt and holds every value the response must
- * be validated against: the CSRF `state`, the PKCE code verifier, and the issuer recorded from the
- * selected authorization server's metadata document. The recorded issuer is authentic only because
- * it comes from metadata the SDK itself fetched and validated; validation provides no protection
- * against an issuer taken from an unvalidated source.
+ * @details One record is created per authorization attempt and holds every value the response must be
+ * validated against: the CSRF `state`, the PKCE code verifier, and the issuer recorded from the
+ * selected authorization server's metadata document. The recorded issuer must come from metadata that
+ * was itself fetched and validated.
  */
 struct AuthorizationRequest {
     std::string authorization_url;  ///< Complete authorization endpoint URL including query.
@@ -153,13 +152,11 @@ struct AuthorizationResponseValidation {
  * | `false` or absent                                | yes           | Compare to recorded issuer |
  * | `false` or absent                                | no            | Proceed                    |
  *
- * Comparison is a plain byte-for-byte string equality test. No scheme or host case folding, no
- * default-port elision, no trailing-slash normalization and no percent-encoding normalization is
- * applied, and no canonicalizing URL helper is consulted.
+ * Comparison is byte-for-byte string equality with no normalization of any kind.
  *
- * The issuer check runs ahead of the `error` path, so a response carrying `error`,
- * `error_description` or `error_uri` with a mismatched issuer is rejected as `issuer_mismatch` and
- * the caller must neither act on nor display those values.
+ * The issuer check runs ahead of the `error` path: a response carrying `error`, `error_description`
+ * or `error_uri` with a mismatched issuer is rejected as `issuer_mismatch`, and the caller must
+ * neither act on nor display those values.
  */
 [[nodiscard]] MCP_API AuthorizationResponseValidation validate_authorization_response(
     const AuthorizationRequest& request, const AuthorizationResponse& response);

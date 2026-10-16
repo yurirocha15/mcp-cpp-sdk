@@ -18,9 +18,12 @@
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/version.hpp>
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -32,6 +35,8 @@
 
 // Reach-in for retained-state assertions; see the header. Not a public SDK header.
 #include "../../src/auth/oauth_internal.hpp"
+#include "../support/resolve_gate.hpp"
+#include "../support/socket_gate.hpp"
 
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -40,6 +45,11 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#if BOOST_VERSION >= 107700
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/cancellation_signal.hpp>
+#endif
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -1191,17 +1201,18 @@ class StallingServer final {
         acceptor_.async_accept([this](boost::system::error_code error, asio::ip::tcp::socket socket) {
             if (!error) {
                 held_socket_ = std::move(socket);
-                ++accepted_;
+                accepted_.fetch_add(1);
             }
         });
     }
 
-    [[nodiscard]] int accepted() const { return accepted_; }
+    /// Safe to poll from a thread other than the one running the io_context.
+    [[nodiscard]] int accepted() const { return accepted_.load(); }
 
    private:
     asio::ip::tcp::acceptor acceptor_;
     std::optional<asio::ip::tcp::socket> held_socket_;
-    int accepted_{0};
+    std::atomic<int> accepted_{0};
 };
 
 }  // namespace
@@ -1595,26 +1606,17 @@ TEST(AuthTransportCloseTest, CloseDuringTokenExchangeAbortsTheStalledExchange) {
     EXPECT_GE(stalling.accepted(), 1);
 }
 
-// A follower must report the outcome of the flight IT joined, and must report why that flight
-// failed.
-//
-// A follower's result must be read off the flight it joined, not off a manager-wide field: a
-// follower woken from flight one that read such a field after flight two had finished would pick
-// up flight two's result. And it must carry the leader's own reason, because a credential refusal
-// names exactly what the caller has to change and a bare bool would drop that.
-//
-// Both faces are provoked here in one run, and the sequencing is arranged rather than raced:
+// A follower must report the outcome of the flight it joined, with the leader's own failure, not the
+// result of a later flight. The sequencing is arranged rather than raced:
 //
 //   1. The leader of flight one parks inside the application's authorization callback.
 //   2. A follower joins flight one and parks on its timer.
 //   3. That follower's own strand is then blocked, so its wake-up cannot be delivered.
 //   4. The leader of flight one is released and fails with a distinctive message.
-//   5. A second challenge runs to completion and SUCCEEDS, which is what overwrote the shared
-//      field.
+//   5. A second challenge runs to completion and SUCCEEDS.
 //   6. Only then is the follower's strand released and its result read.
 //
-// Against the shared-bool version the follower reports success at step 6 -- flight two's outcome,
-// for a flight that failed. It must instead fail with flight one's message.
+// At step 6 the follower must fail with flight one's message, not report flight two's success.
 TEST(AuthTransportCloseTest, AFollowerReportsItsOwnFlightsFailureNotALaterFlightsSuccess) {
     constexpr int io_thread_count = 4;
     const std::string leader_failure_text = "flight one refused by the application callback";
@@ -1756,7 +1758,7 @@ TEST(AuthTransportCloseTest, AFollowerReportsItsOwnFlightsFailureNotALaterFlight
     ASSERT_NE(first_message.find(leader_failure_text), std::string::npos)
         << "the first leader did not fail the way this test needs it to: " << first_message;
 
-    // A second, successful flight. Its result is what the shared field used to hand the follower.
+    // A second, successful flight: the result a manager-wide field would hand the follower.
     asio::co_spawn(
         io_ctx,
         [&]() -> mcp::Task<void> {
@@ -1879,17 +1881,11 @@ TEST(AuthTransportCloseTest, CloseWhileAFollowerIsParkedOnTheSingleFlightTimerWa
     EXPECT_NE(leader_failure, nullptr);
 }
 
-// The test above stalls the leader in discovery, where abort_pending() closing the socket also
-// unblocks the leader's own cleanup in time to cancel the single-flight timer -- so it cannot tell
-// a working flight->cancel() from one that only appears to work because the follower had already
-// registered its wait long before close() ran. This one stalls the leader somewhere abort_pending()
-// can never reach at all -- the application's own consent callback -- and races close() against a
-// follower joining the same flight from a second, real OS thread with no artificial delay between
-// them, so the follower's join and its flight->async_wait() registration are not guaranteed to have
-// both completed before close() runs. That gap is exactly what turns a bare flight->cancel() (a
-// no-op against a wait that has not started yet, and one that does not affect a *later* wait either)
-// into a permanent hang, and exactly what expires_at(time_point::min()) closes: it moves the timer's
-// deadline into the past, so a wait registered after this call still completes immediately.
+// Stalls the leader where abort_pending() cannot reach -- the application's consent callback -- and
+// races close() against a follower joining the same flight from a second OS thread, so the follower's
+// join and its flight->async_wait() registration are not guaranteed to have both completed before
+// close() runs. A bare flight->cancel() is a no-op against a wait that has not started, which would
+// hang; expires_at(time_point::min()) makes a wait registered after the call complete immediately.
 TEST(AuthTransportCloseTest,
      CloseWhileALeaderIsParkedInTheApplicationConsentCallbackWakesAFollowerWithAnError) {
     asio::io_context io_ctx;
@@ -1921,9 +1917,8 @@ TEST(AuthTransportCloseTest,
     // `leader_parked_signal` right before parking, so the main thread knows `flight` already exists
     // (it is created earlier still, synchronously, before discovery even starts) and the leader has
     // reached the one phase this manager cannot itself abort. The leader is deliberately left parked
-    // here, leaked into the stopped io_context, for the rest of the test: releasing it is not this
-    // fix's job (see the manager's own doc comment on close()); only the follower's release is under
-    // test, so nothing below joins or waits on the leader's own coroutine.
+    // here, leaked into the stopped io_context, for the rest of the test: only the follower's release
+    // is under test, so nothing below joins or waits on the leader's own coroutine.
     std::promise<void> leader_parked_signal;
     auto leader_parked = leader_parked_signal.get_future();
     auto callback =
@@ -1942,12 +1937,10 @@ TEST(AuthTransportCloseTest,
 
     // A single follower racing a single close() call almost never lands in the gap between joining
     // the flight and registering its wait: starting the runner thread, having it work through
-    // discovery and reach the callback, and then waking it again for one posted follower all take
-    // far longer than close()'s own few instructions, so the follower is reliably already waiting
-    // by the time close() runs (50/50 local runs against the unfixed code never reproduced the hang
-    // with just one). A burst of many followers, posted individually and racing the same close()
-    // call from a second thread with no synchronization, gives the same narrow window many
-    // independent chances to be hit in one test run instead of one.
+    // discovery and reach the callback, and then waking it again for one posted follower all take far
+    // longer than close()'s own few instructions. A burst of many followers, posted individually and
+    // racing the same close() call from a second thread with no synchronization, gives the same
+    // narrow window many independent chances to be hit in one test run instead of one.
     constexpr int follower_count = 200;
     std::vector<bool> follower_authorized(follower_count, false);
     std::vector<std::exception_ptr> follower_failure(follower_count);
@@ -2023,28 +2016,18 @@ TEST(AuthTransportCloseTest,
     }
 }
 
-// The single-flight timer is a boost::asio::steady_timer, which Boost.Asio documents as unsafe for
-// concurrent use. Its two touch points -- expire_flight()'s expires_at() and a follower's
-// async_wait() in await_in_flight() -- both run synchronously on whatever thread calls them, so
-// they need mutual exclusion that the timer itself does not provide.
+// The single-flight timer's two touch points -- expire_flight()'s expires_at() and a follower's
+// async_wait() in await_in_flight() -- run synchronously on whatever thread calls them, and a
+// steady_timer is not safe for concurrent use. Two things are needed to reach the window:
 //
-// Every other close test in this file drives the io_context from exactly ONE thread, which
-// serialises those two calls by accident and hides the defect; that is why all of them passed
-// under ThreadSanitizer while the race was live. Two things are needed to reach the window, and
-// both are load-bearing here:
+//   * The io_context runs on several threads, so the two calls can execute at the same instant.
+//   * Followers keep arriving while close() lands: close() sets `closed` first, so a follower
+//     spawned afterwards throws in handle_challenge() without reaching the timer. Only one that
+//     read `flight` before `closed` was set and calls async_wait() after expire_flight() ran is in
+//     the gap.
 //
-//   * The io_context runs on SEVERAL threads, so expire_flight()'s handler and a follower's
-//     async_wait() can genuinely execute at the same instant.
-//   * Followers keep ARRIVING while close() lands. Posting a burst up front and then closing
-//     reproduces nothing: close() sets `closed` first, so every follower spawned afterwards throws
-//     in handle_challenge() without ever reaching the timer. Only a follower that read `flight`
-//     before `closed` was set and calls async_wait() after expire_flight() already ran is in the
-//     gap, so the stream has to still be draining when close() runs.
-//
-// Against the unfixed manager ThreadSanitizer reports the race directly (expires_at() versus
-// async_wait() on the timer allocated in handle_challenge()). Without a sanitizer the assertions
-// below still catch the consequence: a follower whose wait was enqueued at the pre-write deadline
-// of time_point::max() is never woken by anything, and the watchdog fires.
+// Unserialised, ThreadSanitizer reports the race; without a sanitizer a follower whose wait was
+// enqueued at time_point::max() is never woken, and the watchdog fires.
 TEST(AuthTransportCloseTest, CloseWakesEveryFollowerWhileTheyKeepArrivingOnAMultiThreadedIoContext) {
     constexpr int io_thread_count = 4;
     // A strand serialises its own followers but not the followers on the other strands, so several
@@ -2205,18 +2188,11 @@ TEST(AuthTransportCloseTest, CloseWakesEveryFollowerWhileTheyKeepArrivingOnAMult
            "on the manager's flight strand instead of handing it back";
 }
 
-// Serialising the single-flight timer means await_in_flight() initiates its wait on the manager's
-// own flight strand, which takes the follower off the executor it was spawned on. Everything after
-// that wait has to come back: Client spawns its write onto its own strand
-// (src/client/client.cpp) and SerializedTransportWriter builds another
-// (src/core/serialized_transport_writer.cpp) precisely to serialise writes, and a continuation that
-// resumed on the manager's flight strand would bypass both -- closing the timer race and silently
-// breaking write serialisation in its place.
-//
-// The multi-threaded test above also checks this, but most of its followers arrive after close()
-// has set `closed` and throw without ever parking, so the check is only as strong as the subset
-// that did park. Here exactly one follower is used and it is proven to have parked before close()
-// runs, which makes the executor assertion unconditional.
+// await_in_flight() initiates its wait on the manager's flight strand, which takes the follower off
+// the executor it was spawned on. Everything after that wait has to come back: Client and
+// SerializedTransportWriter each serialise writes on a strand of their own, and a continuation left
+// on the flight strand would bypass both. Exactly one follower is used, proven to have parked before
+// close() runs, so the executor assertion is unconditional.
 TEST(AuthTransportCloseTest, AFollowerReleasedFromTheSingleFlightTimerResumesOnItsOwnStrand) {
     constexpr int io_thread_count = 4;
 
@@ -2408,19 +2384,591 @@ TEST(AuthTransportCloseTest, CloseFromAnotherThreadWhileAuthorizationIsInFlightT
 
     std::thread runner([&io_ctx]() { io_ctx.run(); });
 
-    // A brief head start into the stalled discovery fetch, then close from a thread that never runs
-    // the io_context at all.
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // Wait until the discovery fetch has connected to the stalling server (a fixed head start is
+    // not enough under sanitizer slowdown), then close from a thread that never runs the io_context.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (stalling.accepted() < 1 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    const bool reached_stall = stalling.accepted() >= 1;
     transport->close();
     resource_server.close();
 
     runner.join();
 
+    ASSERT_TRUE(reached_stall)
+        << "the flow never reached the stalling discovery server, so close() raced nothing";
     ASSERT_FALSE(timed_out) << "watchdog: close() from another thread did not unblock the flow";
     EXPECT_TRUE(completed);
     EXPECT_NE(failure, nullptr);
     EXPECT_GE(stalling.accepted(), 1);
 }
+
+// Between the per-hop latch check and the socket opening inside async_connect() an exchange has
+// nothing live for abort_pending() to close, so connect() re-reads the latch once the addresses are
+// known. The resolver hook runs synchronously at exactly that point. The fetch reports
+// operation_aborted either way, so the oracle is the listener's accept queue: a probe connected after
+// the fetch has failed must be the first connection the listener hands out.
+TEST(AuthTransportCloseTest, AbortBetweenResolutionAndConnectOpensNoConnection) {
+    asio::io_context io_ctx;
+    asio::ip::tcp::acceptor acceptor(io_ctx, {asio::ip::make_address("127.0.0.1"), 0});
+    const auto listening = acceptor.local_endpoint();
+    const auto base = "http://127.0.0.1:" + std::to_string(listening.port());
+
+    auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+    client->set_metadata_policy(loopback_policy(base));
+
+    int resolver_calls = 0;
+    auto* raw_client = client.get();
+    client->set_host_resolver([&resolver_calls, raw_client](const std::string&, const std::string&) {
+        ++resolver_calls;
+        raw_client->abort_pending();
+        return std::vector<std::string>{"127.0.0.1"};
+    });
+
+    bool completed = false;
+    bool timed_out = false;
+    boost::system::error_code fetch_error;
+    asio::ip::tcp::endpoint probe_endpoint;
+    asio::ip::tcp::endpoint first_accepted_endpoint;
+
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error && !completed) {
+            timed_out = true;
+            io_ctx.stop();
+        }
+    });
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                (void)co_await client->get_json(base + "/prm");
+            } catch (const boost::system::system_error& error) {
+                fetch_error = error.code();
+            }
+
+            asio::ip::tcp::socket probe(io_ctx);
+            co_await probe.async_connect(listening, asio::use_awaitable);
+            probe_endpoint = probe.local_endpoint();
+
+            asio::ip::tcp::socket accepted(io_ctx);
+            co_await acceptor.async_accept(accepted, first_accepted_endpoint, asio::use_awaitable);
+
+            completed = true;
+            watchdog.cancel();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    ASSERT_FALSE(timed_out) << "watchdog: the aborted fetch or the probe connection never finished";
+    ASSERT_TRUE(completed);
+    EXPECT_EQ(resolver_calls, 1) << "the abort must have been issued from inside connect()";
+    EXPECT_TRUE(fetch_error == asio::error::operation_aborted) << fetch_error.message();
+    EXPECT_EQ(first_accepted_endpoint, probe_endpoint)
+        << "the exchange opened a connection after abort_pending() had already run: the listener "
+           "accepted it ahead of the probe";
+}
+
+#ifdef __linux__
+
+// The window the test above pins, reached with the system resolver and close() called from a thread
+// that does not run the io_context. Asio's resolver thread checks its cancel token once, before
+// getaddrinfo(), so a close() arriving during that call can cancel neither the resolve nor a socket
+// that is not open yet. The gate holds the lookup inside getaddrinfo() until the abort has run, so
+// the flow resumes with usable addresses on a closed transport and must stop there; without the latch
+// check in connect() it would block on the stalling server until the HTTP timeout.
+TEST(AuthTransportCloseTest, CloseWhileTheResolverIsPastItsCancelCheckOpensNoConnection) {
+    asio::io_context io_ctx;
+    StallingServer stalling(io_ctx);
+    stalling.accept_and_stall();
+    const auto stalling_base = stalling.base_url();
+
+    LoopbackServer resource_server(io_ctx);
+    const auto resource_base = resource_server.base_url();
+    resource_server.set_handler([&](const http::request<http::string_body>&) {
+        http::response<http::string_body> challenge{http::status::unauthorized, 11};
+        challenge.set(http::field::www_authenticate,
+                      R"(Bearer resource_metadata=")" + stalling_base + R"(/prm")");
+        return challenge;
+    });
+    asio::co_spawn(io_ctx, resource_server.serve(5), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = resource_base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allowed_origins = {resource_base, stalling_base};
+    policy.allow_plain_http_loopback = true;
+    config.policy = policy;
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    std::vector<std::string> requested_scopes;
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+        io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+    auto inner =
+        std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), resource_base + "/mcp");
+    auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, manager);
+
+    // Only the discovery fetch resolves the stalling server's port, so only that lookup is held.
+    resolve_gate().arm(stalling.port());
+
+    std::exception_ptr failure;
+    std::promise<void> flow_done;
+    auto flow_finished = flow_done.get_future();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            flow_done.set_value();
+        },
+        asio::detached);
+
+    std::thread runner([&io_ctx]() { io_ctx.run(); });
+
+    const auto limit = std::chrono::seconds(10);
+    const bool lookup_held = resolve_gate().wait_until_entered(limit);
+
+    // close() posts its abort to the io_context. Two further hops through the same queue cannot
+    // complete before it has, including when the abort had to wait its turn on the client's strand.
+    std::promise<void> abort_done;
+    auto abort_finished = abort_done.get_future();
+    bool abort_ran = false;
+    if (lookup_held) {
+        transport->close();
+        asio::post(io_ctx, [&]() { asio::post(io_ctx, [&]() { abort_done.set_value(); }); });
+        abort_ran = abort_finished.wait_for(limit) == std::future_status::ready;
+    }
+
+    resolve_gate().release();
+    const bool finished = flow_finished.wait_for(limit) == std::future_status::ready;
+
+    // Everything below reads state the runner thread wrote, so it stops first.
+    io_ctx.stop();
+    runner.join();
+
+    ASSERT_TRUE(lookup_held) << "the discovery fetch never reached getaddrinfo()";
+    ASSERT_TRUE(abort_ran) << "the abort posted by close() never ran on the io_context";
+    EXPECT_TRUE(finished) << "close() was lost: the flow resumed from the lookup after the "
+                             "transport closed and is still running";
+    EXPECT_EQ(stalling.accepted(), 0)
+        << "the flow connected to the metadata server after the transport had closed";
+    if (finished) {
+        EXPECT_NE(failure, nullptr) << "a flow cut short by close() must report an error";
+    }
+}
+
+namespace {
+
+/// One request against a stalling server on an io_context run by two threads, with
+/// abort_pending() called while one of them is inside the socket() call that opens the exchange's
+/// connection. `request` issues it, and opens `sockets_before_the_held_one` connections first.
+///
+/// The exchange has passed its last latch check, so only the posted close can stop it. Because the
+/// exchange runs on the client's strand, the close runs once the exchange next suspends, with the
+/// socket open; off the strand the second io thread would run it with nothing to close, and the
+/// exchange would block on the stalling server until the HTTP timeout.
+void expect_abort_during_socket_open_stops_the_exchange(
+    asio::io_context& io_ctx, const std::shared_ptr<mcp::auth::OAuthHttpClient>& client,
+    std::function<mcp::Task<void>()> request, int sockets_before_the_held_one = 0) {
+    socket_gate().arm(sockets_before_the_held_one);
+
+    boost::system::error_code request_error;
+    std::promise<void> request_done;
+    auto request_finished = request_done.get_future();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await request();
+            } catch (const boost::system::system_error& error) {
+                request_error = error.code();
+            } catch (...) {
+            }
+            request_done.set_value();
+        },
+        asio::detached);
+
+    std::thread first_runner([&io_ctx]() { io_ctx.run(); });
+    std::thread second_runner([&io_ctx]() { io_ctx.run(); });
+
+    const auto limit = std::chrono::seconds(10);
+    const bool open_held = socket_gate().wait_until_entered(limit);
+
+    // One io thread is parked in socket(), so the other runs everything posted from here, in
+    // order: a close that could run at all has run by the time the marker behind it does.
+    std::promise<void> marker_done;
+    auto marker_finished = marker_done.get_future();
+    bool marker_ran = false;
+    if (open_held) {
+        client->abort_pending();
+        asio::post(io_ctx, [&]() { marker_done.set_value(); });
+        marker_ran = marker_finished.wait_for(limit) == std::future_status::ready;
+    }
+
+    socket_gate().release();
+    const bool finished = request_finished.wait_for(limit) == std::future_status::ready;
+
+    // Everything below reads state the runner threads wrote, so they stop first.
+    io_ctx.stop();
+    first_runner.join();
+    second_runner.join();
+
+    ASSERT_TRUE(open_held) << "the exchange never reached socket()";
+    ASSERT_TRUE(marker_ran) << "the second io thread never ran the marker posted after the abort";
+    ASSERT_TRUE(finished) << "abort_pending() was lost: its close ran while the exchange was "
+                             "opening its socket on another thread, and the exchange is still "
+                             "running";
+    EXPECT_TRUE(request_error == asio::error::operation_aborted) << request_error.message();
+}
+
+}  // namespace
+
+TEST(AuthTransportCloseTest, AbortWhileAnotherIoThreadOpensTheSocketStopsAGet) {
+    asio::io_context io_ctx;
+    StallingServer stalling(io_ctx);
+    stalling.accept_and_stall();
+    const auto base = stalling.base_url();
+
+    auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+    client->set_metadata_policy(loopback_policy(base));
+
+    expect_abort_during_socket_open_stops_the_exchange(
+        io_ctx, client, [&]() -> mcp::Task<void> { (void)co_await client->get_json(base + "/prm"); });
+}
+
+// A redirect is followed on a fresh socket, opened long after the exchange first reached the
+// strand. The first hop's socket() passes the gate and the second hop's is held.
+TEST(AuthTransportCloseTest, AbortWhileAnotherIoThreadOpensTheSocketStopsARedirectHop) {
+    asio::io_context io_ctx;
+    StallingServer stalling(io_ctx);
+    stalling.accept_and_stall();
+    const auto stalling_base = stalling.base_url();
+
+    LoopbackServer redirecting(io_ctx);
+    const auto base = redirecting.base_url();
+    redirecting.set_handler([&](const http::request<http::string_body>&) {
+        http::response<http::string_body> redirect{http::status::found, 11};
+        redirect.set(http::field::location, stalling_base + "/prm");
+        return redirect;
+    });
+    asio::co_spawn(io_ctx, redirecting.serve(1), asio::detached);
+
+    auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allowed_origins = {base, stalling_base};
+    policy.allow_plain_http_loopback = true;
+    client->set_metadata_policy(policy);
+
+    expect_abort_during_socket_open_stops_the_exchange(
+        io_ctx, client, [&]() -> mcp::Task<void> { (void)co_await client->get_json(base + "/prm"); },
+        1);
+}
+
+TEST(AuthTransportCloseTest, AbortWhileAnotherIoThreadOpensTheSocketStopsAJsonPost) {
+    asio::io_context io_ctx;
+    StallingServer stalling(io_ctx);
+    stalling.accept_and_stall();
+    const auto base = stalling.base_url();
+
+    auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+    client->set_metadata_policy(loopback_policy(base));
+
+    const json registration = {{"client_name", "test"}};
+    expect_abort_during_socket_open_stops_the_exchange(io_ctx, client, [&]() -> mcp::Task<void> {
+        (void)co_await client->post_json(base + "/register", registration);
+    });
+}
+
+TEST(AuthTransportCloseTest, AbortWhileAnotherIoThreadOpensTheSocketStopsATokenRequest) {
+    asio::io_context io_ctx;
+    StallingServer stalling(io_ctx);
+    stalling.accept_and_stall();
+    const auto base = stalling.base_url();
+
+    auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+    client->set_metadata_policy(loopback_policy(base));
+
+    mcp::auth::OAuthConfig config;
+    config.client_id = "test-client";
+    config.token_endpoint = base + "/token";
+
+    expect_abort_during_socket_open_stops_the_exchange(io_ctx, client, [&]() -> mcp::Task<void> {
+        (void)co_await client->refresh_token(config, "refresh-token");
+    });
+}
+
+#endif  // __linux__
+
+// abort_pending() against exchanges at every stage of their life, on an io_context run by three
+// threads and with nothing ordering the two: each abort is issued a varying few microseconds after
+// its request starts. The exchange and the close abort_pending() posts touch the same socket, so
+// they must never run at the same time. The assertions hold either way; the oracle for that
+// property is ThreadSanitizer, which reports the two colliding unless both run on the client's
+// strand.
+TEST(AuthTransportCloseTest, AbortRacingExchangesOnThreeIoThreadsEndsEveryRequest) {
+    asio::io_context io_ctx;
+    auto work = asio::make_work_guard(io_ctx);
+
+    // Accepts and immediately drops every connection, so an exchange the abort misses still ends.
+    asio::ip::tcp::acceptor acceptor(io_ctx, {asio::ip::make_address("127.0.0.1"), 0});
+    const auto base = "http://127.0.0.1:" + std::to_string(acceptor.local_endpoint().port());
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            for (;;) {
+                boost::system::error_code accept_error;
+                auto socket = co_await acceptor.async_accept(
+                    asio::redirect_error(asio::use_awaitable, accept_error));
+                if (accept_error) {
+                    co_return;
+                }
+            }
+        },
+        asio::detached);
+
+    std::vector<std::thread> runners;
+    for (int index = 0; index < 3; ++index) {
+        runners.emplace_back([&io_ctx]() { io_ctx.run(); });
+    }
+
+    const int requests = 2000;
+    int ended = 0;
+    for (int index = 0; index < requests; ++index) {
+        auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+        client->set_metadata_policy(loopback_policy(base));
+
+        std::promise<void> request_done;
+        auto request_finished = request_done.get_future();
+        asio::co_spawn(
+            io_ctx,
+            [&, client]() -> mcp::Task<void> {
+                try {
+                    (void)co_await client->get_json(base + "/prm");
+                } catch (...) {
+                }
+                request_done.set_value();
+            },
+            asio::detached);
+
+        const auto strike =
+            std::chrono::steady_clock::now() + std::chrono::microseconds((index * 13) % 400);
+        while (std::chrono::steady_clock::now() < strike) {
+        }
+        client->abort_pending();
+
+        if (request_finished.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
+            break;
+        }
+        ++ended;
+    }
+
+    io_ctx.stop();
+    for (auto& runner : runners) {
+        runner.join();
+    }
+
+    EXPECT_EQ(ended, requests) << "a request neither completed nor was aborted";
+}
+
+// A request runs on the client's strand, and its caller is resumed off it. A caller left on the
+// strand would hold it for as long as it kept running, and a caller that blocks there -- here, on
+// a gate the test holds -- would stall every other request the client has, along with the close
+// abort_pending() posts, until it let go.
+TEST(AuthHttpClientExecutorTest, ACallerThatBlocksAfterARequestDoesNotStallTheClient) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler(
+        [](const http::request<http::string_body>&) { return json_response({{"ok", true}}); });
+    asio::co_spawn(io_ctx, server.serve(2), asio::detached);
+
+    auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+    client->set_metadata_policy(loopback_policy(base));
+
+    std::promise<void> first_resumed;
+    auto first_has_resumed = first_resumed.get_future();
+    std::promise<void> release_first;
+    auto first_released = release_first.get_future();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                (void)co_await client->get_json(base + "/first");
+            } catch (...) {
+            }
+            first_resumed.set_value();
+            // Blocks the io thread it resumed on, as a caller doing synchronous work would.
+            (void)first_released.wait_for(std::chrono::seconds(30));
+        },
+        asio::detached);
+
+    std::thread first_runner([&io_ctx]() { io_ctx.run(); });
+    std::thread second_runner([&io_ctx]() { io_ctx.run(); });
+
+    const auto limit = std::chrono::seconds(10);
+    const bool resumed = first_has_resumed.wait_for(limit) == std::future_status::ready;
+
+    std::promise<void> second_done;
+    auto second_finished = second_done.get_future();
+    bool finished = false;
+    if (resumed) {
+        asio::co_spawn(
+            io_ctx,
+            [&]() -> mcp::Task<void> {
+                try {
+                    (void)co_await client->get_json(base + "/second");
+                } catch (...) {
+                }
+                second_done.set_value();
+            },
+            asio::detached);
+        finished = second_finished.wait_for(limit) == std::future_status::ready;
+    }
+
+    release_first.set_value();
+    io_ctx.stop();
+    first_runner.join();
+    second_runner.join();
+
+    ASSERT_TRUE(resumed) << "the first request never returned to its caller";
+    EXPECT_TRUE(finished) << "a second request could not run while the first request's caller was "
+                             "blocked: that caller was resumed on the client's strand";
+}
+
+#if BOOST_VERSION >= 107700
+
+namespace {
+
+struct CancelledCallerOutcome {
+    bool resumed{false};
+    bool has_result{false};
+    boost::system::error_code error;
+    /// Whether the caller's later awaits still throw once it is cancelled, read after the request.
+    bool still_throws_if_cancelled{false};
+    bool second_request_finished{false};
+};
+
+/// Cancel a caller while its request is running, then let it block where it resumes and issue a
+/// second request behind it. The cancellation is emitted from the resolver hook, which runs on the
+/// client's strand in the middle of the exchange, so it lands at an exact place.
+///
+/// The caller accepts every kind of cancellation; the exchange keeps the default and reacts to
+/// terminal cancellation only. A terminal cancellation therefore ends the exchange, and a total one
+/// marks the caller cancelled while the exchange runs to completion.
+CancelledCallerOutcome cancel_a_caller_mid_request(asio::cancellation_type type) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler(
+        [](const http::request<http::string_body>&) { return json_response({{"ok", true}}); });
+    asio::co_spawn(io_ctx, server.serve(1), asio::detached);
+
+    auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+    client->set_metadata_policy(loopback_policy(base));
+
+    asio::cancellation_signal cancel;
+    client->set_host_resolver([&cancel, type](const std::string&, const std::string&) {
+        cancel.emit(type);
+        return std::vector<std::string>{"127.0.0.1"};
+    });
+
+    CancelledCallerOutcome outcome;
+    std::promise<void> first_resumed;
+    auto first_has_resumed = first_resumed.get_future();
+    std::promise<void> release_first;
+    auto first_released = release_first.get_future();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            co_await asio::this_coro::reset_cancellation_state(asio::enable_total_cancellation());
+            try {
+                (void)co_await client->get_json(base + "/first");
+                outcome.has_result = true;
+            } catch (const boost::system::system_error& error) {
+                outcome.error = error.code();
+            } catch (...) {
+            }
+            outcome.still_throws_if_cancelled = co_await asio::this_coro::throw_if_cancelled();
+            first_resumed.set_value();
+            // Blocks the io thread it resumed on, as a caller doing synchronous work would.
+            (void)first_released.wait_for(std::chrono::seconds(30));
+        },
+        asio::bind_cancellation_slot(cancel.slot(), asio::detached));
+
+    std::thread first_runner([&io_ctx]() { io_ctx.run(); });
+    std::thread second_runner([&io_ctx]() { io_ctx.run(); });
+
+    const auto limit = std::chrono::seconds(10);
+    outcome.resumed = first_has_resumed.wait_for(limit) == std::future_status::ready;
+
+    std::promise<void> second_done;
+    auto second_finished = second_done.get_future();
+    if (outcome.resumed) {
+        asio::co_spawn(
+            io_ctx,
+            [&]() -> mcp::Task<void> {
+                try {
+                    // Outside the policy's origins: refused on the client's strand, with no
+                    // lookup, so it ends at once unless something is holding that strand.
+                    (void)co_await client->get_json("http://192.0.2.1/second");
+                } catch (...) {
+                }
+                second_done.set_value();
+            },
+            asio::detached);
+        outcome.second_request_finished = second_finished.wait_for(limit) == std::future_status::ready;
+    }
+
+    release_first.set_value();
+    io_ctx.stop();
+    first_runner.join();
+    second_runner.join();
+    return outcome;
+}
+
+}  // namespace
+
+// Cancelling the caller cancels its exchange, and the caller still leaves the client's strand
+// before it runs again. co_await throws for a cancelled coroutine before initiating anything, so
+// the post that takes the caller off the strand has to be made with that switched off.
+TEST(AuthHttpClientExecutorTest, ACancelledCallerThatBlocksDoesNotStallTheClient) {
+    const auto outcome = cancel_a_caller_mid_request(asio::cancellation_type::terminal);
+
+    ASSERT_TRUE(outcome.resumed) << "the cancelled request never returned to its caller";
+    EXPECT_FALSE(outcome.has_result);
+    EXPECT_TRUE(outcome.error == asio::error::operation_aborted) << outcome.error.message();
+    EXPECT_TRUE(outcome.still_throws_if_cancelled)
+        << "the request left the caller's coroutine ignoring its own cancellation";
+    EXPECT_TRUE(outcome.second_request_finished)
+        << "a second request could not run while the cancelled caller was blocked: that caller "
+           "was resumed on the client's strand";
+}
+
+// A cancellation the exchange does not react to leaves it to finish, and what it fetched is still
+// the caller's answer: leaving the strand must not turn a completed result into operation_aborted.
+TEST(AuthHttpClientExecutorTest, AResultThatCompletedDespiteACancellationIsDelivered) {
+    const auto outcome = cancel_a_caller_mid_request(asio::cancellation_type::total);
+
+    ASSERT_TRUE(outcome.resumed) << "the request never returned to its caller";
+    EXPECT_TRUE(outcome.has_result)
+        << "the completed result was replaced by: " << outcome.error.message();
+    EXPECT_TRUE(outcome.still_throws_if_cancelled)
+        << "the request left the caller's coroutine ignoring its own cancellation";
+    EXPECT_TRUE(outcome.second_request_finished)
+        << "a second request could not run while the cancelled caller was blocked: that caller "
+           "was resumed on the client's strand";
+}
+
+#endif  // BOOST_VERSION >= 107700
 
 // The closed check and the flight read-or-create share one critical section in handle_challenge().
 // Split across two, a request that passed the check before close() ran could still create a fresh
@@ -2470,13 +3018,13 @@ TEST(AuthTransportCloseTest, CloseThenChallengeThrowsPromptlyWithoutAnyDiscovery
     EXPECT_TRUE(requested_scopes.empty());
 }
 
-// Authenticator::try_handle_challenge() is a coroutine on the virtual this overrides, so its
-// contract is the lazy one: building the awaitable does nothing, and any error surfaces from the
-// await. Impl::handle_challenge() contains no co_await or co_return, which makes it a plain
-// function returning an awaitable, so a bare `throw` in its body fired when try_handle_challenge()
-// was *called* instead. A caller that builds the awaitable first and awaits it later -- or stores
-// it, or hands it to a combinator -- saw the exception escape from the wrong place, outside
-// whatever try/catch was wrapped around the await.
+// Authenticator::try_handle_challenge() is a coroutine on the virtual this overrides, so its contract
+// is the lazy one: building the awaitable does nothing, and any error surfaces from the await.
+// Impl::handle_challenge() contains no co_await or co_return, which makes it a plain function
+// returning an awaitable, so a bare `throw` in its body would fire when try_handle_challenge() is
+// *called* instead. A caller that builds the awaitable first and awaits it later -- or stores it, or
+// hands it to a combinator -- would see the exception escape outside whatever try/catch was wrapped
+// around the await.
 TEST(AuthTransportCloseTest, ChallengeOnAClosedManagerThrowsFromTheAwaitNotFromTheCall) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
@@ -2596,20 +3144,13 @@ TEST(AuthTransportCloseTest, AuthenticatorCloseThenRefreshPerformsNoNetworkIO) {
     EXPECT_EQ(authenticator->get_access_token(), "stale-access-token");
 }
 
-// Closing one authenticator must not disable another that merely shares the same HTTP client.
+// Closing one authenticator must not disable another that shares the same HTTP client, and a churn of
+// short-lived authenticators must leave no per-scope record behind on the client.
 //
-// The abort latch has to outlive every exchange that could still consult it, and must not outlive
-// the process. A shared client with a churn of short-lived authenticators -- one per server across
-// a reconnect loop -- is the ordinary shape that tells the two apart: each close() latches a scope,
-// and if the client is the thing remembering which scopes are latched, it remembers one more
-// forever every time an authenticator goes away.
-//
-// Asserted on the retained records themselves, not on a stand-in that happens to move with them.
-//
-// LIMITATION: this test cannot fail on its own. It pins the absence of the per-scope container the
-// client no longer has, and the accessor answers zero structurally, so a newly introduced container
-// would not be detected here. TheScopeAbortLatchIsReleasedByEveryChurnedAuthenticator below is the
-// live guard for scope lifetime -- edit that one.
+// LIMITATION: this test cannot fail on its own. The accessor answers zero structurally, so a newly
+// introduced per-scope container would not be detected here.
+// TheScopeAbortLatchIsReleasedByEveryChurnedAuthenticator below is the live guard for scope lifetime
+// -- edit that one.
 TEST(AuthHttpClientScopeRetentionTest, RetainsNoPerScopeStateAsAuthenticatorsComeAndGo) {
     asio::io_context io_ctx;
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
@@ -2651,14 +3192,9 @@ TEST(AuthHttpClientScopeRetentionTest, RetainsNoPerScopeStateAsAuthenticatorsCom
 // The live guard for scope-latch lifetime, and the one to edit if you change how scopes are held.
 //
 // Counts the abort latches alive in the process, drives a churn of authenticators that each run a
-// real token refresh through their scope, and requires the count to return to its starting value.
-// It goes red if a latch outlives its scope: a capture that escapes into the client, a reference
-// cycle between the latch and an exchange, or an exchange never released from `active_exchanges`.
-//
-// The peak assertion exists so the test cannot pass vacuously -- instrumentation that always
-// reported zero would satisfy return-to-baseline in silence. The peak is the number of live latch
-// objects, which here is the authenticators the test is holding; sampling from inside the token
-// server's handler is what makes `in_flight_samples` non-zero, not what makes the peak larger.
+// real token refresh through their scope, and requires the count to return to its starting value. The
+// peak assertion keeps the test from passing vacuously against instrumentation that always reports
+// zero; the peak is the number of authenticators the test is holding.
 TEST(AuthHttpClientScopeRetentionTest, TheScopeAbortLatchIsReleasedByEveryChurnedAuthenticator) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
@@ -3034,8 +3570,7 @@ TEST(AuthClientIdentityBindingTest, RefusesInjectedCredentialsBoundToADifferentI
 }
 
 // The refusal is aimed at the secret, not at injected credentials in general. A public client's
-// `client_id` is not confidential, so an unbound one still authorizes normally and the fix is not a
-// sledgehammer.
+// `client_id` is not confidential, so an unbound one still authorizes normally.
 TEST(AuthClientIdentityBindingTest, UnboundPublicClientCredentialsAreStillUsed) {
     mcp::auth::ClientIdentityConfig config;
     mcp::auth::OAuthClientInformation injected;
@@ -3191,15 +3726,10 @@ TEST(AuthClientIdentityBindingTest, AuthorizesNormallyWhenTheInjectedSecretNames
     EXPECT_TRUE(outcome.secret_seen_on_the_wire);
 }
 
-// `client_issuer` is NOT a universal remedy for the refusal above, and the refusal has to say so.
-//
-// The manager's constructor copies `client_issuer` into the injected credentials only when
-// `client_identity.pre_registered` was not already populated. A caller who builds that struct
-// themselves is on a path where `client_issuer` is never read, so being told to set it sends them
-// to a field that cannot help -- while they are working to clear a security refusal.
-//
-// This pins both halves: that setting `client_issuer` really does leave a hand-built
-// `pre_registered` refused, and that the message names the field that would actually work.
+// `client_issuer` does not clear the refusal above for hand-built credentials, and the refusal has to
+// say so: the manager's constructor copies `client_issuer` into the injected credentials only when
+// `client_identity.pre_registered` was not already populated. Pins that a hand-built `pre_registered`
+// stays refused with `client_issuer` set, and that the message names the field that would work.
 TEST(AuthClientIdentityBindingTest, RefusalNamesTheFieldThatAppliesToHandBuiltCredentials) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
@@ -3835,15 +4365,10 @@ TEST(AuthDiagnosticsSanitizingTest, AnAuthorizationResponseErrorCannotForgeALogL
     EXPECT_EQ(failure.find('\r'), std::string::npos) << failure;
 }
 
-// The sanitizer's budget is counted in BYTES, so a payload of multi-byte characters can be made to
-// straddle it. Cutting there emitted a half-written character: invalid UTF-8, from the one function
-// whose job is making peer-controlled text safe to log. A JSON log encoder handed invalid UTF-8
-// throws or drops the record, so a peer could still degrade logging, just by a different route than
-// the newline forgery already closed.
-//
-// The payload here is a long run of three-byte characters chosen so the 256-byte limit lands in the
-// middle of one. It also carries ill-formed bytes, which reach the SDK through headers rather than
-// through a parsed document and so have had nothing validate them.
+// The sanitizer's budget is counted in bytes, so a multi-byte character can straddle it; cutting
+// there would emit invalid UTF-8, which a JSON log encoder throws on or drops. The payload is a long
+// run of three-byte characters chosen so the 256-byte limit lands in the middle of one, plus
+// ill-formed bytes, which reach the SDK through headers rather than through a parsed document.
 TEST(AuthDiagnosticsSanitizingTest, ATruncatedMultiByteIssuerStaysWellFormedUtf8) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
@@ -4072,20 +4597,12 @@ mcp::StreamableHttpSessionManager::ServerFactory make_pairing_server_factory() {
 
 }  // namespace
 
-// EXECUTED, not read: this is the gap as the shipped code actually behaves, pinned so it cannot
-// change unnoticed in either direction.
-//
-// RFC 9728 section 5.1 has the resource server point the client at its metadata with a
-// `resource_metadata` parameter on the challenge. Both places that set that header send a bare
-// `Bearer`, because this server was given a validator and nothing else.
-//
-// So a client that receives this challenge is told it needs a token and nothing about where to get
-// one. It can only fall back to the well-known location derived from the URL it was configured
-// with, which this server does not serve, and discovery fails.
-//
-// This is the cost of leaving the resource undescribed, not a gap in the SDK:
+// Pins how a server configured with only a validator behaves. RFC 9728 section 5.1 has the resource
+// server point the client at its metadata with a `resource_metadata` parameter on the challenge; this
+// server sends a bare `Bearer`, so the client can only fall back to the well-known location derived
+// from its configured URL, which this server does not serve, and discovery fails.
 // `ClientDiscoversAuthorizationFromTheServersOwnChallenge` below is the same pairing with
-// set_protected_resource_metadata() configured. Read them as a pair.
+// set_protected_resource_metadata() configured.
 TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDiscoveryCannotStart) {
     constexpr unsigned short port = 19211;
 
@@ -4142,12 +4659,10 @@ TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDisc
     EXPECT_EQ(challenge.www_authenticate.find("resource_metadata"), std::string::npos)
         << challenge.www_authenticate;
 
-    // And the consequence.
-    //
-    // Note what the client does NOT do: it does not give up. Told nothing, it falls back to
-    // GUESSING the well-known locations under the URL it was configured with, spends real requests
-    // on them, and only then fails. So the cost of the missing parameter is not one failed
-    // handshake, it is the client probing a server that never advertised anything.
+    // Told nothing, the client does not give up: it falls back to guessing the well-known locations
+    // under the URL it was configured with, spends real requests on them, and only then fails. So the
+    // cost of the missing parameter is not one failed handshake, it is the client probing a server
+    // that never advertised anything.
     EXPECT_GT(discovery_attempts.load(), 0)
         << "the client should have been driven to guess at well-known locations";
     EXPECT_FALSE(client_authorized)
@@ -4159,12 +4674,12 @@ TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDisc
     EXPECT_NE(client_failure.find("/mcp"), std::string::npos) << client_failure;
 }
 
-// The end state the pair above was waiting for. A server that is told what resource it represents
-// advertises where its metadata lives, so the shipped client has somewhere to begin discovery.
+// A server that is told what resource it represents advertises where its metadata lives, so the
+// shipped client has somewhere to begin discovery.
 //
-// The seam stays guarded in both directions: the test above still pins that a server configured
-// with only a validator sends the bare challenge, so the parameter cannot appear by accident, and
-// this one fails if it ever stops appearing when the metadata IS configured.
+// The seam stays guarded in both directions: the test above pins that a server configured with only a
+// validator sends the bare challenge, so the parameter cannot appear by accident, and this one fails
+// if it ever stops appearing when the metadata IS configured.
 TEST(AuthClientServerPairingTest, ClientDiscoversAuthorizationFromTheServersOwnChallenge) {
     constexpr unsigned short port = 19212;
 
@@ -4201,15 +4716,10 @@ TEST(AuthClientServerPairingTest, ClientDiscoversAuthorizationFromTheServersOwnC
         << "RFC 9728 5.1: the challenge must name where the client can discover how to authenticate";
 }
 
-// set_metadata_policy() and set_host_resolver() are taken under the mutex that already guards the
-// exchange list, and each exchange reads them ONCE when it is built. Unsynchronised they are a real
-// race for anyone driving OAuthHttpClient directly -- which is exactly who the public API is for;
-// in-tree they would be safe only by accident, because OAuthAuthorizationManager's constructor sets
-// both before anything is spawned.
-//
-// Reading them once is the part with teeth beyond thread safety: an exchange re-validates every
-// redirect hop, so a policy swapped mid-chain would have checked hop one against the old rules and
-// hop two against the new. This test pins that a chain runs under one policy from end to end.
+// set_metadata_policy() and set_host_resolver() are taken under the mutex that guards the exchange
+// list, and each exchange reads them once when it is built. An exchange re-validates every redirect
+// hop, so this pins that a chain runs under one policy from end to end even when the policy is
+// swapped mid-chain.
 TEST(AuthHttpClientPolicyTest, APolicyInstalledMidExchangeDoesNotChangeTheRulesUnderIt) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);

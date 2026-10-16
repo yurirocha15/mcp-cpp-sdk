@@ -1019,8 +1019,10 @@ TEST_F(ServerCoreTest, ConcurrentReverseRequestsRemainCorrelatedOnMultiThreadedE
     };
     launch_requests();
 
+    // Wide for the same reason as in the client's twin of this test: a sanitizer can stop every
+    // thread for seconds, and the bound only ends a run that has gone wrong.
     boost::asio::steady_timer watchdog(io_ctx_);
-    watchdog.expires_after(5s);
+    watchdog.expires_after(60s);
     watchdog.async_wait(
         [&completed, &stop_poll, client_transport](const boost::system::error_code& error) {
             if (!error && completed.load(std::memory_order_acquire) != request_count) {
@@ -1481,13 +1483,10 @@ TEST_F(ServerCoreTest, DiscoverWorksAgainAfterInitializeIdempotently) {
 namespace {
 
 // Drives one server-initiated request that the client answers with a JSON-RPC error object, and
-// reports the diagnostic the server raised.
-//
-// Same defect as the peer-controlled text in the client's McpError, opposite direction: here the
-// untrusted side is the client. Every server-initiated request -- sampling/createMessage,
-// elicitation, roots/list -- can be answered with an error whose `message` the client writes, and
-// that message is deserialized verbatim and interpolated into the runtime_error the server
-// operator logs. There is no authorization step in the way.
+// reports the diagnostic the server raised. Here the untrusted side is the client: every
+// server-initiated request -- sampling/createMessage, elicitation, roots/list -- can be answered with
+// an error whose `message` is deserialized verbatim and interpolated into the runtime_error the
+// server operator logs.
 struct ReverseErrorOutcome {
     bool threw{false};
     std::string what;

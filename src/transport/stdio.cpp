@@ -194,8 +194,8 @@ struct StdioTransport::Impl {
         bool read_pending{false};
         bool input_ended{false};
         std::atomic<bool> closed{false};
-        // A custom stream buffer can call close() from inside write/flush.
-        // Recursive locking keeps that re-entrant close from deadlocking.
+        /// A custom stream buffer can call close() from inside write/flush.
+        /// Recursive locking keeps that re-entrant close from deadlocking.
         std::recursive_mutex output_mutex;
     };
 
@@ -333,8 +333,8 @@ struct StdioTransport::Impl {
         co_return;
     }
 
-    // Declared first so it outlives `state`, which holds a reference into it,
-    // and so standard output is handed back only after the last write.
+    /// Declared first so it outlives `state`, which holds a reference into it,
+    /// and so standard output is handed back only after the last write.
     std::unique_ptr<OwnedStdout> owned_output;
     std::istream& input;
     std::shared_ptr<SharedState> state;
