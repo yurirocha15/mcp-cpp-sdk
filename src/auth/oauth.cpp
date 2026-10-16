@@ -1009,25 +1009,7 @@ Task<nlohmann::json> OAuthHttpClient::post_json(const std::string& url, const nl
     return impl_->post_json(url, body.dump());
 }
 
-namespace detail {
-
-/// Defined here and nowhere else; the public header only grants it friendship.
-struct OAuthTestAccess {
-    static std::size_t retained_scope_records(const OAuthHttpClient& client) {
-        // Structural, not a stubbed zero: there is no per-scope container left to count. A change
-        // that reintroduces one has to answer here, and the retention test will see it.
-        std::lock_guard lock(client.impl_->active_mutex);
-        return 0;
-    }
-};
-
-}  // namespace detail
-
 namespace internal {
-
-std::size_t retained_scope_record_count(const OAuthHttpClient& client) {
-    return detail::OAuthTestAccess::retained_scope_records(client);
-}
 
 std::size_t live_scope_latch_count() { return detail::OAuthScopeState::live_count(); }
 

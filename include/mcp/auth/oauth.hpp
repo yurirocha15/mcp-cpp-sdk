@@ -222,20 +222,6 @@ namespace detail {
 /// scope instead of accumulating on the client for the life of the process.
 struct OAuthScopeState;
 
-/// Reach-in for this SDK's own tests, declared opaque on purpose.
-///
-/// Why a public header knows about a test type at all: the accessors that use it need to read
-/// this client's private state, and granting friendship to one opaque tag is the narrowest way to
-/// allow that. It hands out nothing callable -- the type is defined only inside the
-/// implementation, and the accessors are declared in src/auth/oauth_internal.hpp, which is not
-/// installed, so no consumer can reach them without hand-redeclaring an implementation symbol.
-/// The symbols themselves are exported, because the test binary links the shared library and this
-/// library is built with hidden visibility; "absent from every installed header" and "not
-/// exported" were not both achievable without changing what the tests link against, which is a
-/// far larger change than it would be worth. A friend declaration does not affect layout, so
-/// binary compatibility is unaffected.
-struct OAuthTestAccess;
-
 }  // namespace detail
 
 /**
@@ -386,7 +372,6 @@ class MCP_API OAuthHttpClient {
     std::shared_ptr<Impl> impl_;
 
     friend class OAuthHttpClientScope;
-    friend struct detail::OAuthTestAccess;
 };
 
 /**
