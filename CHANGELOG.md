@@ -41,6 +41,15 @@ Versioning; a `0.x` version is a stable release unless its version has an
   (triage SLAs), `VERSIONING.md` (compatibility surface), and
   `DEPENDENCY_POLICY.md` (runtime dependency floors).
 - GitHub issue templates and a label manifest (`.github/labels.yml`).
+- JSON-RPC error code constants from the spec-reserved band:
+  `g_HEADER_MISMATCH` (`-32020`), `g_MISSING_REQUIRED_CLIENT_CAPABILITY`
+  (`-32021`) and `g_UNSUPPORTED_PROTOCOL_VERSION` (`-32022`).
+- An optional `extensions` member on `ClientCapabilities` and
+  `ServerCapabilities`, keyed by extension name. Adding it changes the layout
+  of both structs.
+- `g_PROTOCOL_VERSION_2026_07_28` and `g_DISCOVERABLE_PROTOCOL_VERSIONS`, the
+  version list for `server/discover`. `g_SUPPORTED_PROTOCOL_VERSIONS`, which
+  governs `initialize` negotiation, is unchanged.
 
 ### Changed
 
