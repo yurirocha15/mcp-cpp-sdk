@@ -35,9 +35,27 @@ namespace {
 
 constexpr int kStdoutDescriptor = 1;
 constexpr int kStderrDescriptor = 2;
+// The protocol's copy of stdout must not take one of the standard descriptors.
+// In a process started with stderr closed, 2 is the lowest free descriptor, and
+// pointing stdout at stderr would then point it back at the protocol stream.
+constexpr int kFirstPrivateDescriptor = 3;
 
 #if defined(_WIN32)
-int duplicate_descriptor(int descriptor) { return ::_dup(descriptor); }
+// _dup() takes the lowest free descriptor, so set aside any it hands out below
+// kFirstPrivateDescriptor and keep asking.
+int duplicate_descriptor(int descriptor) {
+    int standard[kFirstPrivateDescriptor];
+    int held = 0;
+    int duplicate = ::_dup(descriptor);
+    while (duplicate >= 0 && duplicate < kFirstPrivateDescriptor) {
+        standard[held++] = duplicate;
+        duplicate = ::_dup(descriptor);
+    }
+    while (held > 0) {
+        ::_close(standard[--held]);
+    }
+    return duplicate;
+}
 int replace_descriptor(int source, int target) { return ::_dup2(source, target); }
 int release_descriptor(int descriptor) { return ::_close(descriptor); }
 int open_null_device() { return ::_open("NUL", _O_WRONLY); }
@@ -45,7 +63,9 @@ std::ptrdiff_t write_descriptor(int descriptor, const char* data, std::size_t si
     return ::_write(descriptor, data, static_cast<unsigned int>(size));
 }
 #else
-int duplicate_descriptor(int descriptor) { return ::dup(descriptor); }
+int duplicate_descriptor(int descriptor) {
+    return ::fcntl(descriptor, F_DUPFD_CLOEXEC, kFirstPrivateDescriptor);
+}
 int replace_descriptor(int source, int target) { return ::dup2(source, target); }
 int release_descriptor(int descriptor) { return ::close(descriptor); }
 int open_null_device() { return ::open("/dev/null", O_WRONLY); }

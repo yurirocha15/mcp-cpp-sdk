@@ -729,4 +729,39 @@ TEST_F(StdioTransportTest, OnlyOneTransportMayOwnStdoutAtATime) {
     std::filesystem::remove(err);
 }
 
+// A process started with stderr closed has 2 as its lowest free descriptor. The
+// protocol copy of stdout must not land there, or redirecting stdout to stderr
+// would point the application's output straight back at the protocol channel.
+TEST_F(StdioTransportTest, OwnedStdoutStaysPrivateWhenStderrIsClosed) {
+    const auto out = scratch_file("mcp_stdio_no_stderr_out.txt");
+    const auto err = scratch_file("mcp_stdio_no_stderr_err.txt");
+
+    {
+        CapturedProcessStreams capture(out, err);
+        ::close(STDERR_FILENO);
+        std::istringstream input;
+        auto transport = mcp::StdioTransport::create_owning_stdout(io_ctx_.get_executor(), input);
+
+        boost::asio::co_spawn(
+            io_ctx_,
+            [&]() -> mcp::Task<void> {
+                co_await transport->write_message(kFramedMessage);
+                emit_stray_application_output();
+                co_await transport->write_message(kFramedMessage);
+            },
+            boost::asio::detached);
+        io_ctx_.run();
+        std::cout.flush();
+        transport.reset();
+    }
+
+    const auto lines = protocol_lines(out);
+    ASSERT_EQ(lines.size(), 2U) << "protocol channel carried: " << read_file(out);
+    EXPECT_EQ(lines[0], kFramedMessage);
+    EXPECT_EQ(lines[1], kFramedMessage);
+
+    std::filesystem::remove(out);
+    std::filesystem::remove(err);
+}
+
 #endif  // !defined(_WIN32)
