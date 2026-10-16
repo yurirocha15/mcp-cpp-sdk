@@ -100,6 +100,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   that omits the member, before it builds an authorization request. The MCP
   authorization specification requires the client to verify PKCE support
   this way.
+- A `401` is answered by renewing the access token with the stored refresh
+  token first; the authorization flow named by the challenge runs only when
+  there is no refresh token or the renewal fails. Previously a `401` carrying
+  a Bearer challenge always started a new authorization, so the user was asked
+  to consent again whenever an access token expired. A `403` still goes
+  straight to the challenge.
 
 ## [0.2.0] - TBD
 

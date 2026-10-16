@@ -1030,6 +1030,101 @@ TEST(AuthChallengeReplayTest, ReplaysTheExactRequestAfterChallengeDrivenAuthoriz
     EXPECT_EQ(server.authorizations()[4], "Bearer granted-access-token");
 }
 
+// A 401 that carries a challenge, sent once a grant exists, renews that grant with the refresh
+// token instead of asking the user to authorize again.
+TEST(AuthChallengeReplayTest, RenewsTheGrantBeforeAuthorizingAgainOnAnUnauthorizedChallenge) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&base](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/mcp") {
+            // The access token from the first grant has expired; only the renewed one is accepted.
+            if (request[http::field::authorization] == "Bearer renewed-access-token") {
+                return status_response(http::status::accepted);
+            }
+            http::response<http::string_body> challenge{http::status::unauthorized, 11};
+            challenge.set(http::field::www_authenticate,
+                          R"(Bearer error="invalid_token", resource_metadata=")" + base + R"(/prm")");
+            return challenge;
+        }
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        if (target == "/token") {
+            if (request.body().find("grant_type=refresh_token") != std::string::npos) {
+                return json_response({{"access_token", "renewed-access-token"},
+                                      {"token_type", "Bearer"},
+                                      {"expires_in", 3600}});
+            }
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    // Room for repeated authorizations too, so authorizing instead of renewing fails fast below.
+    asio::co_spawn(io_ctx, server.serve(16), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    int callbacks = 0;
+    auto callback = [&callbacks](const mcp::auth::AuthorizationRequest& request)
+        -> mcp::Task<mcp::auth::AuthorizationResponse> {
+        ++callbacks;
+        mcp::auth::AuthorizationResponse response;
+        response.code = "test-authorization-code";
+        response.state = request.state;
+        response.iss = request.issuer;
+        co_return response;
+    };
+    const std::string wire = R"({"jsonrpc":"2.0","method":"notifications/initialized"})";
+    std::string failure;
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+                io_ctx.get_executor(), store, config, callback);
+            auto inner =
+                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+            mcp::auth::OAuthClientTransport transport(inner, manager);
+            try {
+                // The first grant, which leaves an access token and a refresh token in the store.
+                (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                             R"(/prm")");
+                co_await transport.write_message(wire);
+            } catch (const std::exception& error) {
+                failure = error.what();
+            }
+            transport.close();
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    ASSERT_EQ(failure, "");
+    EXPECT_EQ(callbacks, 1);
+    ASSERT_EQ(server.targets().size(), 6U);
+    EXPECT_EQ(server.targets()[3], "/mcp");
+    EXPECT_EQ(server.authorizations()[3], "Bearer granted-access-token");
+    EXPECT_EQ(server.targets()[4], "/token");
+    EXPECT_NE(server.bodies()[4].find("grant_type=refresh_token"), std::string::npos);
+    EXPECT_NE(server.bodies()[4].find("refresh_token=granted-refresh-token"), std::string::npos);
+    EXPECT_EQ(server.targets()[5], "/mcp");
+    EXPECT_EQ(server.bodies()[5], wire);
+    EXPECT_EQ(server.authorizations()[5], "Bearer renewed-access-token");
+}
+
 namespace {
 
 /// Consent callback that records the scope of every authorization request it is asked to run.

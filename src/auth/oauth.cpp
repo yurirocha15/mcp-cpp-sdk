@@ -2013,15 +2013,16 @@ struct OAuthClientTransport::Impl {
 
             bool authorized = false;
             try {
-                // A challenge that names its metadata can drive a full authorization exchange;
-                // renewing an existing grant is the fallback when it cannot. Renewal is pointless
-                // against an insufficient-scope refusal, so it is offered only for a 401.
-                if (!operation->authenticate_challenge.empty()) {
+                // A 401 first tries to renew the existing grant, which needs no user interaction; a
+                // challenge that names its metadata drives a full authorization exchange only when
+                // renewal is unavailable or fails. Renewal is pointless against an
+                // insufficient-scope refusal, so a 403 goes straight to the challenge.
+                if (operation->refresh_allowed) {
+                    authorized = co_await operation->owner->authenticator->try_refresh_token();
+                }
+                if (!authorized && !operation->authenticate_challenge.empty()) {
                     authorized = co_await operation->owner->authenticator->try_handle_challenge(
                         operation->authenticate_challenge);
-                }
-                if (!authorized && operation->refresh_allowed) {
-                    authorized = co_await operation->owner->authenticator->try_refresh_token();
                 }
             } catch (...) {
                 erase_pending(operation);
