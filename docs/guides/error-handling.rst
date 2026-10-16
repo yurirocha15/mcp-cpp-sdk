@@ -36,7 +36,7 @@ Server-side Error Handling
 
 Server handlers (tools, resources, prompts) can report errors in two primary ways:
 
-1. **Throwing Exceptions**: Exceptions from typed or asynchronous handlers propagate as JSON-RPC ``Internal error (-32603)`` responses. The raw synchronous ``add_tool(name, description, schema, std::function<nlohmann::json(const nlohmann::json&)>)`` overload is different: it catches exceptions and converts them into tool results with ``isError: true``.
+1. **Throwing Exceptions**: A ``std::exception`` thrown during ``tools/call``, by any tool handler (synchronous, typed or asynchronous) or by middleware, is converted into a tool result with ``isError: true`` whose text is the exception message. An exception from a resource or prompt handler is answered with a JSON-RPC ``Internal error (-32603)`` response.
 2. **Returning Error Results**: For application-level errors (e.g., "File not found" or "Invalid input"), handlers can return a ``CallToolResult`` with the ``isError`` flag set to ``true``. This allows the client to distinguish between a technical failure (like a crash or timeout) and a logical error within the tool's execution.
 
 Choosing Between Exceptions and Error Results
@@ -70,7 +70,7 @@ Example: Returning an Error Result
 Implicit Exceptions
 ~~~~~~~~~~~~~~~~~~~
 
-It's important to be aware that some library calls might throw exceptions that you don't explicitly catch. For instance, ``nlohmann::json`` throws an exception if you try to access a non-existent key using ``at()``. In typed or asynchronous handlers, those exceptions propagate as JSON-RPC internal errors; in the raw synchronous JSON overload, they are wrapped into a tool error result instead.
+It's important to be aware that some library calls might throw exceptions that you don't explicitly catch. For instance, ``nlohmann::json`` throws an exception if you try to access a non-existent key using ``at()``. In a tool handler such an exception becomes a tool error result like any other; in a resource or prompt handler it becomes a JSON-RPC internal error.
 
 .. literalinclude:: ../../examples/features/error_handling.cpp
    :language: cpp
@@ -90,7 +90,7 @@ Clients should always wrap server calls in ``try-catch`` blocks to handle potent
 Catching Server Errors
 ~~~~~~~~~~~~~~~~~~~~~~
 
-When a server returns a JSON-RPC error response, the ``Client`` methods (like ``call_tool`` or ``read_resource``) throw a ``std::runtime_error`` containing the error code and message. This simplifies the client logic, as you can use standard C++ exception handling for both local and remote failures.
+When a server returns a JSON-RPC error response, the ``Client`` methods (like ``call_tool`` or ``read_resource``) throw ``mcp::McpError``, a ``std::runtime_error`` that carries the error code and message. This simplifies the client logic, as you can use standard C++ exception handling for both local and remote failures.
 
 Handling Application Errors
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
