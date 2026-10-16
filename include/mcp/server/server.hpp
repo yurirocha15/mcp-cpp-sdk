@@ -443,7 +443,9 @@ class MCP_API Server {
      * validated, but no stateful initialize/initialized handshake is required.
      *
      * @details Request parameter decoding failures are returned as `g_INVALID_PARAMS` (-32602).
-     * Exceptions thrown by handlers or middleware are returned as `g_INTERNAL_ERROR` (-32603).
+     * Exceptions thrown by middleware, or by resource, prompt and completion handlers, are
+     * returned as `g_INTERNAL_ERROR` (-32603); a tool handler's exception becomes a tool error
+     * result (`isError: true`).
      *
      * @param json_msg The parsed JSON-RPC request object.
      * @return A task that resolves to the serialized JSON-RPC response.

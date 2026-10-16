@@ -102,11 +102,20 @@ security boundary, see :doc:`oauth`.
        co_return co_await next(ctx, params);
    });
 
-Tool middleware returns the same application value as the wrapped handler. To
-short-circuit with a tool error, throw an exception; the server converts it to
-a top-level ``CallToolResult`` with ``isError=true``. Complete protocol result
-objects belong in a typed ``CallToolResult`` handler or ``add_raw_tool()``, not
-in an ordinary JSON middleware return value.
+An exception thrown by middleware is answered as a JSON-RPC
+``Internal error (-32603)`` for every request kind, ``tools/call`` included:
+middleware decides whether a call may proceed at all, which is a protocol-level
+answer rather than a tool outcome. A middleware that wants to refuse a tool
+call with a tool error instead can return ``make_tool_error_result(...)``
+without calling ``next()``; a complete ``CallToolResult`` is passed through
+unchanged. The bundled ``make_auth_middleware()`` answers a refused
+``tools/call`` with a tool error result and a refused ``resources/read`` or
+``prompts/get`` with ``-32603``.
+
+Middleware runs outside the tool handler's exception guard, so a tool handler's
+exception never reaches it: by the time ``next()`` returns, the exception has
+already become a ``CallToolResult`` with ``isError: true``. Middleware that
+counts or logs tool failures should inspect that flag rather than catch.
 
 Logging
 ^^^^^^^
@@ -127,7 +136,7 @@ Best Practices
 
 - **Keep it focused**: Each middleware should handle exactly one concern. This makes your code easier to test, debug, and reuse across different servers.
 - **Always co_await next**: Unless you are explicitly short-circuiting, ensure you ``co_await next(ctx, params)`` to maintain the execution chain. Forgetting to call or await ``next`` will cause the request to hang or terminate prematurely.
-- **Handle exceptions**: If a middleware performs risky operations (like database queries or network calls), wrap ``next()`` in a try-catch block to ensure consistent error reporting and prevent server crashes.
+- **Handle exceptions**: If a middleware performs risky operations (like database queries or network calls), catch their failures inside the middleware. An exception that leaves a middleware is answered as ``-32603``. Wrapping ``next()`` in a try-catch sees resource and prompt handler exceptions, but not tool handler exceptions, which arrive as ``isError`` results.
 - **Mind the order**: Register global concerns (like logging or tracing) first, and more specific concerns (like tool-specific validation or authentication) later. Remember that the first registered middleware is the outermost.
 - **Use the Context**: Leverage the ``ctx`` object for logging information relevant to the middleware's task. This helps in auditing and troubleshooting request flows in production environments.
 - **Avoid Heavy lifting**: Middleware should be relatively lightweight. If a middleware needs to perform a very expensive operation, consider if it should be part of the tool handler itself or if it can be optimized with caching.

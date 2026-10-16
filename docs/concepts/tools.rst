@@ -120,9 +120,10 @@ Error Handling
 There are two primary ways to handle errors in tool handlers:
 
 1. **Throwing Exceptions**: A ``std::exception`` thrown by any tool handler
-   (synchronous, typed or asynchronous) or by middleware during ``tools/call``
-   is converted into a tool error result (``isError: true``) whose text is the
-   exception message.
+   (synchronous, typed or asynchronous) is converted into a tool error result
+   (``isError: true``) whose text is the exception message. An exception from
+   middleware is not: it is answered as a JSON-RPC ``-32603`` error (see
+   :doc:`middleware`).
 2. **Explicit Error Returns**: A handler declared with
    ``Out=mcp::CallToolResult`` can return a complete result whose ``isError``
    field is ``true``. ``add_raw_tool()`` provides the equivalent low-level JSON
