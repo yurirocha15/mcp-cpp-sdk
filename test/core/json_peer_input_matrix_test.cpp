@@ -39,7 +39,7 @@
 // a member that tolerates being absent but throws when a peer sends it as an
 // explicit null. That is a recurring defect class, and
 // scripts/json_census_dispositions.json dispositions it "fix".
-// 66 of the 317 field entries below still carry it; there were 87 before the
+// 0 of the 317 field entries below still carry it; there were 87 before the
 // explicit-null decoding fixes. Those rows pin behaviour as it is so the
 // suite stays green. They do not endorse it. Fixing one makes the build check
 // report this file stale until it is regenerated with the fix. The check reads
@@ -182,9 +182,9 @@ void check_field(const json& baseline, const FieldExpect& f) {
 TEST(JsonPeerInputMatrix, Annotations) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
-        {"audience", R"json(["user"])json", 0, false, true, true, false},
-        {"lastModified", R"json("x")json", 0, false, true, true, false},
-        {"priority", R"json(1.0)json", 0, false, true, true, false},
+        {"audience", R"json(["user"])json", 0, false, false, true, false},
+        {"lastModified", R"json("x")json", 0, false, false, true, false},
+        {"priority", R"json(1.0)json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("Annotations.") + f.key);
@@ -209,7 +209,7 @@ TEST(JsonPeerInputMatrix, BlobResourceContents) {
     const json baseline = json::parse(R"json({"uri":"x","blob":"x"})json");
     static const FieldExpect fields[] = {
         {"blob", R"json("x")json", 0, true, true, true, false},
-        {"mimeType", R"json("x")json", 0, false, true, true, false},
+        {"mimeType", R"json("x")json", 0, false, false, true, false},
         {"uri", R"json("x")json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
@@ -319,7 +319,7 @@ TEST(JsonPeerInputMatrix, ClientCapabilities) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
         {"experimental", R"json({})json", 0, false, false, false, false},
-        {"extensions", R"json({})json", 0, false, true, true, false},
+        {"extensions", R"json({})json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ClientCapabilities.") + f.key);
@@ -342,7 +342,7 @@ TEST(JsonPeerInputMatrix, ClientCapabilities_ElicitationCapability) {
 TEST(JsonPeerInputMatrix, ClientCapabilities_RootsCapability) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
-        {"listChanged", R"json(true)json", 0, false, true, true, false},
+        {"listChanged", R"json(true)json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ClientCapabilities::RootsCapability.") + f.key);
@@ -439,8 +439,8 @@ TEST(JsonPeerInputMatrix, CompleteResult) {
 TEST(JsonPeerInputMatrix, CompletionResultDetails) {
     const json baseline = json::parse(R"json({"values":["x"]})json");
     static const FieldExpect fields[] = {
-        {"hasMore", R"json(true)json", 0, false, true, true, false},
-        {"total", R"json(1)json", 0, false, true, true, false},
+        {"hasMore", R"json(true)json", 0, false, false, true, false},
+        {"total", R"json(1)json", 0, false, false, true, false},
         {"values", R"json(["x"])json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
@@ -466,16 +466,16 @@ TEST(JsonPeerInputMatrix, CreateMessageRequestParams) {
     const json baseline = json::parse(R"json({"messages":[],"maxTokens":1})json");
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
-        {"includeContext", R"json("x")json", 0, false, true, true, false},
+        {"includeContext", R"json("x")json", 0, false, false, true, false},
         {"maxTokens", R"json(1)json", 0, true, true, true, false},
         {"messages", R"json([])json", 0, true, true, true, false},
         {"metadata", R"json({})json", 0, false, false, false, false},
         {"modelPreferences", R"json({})json", 0, false, false, false, false},
-        {"stopSequences", R"json(["x"])json", 0, false, true, true, false},
-        {"systemPrompt", R"json("x")json", 0, false, true, true, false},
-        {"temperature", R"json(1.0)json", 0, false, true, true, false},
+        {"stopSequences", R"json(["x"])json", 0, false, false, true, false},
+        {"systemPrompt", R"json("x")json", 0, false, false, true, false},
+        {"temperature", R"json(1.0)json", 0, false, false, true, false},
         {"toolChoice", R"json({})json", 0, false, false, false, false},
-        {"tools", R"json([{"name":"x","inputSchema":{}}])json", 0, false, true, true, false},
+        {"tools", R"json([{"name":"x","inputSchema":{}}])json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("CreateMessageRequestParams.") + f.key);
@@ -515,10 +515,10 @@ TEST(JsonPeerInputMatrix, DiscoverResult) {
     static const FieldExpect fields[] = {
         {"cacheScope", R"json("public")json", 0, false, false, false, false},
         {"capabilities", R"json({})json", 0, true, false, false, false},
-        {"instructions", R"json("x")json", 0, false, true, true, false},
+        {"instructions", R"json("x")json", 0, false, false, true, false},
         {"resultType", R"json("complete")json", 0, true, true, true, false},
         {"supportedVersions", R"json(["x"])json", 0, true, true, true, false},
-        {"ttlMs", R"json(1)json", 0, false, true, true, false},
+        {"ttlMs", R"json(1)json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("DiscoverResult.") + f.key);
@@ -598,9 +598,9 @@ TEST(JsonPeerInputMatrix, ElicitationCompleteNotificationParams) {
 TEST(JsonPeerInputMatrix, EnumSchema) {
     const json baseline = json::parse(R"json({"type":"x"})json");
     static const FieldExpect fields[] = {
-        {"description", R"json("x")json", 0, false, true, true, false},
-        {"enum", R"json(["x"])json", 0, false, true, true, false},
-        {"title", R"json("x")json", 0, false, true, true, false},
+        {"description", R"json("x")json", 0, false, false, true, false},
+        {"enum", R"json(["x"])json", 0, false, false, true, false},
+        {"title", R"json("x")json", 0, false, false, true, false},
         {"type", R"json("x")json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
@@ -651,7 +651,7 @@ TEST(JsonPeerInputMatrix, GetPromptResult) {
     const json baseline = json::parse(R"json({"messages":[]})json");
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
-        {"description", R"json("x")json", 0, false, true, true, false},
+        {"description", R"json("x")json", 0, false, false, true, false},
         {"messages", R"json([])json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
@@ -725,9 +725,9 @@ TEST(JsonPeerInputMatrix, GetTaskResult) {
         {"_meta", R"json({})json", 0, false, false, false, false},
         {"createdAt", R"json("x")json", 0, true, true, true, false},
         {"lastUpdatedAt", R"json("x")json", 0, true, true, true, false},
-        {"pollInterval", R"json(1)json", 0, false, true, true, false},
+        {"pollInterval", R"json(1)json", 0, false, false, true, false},
         {"status", R"json("cancelled")json", 0, true, false, false, false},
-        {"statusMessage", R"json("x")json", 0, false, true, true, false},
+        {"statusMessage", R"json("x")json", 0, false, false, true, false},
         {"taskId", R"json("x")json", 0, true, true, true, false},
         {"ttl", R"json(1)json", 0, true, true, true, false},
     };
@@ -740,10 +740,10 @@ TEST(JsonPeerInputMatrix, GetTaskResult) {
 TEST(JsonPeerInputMatrix, Icon) {
     const json baseline = json::parse(R"json({"src":"x"})json");
     static const FieldExpect fields[] = {
-        {"mimeType", R"json("x")json", 0, false, true, true, false},
-        {"sizes", R"json(["x"])json", 0, false, true, true, false},
+        {"mimeType", R"json("x")json", 0, false, false, true, false},
+        {"sizes", R"json(["x"])json", 0, false, false, true, false},
         {"src", R"json("x")json", 0, true, true, true, false},
-        {"theme", R"json("x")json", 0, false, true, true, false},
+        {"theme", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("Icon.") + f.key);
@@ -860,7 +860,7 @@ TEST(JsonPeerInputMatrix, ListPromptsResult) {
     const json baseline = json::parse(R"json({"prompts":[{"name":"x"}]})json");
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
-        {"nextCursor", R"json("x")json", 0, false, true, true, false},
+        {"nextCursor", R"json("x")json", 0, false, false, true, false},
         {"prompts", R"json([{"name":"x"}])json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
@@ -884,7 +884,7 @@ TEST(JsonPeerInputMatrix, ListResourceTemplatesRequest) {
 TEST(JsonPeerInputMatrix, ListResourceTemplatesRequestParams) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
-        {"cursor", R"json("x")json", 0, false, true, true, false},
+        {"cursor", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ListResourceTemplatesRequestParams.") + f.key);
@@ -897,7 +897,7 @@ TEST(JsonPeerInputMatrix, ListResourceTemplatesResult) {
         json::parse(R"json({"resourceTemplates":[{"uriTemplate":"x","name":"x"}]})json");
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
-        {"nextCursor", R"json("x")json", 0, false, true, true, false},
+        {"nextCursor", R"json("x")json", 0, false, false, true, false},
         {"resourceTemplates", R"json([{"uriTemplate":"x","name":"x"}])json", 0, true, true, true,
          false},
     };
@@ -922,7 +922,7 @@ TEST(JsonPeerInputMatrix, ListResourcesRequest) {
 TEST(JsonPeerInputMatrix, ListResourcesRequestParams) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
-        {"cursor", R"json("x")json", 0, false, true, true, false},
+        {"cursor", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ListResourcesRequestParams.") + f.key);
@@ -934,7 +934,7 @@ TEST(JsonPeerInputMatrix, ListResourcesResult) {
     const json baseline = json::parse(R"json({"resources":[{"uri":"x","name":"x"}]})json");
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
-        {"nextCursor", R"json("x")json", 0, false, true, true, false},
+        {"nextCursor", R"json("x")json", 0, false, false, true, false},
         {"resources", R"json([{"uri":"x","name":"x"}])json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
@@ -981,7 +981,7 @@ TEST(JsonPeerInputMatrix, ListTasksRequest) {
 TEST(JsonPeerInputMatrix, ListTasksRequestParams) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
-        {"cursor", R"json("x")json", 0, false, true, true, false},
+        {"cursor", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ListTasksRequestParams.") + f.key);
@@ -994,7 +994,7 @@ TEST(JsonPeerInputMatrix, ListTasksResult) {
         R"json({"tasks":[{"taskId":"x","status":"cancelled","createdAt":"x","lastUpdatedAt":"x","ttl":1}]})json");
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
-        {"nextCursor", R"json("x")json", 0, false, true, true, false},
+        {"nextCursor", R"json("x")json", 0, false, false, true, false},
         {"tasks",
          R"json([{"taskId":"x","status":"cancelled","createdAt":"x","lastUpdatedAt":"x","ttl":1}])json",
          0, true, true, true, false},
@@ -1020,7 +1020,7 @@ TEST(JsonPeerInputMatrix, ListToolsRequest) {
 TEST(JsonPeerInputMatrix, ListToolsRequestParams) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
-        {"cursor", R"json("x")json", 0, false, true, true, false},
+        {"cursor", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ListToolsRequestParams.") + f.key);
@@ -1032,7 +1032,7 @@ TEST(JsonPeerInputMatrix, ListToolsResult) {
     const json baseline = json::parse(R"json({"tools":[{"name":"x","inputSchema":{}}]})json");
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
-        {"nextCursor", R"json("x")json", 0, false, true, true, false},
+        {"nextCursor", R"json("x")json", 0, false, false, true, false},
         {"tools", R"json([{"name":"x","inputSchema":{}}])json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
@@ -1070,7 +1070,7 @@ TEST(JsonPeerInputMatrix, LoggingMessageNotificationParams) {
 TEST(JsonPeerInputMatrix, ModelHint) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
-        {"name", R"json("x")json", 0, false, true, true, false},
+        {"name", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ModelHint.") + f.key);
@@ -1081,10 +1081,10 @@ TEST(JsonPeerInputMatrix, ModelHint) {
 TEST(JsonPeerInputMatrix, ModelPreferences) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
-        {"costPriority", R"json(1.0)json", 0, false, true, true, false},
-        {"hints", R"json([{}])json", 0, false, true, true, false},
-        {"intelligencePriority", R"json(1.0)json", 0, false, true, true, false},
-        {"speedPriority", R"json(1.0)json", 0, false, true, true, false},
+        {"costPriority", R"json(1.0)json", 0, false, false, true, false},
+        {"hints", R"json([{}])json", 0, false, false, true, false},
+        {"intelligencePriority", R"json(1.0)json", 0, false, false, true, false},
+        {"speedPriority", R"json(1.0)json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ModelPreferences.") + f.key);
@@ -1096,7 +1096,7 @@ TEST(JsonPeerInputMatrix, PaginatedRequestParams) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
-        {"cursor", R"json("x")json", 0, false, true, true, false},
+        {"cursor", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("PaginatedRequestParams.") + f.key);
@@ -1146,11 +1146,11 @@ TEST(JsonPeerInputMatrix, Prompt) {
     const json baseline = json::parse(R"json({"name":"x"})json");
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
-        {"arguments", R"json([{"name":"x"}])json", 0, false, true, true, false},
-        {"description", R"json("x")json", 0, false, true, true, false},
-        {"icons", R"json([{"src":"x"}])json", 0, false, true, true, false},
+        {"arguments", R"json([{"name":"x"}])json", 0, false, false, true, false},
+        {"description", R"json("x")json", 0, false, false, true, false},
+        {"icons", R"json([{"src":"x"}])json", 0, false, false, true, false},
         {"name", R"json("x")json", 0, true, true, true, false},
-        {"title", R"json("x")json", 0, false, true, true, false},
+        {"title", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("Prompt.") + f.key);
@@ -1161,10 +1161,10 @@ TEST(JsonPeerInputMatrix, Prompt) {
 TEST(JsonPeerInputMatrix, PromptArgument) {
     const json baseline = json::parse(R"json({"name":"x"})json");
     static const FieldExpect fields[] = {
-        {"description", R"json("x")json", 0, false, true, true, false},
+        {"description", R"json("x")json", 0, false, false, true, false},
         {"name", R"json("x")json", 0, true, true, true, false},
-        {"required", R"json(true)json", 0, false, true, true, false},
-        {"title", R"json("x")json", 0, false, true, true, false},
+        {"required", R"json(true)json", 0, false, false, true, false},
+        {"title", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("PromptArgument.") + f.key);
@@ -1265,12 +1265,12 @@ TEST(JsonPeerInputMatrix, ResourceLink) {
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
         {"annotations", R"json({})json", 0, false, false, false, false},
-        {"description", R"json("x")json", 0, false, true, true, false},
-        {"icons", R"json([{"src":"x"}])json", 0, false, true, true, false},
-        {"mimeType", R"json("x")json", 0, false, true, true, false},
+        {"description", R"json("x")json", 0, false, false, true, false},
+        {"icons", R"json([{"src":"x"}])json", 0, false, false, true, false},
+        {"mimeType", R"json("x")json", 0, false, false, true, false},
         {"name", R"json("x")json", 0, true, true, true, false},
-        {"size", R"json(1)json", 0, false, true, true, false},
-        {"title", R"json("x")json", 0, false, true, true, false},
+        {"size", R"json(1)json", 0, false, false, true, false},
+        {"title", R"json("x")json", 0, false, false, true, false},
         {"type", R"json("resource_link")json", 0, true, true, true, true},
         {"uri", R"json("x")json", 0, true, true, true, false},
     };
@@ -1371,7 +1371,7 @@ TEST(JsonPeerInputMatrix, Root) {
     const json baseline = json::parse(R"json({"uri":"x"})json");
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
-        {"name", R"json("x")json", 0, false, true, true, false},
+        {"name", R"json("x")json", 0, false, false, true, false},
         {"uri", R"json("x")json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
@@ -1396,7 +1396,7 @@ TEST(JsonPeerInputMatrix, ServerCapabilities) {
     static const FieldExpect fields[] = {
         {"completions", R"json({})json", 0, false, false, false, false},
         {"experimental", R"json({})json", 0, false, false, false, false},
-        {"extensions", R"json({})json", 0, false, true, true, false},
+        {"extensions", R"json({})json", 0, false, false, true, false},
         {"logging", R"json({})json", 0, false, false, false, false},
     };
     for (const auto& f : fields) {
@@ -1408,7 +1408,7 @@ TEST(JsonPeerInputMatrix, ServerCapabilities) {
 TEST(JsonPeerInputMatrix, ServerCapabilities_PromptsCapability) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
-        {"listChanged", R"json(true)json", 0, false, true, true, false},
+        {"listChanged", R"json(true)json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ServerCapabilities::PromptsCapability.") + f.key);
@@ -1419,8 +1419,8 @@ TEST(JsonPeerInputMatrix, ServerCapabilities_PromptsCapability) {
 TEST(JsonPeerInputMatrix, ServerCapabilities_ResourcesCapability) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
-        {"listChanged", R"json(true)json", 0, false, true, true, false},
-        {"subscribe", R"json(true)json", 0, false, true, true, false},
+        {"listChanged", R"json(true)json", 0, false, false, true, false},
+        {"subscribe", R"json(true)json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ServerCapabilities::ResourcesCapability.") + f.key);
@@ -1455,7 +1455,7 @@ TEST(JsonPeerInputMatrix, ServerCapabilities_TasksCapability) {
 TEST(JsonPeerInputMatrix, ServerCapabilities_ToolsCapability) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
-        {"listChanged", R"json(true)json", 0, false, true, true, false},
+        {"listChanged", R"json(true)json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ServerCapabilities::ToolsCapability.") + f.key);
@@ -1507,9 +1507,9 @@ TEST(JsonPeerInputMatrix, TaskData) {
     static const FieldExpect fields[] = {
         {"createdAt", R"json("x")json", 0, true, true, true, false},
         {"lastUpdatedAt", R"json("x")json", 0, true, true, true, false},
-        {"pollInterval", R"json(1)json", 0, false, true, true, false},
+        {"pollInterval", R"json(1)json", 0, false, false, true, false},
         {"status", R"json("cancelled")json", 0, true, false, false, false},
-        {"statusMessage", R"json("x")json", 0, false, true, true, false},
+        {"statusMessage", R"json("x")json", 0, false, false, true, false},
         {"taskId", R"json("x")json", 0, true, true, true, false},
         {"ttl", R"json(1)json", 0, true, true, true, false},
     };
@@ -1573,7 +1573,7 @@ TEST(JsonPeerInputMatrix, TextContent) {
 TEST(JsonPeerInputMatrix, TextResourceContents) {
     const json baseline = json::parse(R"json({"uri":"x","text":"x"})json");
     static const FieldExpect fields[] = {
-        {"mimeType", R"json("x")json", 0, false, true, true, false},
+        {"mimeType", R"json("x")json", 0, false, false, true, false},
         {"text", R"json("x")json", 0, true, true, true, false},
         {"uri", R"json("x")json", 0, true, true, true, false},
     };
@@ -1605,11 +1605,11 @@ TEST(JsonPeerInputMatrix, Tool) {
 TEST(JsonPeerInputMatrix, ToolAnnotations) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
-        {"destructiveHint", R"json(true)json", 0, false, true, true, false},
-        {"idempotentHint", R"json(true)json", 0, false, true, true, false},
-        {"openWorldHint", R"json(true)json", 0, false, true, true, false},
-        {"readOnlyHint", R"json(true)json", 0, false, true, true, false},
-        {"title", R"json("x")json", 0, false, true, true, false},
+        {"destructiveHint", R"json(true)json", 0, false, false, true, false},
+        {"idempotentHint", R"json(true)json", 0, false, false, true, false},
+        {"openWorldHint", R"json(true)json", 0, false, false, true, false},
+        {"readOnlyHint", R"json(true)json", 0, false, false, true, false},
+        {"title", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ToolAnnotations.") + f.key);
@@ -1620,7 +1620,7 @@ TEST(JsonPeerInputMatrix, ToolAnnotations) {
 TEST(JsonPeerInputMatrix, ToolChoice) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
-        {"mode", R"json("x")json", 0, false, true, true, false},
+        {"mode", R"json("x")json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ToolChoice.") + f.key);

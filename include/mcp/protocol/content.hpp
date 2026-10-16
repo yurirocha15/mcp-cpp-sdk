@@ -65,7 +65,7 @@ inline void to_json(nlohmann::json& json_obj, const TextResourceContents& conten
 inline void from_json(const nlohmann::json& json_obj, TextResourceContents& content) {
     json_obj.at("uri").get_to(content.uri);
     json_obj.at("text").get_to(content.text);
-    if (json_obj.contains("mimeType")) {
+    if (detail::has_json_value(json_obj, "mimeType")) {
         content.mimeType = json_obj.at("mimeType").get<std::string>();
     }
 }
@@ -80,7 +80,7 @@ inline void to_json(nlohmann::json& json_obj, const BlobResourceContents& conten
 inline void from_json(const nlohmann::json& json_obj, BlobResourceContents& content) {
     json_obj.at("uri").get_to(content.uri);
     json_obj.at("blob").get_to(content.blob);
-    if (json_obj.contains("mimeType")) {
+    if (detail::has_json_value(json_obj, "mimeType")) {
         content.mimeType = json_obj.at("mimeType").get<std::string>();
     }
 }
@@ -154,13 +154,13 @@ inline void from_json(const nlohmann::json& json_obj, ResourceLink& link) {
     detail::validate_content_type(link.type, "resource_link");
     json_obj.at("uri").get_to(link.uri);
     json_obj.at("name").get_to(link.name);
-    if (json_obj.contains("description")) {
+    if (detail::has_json_value(json_obj, "description")) {
         link.description = json_obj.at("description").get<std::string>();
     }
-    if (json_obj.contains("mimeType")) {
+    if (detail::has_json_value(json_obj, "mimeType")) {
         link.mimeType = json_obj.at("mimeType").get<std::string>();
     }
-    if (json_obj.contains("size")) {
+    if (detail::has_json_value(json_obj, "size")) {
         link.size = json_obj.at("size").get<int64_t>();
     }
     if (json_obj.contains("_meta")) {
@@ -169,10 +169,10 @@ inline void from_json(const nlohmann::json& json_obj, ResourceLink& link) {
     if (json_obj.contains("annotations")) {
         link.annotations = json_obj.at("annotations").get<Annotations>();
     }
-    if (json_obj.contains("title")) {
+    if (detail::has_json_value(json_obj, "title")) {
         link.title = json_obj.at("title").get<std::string>();
     }
-    if (json_obj.contains("icons")) {
+    if (detail::has_json_value(json_obj, "icons")) {
         link.icons = json_obj.at("icons").get<std::vector<Icon>>();
     }
 }

@@ -2577,6 +2577,57 @@ TEST(ProtocolTest, ImplementationDecodesExplicitNullOptionals) {
     EXPECT_FALSE(impl.icons.has_value());
 }
 
+TEST(ProtocolTest, ClientCapabilitiesDecodeExplicitNullOptionals) {
+    // What a client that writes absent optionals as null sends in initialize.
+    json caps_json = {{"roots", {{"listChanged", nullptr}}}, {"extensions", nullptr}};
+
+    mcp::ClientCapabilities caps;
+    ASSERT_NO_THROW(caps = caps_json.get<mcp::ClientCapabilities>());
+    ASSERT_TRUE(caps.roots.has_value());
+    EXPECT_FALSE(caps.roots->listChanged.has_value());
+    EXPECT_FALSE(caps.extensions.has_value());
+}
+
+TEST(ProtocolTest, ServerCapabilitiesDecodeExplicitNullOptionals) {
+    json caps_json = {{"tools", {{"listChanged", nullptr}}},
+                      {"resources", {{"listChanged", nullptr}, {"subscribe", nullptr}}},
+                      {"prompts", {{"listChanged", nullptr}}},
+                      {"extensions", nullptr}};
+
+    mcp::ServerCapabilities caps;
+    ASSERT_NO_THROW(caps = caps_json.get<mcp::ServerCapabilities>());
+    ASSERT_TRUE(caps.tools.has_value());
+    EXPECT_FALSE(caps.tools->listChanged.has_value());
+    ASSERT_TRUE(caps.resources.has_value());
+    EXPECT_FALSE(caps.resources->listChanged.has_value());
+    EXPECT_FALSE(caps.resources->subscribe.has_value());
+    ASSERT_TRUE(caps.prompts.has_value());
+    EXPECT_FALSE(caps.prompts->listChanged.has_value());
+    EXPECT_FALSE(caps.extensions.has_value());
+}
+
+TEST(ProtocolTest, ListRequestsAndResultsDecodeExplicitNullCursors) {
+    mcp::ListToolsRequestParams request;
+    ASSERT_NO_THROW(request = json({{"cursor", nullptr}}).get<mcp::ListToolsRequestParams>());
+    EXPECT_FALSE(request.cursor.has_value());
+
+    mcp::ListToolsResult tools;
+    ASSERT_NO_THROW(
+        tools = json({{"tools", json::array()}, {"nextCursor", nullptr}}).get<mcp::ListToolsResult>());
+    EXPECT_FALSE(tools.nextCursor.has_value());
+
+    mcp::ListResourcesResult resources;
+    ASSERT_NO_THROW(resources = json({{"resources", json::array()}, {"nextCursor", nullptr}})
+                                    .get<mcp::ListResourcesResult>());
+    EXPECT_FALSE(resources.nextCursor.has_value());
+
+    mcp::ListPromptsResult prompts;
+    ASSERT_NO_THROW(
+        prompts =
+            json({{"prompts", json::array()}, {"nextCursor", nullptr}}).get<mcp::ListPromptsResult>());
+    EXPECT_FALSE(prompts.nextCursor.has_value());
+}
+
 TEST(ProtocolTest, CompleteParamsDecodesExplicitNullContextArguments) {
     json params_json = {{"ref", {{"type", "ref/prompt"}, {"name", "p"}}},
                         {"argument", {{"name", "a"}, {"value", "v"}}},

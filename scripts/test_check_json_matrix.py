@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import unittest
 
@@ -21,6 +22,59 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FLAGS = ("absent", "null", "wrong_type", "oversized")
 
 
+def _block_span(text: str, test: str) -> tuple[int, int]:
+    heads = list(gen._TEST_RE.finditer(text))
+    for i, head in enumerate(heads):
+        if head.group(1) == test:
+            end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+            return head.start(), end
+    raise AssertionError(f"no TEST {test}")
+
+
+def _edit_row(text: str, test: str, key: str, new_row) -> str:
+    """Replaces (or with None, removes) one row of one TEST in `text`."""
+    start, end = _block_span(text, test)
+    block = text[start:end]
+    for m in gen._ROW_RE.finditer(block):
+        if m.group(1) != key:
+            continue
+        if new_row is None:
+            # The row and its trailing comma.
+            block = block[: m.start()] + block[m.end() + 1 :]
+        else:
+            flags = ", ".join(str(new_row[f]).lower() for f in FLAGS)
+            row = f'{{"{key}", R"json({m.group(2)})json", {m.group(3)}, {flags}}}'
+            block = block[: m.start()] + row + block[m.end() :]
+        return text[:start] + block + text[end:]
+    raise AssertionError(f"no row {test}.{key}")
+
+
+def _null_fragile(row) -> bool:
+    return not row["absent"] and row["null"]
+
+
+def _with_null_fragile_rows(rendered: str) -> str:
+    """Returns `rendered` with at least one null-fragile row in a plain and in a nested type.
+
+    Several cases need such a row to mutate. When every decoder already treats an
+    explicit null as absent, tolerant rows are flipped as if their decoders had
+    regressed, and the header count is kept consistent with the rows.
+    """
+    parsed = gen.parse_matrix(rendered)
+    rows = [(t, k, r) for t, b in parsed["tests"].items() for k, r in b["rows"].items()]
+    for nested in (False, True):
+        if any(_null_fragile(r) and ("_" in t) == nested for t, _, r in rows):
+            continue
+        test, key, row = next(
+            (t, k, r) for t, k, r in rows if ("_" in t) == nested and not r["absent"]
+        )
+        rendered = _edit_row(rendered, test, key, dict(row, null=True))
+    parsed = gen.parse_matrix(rendered)
+    fragile = sum(_null_fragile(r) for b in parsed["tests"].values() for r in b["rows"].values())
+    return re.sub(r"// \d+ of the (\d+) field entries", rf"// {fragile} of the \1 field entries",
+                  rendered, count=1)
+
+
 class JsonMatrixCheckTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -29,12 +83,18 @@ class JsonMatrixCheckTest(unittest.TestCase):
             cls.committed = fh.read()
         with open(os.path.join(core, "json_matrix_manifest.json"), encoding="utf-8") as fh:
             cls.committed_manifest = json.load(fh)
-        cls.rendered, cls.manifest = gen.render(REPO)
+        cls.real_rendered, cls.manifest = gen.render(REPO)
+        cls.rendered = _with_null_fragile_rows(cls.real_rendered)
         cls.parsed = gen.parse_matrix(cls.rendered)
 
-    def run_check(self, text: str, manifest: dict | None = None) -> tuple[int, str]:
+    def run_check(
+        self, text: str, manifest: dict | None = None, rendered: str | None = None
+    ) -> tuple[int, str]:
         code, lines = check.check(
-            text, self.manifest if manifest is None else manifest, self.rendered, self.manifest
+            text,
+            self.manifest if manifest is None else manifest,
+            self.rendered if rendered is None else rendered,
+            self.manifest,
         )
         return code, "\n".join(lines)
 
@@ -46,29 +106,10 @@ class JsonMatrixCheckTest(unittest.TestCase):
         self.fail("no rendered row matches")
 
     def block_span(self, text: str, test: str) -> tuple[int, int]:
-        heads = list(gen._TEST_RE.finditer(text))
-        for i, head in enumerate(heads):
-            if head.group(1) == test:
-                end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
-                return head.start(), end
-        self.fail(f"no TEST {test}")
+        return _block_span(text, test)
 
     def edit_row(self, text: str, test: str, key: str, new_row) -> str:
-        """Replaces (or with None, removes) one row of one TEST in `text`."""
-        start, end = self.block_span(text, test)
-        block = text[start:end]
-        for m in gen._ROW_RE.finditer(block):
-            if m.group(1) != key:
-                continue
-            if new_row is None:
-                # The row and its trailing comma.
-                block = block[: m.start()] + block[m.end() + 1 :]
-            else:
-                flags = ", ".join(str(new_row[f]).lower() for f in FLAGS)
-                row = f'{{"{key}", R"json({m.group(2)})json", {m.group(3)}, {flags}}}'
-                block = block[: m.start()] + row + block[m.end() :]
-            return text[:start] + block + text[end:]
-        self.fail(f"no row {test}.{key}")
+        return _edit_row(text, test, key, new_row)
 
     def flipped(self, test: str, key: str, **cols: bool) -> str:
         row = dict(self.parsed["tests"][test]["rows"][key], **cols)
@@ -76,7 +117,7 @@ class JsonMatrixCheckTest(unittest.TestCase):
 
     # 1
     def test_committed_matrix_matches_render(self) -> None:
-        code, out = self.run_check(self.committed, self.committed_manifest)
+        code, out = self.run_check(self.committed, self.committed_manifest, self.real_rendered)
         self.assertEqual(code, 0, out)
         self.assertIn("matches scripts/gen_json_matrix.py", out)
 

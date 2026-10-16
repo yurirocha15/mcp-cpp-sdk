@@ -32,13 +32,13 @@ inline void to_json(nlohmann::json& json_obj, const PromptArgument& arg) {
 
 inline void from_json(const nlohmann::json& json_obj, PromptArgument& arg) {
     json_obj.at("name").get_to(arg.name);
-    if (json_obj.contains("description")) {
+    if (detail::has_json_value(json_obj, "description")) {
         arg.description = json_obj.at("description").get<std::string>();
     }
-    if (json_obj.contains("required")) {
+    if (detail::has_json_value(json_obj, "required")) {
         arg.required = json_obj.at("required").get<bool>();
     }
-    if (json_obj.contains("title")) {
+    if (detail::has_json_value(json_obj, "title")) {
         arg.title = json_obj.at("title").get<std::string>();
     }
 }
@@ -76,19 +76,19 @@ inline void to_json(nlohmann::json& json_obj, const Prompt& prompt) {
 
 inline void from_json(const nlohmann::json& json_obj, Prompt& prompt) {
     json_obj.at("name").get_to(prompt.name);
-    if (json_obj.contains("description")) {
+    if (detail::has_json_value(json_obj, "description")) {
         prompt.description = json_obj.at("description").get<std::string>();
     }
-    if (json_obj.contains("arguments")) {
+    if (detail::has_json_value(json_obj, "arguments")) {
         prompt.arguments = json_obj.at("arguments").get<std::vector<PromptArgument>>();
     }
     if (json_obj.contains("_meta")) {
         prompt.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
-    if (json_obj.contains("title")) {
+    if (detail::has_json_value(json_obj, "title")) {
         prompt.title = json_obj.at("title").get<std::string>();
     }
-    if (json_obj.contains("icons")) {
+    if (detail::has_json_value(json_obj, "icons")) {
         prompt.icons = json_obj.at("icons").get<std::vector<Icon>>();
     }
 }
@@ -163,7 +163,7 @@ inline void to_json(nlohmann::json& json_obj, const GetPromptResult& result) {
 
 inline void from_json(const nlohmann::json& json_obj, GetPromptResult& result) {
     json_obj.at("messages").get_to(result.messages);
-    if (json_obj.contains("description")) {
+    if (detail::has_json_value(json_obj, "description")) {
         result.description = json_obj.at("description").get<std::string>();
     }
     if (json_obj.contains("_meta")) {
@@ -214,7 +214,7 @@ inline void to_json(nlohmann::json& json_obj, const ListPromptsResult& result) {
 
 inline void from_json(const nlohmann::json& json_obj, ListPromptsResult& result) {
     json_obj.at("prompts").get_to(result.prompts);
-    if (json_obj.contains("nextCursor")) {
+    if (detail::has_json_value(json_obj, "nextCursor")) {
         result.nextCursor = json_obj.at("nextCursor").get<std::string>();
     }
     if (json_obj.contains("_meta")) {

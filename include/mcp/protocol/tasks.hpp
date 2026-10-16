@@ -39,10 +39,10 @@ inline void from_json(const nlohmann::json& json_obj, TaskData& task) {
     json_obj.at("createdAt").get_to(task.createdAt);
     json_obj.at("lastUpdatedAt").get_to(task.lastUpdatedAt);
     json_obj.at("ttl").get_to(task.ttl);
-    if (json_obj.contains("pollInterval")) {
+    if (detail::has_json_value(json_obj, "pollInterval")) {
         task.pollInterval = json_obj.at("pollInterval").get<int64_t>();
     }
-    if (json_obj.contains("statusMessage")) {
+    if (detail::has_json_value(json_obj, "statusMessage")) {
         task.statusMessage = json_obj.at("statusMessage").get<std::string>();
     }
 }
@@ -108,10 +108,10 @@ inline void from_json(const nlohmann::json& json_obj, GetTaskResult& result) {
     json_obj.at("createdAt").get_to(result.createdAt);
     json_obj.at("lastUpdatedAt").get_to(result.lastUpdatedAt);
     json_obj.at("ttl").get_to(result.ttl);
-    if (json_obj.contains("pollInterval")) {
+    if (detail::has_json_value(json_obj, "pollInterval")) {
         result.pollInterval = json_obj.at("pollInterval").get<int64_t>();
     }
-    if (json_obj.contains("statusMessage")) {
+    if (detail::has_json_value(json_obj, "statusMessage")) {
         result.statusMessage = json_obj.at("statusMessage").get<std::string>();
     }
     if (json_obj.contains("_meta")) {
@@ -140,7 +140,7 @@ inline void to_json(nlohmann::json& json_obj, const ListTasksResult& result) {
 
 inline void from_json(const nlohmann::json& json_obj, ListTasksResult& result) {
     json_obj.at("tasks").get_to(result.tasks);
-    if (json_obj.contains("nextCursor")) {
+    if (detail::has_json_value(json_obj, "nextCursor")) {
         result.nextCursor = json_obj.at("nextCursor").get<std::string>();
     }
     if (json_obj.contains("_meta")) {
@@ -213,7 +213,7 @@ inline void to_json(nlohmann::json& j, const ListTasksRequestParams& p) {
     }
 }
 inline void from_json(const nlohmann::json& j, ListTasksRequestParams& p) {
-    if (j.contains("cursor")) {
+    if (detail::has_json_value(j, "cursor")) {
         p.cursor = j.at("cursor").get<std::string>();
     }
 }

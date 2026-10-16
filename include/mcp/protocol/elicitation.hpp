@@ -24,10 +24,10 @@ inline void to_json(nlohmann::json& j, const PrimitiveSchemaDefinition& def) {
 }
 inline void from_json(const nlohmann::json& j, PrimitiveSchemaDefinition& def) {
     j.at("type").get_to(def.type);
-    if (j.contains("title")) {
+    if (detail::has_json_value(j, "title")) {
         def.title = j.at("title").get<std::string>();
     }
-    if (j.contains("description")) {
+    if (detail::has_json_value(j, "description")) {
         def.description = j.at("description").get<std::string>();
     }
 }
@@ -51,7 +51,7 @@ inline void to_json(nlohmann::json& j, const EnumSchema& e) {
 }
 inline void from_json(const nlohmann::json& j, EnumSchema& e) {
     from_json(j, static_cast<PrimitiveSchemaDefinition&>(e));
-    if (j.contains("enum")) {
+    if (detail::has_json_value(j, "enum")) {
         j.at("enum").get_to(e.enumValues);
     }
 }

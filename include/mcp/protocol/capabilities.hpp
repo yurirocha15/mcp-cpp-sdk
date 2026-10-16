@@ -130,13 +130,13 @@ inline void to_json(nlohmann::json& json_obj, const Icon& icon) {
  */
 inline void from_json(const nlohmann::json& json_obj, Icon& icon) {
     json_obj.at("src").get_to(icon.source);
-    if (json_obj.contains("mimeType")) {
+    if (detail::has_json_value(json_obj, "mimeType")) {
         icon.mimeType = json_obj.at("mimeType").get<std::string>();
     }
-    if (json_obj.contains("sizes")) {
+    if (detail::has_json_value(json_obj, "sizes")) {
         icon.sizes = json_obj.at("sizes").get<std::vector<std::string>>();
     }
-    if (json_obj.contains("theme")) {
+    if (detail::has_json_value(json_obj, "theme")) {
         icon.theme = json_obj.at("theme").get<std::string>();
     }
 }
@@ -176,13 +176,13 @@ inline void to_json(nlohmann::json& json_obj, const Annotations& annotations) {
  * @param annotations The Annotations object to populate.
  */
 inline void from_json(const nlohmann::json& json_obj, Annotations& annotations) {
-    if (json_obj.contains("audience")) {
+    if (detail::has_json_value(json_obj, "audience")) {
         annotations.audience = json_obj.at("audience").get<std::vector<Role>>();
     }
-    if (json_obj.contains("lastModified")) {
+    if (detail::has_json_value(json_obj, "lastModified")) {
         annotations.lastModified = json_obj.at("lastModified").get<std::string>();
     }
-    if (json_obj.contains("priority")) {
+    if (detail::has_json_value(json_obj, "priority")) {
         annotations.priority = json_obj.at("priority").get<double>();
     }
 }
@@ -352,7 +352,7 @@ inline void to_json(nlohmann::json& j, const ClientCapabilities::RootsCapability
 }
 
 inline void from_json(const nlohmann::json& j, ClientCapabilities::RootsCapability& cap) {
-    if (j.contains("listChanged")) {
+    if (detail::has_json_value(j, "listChanged")) {
         cap.listChanged = j.at("listChanged").get<bool>();
     }
 }
@@ -491,7 +491,7 @@ inline void from_json(const nlohmann::json& j, ClientCapabilities& cap) {
     if (j.contains("tasks")) {
         cap.tasks = j.at("tasks").get<ClientCapabilities::TasksCapability>();
     }
-    if (j.contains("extensions")) {
+    if (detail::has_json_value(j, "extensions")) {
         cap.extensions = j.at("extensions").get<std::map<std::string, nlohmann::json>>();
     }
 }
@@ -571,7 +571,7 @@ inline void to_json(nlohmann::json& j, const ServerCapabilities::PromptsCapabili
 }
 
 inline void from_json(const nlohmann::json& j, ServerCapabilities::PromptsCapability& cap) {
-    if (j.contains("listChanged")) {
+    if (detail::has_json_value(j, "listChanged")) {
         cap.listChanged = j.at("listChanged").get<bool>();
     }
 }
@@ -587,10 +587,10 @@ inline void to_json(nlohmann::json& j, const ServerCapabilities::ResourcesCapabi
 }
 
 inline void from_json(const nlohmann::json& j, ServerCapabilities::ResourcesCapability& cap) {
-    if (j.contains("listChanged")) {
+    if (detail::has_json_value(j, "listChanged")) {
         cap.listChanged = j.at("listChanged").get<bool>();
     }
-    if (j.contains("subscribe")) {
+    if (detail::has_json_value(j, "subscribe")) {
         cap.subscribe = j.at("subscribe").get<bool>();
     }
 }
@@ -657,7 +657,7 @@ inline void to_json(nlohmann::json& j, const ServerCapabilities::ToolsCapability
 }
 
 inline void from_json(const nlohmann::json& j, ServerCapabilities::ToolsCapability& cap) {
-    if (j.contains("listChanged")) {
+    if (detail::has_json_value(j, "listChanged")) {
         cap.listChanged = j.at("listChanged").get<bool>();
     }
 }
@@ -712,7 +712,7 @@ inline void from_json(const nlohmann::json& j, ServerCapabilities& cap) {
     if (j.contains("tools")) {
         cap.tools = j.at("tools").get<ServerCapabilities::ToolsCapability>();
     }
-    if (j.contains("extensions")) {
+    if (detail::has_json_value(j, "extensions")) {
         cap.extensions = j.at("extensions").get<std::map<std::string, nlohmann::json>>();
     }
 }
@@ -866,10 +866,10 @@ inline void from_json(const nlohmann::json& json_obj, DiscoverResult& res) {
         json_obj.at("_meta").contains("io.modelcontextprotocol/serverInfo")) {
         json_obj.at("_meta").at("io.modelcontextprotocol/serverInfo").get_to(res.serverInfo);
     }
-    if (json_obj.contains("instructions")) {
+    if (detail::has_json_value(json_obj, "instructions")) {
         res.instructions = json_obj.at("instructions").get<std::string>();
     }
-    if (json_obj.contains("ttlMs")) {
+    if (detail::has_json_value(json_obj, "ttlMs")) {
         res.ttlMs = json_obj.at("ttlMs").get<std::int64_t>();
     }
     if (json_obj.contains("cacheScope")) {
