@@ -13,6 +13,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -304,6 +305,7 @@ struct HttpServerTransport::Impl {
     Task<void> terminate_session() {
         session_id.reset();
         session_active = false;
+        terminated_sessions.fetch_add(1, std::memory_order_release);
         co_return;
     }
 
@@ -658,6 +660,7 @@ struct HttpServerTransport::Impl {
     std::optional<std::string> session_id;
     std::string negotiated_protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
     bool session_active{false};
+    std::atomic<std::uint64_t> terminated_sessions{0};
 
     bool allow_all_origins{false};
     std::unordered_set<std::string> allowed_origins;
@@ -807,5 +810,13 @@ Task<void> HttpServerTransport::listen_impl(std::shared_ptr<Impl> impl) {
             });
     }
 }
+
+namespace detail {
+
+std::uint64_t terminated_session_count(const HttpServerTransport& transport) noexcept {
+    return transport.impl_->terminated_sessions.load(std::memory_order_acquire);
+}
+
+}  // namespace detail
 
 }  // namespace mcp

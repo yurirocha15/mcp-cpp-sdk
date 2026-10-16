@@ -18,6 +18,14 @@
 
 namespace mcp {
 
+class HttpServerTransport;
+
+namespace detail {
+/// Number of sessions `transport` has ended in response to an HTTP DELETE. The Server compares it
+/// across `initialize` requests to recognise the start of a new session on the same transport.
+std::uint64_t terminated_session_count(const HttpServerTransport& transport) noexcept;
+}  // namespace detail
+
 /**
  * @brief A bounded in-memory event store for SSE resumability.
  *
@@ -241,6 +249,9 @@ class MCP_API HttpServerTransport final : public ITransport {
     Task<void> listen();
 
    private:
+    friend std::uint64_t detail::terminated_session_count(
+        const HttpServerTransport& transport) noexcept;
+
     struct Impl;
     static Task<void> listen_impl(std::shared_ptr<Impl> impl);
     std::shared_ptr<Impl> impl_;

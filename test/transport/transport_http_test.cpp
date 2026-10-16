@@ -1,3 +1,4 @@
+#include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
 #include "mcp/transport/http_server.hpp"
 
@@ -1011,4 +1012,99 @@ TEST_F(HttpTransportTest, NonAtomicConfigurationLocksWhenListeningStarts) {
     server.close();
     asio::co_spawn(io_ctx_, std::move(listener), asio::detached);
     io_ctx_.run();
+}
+
+// HttpServerTransport serves one session at a time and accepts a new initialize once the client
+// ends its session with DELETE. The Server running on it must treat that initialize as the start of
+// a new session, not as a second initialize within the old one.
+TEST_F(HttpTransportTest, ServerAcceptsANewSessionAfterTheClientDeletesTheOldOne) {
+    auto server_transport =
+        std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server_transport->set_json_only(true);
+    const auto port = std::to_string(server_transport->port());
+
+    mcp::Implementation info;
+    info.name = "test-server";
+    info.version = "1.0";
+    mcp::Server server(std::move(info), mcp::ServerCapabilities{});
+
+    asio::co_spawn(io_ctx_, server_transport->listen(), asio::detached);
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> { co_await server.run(server_transport, io_ctx_.get_executor()); },
+        asio::detached);
+
+    struct Reply {
+        unsigned status{0};
+        std::string session_id;
+        std::string body;
+    };
+    const auto send = [&](http::verb verb, std::string body,
+                          std::string session_id) -> mcp::Task<Reply> {
+        beast::tcp_stream stream(io_ctx_.get_executor());
+        auto resolver = asio::ip::tcp::resolver(io_ctx_.get_executor());
+        auto endpoints = co_await resolver.async_resolve("127.0.0.1", port, asio::use_awaitable);
+        co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+
+        http::request<http::string_body> request{verb, "/mcp", 11};
+        request.set(http::field::host, "127.0.0.1");
+        request.set(http::field::content_type, "application/json");
+        request.set(http::field::accept, "application/json, text/event-stream");
+        if (!session_id.empty()) {
+            request.set("MCP-Session-Id", session_id);
+        }
+        request.body() = std::move(body);
+        request.prepare_payload();
+        co_await http::async_write(stream, request, asio::use_awaitable);
+
+        beast::flat_buffer buffer;
+        http::response<http::string_body> response;
+        co_await http::async_read(stream, buffer, response, asio::use_awaitable);
+        beast::error_code ignored;
+        stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+        co_return Reply{response.result_int(), std::string(response["MCP-Session-Id"]),
+                        std::move(response.body())};
+    };
+
+    const nlohmann::json initialize = {
+        {"jsonrpc", "2.0"},
+        {"id", 1},
+        {"method", "initialize"},
+        {"params",
+         {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+          {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
+          {"capabilities", nlohmann::json::object()}}}};
+    const std::string initialized = R"({"jsonrpc":"2.0","method":"notifications/initialized"})";
+
+    Reply first;
+    Reply repeated;
+    Reply second;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            first = co_await send(http::verb::post, initialize.dump(), "");
+            co_await send(http::verb::post, initialized, first.session_id);
+            repeated = co_await send(http::verb::post, initialize.dump(), first.session_id);
+            co_await send(http::verb::delete_, "", first.session_id);
+            second = co_await send(http::verb::post, initialize.dump(), "");
+            server_transport->close();
+        },
+        [](const std::exception_ptr& error) {
+            if (error) {
+                std::rethrow_exception(error);
+            }
+        });
+
+    io_ctx_.run();
+
+    ASSERT_EQ(first.status, 200U) << first.body;
+    ASSERT_FALSE(first.session_id.empty());
+    EXPECT_TRUE(nlohmann::json::parse(first.body).contains("result")) << first.body;
+    // Within one session a second initialize is still refused.
+    EXPECT_EQ(nlohmann::json::parse(repeated.body).at("error").at("code"), mcp::g_INVALID_REQUEST)
+        << repeated.body;
+    ASSERT_EQ(second.status, 200U) << second.body;
+    EXPECT_TRUE(nlohmann::json::parse(second.body).contains("result")) << second.body;
+    EXPECT_FALSE(second.session_id.empty());
+    EXPECT_NE(second.session_id, first.session_id);
 }

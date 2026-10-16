@@ -577,6 +577,8 @@ class MCP_API Server {
                                                  std::shared_ptr<const std::string> uri);
 
     [[nodiscard]] std::shared_ptr<Session> session_snapshot() const;
+    /// Whether the session's transport has ended a session since the current one was initialized.
+    [[nodiscard]] bool transport_started_new_session() const;
 
     void reset_session();
     void reset_session(const std::shared_ptr<Session>& session);
