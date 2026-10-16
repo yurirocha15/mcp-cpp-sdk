@@ -306,6 +306,10 @@ class MCP_API HttpServerTransport final : public ITransport {
      * any query string or fragment removed first, so `/health` also exempts `/health?probe=1`.
      * Empty by default.
      *
+     * This transport has no custom request handler, so an exempt path other than the metadata
+     * route is always answered 404. Serving a health check without a token needs
+     * StreamableHttpSessionManager, whose custom request handler can claim the path.
+     *
      * Configure the paths before listen() or run() starts.
      *
      * @throws std::logic_error If listen() has already been called or the transport is closed.

@@ -233,6 +233,12 @@ exempts ``/health?probe=1``. :cpp:func:`mcp::http_request_path` performs that
 split and is exported, so a custom request handler can key off exactly the same
 path the exemption check used.
 
+``HttpServerTransport`` has no custom request handler, so on that transport
+the only exempt path that is answered with content is the protected-resource
+metadata route; every other exempt path gets ``404 Not Found``. A health check
+that has to answer without a token needs ``StreamableHttpSessionManager`` and
+its custom request handler.
+
 .. warning::
 
    An exempt path is excused from the bearer check **and** excluded from MCP
