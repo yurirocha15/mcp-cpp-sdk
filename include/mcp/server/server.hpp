@@ -382,6 +382,10 @@ class MCP_API Server {
      * processes JSON-RPC requests. Handles SIGINT and SIGTERM for clean
      * shutdown. Exceptions from the server session are propagated to the caller.
      *
+     * The transport keeps its default settings, so a request carrying an Origin
+     * header is answered with 403. To accept browser clients, construct an
+     * HttpServerTransport, call set_allowed_origins() on it, and pass it to run().
+     *
      * @param host  Local address to bind (e.g. "0.0.0.0" or "127.0.0.1").
      * @param port  TCP port to listen on.
      */
