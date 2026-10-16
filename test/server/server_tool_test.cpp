@@ -7,8 +7,11 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <chrono>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -152,6 +155,156 @@ TEST_F(ServerToolTest, NonTemplateHandlerExceptionBecomesToolError) {
     ASSERT_FALSE(content_arr.empty());
     auto err_text = content_arr[0]["text"].get<std::string>();
     EXPECT_NE(err_text.find("something broke"), std::string::npos);
+}
+
+TEST_F(ServerToolTest, NonStdExceptionFromHandlerBecomesToolError) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool("fail", "Throws something that is not a std::exception",
+                          nlohmann::json{{"type", "object"}},
+                          [](const nlohmann::json&) -> nlohmann::json { throw 42; });
+
+    std::vector<nlohmann::json> responses;
+    boost::asio::steady_timer watchdog(io_ctx_);
+
+    setup.raw_transport->set_on_write([&responses, &setup, &watchdog](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        if (responses.size() == 2) {
+            watchdog.cancel();
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    setup.raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "fail"}, {"arguments", nlohmann::json::object()}}}}
+            .dump());
+
+    // A throw the tool guard does not catch escapes the dispatcher without writing anything, so
+    // the request is never answered and nothing closes the transport. Bound the wait, or that
+    // regression hangs the suite instead of failing it.
+    watchdog.expires_after(std::chrono::seconds(5));
+    watchdog.async_wait([&setup](const boost::system::error_code& error) {
+        if (!error) {
+            setup.raw_transport->close();
+        }
+    });
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2) << "the tools/call request went unanswered";
+    EXPECT_EQ(responses[1]["id"], "2");
+    ASSERT_TRUE(responses[1].contains("result")) << responses[1].dump();
+    EXPECT_TRUE(responses[1]["result"]["isError"].get<bool>());
+}
+
+TEST_F(ServerToolTest, NonTemplateSyncHandlerReturningCallToolResultIsNotRewrapped) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool("greet", "Greets a user", nlohmann::json{{"type", "object"}},
+                          [](const nlohmann::json&) -> nlohmann::json {
+                              return nlohmann::json(mcp::make_tool_text_result("Hello, Alice!"));
+                          });
+
+    auto responses = call_tool(setup, "greet");
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("result"));
+    EXPECT_EQ(responses[1]["result"]["content"][0]["text"], "Hello, Alice!");
+    EXPECT_FALSE(responses[1]["result"].contains("structuredContent"));
+}
+
+TEST_F(ServerToolTest, NonTemplateSyncHandlerReturningErrorResultKeepsItsErrorFlag) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool("deny", "Denies every call", nlohmann::json{{"type", "object"}},
+                          [](const nlohmann::json&) -> nlohmann::json {
+                              return nlohmann::json(mcp::make_tool_error_result("not permitted"));
+                          });
+
+    auto responses = call_tool(setup, "deny");
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("result"));
+    EXPECT_TRUE(responses[1]["result"]["isError"].get<bool>());
+    EXPECT_EQ(responses[1]["result"]["content"][0]["text"], "not permitted");
+}
+
+TEST_F(ServerToolTest, NonTemplateSyncHandlerReturningLiteralResultJsonIsNotRewrapped) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool(
+        "echo", "Echoes a message", nlohmann::json{{"type", "object"}},
+        [](const nlohmann::json&) -> nlohmann::json {
+            return nlohmann::json{{"content", nlohmann::json::array({nlohmann::json{
+                                                  {"type", "text"}, {"text", "hello"}}})}};
+        });
+
+    auto responses = call_tool(setup, "echo");
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("result"));
+    ASSERT_EQ(responses[1]["result"]["content"].size(), 1);
+    EXPECT_EQ(responses[1]["result"]["content"][0]["text"], "hello");
+    EXPECT_FALSE(responses[1]["result"].contains("structuredContent"));
+}
+
+TEST_F(ServerToolTest, DomainObjectNamedContentIsStillWrapped) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool(
+        "fetch", "Returns domain data", nlohmann::json{{"type", "object"}},
+        [](const nlohmann::json&) -> nlohmann::json {
+            return nlohmann::json{{"content", nlohmann::json::array({"first", "second"})}};
+        });
+
+    auto responses = call_tool(setup, "fetch");
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("result"));
+    EXPECT_EQ(responses[1]["result"]["structuredContent"]["content"][0], "first");
+    EXPECT_EQ(responses[1]["result"]["content"][0]["type"], "text");
+}
+
+TEST_F(ServerToolTest, SyncHandlerExceptionTextIsSanitizedBeforeItReachesThePeer) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool("fail", "Always fails", nlohmann::json{{"type", "object"}},
+                          [](const nlohmann::json&) -> nlohmann::json {
+                              throw std::runtime_error("broke\nat /opt/internal/secret.cpp:12");
+                          });
+
+    auto responses = call_tool(setup, "fail");
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("result"));
+    EXPECT_TRUE(responses[1]["result"]["isError"].get<bool>());
+    auto text = responses[1]["result"]["content"][0]["text"].get<std::string>();
+    EXPECT_EQ(text.find('\n'), std::string::npos);
+    EXPECT_NE(text.find("broke"), std::string::npos);
 }
 
 TEST_F(ServerToolTest, NonTemplateToolAppearsInToolsList) {

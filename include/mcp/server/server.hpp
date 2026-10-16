@@ -435,6 +435,9 @@ class MCP_API Server {
      * server session for request/response messages. The request envelope is
      * validated, but no stateful initialize/initialized handshake is required.
      *
+     * @details Request parameter decoding failures are returned as `g_INVALID_PARAMS` (-32602).
+     * Exceptions thrown by handlers or middleware are returned as `g_INTERNAL_ERROR` (-32603).
+     *
      * @param json_msg The parsed JSON-RPC request object.
      * @return A task that resolves to the serialized JSON-RPC response.
      */
@@ -508,80 +511,6 @@ class MCP_API Server {
     void register_resource_template(const ResourceTemplate& tmpl, TypeErasedHandler handler);
     void register_prompt(const Prompt& prompt, TypeErasedHandler handler);
 
-    Context make_context(std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
-                         std::optional<ProgressToken> progress_token = std::nullopt);
-
-    /**
-     * @brief Dispatches an incoming JSON-RPC request to the appropriate registered handler.
-     *
-     * @details Request parameter decoding failures are returned as `g_INVALID_PARAMS` (-32602).
-     * Exceptions thrown by handlers or middleware are returned as `g_INTERNAL_ERROR` (-32603).
-     *
-     * @param json_msg The raw JSON-RPC request object.
-     */
-    Task<void> dispatch_request(nlohmann::json json_msg);
-
-    Task<std::string> dispatch_request_wire(nlohmann::json json_msg, bool enforce_lifecycle);
-
-    void dispatch_notification(const nlohmann::json& json_msg);
-
-    void dispatch_response(const nlohmann::json& json_msg);
-
-    Task<void> handle_initialize(const nlohmann::json& json_msg);
-    Task<std::string> handle_initialize_wire(const nlohmann::json& json_msg, bool update_lifecycle);
-
-    Task<void> handle_shutdown(const nlohmann::json& json_msg);
-    Task<std::string> handle_shutdown_wire(const nlohmann::json& json_msg);
-
-    Task<void> handle_ping(const nlohmann::json& json_msg);
-    Task<std::string> handle_ping_wire(const nlohmann::json& json_msg);
-
-    Task<std::string> handle_discover_wire(const nlohmann::json& json_msg);
-
-    Task<void> handle_tools_call(const nlohmann::json& json_msg);
-    Task<std::string> handle_tools_call_wire(const nlohmann::json& json_msg);
-
-    Task<void> handle_tools_list(const nlohmann::json& json_msg);
-    Task<std::string> handle_tools_list_wire(const nlohmann::json& json_msg);
-
-    Task<void> handle_resources_list(const nlohmann::json& json_msg);
-    Task<std::string> handle_resources_list_wire(const nlohmann::json& json_msg);
-
-    Task<void> handle_resources_read(const nlohmann::json& json_msg);
-    Task<std::string> handle_resources_read_wire(const nlohmann::json& json_msg);
-
-    Task<void> handle_resource_templates_list(const nlohmann::json& json_msg);
-    Task<std::string> handle_resource_templates_list_wire(const nlohmann::json& json_msg);
-
-    Task<void> handle_subscribe(const nlohmann::json& json_msg);
-    Task<std::string> handle_subscribe_wire(const nlohmann::json& json_msg);
-
-    Task<void> handle_unsubscribe(const nlohmann::json& json_msg);
-    Task<std::string> handle_unsubscribe_wire(const nlohmann::json& json_msg);
-
-    Task<void> handle_prompts_list(const nlohmann::json& json_msg);
-    Task<std::string> handle_prompts_list_wire(const nlohmann::json& json_msg);
-
-    Task<void> handle_prompts_get(const nlohmann::json& json_msg);
-    Task<std::string> handle_prompts_get_wire(const nlohmann::json& json_msg);
-
-    Task<void> handle_set_level(const nlohmann::json& json_msg);
-    Task<std::string> handle_set_level_wire(const nlohmann::json& json_msg);
-
-    Task<void> handle_complete(const nlohmann::json& json_msg);
-    Task<std::string> handle_complete_wire(const nlohmann::json& json_msg);
-
-    Task<nlohmann::json> invoke_tool_impl(CallToolParams params,
-                                          std::shared_ptr<std::atomic<bool>> cancelled,
-                                          std::optional<ProgressToken> progress_token);
-
-    // [gcc11-sso: wire-builders] DO NOT convert to Task<T>.
-    static std::string make_result_wire(const RequestId& id, nlohmann::json result);
-    static std::string make_error_wire(const RequestId& id, int code, std::string message);
-
-    Task<void> send_notification(const std::string& method,
-                                 const std::optional<nlohmann::json>& params);
-
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
 
     struct PaginationSlice {
@@ -590,31 +519,17 @@ class MCP_API Server {
         std::optional<std::string> next_cursor;
     };
 
-    std::optional<PaginationSlice> paginate(std::size_t total, const nlohmann::json& json_msg);
-
-    [[nodiscard]] bool has_tool_output_schema(const std::string& name) const;
-
     struct PendingRequest;
     struct Session;
 
-    static Task<nlohmann::json> await_reverse_response(std::shared_ptr<Session> session,
-                                                       std::shared_ptr<const std::string> wire,
-                                                       std::int64_t id);
-    static Task<nlohmann::json> await_reverse_response_on_strand(
-        std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, std::int64_t id);
-
-    Task<void> run_session(std::shared_ptr<Session> session);
-    Task<void> dispatch_on_strand(nlohmann::json json_msg);
-    Task<void> notify_resource_updated_on_strand(std::shared_ptr<Session> session,
-                                                 std::shared_ptr<const std::string> uri);
-
-    [[nodiscard]] std::shared_ptr<Session> session_snapshot() const;
-
+    /// Tears down the current session. Runs on whatever thread destroys the Server, so it is safe
+    /// to call from any thread.
     void reset_session();
-    void reset_session(const std::shared_ptr<Session>& session);
 
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    // Shared rather than owned outright: work already in flight when this Server is destroyed
+    // keeps the implementation alive until it finishes, so it never runs against freed state.
+    std::shared_ptr<Impl> impl_;
 };
 
 }  // namespace mcp

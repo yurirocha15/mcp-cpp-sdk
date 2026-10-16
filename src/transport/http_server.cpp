@@ -1,3 +1,5 @@
+#include "../detail/peer_json.hpp"
+
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/http_types.hpp>
@@ -160,6 +162,23 @@ struct HttpServerTransport::Impl {
         for (const auto& connection : active_connections) {
             close_connection(connection);
         }
+    }
+
+    /// @brief Render the challenge a 401 will carry, borrowing the metadata URL when unset.
+    std::string render_challenge(const BearerChallengeConfig& challenge) const {
+        auto effective = challenge;
+        if (effective.resource_metadata.empty() && protected_resource_metadata.has_value()) {
+            effective.resource_metadata = protected_resource_metadata_url(*protected_resource_metadata);
+        }
+        return format_www_authenticate(effective);
+    }
+
+    bool is_unauthenticated_path(const StringRequest& request) const {
+        if (unauthenticated_paths.empty()) {
+            return false;
+        }
+        const auto path = http_request_path(std::string_view(request.target()));
+        return unauthenticated_paths.contains(std::string(path));
     }
 
     bool is_origin_allowed(std::string_view origin_value) const {
@@ -374,26 +393,61 @@ struct HttpServerTransport::Impl {
         return std::nullopt;
     }
 
+    /// @brief Answer a GET for the configured RFC 9728 document, which needs no bearer token.
+    std::optional<StringResponse> serve_protected_resource_metadata(
+        const StringRequest& request) const {
+        if (!protected_resource_metadata.has_value() || request.method() != http::verb::get) {
+            return std::nullopt;
+        }
+        if (http_request_path(std::string_view(request.target())) != protected_resource_metadata_path) {
+            return std::nullopt;
+        }
+        if (auto error = check_origin(request)) {
+            return error;
+        }
+        return make_json_response(request, http::status::ok, protected_resource_metadata_body);
+    }
+
+    StringResponse make_unauthorized_response(const StringRequest& request) const {
+        auto response =
+            make_error_response(request, http::status::unauthorized, "Invalid bearer token");
+        response.set(http::field::www_authenticate, www_authenticate_value);
+        return response;
+    }
+
+    static std::string_view request_bearer_token(const StringRequest& request) {
+        const auto authorization_it = request.find(http::field::authorization);
+        return authorization_it == request.end() ? std::string_view{}
+                                                 : http_bearer_token(header_value(authorization_it));
+    }
+
+    /// @brief Run the bearer check when it can be decided without suspending.
+    /// @details Returns nothing when an async validator is installed, because that decision
+    ///          belongs to check_authorization_async; keeping the two apart leaves the far more
+    ///          common synchronous path free of a coroutine frame and of copying the token.
     std::optional<StringResponse> check_authorization(const StringRequest& request) const {
-        if (!bearer_token_validator) {
+        if (async_bearer_token_validator || !bearer_token_validator) {
             return std::nullopt;
         }
 
-        const auto authorization_it = request.find(http::field::authorization);
-        const auto token = authorization_it == request.end()
-                               ? std::string_view{}
-                               : http_bearer_token(header_value(authorization_it));
+        const auto token = request_bearer_token(request);
         if (token.empty() || !bearer_token_validator(token)) {
-            auto response =
-                make_error_response(request, http::status::unauthorized, "Invalid bearer token");
-            response.set(http::field::www_authenticate, "Bearer");
-            return response;
+            return make_unauthorized_response(request);
         }
         return std::nullopt;
     }
 
+    /// @brief Run the bearer check against an async validator. Only entered when one is installed.
+    Task<std::optional<StringResponse>> check_authorization_async(const StringRequest& request) const {
+        const auto token = request_bearer_token(request);
+        if (token.empty() || !co_await async_bearer_token_validator(std::string(token))) {
+            co_return make_unauthorized_response(request);
+        }
+        co_return std::nullopt;
+    }
+
     Task<StringResponse> handle_post(const StringRequest& request) {
-        const auto request_json = nlohmann::json::parse(request.body(), nullptr, false);
+        const auto request_json = detail::parse_peer_json(request.body());
         if (request_json.is_discarded() || !request_json.is_object()) {
             co_return make_error_response(request, http::status::bad_request,
                                           "Invalid JSON-RPC payload");
@@ -407,6 +461,11 @@ struct HttpServerTransport::Impl {
         }
         if (auto error = check_authorization(request)) {
             co_return std::move(*error);
+        }
+        if (async_bearer_token_validator) {
+            if (auto error = co_await check_authorization_async(request)) {
+                co_return std::move(*error);
+            }
         }
 
         // server/discover is a pre-gate method: it MUST stay reachable with zero prior session
@@ -439,30 +498,22 @@ struct HttpServerTransport::Impl {
             co_return make_empty_json_response(request, http::status::accepted);
         }
 
-        // A sessionless discover is answered on no credential at all, so the JSON-RPC id it
-        // carries is chosen by an unauthenticated party. Registering it under that raw id would
-        // put a stranger in the same key space the established session correlates on, with two
-        // consequences. Whoever registers first owns the id, so a prober could claim an id the
-        // session then needs and force a spurious "Request id already pending" on a legitimate
-        // request. And the raw id would land in sessionless_request_ids, which decides
-        // replay-store exclusion, so the prober's chosen id would steer what the session's
-        // replay history contains -- an unauthenticated party influencing session state, not
-        // merely denying itself service.
+        // A sessionless discover carries an id chosen by an unauthenticated party, so it is given
+        // a transport-private sentinel id here and the caller's own id is restored in run_write
+        // before the response leaves. Registering it under the raw id would share a key space with
+        // the established session: a prober could claim an id the session then needs and force a
+        // spurious "Request id already pending", and the raw id would also land in
+        // sessionless_request_ids, which decides replay-store exclusion, letting the prober steer
+        // what the session's replay history contains.
         //
-        // The discover is therefore carried under a transport-private sentinel id: registered,
-        // correlated and replay-filtered under the sentinel, with the caller's own id restored
-        // in run_write before the response leaves. Only this pre-gate path pays the rewrite and
-        // the re-serialisation; every session-gated request is still registered under, and
-        // forwarded with, the exact bytes the peer sent.
+        // Only this pre-gate path pays the rewrite; session-gated requests are registered under,
+        // and forwarded with, the exact bytes the peer sent.
         //
-        // Do not replace this with a scoped map -- keying pending_responses per session or per
-        // principal and letting both parties hold the same raw id. It looks smaller and it is
-        // wrong: the correlation key is the id the peer echoes back, so a response arriving for
-        // id N could belong to either holder and the transport would have to guess, by arrival
-        // order or by content. Guessing wrong hands one party another party's response body.
-        // That converts today's clean denial, where the reply always reaches the registrant,
-        // into a genuine cross-party confusion -- strictly worse than the defect being fixed.
-        // Rewriting the id is what preserves the correlation property.
+        // Do not replace this with a per-session or per-principal map that lets both parties hold
+        // the same raw id. Correlation keys on the id the peer echoes back, so a response for id N
+        // could belong to either holder and the transport would have to guess -- and guessing
+        // wrong hands one party another party's response body, which is worse than the denial it
+        // replaces.
         std::string request_id_key;
         std::optional<nlohmann::json> client_request_id;
         std::string sentinel_body;
@@ -549,6 +600,11 @@ struct HttpServerTransport::Impl {
         if (auto error = check_authorization(request)) {
             co_return std::move(*error);
         }
+        if (async_bearer_token_validator) {
+            if (auto error = co_await check_authorization_async(request)) {
+                co_return std::move(*error);
+            }
+        }
 
         const auto session_check = co_await validate_delete_session(request);
         if (!session_check.ok) {
@@ -570,6 +626,11 @@ struct HttpServerTransport::Impl {
         }
         if (auto error = check_authorization(request)) {
             co_return std::move(*error);
+        }
+        if (async_bearer_token_validator) {
+            if (auto error = co_await check_authorization_async(request)) {
+                co_return std::move(*error);
+            }
         }
 
         if (!session_id.has_value()) {
@@ -603,6 +664,15 @@ struct HttpServerTransport::Impl {
             co_return make_error_response(request, http::status::service_unavailable,
                                           "Transport closed");
         }
+        if (auto document = serve_protected_resource_metadata(request)) {
+            co_return std::move(*document);
+        }
+        if (is_unauthenticated_path(request)) {
+            // An exempt path is excluded from MCP dispatch, not merely excused from the bearer
+            // check. Serving MCP here would answer it with no authentication at all, so a path the
+            // metadata route did not claim has nothing left to answer it.
+            co_return make_error_response(request, http::status::not_found, "Not found");
+        }
         if (request.method() == http::verb::post) {
             co_return co_await handle_post(request);
         }
@@ -619,22 +689,50 @@ struct HttpServerTransport::Impl {
         co_return response;
     }
 
+    /// @brief Report a body that exceeded max_request_body_bytes, ignoring a dead peer.
+    static Task<void> write_payload_too_large(Connection& stream) {
+        StringResponse response{http::status::payload_too_large, 11};
+        set_common_headers(response, false);
+        response.set(http::field::content_type, "application/json");
+        response.body() = nlohmann::json{{"error", "Request body too large"}}.dump();
+        response.prepare_payload();
+        try {
+            co_await http::async_write(stream, response, boost::asio::use_awaitable);
+        } catch (const boost::system::system_error&) {
+            // The peer that overran the limit may already be gone; nothing more to report to it.
+            (void)0;
+        }
+    }
+
     Task<void> handle_connection(const std::shared_ptr<Connection>& connection) {
         auto& stream = *connection;
         beast::flat_buffer request_buffer;
 
         for (;;) {
-            StringRequest request;
+            http::request_parser<http::string_body> parser;
+            parser.body_limit(max_request_body_bytes);
+            bool body_too_large = false;
             try {
-                co_await http::async_read(stream, request_buffer, request, boost::asio::use_awaitable);
+                co_await http::async_read(stream, request_buffer, parser, boost::asio::use_awaitable);
             } catch (const boost::system::system_error& err) {
                 if (err.code() == boost::asio::error::eof ||
                     err.code() == boost::asio::error::connection_reset ||
                     err.code() == boost::asio::error::operation_aborted) {
                     break;
                 }
-                throw;
+                if (err.code() != http::error::body_limit) {
+                    throw;
+                }
+                body_too_large = true;
             }
+
+            if (body_too_large) {
+                // The parser cannot resynchronize after a truncated body, so the connection ends
+                // with this answer rather than reading another request from it.
+                co_await write_payload_too_large(stream);
+                break;
+            }
+            StringRequest request = parser.release();
 
             if (state->closed.load(std::memory_order_acquire)) {
                 break;
@@ -778,6 +876,16 @@ struct HttpServerTransport::Impl {
     bool allow_all_origins{false};
     std::unordered_set<std::string> allowed_origins;
     BearerTokenValidator bearer_token_validator;
+    AsyncBearerTokenValidator async_bearer_token_validator;
+    std::size_t max_request_body_bytes{constants::g_default_max_request_body_bytes};
+    BearerChallengeConfig bearer_challenge;
+    // Rendered once when the challenge or the metadata changes, so serving a 401 never formats.
+    std::string www_authenticate_value{"Bearer"};
+    std::optional<ProtectedResourceMetadataConfig> protected_resource_metadata;
+    std::string protected_resource_metadata_body;
+    // The resolved serving path: `path` when set, else derived from `resource`.
+    std::string protected_resource_metadata_path;
+    std::unordered_set<std::string> unauthenticated_paths;
 
     EventStore event_store;
     std::atomic<bool> json_only_{false};
@@ -831,7 +939,69 @@ void HttpServerTransport::set_allow_all_origins(bool allow_all) {
 void HttpServerTransport::set_bearer_token_validator(BearerTokenValidator validator) {
     std::lock_guard lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
+    if (validator && impl_->async_bearer_token_validator) {
+        throw std::logic_error("HttpServerTransport accepts one bearer token validator");
+    }
     impl_->bearer_token_validator = std::move(validator);
+}
+
+void HttpServerTransport::set_async_bearer_token_validator(AsyncBearerTokenValidator validator) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    if (validator && impl_->bearer_token_validator) {
+        throw std::logic_error("HttpServerTransport accepts one bearer token validator");
+    }
+    impl_->async_bearer_token_validator = std::move(validator);
+}
+
+void HttpServerTransport::set_max_request_body_bytes(std::size_t max_bytes) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    if (max_bytes == 0) {
+        throw std::invalid_argument("Maximum request body size must be greater than zero");
+    }
+    impl_->max_request_body_bytes = max_bytes;
+}
+
+void HttpServerTransport::set_bearer_challenge(BearerChallengeConfig challenge) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    auto rendered = impl_->render_challenge(challenge);
+    impl_->bearer_challenge = std::move(challenge);
+    impl_->www_authenticate_value = std::move(rendered);
+}
+
+void HttpServerTransport::set_protected_resource_metadata(ProtectedResourceMetadataConfig metadata) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    if (metadata.resource.empty()) {
+        throw std::invalid_argument("Protected-resource metadata requires a resource URL");
+    }
+
+    auto metadata_url = protected_resource_metadata_url(metadata);
+    auto document = format_protected_resource_metadata(metadata);
+    auto challenge = impl_->bearer_challenge;
+    if (challenge.resource_metadata.empty()) {
+        challenge.resource_metadata = std::move(metadata_url);
+    }
+    auto rendered = format_www_authenticate(challenge);
+
+    auto document_path = protected_resource_metadata_path(metadata);
+
+    impl_->protected_resource_metadata = std::move(metadata);
+    impl_->protected_resource_metadata_path = std::move(document_path);
+    impl_->protected_resource_metadata_body = std::move(document);
+    impl_->www_authenticate_value = std::move(rendered);
+}
+
+void HttpServerTransport::set_unauthenticated_paths(std::vector<std::string> paths) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->unauthenticated_paths.clear();
+    impl_->unauthenticated_paths.reserve(paths.size());
+    for (auto& path : paths) {
+        impl_->unauthenticated_paths.insert(std::move(path));
+    }
 }
 
 Task<std::string> HttpServerTransport::read_message() {

@@ -40,7 +40,7 @@ inline void to_json(nlohmann::json& json_obj, const Root& root) {
  */
 inline void from_json(const nlohmann::json& json_obj, Root& root) {
     json_obj.at("uri").get_to(root.uri);
-    if (json_obj.contains("name")) {
+    if (detail::has_json_value(json_obj, "name")) {
         root.name = json_obj.at("name").get<std::string>();
     }
     if (json_obj.contains("_meta")) {

@@ -42,7 +42,7 @@ inline void to_json(nlohmann::json& json_obj, const SetLevelRequestParams& param
 
 inline void from_json(const nlohmann::json& json_obj, SetLevelRequestParams& params) {
     json_obj.at("level").get_to(params.level);
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         params.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
@@ -83,7 +83,7 @@ inline void to_json(nlohmann::json& j, const CancelledNotificationParams& params
 
 inline void from_json(const nlohmann::json& j, CancelledNotificationParams& params) {
     j.at("requestId").get_to(params.requestId);
-    if (j.contains("reason")) {
+    if (detail::has_json_value(j, "reason")) {
         params.reason = j.at("reason").get<std::string>();
     }
 }
@@ -120,10 +120,10 @@ inline void to_json(nlohmann::json& j, const ProgressNotificationParams& params)
 inline void from_json(const nlohmann::json& j, ProgressNotificationParams& params) {
     j.at("progressToken").get_to(params.progressToken);
     j.at("progress").get_to(params.progress);
-    if (j.contains("total")) {
+    if (detail::has_json_value(j, "total")) {
         params.total = j.at("total").get<double>();
     }
-    if (j.contains("message")) {
+    if (detail::has_json_value(j, "message")) {
         params.message = j.at("message").get<std::string>();
     }
 }
@@ -156,7 +156,7 @@ inline void to_json(nlohmann::json& j, const LoggingMessageNotificationParams& p
 inline void from_json(const nlohmann::json& j, LoggingMessageNotificationParams& params) {
     j.at("level").get_to(params.level);
     j.at("data").get_to(params.data);
-    if (j.contains("logger")) {
+    if (detail::has_json_value(j, "logger")) {
         params.logger = j.at("logger").get<std::string>();
     }
 }
@@ -240,10 +240,10 @@ inline void to_json(nlohmann::json& j, const TaskStatusNotificationParams& p) {
 inline void from_json(const nlohmann::json& j, TaskStatusNotificationParams& p) {
     j.at("id").get_to(p.id);
     j.at("status").get_to(p.status);
-    if (j.contains("metadata")) {
+    if (detail::has_json_value(j, "metadata")) {
         p.metadata = j.at("metadata").get<TaskMetadata>();
     }
-    if (j.contains("message")) {
+    if (detail::has_json_value(j, "message")) {
         p.message = j.at("message").get<std::string>();
     }
 }

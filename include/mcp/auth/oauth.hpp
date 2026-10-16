@@ -232,12 +232,9 @@ struct OAuthScopeState;
 /// this client's private state, and granting friendship to one opaque tag is the narrowest way to
 /// allow that. It hands out nothing callable -- the type is defined only inside the
 /// implementation, and the accessors are declared in src/auth/oauth_internal.hpp, which is not
-/// installed, so no consumer can reach them without hand-redeclaring an implementation symbol.
-/// The symbols themselves are exported, because the test binary links the shared library and this
-/// library is built with hidden visibility; "absent from every installed header" and "not
-/// exported" were not both achievable without changing what the tests link against, which is a
-/// far larger change than it would be worth. A friend declaration does not affect layout, so
-/// binary compatibility is unaffected.
+/// installed. The symbols are exported because the test binary links the shared library, which is
+/// built with hidden visibility. A friend declaration does not affect layout, so binary
+/// compatibility is unaffected.
 struct OAuthTestAccess;
 
 }  // namespace detail
@@ -264,10 +261,12 @@ class MCP_API OAuthHttpClient {
      * @param policy Policy governing schemes, origins, resolved addresses, response size and
      *        redirect depth.
      *
-     * @details Must be installed before the first request. Once installed, each request is
-     * validated before host resolution, every resolved address is classified before connecting,
-     * the addresses from that single resolution are pinned for the connection, response bodies are
-     * capped, and redirects are bounded and individually re-validated.
+     * @details May be called at any time, including while requests are in flight: an exchange
+     * already running keeps the policy it started with, and the next one picks up the new value.
+     * Once installed, each request is validated before host resolution, every resolved address is
+     * classified before connecting, the addresses from that single resolution are pinned for the
+     * connection, response bodies are capped, and redirects are bounded and individually
+     * re-validated.
      *
      * @warning Do not pair this with set_host_resolver() to change both. This setter and that one
      * are individually atomic and do NOT compose: between the two calls the client holds one new

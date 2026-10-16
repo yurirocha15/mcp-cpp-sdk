@@ -9,14 +9,22 @@
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <chrono>
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <functional>
+#include <future>
 #include <memory>
+#include <mutex>
+#include <queue>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -24,6 +32,17 @@
 #include <vector>
 
 namespace {
+
+// Ends its session immediately, then fails the teardown. ITransport::close is not noexcept, so a
+// throwing implementation is the reachable way to make session teardown exit exceptionally.
+class ThrowingCloseTransport final : public mcp::ITransport {
+   public:
+    mcp::Task<std::string> read_message() override { throw std::runtime_error("transport exhausted"); }
+
+    mcp::Task<void> write_message(std::string_view) override { co_return; }
+
+    void close() override { throw std::runtime_error("close failed"); }
+};
 
 class StrandCloseProbeTransport final : public mcp::ITransport {
    public:
@@ -445,6 +464,108 @@ TEST_F(ServerCoreTest, RequestsRequireCompletedInitializationHandshake) {
     EXPECT_TRUE(server.is_initialized());
 }
 
+TEST_F(ServerCoreTest, InitializedNotificationWithNullParamsCompletesTheHandshake) {
+    mcp::Implementation info;
+    info.name = "test-server";
+    info.version = "1.0";
+    mcp::Server server(info, mcp::ServerCapabilities{});
+
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    std::vector<nlohmann::json> responses;
+    raw_transport->set_on_write([&responses, raw_transport](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        if (responses.size() == 2) {
+            raw_transport->close();
+        }
+    });
+
+    raw_transport->enqueue_message(make_initialize_request("init").dump());
+    auto initialized = make_initialized_notification();
+    initialized["params"] = nullptr;
+    raw_transport->enqueue_message(initialized.dump());
+    raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"}, {"id", "list"}, {"method", "tools/list"}}.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("result"));
+    EXPECT_TRUE(responses[1]["result"]["tools"].empty());
+}
+
+TEST_F(ServerCoreTest, NotificationWithNonObjectParamsIsStillRejected) {
+    mcp::Implementation info;
+    info.name = "test-server";
+    info.version = "1.0";
+    mcp::Server server(info, mcp::ServerCapabilities{});
+
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    std::vector<nlohmann::json> responses;
+    raw_transport->set_on_write([&responses, raw_transport](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        if (responses.size() == 2) {
+            raw_transport->close();
+        }
+    });
+
+    raw_transport->enqueue_message(make_initialize_request("init").dump());
+    auto initialized = make_initialized_notification();
+    initialized["params"] = "not-an-object";
+    raw_transport->enqueue_message(initialized.dump());
+    raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"}, {"id", "list"}, {"method", "tools/list"}}.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("error"));
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_REQUEST);
+}
+
+TEST_F(ServerCoreTest, FailedSessionTeardownDoesNotStrandTheServer) {
+    mcp::Server server({"teardown-server", "1.0"}, mcp::ServerCapabilities{});
+
+    std::exception_ptr first_error;
+    boost::asio::co_spawn(
+        io_ctx_, server.run(std::make_shared<ThrowingCloseTransport>(), io_ctx_.get_executor()),
+        [&first_error](std::exception_ptr error) { first_error = std::move(error); });
+    io_ctx_.run();
+    EXPECT_NE(first_error, nullptr);
+
+    io_ctx_.restart();
+
+    // The failed teardown must not leave the session registered, or every later run() is refused.
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    std::vector<nlohmann::json> responses;
+    raw_transport->set_on_write([&responses, raw_transport](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        raw_transport->close();
+    });
+    raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"}, {"id", "ping"}, {"method", "ping"}}.dump());
+
+    std::exception_ptr second_error;
+    boost::asio::co_spawn(
+        io_ctx_, server.run(transport, io_ctx_.get_executor()),
+        [&second_error](std::exception_ptr error) { second_error = std::move(error); });
+    io_ctx_.run();
+
+    EXPECT_EQ(second_error, nullptr);
+    ASSERT_EQ(responses.size(), 1);
+    EXPECT_EQ(responses[0]["id"], "ping");
+}
+
 TEST_F(ServerCoreTest, InvalidJsonRpcEnvelopesAreRejected) {
     mcp::Implementation info;
     info.name = "test-server";
@@ -754,6 +875,71 @@ TEST_F(ServerCoreTest, SessionTeardownStaysOnConfiguredStrandAcrossRepeatedRuns)
         EXPECT_GE(transport->close_calls(), 1);
         EXPECT_EQ(transport->off_strand_closes(), 0);
     }
+}
+
+// A peer that serializes absent optionals as explicit nulls answers a server-initiated request
+// with an "error" member set to null. That is not an error, and the response must still correlate.
+TEST_F(ServerCoreTest, ReverseRequestResponseCarryingNullErrorIsAccepted) {
+    using namespace std::chrono_literals;
+
+    auto [server_transport, client_transport] =
+        mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    mcp::Server server({"reverse-rpc-server", "1.0"}, mcp::ServerCapabilities{});
+
+    std::atomic_bool session_ready{false};
+    boost::asio::co_spawn(io_ctx_, server.run(server_transport, io_ctx_.get_executor()),
+                          boost::asio::detached);
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [client_transport, &session_ready]() -> mcp::Task<void> {
+            co_await client_transport->write_message(make_initialize_request("init").dump());
+            static_cast<void>(co_await client_transport->read_message());
+            co_await client_transport->write_message(make_initialized_notification().dump());
+            session_ready.store(true, std::memory_order_release);
+
+            auto request = nlohmann::json::parse(co_await client_transport->read_message());
+            // [gcc11-sso: scope-before-await] Build the message first: a braced-init-list temporary
+            // inside the co_await argument makes GCC fail with an internal compiler error.
+            auto response =
+                make_result_response(request.at("id").get<std::string>(), nlohmann::json{{"ok", true}});
+            response["error"] = nullptr;
+            co_await client_transport->write_message(response.dump());
+        },
+        boost::asio::detached);
+
+    bool completed = false;
+    nlohmann::json reverse_result;
+    boost::asio::steady_timer launch_poll(io_ctx_);
+    std::function<void()> launch;
+    launch = [&]() {
+        if (!session_ready.load(std::memory_order_acquire)) {
+            launch_poll.expires_after(1ms);
+            launch_poll.async_wait([&launch](const boost::system::error_code& error) {
+                if (!error) {
+                    launch();
+                }
+            });
+            return;
+        }
+        boost::asio::co_spawn(
+            io_ctx_, server.send_request("sampling/createMessage", nlohmann::json::object()),
+            [this, &completed, &reverse_result](std::exception_ptr error, nlohmann::json result) {
+                if (!error) {
+                    completed = true;
+                    reverse_result = std::move(result);
+                }
+                // The live session keeps the context busy, so stop it here; otherwise run_for
+                // waits out the whole timeout even when the response arrived immediately.
+                io_ctx_.stop();
+            });
+    };
+    launch();
+
+    io_ctx_.run_for(5s);
+
+    ASSERT_TRUE(completed) << "the reverse request never correlated with its response";
+    EXPECT_EQ(reverse_result["ok"], true);
 }
 
 TEST_F(ServerCoreTest, ConcurrentReverseRequestsRemainCorrelatedOnMultiThreadedExecutor) {
@@ -1290,4 +1476,500 @@ TEST_F(ServerCoreTest, DiscoverWorksAgainAfterInitializeIdempotently) {
     ASSERT_TRUE(responses[3].contains("result"));
 
     EXPECT_TRUE(server.is_initialized());
+}
+
+namespace {
+
+// Drives one server-initiated request that the client answers with a JSON-RPC error object, and
+// reports the diagnostic the server raised.
+//
+// Same defect as the peer-controlled text in the client's McpError, opposite direction: here the
+// untrusted side is the client. Every server-initiated request -- sampling/createMessage,
+// elicitation, roots/list -- can be answered with an error whose `message` the client writes, and
+// that message is deserialized verbatim and interpolated into the runtime_error the server
+// operator logs. There is no authorization step in the way.
+struct ReverseErrorOutcome {
+    bool threw{false};
+    std::string what;
+};
+
+// A free coroutine rather than a lambda, and every operand named rather than a temporary: GCC 13
+// ICEs (build_special_member_call) on a co_await of a call taking a temporary inside a try block
+// in a capturing coroutine lambda.
+mcp::Task<void> capture_reverse_request_error(mcp::Server& server, ReverseErrorOutcome& outcome) {
+    const std::optional<nlohmann::json> params{nlohmann::json{{"probe", true}}};
+    try {
+        auto result = co_await server.send_request("sampling/createMessage", params);
+        static_cast<void>(result);
+    } catch (const std::exception& error) {
+        outcome.threw = true;
+        outcome.what = error.what();
+    }
+}
+
+ReverseErrorOutcome reverse_request_against_peer_error(boost::asio::io_context& io_ctx,
+                                                       const std::string& peer_message) {
+    using namespace std::chrono_literals;
+
+    // Named copies rather than a structured binding: GCC 13 ICEs on capturing a structured binding
+    // by copy in a coroutine lambda alongside a by-reference default.
+    auto transport_pair = mcp::create_memory_transport_pair(io_ctx.get_executor());
+    auto server_transport = transport_pair.first;
+    auto client_transport = transport_pair.second;
+    mcp::Server server({"reverse-error-server", "1.0"}, mcp::ServerCapabilities{});
+
+    ReverseErrorOutcome outcome;
+    std::atomic_bool session_ready{false};
+
+    boost::asio::co_spawn(io_ctx, server.run(server_transport, io_ctx.get_executor()),
+                          boost::asio::detached);
+
+    boost::asio::co_spawn(
+        io_ctx,
+        [client_transport, peer_message, &session_ready]() -> mcp::Task<void> {
+            co_await client_transport->write_message(make_initialize_request("init").dump());
+            static_cast<void>(co_await client_transport->read_message());
+            co_await client_transport->write_message(make_initialized_notification().dump());
+            session_ready.store(true, std::memory_order_release);
+
+            // Answer the server's reverse request with an error of the client's own choosing. The
+            // message travels as JSON, so CR/LF written here arrive as real control bytes: the
+            // encoder escapes them and the server's decoder turns them back.
+            for (;;) {
+                const auto request = nlohmann::json::parse(co_await client_transport->read_message());
+                if (!request.contains("id")) {
+                    continue;
+                }
+                co_await client_transport->write_message(
+                    make_error_response(request.at("id").get<std::string>(), mcp::g_INTERNAL_ERROR,
+                                        peer_message)
+                        .dump());
+                co_return;
+            }
+        },
+        boost::asio::detached);
+
+    boost::asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(10s);
+    watchdog.async_wait([client_transport](const boost::system::error_code& error) {
+        if (!error) {
+            client_transport->close();
+        }
+    });
+
+    boost::asio::co_spawn(
+        io_ctx,
+        [&io_ctx, &server, &outcome, &session_ready, &watchdog, client_transport]() -> mcp::Task<void> {
+            boost::asio::steady_timer poll(io_ctx);
+            for (int attempt = 0; attempt < 5000 && !session_ready.load(std::memory_order_acquire);
+                 ++attempt) {
+                poll.expires_after(1ms);
+                co_await poll.async_wait(boost::asio::use_awaitable);
+            }
+            co_await capture_reverse_request_error(server, outcome);
+            // Cancelled rather than left pending: an armed watchdog is outstanding work, and
+            // io_context::run() would sit on it for the full ten seconds after the test is done.
+            watchdog.cancel();
+            client_transport->close();
+        },
+        boost::asio::detached);
+
+    io_ctx.run();
+    return outcome;
+}
+
+}  // namespace
+
+// The message in the error a CLIENT returns for a server-initiated request is the client's text,
+// and it reaches the diagnostic the server operator logs. A client answering with CR/LF forges a
+// line in that log; a bidi override reorders the tail of the message.
+TEST_F(ServerCoreTest, ReverseRequestErrorDiagnosticFlattensThePeerChosenMessage) {
+    // "zqtripwire" is a token no other code path produces; see the tripwire assertions below.
+    // \xe2\x80\xae is U+202E RIGHT-TO-LEFT OVERRIDE, written escaped so this source file does not
+    // itself contain a bidi override.
+    const std::string forged =
+        "denied\r\n2026-09-20 INFO zqtripwire operator approved\xe2\x80\xae reordered tail";
+
+    const auto outcome = reverse_request_against_peer_error(io_ctx_, forged);
+
+    // Tripwire, ordered before the flattening assertions. send_request() has four other throw
+    // sites -- "reverse RPC is unavailable in stateless direct dispatch", "server session is
+    // closing", "duplicate pending request id", "pending request not found for id" -- none of
+    // which interpolates a byte the peer chose, and each of which would satisfy everything below
+    // for a reason unrelated to the site under test. Dump what() on failure so a vacuous pass
+    // cannot hide.
+    ASSERT_TRUE(outcome.threw) << "send_request() raised nothing at all";
+    ASSERT_EQ(outcome.what.rfind("JSON-RPC error ", 0), 0U) << "actual what(): " << outcome.what;
+    ASSERT_NE(outcome.what.find(std::to_string(mcp::g_INTERNAL_ERROR)), std::string::npos)
+        << "actual what(): " << outcome.what;
+    ASSERT_NE(outcome.what.find("zqtripwire"), std::string::npos) << "actual what(): " << outcome.what;
+
+    EXPECT_EQ(outcome.what.find('\r'), std::string::npos) << "actual what(): " << outcome.what;
+    EXPECT_EQ(outcome.what.find('\n'), std::string::npos) << "actual what(): " << outcome.what;
+    EXPECT_EQ(outcome.what.find("\xe2\x80\xae"), std::string::npos)
+        << "actual what(): " << outcome.what;
+}
+
+// The same site must bound the value too, so a client cannot flood the server operator's log
+// through a megabyte-long error message.
+TEST_F(ServerCoreTest, ReverseRequestErrorDiagnosticBoundsThePeerChosenMessage) {
+    const std::string forged = "zqtripwire" + std::string(64 * 1024, 'A');
+
+    const auto outcome = reverse_request_against_peer_error(io_ctx_, forged);
+
+    ASSERT_TRUE(outcome.threw) << "send_request() raised nothing at all";
+    ASSERT_EQ(outcome.what.rfind("JSON-RPC error ", 0), 0U)
+        << "actual what() prefix: " << outcome.what.substr(0, 80);
+    ASSERT_NE(outcome.what.find("zqtripwire"), std::string::npos)
+        << "actual what() prefix: " << outcome.what.substr(0, 80);
+
+    EXPECT_LT(outcome.what.size(), forged.size()) << "what() size: " << outcome.what.size();
+    EXPECT_LE(outcome.what.size(), std::size_t{512}) << "what() size: " << outcome.what.size();
+}
+
+// ---------------------------------------------------------------------------
+// Server destruction
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A transport whose read loop stays suspended for as long as the test needs it to. close() is
+// counted but deliberately does not wake the reader, so the session loop never resumes after the
+// Server it belongs to is gone. Resuming it would exercise a different rule -- run() documents
+// that the Server must outlive the task it returns -- and these tests are about what the
+// destructor itself does on the thread that runs it.
+class QuiescentSessionTransport final : public mcp::ITransport {
+   public:
+    explicit QuiescentSessionTransport(const boost::asio::any_io_executor& executor)
+        : reader_(executor) {
+        reader_.expires_at(std::chrono::steady_clock::time_point::max());
+    }
+
+    mcp::Task<std::string> read_message() override {
+        read_calls_.fetch_add(1, std::memory_order_release);
+        for (;;) {
+            {
+                std::lock_guard lock(mutex_);
+                if (!incoming_.empty()) {
+                    auto message = std::move(incoming_.front());
+                    incoming_.pop();
+                    co_return message;
+                }
+            }
+            try {
+                co_await reader_.async_wait(boost::asio::use_awaitable);
+            } catch (const boost::system::system_error& error) {
+                if (error.code() != boost::asio::error::operation_aborted) {
+                    throw;
+                }
+            }
+        }
+    }
+
+    // Callable from any thread: the timer is only ever touched on its own executor.
+    void feed(std::string message) {
+        {
+            std::lock_guard lock(mutex_);
+            incoming_.push(std::move(message));
+        }
+        boost::asio::post(reader_.get_executor(), [this] { reader_.cancel(); });
+    }
+
+    mcp::Task<void> write_message(std::string_view message) override {
+        if (message.find("sampling/createMessage") != std::string_view::npos) {
+            reverse_requests_.fetch_add(1, std::memory_order_release);
+        }
+        co_return;
+    }
+
+    void close() override { close_calls_.fetch_add(1, std::memory_order_release); }
+
+    // Non-zero once run_session has registered the session and asked for its first message.
+    [[nodiscard]] std::size_t read_calls() const { return read_calls_.load(std::memory_order_acquire); }
+    [[nodiscard]] std::size_t reverse_requests() const {
+        return reverse_requests_.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] std::size_t close_calls() const {
+        return close_calls_.load(std::memory_order_acquire);
+    }
+
+   private:
+    boost::asio::steady_timer reader_;
+    std::mutex mutex_;
+    std::queue<std::string> incoming_;
+    std::atomic_size_t read_calls_{0};
+    std::atomic_size_t reverse_requests_{0};
+    std::atomic_size_t close_calls_{0};
+};
+
+// Runs `body` on a helper thread and aborts the process if it has not returned within `budget`.
+// A destructor that blocks forever hangs the whole test binary rather than failing one test, and
+// a hung binary reports neither a pass nor a failure for anything in it. Aborting converts that
+// into a loud failure with a named cause. std::abort is used instead of a gtest failure because
+// the blocked thread cannot be joined or unwound.
+void run_with_teardown_watchdog(std::chrono::milliseconds budget, const std::function<void()>& body) {
+    std::promise<void> finished;
+    auto reached_the_end = finished.get_future();
+    std::thread worker([&finished, &body]() {
+        try {
+            body();
+        } catch (...) {
+            finished.set_exception(std::current_exception());
+            return;
+        }
+        finished.set_value();
+    });
+
+    if (reached_the_end.wait_for(budget) != std::future_status::ready) {
+        std::fprintf(stderr, "server teardown did not finish within %lld ms\n",
+                     static_cast<long long>(budget.count()));
+        std::fflush(stderr);
+        std::abort();
+    }
+
+    worker.join();
+    reached_the_end.get();
+}
+
+// Spins until `condition` holds, or the budget runs out. Returns whether it held.
+bool wait_for_condition(const std::function<bool()>& condition, std::chrono::milliseconds budget) {
+    const auto deadline = std::chrono::steady_clock::now() + budget;
+    while (!condition()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
+constexpr std::chrono::milliseconds g_teardown_budget{10000};
+
+}  // namespace
+
+// Positive control for the watchdog the tests below rely on: a body that deliberately overruns
+// its budget must abort with a named cause. Without this, a watchdog that had stopped biting
+// would make every test below look like it passed. Disabled because it aborts on purpose; run it
+// with --gtest_also_run_disabled_tests to re-check the watchdog.
+TEST(ServerTeardownTest, DISABLED_TeardownWatchdogAbortsOnOverrun) {
+    run_with_teardown_watchdog(std::chrono::milliseconds(200),
+                               [] { std::this_thread::sleep_for(std::chrono::seconds(30)); });
+}
+
+// Building a Server, registering tools and letting it go out of scope without ever running it is
+// the ordinary lifecycle in this SDK's own tests and examples. The destructor therefore has to
+// complete with no executor to post to and no session to unwind. Returning is the whole
+// assertion: what this detects is a destructor that blocks, which the watchdog turns into an
+// abort rather than a hang.
+TEST(ServerTeardownTest, DestroyWithoutSessionCompletes) {
+    run_with_teardown_watchdog(g_teardown_budget, [] {
+        mcp::ServerCapabilities capabilities;
+        capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
+        mcp::Server server({"teardown-no-session", "1.0"}, capabilities);
+        server.add_tool<nlohmann::json, nlohmann::json>(
+            "noop", "Does nothing", nlohmann::json{{"type", "object"}},
+            [](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+                co_return nlohmann::json::object();
+            });
+    });
+}
+
+// run() was spawned but the io_context was never run, so the session was never created and the
+// posted work never executed. Anything the destructor posted here would never be picked up.
+// Returning is the whole assertion, as above.
+TEST(ServerTeardownTest, DestroyWithNeverRunIoContextCompletes) {
+    run_with_teardown_watchdog(g_teardown_budget, [] {
+        boost::asio::io_context io_ctx;
+        auto transport = std::make_shared<QuiescentSessionTransport>(io_ctx.get_executor());
+        mcp::Server server({"teardown-never-run", "1.0"}, mcp::ServerCapabilities{});
+        boost::asio::co_spawn(io_ctx, server.run(transport, io_ctx.get_executor()),
+                              boost::asio::detached);
+    });
+}
+
+// The session exists and holds pending reverse requests, but the io_context has been stopped and
+// its thread joined, so nothing can run on the session strand again. A destructor that waited for
+// strand work to complete would never be satisfied here.
+TEST(ServerTeardownTest, DestroyAfterIoContextStoppedCompletes) {
+    boost::asio::io_context io_ctx;
+    auto transport = std::make_shared<QuiescentSessionTransport>(io_ctx.get_executor());
+    auto server = std::make_unique<mcp::Server>(mcp::Implementation{"teardown-stopped", "1.0"},
+                                                mcp::ServerCapabilities{});
+
+    boost::asio::co_spawn(io_ctx, server->run(transport, io_ctx.get_executor()), boost::asio::detached);
+
+    auto work = boost::asio::make_work_guard(io_ctx);
+    std::thread runner([&io_ctx] { io_ctx.run(); });
+
+    ASSERT_TRUE(wait_for_condition([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
+
+    std::atomic_size_t settled{0};
+    boost::asio::co_spawn(
+        io_ctx, server->send_request("sampling/createMessage", nlohmann::json{{"sequence", 0}}),
+        [&settled](std::exception_ptr, nlohmann::json) {
+            settled.fetch_add(1, std::memory_order_release);
+        });
+    ASSERT_TRUE(
+        wait_for_condition([&] { return transport->reverse_requests() == 1; }, g_teardown_budget));
+
+    work.reset();
+    io_ctx.stop();
+    runner.join();
+
+    ASSERT_EQ(settled.load(std::memory_order_acquire), 0U);
+
+    run_with_teardown_watchdog(g_teardown_budget, [&server] { server.reset(); });
+}
+
+// Destruction from a thread that is itself driving the session's executor. With a single-threaded
+// io_context the destroying thread is the thread the session strand runs on, so a destructor that
+// waited on strand work would deadlock against itself.
+TEST(ServerTeardownTest, DestroyFromSessionExecutorThreadCompletes) {
+    boost::asio::io_context io_ctx;
+    auto transport = std::make_shared<QuiescentSessionTransport>(io_ctx.get_executor());
+    auto server = std::make_unique<mcp::Server>(mcp::Implementation{"teardown-on-executor", "1.0"},
+                                                mcp::ServerCapabilities{});
+
+    boost::asio::co_spawn(io_ctx, server->run(transport, io_ctx.get_executor()), boost::asio::detached);
+
+    run_with_teardown_watchdog(g_teardown_budget, [&] {
+        while (transport->read_calls() == 0 && io_ctx.poll_one() > 0) {
+        }
+        server.reset();
+    });
+
+    EXPECT_GE(transport->read_calls(), 1U) << "the session was never registered";
+    EXPECT_GE(transport->close_calls(), 1U);
+}
+
+// The scenario: a Server destroyed from a thread that is not the session strand, while other
+// threads are servicing that strand and the session's pending-request map is full.
+//
+// The two ASSERTs before the destructor are the reachability witness, and they stand on their own
+// without a sanitizer: every reverse request has reached the wire, so each owns an entry in the
+// session's pending-request map, and none has settled, so none of those entries has been erased.
+// The map the destructor is about to walk therefore holds pending_count entries.
+TEST(ServerTeardownTest, DestroyFromForeignThreadWithPendingReverseRequests) {
+    constexpr std::size_t pending_count = 512;
+    constexpr std::size_t pool_size = 2;
+
+    boost::asio::io_context io_ctx;
+    auto transport = std::make_shared<QuiescentSessionTransport>(io_ctx.get_executor());
+    auto server = std::make_unique<mcp::Server>(mcp::Implementation{"teardown-foreign", "1.0"},
+                                                mcp::ServerCapabilities{});
+
+    boost::asio::co_spawn(io_ctx, server->run(transport, io_ctx.get_executor()), boost::asio::detached);
+
+    auto work = boost::asio::make_work_guard(io_ctx);
+    std::vector<std::thread> pool;
+    pool.reserve(pool_size);
+    for (std::size_t index = 0; index < pool_size; ++index) {
+        pool.emplace_back([&io_ctx] { io_ctx.run(); });
+    }
+
+    ASSERT_TRUE(wait_for_condition([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
+
+    std::atomic_size_t settled{0};
+    for (std::size_t sequence = 0; sequence < pending_count; ++sequence) {
+        boost::asio::co_spawn(
+            io_ctx,
+            server->send_request("sampling/createMessage", nlohmann::json{{"sequence", sequence}}),
+            [&settled](std::exception_ptr, nlohmann::json) {
+                settled.fetch_add(1, std::memory_order_release);
+            });
+    }
+
+    ASSERT_TRUE(wait_for_condition([&] { return transport->reverse_requests() == pending_count; },
+                                   g_teardown_budget));
+    ASSERT_EQ(settled.load(std::memory_order_acquire), 0U);
+    ASSERT_EQ(transport->close_calls(), 0U);
+
+    run_with_teardown_watchdog(g_teardown_budget, [&server] { server.reset(); });
+
+    // Closing the transport is the last step of session teardown, after the pending-request walk,
+    // so observing it proves the teardown ran over the non-empty map witnessed above.
+    EXPECT_GE(transport->close_calls(), 1U);
+
+    // Every pending request is failed and woken even though run_session never reaches its own
+    // teardown here: this transport does not wake its reader on close, so whatever the destructor
+    // arranges is the only cleanup that runs. Destroying a Server mid-session must not strand the
+    // callers waiting on its reverse requests.
+    EXPECT_TRUE(wait_for_condition(
+        [&] { return settled.load(std::memory_order_acquire) == pending_count; }, g_teardown_budget))
+        << "settled " << settled.load(std::memory_order_acquire) << " of " << pending_count;
+
+    work.reset();
+    io_ctx.stop();
+    for (auto& thread : pool) {
+        thread.join();
+    }
+}
+
+// A handler that is still running when its Server is destroyed must be able to find that out
+// instead of dereferencing freed memory. The reverse-RPC call below is the reachable hazard: it
+// goes through the Context the handler was given, which is the only route application code has
+// back into the Server.
+//
+// The failure it reports has to be distinguishable from the two neighbouring ones -- stateless
+// direct dispatch, and a session that is merely closing -- because a handler's correct response
+// differs in each case, so the message is asserted rather than just the fact of an exception.
+TEST(ServerTeardownTest, ReverseRequestFromAHandlerReportsADestroyedServer) {
+    boost::asio::io_context io_ctx;
+    auto transport = std::make_shared<QuiescentSessionTransport>(io_ctx.get_executor());
+    auto server = std::make_unique<mcp::Server>(mcp::Implementation{"teardown-handler", "1.0"},
+                                                mcp::ServerCapabilities{});
+
+    std::atomic_bool handler_entered{false};
+    std::atomic_bool server_destroyed{false};
+    std::atomic_bool call_returned{false};
+    std::string observed;
+
+    // A tool handler is the only way application code is handed a Context, so the hazard is
+    // reached the way a real one would reach it. The handler parks until the Server is gone, then
+    // calls back through the Context it was given.
+    server->add_tool<nlohmann::json, nlohmann::json>(
+        "park", "Waits for the server to go away", nlohmann::json{{"type", "object"}},
+        [&](mcp::Context& ctx, const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+            handler_entered.store(true, std::memory_order_release);
+            while (!server_destroyed.load(std::memory_order_acquire)) {
+                boost::asio::steady_timer pause(io_ctx, std::chrono::milliseconds(1));
+                co_await pause.async_wait(boost::asio::use_awaitable);
+            }
+            try {
+                mcp::CreateMessageRequestParams request;
+                request.maxTokens = 1;
+                static_cast<void>(co_await ctx.sample_llm(request));
+            } catch (const std::exception& error) {
+                observed = error.what();
+            }
+            call_returned.store(true, std::memory_order_release);
+            co_return nlohmann::json::object();
+        });
+
+    boost::asio::co_spawn(io_ctx, server->run(transport, io_ctx.get_executor()), boost::asio::detached);
+
+    auto work = boost::asio::make_work_guard(io_ctx);
+    std::thread runner([&io_ctx] { io_ctx.run(); });
+
+    ASSERT_TRUE(wait_for_condition([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
+
+    transport->feed(make_initialize_request("init").dump());
+    transport->feed(make_initialized_notification().dump());
+    transport->feed(make_tool_call_request("call", "park").dump());
+
+    ASSERT_TRUE(wait_for_condition([&] { return handler_entered.load(std::memory_order_acquire); },
+                                   g_teardown_budget));
+
+    run_with_teardown_watchdog(g_teardown_budget, [&server] { server.reset(); });
+    server_destroyed.store(true, std::memory_order_release);
+
+    EXPECT_TRUE(wait_for_condition([&] { return call_returned.load(std::memory_order_acquire); },
+                                   g_teardown_budget))
+        << "the reverse-RPC call never returned";
+    EXPECT_NE(observed.find("destroyed"), std::string::npos)
+        << "reverse RPC after destruction reported: " << observed;
+
+    work.reset();
+    io_ctx.stop();
+    runner.join();
 }

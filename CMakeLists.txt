@@ -283,7 +283,8 @@ if(BUILD_TESTING)
       test/server/server_http_test.cpp
       test/server/server_tool_test.cpp
       test/transport/transport_factory_test.cpp
-      test/core/gcc11_sso_crash_test.cpp)
+      test/core/gcc11_sso_crash_test.cpp
+      test/core/json_peer_input_matrix_test.cpp)
   add_executable(mcp-sdk-tests ${TEST_SRCS})
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
   if(MSVC)
@@ -293,6 +294,54 @@ if(BUILD_TESTING)
     # hold (error C1128). The flag lifts that limit to 2^32; the only cost is a
     # larger object file.
     target_compile_options(mcp-sdk-tests PRIVATE /bigobj)
+  endif()
+
+  # The peer-input matrix is generated from scripts/json_census.py, and its
+  # worth depends on covering every protocol type. Checking that here means a
+  # new type with a from_json breaks the build until it is either in the matrix
+  # or excluded with a stated reason, rather than quietly arriving untested.
+  # Source archives ship test/ but not the matrix scripts, so a packager's
+  # BUILD_TESTING=ON build defaults the check off instead of failing on it.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_json_matrix.py")
+    set(_mcp_json_matrix_default ON)
+  else()
+    set(_mcp_json_matrix_default OFF)
+  endif()
+  option(
+    MCP_CPP_SDK_CHECK_JSON_MATRIX
+    "Fail the build when the peer-input matrix is stale (needs Python 3.9+)"
+    ${_mcp_json_matrix_default})
+  if(MCP_CPP_SDK_CHECK_JSON_MATRIX)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_json_matrix.py")
+      message(
+        FATAL_ERROR
+          "MCP_CPP_SDK_CHECK_JSON_MATRIX=ON but scripts/check_json_matrix.py "
+          "is not in this source tree")
+    endif()
+    find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
+    add_custom_target(
+      mcp-json-matrix-complete ALL
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_json_matrix.py"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      COMMENT "Checking the peer-input matrix covers every protocol type")
+    add_dependencies(mcp-sdk-tests mcp-json-matrix-complete)
+    # Inside the gate for the same reason as the check: source archives do not
+    # ship these scripts.
+    add_test(
+      NAME json-matrix-check-unittest
+      COMMAND "${Python3_EXECUTABLE}" scripts/test_check_json_matrix.py -v
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(json-matrix-check-unittest
+                         PROPERTIES ENVIRONMENT PYTHONDONTWRITEBYTECODE=1)
+  elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_json_matrix.py")
+    message(STATUS "Peer-input matrix check skipped "
+                   "(disabled by MCP_CPP_SDK_CHECK_JSON_MATRIX=OFF)")
+  else()
+    message(
+      STATUS
+        "Peer-input matrix check skipped (MCP_CPP_SDK_CHECK_JSON_MATRIX=OFF; "
+        "scripts/ is not shipped in source archives)")
   endif()
 
   include(GoogleTest)

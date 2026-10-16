@@ -1058,3 +1058,411 @@ TEST_F(ClientCoreTest, ConcurrentRequestsRemainCorrelatedOnMultiThreadedExecutor
     EXPECT_EQ(errors.load(), 0);
     EXPECT_EQ(client.pending_request_count(), 0);
 }
+
+namespace {
+
+// Drives a connect() whose peer answers `initialize` with the given protocolVersion, and returns
+// the McpError message the client raised. The version string is entirely the server's choice, so
+// this is the untrusted-peer text that reaches the diagnostic.
+struct RejectedVersionOutcome {
+    bool threw{false};
+    int code{0};
+    std::string message;
+};
+
+RejectedVersionOutcome connect_against_protocol_version(boost::asio::io_context& io_ctx,
+                                                        const std::string& protocol_version) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx.get_executor());
+    auto* raw_transport = transport.get();
+
+    raw_transport->set_on_write([raw_transport, protocol_version](std::string_view msg) {
+        const auto json_msg = nlohmann::json::parse(msg);
+        if (!json_msg.contains("id")) {
+            return;
+        }
+        raw_transport->enqueue_message(
+            make_result_response(
+                json_msg.at("id").get<std::string>(),
+                nlohmann::json{{"protocolVersion", protocol_version},
+                               {"capabilities", nlohmann::json::object()},
+                               {"serverInfo", {{"name", "test-server"}, {"version", "1.0"}}}})
+                .dump());
+    });
+
+    mcp::Client client(transport, io_ctx.get_executor());
+
+    RejectedVersionOutcome outcome;
+    boost::asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            mcp::Implementation info;
+            info.name = "test-client";
+            info.version = "0.1";
+            try {
+                static_cast<void>(co_await client.connect(std::move(info), mcp::ClientCapabilities{}));
+            } catch (const mcp::McpError& error) {
+                outcome.threw = true;
+                outcome.code = error.code();
+                outcome.message = error.message();
+            }
+            raw_transport->close();
+        },
+        boost::asio::detached);
+
+    io_ctx.run();
+    return outcome;
+}
+
+}  // namespace
+
+// The protocol version in an `initialize` result is chosen by the remote server. When the client
+// refuses it, the rejected value is interpolated into the McpError the application logs, so a
+// malicious or broken server that answers with CR/LF forges a line in the application's log and a
+// bidi override reorders the rest of the message.
+TEST_F(ClientCoreTest, UnsupportedProtocolVersionDiagnosticFlattensServerChosenVersion) {
+    // "zqtripwire" is a token no other code path produces; see the tripwire assertions below.
+    // \xe2\x80\xae is U+202E RIGHT-TO-LEFT OVERRIDE, written escaped so this source file does not
+    // itself contain a bidi override.
+    const std::string forged_version =
+        "zqtripwire\r\n2026-09-20 ERROR forged line from the server\xe2\x80\xae reordered tail";
+
+    const auto outcome = connect_against_protocol_version(io_ctx_, forged_version);
+
+    // Tripwire. The rejection must be the strict-protocol-validation site, not a JSON parse
+    // failure, a transport error, or any other throw that never interpolates the peer's bytes --
+    // each of those would make the assertions below pass for a reason unrelated to the site under
+    // test. Dump the message on failure so a vacuous pass cannot hide.
+    ASSERT_TRUE(outcome.threw) << "connect() did not reject the version at all";
+    ASSERT_EQ(outcome.code, mcp::g_INVALID_REQUEST) << "actual message: " << outcome.message;
+    ASSERT_EQ(outcome.message.rfind("Server selected unsupported protocol version: ", 0), 0U)
+        << "actual message: " << outcome.message;
+    ASSERT_NE(outcome.message.find("zqtripwire"), std::string::npos)
+        << "actual message: " << outcome.message;
+
+    EXPECT_EQ(outcome.message.find('\r'), std::string::npos) << "actual message: " << outcome.message;
+    EXPECT_EQ(outcome.message.find('\n'), std::string::npos) << "actual message: " << outcome.message;
+    EXPECT_EQ(outcome.message.find("\xe2\x80\xae"), std::string::npos)
+        << "actual message: " << outcome.message;
+}
+
+// The same site must also bound the value, so a server cannot flood the application's log through
+// a megabyte-long protocol version.
+TEST_F(ClientCoreTest, UnsupportedProtocolVersionDiagnosticBoundsServerChosenVersion) {
+    const std::string forged_version = "zqtripwire" + std::string(64 * 1024, 'A');
+
+    const auto outcome = connect_against_protocol_version(io_ctx_, forged_version);
+
+    ASSERT_TRUE(outcome.threw) << "connect() did not reject the version at all";
+    ASSERT_EQ(outcome.code, mcp::g_INVALID_REQUEST)
+        << "actual message prefix: " << outcome.message.substr(0, 80);
+    ASSERT_EQ(outcome.message.rfind("Server selected unsupported protocol version: ", 0), 0U)
+        << "actual message prefix: " << outcome.message.substr(0, 80);
+    ASSERT_NE(outcome.message.find("zqtripwire"), std::string::npos)
+        << "actual message prefix: " << outcome.message.substr(0, 80);
+
+    EXPECT_LT(outcome.message.size(), forged_version.size())
+        << "message size: " << outcome.message.size();
+    EXPECT_LE(outcome.message.size(), std::size_t{512}) << "message size: " << outcome.message.size();
+}
+
+namespace {
+
+// Drives a request the peer answers with a JSON-RPC error object, and reports what the client
+// raised.
+//
+// This is the shortest path there is from a peer's bytes to an application's log. `error.message`
+// is deserialized verbatim off the wire (`json_message.at("error").get<Error>()`), carried into
+// McpError, and interpolated into what(). No OAuth, no discovery, no metadata document: an
+// ordinary error response to an ordinary request.
+struct PeerErrorOutcome {
+    bool threw{false};
+    int code{0};
+    std::string what;         ///< McpError::what() -- the human-readable diagnostic.
+    std::string raw_message;  ///< McpError::message() -- the structured field, which stays raw.
+};
+
+PeerErrorOutcome send_request_against_peer_error(boost::asio::io_context& io_ctx,
+                                                 const std::string& peer_message) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx.get_executor());
+    auto* raw_transport = transport.get();
+
+    raw_transport->set_on_write([raw_transport, peer_message](std::string_view msg) {
+        const auto json_msg = nlohmann::json::parse(msg);
+        if (!json_msg.contains("id")) {
+            return;
+        }
+        const auto id = json_msg.at("id").get<std::string>();
+        if (json_msg.value("method", "") == "initialize") {
+            raw_transport->enqueue_message(make_result_response(id, make_initialize_result()).dump());
+            return;
+        }
+        // The message travels as JSON, so CR/LF written here arrive at the client as real control
+        // bytes rather than as the two-character escapes: the encoder escapes them, the decoder
+        // turns them back. That decode is what makes a parsed field sharper than raw wire bytes.
+        raw_transport->enqueue_message(
+            make_error_response(id, mcp::g_INTERNAL_ERROR, peer_message).dump());
+    });
+
+    mcp::Client client(transport, io_ctx.get_executor());
+
+    PeerErrorOutcome outcome;
+    boost::asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            mcp::Implementation info;
+            info.name = "test-client";
+            info.version = "0.1";
+            static_cast<void>(co_await client.connect(std::move(info), mcp::ClientCapabilities{}));
+            try {
+                static_cast<void>(co_await client.send_request("tools/list", std::nullopt));
+            } catch (const mcp::McpError& error) {
+                outcome.threw = true;
+                outcome.code = error.code();
+                outcome.what = error.what();
+                outcome.raw_message = error.message();
+            }
+            raw_transport->close();
+        },
+        boost::asio::detached);
+
+    io_ctx.run();
+    return outcome;
+}
+
+}  // namespace
+
+// The message in a peer's error response is the peer's text, and it reaches what() -- which is
+// what an application logs. A server that answers with CR/LF forges a line in that log, and a bidi
+// override reorders the tail of the diagnostic so a refusal can be made to read as its opposite.
+TEST_F(ClientCoreTest, PeerErrorDiagnosticFlattensThePeerChosenMessage) {
+    // "zqtripwire" is a token no other code path produces; see the tripwire assertions below.
+    // \xe2\x80\xae is U+202E RIGHT-TO-LEFT OVERRIDE, written escaped so this source file does not
+    // itself contain a bidi override.
+    const std::string forged =
+        "denied\r\n2026-09-20 INFO zqtripwire operator approved\xe2\x80\xae reordered tail";
+
+    const auto outcome = send_request_against_peer_error(io_ctx_, forged);
+
+    // Tripwire, ordered before the flattening assertions. The throw has to be the McpError built
+    // from the peer's own error object -- not a request timeout, not an envelope-validation
+    // refusal, not a transport failure. Each of those also raises an McpError, with a message this
+    // SDK authored, and would satisfy everything below without the peer's bytes ever reaching a
+    // diagnostic. Dump what() on failure so a vacuous pass cannot hide.
+    ASSERT_TRUE(outcome.threw) << "send_request() raised nothing at all";
+    ASSERT_EQ(outcome.code, mcp::g_INTERNAL_ERROR) << "actual what(): " << outcome.what;
+    ASSERT_EQ(outcome.what.rfind("JSON-RPC error ", 0), 0U) << "actual what(): " << outcome.what;
+    ASSERT_NE(outcome.what.find("zqtripwire"), std::string::npos) << "actual what(): " << outcome.what;
+
+    EXPECT_EQ(outcome.what.find('\r'), std::string::npos) << "actual what(): " << outcome.what;
+    EXPECT_EQ(outcome.what.find('\n'), std::string::npos) << "actual what(): " << outcome.what;
+    EXPECT_EQ(outcome.what.find("\xe2\x80\xae"), std::string::npos)
+        << "actual what(): " << outcome.what;
+
+    // The split, and it is the point: what() is a diagnostic and is sanitized; error() and the
+    // message() it exposes are structured protocol data a caller may compare or re-encode, so they
+    // must come back exactly as the peer sent them. Sanitizing those instead would silently change
+    // what an application matches on.
+    EXPECT_EQ(outcome.raw_message, forged);
+}
+
+// The same site must bound the value too, so a peer cannot flood the application's log through a
+// megabyte-long error message.
+TEST_F(ClientCoreTest, PeerErrorDiagnosticBoundsThePeerChosenMessage) {
+    const std::string forged = "zqtripwire" + std::string(64 * 1024, 'A');
+
+    const auto outcome = send_request_against_peer_error(io_ctx_, forged);
+
+    ASSERT_TRUE(outcome.threw) << "send_request() raised nothing at all";
+    ASSERT_EQ(outcome.code, mcp::g_INTERNAL_ERROR)
+        << "actual what() prefix: " << outcome.what.substr(0, 80);
+    ASSERT_EQ(outcome.what.rfind("JSON-RPC error ", 0), 0U)
+        << "actual what() prefix: " << outcome.what.substr(0, 80);
+    ASSERT_NE(outcome.what.find("zqtripwire"), std::string::npos)
+        << "actual what() prefix: " << outcome.what.substr(0, 80);
+
+    EXPECT_LT(outcome.what.size(), forged.size()) << "what() size: " << outcome.what.size();
+    EXPECT_LE(outcome.what.size(), std::size_t{512}) << "what() size: " << outcome.what.size();
+    EXPECT_EQ(outcome.raw_message.size(), forged.size())
+        << "the structured message was truncated; only the diagnostic may be";
+}
+
+namespace {
+
+// Drives two requests over one session. The peer answers the first with a caller-supplied burst of
+// messages and the second normally.
+//
+// The second request is the whole point: it separates a failure confined to one message from a
+// failure that took the session down with it. A client that survives a message it cannot use fails
+// at most the first request; a client that does not fails the second too, and every request after
+// it, for the life of the connection.
+struct SecondRequestOutcome {
+    bool first_threw{false};
+    int first_code{0};
+    std::string first_message;
+    bool second_succeeded{false};
+    std::string second_failure;
+    std::vector<mcp::Error> reported;  ///< What ClientOptions::on_protocol_error saw.
+};
+
+SecondRequestOutcome send_two_requests(
+    boost::asio::io_context& io_ctx,
+    const std::function<std::vector<nlohmann::json>(const std::string& id)>& answer_first) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx.get_executor());
+    auto* raw_transport = transport.get();
+
+    SecondRequestOutcome outcome;
+
+    int answered = 0;
+    raw_transport->set_on_write([&](std::string_view msg) {
+        const auto json_msg = nlohmann::json::parse(msg);
+        if (!json_msg.contains("id")) {
+            return;
+        }
+        const auto id = json_msg.at("id").get<std::string>();
+        if (json_msg.value("method", "") == "initialize") {
+            raw_transport->enqueue_message(make_result_response(id, make_initialize_result()).dump());
+            return;
+        }
+        ++answered;
+        if (answered == 1) {
+            for (const auto& message : answer_first(id)) {
+                raw_transport->enqueue_message(message.dump());
+            }
+        } else {
+            raw_transport->enqueue_message(make_result_response(id, nlohmann::json::object()).dump());
+        }
+    });
+
+    mcp::ClientOptions options;
+    // Short enough that a response the client never delivers surfaces as a test failure instead of
+    // a stalled run.
+    options.request_timeout = std::chrono::seconds(5);
+    options.on_protocol_error = [&](const mcp::Error& error) { outcome.reported.push_back(error); };
+    mcp::Client client(transport, io_ctx.get_executor(), options);
+
+    boost::asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            static_cast<void>(co_await client.connect("test-client", "0.1"));
+
+            try {
+                co_await client.ping();
+            } catch (const mcp::McpError& error) {
+                outcome.first_threw = true;
+                outcome.first_code = error.code();
+                outcome.first_message = error.what();
+            }
+
+            try {
+                co_await client.ping();
+                outcome.second_succeeded = true;
+            } catch (const mcp::McpError& error) {
+                outcome.second_failure = error.what();
+            }
+
+            raw_transport->close();
+        },
+        boost::asio::detached);
+
+    io_ctx.run();
+    return outcome;
+}
+
+}  // namespace
+
+// JSON-RPC 2.0 requires `error.message`, but omitting it is an ordinary server-side slip, not an
+// attack. It must cost the peer that one response, not the session.
+TEST_F(ClientCoreTest, ErrorResponseWithoutMessageDoesNotStopReadLoop) {
+    const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
+        return std::vector<nlohmann::json>{
+            {{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", mcp::g_METHOD_NOT_FOUND}}}}};
+    });
+
+    EXPECT_TRUE(outcome.second_succeeded)
+        << "the session died on one malformed response: " << outcome.second_failure;
+    ASSERT_TRUE(outcome.first_threw);
+    EXPECT_EQ(outcome.first_code, mcp::g_METHOD_NOT_FOUND)
+        << "the error code did not survive the missing message: " << outcome.first_message;
+}
+
+// A peer that serializes absent optionals as explicit null -- the default for Go's encoding/json
+// without omitempty -- sends `message: null` rather than omitting the key.
+TEST_F(ClientCoreTest, ErrorResponseWithNullMessageDoesNotStopReadLoop) {
+    const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
+        return std::vector<nlohmann::json>{
+            {{"jsonrpc", "2.0"},
+             {"id", id},
+             {"error", {{"code", mcp::g_METHOD_NOT_FOUND}, {"message", nullptr}, {"data", nullptr}}}}};
+    });
+
+    EXPECT_TRUE(outcome.second_succeeded)
+        << "the session died on one malformed response: " << outcome.second_failure;
+    ASSERT_TRUE(outcome.first_threw);
+    EXPECT_EQ(outcome.first_code, mcp::g_METHOD_NOT_FOUND);
+}
+
+// An `error` member that is not an object yields no code, so the request it answers fails -- but
+// it still answers that request rather than leaving the caller to wait out its deadline, and the
+// session continues.
+TEST_F(ClientCoreTest, ErrorMemberThatIsNotAnObjectFailsOnlyItsOwnRequest) {
+    const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
+        return std::vector<nlohmann::json>{{{"jsonrpc", "2.0"}, {"id", id}, {"error", "oops"}}};
+    });
+
+    EXPECT_TRUE(outcome.second_succeeded)
+        << "the session died on one malformed response: " << outcome.second_failure;
+    ASSERT_TRUE(outcome.first_threw);
+    EXPECT_EQ(outcome.first_code, mcp::g_INVALID_REQUEST) << "actual: " << outcome.first_message;
+}
+
+// A message the client cannot classify at all is dropped. Dropping it silently would leave an
+// application unable to tell a misbehaving peer from a quiet one, so it is reported first.
+TEST_F(ClientCoreTest, UndecodableMessageIsReportedAndDropped) {
+    const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
+        return std::vector<nlohmann::json>{
+            nlohmann::json::array({"not", "an", "object"}),
+            {{"jsonrpc", "2.0"}, {"id", id}, {"result", nlohmann::json::object()}}};
+    });
+
+    EXPECT_TRUE(outcome.second_succeeded)
+        << "the session died on one malformed message: " << outcome.second_failure;
+    EXPECT_FALSE(outcome.first_threw) << "actual: " << outcome.first_message;
+    ASSERT_EQ(outcome.reported.size(), 1U) << "the drop was silent";
+    EXPECT_EQ(outcome.reported.front().code, mcp::g_PARSE_ERROR);
+}
+
+// A request from the peer whose id is neither string nor integer can never be answered. Dispatching
+// it would bury the failure in a detached coroutine; it is rejected where the drop is reported.
+TEST_F(ClientCoreTest, PeerRequestWithUnusableIdDoesNotStopReadLoop) {
+    const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
+        return std::vector<nlohmann::json>{
+            {{"jsonrpc", "2.0"}, {"id", nlohmann::json::object()}, {"method", "ping"}},
+            {{"jsonrpc", "2.0"}, {"id", id}, {"result", nlohmann::json::object()}}};
+    });
+
+    EXPECT_TRUE(outcome.second_succeeded)
+        << "the session died on one malformed request: " << outcome.second_failure;
+    EXPECT_FALSE(outcome.first_threw) << "actual: " << outcome.first_message;
+    ASSERT_EQ(outcome.reported.size(), 1U) << "the drop was silent";
+    EXPECT_EQ(outcome.reported.front().code, mcp::g_PARSE_ERROR);
+}
+
+// `result` and `error` are not symmetric. A null `result` is a legitimate empty result, but a null
+// `error` is the absence of an error -- so selecting on presence alone reads a successful response
+// as one carrying both members, and rejects it. The request completes, so nothing hangs and nothing
+// times out; the caller is simply handed a protocol violation in place of the result that arrived.
+//
+// The second request is the control: the same response without the null member.
+TEST_F(ClientCoreTest, ResultWithNullErrorMemberIsNotAProtocolViolation) {
+    const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
+        return std::vector<nlohmann::json>{
+            {{"jsonrpc", "2.0"}, {"id", id}, {"result", {{"ok", true}}}, {"error", nullptr}}};
+    });
+
+    EXPECT_FALSE(outcome.first_threw)
+        << "a successful response was rejected over a null error member: " << outcome.first_message;
+    EXPECT_TRUE(outcome.second_succeeded)
+        << "the control response failed too, so the null member is not the difference: "
+        << outcome.second_failure;
+    EXPECT_TRUE(outcome.reported.empty()) << "a well-formed response was reported as an error";
+}
