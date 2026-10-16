@@ -162,8 +162,37 @@ void validate_call_tool_result(const nlohmann::json& result) {
     static_cast<void>(result.get<CallToolResult>());
 }
 
+// Whether a handler's value is already a serialized CallToolResult: an object made only of
+// CallToolResult members that decodes as one. A bare {"content": []} is left out, because an empty
+// list says nothing about which of the two the handler meant.
+bool is_serialized_call_tool_result(const nlohmann::json& result) {
+    if (!result.is_object() || !result.contains("content") || !result.at("content").is_array()) {
+        return false;
+    }
+    for (const auto& [key, value] : result.items()) {
+        static_cast<void>(value);
+        if (key != "content" && key != "structuredContent" && key != "isError" && key != "_meta") {
+            return false;
+        }
+    }
+    if (result.at("content").empty() && result.size() == 1) {
+        return false;
+    }
+    try {
+        validate_call_tool_result(result);
+    } catch (const std::exception&) {
+        return false;
+    }
+    return true;
+}
+
 nlohmann::json normalize_structured_tool_result(nlohmann::json result) {
     if (result.is_object()) {
+        // A handler that built a CallToolResult is already speaking the protocol; wrapping it again
+        // would bury its content blocks inside a text block.
+        if (is_serialized_call_tool_result(result)) {
+            return result;
+        }
         return nlohmann::json(make_tool_structured_result(std::move(result)));
     }
     if (result.is_string()) {
