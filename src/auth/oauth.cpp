@@ -900,9 +900,8 @@ void OAuthHttpClient::set_host_resolver(HostResolver resolver) {
 // value and one old one, and make_exchange() pins whatever it finds. Resolver-first is the natural
 // order to write and the dangerous one: the redirection lands before the narrowing does, so an
 // exchange in the interval is sent where the new resolver says while being checked against the old,
-// wider allow list. The interval is however long the caller takes between the two statements -- at
-// a 1 ms gap, 9,406 of 9,985 narrowings admitted a request they were meant to refuse. One hold of
-// the mutex for both values removes the interval outright.
+// wider allow list. The interval is however long the caller takes between the two statements. One
+// hold of the mutex for both values removes the interval outright.
 void OAuthHttpClient::configure(MetadataFetchPolicy policy, HostResolver resolver) {
     std::lock_guard lock(impl_->active_mutex);
     impl_->policy = std::move(policy);

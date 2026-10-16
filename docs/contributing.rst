@@ -425,8 +425,8 @@ Changing the SDK's own signatures does not help: a parameter taken by value inst
 const reference still crashes. Avoiding the construct at the call site is the only fix.
 
 **Detection**: ``scripts/check_readme_snippets.py`` compiles the README's complete
-examples with the toolchain that built the SDK, and CI runs it on the Linux matrix
-entries, where that toolchain is GCC.
+examples with the toolchain that built the SDK, and CI runs it on every matrix entry
+except Windows: GCC on Linux and Clang on macOS.
 
 Feature Requests
 ----------------

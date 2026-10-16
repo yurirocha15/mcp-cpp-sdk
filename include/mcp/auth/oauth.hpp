@@ -213,9 +213,6 @@ struct OAuthConfig {
 using HostResolver =
     std::function<std::vector<std::string>(const std::string& host, const std::string& port)>;
 
-/**
- * @brief Minimal HTTP client for OAuth token exchange and metadata retrieval.
- */
 class OAuthHttpClientScope;
 
 namespace detail {
@@ -241,6 +238,9 @@ struct OAuthTestAccess;
 
 }  // namespace detail
 
+/**
+ * @brief Minimal HTTP client for OAuth token exchange and metadata retrieval.
+ */
 class MCP_API OAuthHttpClient {
    public:
     /**
@@ -275,8 +275,7 @@ class MCP_API OAuthHttpClient {
      * narrowing still lags: the exchange is directed by the new resolver and validated against the
      * old, wider allow list -- exactly the request the narrowing was meant to refuse. The interval
      * is however long the application takes between the two statements, so a log line or a single
-     * descheduling is enough; measured at a 1 ms gap, 9,406 of 9,985 narrowings admitted such a
-     * request. Use configure() whenever both are being changed.
+     * descheduling is enough. Use configure() whenever both are being changed.
      */
     void set_metadata_policy(MetadataFetchPolicy policy);
 
@@ -676,6 +675,11 @@ class Authenticator {
  */
 class MCP_API OAuthAuthenticator : public Authenticator {
    public:
+    /**
+     * @brief Construct an authenticator that refreshes tokens through `oauth_client`.
+     *
+     * @throws std::invalid_argument if `oauth_client` is null.
+     */
     OAuthAuthenticator(std::shared_ptr<TokenStore> token_store,
                        std::shared_ptr<OAuthHttpClient> oauth_client, OAuthConfig config,
                        std::string server_url);
@@ -689,7 +693,8 @@ class MCP_API OAuthAuthenticator : public Authenticator {
     /// @param token The token response to persist via the configured TokenStore.
     void store_token(TokenResponse token);
 
-    /// @brief Aborts any in-flight token-refresh HTTP exchange.
+    /// @brief Aborts this authenticator's in-flight token-refresh HTTP exchanges. Other holders of
+    /// the same OAuthHttpClient are unaffected.
     void close() override;
 
    private:
