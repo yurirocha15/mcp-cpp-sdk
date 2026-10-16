@@ -331,15 +331,15 @@ struct HttpClientTransport::Impl {
         state.read_active = true;
         try {
             for (;;) {
-                if (state.closed.load(std::memory_order_acquire)) {
-                    throw std::runtime_error("HttpClientTransport is closed");
-                }
-
                 if (!state.queue.empty()) {
                     auto message_text = std::move(state.queue.front());
                     state.queue.pop();
                     state.read_active = false;
                     co_return message_text;
+                }
+
+                if (state.closed.load(std::memory_order_acquire)) {
+                    throw std::runtime_error("HttpClientTransport is closed");
                 }
 
                 state.timer.expires_at(std::chrono::steady_clock::time_point::max());

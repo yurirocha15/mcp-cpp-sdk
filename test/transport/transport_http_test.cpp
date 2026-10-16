@@ -163,6 +163,50 @@ TEST_F(HttpTransportTest, ServerWriteClientReceives) {
     EXPECT_EQ(nlohmann::json::parse(client_received), expected_response);
 }
 
+TEST_F(HttpTransportTest, ClientReadAfterCloseDeliversResponseQueuedBeforeClose) {
+    mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 0);
+    const std::string url = "http://127.0.0.1:" + std::to_string(server_transport.port()) + "/mcp";
+
+    asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
+
+    const nlohmann::json response_payload = {{"jsonrpc", "2.0"}, {"result", "pong"}, {"id", 1}};
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            (void)co_await server_transport.read_message();
+            co_await server_transport.write_message(response_payload.dump());
+        },
+        asio::detached);
+
+    std::string client_received;
+    bool read_after_drain_threw = false;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            mcp::HttpClientTransport client_transport(io_ctx_.get_executor(), url);
+            const nlohmann::json request_payload = {{"jsonrpc", "2.0"}, {"method", "ping"}, {"id", 1}};
+            co_await client_transport.write_message(request_payload.dump());
+
+            // The response is queued and nothing has read it yet.
+            client_transport.close();
+            server_transport.close();
+
+            client_received = co_await client_transport.read_message();
+            try {
+                (void)co_await client_transport.read_message();
+            } catch (const std::runtime_error&) {
+                read_after_drain_threw = true;
+            }
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_FALSE(client_received.empty());
+    EXPECT_EQ(nlohmann::json::parse(client_received), response_payload);
+    EXPECT_TRUE(read_after_drain_threw);
+}
+
 TEST_F(HttpTransportTest, FullMcpHandshake) {
     mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18082);
 
