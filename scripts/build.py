@@ -238,6 +238,11 @@ def msan_conan_args(libcxx, clang):
     link_flags = ["-fsanitize=memory", "-stdlib=libc++", f"-L{libcxx}/lib",
                   f"-Wl,-rpath,{libcxx}/lib", "-lc++abi", quiet]
     executables = {"c": c_compiler, "cpp": cxx_compiler}
+    # Confs do not enter a package id by default, so without this an uninstrumented clang/libc++
+    # binary already in the cache would satisfy --build=missing, and the instrumented ones built
+    # here would satisfy a later build that is not using MemorySanitizer.
+    flag_confs = ["tools.build:cflags", "tools.build:cxxflags", "tools.build:exelinkflags",
+                  "tools.build:sharedlinkflags"]
     return [
         "-s", "compiler=clang",
         "-s", f"compiler.version={CLANG_VERSION}",
@@ -249,6 +254,7 @@ def msan_conan_args(libcxx, clang):
         "-c", f"tools.build:cxxflags={json.dumps(cxx_flags)}",
         "-c", f"tools.build:exelinkflags={json.dumps(link_flags)}",
         "-c", f"tools.build:sharedlinkflags={json.dumps(link_flags)}",
+        "-c", f"tools.info.package_id:confs={json.dumps(flag_confs)}",
     ]
 
 
