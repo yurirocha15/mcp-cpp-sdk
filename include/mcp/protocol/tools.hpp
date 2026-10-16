@@ -51,19 +51,19 @@ inline void to_json(nlohmann::json& json_obj, const ToolAnnotations& annotations
  * @param annotations The ToolAnnotations object to populate.
  */
 inline void from_json(const nlohmann::json& json_obj, ToolAnnotations& annotations) {
-    if (json_obj.contains("destructiveHint")) {
+    if (detail::has_json_value(json_obj, "destructiveHint")) {
         annotations.destructiveHint = json_obj.at("destructiveHint").get<bool>();
     }
-    if (json_obj.contains("idempotentHint")) {
+    if (detail::has_json_value(json_obj, "idempotentHint")) {
         annotations.idempotentHint = json_obj.at("idempotentHint").get<bool>();
     }
-    if (json_obj.contains("openWorldHint")) {
+    if (detail::has_json_value(json_obj, "openWorldHint")) {
         annotations.openWorldHint = json_obj.at("openWorldHint").get<bool>();
     }
-    if (json_obj.contains("readOnlyHint")) {
+    if (detail::has_json_value(json_obj, "readOnlyHint")) {
         annotations.readOnlyHint = json_obj.at("readOnlyHint").get<bool>();
     }
-    if (json_obj.contains("title")) {
+    if (detail::has_json_value(json_obj, "title")) {
         annotations.title = json_obj.at("title").get<std::string>();
     }
 }
@@ -285,7 +285,7 @@ inline void to_json(nlohmann::json& j, const ListToolsRequestParams& p) {
     }
 }
 inline void from_json(const nlohmann::json& j, ListToolsRequestParams& p) {
-    if (j.contains("cursor")) {
+    if (detail::has_json_value(j, "cursor")) {
         p.cursor = j.at("cursor").get<std::string>();
     }
 }
@@ -329,7 +329,7 @@ inline void to_json(nlohmann::json& j, const ListToolsResult& r) {
 }
 inline void from_json(const nlohmann::json& j, ListToolsResult& r) {
     j.at("tools").get_to(r.tools);
-    if (j.contains("nextCursor")) {
+    if (detail::has_json_value(j, "nextCursor")) {
         r.nextCursor = j.at("nextCursor").get<std::string>();
     }
     if (j.contains("_meta")) {

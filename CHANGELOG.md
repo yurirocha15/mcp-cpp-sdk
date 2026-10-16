@@ -354,6 +354,15 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `ResourceTemplate`, `Tool`, `CallToolResult` and `ToolResultContent`,
   `Tool::outputSchema`, `structuredContent` on `CallToolResult` and
   `ToolResultContent`, and `CallToolParams::_meta` on the `tools/call` path.
+- The remaining optional members of the protocol types read an explicit null
+  as absent too: the capability flags (`listChanged`, `subscribe` and
+  `extensions` on both sides), `cursor` and `nextCursor` on every list request
+  and result, and the optional members of `Annotations`, `Icon`, `Prompt`,
+  `PromptArgument`, `ResourceLink`, `Root`, `ToolAnnotations`, the sampling and
+  elicitation types, completion results and tasks. Before this, `initialize`
+  was answered `-32602` when a client sent `"roots": {"listChanged": null}`,
+  and `connect()` or a `list_*` call threw when a server sent
+  `"listChanged": null` or `"nextCursor": null`.
 - A `resources/read` URI longer than 512 characters is now answered
   `-32602` naming the limit, instead of being handed to the regular-expression
   template matcher, whose stack use grows with the subject and can overrun the
