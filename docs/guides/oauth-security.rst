@@ -104,16 +104,20 @@ Applications that cannot enumerate all authorization servers in advance can impl
 .. code-block:: cpp
 
    policy.origin_allowance = [](const std::string& origin) {
-       // Custom rule: allow any HTTPS origin from internal domain. The origin here is already
-       // canonicalized, so a default port (e.g. "https://auth.internal:443") has been elided down
-       // to "https://auth.internal" — match on ".internal", not ".internal:", so a default-port
-       // origin is not missed.
-       if (origin.find("https://") == 0 &&
-           origin.find(".internal") != std::string::npos) {
-           return true;
+       // Custom rule: allow https origins on example.com and its subdomains. The origin is
+       // canonical ("https://host" or "https://host:port", default port elided), so compare the
+       // host exactly or by a dot-prefixed suffix. A substring or prefix search would also admit
+       // "https://example.com.attacker.test".
+       constexpr std::string_view scheme = "https://";
+       if (!origin.starts_with(scheme)) {
+           return false;
        }
-       // Otherwise deny
-       return false;
+       std::string_view host = std::string_view(origin).substr(scheme.size());
+       if (host.starts_with("[")) {
+           return false;  // IP literals are not part of this rule
+       }
+       host = host.substr(0, host.find(':'));
+       return host == "example.com" || host.ends_with(".example.com");
    };
 
 The callback:
@@ -221,12 +225,12 @@ Metadata and token responses are capped to prevent unbounded buffering:
 
    policy.max_response_bytes = 256 * 1024;  // Default: 256 KiB
 
-A response exceeding the cap is rejected without being fully buffered, protecting against slowloris or resource-exhaustion attacks.
+A response exceeding the cap is rejected without being fully buffered, protecting against resource exhaustion. A server that sends slowly is bounded by the per-operation timeout instead, not by this cap.
 
 Example: Hardened Policy Configuration
 ---------------------------------------
 
-A production authorization-server integration might configure:
+Once the SDK can reach ``https://`` authorization servers (see the security boundary in :doc:`/concepts/oauth`; the built-in client has no TLS support yet), a hardened integration might configure:
 
 .. code-block:: cpp
 
@@ -245,8 +249,9 @@ A production authorization-server integration might configure:
    // authorization servers not in the allow list, require explicit
    // operator approval via a callback (optional; safer to omit)
    policy.origin_allowance = [](const std::string& origin) {
-       // Only allow explicit HTTPS from trusted domain
-       return origin.find("https://trusted-domain.internal") == 0;
+       // Only allow exactly this https origin; a prefix check would also admit
+       // "https://trusted.example.com.attacker.test".
+       return origin == "https://trusted.example.com";
    };
 
    // Response limits

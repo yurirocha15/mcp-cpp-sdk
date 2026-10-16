@@ -400,9 +400,10 @@ auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
         // empty and plain HTTP to a loopback address is not permitted. Discovery URLs are
         // attacker-influenced, so the application must name the origins it intends to reach before
         // the first request. This example talks only to its own mock server on loopback, so it
-        // allows that one origin and opts in to plain-HTTP loopback. A real client lists the
-        // origins of its MCP server and of the authorization servers that server names, and leaves
-        // allow_plain_http_loopback false so only https targets are reachable.
+        // allows that one origin and opts in to plain-HTTP loopback. A client lists the origins of
+        // its MCP server and of the authorization servers that server names. Leaving
+        // allow_plain_http_loopback false admits only https targets, which the built-in client
+        // cannot reach yet because it has no TLS support.
         mcp::auth::MetadataFetchPolicy policy;
         policy.allowed_origins = {runtime.mock_oauth->issuer()};
         policy.allow_plain_http_loopback = true;

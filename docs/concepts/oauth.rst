@@ -14,10 +14,15 @@ tokens, volatile token storage, and transport-level bearer authentication.
 Security boundary
 -----------------
 
-``OAuthHttpClient`` and the built-in MCP HTTP transports currently accept only
-plain ``http://`` URLs. Use them directly only for loopback development or a
-trusted internal boundary. Production traffic outside that boundary must use a
-TLS-terminating proxy or a custom TLS transport. Never log access tokens,
+``OAuthHttpClient`` and the built-in MCP HTTP transports speak plain
+``http://`` only; the SDK has no TLS support yet. The metadata-fetch policy that
+every ``OAuthHttpClient`` request passes admits ``https://`` targets, and plain
+``http://`` only to a loopback address when ``allow_plain_http_loopback`` is
+set; private, link-local and other internal addresses are always refused.
+Together these mean the built-in OAuth client can reach only an authorization
+server on the same machine, so in this release it serves loopback development
+and testing. An authorization server elsewhere, including one on a trusted
+internal network, cannot be reached through it. Never log access tokens,
 refresh tokens, authorization codes, client secrets, or PKCE verifiers.
 
 Configuration
@@ -46,6 +51,11 @@ metadata. Discovery results are cached for a configurable interval.
 .. code-block:: cpp
 
    auto oauth_http = std::make_shared<mcp::auth::OAuthHttpClient>(executor);
+   // Without a policy every request is refused. Name the origins to reach.
+   mcp::auth::MetadataFetchPolicy policy;
+   policy.allowed_origins = {"http://127.0.0.1:9000"};
+   policy.allow_plain_http_loopback = true;
+   oauth_http->set_metadata_policy(std::move(policy));
    mcp::auth::OAuthDiscoveryClient discovery(oauth_http);
 
    auto resource = co_await discovery.discover_protected_resource(server_url);
@@ -65,10 +75,17 @@ should implement ``TokenStore`` with encryption and operating-system-appropriate
 secret storage.
 
 ``OAuthAuthenticator`` reads the current access token and can explicitly
-refresh it. It does not run a background refresh task. ``OAuthClientTransport``
-attempts one refresh-and-retry after an HTTP 401 from ``HttpClientTransport``;
-for non-HTTP transports it also understands the legacy JSON-RPC
-``g_UNAUTHORIZED`` path. Because a request can be replayed, callers should
+refresh it. It does not run a background refresh task. After an HTTP 401 from
+``HttpClientTransport``, ``OAuthClientTransport`` renews the token with the
+stored refresh token once and retries; if renewal is not possible, or the
+renewed token is refused too, it runs the authorization flow the challenge
+names. A 403 whose challenge carries ``error="insufficient_scope"`` runs that
+flow directly. For non-HTTP transports it also understands the legacy JSON-RPC
+``g_UNAUTHORIZED`` path. ``OAuthAuthorizationManager`` can renew a grant only
+after it has authorized in the same process, because the token endpoint and
+client identity it renews with are held in memory: after a restart, a refresh
+token kept in a persistent ``TokenStore`` is not used, and the next 401 starts
+a new authorization. Because a request can be replayed, callers should
 avoid wrapping non-idempotent operations unless their server provides its own
 deduplication semantics.
 
