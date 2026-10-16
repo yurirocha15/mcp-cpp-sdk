@@ -359,6 +359,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   template matcher, whose stack use grows with the subject and can overrun the
   smallest thread stack the SDK runs on. Exact resource lookups happen first
   and are unaffected by the limit.
+- Messages from a peer that nest arrays and objects more than 128 levels deep
+  are refused before they are decoded: the server answers `-32700`, the client
+  drops the message and reports it through `ClientOptions::on_protocol_error`,
+  and the HTTP transports answer `400`. Copying a decoded document recurses
+  once per level, so a request of a few hundred kilobytes made of nothing but
+  brackets could exhaust the stack and crash the process.
 - A resource URI template with two expressions and no literal between them
   (`{a}{b}`) is now rejected at registration with `std::invalid_argument`.
   Such a template compiled to adjacent unbounded runs that the matcher could

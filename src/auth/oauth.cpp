@@ -1,5 +1,6 @@
 #include <mcp/auth/oauth.hpp>
 
+#include "../detail/peer_json.hpp"
 #include "oauth_internal.hpp"
 
 #include <mcp/transport/http_client.hpp>
@@ -800,7 +801,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         }
 
         exchange->body = exchange->response().body();
-        auto response_json = nlohmann::json::parse(exchange->body, nullptr, false);
+        auto response_json = mcp::detail::parse_peer_json(exchange->body);
         if (response_json.is_discarded()) {
             throw std::runtime_error("Failed to parse JSON from " +
                                      sanitize_for_diagnostics(exchange->url));
@@ -841,7 +842,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         }
 
         exchange->body = exchange->response().body();
-        auto response_json = nlohmann::json::parse(exchange->body, nullptr, false);
+        auto response_json = mcp::detail::parse_peer_json(exchange->body);
         if (response_json.is_discarded()) {
             throw std::runtime_error("Failed to parse JSON from " +
                                      sanitize_for_diagnostics(exchange->url));
@@ -2742,7 +2743,10 @@ struct OAuthClientTransport::Impl {
     static std::shared_ptr<const std::string> take_retry_wire(const std::shared_ptr<Impl>& owner,
                                                               std::string_view raw) {
         try {
-            const auto json_message = nlohmann::json::parse(raw);
+            const auto json_message = mcp::detail::parse_peer_json(raw);
+            if (json_message.is_discarded()) {
+                return {};
+            }
             const auto message = json_message.get<JSONRPCMessage>();
 
             std::optional<std::string> key;

@@ -12,9 +12,13 @@
 #include "mcp/protocol/tasks.hpp"
 #include "mcp/protocol/tools.hpp"
 
+#include "../../src/detail/peer_json.hpp"
+
 #include <gtest/gtest.h>
 
 #include <nlohmann/json.hpp>
+
+#include <string>
 
 using json = nlohmann::json;
 
@@ -2603,4 +2607,28 @@ TEST(ProtocolTest, CallToolParamsStillRejectsNonObjectArguments) {
     // representable and a null there can only be malformed. This must NOT become acceptance.
     EXPECT_THROW((void)(json{{"name", "add"}, {"arguments", nullptr}}).get<mcp::CallToolParams>(),
                  std::invalid_argument);
+}
+
+TEST(PeerJsonTest, CountsNestingOutsideStringsOnly) {
+    using mcp::detail::exceeds_json_depth;
+    EXPECT_FALSE(exceeds_json_depth(R"({"a":[1,{"b":2}]})", 3));
+    EXPECT_TRUE(exceeds_json_depth(R"({"a":[1,{"b":2}]})", 2));
+    // Brackets inside strings are text, including after an escaped quote, and an escaped backslash
+    // does not escape the quote that follows it.
+    EXPECT_FALSE(exceeds_json_depth(R"({"a":"[[[[{{{{"})", 1));
+    EXPECT_FALSE(exceeds_json_depth(R"({"a":"\"[[[["})", 1));
+    EXPECT_TRUE(exceeds_json_depth(R"({"a":"\\","b":[[1]]})", 2));
+}
+
+TEST(PeerJsonTest, ParsePeerJsonDiscardsDocumentsNestedTooDeeplyOrInvalid) {
+    const auto nested = [](std::size_t depth) {
+        return std::string(depth, '[') + std::string(depth, ']');
+    };
+    EXPECT_FALSE(
+        mcp::detail::parse_peer_json(nested(mcp::detail::g_MAX_PEER_JSON_DEPTH)).is_discarded());
+    EXPECT_TRUE(
+        mcp::detail::parse_peer_json(nested(mcp::detail::g_MAX_PEER_JSON_DEPTH + 1)).is_discarded());
+    EXPECT_TRUE(mcp::detail::parse_peer_json("{not json").is_discarded());
+    // Two megabytes of brackets: refused before anything is built from them.
+    EXPECT_TRUE(mcp::detail::parse_peer_json(nested(1'000'000)).is_discarded());
 }
