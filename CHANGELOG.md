@@ -61,7 +61,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `content` array is not. Any other value is wrapped: an object becomes
   `structuredContent` with its serialization as the text block, a string
   becomes the text block, and any other value is serialized into the text
-  block. Previously every value was sent as the result unchanged.
+  block. Previously a value was sent as the result unchanged, except that a
+  tool with an `outputSchema` also had it copied into `structuredContent`.
   `add_raw_tool()` handlers must return a valid `CallToolResult`, and a tool
   with an `outputSchema` must return `structuredContent`.
 - A `std::exception` thrown by any tool handler, typed and asynchronous ones
@@ -70,9 +71,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   only the synchronous JSON `add_tool()` overload did this, and other tool
   handlers' exceptions were answered with `-32603`. Resource and prompt
   handler exceptions are still answered with `-32603`.
-- Invalid request params are answered with `-32602` (previously `-32603`). A
-  message the server cannot parse is answered with `-32700` and the session
-  stays open; previously the session ended.
+- Request params that fail to decode are answered with `-32602` (previously
+  `-32603`). A message the server cannot parse is answered with `-32700` and
+  the session stays open; previously the session ended.
 - Registering a second tool, resource, prompt or resource template with the
   same name, URI or URI template throws `std::invalid_argument`.
 - `HttpServerTransport` and `StreamableHttpSessionManager` accept
