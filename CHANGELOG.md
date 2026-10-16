@@ -62,6 +62,50 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `std::string` by value.
 - Documentation guides and feature examples refreshed to match the compiled
   runtime split.
+- OAuth protected-resource metadata that omits the RFC 9728 `resource`
+  member is now rejected instead of falling back to the configured server
+  URL; a `resource` value must identify the configured server (exact match
+  or an origin/segment-boundary prefix).
+- `OAuthHttpClient` constructed without a `MetadataFetchPolicy` now refuses
+  every request (deny-all default) instead of allowing any target; callers
+  must supply an explicit policy.
+- A `MetadataFetchPolicy::denied_origins` entry that is not a bare origin — it
+  carries a path (a lone trailing `/` included), a query or a fragment, or its
+  port is not a plain in-range decimal number — is now rejected instead of
+  silently ignored. `validate_metadata_url` throws `MetadataPolicyError` with
+  the new `MetadataUrlDecision::denied_origin_entry_malformed`, naming the
+  offending entry, and refuses every target until the policy is corrected.
+  Previously such an entry denied nothing, so `denied_origins` of
+  `{"https://evil.example/"}` admitted `https://evil.example`. A configuration
+  that relied on that silence is now a hard failure. `allowed_origins` is
+  unchanged: an entry that is not a bare origin still matches nothing, because
+  dropping an allow entry grants nothing and so fails closed.
+- Injected OAuth client credentials that carry a `client_secret` must now name
+  the authorization server they are bound to, via the new
+  `OAuthAuthorizationConfig::client_issuer` or
+  `ClientIdentityConfig::pre_registered`'s `issuer`. A secret that names no
+  issuer is refused at the point of use: `select_client_identity` returns
+  `ClientIdentityDecision::unavailable` and the authorization attempt fails
+  with a message naming the missing binding, rather than presenting the secret.
+  Previously an empty `issuer` fell through to `use_pre_registered` for every
+  authorization server, so the existing misbinding guard was inert on both
+  paths the SDK itself constructs, and a hostile-but-policy-allowed
+  authorization server named in a protected-resource document received the
+  application's secret at its token endpoint. "Bound to no issuer" is not
+  "bound to every issuer". Construction is unchanged, so a caller breaks only
+  when it actually attempts the affected flow; a public client (a `client_id`
+  with no secret) is unaffected and still authorizes against any issuer.
+- `OAuthAuthorizationManager` refuses an authorization server whose metadata
+  does not list `S256` in `code_challenge_methods_supported`, including one
+  that omits the member, before it builds an authorization request. The MCP
+  authorization specification requires the client to verify PKCE support
+  this way.
+- A `401` is answered by renewing the access token with the stored refresh
+  token first; the authorization flow named by the challenge runs only when
+  there is no refresh token or the renewal fails. Previously a `401` carrying
+  a Bearer challenge always started a new authorization, so the user was asked
+  to consent again whenever an access token expired. A `403` still goes
+  straight to the challenge.
 
 ## [0.2.0] - TBD
 

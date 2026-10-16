@@ -13,6 +13,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -49,6 +50,9 @@ struct HttpServerTransport::Impl {
         std::optional<std::string> response_body;
         std::optional<std::string> session_header;
         std::optional<std::string> event_id;
+        // Set only for a request carried under a sentinel id. Holds the id the caller actually
+        // sent, so run_write can put it back before the response leaves the transport.
+        std::optional<nlohmann::json> client_request_id;
         bool response_ready{false};
     };
 
@@ -113,6 +117,12 @@ struct HttpServerTransport::Impl {
         return request_json.is_object() && request_json.contains("method") &&
                request_json.at("method").is_string() &&
                request_json.at("method").get<std::string>() == "initialize";
+    }
+
+    static bool is_discover_request(const nlohmann::json& request_json) {
+        return request_json.is_object() && request_json.contains("method") &&
+               request_json.at("method").is_string() &&
+               request_json.at("method").get<std::string>() == "server/discover";
     }
 
     static std::string_view header_value(const StringRequest::const_iterator& header_it) {
@@ -266,7 +276,8 @@ struct HttpServerTransport::Impl {
     }
 
     Task<std::optional<std::shared_ptr<boost::asio::steady_timer>>> register_pending_request(
-        const std::string& request_id_key) {
+        const std::string& request_id_key,
+        std::optional<nlohmann::json> client_request_id = std::nullopt) {
         if (pending_responses.contains(request_id_key)) {
             co_return std::nullopt;
         }
@@ -274,9 +285,21 @@ struct HttpServerTransport::Impl {
         auto timer_signal = std::make_shared<boost::asio::steady_timer>(strand);
         timer_signal->expires_at(std::chrono::steady_clock::time_point::max());
 
-        pending_responses.emplace(request_id_key, PendingResponse{timer_signal, std::nullopt,
-                                                                  std::nullopt, std::nullopt, false});
+        pending_responses.emplace(
+            request_id_key, PendingResponse{timer_signal, std::nullopt, std::nullopt, std::nullopt,
+                                            std::move(client_request_id), false});
         co_return timer_signal;
+    }
+
+    // A transport-private id for a request that arrives with no session credential. The random
+    // prefix is drawn once per transport from the same secure source as the session id, so a
+    // peer cannot construct an id that collides with a live sentinel, and the counter keeps
+    // concurrent sentinels distinct from each other.
+    std::string next_sentinel_request_id() {
+        if (sentinel_id_prefix.empty()) {
+            sentinel_id_prefix = "mcp-pregate-" + generate_session_id() + "-";
+        }
+        return sentinel_id_prefix + std::to_string(++sentinel_id_counter);
     }
 
     Task<bool> is_response_ready(const std::string& request_id_key) {
@@ -298,6 +321,7 @@ struct HttpServerTransport::Impl {
                                      std::move(pending_it->second.session_header),
                                      std::move(pending_it->second.event_id)};
         pending_responses.erase(pending_it);
+        sessionless_request_ids.erase(request_id_key);
         co_return pending_result;
     }
 
@@ -320,6 +344,14 @@ struct HttpServerTransport::Impl {
             }
             return make_error_response(request, http::status::bad_request,
                                        "Invalid MCP-Protocol-Version header");
+        }
+
+        if (is_discover_request(request_json)) {
+            // server/discover advertises protocol versions (see g_DISCOVERABLE_PROTOCOL_VERSIONS)
+            // outside g_SUPPORTED_PROTOCOL_VERSIONS, and is reachable with zero prior session
+            // state, so it is exempted from header validation here exactly like initialize is
+            // exempted from the negotiated-version check below.
+            return std::nullopt;
         }
 
         if (protocol_header_it == request.end() ||
@@ -377,10 +409,27 @@ struct HttpServerTransport::Impl {
             co_return std::move(*error);
         }
 
-        const auto session_check = co_await validate_post_session(request);
-        if (!session_check.ok) {
-            co_return make_error_response(request, http::status::bad_request,
-                                          session_check.error_message);
+        // server/discover is a pre-gate method: it MUST stay reachable with zero prior session
+        // state, so a discover REQUEST that carries no MCP-Session-Id header skips the POST
+        // session gate — mirroring HttpSessionManager, which intercepts sessionless discover
+        // before resolve_session_for_post. Nothing else is exempted: any other method, and
+        // discover WITH a session header, still goes through validate_post_session unchanged,
+        // and this path neither creates nor mutates session state.
+        //
+        // The "id" requirement is deliberate and does NOT mirror the sibling transport. Without
+        // it a sessionless JSON-RPC *notification* named server/discover would skip the gate and
+        // push its whole body onto the unbounded incoming queue below, answering 202 without
+        // ever waiting for the server. server/discover is a request method, so demanding an id
+        // costs nothing and keeps that unbounded enqueue behind the session gate.
+        const bool is_sessionless_discover = is_discover_request(request_json) &&
+                                             request_json.contains("id") &&
+                                             request.find("MCP-Session-Id") == request.end();
+        if (!is_sessionless_discover) {
+            const auto session_check = co_await validate_post_session(request);
+            if (!session_check.ok) {
+                co_return make_error_response(request, http::status::bad_request,
+                                              session_check.error_message);
+            }
         }
 
         const bool has_request_id = request_json.contains("id");
@@ -390,14 +439,56 @@ struct HttpServerTransport::Impl {
             co_return make_empty_json_response(request, http::status::accepted);
         }
 
-        const auto request_id_key = request_json.at("id").dump();
-        const auto timer_signal = co_await register_pending_request(request_id_key);
+        // A sessionless discover is answered on no credential at all, so the JSON-RPC id it
+        // carries is chosen by an unauthenticated party. Registering it under that raw id would
+        // put a stranger in the same key space the established session correlates on, with two
+        // consequences. Whoever registers first owns the id, so a prober could claim an id the
+        // session then needs and force a spurious "Request id already pending" on a legitimate
+        // request. And the raw id would land in sessionless_request_ids, which decides
+        // replay-store exclusion, so the prober's chosen id would steer what the session's
+        // replay history contains -- an unauthenticated party influencing session state, not
+        // merely denying itself service.
+        //
+        // The discover is therefore carried under a transport-private sentinel id: registered,
+        // correlated and replay-filtered under the sentinel, with the caller's own id restored
+        // in run_write before the response leaves. Only this pre-gate path pays the rewrite and
+        // the re-serialisation; every session-gated request is still registered under, and
+        // forwarded with, the exact bytes the peer sent.
+        //
+        // Do not replace this with a scoped map -- keying pending_responses per session or per
+        // principal and letting both parties hold the same raw id. It looks smaller and it is
+        // wrong: the correlation key is the id the peer echoes back, so a response arriving for
+        // id N could belong to either holder and the transport would have to guess, by arrival
+        // order or by content. Guessing wrong hands one party another party's response body.
+        // That converts today's clean denial, where the reply always reaches the registrant,
+        // into a genuine cross-party confusion -- strictly worse than the defect being fixed.
+        // Rewriting the id is what preserves the correlation property.
+        std::string request_id_key;
+        std::optional<nlohmann::json> client_request_id;
+        std::string sentinel_body;
+        if (is_sessionless_discover) {
+            client_request_id = request_json.at("id");
+            auto sentinel_json = request_json;
+            sentinel_json["id"] = next_sentinel_request_id();
+            request_id_key = sentinel_json.at("id").dump();
+            sentinel_body = sentinel_json.dump();
+        } else {
+            request_id_key = request_json.at("id").dump();
+        }
+
+        const auto timer_signal = co_await register_pending_request(request_id_key, client_request_id);
         if (!timer_signal.has_value()) {
             co_return make_error_response(request, http::status::bad_request,
                                           "Request id already pending");
         }
-
-        enqueue_incoming_message(request.body());
+        if (is_sessionless_discover) {
+            // Tracked so run_write can keep this response out of the shared replay store. The
+            // entry is dropped again in consume_pending_response and in close().
+            sessionless_request_ids.insert(request_id_key);
+            enqueue_incoming_message(std::move(sentinel_body));
+        } else {
+            enqueue_incoming_message(request.body());
+        }
 
         for (;;) {
             if (state->closed.load(std::memory_order_acquire)) {
@@ -610,19 +701,41 @@ struct HttpServerTransport::Impl {
             co_return;
         }
 
+        std::optional<std::string> response_id_key;
+        if (response_json.contains("id")) {
+            response_id_key = response_json.at("id").dump();
+        }
+
+        // Responses to sessionless pre-gate requests must never reach the replay store. That
+        // store is a bounded ring shared with the established session, so appending them would
+        // evict the session's own replay history and turn its next Last-Event-ID resume into a
+        // 410 Gone. Sessionless requests are unauthenticated by construction, so their traffic
+        // must not be able to consume replay capacity that belongs to a real session.
+        const bool skip_event_store =
+            response_id_key.has_value() && impl->sessionless_request_ids.contains(*response_id_key);
+
         std::optional<std::string> event_id;
-        if (!impl->json_only_.load(std::memory_order_acquire)) {
+        if (!impl->json_only_.load(std::memory_order_acquire) && !skip_event_store) {
             event_id = impl->event_store.append(message);
         }
 
-        if (!response_json.contains("id")) {
+        if (!response_id_key.has_value()) {
             co_return;
         }
 
-        const auto request_id_key = response_json.at("id").dump();
+        const auto& request_id_key = *response_id_key;
         const auto pending_it = impl->pending_responses.find(request_id_key);
         if (pending_it == impl->pending_responses.end()) {
             co_return;
+        }
+
+        // The request was carried under a sentinel id, so the server answered the sentinel. Put
+        // the caller's own id back before the response leaves the transport; the peer must see
+        // the id it sent, and must never see the sentinel.
+        if (pending_it->second.client_request_id.has_value()) {
+            auto restored_response = response_json;
+            restored_response["id"] = *pending_it->second.client_request_id;
+            message = restored_response.dump();
         }
 
         pending_it->second.response_body = std::move(message);
@@ -655,6 +768,9 @@ struct HttpServerTransport::Impl {
     bool listening_started{false};
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
+    std::unordered_set<std::string> sessionless_request_ids;
+    std::string sentinel_id_prefix;
+    std::uint64_t sentinel_id_counter{0};
     std::optional<std::string> session_id;
     std::string negotiated_protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
     bool session_active{false};
@@ -748,6 +864,7 @@ void HttpServerTransport::close() {
             pending_entry.second.ready_timer->cancel();
         }
         impl->pending_responses.clear();
+        impl->sessionless_request_ids.clear();
 
         impl->session_id.reset();
         impl->negotiated_protocol_version = std::string(g_LATEST_PROTOCOL_VERSION);

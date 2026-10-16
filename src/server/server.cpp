@@ -320,6 +320,9 @@ struct Server::Impl {
 
     Implementation server_info;
     ServerCapabilities capabilities;
+    std::optional<std::string> instructions;
+    std::optional<std::int64_t> discover_ttl_ms;
+    std::optional<CacheScope> discover_cache_scope;
     std::atomic<LifecycleState> lifecycle{LifecycleState::eUninitialized};
     std::atomic_bool shutdown_requested{false};
 
@@ -409,6 +412,19 @@ void Server::set_completion_provider(CompletionHandler handler) {
 }
 
 void Server::set_page_size(std::size_t size) { impl_->page_size = size; }
+
+void Server::set_instructions(std::string instructions) {
+    impl_->instructions = std::move(instructions);
+}
+
+void Server::set_discover_ttl_ms(std::int64_t ttl_ms) {
+    if (ttl_ms < 0) {
+        throw std::invalid_argument("Discover ttlMs must be >= 0");
+    }
+    impl_->discover_ttl_ms = ttl_ms;
+}
+
+void Server::set_discover_cache_scope(CacheScope scope) { impl_->discover_cache_scope = scope; }
 
 void Server::on_subscribe(const SubscriptionHandler& handler) { impl_->subscribe_handler = handler; }
 
@@ -727,6 +743,10 @@ Task<std::string> Server::dispatch_request_wire(nlohmann::json json_msg, bool en
             co_return co_await handle_ping_wire(json_msg);
         }
 
+        if (method == "server/discover") {
+            co_return co_await handle_discover_wire(json_msg);
+        }
+
         if (enforce_lifecycle &&
             impl_->lifecycle.load(std::memory_order_relaxed) != Impl::LifecycleState::eReady) {
             co_return make_error_wire(
@@ -858,6 +878,7 @@ Task<std::string> Server::handle_initialize_wire(const nlohmann::json& json_msg,
         std::string(negotiate_protocol_version(initialize_request.protocolVersion));
     init_result.capabilities = impl_->capabilities;
     init_result.serverInfo = impl_->server_info;
+    init_result.instructions = impl_->instructions;
 
     if (update_lifecycle) {
         impl_->lifecycle.store(Impl::LifecycleState::eAwaitingInitialized, std::memory_order_relaxed);
@@ -889,6 +910,30 @@ Task<void> Server::handle_ping(const nlohmann::json& json_msg) {
 
 Task<std::string> Server::handle_ping_wire(const nlohmann::json& json_msg) {
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object());
+}
+
+// Params carry only `_meta`, whose contents (protocolVersion, clientInfo, clientCapabilities)
+// are accepted but not yet interpreted. This request is a pre-gate method
+// like initialize/ping: reachable with no prior state and idempotent, so it neither reads
+// json_msg's params nor mutates lifecycle.
+Task<std::string> Server::handle_discover_wire(const nlohmann::json& json_msg) {
+    DiscoverResult discover_result;
+    // resultType uses the DiscoverResult struct default ("complete").
+    discover_result.supportedVersions.assign(g_DISCOVERABLE_PROTOCOL_VERSIONS.begin(),
+                                             g_DISCOVERABLE_PROTOCOL_VERSIONS.end());
+    discover_result.capabilities = impl_->capabilities;
+    discover_result.serverInfo = impl_->server_info;
+    discover_result.instructions = impl_->instructions;
+    // server/utilities/caching.md: servers MUST include caching hints on "complete" results,
+    // server/discover listed first, and MUST provide a ttlMs >= 0. ttlMs defaults to 0 ("do not
+    // cache" / immediately stale per the spec's freshness rule); an absent ttlMs "should only
+    // occur in older server versions", which this SDK is not, so it is always emitted. The spec
+    // does not state a default cacheScope, so this SDK defaults to the conservative choice,
+    // "private" (do not assume the result is safe to share across authorization contexts),
+    // until a caller explicitly opts into "public" via set_discover_cache_scope.
+    discover_result.ttlMs = impl_->discover_ttl_ms.value_or(0);
+    discover_result.cacheScope = impl_->discover_cache_scope.value_or(CacheScope::ePrivate);
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json(discover_result));
 }
 
 Task<nlohmann::json> Server::invoke_tool_impl(CallToolParams params,
