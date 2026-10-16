@@ -388,6 +388,79 @@ TEST(AuthAuthorizationManagerTest, RejectsAnIssuerMismatchBeforeExchangingTheCod
     EXPECT_TRUE(fixture.store->load(base + "/mcp") == std::nullopt);
 }
 
+TEST(AuthAuthorizationManagerTest, RefusesAnAuthorizationServerThatDoesNotListS256) {
+    // Absent means the server does not support PKCE; "plain" alone is not a method this client uses.
+    for (const auto& methods : {json(nullptr), json::array({"plain"})}) {
+        SCOPED_TRACE(methods.dump());
+        asio::io_context io_ctx;
+        LoopbackServer server(io_ctx);
+        const auto base = server.base_url();
+
+        server.set_handler([&base, &methods](const http::request<http::string_body>& request) {
+            const std::string target(request.target());
+            if (target == "/prm") {
+                return json_response(
+                    {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+            }
+            if (target == "/.well-known/oauth-authorization-server") {
+                auto metadata = auth_server_metadata(base, true);
+                if (methods.is_null()) {
+                    metadata.erase("code_challenge_methods_supported");
+                } else {
+                    metadata["code_challenge_methods_supported"] = methods;
+                }
+                return json_response(metadata);
+            }
+            if (target == "/token") {
+                return json_response(token_document());
+            }
+            return status_response(http::status::not_found);
+        });
+        // Room for the token request too, so a missing refusal fails the assertions below.
+        asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+
+        ManagerFixture fixture;
+        fixture.config.server_url = base + "/mcp";
+        fixture.config.client_id = "test-client";
+        fixture.config.redirect_uri = "http://127.0.0.1:9999/callback";
+        fixture.config.policy = loopback_policy(server.origin());
+
+        int callbacks = 0;
+        std::string message;
+        asio::co_spawn(
+            io_ctx,
+            [&]() -> mcp::Task<void> {
+                auto callback = [&callbacks](const mcp::auth::AuthorizationRequest& request)
+                    -> mcp::Task<mcp::auth::AuthorizationResponse> {
+                    ++callbacks;
+                    mcp::auth::AuthorizationResponse response;
+                    response.code = "test-authorization-code";
+                    response.state = request.state;
+                    response.iss = request.issuer;
+                    co_return response;
+                };
+                mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
+                                                             fixture.config, callback);
+                try {
+                    (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                                R"(/prm")");
+                } catch (const std::exception& error) {
+                    message = error.what();
+                }
+                server.close();
+            },
+            asio::detached);
+
+        io_ctx.run();
+
+        EXPECT_NE(message.find("S256"), std::string::npos) << message;
+        // No authorization request was built and the token endpoint was never reached.
+        EXPECT_EQ(callbacks, 0);
+        EXPECT_EQ(server.targets().size(), 2U);
+        EXPECT_TRUE(fixture.store->load(base + "/mcp") == std::nullopt);
+    }
+}
+
 TEST(AuthAuthorizationManagerTest, RefreshesTheStoredTokenAfterAuthorization) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
