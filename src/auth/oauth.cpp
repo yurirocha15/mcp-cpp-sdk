@@ -1799,6 +1799,10 @@ struct OAuthClientTransport::Impl {
         std::string authenticate_challenge;
         bool authentication_challenge{false};
         bool refresh_allowed{false};
+        // Set once the refresh token has been spent on this request. A 401 that comes back after a
+        // successful refresh means the renewed token is not accepted either, so it goes to the
+        // challenge instead of refreshing again.
+        bool refreshed{false};
         int authorization_attempts{0};
     };
 
@@ -2017,7 +2021,8 @@ struct OAuthClientTransport::Impl {
                 // challenge that names its metadata drives a full authorization exchange only when
                 // renewal is unavailable or fails. Renewal is pointless against an
                 // insufficient-scope refusal, so a 403 goes straight to the challenge.
-                if (operation->refresh_allowed) {
+                if (operation->refresh_allowed && !operation->refreshed) {
+                    operation->refreshed = true;
                     authorized = co_await operation->owner->authenticator->try_refresh_token();
                 }
                 if (!authorized && !operation->authenticate_challenge.empty()) {
