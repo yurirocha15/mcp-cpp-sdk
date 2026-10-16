@@ -6,6 +6,7 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
 #include <chrono>
@@ -214,6 +215,38 @@ TEST_F(StdioTransportTest, ReadMultipleMessages) {
     EXPECT_EQ(results[0], "first");
     EXPECT_EQ(results[1], "second");
     EXPECT_EQ(results[2], "third");
+}
+
+TEST_F(StdioTransportTest, ReadAfterCloseDeliversLinesQueuedBeforeClose) {
+    std::istringstream input("first\nsecond\n");
+    std::ostringstream output;
+
+    mcp::StdioTransport transport(io_ctx_.get_executor(), input, output);
+
+    std::vector<std::string> results;
+    std::string error_after_queue;
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            results.push_back(co_await transport.read_message());
+            // Give the reader thread time to queue the second line and reach end of input.
+            boost::asio::steady_timer settle(io_ctx_, std::chrono::milliseconds(200));
+            co_await settle.async_wait(boost::asio::use_awaitable);
+            transport.close();
+            results.push_back(co_await transport.read_message());
+            try {
+                (void)co_await transport.read_message();
+            } catch (const std::runtime_error& error) {
+                error_after_queue = error.what();
+            }
+        },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    ASSERT_EQ(results.size(), 2U);
+    EXPECT_EQ(results[0], "first");
+    EXPECT_EQ(results[1], "second");
+    EXPECT_EQ(error_after_queue, "StdioTransport is closed");
 }
 
 TEST_F(StdioTransportTest, WriteMessageAppendsNewline) {

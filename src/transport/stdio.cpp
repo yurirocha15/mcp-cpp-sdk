@@ -129,17 +129,14 @@ struct StdioTransport::Impl {
         } reservation(*shared_state);
 
         for (;;) {
-            if (shared_state->closed.load(std::memory_order_acquire)) {
-                throw std::runtime_error("StdioTransport is closed");
-            }
-
+            // A line read before close() is still delivered; close() only stops waiting for more.
             if (!shared_state->queue.empty()) {
                 auto message = std::move(shared_state->queue.front());
                 shared_state->queue.pop();
                 co_return message;
             }
 
-            if (shared_state->input_ended) {
+            if (shared_state->closed.load(std::memory_order_acquire) || shared_state->input_ended) {
                 throw std::runtime_error("StdioTransport is closed");
             }
 
