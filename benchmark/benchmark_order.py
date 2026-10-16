@@ -8,6 +8,27 @@ import json
 import random
 
 
+def three_round_indices(count: int) -> tuple[tuple[int, ...], ...] | None:
+    """Return forward, reversed and rotated rounds when they counterbalance.
+
+    The reversed round puts every pair in both lead/follow orders. The rotation
+    is the smallest one that leaves each server in three distinct positions.
+    None means no rotation does, as for any odd count: reversal leaves the
+    middle server where it was.
+    """
+    forward = tuple(range(count))
+    backward = forward[::-1]
+    for shift in range(1, count):
+        rotated = forward[shift:] + forward[:shift]
+        if all(
+            len({forward.index(index), backward.index(index), rotated.index(index)})
+            == 3
+            for index in range(count)
+        ):
+            return forward, backward, rotated
+    return None
+
+
 def counterbalanced_orders(
     servers: list[str], runs: int, seed: int
 ) -> list[list[str]]:
@@ -21,6 +42,8 @@ def counterbalanced_orders(
             (1, 2, 3, 4, 0),
             (4, 3, 0, 2, 1),
         )
+        return [[base[index] for index in order] for order in indices]
+    if runs == 3 and (indices := three_round_indices(len(base))) is not None:
         return [[base[index] for index in order] for order in indices]
 
     return [

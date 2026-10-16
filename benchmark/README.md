@@ -36,6 +36,10 @@ cd benchmark
 # Run the language baselines as a diagnostic (not a publishable ranking).
 ./run.sh baseline
 
+# Run the C++ SDKs, their TCP_NODELAY builds, and the language baselines
+# in one counterbalanced run.
+./run.sh full
+
 # Run selected servers.
 ./run.sh ours-comparable hkr04
 ```
@@ -55,6 +59,7 @@ profile:
 |---|---|---|
 | `./run.sh cpp-sdks` with exact defaults | `production` | Publishable candidate after every gate passes |
 | `./run.sh baseline` with exact defaults | `baseline-diagnostic` | Diagnostic only; never an equal-work ranking |
+| `./run.sh full` with exact defaults | `production-full` | Publishable candidate for the five C++ SDKs; the TCP_NODELAY builds and language baselines in it stay diagnostic |
 | Any parameter override or other server selection | `smoke` | Harness validation only |
 
 `publishable_candidate` remains false while a run is in progress and after any
@@ -236,8 +241,10 @@ The C++ SDK comparison follows this sequence:
    evidence from that same run; do not combine resources from another run.
 
 The counterbalanced schedule varies server position and neighboring servers
-across rounds, reducing fixed-order thermal and cache bias. Its seed and exact
-per-round order are retained with the result bundle.
+across rounds, reducing fixed-order thermal and cache bias. In a three-round
+schedule of five servers, or of any even number from four up as in `full`, each
+server runs in three different positions and every pair runs in both orders.
+Its seed and exact per-round order are retained with the result bundle.
 
 Sessions unfinished at the hard time boundary are right-censored. An operation
 is counted only after its HTTP response, shape check, contract check, and metric

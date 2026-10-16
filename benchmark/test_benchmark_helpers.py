@@ -41,6 +41,30 @@ class CounterbalancedOrderTests(unittest.TestCase):
             positions = [order.index(server) for order in orders]
             self.assertEqual(len(positions), len(set(positions)))
 
+    def test_twelve_servers_take_distinct_positions_and_run_in_both_orders(
+        self,
+    ) -> None:
+        servers = [f"server-{index}" for index in range(12)]
+        orders = benchmark_order.counterbalanced_orders(servers, runs=3, seed=417)
+
+        self.assertEqual(len(orders), 3)
+        for order in orders:
+            self.assertEqual(sorted(order), sorted(servers))
+        for server in servers:
+            positions = [order.index(server) for order in orders]
+            self.assertEqual(len(positions), len(set(positions)))
+        for first in servers:
+            for second in servers:
+                if first == second:
+                    continue
+                self.assertTrue(
+                    any(
+                        order.index(first) < order.index(second)
+                        for order in orders
+                    ),
+                    f"{first} never runs before {second}",
+                )
+
 
 class MedianRunTests(unittest.TestCase):
     def test_operation_rps_prefers_the_measured_operation_rate(self) -> None:

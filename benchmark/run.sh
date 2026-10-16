@@ -173,7 +173,9 @@ ALL_MCP_SERVICES=(
     hkr04-nodelay-server fastmcpp-nodelay-server cxxmcp-nodelay-server neumann-nodelay-server
 )
 CPP_SDK_SERVERS=(ours-comparable hkr04 fastmcpp cxxmcp neumann)
+NODELAY_SERVERS=(hkr04-nodelay fastmcpp-nodelay cxxmcp-nodelay neumann-nodelay)
 BASELINE_SERVERS=(python go rust)
+FULL_SERVERS=("${CPP_SDK_SERVERS[@]}" "${NODELAY_SERVERS[@]}" "${BASELINE_SERVERS[@]}")
 
 declare -A REQUIRE_SUPPLEMENTAL=(
     [neumann-nodelay]=1
@@ -200,12 +202,14 @@ Usage:
   ./run.sh cpp-sdks         # five comparable C++ SDKs
   ./run.sh baseline         # Python, Go, and Rust baselines
   ./run.sh all              # all corrected C++ and language baselines
+  ./run.sh full             # C++ SDKs, their TCP_NODELAY builds, and baselines
   ./run.sh python go rust   # selected servers
   ./run.sh hkr04,cxxmcp     # selected servers (comma-separated)
 
 Production profile: 3 rounds, 50 VUs, 15s ramp + 60s warmup, then a
-separate constant-50-VU 5m measurement. Any override is labeled smoke and
-is never a publishable result.
+separate constant-50-VU 5m measurement. `full` with the same settings is
+labeled production-full. Any override is labeled smoke and is never a
+publishable result.
 USAGE
 }
 
@@ -258,7 +262,8 @@ finalize_manifest() {
         --arg failure_log "$FAILURE_EVIDENCE_LOG" \
         --argjson exit_code "$exit_code" \
         '.status = $status | .completed_at = $completed_at
-        | .publishable_candidate = ($status == "complete" and .profile == "production")
+        | .publishable_candidate = ($status == "complete"
+            and (.profile == "production" or .profile == "production-full"))
         | if $status == "failed" then
             .failure = {
               exit_code: $exit_code,
@@ -867,6 +872,8 @@ elif [[ "$#" -eq 1 && "$1" == "baseline" ]]; then
     selected_servers=("${BASELINE_SERVERS[@]}")
 elif [[ "$#" -eq 1 && "$1" == "all" ]]; then
     selected_servers=("${CPP_SDK_SERVERS[@]}" "${BASELINE_SERVERS[@]}")
+elif [[ "$#" -eq 1 && "$1" == "full" ]]; then
+    selected_servers=("${FULL_SERVERS[@]}")
 elif [[ "$#" -eq 1 && "$1" == *","* ]]; then
     IFS=',' read -r -a selected_servers <<< "$1"
 else
@@ -933,11 +940,13 @@ if [[ "$BENCHMARK_RUNS" -eq 3 \
     && "$BENCHMARK_MEASURE_DURATION" == "5m" ]]; then
     if [[ "${selected_servers[*]}" == "${CPP_SDK_SERVERS[*]}" ]]; then
         RUN_PROFILE="production"
+    elif [[ "${selected_servers[*]}" == "${FULL_SERVERS[*]}" ]]; then
+        RUN_PROFILE="production-full"
     elif [[ "$baseline_selection" == true ]]; then
         RUN_PROFILE="baseline-diagnostic"
     fi
 fi
-if [[ "$RUN_PROFILE" == "production" \
+if [[ "$RUN_PROFILE" == production* \
     && "$BENCHMARK_VUS" -ne "$BENCHMARK_REQUEST_CONCURRENCY" ]]; then
     error "Production VUs must match request concurrency ($BENCHMARK_REQUEST_CONCURRENCY)"
     exit 1
