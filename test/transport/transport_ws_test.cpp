@@ -572,6 +572,19 @@ TEST_F(WebSocketTransportTest, CanceledQueuedWriteDoesNotBlockSubsequentWrites) 
                     }
                 }));
 
+            // Runs on every exit path, so a failure ends the test at once instead of when the
+            // watchdog fires.
+            struct StopOnExit {
+                std::shared_ptr<asio::steady_timer> watchdog;
+                std::shared_ptr<mcp::WebSocketClientTransport> transport;
+
+                ~StopOnExit() {
+                    boost::system::error_code ignored;
+                    watchdog->cancel(ignored);
+                    transport->close();
+                }
+            } stop_on_exit{watchdog, transport};
+
             auto first_write = std::make_shared<VoidCompletion>(coordinator);
             asio::co_spawn(coordinator, transport->write_message(std::string(payload_size, 'x')),
                            asio::bind_executor(coordinator, [first_write](std::exception_ptr error) {
@@ -599,10 +612,6 @@ TEST_F(WebSocketTransportTest, CanceledQueuedWriteDoesNotBlockSubsequentWrites) 
                 std::rethrow_exception(first_write->error);
             }
             EXPECT_EQ(co_await transport->read_message(), "done");
-
-            boost::system::error_code ignored;
-            watchdog->cancel(ignored);
-            transport->close();
         },
         asio::use_future);
 
