@@ -57,7 +57,7 @@ constexpr std::array<std::string_view, 4> g_SUPPORTED_PROTOCOL_VERSIONS = {
 /**
  * @brief Protocol versions advertised through the 2026-07-28 discovery surface.
  *
- * @details Consumed only by server/discover; deliberately distinct from
+ * @details The version list for the server/discover method, deliberately distinct from
  * g_SUPPORTED_PROTOCOL_VERSIONS, which alone governs legacy initialize negotiation.
  * Advertising a version here makes no promise to the negotiation path: a legacy peer
  * requesting 2026-07-28 still negotiates g_LATEST_PROTOCOL_VERSION until dual-era dispatch
