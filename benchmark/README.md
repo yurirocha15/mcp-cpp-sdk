@@ -186,7 +186,9 @@ clients than the load profile. It is an admission-capacity control, not a claim
 that every process has the same number of OS threads or 50 CPUs.
 
 All five adapters call the same application workload, whose internal pool has
-64 threads for the Redis and HTTP work. This SDK retains two asynchronous I/O
+64 threads for the Redis and HTTP work. Its Redis connections are pooled across
+threads, so an SDK that runs each request on a new thread reuses them instead
+of opening one per call. This SDK retains two asynchronous I/O
 threads. hkr04's separate two-thread async pool is not used by its synchronous
 Streamable HTTP path. SDK/runtime-owned I/O, session, timer, logging, and other
 auxiliary threads otherwise remain native to each implementation and can

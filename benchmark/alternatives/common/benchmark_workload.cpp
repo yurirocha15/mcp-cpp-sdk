@@ -177,6 +177,15 @@ class RedisClient {
    public:
     explicit RedisClient(RedisEndpoint endpoint) : endpoint_(std::move(endpoint)) {}
 
+    ~RedisClient() {
+        for (redisContext* connection : idle_) {
+            redisFree(connection);
+        }
+    }
+
+    RedisClient(const RedisClient&) = delete;
+    RedisClient& operator=(const RedisClient&) = delete;
+
     std::vector<std::string> string_array(const std::vector<std::string>& args) const {
         Reply reply = command(args);
         std::vector<std::string> values;
@@ -212,26 +221,52 @@ class RedisClient {
         explicit Reply(redisReply* input) : value(input) {}
     };
 
-    struct Connection {
-        redisContext* value = nullptr;
-        ~Connection() {
+    // Connections are pooled across threads rather than kept per thread. An SDK that runs each
+    // request on a new thread would otherwise open and close a Redis connection per call, and
+    // the closed connections' TIME_WAIT entries can exhaust the container's ephemeral ports.
+    struct Lease {
+        Lease(const RedisClient& client, redisContext* connection) : owner(client), value(connection) {}
+        const RedisClient& owner;
+        redisContext* value;
+        ~Lease() {
             if (value) {
-                redisFree(value);
+                owner.release(value);
             }
         }
+        Lease(const Lease&) = delete;
+        Lease& operator=(const Lease&) = delete;
     };
 
-    Reply command(const std::vector<std::string>& args) const {
-        thread_local Connection connection;
-        if (!connection.value || connection.value->err) {
-            if (connection.value) {
-                redisFree(connection.value);
-            }
-            connection.value = redisConnect(endpoint_.host.c_str(), endpoint_.port);
-            if (!connection.value || connection.value->err) {
-                throw std::runtime_error("Redis connection failed");
+    redisContext* acquire() const {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!idle_.empty()) {
+                redisContext* connection = idle_.back();
+                idle_.pop_back();
+                return connection;
             }
         }
+        redisContext* connection = redisConnect(endpoint_.host.c_str(), endpoint_.port);
+        if (!connection || connection->err) {
+            if (connection) {
+                redisFree(connection);
+            }
+            throw std::runtime_error("Redis connection failed");
+        }
+        return connection;
+    }
+
+    void release(redisContext* connection) const {
+        if (connection->err) {
+            redisFree(connection);
+            return;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        idle_.push_back(connection);
+    }
+
+    Reply command(const std::vector<std::string>& args) const {
+        Lease connection{*this, acquire()};
 
         std::vector<const char*> argv;
         std::vector<std::size_t> lengths;
@@ -252,6 +287,8 @@ class RedisClient {
     }
 
     RedisEndpoint endpoint_;
+    mutable std::mutex mutex_;
+    mutable std::vector<redisContext*> idle_;
 };
 
 std::string number(double value) {
