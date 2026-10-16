@@ -190,10 +190,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   with Clang. CI runs all of them on pushes to `main` and on pull requests
   into it, and the AddressSanitizer run now also checks for stack use after
   return.
-- `WebSocketClientTransport` takes a `connect_timeout` (default 30 seconds,
-  zero disables it) that bounds the TCP connect and the WebSocket handshake
-  together. A peer that accepts the connection and then stalls now fails the
-  pending call with a timeout instead of holding it forever.
+- `WebSocketClientTransport` takes a `connect_timeout` (default 30 seconds)
+  that bounds the TCP connect and the WebSocket handshake together. A peer
+  that accepts the connection and then stalls now fails the pending call with
+  a timeout instead of holding it forever. Zero, a negative value, or one too
+  long for the clock to represent, such as `std::chrono::milliseconds::max()`,
+  disables the limit.
 
 ### Changed
 
