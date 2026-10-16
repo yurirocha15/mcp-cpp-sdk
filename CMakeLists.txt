@@ -322,7 +322,8 @@ if(BUILD_TESTING)
     find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
     add_custom_target(
       mcp-json-matrix-complete ALL
-      COMMAND "${Python3_EXECUTABLE}"
+      # -B: the build must not write bytecode into the source tree.
+      COMMAND "${Python3_EXECUTABLE}" -B
               "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_json_matrix.py"
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       COMMENT "Checking the peer-input matrix covers every protocol type")
