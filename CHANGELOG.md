@@ -365,11 +365,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
   and the HTTP transports answer `400`. Copying a decoded document recurses
   once per level, so a request of a few hundred kilobytes made of nothing but
   brackets could exhaust the stack and crash the process.
-- A resource URI template with two expressions and no literal between them
-  (`{a}{b}`) is now rejected at registration with `std::invalid_argument`.
-  Such a template compiled to adjacent unbounded runs that the matcher could
-  only resolve by backtracking over every split of the input, and the boundary
-  between the two variables is undecidable in any case.
+- A resource URI template with two adjacent expressions is rejected at
+  registration with `std::invalid_argument` when the boundary between them is
+  ambiguous: the second expression has no leading literal (`{a}{b}`,
+  `{a}{+b}`), or its literal can occur in the first expression's value
+  (`{name}{.ext}`, `{+path}{/segment}`). Such a template compiled to adjacent
+  runs that the matcher could only resolve by backtracking over every split of
+  the input. Adjacent expressions with a decidable boundary, such as
+  `{+path}{?query}` and `{id}{#section}`, are accepted.
 - An exception from a tool handler is reported as a `CallToolResult` carrying
   `isError`, with the message sanitized before it reaches the peer, and the
   guard now covers a throw that does not derive from `std::exception`. Such a

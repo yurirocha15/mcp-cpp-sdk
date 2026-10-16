@@ -69,6 +69,27 @@ bool is_uri_template_operator(char ch) {
     return operators.find(ch) != std::string_view::npos;
 }
 
+char uri_expression_operator(std::string_view expression) {
+    return !expression.empty() && is_uri_template_operator(expression.front()) ? expression.front() : 0;
+}
+
+// Characters an expression's expansion can never contain. When the next expression's leading
+// literal is one of them, it marks the boundary between the two unambiguously.
+std::string_view uri_expression_excluded_characters(char expression_operator) {
+    switch (expression_operator) {
+        case '#':
+        case '?':
+        case '&':
+            return "#";
+        case '+':
+        case '/':
+        case ';':
+            return "?#";
+        default:
+            return "/?#";
+    }
+}
+
 void validate_uri_template_variables(std::string_view expression) {
     if (!expression.empty() && is_uri_template_operator(expression.front())) {
         expression.remove_prefix(1);
@@ -146,14 +167,15 @@ UriTemplatePattern compile_uri_template(std::string_view uri_template) {
     }
 
     std::string pattern = "^";
-    bool previous_token_was_expression = false;
+    // The operator of the previous token, when that token was an expression.
+    std::optional<char> previous_operator;
     for (std::size_t index = 0; index < uri_template.size();) {
         if (uri_template[index] == '}') {
             throw std::invalid_argument("Resource URI template contains an unmatched '}'");
         }
         if (uri_template[index] != '{') {
             append_regex_literal(pattern, uri_template[index]);
-            previous_token_was_expression = false;
+            previous_operator.reset();
             ++index;
             continue;
         }
@@ -162,16 +184,24 @@ UriTemplatePattern compile_uri_template(std::string_view uri_template) {
         if (close == std::string_view::npos) {
             throw std::invalid_argument("Resource URI template contains an unmatched '{'");
         }
-        // Two expressions with nothing between them compile to adjacent unbounded runs, which the
-        // regex engine can only resolve by backtracking over every way of splitting the input. The
-        // boundary between such variables is undecidable anyway, so reject the template outright.
-        if (previous_token_was_expression) {
-            throw std::invalid_argument(
-                "Resource URI template must separate adjacent expressions with a literal");
-        }
         auto expression = uri_template.substr(index + 1, close - index - 1);
+        const char expression_operator = uri_expression_operator(expression);
+        // Two expressions with nothing between them compile to adjacent runs. The boundary is
+        // decidable only when the second expands with a leading literal (every operator but '+'
+        // does) that the first can never contain, as in {+path}{?query} or {id}{#section}.
+        // Otherwise the regex engine can only resolve it by backtracking over every way of
+        // splitting the input, and the variables' values are ambiguous anyway, so reject it.
+        if (previous_operator) {
+            const bool has_leading_literal = expression_operator != 0 && expression_operator != '+';
+            if (!has_leading_literal ||
+                uri_expression_excluded_characters(*previous_operator).find(expression_operator) ==
+                    std::string_view::npos) {
+                throw std::invalid_argument(
+                    "Resource URI template must separate adjacent expressions with a literal");
+            }
+        }
         append_uri_expression_pattern(pattern, expression);
-        previous_token_was_expression = true;
+        previous_operator = expression_operator;
         index = close + 1;
     }
     pattern += '$';
