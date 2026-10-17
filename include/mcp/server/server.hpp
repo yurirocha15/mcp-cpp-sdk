@@ -381,7 +381,9 @@ class MCP_API Server {
      *
      * Runs until the transport is closed or an error occurs, then waits for
      * request handlers already dispatched by this session to finish. The
-     * Server object must outlive the returned task.
+     * returned task keeps the server's state alive, so the Server object may be
+     * destroyed before it completes; a reverse request that a handler issues
+     * after that throws std::runtime_error.
      *
      * The session enforces the initialization sequence. When @p transport is an
      * HttpServerTransport, a session the client ends with HTTP DELETE is over and
@@ -432,6 +434,8 @@ class MCP_API Server {
      * @brief Dispatch a parsed JSON-RPC message to the appropriate handler.
      *
      * @param json_msg The parsed JSON-RPC message.
+     *
+     * The Server object must outlive the returned task.
      */
     Task<void> dispatch(nlohmann::json json_msg);
 
@@ -449,6 +453,8 @@ class MCP_API Server {
      *
      * @param json_msg The parsed JSON-RPC request object.
      * @return A task that resolves to the serialized JSON-RPC response.
+     *
+     * The Server object must outlive the returned task.
      */
     Task<std::string> dispatch_request_direct(nlohmann::json json_msg);
 
@@ -468,16 +474,22 @@ class MCP_API Server {
 
     /**
      * @brief Send a notifications/tools/list_changed notification to the client.
+     *
+     * The Server object must outlive the returned task.
      */
     Task<void> notify_tools_list_changed();
 
     /**
      * @brief Send a notifications/resources/list_changed notification to the client.
+     *
+     * The Server object must outlive the returned task.
      */
     Task<void> notify_resources_list_changed();
 
     /**
      * @brief Send a notifications/prompts/list_changed notification to the client.
+     *
+     * The Server object must outlive the returned task.
      */
     Task<void> notify_prompts_list_changed();
 
@@ -485,6 +497,8 @@ class MCP_API Server {
      * @brief Send a notifications/resources/updated notification to all subscribers.
      *
      * @param uri The URI of the resource that was updated.
+     *
+     * The Server object must outlive the returned task.
      */
     Task<void> notify_resource_updated(const std::string& uri);
 
