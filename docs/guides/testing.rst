@@ -87,8 +87,12 @@ When writing scripted tests, consider the following:
 
         // CallToolResult::content holds ContentBlock, a variant, not JSON.
         const auto* text = std::get_if<mcp::TextContent>(&result.content.at(0));
-        ASSERT_NE(text, nullptr);
-        EXPECT_EQ(text->text, "test");
+        // ASSERT_* leaves the enclosing function with a plain `return`, which a
+        // coroutine cannot use, so check with EXPECT_* and guard the dereference.
+        EXPECT_NE(text, nullptr);
+        if (text != nullptr) {
+            EXPECT_EQ(text->text, "test");
+        }
 
         // 3. Verify server-side state if accessible
         EXPECT_TRUE(server->has_tool("echo"));
