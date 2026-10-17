@@ -485,10 +485,13 @@ class Authenticator {
      * @param www_authenticate Raw `WWW-Authenticate` header value from the challenge response.
      * @return true if authorization completed and a new token was persisted; false otherwise.
      *
-     * @details Called before try_refresh_token() when a challenge is available, so an
-     * implementation can discover metadata and run a full authorization exchange rather than only
-     * renewing an existing grant. The default implementation reports that it handled nothing,
-     * which keeps existing Authenticator implementations source-compatible.
+     * @details OAuthClientTransport calls it for a challenge that a renewal cannot answer: on a 401,
+     * only after try_refresh_token() was unavailable, failed, or produced a token that was refused
+     * too, and at most once per request; on a 403 whose challenge carries
+     * `error="insufficient_scope"`, directly. An implementation can discover metadata and run a
+     * full authorization exchange rather than only renewing an existing grant. The default
+     * implementation reports that it handled nothing, which keeps existing Authenticator
+     * implementations source-compatible.
      */
     virtual Task<bool> try_handle_challenge(const std::string& www_authenticate) {
         (void)www_authenticate;

@@ -79,8 +79,9 @@ refresh it. It does not run a background refresh task. After an HTTP 401 from
 ``HttpClientTransport``, ``OAuthClientTransport`` renews the token with the
 stored refresh token once and retries; if renewal is not possible, or the
 renewed token is refused too, it runs the authorization flow the challenge
-names. A 403 whose challenge carries ``error="insufficient_scope"`` runs that
-flow directly. For non-HTTP transports it also understands the legacy JSON-RPC
+names, once per request: a 401 after that new grant fails the request. A 403
+whose challenge carries ``error="insufficient_scope"`` runs that flow
+directly. For non-HTTP transports it also understands the legacy JSON-RPC
 ``g_UNAUTHORIZED`` path. ``OAuthAuthorizationManager`` can renew a grant only
 after it has authorized in the same process, because the token endpoint and
 client identity it renews with are held in memory: after a restart, a refresh

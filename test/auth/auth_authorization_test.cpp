@@ -1220,6 +1220,95 @@ TEST(AuthChallengeReplayTest, AuthorizesAgainWhenTheRenewedTokenIsAlsoRefused) {
     EXPECT_EQ(server.authorizations().back(), "Bearer second-grant-token");
 }
 
+// A resource server that refuses every token, even one from a fresh authorization, gets one renewal
+// and one new authorization per request. Asking the user a second time would not change its answer.
+TEST(AuthChallengeReplayTest, AuthorizesOnceWhenTheServerRefusesEveryToken) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    int code_grants = 0;
+    int refresh_grants = 0;
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/mcp") {
+            http::response<http::string_body> challenge{http::status::unauthorized, 11};
+            challenge.set(http::field::www_authenticate,
+                          R"(Bearer error="invalid_token", resource_metadata=")" + base + R"(/prm")");
+            return challenge;
+        }
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        if (target == "/token") {
+            if (request.body().find("grant_type=refresh_token") != std::string::npos) {
+                ++refresh_grants;
+                return json_response({{"access_token", "renewed-access-token"},
+                                      {"token_type", "Bearer"},
+                                      {"expires_in", 3600}});
+            }
+            ++code_grants;
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(24), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    int callbacks = 0;
+    auto callback = [&callbacks](const mcp::auth::AuthorizationRequest& request)
+        -> mcp::Task<mcp::auth::AuthorizationResponse> {
+        ++callbacks;
+        mcp::auth::AuthorizationResponse response;
+        response.code = "test-authorization-code";
+        response.state = request.state;
+        response.iss = request.issuer;
+        co_return response;
+    };
+    int callbacks_before_request = 0;
+    bool failed = false;
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+                io_ctx.get_executor(), store, config, callback);
+            auto inner =
+                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+            mcp::auth::OAuthClientTransport transport(inner, manager);
+            try {
+                (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                             R"(/prm")");
+                callbacks_before_request = callbacks;
+                co_await transport.write_message(
+                    R"({"jsonrpc":"2.0","method":"notifications/initialized"})");
+            } catch (const std::exception&) {
+                failed = true;
+            }
+            transport.close();
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_TRUE(failed);
+    EXPECT_EQ(callbacks_before_request, 1);
+    EXPECT_EQ(refresh_grants, 1);
+    EXPECT_EQ(callbacks - callbacks_before_request, 1);
+    EXPECT_EQ(code_grants, 2);
+}
+
 // Only a 403 whose challenge asks for more scope is a step-up. Any other 403 is an authorization
 // decision that a new grant cannot change, so it reaches the caller without a new consent prompt.
 TEST(AuthChallengeReplayTest, AForbiddenChallengeWithoutInsufficientScopeIsNotAStepUp) {

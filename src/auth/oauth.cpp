@@ -1803,6 +1803,10 @@ struct OAuthClientTransport::Impl {
         // successful refresh means the renewed token is not accepted either, so it goes to the
         // challenge instead of refreshing again.
         bool refreshed{false};
+        // Set once a 401 has driven a full authorization for this request. A 401 that comes back
+        // after it means the resource server does not accept the new token either, and asking the
+        // user to authorize again would not change that.
+        bool authorized_after_unauthorized{false};
         int authorization_attempts{0};
     };
 
@@ -2021,7 +2025,8 @@ struct OAuthClientTransport::Impl {
                 co_return;
             }
             if (!operation->authentication_challenge ||
-                operation->authorization_attempts >= g_max_authorization_challenges) {
+                operation->authorization_attempts >= g_max_authorization_challenges ||
+                (operation->refresh_allowed && operation->authorized_after_unauthorized)) {
                 break;
             }
             ++operation->authorization_attempts;
@@ -2037,6 +2042,8 @@ struct OAuthClientTransport::Impl {
                     authorized = co_await operation->owner->authenticator->try_refresh_token();
                 }
                 if (!authorized && !operation->authenticate_challenge.empty()) {
+                    operation->authorized_after_unauthorized =
+                        operation->authorized_after_unauthorized || operation->refresh_allowed;
                     authorized = co_await operation->owner->authenticator->try_handle_challenge(
                         operation->authenticate_challenge);
                 }

@@ -192,9 +192,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   must supply an explicit policy.
 - `OAuthClientTransport` follows an HTTP `401` into the authorization flow its
   `WWW-Authenticate` challenge names when renewing the access token is not
-  possible or the renewed token is refused too, renewing at most once per
-  request; a `403` whose challenge carries `error="insufficient_scope"` goes
-  straight to that flow. Previously an authentication failure got one refresh
+  possible or the renewed token is refused too, renewing at most once and
+  authorizing for a `401` at most once per request; a `403` whose challenge
+  carries `error="insufficient_scope"` goes straight to that flow. Previously an authentication failure got one refresh
   and one retry. `Authenticator` gains `try_handle_challenge()` and `close()`,
   which changes its layout.
 
