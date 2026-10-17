@@ -78,7 +78,8 @@ The `OAuthAuthenticator` and `OAuthClientTransport` work together to automate au
 
 .. literalinclude:: ../../examples/features/oauth_flow.cpp
    :language: cpp
-   :lines: 410-413
+   :start-at: state->authenticator = std::make_shared<mcp::auth::OAuthAuthenticator>(
+   :end-at: runtime.client_base_transport, state->authenticator);
    :dedent: 8
 
 Automatic Token Refresh
@@ -99,7 +100,8 @@ On the server side, you can protect your tools and resources using `make_auth_mi
 
 .. literalinclude:: ../../examples/features/oauth_flow.cpp
    :language: cpp
-   :lines: 524-530
+   :start-at: server.use(
+   :end-at: }));
    :dedent: 8
 
 Example Walkthrough
@@ -109,7 +111,8 @@ The following example demonstrates a complete OAuth integration, from discovery 
 
 .. literalinclude:: ../../examples/features/oauth_flow.cpp
    :language: cpp
-   :lines: 378-474
+   :start-at: auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
+   :end-before: }  // namespace
    :dedent: 0
 
 Cross-References
