@@ -150,8 +150,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - Less work per request in `StreamableHttpSessionManager` sessions: responses
   are routed by their id without parsing the whole message, the session's
   read loops and response waits end without throwing, and `MemoryTransport`
-  writes go straight to the peer's strand. Tool results, `tools/list` pages
-  and typed tool registrations are moved rather than copied.
+  writes go straight to the peer's strand. Tool results and typed tool
+  registrations are moved rather than copied, and a `tools/list` page is
+  serialized from the registered tools without first copying them.
 
 ### Fixed
 
