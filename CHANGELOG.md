@@ -114,9 +114,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `StdioTransport::create_owning_stdout()`, which writes the protocol to a
   private copy of the process's standard output and points standard output at
   standard error while the transport lives, so stray output from the
-  application or a dependency cannot corrupt the message stream. Standard
+  application or a dependency cannot corrupt the message stream. With standard
+  error closed, standard output points at the null device instead. Standard
   output is restored when the transport is destroyed, and only one such
-  transport may exist at a time.
+  transport may exist at a time. A process launched with standard error sent
+  to the same place as standard output (`2>&1`) is not protected.
 - CI compiles the README code snippets and checks that the stdio examples
   write nothing but protocol messages to standard output.
 

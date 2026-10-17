@@ -56,8 +56,11 @@ class MCP_API StdioTransport final : public ITransport {
      * at standard error. Everything the application subsequently writes to
      * stdout - std::cout, printf, a logging library's default sink, a
      * dependency's debug line - is then diagnostics on stderr instead of
-     * corruption in the middle of the message stream. The original standard
-     * output is restored when the transport is destroyed.
+     * corruption in the middle of the message stream. If the process was
+     * started with standard error closed, standard output points at the null
+     * device (/dev/null, or NUL on Windows) instead, and that output is
+     * discarded. The original standard output is restored when the transport
+     * is destroyed.
      *
      * @param executor The executor to use for async operations.
      * @param input    Input stream to read messages from (default: std::cin).
@@ -73,6 +76,11 @@ class MCP_API StdioTransport final : public ITransport {
      * one owning transport alive at a time. On Windows the redirect covers the
      * C runtime (std::cout, printf, fwrite); code writing directly to the
      * Win32 STD_OUTPUT_HANDLE is not covered.
+     *
+     * @note Standard error is used as it is. If the process was launched with
+     * standard error sent to the same place as standard output (for example
+     * `server 2>&1`), stray stdout output still reaches the protocol stream,
+     * and so does anything written to stderr.
      */
     static std::unique_ptr<StdioTransport> create_owning_stdout(
         const boost::asio::any_io_executor& executor, std::istream& input = std::cin);
