@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <map>
 #include <string>
 #include <thread>
 
@@ -27,6 +28,11 @@ mcp::CallToolResult text_result(std::string text) {
 int main() {
     mcp::set_log_level(mcp::LogLevel::off);
     mcp_benchmark::Workload workload("cpp-sdk");
+    // HttpServerHost builds a Server per session, so the schemas are parsed once and copied.
+    std::map<std::string, nlohmann::json> schemas;
+    for (const auto* name : {"search_products", "get_user_cart", "checkout"}) {
+        schemas.emplace(name, nlohmann::json::parse(mcp_benchmark::Workload::input_schema(name)));
+    }
     mcp::HttpServerHost::Options options;
     options.host = "0.0.0.0";
     options.port = port();
@@ -34,10 +40,10 @@ int main() {
 
     mcp::HttpServerHost host(
         mcp::Implementation{.name = "benchmark-cpp-sdk", .version = "1.0.0"}, std::move(options),
-        [&workload](mcp::Server& server) {
+        [&workload, &schemas](mcp::Server& server) {
             const auto add_tool = [&](const std::string& name, const std::string& description) {
                 server.tool(
-                    name, nlohmann::json::parse(mcp_benchmark::Workload::input_schema(name)),
+                    name, schemas.at(name),
                     [&workload, name](const nlohmann::json& args) {
                         return text_result(workload.invoke(name, args.dump()));
                     },
