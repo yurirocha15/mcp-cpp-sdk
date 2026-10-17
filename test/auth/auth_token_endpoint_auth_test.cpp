@@ -127,11 +127,9 @@ std::string token_endpoint_url(unsigned short port) {
     return "http://127.0.0.1:" + std::to_string(port) + "/token";
 }
 
-/// What `apply_client_authentication()` in src/auth/oauth.cpp builds for `client_secret_basic`,
-/// reproduced here so the expected header is derived rather than hard-coded.
+/// The `client_secret_basic` header for credentials that need no encoding.
 std::string expected_basic_header(const std::string& client_id, const std::string& client_secret) {
-    const auto credentials =
-        mcp::auth::detail::url_encode(client_id) + ":" + mcp::auth::detail::url_encode(client_secret);
+    const auto credentials = client_id + ":" + client_secret;
     return "Basic " +
            mcp::auth::detail::base64_encode(reinterpret_cast<const unsigned char*>(credentials.data()),
                                             credentials.size());
@@ -179,6 +177,25 @@ TEST(AuthTokenEndpointAuthWireTest, ClientSecretBasicPutsTheSecretOnlyInTheAutho
     EXPECT_EQ(outcome.recorded.body.find(client_secret), std::string::npos);
     EXPECT_EQ(outcome.recorded.body.find("client_secret"), std::string::npos);
     EXPECT_EQ(outcome.recorded.target.find(client_secret), std::string::npos);
+}
+
+// RFC 6749 section 2.3.1 form-encodes the identifier and secret before joining them, so a space
+// becomes `+` and a literal `+` is escaped.
+TEST(AuthTokenEndpointAuthWireTest, ClientSecretBasicFormEncodesTheCredentials) {
+    const auto outcome = run_exchange(
+        [&](unsigned short port) {
+            mcp::auth::OAuthConfig config;
+            config.client_id = "conf client";
+            config.client_secret = "a b+c:d";
+            config.token_endpoint = token_endpoint_url(port);
+            config.redirect_uri = "http://127.0.0.1:9999/callback";
+            config.token_endpoint_auth_method = "client_secret_basic";
+            return config;
+        },
+        json_response(token_document()));
+
+    ASSERT_EQ(outcome.failure, nullptr);
+    EXPECT_EQ(outcome.recorded.authorization, expected_basic_header("conf+client", "a+b%2Bc%3Ad"));
 }
 
 TEST(AuthTokenEndpointAuthWireTest, ClientSecretPostPutsTheSecretOnlyInTheFormBody) {

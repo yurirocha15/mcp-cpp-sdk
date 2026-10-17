@@ -755,6 +755,20 @@ void OAuthHttpClient::abort_pending() { impl_->abort_pending(); }
 
 namespace {
 
+/// application/x-www-form-urlencoded encoding, which RFC 6749 section 2.3.1 applies to the client
+/// identifier and secret before they are joined for HTTP Basic: a space becomes `+`.
+std::string form_encode(const std::string& value) {
+    std::string result;
+    std::size_t start = 0;
+    for (auto space = value.find(' '); space != std::string::npos; space = value.find(' ', start)) {
+        result += detail::url_encode(value.substr(start, space - start));
+        result.push_back('+');
+        start = space + 1;
+    }
+    result += detail::url_encode(value.substr(start));
+    return result;
+}
+
 /// Place the client secret where the negotiated method says it belongs, and nowhere else.
 ///
 /// @return The `Authorization` header value, empty when the secret does not travel in a header.
@@ -768,7 +782,7 @@ std::string apply_client_authentication(const OAuthConfig& config, KeyValuePairL
     }
     if (method && *method == "client_secret_basic") {
         const auto credentials =
-            detail::url_encode(config.client_id) + ":" + detail::url_encode(*config.client_secret);
+            form_encode(config.client_id) + ":" + form_encode(*config.client_secret);
         return "Basic " +
                detail::base64_encode(reinterpret_cast<const unsigned char*>(credentials.data()),
                                      credentials.size());
