@@ -495,15 +495,8 @@ struct HttpServerTransport::Impl {
     }
 
     Task<StringResponse> handle_post(const StringRequest& request) {
-        const auto request_json = detail::parse_peer_json(request.body());
-        if (request_json.is_discarded() || !request_json.is_object()) {
-            co_return make_error_response(request, http::status::bad_request,
-                                          "Invalid JSON-RPC payload");
-        }
-
-        if (auto error = check_protocol_version(request, request_json)) {
-            co_return std::move(*error);
-        }
+        // Origin and bearer checks come first: they need only the headers, so a request that fails
+        // them never makes the server build a JSON document from its body.
         if (auto error = check_origin(request)) {
             co_return std::move(*error);
         }
@@ -514,6 +507,15 @@ struct HttpServerTransport::Impl {
             if (auto error = co_await check_authorization_async(request)) {
                 co_return std::move(*error);
             }
+        }
+
+        const auto request_json = detail::parse_peer_json(request.body());
+        if (request_json.is_discarded() || !request_json.is_object()) {
+            co_return make_error_response(request, http::status::bad_request,
+                                          "Invalid JSON-RPC payload");
+        }
+        if (auto error = check_protocol_version(request, request_json)) {
+            co_return std::move(*error);
         }
 
         // server/discover is a pre-gate method: it MUST stay reachable with zero prior session

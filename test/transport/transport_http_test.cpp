@@ -2449,6 +2449,31 @@ TEST_F(HttpTransportTest, UnconfiguredTransportSendsBareBearerChallenge) {
     EXPECT_EQ(denied.www_authenticate, "Bearer");
 }
 
+// The bearer check runs before the body is parsed, so a request without a valid token never makes
+// the server build a JSON document from its body. A body that is not JSON at all shows the order:
+// it is answered with the challenge, not with the parse error.
+TEST_F(HttpTransportTest, UnauthenticatedPostIsRefusedBeforeItsBodyIsParsed) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    const auto port = server->port();
+
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    ChallengeProbeResult denied;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            denied = co_await probe(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                    std::string("{not json"));
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(denied.status, 401);
+    EXPECT_EQ(denied.www_authenticate, "Bearer");
+}
+
 TEST_F(HttpTransportTest, ConfiguredChallengeIsSentOnUnauthorized) {
     auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
     server->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
