@@ -61,9 +61,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - A server session enforces the initialization sequence: until
   `notifications/initialized` arrives, every request other than `initialize`
   and `ping` is answered with `g_INVALID_REQUEST`, and a second `initialize`
-  within a session is rejected. On `HttpServerTransport`, a session the client
-  ended with `DELETE` is over, and the next client's `initialize` starts a new
-  one.
+  within a session is rejected. When `Server::run()` is given an
+  `HttpServerTransport` (not a transport that wraps one), a session the client
+  ended with `DELETE` is over, and the next client must send `initialize` to
+  start a new one.
 - Tool results are always sent as a `CallToolResult`. A value returned by a
   JSON tool handler, or by a typed handler whose result type is not
   `CallToolResult`, is sent unchanged only when it is an object made of

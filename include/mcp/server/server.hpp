@@ -351,6 +351,11 @@ class MCP_API Server {
      * request handlers already dispatched by this session to finish. The
      * Server object must outlive the returned task.
      *
+     * The session enforces the initialization sequence. When @p transport is an
+     * HttpServerTransport, a session the client ends with HTTP DELETE is over and
+     * the next client must initialize again; a transport that wraps an
+     * HttpServerTransport is not recognized as one.
+     *
      * @param transport The transport to use for message exchange. Ownership is shared.
      * @param executor  The executor to use for async operations.
      */
