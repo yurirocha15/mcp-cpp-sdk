@@ -3313,6 +3313,96 @@ TEST(AuthTransportCloseTest, CloseWithQueuedPendingRequestsFailsThemPromptlyWith
     EXPECT_EQ(failed, request_count);
 }
 
+namespace {
+
+/// Authorize `manager` against `server`, whose handler must answer the protected-resource metadata,
+/// authorization server metadata and token requests.
+mcp::Task<bool> authorize_against(mcp::auth::OAuthAuthorizationManager& manager,
+                                  const std::string& base) {
+    co_return co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                    R"(/prm")");
+}
+
+/// Answers metadata and every token request, counting refresh grants among them.
+LoopbackServer::Handler refresh_counting_handler(const std::string& base, int* refresh_grants) {
+    return [base, refresh_grants](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        if (target == "/token") {
+            if (request.body().find("grant_type=refresh_token") != std::string::npos) {
+                ++*refresh_grants;
+                return json_response({{"access_token", "renewed-access-token"},
+                                      {"token_type", "Bearer"},
+                                      {"refresh_token", "renewed-refresh-token"},
+                                      {"expires_in", 3600}});
+            }
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    };
+}
+
+}  // namespace
+
+// A refresh token may be rotated on every use. A second exchange of the same one then presents an
+// invalidated token, and the authorization server answers that by revoking the active refresh
+// token too (RFC 9700 section 4.14.2). So refreshes that overlap share one exchange and all report
+// its outcome.
+TEST(AuthAuthorizationManagerTest, ConcurrentRefreshesShareOneRefreshGrant) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    int refresh_grants = 0;
+    server.set_handler(refresh_counting_handler(base, &refresh_grants));
+    asio::co_spawn(io_ctx, server.serve(10), asio::detached);
+
+    ManagerFixture fixture;
+    fixture.config.server_url = base + "/mcp";
+    fixture.config.client_id = "test-client";
+    fixture.config.redirect_uri = "http://127.0.0.1:9999/callback";
+    fixture.config.policy = loopback_policy(server.origin());
+    mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store, fixture.config,
+                                                 echoing_callback(nullptr));
+
+    constexpr int refreshers = 3;
+    bool authorized = false;
+    int refreshed = 0;
+    int completed = 0;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            authorized = co_await authorize_against(manager, base);
+            for (int index = 0; index < refreshers; ++index) {
+                asio::co_spawn(
+                    io_ctx,
+                    [&]() -> mcp::Task<void> {
+                        if (co_await manager.try_refresh_token()) {
+                            ++refreshed;
+                        }
+                        if (++completed == refreshers) {
+                            server.close();
+                        }
+                    },
+                    asio::detached);
+            }
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    ASSERT_TRUE(authorized);
+    EXPECT_EQ(completed, refreshers);
+    EXPECT_EQ(refreshed, refreshers);
+    EXPECT_EQ(refresh_grants, 1);
+    EXPECT_EQ(manager.get_access_token(), "renewed-access-token");
+}
+
 TEST(AuthIssuerBindingTest, RejectsAuthServerMetadataWhoseIssuerIsNotItsDiscoveryLocation) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);

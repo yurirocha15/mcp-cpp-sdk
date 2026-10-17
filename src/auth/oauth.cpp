@@ -1627,6 +1627,7 @@ struct OAuthAuthorizationManager::Impl {
 
     struct RefreshOperation {
         std::shared_ptr<Impl> owner;
+        std::shared_ptr<Flight> flight;
         OAuthConfig token_config;
         TokenResponse stored_token;
         std::optional<TokenResponse> new_token;
@@ -2129,16 +2130,79 @@ struct OAuthAuthorizationManager::Impl {
         }
 
         auto operation = std::make_shared<RefreshOperation>();
+        std::shared_ptr<Flight> joined;
         {
             std::lock_guard lock(owner->state_mutex);
-            if (!owner->token_config) {
+            if (!owner->token_config || owner->closed) {
                 return return_false();
             }
-            operation->token_config = *owner->token_config;
+            // Concurrent refreshes share one exchange. A public client's refresh token may be
+            // rotated on every use (RFC 9700 section 4.14.2), so a second exchange would present an
+            // already invalidated token, and the authorization server answers that by revoking the
+            // active refresh token as well.
+            if (owner->refresh_flight) {
+                joined = owner->refresh_flight;
+            } else {
+                owner->refresh_flight = std::make_shared<Flight>(owner->flight_strand);
+                operation->flight = owner->refresh_flight;
+                operation->token_config = *owner->token_config;
+            }
+        }
+        if (joined) {
+            return await_refresh(std::move(owner), std::move(joined));
         }
         operation->owner = std::move(owner);
         operation->stored_token = std::move(*stored);
-        return run_refresh(std::move(operation));
+        return run_leading_refresh(std::move(operation));
+    }
+
+    static Task<bool> run_leading_refresh(std::shared_ptr<RefreshOperation> operation) {
+        auto owner = operation->owner;
+        auto finished = operation->flight;
+        bool succeeded = false;
+        std::exception_ptr failure;
+        try {
+            succeeded = co_await run_refresh(std::move(operation));
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        {
+            std::lock_guard lock(owner->state_mutex);
+            if (owner->refresh_flight == finished) {
+                owner->refresh_flight.reset();
+            }
+            finished->succeeded = succeeded;
+            finished->failure = failure;
+            finished->finished = true;
+        }
+        expire_flight(owner->flight_strand, std::move(finished));
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
+        co_return succeeded;
+    }
+
+    /// A refresh that joined another's reports that one's outcome. Woken without one, by close(),
+    /// it reports that no token was renewed.
+    static Task<bool> await_refresh(std::shared_ptr<Impl> owner, std::shared_ptr<Flight> flight) {
+        // Initiated on flight_strand and resumed on the caller's executor, as in await_in_flight().
+        co_await net::dispatch(net::bind_executor(owner->flight_strand, net::use_awaitable));
+        boost::system::error_code ignored;
+        co_await flight->timer.async_wait(net::redirect_error(net::use_awaitable, ignored));
+
+        std::exception_ptr failure;
+        bool succeeded = false;
+        {
+            std::lock_guard lock(owner->state_mutex);
+            if (flight->finished) {
+                failure = flight->failure;
+                succeeded = flight->succeeded;
+            }
+        }
+        if (failure) {
+            std::rethrow_exception(failure);
+        }
+        co_return succeeded;
     }
 
     static Task<bool> run_refresh(std::shared_ptr<RefreshOperation> operation) {
@@ -2177,6 +2241,8 @@ struct OAuthAuthorizationManager::Impl {
     /// Non-null exactly while one authorization flow is running; cancelling it releases the
     /// requests that coalesced onto it.
     std::shared_ptr<Flight> flight;
+    /// Non-null exactly while one refresh exchange is running; concurrent refreshes wait on it.
+    std::shared_ptr<Flight> refresh_flight;
     bool closed{false};
 
     /// Abort whatever this manager has in flight and release every parked follower with an error.
@@ -2191,6 +2257,7 @@ struct OAuthAuthorizationManager::Impl {
     /// holds no cancellable network state of its own.
     static void close(const std::shared_ptr<Impl>& owner) {
         std::shared_ptr<Flight> flight;
+        std::shared_ptr<Flight> refresh;
         {
             std::lock_guard lock(owner->state_mutex);
             if (owner->closed) {
@@ -2198,9 +2265,11 @@ struct OAuthAuthorizationManager::Impl {
             }
             owner->closed = true;
             flight = owner->flight;
+            refresh = owner->refresh_flight;
         }
         owner->http_client->abort_pending();
         expire_flight(owner->flight_strand, std::move(flight));
+        expire_flight(owner->flight_strand, std::move(refresh));
     }
 };
 

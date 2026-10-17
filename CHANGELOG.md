@@ -244,7 +244,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   requests it issued, leaving the client usable by anyone else sharing it.
 - Challenges that arrive while `OAuthAuthorizationManager` is already
   authorizing wait for that attempt, and each of them reports its outcome,
-  rethrowing the same exception when it fails.
+  rethrowing the same exception when it fails. Refreshes that overlap share
+  one refresh grant in the same way.
 - `scripts/build.py --sanitize --test` runs with LeakSanitizer enabled.
 
 ### Fixed
