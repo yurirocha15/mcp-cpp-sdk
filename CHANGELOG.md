@@ -157,7 +157,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   closed before MCP dispatch; zero is rejected with `std::invalid_argument`.
   The default replaces Beast's own 1 MB limit, which admitted only about
   750 KB of raw content once base64 inflation inside the JSON body is
-  accounted for.
+  accounted for. The body is read up to the cap before the bearer token is
+  checked, and parsed as JSON only after the origin and bearer checks pass.
 - `ClientOptions::on_protocol_error`, invoked when the client discards an
   incoming message instead of dispatching it: a message the peer sent that
   could not be decoded, reported as `g_PARSE_ERROR`, or an exception thrown by

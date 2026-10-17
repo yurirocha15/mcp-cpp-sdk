@@ -270,6 +270,11 @@ Both transports cap the HTTP request body they will read, answering
 :cpp:var:`mcp::constants::g_default_max_request_body_bytes`, 8 MiB, and
 ``set_max_request_body_bytes`` overrides it.
 
+The body is read before the bearer token is checked, so the cap also bounds
+what a client without a valid token can make the server buffer on each
+connection. The body is parsed as JSON only after the origin and bearer checks
+pass.
+
 The default is deliberately well above Boost.Beast's own 1 MB. Binary content
 reaches an MCP server as base64 inside the JSON body — ``ImageContent::data``,
 ``BlobResourceContents::blob`` and ``AudioContent`` have no out-of-band or

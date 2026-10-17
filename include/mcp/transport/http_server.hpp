@@ -256,6 +256,10 @@ class MCP_API HttpServerTransport final : public ITransport {
      * travels as base64 inside the JSON body, so a cap near the size of the raw content rejects
      * payloads that previously worked.
      *
+     * The body is read, up to this cap, before the origin and bearer token are checked, so the cap
+     * is also what one unauthenticated connection can make the transport buffer. The body is parsed
+     * as JSON only after those checks pass.
+     *
      * Configure the cap before listen() or run() starts.
      *
      * @throws std::invalid_argument If `max_bytes` is zero.
