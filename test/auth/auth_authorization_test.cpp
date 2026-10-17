@@ -1499,6 +1499,12 @@ class StallingServer final {
 
     [[nodiscard]] int accepted() const { return accepted_; }
 
+    /// Stop accepting, so a pending accept_and_stall() no longer keeps the io_context running.
+    void close() {
+        boost::system::error_code ignored;
+        (void)acceptor_.close(ignored);
+    }
+
    private:
     asio::ip::tcp::acceptor acceptor_;
     std::optional<asio::ip::tcp::socket> held_socket_;
@@ -3313,6 +3319,249 @@ TEST(AuthTransportCloseTest, CloseWithQueuedPendingRequestsFailsThemPromptlyWith
     EXPECT_EQ(failed, request_count);
 }
 
+// OAuthClientTransport::close() ends the authorization attempt the transport has in flight, but
+// the manager it was built on belongs to the application, and a reconnect builds a new transport
+// over the same one. If closing the transport closed the manager, every later challenge on it
+// would fail with "OAuth authorization manager closed" and the reconnect could never authorize.
+TEST(AuthTransportCloseTest, ANewTransportOverTheSameManagerAuthorizesAfterTheFirstIsClosed) {
+    asio::io_context io_ctx;
+    StallingServer stalling(io_ctx);
+    stalling.accept_and_stall();
+    const auto stalling_base = stalling.base_url();
+
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    // The first transport's challenge names metadata on the stalling server, so its attempt is
+    // still in flight when it is closed. Every later challenge names this server's own metadata.
+    bool stall_discovery = true;
+    int authorized_calls = 0;
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/mcp") {
+            if (request[http::field::authorization] == "Bearer granted-access-token") {
+                ++authorized_calls;
+                return status_response(http::status::accepted);
+            }
+            http::response<http::string_body> challenge{http::status::unauthorized, 11};
+            const auto& metadata_base = stall_discovery ? stalling_base : base;
+            challenge.set(http::field::www_authenticate,
+                          R"(Bearer resource_metadata=")" + metadata_base + R"(/prm")");
+            return challenge;
+        }
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(20), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allowed_origins = {base, stalling_base};
+    policy.allow_plain_http_loopback = true;
+    config.policy = policy;
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    std::vector<std::string> requested_scopes;
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+        io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+    auto first = std::make_shared<mcp::auth::OAuthClientTransport>(
+        std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp"), manager);
+
+    const std::string wire = R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})";
+    bool first_failed = false;
+    bool done = false;
+    bool timed_out = false;
+    std::string second_failure;
+
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error && !done) {
+            timed_out = true;
+            io_ctx.stop();
+        }
+    });
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await first->write_message(wire);
+            } catch (...) {
+                first_failed = true;
+            }
+            // The reconnect: a new transport over the same manager.
+            stall_discovery = false;
+            auto second = std::make_shared<mcp::auth::OAuthClientTransport>(
+                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp"),
+                manager);
+            try {
+                co_await second->write_message(wire);
+            } catch (const std::exception& error) {
+                second_failure = error.what();
+            }
+            second->close();
+            done = true;
+            watchdog.cancel();
+            server.close();
+        },
+        asio::detached);
+
+    asio::steady_timer closer(io_ctx);
+    closer.expires_after(std::chrono::milliseconds(200));
+    closer.async_wait([&](boost::system::error_code) { first->close(); });
+
+    io_ctx.run();
+
+    ASSERT_FALSE(timed_out) << "watchdog: the closed transport or its reconnect never finished";
+    EXPECT_TRUE(first_failed);
+    EXPECT_GE(stalling.accepted(), 1);
+    EXPECT_TRUE(second_failure.empty()) << second_failure;
+    EXPECT_EQ(authorized_calls, 1);
+    // Only the reconnect reached the consent step; the first attempt was still in discovery.
+    EXPECT_EQ(requested_scopes.size(), 1U);
+    EXPECT_EQ(manager->get_access_token(), "granted-access-token");
+}
+
+// The same holds for an OAuthAuthenticator: closing a transport built on it leaves it able to
+// refresh for the next transport.
+TEST(AuthTransportCloseTest, ClosingATransportLeavesItsAuthenticatorRefreshing) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    int token_requests = 0;
+    server.set_handler([&](const http::request<http::string_body>&) {
+        ++token_requests;
+        return json_response(token_document());
+    });
+    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    mcp::auth::TokenResponse stored;
+    stored.access_token = "stale-access-token";
+    stored.token_type = "Bearer";
+    stored.refresh_token = "stale-refresh-token";
+    store->store(base + "/mcp", stored);
+
+    mcp::auth::OAuthConfig config;
+    config.client_id = "test-client";
+    config.token_endpoint = base + "/token";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+
+    auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+    http_client->set_metadata_policy(loopback_policy(server.origin()));
+    auto authenticator =
+        std::make_shared<mcp::auth::OAuthAuthenticator>(store, http_client, config, base + "/mcp");
+    auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(
+        std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp"),
+        authenticator);
+
+    bool refreshed = false;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            transport->close();
+            refreshed = co_await authenticator->try_refresh_token();
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_TRUE(refreshed);
+    EXPECT_EQ(token_requests, 1);
+    EXPECT_EQ(authenticator->get_access_token(), "granted-access-token");
+}
+
+// What a transport's close() does end is the authenticator's refresh already in flight. The next
+// refresh goes out on the network again rather than being refused.
+TEST(AuthTransportCloseTest, ClosingATransportEndsOnlyTheAuthenticatorsRefreshInFlight) {
+    asio::io_context io_ctx;
+    StallingServer stalling(io_ctx);
+    stalling.accept_and_stall();
+    const auto stalling_base = stalling.base_url();
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    mcp::auth::TokenResponse stored;
+    stored.access_token = "stale-access-token";
+    stored.token_type = "Bearer";
+    stored.refresh_token = "stale-refresh-token";
+    store->store(stalling_base + "/mcp", stored);
+
+    mcp::auth::OAuthConfig config;
+    config.client_id = "test-client";
+    config.token_endpoint = stalling_base + "/token";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+
+    auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+    http_client->set_metadata_policy(loopback_policy(stalling_base));
+    auto authenticator = std::make_shared<mcp::auth::OAuthAuthenticator>(store, http_client, config,
+                                                                         stalling_base + "/mcp");
+    auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(
+        std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), stalling_base + "/mcp"),
+        authenticator);
+
+    bool first_refreshed = true;
+    bool second_refreshed = true;
+    bool done = false;
+    bool timed_out = false;
+    int accepted_before_authenticator_close = 0;
+
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error && !done) {
+            timed_out = true;
+            io_ctx.stop();
+        }
+    });
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            first_refreshed = co_await authenticator->try_refresh_token();
+            stalling.accept_and_stall();
+            second_refreshed = co_await authenticator->try_refresh_token();
+            done = true;
+            watchdog.cancel();
+            stalling.close();
+        },
+        asio::detached);
+
+    // The first refresh is parked on the stalled token endpoint when the transport closes. The
+    // second has reached the endpoint by the time the authenticator itself is closed, which is what
+    // ends it.
+    asio::steady_timer closer(io_ctx);
+    closer.expires_after(std::chrono::milliseconds(200));
+    closer.async_wait([&](boost::system::error_code) { transport->close(); });
+    asio::steady_timer authenticator_closer(io_ctx);
+    authenticator_closer.expires_after(std::chrono::milliseconds(600));
+    authenticator_closer.async_wait([&](boost::system::error_code) {
+        accepted_before_authenticator_close = stalling.accepted();
+        authenticator->close();
+    });
+
+    io_ctx.run();
+
+    ASSERT_FALSE(timed_out) << "watchdog: a close() left a refresh parked on the stalled endpoint";
+    EXPECT_FALSE(first_refreshed);
+    EXPECT_FALSE(second_refreshed);
+    EXPECT_EQ(accepted_before_authenticator_close, 2)
+        << "the refresh after the transport closed was refused instead of reaching the network";
+    EXPECT_EQ(authenticator->get_access_token(), "stale-access-token");
+}
+
 namespace {
 
 /// Authorize `manager` against `server`, whose handler must answer the protected-resource metadata,
@@ -3400,6 +3649,97 @@ TEST(AuthAuthorizationManagerTest, ConcurrentRefreshesShareOneRefreshGrant) {
     EXPECT_EQ(completed, refreshers);
     EXPECT_EQ(refreshed, refreshers);
     EXPECT_EQ(refresh_grants, 1);
+    EXPECT_EQ(manager.get_access_token(), "renewed-access-token");
+}
+
+// Cancelling releases a refresh in flight and the refreshes waiting on it, and the next refresh
+// starts a new exchange on a fresh client.
+TEST(AuthAuthorizationManagerTest, CancelReleasesARefreshInFlightAndLeavesRefreshWorking) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    int refresh_grants = 0;
+    server.set_handler(refresh_counting_handler(base, &refresh_grants));
+    // Three requests authorize. The server then stops reading, so the next refresh connects (the
+    // listen backlog accepts it) and waits for a response that never comes.
+    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+
+    ManagerFixture fixture;
+    fixture.config.server_url = base + "/mcp";
+    fixture.config.client_id = "test-client";
+    fixture.config.redirect_uri = "http://127.0.0.1:9999/callback";
+    fixture.config.policy = loopback_policy(server.origin());
+    mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store, fixture.config,
+                                                 echoing_callback(nullptr));
+
+    bool authorized = false;
+    int released = 0;
+    int refreshed_while_stalled = 0;
+    bool refreshed_after_cancel = false;
+    bool done = false;
+    bool timed_out = false;
+    bool stopping = false;
+
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error && !done) {
+            timed_out = true;
+            io_ctx.stop();
+        }
+    });
+
+    const auto stalled_refresh = [&]() -> mcp::Task<void> {
+        if (co_await manager.try_refresh_token()) {
+            ++refreshed_while_stalled;
+        }
+        ++released;
+    };
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            authorized = co_await authorize_against(manager, base);
+            asio::co_spawn(io_ctx, stalled_refresh(), asio::detached);
+            asio::co_spawn(io_ctx, stalled_refresh(), asio::detached);
+        },
+        asio::detached);
+
+    asio::steady_timer canceller(io_ctx);
+    canceller.expires_after(std::chrono::milliseconds(300));
+    canceller.async_wait([&](boost::system::error_code) {
+        manager.cancel_pending();
+        // Serve again, one connection at a time until told to stop. The aborted refresh's
+        // connection is still queued in the backlog and comes first; whether its request can still
+        // be read or not, the loop moves on to the next connection.
+        asio::co_spawn(
+            io_ctx,
+            [&]() -> asio::awaitable<void> {
+                while (!stopping) {
+                    co_await server.serve(1);
+                }
+            },
+            asio::detached);
+        asio::co_spawn(
+            io_ctx,
+            [&]() -> mcp::Task<void> {
+                refreshed_after_cancel = co_await manager.try_refresh_token();
+                done = true;
+                watchdog.cancel();
+                stopping = true;
+                server.close();
+            },
+            asio::detached);
+    });
+
+    io_ctx.run();
+
+    ASSERT_FALSE(timed_out) << "watchdog: cancel_pending() left a refresh parked";
+    ASSERT_TRUE(authorized);
+    EXPECT_EQ(released, 2);
+    EXPECT_EQ(refreshed_while_stalled, 0);
+    EXPECT_TRUE(refreshed_after_cancel);
+    EXPECT_GE(refresh_grants, 1);
     EXPECT_EQ(manager.get_access_token(), "renewed-access-token");
 }
 

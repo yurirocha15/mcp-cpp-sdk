@@ -645,11 +645,23 @@ class Authenticator {
     }
 
     /**
-     * @brief Cancel any authorization work this authenticator has in flight and release parked
-     *        callers with an error.
+     * @brief Cancel the authorization work this authenticator has in flight and release parked
+     *        callers with an error, leaving it usable for later requests.
      *
-     * @details Called once, synchronously, by the owning transport's close(). An implementation that
-     * holds no cancellable network state may leave the default no-op, which keeps existing
+     * @details Called synchronously by OAuthClientTransport::close(). An authenticator can be shared
+     * by several transports and can outlive any of them, so this ends only the work already
+     * started; the next refresh or authorization runs as usual. An implementation that holds no
+     * cancellable network state may leave the default no-op, which keeps existing Authenticator
+     * implementations source-compatible. Safe to call more than once and from any thread.
+     */
+    virtual void cancel_pending() {}
+
+    /**
+     * @brief Cancel any authorization work this authenticator has in flight, release parked
+     *        callers with an error, and refuse further work.
+     *
+     * @details The owner's permanent shutdown. No transport calls it; the application does, once
+     * nothing will use the authenticator again. The default is a no-op, which keeps existing
      * Authenticator implementations source-compatible. Safe to call more than once.
      */
     virtual void close() {}
@@ -678,8 +690,12 @@ class MCP_API OAuthAuthenticator : public Authenticator {
     /// @param token The token response to persist via the configured TokenStore.
     void store_token(TokenResponse token);
 
-    /// @brief Aborts this authenticator's in-flight token-refresh HTTP exchanges. Other holders of
-    /// the same OAuthHttpClient are unaffected.
+    /// @brief Aborts this authenticator's in-flight token-refresh HTTP exchanges. Later refreshes
+    /// run as usual. Other holders of the same OAuthHttpClient are unaffected.
+    void cancel_pending() override;
+
+    /// @brief Aborts this authenticator's in-flight token-refresh HTTP exchanges and refuses later
+    /// ones. Other holders of the same OAuthHttpClient are unaffected.
     void close() override;
 
    private:
@@ -804,6 +820,22 @@ class MCP_API OAuthAuthorizationManager : public Authenticator {
     [[nodiscard]] std::optional<OAuthClientInformation> last_client_identity() const;
 
     /**
+     * @brief Abort the authorization attempt and refresh in flight and release their followers with
+     *        an error, leaving the manager usable.
+     *
+     * @details Aborts the in-progress discovery, registration, or token-exchange HTTP exchange and
+     * wakes every follower coalesced onto it, which then fails. The next challenge or refresh starts
+     * a new attempt on a fresh HTTP client, with its discovery cache empty. Called by
+     * OAuthClientTransport::close(). Safe to call from any thread. A no-op once the manager is
+     * closed.
+     *
+     * @note As with close(), a leader parked inside the application's own authorization callback is
+     * not reachable from here. It stays parked until that callback returns, then fails at its next
+     * network call.
+     */
+    void cancel_pending() override;
+
+    /**
      * @brief Abort this manager's HTTP work, release parked followers with an error, and refuse
      *        further authorization attempts.
      *
@@ -893,7 +925,10 @@ class MCP_API OAuthClientTransport final : public ITransport {
     Task<void> write_message(std::string_view message) override;
 
     /**
-     * @brief Close the wrapped transport.
+     * @brief Cancel the authenticator's in-flight work and close the wrapped transport.
+     *
+     * @details Calls Authenticator::cancel_pending(), not Authenticator::close(): the authenticator
+     * stays usable, so another transport built on it can still refresh and authorize.
      */
     void close() override;
 

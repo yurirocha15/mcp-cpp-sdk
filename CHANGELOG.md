@@ -237,8 +237,13 @@ Versioning; a `0.x` version is a stable release unless its version has an
   possible or the renewed token is refused too, renewing at most once and
   authorizing for a `401` at most once per request; a `403` whose challenge
   carries `error="insufficient_scope"` goes straight to that flow. Previously an authentication failure got one refresh
-  and one retry. `Authenticator` gains `try_handle_challenge()` and `close()`,
-  which changes its layout.
+  and one retry. `Authenticator` gains `try_handle_challenge()`,
+  `cancel_pending()` and `close()`, which changes its layout.
+- Closing an `OAuthClientTransport` cancels the authorization work its
+  authenticator has in flight, through `cancel_pending()`, and leaves the
+  authenticator usable, so a new transport over the same `OAuthAuthenticator`
+  or `OAuthAuthorizationManager` can still refresh and authorize. Calling
+  `close()` on the authenticator itself is permanent.
 - `OAuthAuthenticator` rejects a null `OAuthHttpClient` with
   `std::invalid_argument` when constructed, and its `close()` ends only the
   requests it issued, leaving the client usable by anyone else sharing it.

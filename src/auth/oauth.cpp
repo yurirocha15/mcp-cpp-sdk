@@ -1401,6 +1401,8 @@ struct OAuthAuthenticator::Impl {
         std::shared_ptr<Impl> owner;
         TokenResponse stored_token;
         std::optional<TokenResponse> new_token;
+        /// The scope current when the refresh started; cancel_pending() aborts it.
+        std::optional<OAuthHttpClientScope> scope;
     };
 
     Impl(std::shared_ptr<TokenStore> store, std::shared_ptr<OAuthHttpClient> client,
@@ -1419,15 +1421,43 @@ struct OAuthAuthenticator::Impl {
             return return_false();
         }
 
-        auto operation = std::make_shared<RefreshOperation>();
-        operation->owner = std::move(owner);
-        operation->stored_token = std::move(*stored);
+        auto operation = std::make_shared<RefreshOperation>(
+            RefreshOperation{std::move(owner), std::move(*stored), std::nullopt, std::nullopt});
+        {
+            std::lock_guard lock(operation->owner->scope_mutex);
+            operation->scope = operation->owner->scope;
+        }
         return run_refresh(std::move(operation));
+    }
+
+    /// Abort the refreshes running now and issue later ones through a fresh scope.
+    void cancel_pending() {
+        std::optional<OAuthHttpClientScope> cancelled;
+        {
+            std::lock_guard lock(scope_mutex);
+            if (closed) {
+                return;
+            }
+            cancelled = std::exchange(scope, oauth_client->make_scope());
+        }
+        cancelled->abort();
+    }
+
+    /// Abort this authenticator's scope for good. The scope is not replaced, so every later
+    /// refresh is refused.
+    void close() {
+        std::optional<OAuthHttpClientScope> current;
+        {
+            std::lock_guard lock(scope_mutex);
+            closed = true;
+            current = scope;
+        }
+        current->abort();
     }
 
     static Task<bool> run_refresh(std::shared_ptr<RefreshOperation> operation) {
         try {
-            operation->new_token = co_await operation->owner->scope.refresh_token(
+            operation->new_token = co_await operation->scope->refresh_token(
                 operation->owner->config, *operation->stored_token.refresh_token);
             if (!operation->new_token->refresh_token) {
                 operation->new_token->refresh_token = operation->stored_token.refresh_token;
@@ -1446,8 +1476,11 @@ struct OAuthAuthenticator::Impl {
     std::shared_ptr<OAuthHttpClient> oauth_client;
     /// This authenticator's own slice of the client. The client is supplied by the application and
     /// may be shared with other authenticators for other servers, so close() must end this
-    /// authenticator's work without ending theirs.
+    /// authenticator's work without ending theirs. cancel_pending() swaps in a fresh one, so the
+    /// member is read and replaced under scope_mutex.
+    mutable std::mutex scope_mutex;
     OAuthHttpClientScope scope;
+    bool closed{false};
     OAuthConfig config;
     std::string server_url;
 };
@@ -1487,7 +1520,9 @@ void OAuthAuthenticator::store_token(TokenResponse token) {
 /// application supplied and may share. Two authenticators for two servers sharing one client meant
 /// closing either one silently disabled the other: run_refresh() reports a failed refresh as a
 /// plain `false`, so the survivor got no error, only tokens that quietly stopped renewing.
-void OAuthAuthenticator::close() { impl_->scope.abort(); }
+void OAuthAuthenticator::close() { impl_->close(); }
+
+void OAuthAuthenticator::cancel_pending() { impl_->cancel_pending(); }
 
 namespace {
 
@@ -1601,9 +1636,13 @@ struct OAuthAuthorizationManager::Impl {
         /// Never waited on to expire naturally: it parks at time_point::max() and is pushed into
         /// the past to release the followers. See expire_flight().
         net::steady_timer timer;
-        /// Set when the leader has recorded its result below. A follower woken by close() rather
-        /// than by its leader finishing sees this false.
+        /// Set when the leader has recorded its result below. A follower woken by close() or
+        /// cancel() rather than by its leader finishing sees this false.
         bool finished{false};
+        /// Set by cancel(). The leader's HTTP client is aborted, so it fails at its next network
+        /// call, and its followers are released instead of waiting for it: a challenge's with an
+        /// error, a refresh's reporting that no token was renewed.
+        bool cancelled{false};
         bool succeeded{false};
         /// The leader's own exception, rethrown by every follower so they all report the same
         /// reason the leader does. Null when the flight finished without throwing.
@@ -1612,6 +1651,11 @@ struct OAuthAuthorizationManager::Impl {
 
     struct ChallengeOperation {
         std::shared_ptr<Impl> owner;
+        /// The flight this operation leads, and the client it was started on. cancel() replaces
+        /// the manager's client, so the operation keeps its own rather than reading the member.
+        std::shared_ptr<Flight> flight;
+        std::shared_ptr<OAuthHttpClient> http_client;
+        std::shared_ptr<OAuthDiscoveryClient> discovery;
         BearerChallenge challenge;
         std::optional<ProtectedResourceMetadata> resource_metadata;
         std::optional<AuthServerMetadata> auth_metadata;
@@ -1628,6 +1672,7 @@ struct OAuthAuthorizationManager::Impl {
     struct RefreshOperation {
         std::shared_ptr<Impl> owner;
         std::shared_ptr<Flight> flight;
+        std::shared_ptr<OAuthHttpClient> http_client;
         OAuthConfig token_config;
         TokenResponse stored_token;
         std::optional<TokenResponse> new_token;
@@ -1636,8 +1681,8 @@ struct OAuthAuthorizationManager::Impl {
     Impl(const net::any_io_executor& executor, std::shared_ptr<TokenStore> store,
          OAuthAuthorizationConfig authorization_config, AuthorizationCallback authorization_callback)
         : token_store(std::move(store)),
-          http_client(std::make_shared<OAuthHttpClient>(executor)),
           flight_strand(net::make_strand(executor)),
+          executor(executor),
           config(std::move(authorization_config)),
           callback(std::move(authorization_callback)) {
         // A bare `client_id` is the shorthand form of injected credentials, so the two spellings
@@ -1656,12 +1701,19 @@ struct OAuthAuthorizationManager::Impl {
         if (config.client_identity.metadata.redirect_uris.empty() && !config.redirect_uri.empty()) {
             config.client_identity.metadata.redirect_uris.push_back(config.redirect_uri);
         }
+        http_client = make_client();
+        discovery = std::make_shared<OAuthDiscoveryClient>(http_client);
+    }
+
+    /// A client for this manager's outbound requests, under its policy and resolver.
+    [[nodiscard]] std::shared_ptr<OAuthHttpClient> make_client() const {
+        auto client = std::make_shared<OAuthHttpClient>(executor);
         // One call rather than two, even here where the client has not yet issued a request: the
         // pair method is what a reader should find at a site that installs both. An empty
         // `host_resolver` leaves this client on the executor's system resolver, which is exactly
         // what the guard that used to skip the second call achieved.
-        http_client->configure(config.policy, config.host_resolver);
-        discovery = std::make_shared<OAuthDiscoveryClient>(http_client);
+        client->configure(config.policy, config.host_resolver);
+        return client;
     }
 
     static Task<bool> return_false() { co_return false; }
@@ -1791,7 +1843,7 @@ struct OAuthAuthorizationManager::Impl {
             }
         }
 
-        operation->registration_response = co_await owner.http_client->post_json(
+        operation->registration_response = co_await operation->http_client->post_json(
             *operation->facts.registration_endpoint,
             build_registration_request(owner.config.client_identity.metadata, operation->facts));
 
@@ -1896,10 +1948,10 @@ struct OAuthAuthorizationManager::Impl {
         };
 
         // The challenge's own metadata URL wins over the well-known fallback order.
-        operation->resource_metadata = co_await owner.discovery->discover_protected_resource(
+        operation->resource_metadata = co_await operation->discovery->discover_protected_resource(
             owner.config.server_url, operation->challenge.resource_metadata, std::move(accept));
 
-        operation->auth_metadata = co_await owner.discovery->discover_auth_server(
+        operation->auth_metadata = co_await operation->discovery->discover_auth_server(
             operation->resource_metadata->authorization_servers.front());
         // RFC 8414 §3.3: the issuer a metadata document claims MUST be the location it was fetched
         // from, compared byte-exact. Normalizing here would re-open the AS mix-up this closes.
@@ -1947,7 +1999,7 @@ struct OAuthAuthorizationManager::Impl {
             throw std::runtime_error("Authorization response rejected: " + validation.message);
         }
 
-        operation->token = co_await owner.http_client->exchange_code(
+        operation->token = co_await operation->http_client->exchange_code(
             operation->token_config, *operation->response.code, operation->request.code_verifier);
         {
             std::lock_guard lock(owner.state_mutex);
@@ -2024,12 +2076,15 @@ struct OAuthAuthorizationManager::Impl {
             if (owner->closed) {
                 throw std::runtime_error("OAuth authorization manager closed");
             }
+            if (flight->cancelled && !flight->finished) {
+                throw std::runtime_error("OAuth authorization attempt was cancelled");
+            }
             // Read off the flight this follower actually waited on. Reading a manager-wide field
             // here is what let a late waker report a different attempt's outcome.
             //
-            // `finished` is a guard rather than a case that arises today: the only two things that
-            // expire this timer are the leader recording its result and close(), and the closed
-            // check above already took the second. It is here so that a third wake-up added later
+            // `finished` is a guard rather than a case that arises today: the only things that
+            // expire this timer are the leader recording its result, close() and cancel(), and the
+            // checks above already took the other two. It is here so that a wake-up added later
             // cannot reintroduce the failure mode this whole channel exists to remove -- a follower
             // reporting a flat "not authorized" that is indistinguishable from a real refusal.
             if (!flight->finished) {
@@ -2058,6 +2113,7 @@ struct OAuthAuthorizationManager::Impl {
 
     static Task<bool> run_leading_challenge(std::shared_ptr<ChallengeOperation> operation) {
         auto owner = operation->owner;
+        auto finished = operation->flight;
         bool succeeded = false;
         std::exception_ptr failure;
         try {
@@ -2066,11 +2122,13 @@ struct OAuthAuthorizationManager::Impl {
             failure = std::current_exception();
         }
 
-        std::shared_ptr<Flight> finished;
         {
             std::lock_guard lock(owner->state_mutex);
-            finished = std::move(owner->flight);
-            owner->flight.reset();
+            // After cancel() the manager may already be running a newer flight; that one is not
+            // this leader's to end.
+            if (owner->flight == finished) {
+                owner->flight.reset();
+            }
             if (finished) {
                 // Recorded on the attempt itself, before any follower is woken, so each follower
                 // reads the result of the flight it joined and gets the leader's own reason for it
@@ -2097,6 +2155,7 @@ struct OAuthAuthorizationManager::Impl {
         }
 
         std::shared_ptr<Flight> joined;
+        auto operation = std::make_shared<ChallengeOperation>();
         {
             std::lock_guard lock(owner->state_mutex);
             // Checked in the same critical section that reads or creates `flight`: close() also
@@ -2111,13 +2170,15 @@ struct OAuthAuthorizationManager::Impl {
                 joined = owner->flight;
             } else {
                 owner->flight = std::make_shared<Flight>(owner->flight_strand);
+                operation->flight = owner->flight;
+                operation->http_client = owner->http_client;
+                operation->discovery = owner->discovery;
             }
         }
         if (joined) {
             return await_in_flight(std::move(owner), std::move(joined));
         }
 
-        auto operation = std::make_shared<ChallengeOperation>();
         operation->owner = std::move(owner);
         operation->challenge = std::move(*challenge);
         return run_leading_challenge(std::move(operation));
@@ -2145,6 +2206,7 @@ struct OAuthAuthorizationManager::Impl {
             } else {
                 owner->refresh_flight = std::make_shared<Flight>(owner->flight_strand);
                 operation->flight = owner->refresh_flight;
+                operation->http_client = owner->http_client;
                 operation->token_config = *owner->token_config;
             }
         }
@@ -2182,8 +2244,8 @@ struct OAuthAuthorizationManager::Impl {
         co_return succeeded;
     }
 
-    /// A refresh that joined another's reports that one's outcome. Woken without one, by close(),
-    /// it reports that no token was renewed.
+    /// A refresh that joined another's reports that one's outcome. Woken without one, by close()
+    /// or cancel(), it reports that no token was renewed.
     static Task<bool> await_refresh(std::shared_ptr<Impl> owner, std::shared_ptr<Flight> flight) {
         // Initiated on flight_strand and resumed on the caller's executor, as in await_in_flight().
         co_await net::dispatch(net::bind_executor(owner->flight_strand, net::use_awaitable));
@@ -2207,7 +2269,7 @@ struct OAuthAuthorizationManager::Impl {
 
     static Task<bool> run_refresh(std::shared_ptr<RefreshOperation> operation) {
         try {
-            operation->new_token = co_await operation->owner->http_client->refresh_token(
+            operation->new_token = co_await operation->http_client->refresh_token(
                 operation->token_config, *operation->stored_token.refresh_token);
             if (!operation->new_token->refresh_token) {
                 operation->new_token->refresh_token = operation->stored_token.refresh_token;
@@ -2231,6 +2293,7 @@ struct OAuthAuthorizationManager::Impl {
     /// strand shared by both of them keeps them apart on a multi-threaded io_context. The timer is
     /// constructed on this strand as well, so its completion handlers run here too.
     net::strand<net::any_io_executor> flight_strand;
+    net::any_io_executor executor;
     OAuthAuthorizationConfig config;
     AuthorizationCallback callback;
     mutable std::mutex state_mutex;
@@ -2258,6 +2321,7 @@ struct OAuthAuthorizationManager::Impl {
     static void close(const std::shared_ptr<Impl>& owner) {
         std::shared_ptr<Flight> flight;
         std::shared_ptr<Flight> refresh;
+        std::shared_ptr<OAuthHttpClient> client;
         {
             std::lock_guard lock(owner->state_mutex);
             if (owner->closed) {
@@ -2266,8 +2330,40 @@ struct OAuthAuthorizationManager::Impl {
             owner->closed = true;
             flight = owner->flight;
             refresh = owner->refresh_flight;
+            client = owner->http_client;
         }
-        owner->http_client->abort_pending();
+        client->abort_pending();
+        expire_flight(owner->flight_strand, std::move(flight));
+        expire_flight(owner->flight_strand, std::move(refresh));
+    }
+
+    /// End the authorization work in flight without closing the manager.
+    ///
+    /// The running flight and refresh are marked cancelled and their waiters released with an
+    /// error. Their HTTP client is aborted, which stops the leader at its next network call, and is
+    /// replaced with a new one, so later requests authorize and refresh as before. The discovery
+    /// cache goes with the old client.
+    static void cancel(const std::shared_ptr<Impl>& owner) {
+        std::shared_ptr<Flight> flight;
+        std::shared_ptr<Flight> refresh;
+        std::shared_ptr<OAuthHttpClient> client;
+        {
+            std::lock_guard lock(owner->state_mutex);
+            if (owner->closed || (!owner->flight && !owner->refresh_flight)) {
+                return;
+            }
+            flight = std::exchange(owner->flight, nullptr);
+            refresh = std::exchange(owner->refresh_flight, nullptr);
+            if (flight) {
+                flight->cancelled = true;
+            }
+            if (refresh) {
+                refresh->cancelled = true;
+            }
+            client = std::exchange(owner->http_client, owner->make_client());
+            owner->discovery = std::make_shared<OAuthDiscoveryClient>(owner->http_client);
+        }
+        client->abort_pending();
         expire_flight(owner->flight_strand, std::move(flight));
         expire_flight(owner->flight_strand, std::move(refresh));
     }
@@ -2305,6 +2401,8 @@ Task<bool> OAuthAuthorizationManager::try_handle_challenge(const std::string& ww
 }
 
 void OAuthAuthorizationManager::close() { Impl::close(impl_); }
+
+void OAuthAuthorizationManager::cancel_pending() { Impl::cancel(impl_); }
 
 std::optional<AuthorizationRequest> OAuthAuthorizationManager::last_authorization_request() const {
     std::lock_guard lock(impl_->state_mutex);
@@ -2713,8 +2811,9 @@ void OAuthClientTransport::close() {
     // Releases anything the authenticator has parked -- an in-flight discovery/token exchange, or a
     // follower waiting on a single-flight timer -- before the inner transport is torn down, so a
     // write() still working its way through the authorization retry loop fails promptly instead of
-    // outliving this call.
-    impl_->authenticator->close();
+    // outliving this call. Only that work is cancelled: the authenticator can be shared with other
+    // transports and outlive this one, so closing it is left to its owner.
+    impl_->authenticator->cancel_pending();
     impl_->inner->close();
 }
 
