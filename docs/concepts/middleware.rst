@@ -10,8 +10,8 @@ Middleware functions sit between the server's request dispatcher and the final h
 
 - Inspect and modify incoming request parameters.
 - Perform operations before and after the handler executes.
-- Short-circuit the request by returning a result or error before the handler is even called.
-- Catch and handle exceptions from inner layers.
+- Short-circuit the request by returning a result, or refuse it by throwing, before the handler is even called.
+- Catch exceptions thrown by inner middleware and by resource and prompt handlers.
 - Inject additional context or metadata.
 
 Registering Middleware
@@ -62,7 +62,7 @@ A middleware can choose not to call ``next()``. This is known as short-circuitin
 
 When a middleware short-circuits, the execution chain is halted. Control immediately passes back to the previous middleware in the chain (if any) or back to the server's dispatcher.
 
-In the example below, ``Middleware C`` checks for a "block" flag and returns a custom error if it's present:
+In the example below, ``Middleware C`` checks for a "block" flag and throws if it's present, so the client receives a JSON-RPC ``Internal error (-32603)`` carrying the exception's message:
 
 .. literalinclude:: ../../examples/features/middleware.cpp
    :language: cpp
@@ -80,7 +80,7 @@ Common patterns include:
 - **Authentication**: A middleware that validates API keys, session tokens, or OAuth tokens before allowing access to sensitive tools. This ensures that only authorized clients can trigger certain actions.
 - **Rate Limiting**: A middleware that tracks request frequency from clients and returns a "Too Many Requests" error if they exceed their quota.
 - **Validation**: A middleware that ensures request parameters conform to additional business rules beyond what JSON Schema can express (e.g., checking if a file exists or if a value is within a dynamic range).
-- **Error Mapping**: A middleware that catches low-level exceptions or library-specific errors and transforms them into user-friendly MCP errors.
+- **Error Mapping**: A middleware that catches exceptions from resource and prompt handlers, or from inner middleware, and rethrows them with a clearer message. A tool handler's exception never reaches middleware; it arrives as an ``isError`` result.
 - **Tracing**: A middleware that injects tracing headers or spans into the context to enable distributed tracing across multiple services.
 
 Common Examples
@@ -105,12 +105,18 @@ security boundary, see :doc:`oauth`.
 An exception thrown by middleware is answered as a JSON-RPC
 ``Internal error (-32603)`` for every request kind, ``tools/call`` included:
 middleware decides whether a call may proceed at all, which is a protocol-level
-answer rather than a tool outcome. A middleware that wants to refuse a tool
-call with a tool error instead can return ``make_tool_error_result(...)``
-without calling ``next()``; a complete ``CallToolResult`` is passed through
-unchanged. The bundled ``make_auth_middleware()`` answers a refused
-``tools/call`` with a tool error result and a refused ``resources/read`` or
-``prompts/get`` with ``-32603``.
+answer rather than a tool outcome.
+
+Throw to refuse a request. Middleware registered with ``server.use()`` wraps
+tool calls, resource reads and prompt requests alike, and ``Context`` does not
+say which kind it is handling. A ``CallToolResult`` returned without calling
+``next()``, such as ``make_tool_error_result(...)``, is passed through
+unchanged, but only ``tools/call`` expects that shape: a ``resources/read`` or
+``prompts/get`` would send it to the client as a successful result. The bundled
+``make_auth_middleware()`` answers a refused ``tools/call`` with a tool error
+result and a refused ``resources/read`` or ``prompts/get`` with ``-32603``; it
+tells the two apart through a type internal to the SDK, which custom middleware
+cannot use.
 
 Middleware runs outside the tool handler's exception guard, so a tool handler's
 exception never reaches it: by the time ``next()`` returns, the exception has
@@ -136,7 +142,7 @@ Best Practices
 
 - **Keep it focused**: Each middleware should handle exactly one concern. This makes your code easier to test, debug, and reuse across different servers.
 - **Always co_await next**: Unless you are explicitly short-circuiting, ensure you ``co_await next(ctx, params)`` to maintain the execution chain. Forgetting to call or await ``next`` will cause the request to hang or terminate prematurely.
-- **Handle exceptions**: If a middleware performs risky operations (like database queries or network calls), catch their failures inside the middleware. An exception that leaves a middleware is answered as ``-32603``. Wrapping ``next()`` in a try-catch sees resource and prompt handler exceptions, but not tool handler exceptions, which arrive as ``isError`` results.
+- **Handle exceptions**: If a middleware performs risky operations (like database queries or network calls), catch their failures inside the middleware. An exception that leaves a middleware is answered as ``-32603``. Wrapping ``next()`` in a try-catch sees exceptions from inner middleware, including a refusal from ``make_auth_middleware()``, and from resource and prompt handlers, but not tool handler exceptions, which arrive as ``isError`` results.
 - **Mind the order**: Register global concerns (like logging or tracing) first, and more specific concerns (like tool-specific validation or authentication) later. Remember that the first registered middleware is the outermost.
 - **Use the Context**: Leverage the ``ctx`` object for logging information relevant to the middleware's task. This helps in auditing and troubleshooting request flows in production environments.
 - **Avoid Heavy lifting**: Middleware should be relatively lightweight. If a middleware needs to perform a very expensive operation, consider if it should be part of the tool handler itself or if it can be optimized with caching.
