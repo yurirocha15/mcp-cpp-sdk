@@ -415,6 +415,16 @@ void Server::register_tool(const Tool& tool, const std::string& name, TypeErased
     impl_->tool_handlers.emplace(name, Impl::ToolRegistration{std::move(handler), result_mode});
 }
 
+void Server::register_tool(Tool&& tool, TypeErasedHandler handler, detail::ToolResultMode result_mode) {
+    if (impl_->tool_handlers.contains(tool.name)) {
+        throw std::invalid_argument("Duplicate tool registration: " + tool.name);
+    }
+    auto name = tool.name;
+    impl_->tools.push_back(std::move(tool));
+    impl_->tool_handlers.emplace(std::move(name),
+                                 Impl::ToolRegistration{std::move(handler), result_mode});
+}
+
 void Server::register_resource(const Resource& resource, TypeErasedHandler handler) {
     auto uri = resource.uri;
     if (impl_->resource_handlers.contains(uri)) {

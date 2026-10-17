@@ -177,7 +177,8 @@ class MCP_API Server {
         constexpr auto result_mode = std::same_as<Out, CallToolResult>
                                          ? detail::ToolResultMode::eValidated
                                          : detail::ToolResultMode::eNormalize;
-        register_tool(tool, name, detail::wrap_handler<In, Out>(std::move(async_handler)), result_mode);
+        register_tool(std::move(tool), detail::wrap_handler<In, Out>(std::move(async_handler)),
+                      result_mode);
     }
 
     /**
@@ -198,7 +199,8 @@ class MCP_API Server {
         constexpr auto result_mode = std::same_as<Out, CallToolResult>
                                          ? detail::ToolResultMode::eValidated
                                          : detail::ToolResultMode::eNormalize;
-        register_tool(tool, name, detail::wrap_handler<In, Out>(std::move(async_handler)), result_mode);
+        register_tool(std::move(tool), detail::wrap_handler<In, Out>(std::move(async_handler)),
+                      result_mode);
     }
 
     /**
@@ -479,6 +481,7 @@ class MCP_API Server {
     // Non-template registration helpers called by the template add_* methods above.
     void register_tool(const Tool& tool, const std::string& name, TypeErasedHandler handler,
                        detail::ToolResultMode result_mode);
+    void register_tool(Tool&& tool, TypeErasedHandler handler, detail::ToolResultMode result_mode);
     void register_resource(const Resource& resource, TypeErasedHandler handler);
     void register_resource_template(const ResourceTemplate& tmpl, TypeErasedHandler handler);
     void register_prompt(const Prompt& prompt, TypeErasedHandler handler);
