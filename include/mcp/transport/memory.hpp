@@ -18,7 +18,8 @@ namespace mcp {
 
 namespace detail {
 struct MemoryTransportState;
-}
+struct MemoryTransportAccess;
+}  // namespace detail
 
 /**
  * @brief In-memory transport implementation for testing.
@@ -107,6 +108,8 @@ class MCP_API MemoryTransport final : public ITransport {
     void set_peer(const std::shared_ptr<MemoryTransport>& peer);
 
    private:
+    friend struct detail::MemoryTransportAccess;
+
     std::shared_ptr<detail::MemoryTransportState> state_;
 };
 

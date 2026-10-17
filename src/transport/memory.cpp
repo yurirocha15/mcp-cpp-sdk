@@ -1,3 +1,5 @@
+#include "../detail/memory_transport_read.hpp"
+
 #include <mcp/transport/memory.hpp>
 
 #include <boost/asio/co_spawn.hpp>
@@ -86,9 +88,11 @@ struct MemoryTransportState {
         return nlohmann::json::parse(std::get<std::string>(message));
     }
 
-    static Task<Message> next_message(std::shared_ptr<MemoryTransportState> state) {
+    /// @return The next message, or std::nullopt once the transport is closed.
+    static Task<std::optional<Message>> next_message_or_closed(
+        std::shared_ptr<MemoryTransportState> state) {
         if (state->closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("transport closed");
+            co_return std::nullopt;
         }
         if (!state->incoming.empty()) {
             auto message = std::move(state->incoming.front());
@@ -108,9 +112,17 @@ struct MemoryTransportState {
         }
 
         if (state->closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("transport closed");
+            co_return std::nullopt;
         }
         co_return std::move(*waiter->message);
+    }
+
+    static Task<Message> next_message(std::shared_ptr<MemoryTransportState> state) {
+        auto message = co_await next_message_or_closed(std::move(state));
+        if (!message) {
+            throw std::runtime_error("transport closed");
+        }
+        co_return std::move(*message);
     }
 
     void deliver_message(Message message) {
@@ -179,7 +191,39 @@ Task<nlohmann::json> read_json(std::shared_ptr<detail::MemoryTransportState> sta
         co_await detail::MemoryTransportState::next_message(std::move(state)));
 }
 
+Task<std::optional<std::string>> read_message_until_closed(
+    std::shared_ptr<detail::MemoryTransportState> state) {
+    auto message = co_await detail::MemoryTransportState::next_message_or_closed(std::move(state));
+    if (!message) {
+        co_return std::nullopt;
+    }
+    co_return detail::MemoryTransportState::as_string(std::move(*message));
+}
+
+Task<std::optional<nlohmann::json>> read_json_until_closed(
+    std::shared_ptr<detail::MemoryTransportState> state) {
+    auto message = co_await detail::MemoryTransportState::next_message_or_closed(std::move(state));
+    if (!message) {
+        co_return std::nullopt;
+    }
+    co_return detail::MemoryTransportState::as_json(std::move(*message));
+}
+
 }  // namespace
+
+Task<std::optional<std::string>> detail::MemoryTransportAccess::read_message_until_closed(
+    MemoryTransport& transport) {
+    auto state = transport.state_;
+    return boost::asio::co_spawn(state->strand, mcp::read_message_until_closed(state),
+                                 boost::asio::use_awaitable);
+}
+
+Task<std::optional<nlohmann::json>> detail::MemoryTransportAccess::read_json_until_closed(
+    MemoryTransport& transport) {
+    auto state = transport.state_;
+    return boost::asio::co_spawn(state->strand, mcp::read_json_until_closed(state),
+                                 boost::asio::use_awaitable);
+}
 
 MemoryTransport::MemoryTransport(const boost::asio::any_io_executor& executor)
     : state_(std::make_shared<detail::MemoryTransportState>(executor)) {}

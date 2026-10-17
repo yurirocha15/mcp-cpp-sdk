@@ -1,4 +1,5 @@
 #include "../detail/jsonrpc_envelope.hpp"
+#include "../detail/memory_transport_read.hpp"
 
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/secure_random.hpp>
@@ -860,11 +861,19 @@ struct StreamableHttpSessionManager::Impl {
         std::shared_ptr<std::atomic<bool>> json_only_mode) {
         try {
             for (;;) {
-                auto message = co_await session->client_transport->read_message();
-                dispatch_response_to_pending(session.get(), std::move(message),
+                auto message = co_await detail::MemoryTransportAccess::read_message_until_closed(
+                    *session->client_transport);
+                if (!message) {
+                    break;
+                }
+                dispatch_response_to_pending(session.get(), std::move(*message),
                                              json_only_mode->load(std::memory_order_acquire));
             }
         } catch (...) {
+            // Any other failure ends the loop too, and releases the waiters below.
+            (void)0;
+        }
+        {
             std::vector<std::shared_ptr<boost::asio::steady_timer>> timers;
             {
                 std::lock_guard lock(session->response_mutex);

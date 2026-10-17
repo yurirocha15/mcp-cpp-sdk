@@ -1,3 +1,5 @@
+#include "../detail/memory_transport_read.hpp"
+
 #include <mcp/detail/serialized_transport_writer.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_server.hpp>
@@ -611,7 +613,12 @@ Task<void> Server::run_session(std::shared_ptr<Session> session) {
             bool parse_failed = false;
             try {
                 if (session->memory_transport) {
-                    json_msg = co_await session->memory_transport->read_json();
+                    auto message = co_await detail::MemoryTransportAccess::read_json_until_closed(
+                        *session->memory_transport);
+                    if (!message) {
+                        break;
+                    }
+                    json_msg = std::move(*message);
                 } else {
                     auto raw = co_await session->transport->read_message();
                     json_msg = nlohmann::json::parse(raw);
