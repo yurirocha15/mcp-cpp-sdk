@@ -156,6 +156,8 @@ def main() -> None:
         "A green runner status means the checked-in expected-failure baseline did not drift;",
         "it does not mean that an MCP SDK tier has been achieved. The pass rate follows the",
         "tier-check convention: warnings do not fail a scenario, while missing evidence does.",
+        "The runner status comes from the runner's baseline check, which also fails a scenario",
+        "on a warning.",
         "",
         "| Suite | Passed scenarios | Total scenarios | Pass rate | Runner status |",
         "|---|---:|---:|---:|---:|",
