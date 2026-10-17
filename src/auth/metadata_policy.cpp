@@ -310,10 +310,35 @@ bool mapped_v4(const net::ip::address_v6& address, net::ip::address_v4& mapped) 
     return true;
 }
 
+/// Recognize the NAT64 well-known prefix (64:ff9b::/96) and 6to4 (2002::/16), which embed an IPv4
+/// address that a translator or relay delivers to, so a private IPv4 target cannot hide in either.
+bool embedded_v4(const net::ip::address_v6& address, net::ip::address_v4& embedded) {
+    const auto bytes = address.to_bytes();
+    constexpr std::array<unsigned char, 12> nat64_prefix{0x00, 0x64, 0xFF, 0x9B, 0, 0,
+                                                         0,    0,    0,    0,    0, 0};
+    if (std::equal(nat64_prefix.begin(), nat64_prefix.end(), bytes.begin())) {
+        embedded = net::ip::address_v4(
+            net::ip::address_v4::bytes_type{bytes[12], bytes[13], bytes[14], bytes[15]});
+        return true;
+    }
+    if (bytes[0] == 0x20 && bytes[1] == 0x02) {
+        embedded = net::ip::address_v4(
+            net::ip::address_v4::bytes_type{bytes[2], bytes[3], bytes[4], bytes[5]});
+        return true;
+    }
+    return false;
+}
+
 MetadataUrlDecision classify_v6(const MetadataFetchPolicy& policy, const net::ip::address_v6& address) {
     net::ip::address_v4 mapped;
     if (mapped_v4(address, mapped)) {
         return classify_v4(policy, mapped);
+    }
+    if (embedded_v4(address, mapped)) {
+        // Only a real loopback address may use the loopback opt-out; an embedded one is refused.
+        auto strict = policy;
+        strict.allow_plain_http_loopback = false;
+        return classify_v4(strict, mapped);
     }
     if (address.is_unspecified()) {
         return MetadataUrlDecision::address_reserved;

@@ -70,7 +70,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `MetadataFetchPolicy`, which every `OAuthHttpClient` request passes: allowed
   and denied origins, an `origin_allowance` hook, address classification that
   refuses private, link-local and reserved targets and loopback unless
-  `allow_plain_http_loopback` is set, and redirect and response-size limits.
+  `allow_plain_http_loopback` is set (an IPv4-mapped, NAT64 or 6to4 IPv6
+  address is judged by the IPv4 address it carries), and redirect and
+  response-size limits.
   A `denied_origins` entry that is not a bare origin is rejected with
   `MetadataPolicyError` (`denied_origin_entry_malformed`), and every target is
   refused until it is corrected. `OAuthHttpClient::set_metadata_policy()` and

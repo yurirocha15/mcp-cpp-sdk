@@ -600,6 +600,22 @@ TEST(AuthMetadataPolicyTest, ClassifiesIpv4MappedIpv6Addresses) {
               mcp::auth::MetadataUrlDecision::address_private);
 }
 
+TEST(AuthMetadataPolicyTest, ClassifiesTheIpv4AddressEmbeddedInNat64And6to4Addresses) {
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allow_plain_http_loopback = true;
+    EXPECT_EQ(mcp::auth::validate_metadata_address(policy, "64:ff9b::10.0.0.1"),
+              mcp::auth::MetadataUrlDecision::address_private);
+    EXPECT_EQ(mcp::auth::validate_metadata_address(policy, "64:ff9b::a9fe:a9fe"),
+              mcp::auth::MetadataUrlDecision::address_link_local);
+    EXPECT_EQ(mcp::auth::validate_metadata_address(policy, "2002:c0a8:0101::1"),
+              mcp::auth::MetadataUrlDecision::address_private);
+    // An embedded loopback address is not the local host, so the loopback opt-out does not apply.
+    EXPECT_EQ(mcp::auth::validate_metadata_address(policy, "2002:7f00:0001::1"),
+              mcp::auth::MetadataUrlDecision::address_loopback);
+    EXPECT_EQ(mcp::auth::validate_metadata_address(policy, "64:ff9b::5db8:d822"),
+              mcp::auth::MetadataUrlDecision::allowed);
+}
+
 TEST(AuthMetadataPolicyTest, AllowsRoutablePublicAddresses) {
     const mcp::auth::MetadataFetchPolicy policy;
     EXPECT_EQ(mcp::auth::validate_metadata_address(policy, "93.184.216.34"),
