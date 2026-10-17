@@ -1749,11 +1749,15 @@ constexpr std::chrono::milliseconds g_teardown_budget{10000};
 
 // Positive control for the watchdog the tests below rely on: a body that deliberately overruns
 // its budget must abort with a named cause. Without this, a watchdog that had stopped biting
-// would make every test below look like it passed. Disabled because it aborts on purpose; run it
-// with --gtest_also_run_disabled_tests to re-check the watchdog.
-TEST(ServerTeardownTest, DISABLED_TeardownWatchdogAbortsOnOverrun) {
-    run_with_teardown_watchdog(std::chrono::milliseconds(200),
-                               [] { std::this_thread::sleep_for(std::chrono::seconds(30)); });
+// would make every test below look like it passed. The abort happens in a death-test child, so
+// this runs on every build. The threadsafe style re-executes the test binary for the child rather
+// than forking a process that already has threads.
+TEST(ServerTeardownDeathTest, TeardownWatchdogAbortsOnOverrun) {
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_DEATH(
+        run_with_teardown_watchdog(std::chrono::milliseconds(200),
+                                   [] { std::this_thread::sleep_for(std::chrono::seconds(30)); }),
+        "server teardown did not finish within 200 ms");
 }
 
 // Building a Server, registering tools and letting it go out of scope without ever running it is
