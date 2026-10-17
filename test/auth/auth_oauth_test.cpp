@@ -1142,3 +1142,107 @@ TEST(AuthOAuthHttpClientDefaultPolicyTest, PolicyLessClientRefusesAnHttpLoopback
         << "unexpected decision: " << mcp::auth::describe(decision);
     EXPECT_EQ(resolver_calls, 0);
 }
+
+namespace {
+
+struct RecordedRequest {
+    std::string target;
+    std::string host;
+};
+
+// Accept one request on 127.0.0.1, record its target and Host header, and answer an empty object.
+asio::awaitable<void> record_one_request(asio::ip::tcp::acceptor& acceptor, RecordedRequest& recorded) {
+    auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+    beast::tcp_stream stream(std::move(socket));
+    beast::flat_buffer buffer;
+    http::request<http::string_body> request;
+    co_await http::async_read(stream, buffer, request, asio::use_awaitable);
+    recorded.target = std::string(request.target());
+    recorded.host = std::string(request[http::field::host]);
+
+    http::response<http::string_body> response{http::status::ok, request.version()};
+    response.set(http::field::content_type, "application/json");
+    response.body() = "{}";
+    response.prepare_payload();
+    co_await http::async_write(stream, response, asio::use_awaitable);
+    beast::error_code ignored;
+    stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+}
+
+}  // namespace
+
+// The authority ends at a query as well as at a path, as the fetch policy splits it, so a query with
+// no path is sent as the root path's query rather than becoming part of the host.
+TEST(AuthOAuthHttpClientUrlTest, AQueryWithoutAPathIsSentOnTheRootPath) {
+    asio::io_context io_ctx;
+    asio::ip::tcp::acceptor acceptor(io_ctx, {asio::ip::make_address("127.0.0.1"), 0});
+    const auto port = acceptor.local_endpoint().port();
+    RecordedRequest recorded;
+    asio::co_spawn(io_ctx, record_one_request(acceptor, recorded), asio::detached);
+
+    bool fetched = false;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> asio::awaitable<void> {
+            mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
+            try {
+                (void)co_await client.get_json("http://127.0.0.1:" + std::to_string(port) +
+                                               "?probe=1#ignored");
+                fetched = true;
+            } catch (const std::exception&) {
+            }
+            acceptor.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_TRUE(fetched);
+    EXPECT_EQ(recorded.target, "/?probe=1");
+    EXPECT_EQ(recorded.host, "127.0.0.1");
+}
+
+// An IPv6 literal is resolved without its brackets and keeps them in the Host header. The resolver
+// hook maps it onto the IPv4 test server, so the test needs no IPv6 on the host.
+TEST(AuthOAuthHttpClientUrlTest, AnIpv6LiteralHostIsResolvedWithoutItsBrackets) {
+    asio::io_context io_ctx;
+    asio::ip::tcp::acceptor acceptor(io_ctx, {asio::ip::make_address("127.0.0.1"), 0});
+    const auto port = std::to_string(acceptor.local_endpoint().port());
+    RecordedRequest recorded;
+    asio::co_spawn(io_ctx, record_one_request(acceptor, recorded), asio::detached);
+
+    std::string resolved_host;
+    std::string resolved_port;
+    bool fetched = false;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> asio::awaitable<void> {
+            mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+            mcp::auth::MetadataFetchPolicy policy;
+            policy.allowed_origins.push_back("http://[::1]:" + port);
+            policy.allow_plain_http_loopback = true;
+            client.set_metadata_policy(policy);
+            client.set_host_resolver(
+                [&](const std::string& host, const std::string& service) -> std::vector<std::string> {
+                    resolved_host = host;
+                    resolved_port = service;
+                    return {"127.0.0.1"};
+                });
+            try {
+                (void)co_await client.get_json("http://[::1]:" + port + "/prm");
+                fetched = true;
+            } catch (const std::exception&) {
+            }
+            acceptor.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_TRUE(fetched);
+    EXPECT_EQ(resolved_host, "::1");
+    EXPECT_EQ(resolved_port, port);
+    EXPECT_EQ(recorded.target, "/prm");
+    EXPECT_EQ(recorded.host, "[::1]");
+}

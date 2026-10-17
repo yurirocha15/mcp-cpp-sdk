@@ -355,9 +355,10 @@ void require_resource_identifies_server(const std::string& resource, const std::
 struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Impl> {
     struct ParsedUrl {
         std::string scheme;
-        std::string host;
+        std::string host;         ///< Host to resolve; an IPv6 literal without its brackets.
+        std::string host_header;  ///< Host as the Host header carries it.
         std::string port;
-        std::string path;
+        std::string path;  ///< Request target: the path and query, never empty.
     };
 
     /// State for one HTTP exchange. `reset` rebuilds the per-hop pieces so a redirect can be
@@ -414,23 +415,47 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                 "OAuth HTTP client URL must use the http:// or https:// scheme");
         }
 
-        auto authority_and_path = url.substr(prefix_length);
-        const auto path_separator = authority_and_path.find('/');
-        auto authority = authority_and_path.substr(0, path_separator);
-        auto path =
-            path_separator == std::string::npos ? "/" : authority_and_path.substr(path_separator);
-
-        std::string host;
-        auto port = std::move(default_port);
-        const auto colon = authority.find(':');
-        if (colon == std::string::npos) {
-            host = std::move(authority);
-        } else {
-            host = authority.substr(0, colon);
-            port = authority.substr(colon + 1);
+        // The authority ends where the path, query or fragment begins, as in the fetch policy's
+        // own split of the URL. The fragment is never sent, and a query needs the root path.
+        const auto rest = url.substr(prefix_length);
+        const auto authority_end = rest.find_first_of("/?#");
+        auto authority = rest.substr(0, authority_end);
+        std::string path = authority_end == std::string::npos ? "" : rest.substr(authority_end);
+        if (const auto fragment = path.find('#'); fragment != std::string::npos) {
+            path.erase(fragment);
+        }
+        if (path.empty() || path.front() != '/') {
+            path.insert(0, "/");
         }
 
-        return {std::move(scheme), std::move(host), std::move(port), std::move(path)};
+        std::string host;
+        std::string host_header;
+        auto port = std::move(default_port);
+        if (!authority.empty() && authority.front() == '[') {
+            // An IPv6 literal: the host is inside the brackets and the Host header keeps them.
+            const auto closing = authority.find(']');
+            if (closing == std::string::npos ||
+                (closing + 1 < authority.size() && authority[closing + 1] != ':')) {
+                throw std::invalid_argument("OAuth HTTP client URL has a malformed IPv6 host");
+            }
+            host = authority.substr(1, closing - 1);
+            host_header = authority.substr(0, closing + 1);
+            if (closing + 1 < authority.size()) {
+                port = authority.substr(closing + 2);
+            }
+        } else {
+            const auto colon = authority.find(':');
+            if (colon == std::string::npos) {
+                host = std::move(authority);
+            } else {
+                host = authority.substr(0, colon);
+                port = authority.substr(colon + 1);
+            }
+            host_header = host;
+        }
+
+        return {std::move(scheme), std::move(host), std::move(host_header), std::move(port),
+                std::move(path)};
     }
 
     /// Validate a target before any lookup. Refusal happens here, so the host of a refused target
@@ -624,7 +649,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 
             http::request<http::empty_body> request(http::verb::get, exchange->parsed.path,
                                                     mcp::constants::g_http_version_11);
-            request.set(http::field::host, exchange->parsed.host);
+            request.set(http::field::host, exchange->parsed.host_header);
             request.set(http::field::accept, "application/json");
             co_await exchange_once(exchange, request);
 
@@ -672,7 +697,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 
         http::request<http::string_body> request(http::verb::post, exchange->parsed.path,
                                                  mcp::constants::g_http_version_11);
-        request.set(http::field::host, exchange->parsed.host);
+        request.set(http::field::host, exchange->parsed.host_header);
         request.set(http::field::content_type, content_type);
         request.set(http::field::accept, "application/json");
         if (!authorization.empty()) {
