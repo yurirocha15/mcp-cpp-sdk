@@ -250,6 +250,7 @@ if(BUILD_TESTING)
       test/core/capabilities_extensions_test.cpp
       test/core/concepts_test.cpp
       test/core/core_test.cpp
+      test/core/jsonrpc_envelope_test.cpp
       test/core/protocol_test.cpp
       test/core/serialized_transport_writer_test.cpp
       test/server/roots_test.cpp

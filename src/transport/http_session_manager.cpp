@@ -1,3 +1,5 @@
+#include "../detail/jsonrpc_envelope.hpp"
+
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_session_manager.hpp>
@@ -783,13 +785,30 @@ struct StreamableHttpSessionManager::Impl {
 
     static void dispatch_response_to_pending(detail_session_mgr::SessionRuntime* session,
                                              std::string message, bool json_only) {
-        const auto message_json = nlohmann::json::parse(message, nullptr, false);
-        if (message_json.is_discarded() || !message_json.is_object()) {
-            return;
+        // Routing needs only the id and whether a result or error is present, so the message is
+        // scanned rather than parsed; the id alone is parsed, to key it as its request was keyed.
+        bool is_response = false;
+        std::string request_id_key;
+        if (const auto envelope = detail::scan_jsonrpc_envelope(message)) {
+            is_response = !envelope->id.empty() && envelope->has_result_or_error;
+            if (is_response) {
+                const auto id = nlohmann::json::parse(envelope->id, nullptr, false);
+                if (id.is_discarded()) {
+                    return;
+                }
+                request_id_key = id.dump();
+            }
+        } else {
+            const auto message_json = nlohmann::json::parse(message, nullptr, false);
+            if (message_json.is_discarded() || !message_json.is_object()) {
+                return;
+            }
+            is_response = message_json.contains("id") &&
+                          (message_json.contains("result") || message_json.contains("error"));
+            if (is_response) {
+                request_id_key = message_json.at("id").dump();
+            }
         }
-
-        const bool is_response = message_json.contains("id") &&
-                                 (message_json.contains("result") || message_json.contains("error"));
         std::shared_ptr<boost::asio::steady_timer> timer_to_signal;
 
         {
@@ -813,7 +832,6 @@ struct StreamableHttpSessionManager::Impl {
                 return;
             }
 
-            const auto request_id_key = message_json.at("id").dump();
             auto pending_it = session->pending_responses.find(request_id_key);
             if (pending_it == session->pending_responses.end()) {
                 session->unassigned_stream_events.clear();
