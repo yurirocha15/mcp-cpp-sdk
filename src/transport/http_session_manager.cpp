@@ -210,6 +210,10 @@ struct StreamableHttpSessionManager::Impl {
     std::unordered_set<std::shared_ptr<Connection>> active_connections_;
     mutable std::shared_mutex sessions_mutex_;
     SessionMap sessions;
+    // Answers sessionless server/discover requests. Built once on the first one, so a peer that
+    // needs no session or credential cannot make the factory run per request.
+    std::mutex discover_server_mutex_;
+    std::shared_ptr<Server> discover_server_;
 
     Impl(const boost::asio::any_io_executor& exec, std::string host_arg, unsigned short port_arg,
          StreamableHttpSessionManager::ServerFactory factory_arg, std::size_t capacity)
@@ -556,7 +560,14 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         const auto dispatch_executor = tool_executor_ ? tool_executor_ : executor;
-        auto discover_server = factory(dispatch_executor);
+        std::shared_ptr<Server> discover_server;
+        {
+            std::lock_guard lock(discover_server_mutex_);
+            if (!discover_server_) {
+                discover_server_ = factory(dispatch_executor);
+            }
+            discover_server = discover_server_;
+        }
 
         auto response_body = co_await boost::asio::co_spawn(
             dispatch_executor, dispatch_on_executor(discover_server.get(), std::move(request_json)),

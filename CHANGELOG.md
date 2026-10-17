@@ -80,7 +80,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - The `server/discover` method, answered over HTTP before and after a session
   exists, with `Server::set_instructions()`, `set_discover_ttl_ms()` and
   `set_discover_cache_scope()`, and the `DiscoverRequest`, `DiscoverResult`
-  and `CacheScope` types.
+  and `CacheScope` types. `StreamableHttpSessionManager` answers sessionless
+  discovers from one server built on the first, and `HttpServerTransport`
+  answers `503` to a sessionless discover while 16 are already waiting.
 - `AuthorizationRequest`, `AuthorizationResponse` and
   `parse_authorization_response()` for the consent callback, and the client
   identity types `OAuthClientMetadata`, `OAuthClientInformation`,

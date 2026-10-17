@@ -1519,6 +1519,84 @@ TEST_F(HttpTransportTest, SessionlessDiscoverWithAnInvalidIdIsStillRejected) {
     EXPECT_NE(discover_body.find("Session active"), std::string::npos) << "body: " << discover_body;
 }
 
+// Sessionless discovers wait in the same incoming queue as the session's own requests, so only a
+// bounded number of them may be pending at once; the rest are refused with 503.
+TEST_F(HttpTransportTest, PendingSessionlessDiscoversAreBounded) {
+    mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 0);
+    const auto port = std::to_string(server_transport.port());
+    asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
+
+    auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
+    deadline->expires_after(std::chrono::seconds(10));
+    bool timed_out = false;
+    deadline->async_wait([&timed_out, &server_transport](const boost::system::error_code& error) {
+        if (error) {
+            return;
+        }
+        timed_out = true;
+        server_transport.close();
+    });
+
+    const auto post = [&](std::string body) -> mcp::Task<http::response<http::string_body>> {
+        auto resolver = asio::ip::tcp::resolver(io_ctx_.get_executor());
+        const auto endpoints = co_await resolver.async_resolve("127.0.0.1", port, asio::use_awaitable);
+        beast::tcp_stream stream(io_ctx_.get_executor());
+        co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+        http::request<http::string_body> request{http::verb::post, "/mcp", 11};
+        request.set(http::field::host, "127.0.0.1");
+        request.set(http::field::content_type, "application/json");
+        request.body() = std::move(body);
+        request.prepare_payload();
+        co_await http::async_write(stream, request, asio::use_awaitable);
+        beast::flat_buffer buffer;
+        http::response<http::string_body> response;
+        co_await http::async_read(stream, buffer, response, asio::use_awaitable);
+        beast::error_code ignored;
+        stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+        co_return response;
+    };
+    const auto discover = [](int id) {
+        return nlohmann::json{{"jsonrpc", "2.0"}, {"id", id}, {"method", "server/discover"}}.dump();
+    };
+
+    constexpr int pending_limit = 16;
+    int pending_ended = 0;
+    for (int id = 1; id <= pending_limit; ++id) {
+        asio::co_spawn(
+            io_ctx_,
+            [&, id]() -> mcp::Task<void> {
+                try {
+                    (void)co_await post(discover(id));
+                } catch (const std::exception&) {
+                    // Closing the transport drops the connections still waiting.
+                }
+                ++pending_ended;
+            },
+            [](std::exception_ptr) {});
+    }
+
+    auto refused_status = http::status::unknown;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            // Nothing answers the queued discovers; reading them shows each one is pending.
+            for (int read = 0; read < pending_limit; ++read) {
+                (void)co_await server_transport.read_message();
+            }
+            const auto response = co_await post(discover(pending_limit + 1));
+            refused_status = response.result();
+            deadline->cancel();
+            server_transport.close();
+        },
+        [](std::exception_ptr) {});
+
+    io_ctx_.run();
+
+    EXPECT_FALSE(timed_out);
+    EXPECT_EQ(refused_status, http::status::service_unavailable);
+    EXPECT_EQ(pending_ended, pending_limit);
+}
+
 // Sessionless server/discover is unauthenticated by construction, so its responses must never
 // be appended to the replay EventStore. That store is a bounded ring shared with the
 // established session: a flood of sessionless requests would evict the session's replay

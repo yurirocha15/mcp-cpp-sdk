@@ -33,6 +33,9 @@ namespace beast = boost::beast;
 namespace http = boost::beast::http;
 
 struct HttpServerTransport::Impl {
+    /// How many sessionless server/discover requests may wait for the server at once.
+    static constexpr std::size_t g_max_pending_sessionless_discovers = 16;
+
     using Connection = beast::tcp_stream;
 
     struct SharedState {
@@ -510,6 +513,14 @@ struct HttpServerTransport::Impl {
             sentinel_body = sentinel_json.dump();
         } else {
             request_id_key = request_json.at("id").dump();
+        }
+
+        // Sessionless discovers wait in the established session's incoming queue, so a stranger
+        // could otherwise delay the session's own requests by sending many at once.
+        if (is_sessionless_discover &&
+            sessionless_request_ids.size() >= g_max_pending_sessionless_discovers) {
+            co_return make_error_response(request, http::status::service_unavailable,
+                                          "Too many pending discover requests");
         }
 
         const auto timer_signal = co_await register_pending_request(request_id_key, client_request_id);

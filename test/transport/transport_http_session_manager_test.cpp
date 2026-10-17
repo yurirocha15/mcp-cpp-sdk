@@ -990,6 +990,40 @@ TEST_F(SessionManagerTest, SessionlessDiscoverReturns200WithoutCreatingSession) 
     ASSERT_TRUE(result.contains("cacheScope"));
 }
 
+// A sessionless discover needs no session or credential, so the server that answers it is built
+// once rather than once per request.
+TEST_F(SessionManagerTest, SessionlessDiscoversShareOneServer) {
+    const unsigned short port = 19124;
+    std::atomic<int> factory_calls{0};
+    auto echo_factory = make_echo_server_factory();
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              [&](const asio::any_io_executor& executor) {
+                                                  factory_calls.fetch_add(1, std::memory_order_relaxed);
+                                                  return echo_factory(executor);
+                                              });
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    std::vector<int> statuses;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            for (int id = 1; id <= 3; ++id) {
+                json request = {{"jsonrpc", "2.0"}, {"id", id}, {"method", "server/discover"}};
+                auto response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                     "/mcp", request.dump());
+                statuses.push_back(response.status);
+            }
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(statuses, (std::vector<int>{200, 200, 200}));
+    EXPECT_EQ(factory_calls.load(), 1);
+}
+
 // This transport's immunity to the HttpServerTransport defect (sessionless discover rejected
 // once a session exists) is NOT structural. It holds only because handle_post intercepts
 // sessionless discover BEFORE calling resolve_session_for_post, which is two adjacent
