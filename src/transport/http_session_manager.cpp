@@ -11,6 +11,7 @@
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -585,12 +586,14 @@ struct StreamableHttpSessionManager::Impl {
                 break;
             }
 
-            try {
-                co_await timer_signal->async_wait(boost::asio::use_awaitable);
-            } catch (const boost::system::system_error& err) {
-                if (err.code() != boost::asio::error::operation_aborted) {
-                    throw;
-                }
+            // Cancelling the timer is how a response is signalled, so cancellation is the expected
+            // end of every wait. It is taken as an error code rather than thrown and caught on every
+            // request.
+            boost::system::error_code wait_error;
+            co_await timer_signal->async_wait(
+                boost::asio::redirect_error(boost::asio::use_awaitable, wait_error));
+            if (wait_error && wait_error != boost::asio::error::operation_aborted) {
+                throw boost::system::system_error(wait_error);
             }
         }
 
