@@ -213,6 +213,32 @@ TEST_F(ServerHandlersTest, DomainObjectWithContentFieldIsStillNormalized) {
     EXPECT_EQ(result["content"][0]["type"], "text");
 }
 
+// A typed handler follows the same rule as a JSON one: a value that is already a CallToolResult is
+// sent unchanged.
+TEST_F(ServerHandlersTest, TypedHandlerReturningCallToolResultJsonIsNotRewrapped) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool<nlohmann::json, nlohmann::json>(
+        "typed-result", "Returns a ready result", nlohmann::json{{"type", "object"}},
+        [](nlohmann::json) { return nlohmann::json(mcp::make_tool_error_result("not permitted")); });
+
+    auto responses = run_request(
+        setup, nlohmann::json{
+                   {"jsonrpc", "2.0"},
+                   {"id", "2"},
+                   {"method", "tools/call"},
+                   {"params", {{"name", "typed-result"}, {"arguments", nlohmann::json::object()}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    const auto& result = responses[1]["result"];
+    EXPECT_TRUE(result["isError"].get<bool>());
+    ASSERT_EQ(result["content"].size(), 1);
+    EXPECT_EQ(result["content"][0]["text"], "not permitted");
+    EXPECT_FALSE(result.contains("structuredContent"));
+}
+
 TEST_F(ServerHandlersTest, TypedHandlerExceptionBecomesProtocolToolError) {
     mcp::ServerCapabilities caps;
     caps.tools = mcp::ServerCapabilities::ToolsCapability{};
