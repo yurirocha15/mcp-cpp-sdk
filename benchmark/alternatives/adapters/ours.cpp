@@ -22,22 +22,34 @@ unsigned short port() {
     return value ? static_cast<unsigned short>(std::stoi(value)) : 8080;
 }
 
-std::unique_ptr<mcp::Server> make_server(const std::shared_ptr<mcp_benchmark::Workload>& workload) {
+struct ToolSchemas {
+    nlohmann::json search_products = parse("search_products");
+    nlohmann::json get_user_cart = parse("get_user_cart");
+    nlohmann::json checkout = parse("checkout");
+
+    static nlohmann::json parse(const std::string& name) {
+        return nlohmann::json::parse(mcp_benchmark::Workload::input_schema(name));
+    }
+};
+
+// The session manager builds a Server per session, so the schemas are parsed once and copied.
+std::unique_ptr<mcp::Server> make_server(const std::shared_ptr<mcp_benchmark::Workload>& workload,
+                                         const ToolSchemas& schemas) {
     mcp::ServerCapabilities capabilities;
     capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
     auto server = std::make_unique<mcp::Server>(mcp::Implementation{"benchmark-cpp-sdk", "1.0.0"},
                                                 std::move(capabilities));
 
-    const auto add_tool = [&](const std::string& name, const std::string& description) {
+    const auto add_tool = [&](const std::string& name, const std::string& description,
+                              const nlohmann::json& schema) {
         server->add_tool<nlohmann::json, mcp::CallToolResult>(
-            name, description, nlohmann::json::parse(mcp_benchmark::Workload::input_schema(name)),
-            [workload, name](const nlohmann::json& args) {
+            name, description, schema, [workload, name](const nlohmann::json& args) {
                 return mcp::make_tool_text_result(workload->invoke(name, args.dump()));
             });
     };
-    add_tool("search_products", "Search products and merge popularity data");
-    add_tool("get_user_cart", "Get a cart with recent order history");
-    add_tool("checkout", "Calculate and record a checkout");
+    add_tool("search_products", "Search products and merge popularity data", schemas.search_products);
+    add_tool("get_user_cart", "Get a cart with recent order history", schemas.get_user_cart);
+    add_tool("checkout", "Calculate and record a checkout", schemas.checkout);
     return server;
 }
 
@@ -47,12 +59,13 @@ int main() {
     namespace asio = boost::asio;
 
     auto workload = std::make_shared<mcp_benchmark::Workload>("cpp-sdk");
+    auto schemas = std::make_shared<const ToolSchemas>();
     asio::io_context io_context;
     asio::thread_pool handler_pool(kHandlerThreadCount);
 
     mcp::StreamableHttpSessionManager manager(
         io_context.get_executor(), "0.0.0.0", port(),
-        [workload](const asio::any_io_executor&) { return make_server(workload); });
+        [workload, schemas](const asio::any_io_executor&) { return make_server(workload, *schemas); });
     manager.set_tool_executor(handler_pool.get_executor());
 
     const auto io_work = asio::make_work_guard(io_context);
