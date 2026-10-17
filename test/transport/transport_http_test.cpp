@@ -1016,7 +1016,8 @@ TEST_F(HttpTransportTest, NonAtomicConfigurationLocksWhenListeningStarts) {
 
 // HttpServerTransport serves one session at a time and accepts a new initialize once the client
 // ends its session with DELETE. The Server running on it must treat that initialize as the start of
-// a new session, not as a second initialize within the old one.
+// a new session, not as a second initialize within the old one, and must refuse any other request
+// from the new client until it has initialized.
 TEST_F(HttpTransportTest, ServerAcceptsANewSessionAfterTheClientDeletesTheOldOne) {
     auto server_transport =
         std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
@@ -1075,10 +1076,13 @@ TEST_F(HttpTransportTest, ServerAcceptsANewSessionAfterTheClientDeletesTheOldOne
           {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
           {"capabilities", nlohmann::json::object()}}}};
     const std::string initialized = R"({"jsonrpc":"2.0","method":"notifications/initialized"})";
+    const std::string list_tools = R"({"jsonrpc":"2.0","id":2,"method":"tools/list"})";
 
     Reply first;
     Reply repeated;
+    Reply before_initialize;
     Reply second;
+    Reply listed;
     asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
@@ -1086,7 +1090,10 @@ TEST_F(HttpTransportTest, ServerAcceptsANewSessionAfterTheClientDeletesTheOldOne
             co_await send(http::verb::post, initialized, first.session_id);
             repeated = co_await send(http::verb::post, initialize.dump(), first.session_id);
             co_await send(http::verb::delete_, "", first.session_id);
+            before_initialize = co_await send(http::verb::post, list_tools, "");
             second = co_await send(http::verb::post, initialize.dump(), "");
+            co_await send(http::verb::post, initialized, second.session_id);
+            listed = co_await send(http::verb::post, list_tools, second.session_id);
             server_transport->close();
         },
         [](const std::exception_ptr& error) {
@@ -1103,8 +1110,15 @@ TEST_F(HttpTransportTest, ServerAcceptsANewSessionAfterTheClientDeletesTheOldOne
     // Within one session a second initialize is still refused.
     EXPECT_EQ(nlohmann::json::parse(repeated.body).at("error").at("code"), mcp::g_INVALID_REQUEST)
         << repeated.body;
+    // The new client has not initialized yet, so its request is refused.
+    ASSERT_EQ(before_initialize.status, 200U) << before_initialize.body;
+    EXPECT_EQ(nlohmann::json::parse(before_initialize.body).at("error").at("code"),
+              mcp::g_INVALID_REQUEST)
+        << before_initialize.body;
     ASSERT_EQ(second.status, 200U) << second.body;
     EXPECT_TRUE(nlohmann::json::parse(second.body).contains("result")) << second.body;
     EXPECT_FALSE(second.session_id.empty());
     EXPECT_NE(second.session_id, first.session_id);
+    ASSERT_EQ(listed.status, 200U) << listed.body;
+    EXPECT_TRUE(nlohmann::json::parse(listed.body).contains("result")) << listed.body;
 }

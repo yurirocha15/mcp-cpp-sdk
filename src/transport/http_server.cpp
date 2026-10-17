@@ -303,9 +303,14 @@ struct HttpServerTransport::Impl {
     }
 
     Task<void> terminate_session() {
+        // Only a DELETE that ends an established session counts; one sent before the session
+        // exists ends nothing.
+        const bool ended = session_active;
         session_id.reset();
         session_active = false;
-        terminated_sessions.fetch_add(1, std::memory_order_release);
+        if (ended) {
+            terminated_sessions.fetch_add(1, std::memory_order_release);
+        }
         co_return;
     }
 

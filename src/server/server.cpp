@@ -303,6 +303,7 @@ struct Server::PendingRequest {
 struct Server::Session {
     std::shared_ptr<ITransport> transport;
     MemoryTransport* memory_transport = nullptr;
+    const HttpServerTransport* http_transport = nullptr;
     std::unique_ptr<boost::asio::strand<boost::asio::any_io_executor>> strand;
     std::shared_ptr<detail::SerializedTransportWriter> writer;
     std::map<std::string, PendingRequest> pending_requests;
@@ -327,14 +328,6 @@ class NullTransport : public ITransport {
 NullTransport& null_transport() {
     static NullTransport transport;
     return transport;
-}
-
-// HttpServerTransport is the one transport that can end a session (on HTTP DELETE) and start a new
-// one while run() keeps reading from it, so its count of ended sessions tells a new client's
-// initialize apart from a repeated one. Other transports never end a session this way.
-std::uint64_t terminated_session_count(const ITransport& transport) {
-    const auto* http = dynamic_cast<const HttpServerTransport*>(&transport);
-    return http != nullptr ? detail::terminated_session_count(*http) : 0;
 }
 
 struct Server::Impl {
@@ -570,6 +563,10 @@ Task<void> Server::run(std::shared_ptr<ITransport> transport, boost::asio::any_i
     auto session = std::make_shared<Session>();
     session->transport = std::move(transport);
     session->memory_transport = dynamic_cast<MemoryTransport*>(session->transport.get());
+    // HttpServerTransport is the one transport that can end a session (on HTTP DELETE) and start a
+    // new one while run() keeps reading from it, so its count of ended sessions tells a new client
+    // apart from the one that initialized. Other transports never end a session this way.
+    session->http_transport = dynamic_cast<const HttpServerTransport*>(session->transport.get());
     session->strand = std::make_unique<boost::asio::strand<boost::asio::any_io_executor>>(
         boost::asio::make_strand(executor));
     session->writer =
@@ -754,11 +751,14 @@ Task<std::string> Server::dispatch_request_wire(nlohmann::json json_msg, bool en
     int error_code = g_INTERNAL_ERROR;
 
     try {
+        // A client that arrives after the previous one ended its session starts uninitialized.
+        const auto lifecycle = !enforce_lifecycle ? Impl::LifecycleState::eReady
+                               : transport_started_new_session()
+                                   ? Impl::LifecycleState::eUninitialized
+                                   : impl_->lifecycle.load(std::memory_order_relaxed);
+
         if (method == "initialize") {
-            if (enforce_lifecycle &&
-                impl_->lifecycle.load(std::memory_order_relaxed) !=
-                    Impl::LifecycleState::eUninitialized &&
-                !transport_started_new_session()) {
+            if (enforce_lifecycle && lifecycle != Impl::LifecycleState::eUninitialized) {
                 co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_REQUEST,
                                           "Server has already been initialized");
             }
@@ -769,8 +769,7 @@ Task<std::string> Server::dispatch_request_wire(nlohmann::json json_msg, bool en
             co_return co_await handle_ping_wire(json_msg);
         }
 
-        if (enforce_lifecycle &&
-            impl_->lifecycle.load(std::memory_order_relaxed) != Impl::LifecycleState::eReady) {
+        if (lifecycle != Impl::LifecycleState::eReady) {
             co_return make_error_wire(
                 json_msg.at("id").get<RequestId>(), g_INVALID_REQUEST,
                 "Server is not ready; initialize and send notifications/initialized first");
@@ -902,9 +901,9 @@ Task<std::string> Server::handle_initialize_wire(const nlohmann::json& json_msg,
     init_result.serverInfo = impl_->server_info;
 
     if (update_lifecycle) {
-        if (auto session = session_snapshot(); session && session->transport) {
+        if (auto session = session_snapshot(); session && session->http_transport != nullptr) {
             impl_->terminated_sessions_at_initialize.store(
-                terminated_session_count(*session->transport), std::memory_order_relaxed);
+                detail::terminated_session_count(*session->http_transport), std::memory_order_relaxed);
         }
         impl_->lifecycle.store(Impl::LifecycleState::eAwaitingInitialized, std::memory_order_relaxed);
     }
@@ -1423,8 +1422,8 @@ bool Server::has_tool_output_schema(const std::string& name) const {
 
 bool Server::transport_started_new_session() const {
     auto session = session_snapshot();
-    return session && session->transport &&
-           terminated_session_count(*session->transport) !=
+    return session && session->http_transport != nullptr &&
+           detail::terminated_session_count(*session->http_transport) !=
                impl_->terminated_sessions_at_initialize.load(std::memory_order_relaxed);
 }
 
