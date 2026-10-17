@@ -240,18 +240,14 @@ Task<nlohmann::json> MemoryTransport::read_json() {
     return boost::asio::co_spawn(state->strand, mcp::read_json(state), boost::asio::use_awaitable);
 }
 
+// A write reads only the closed flag and the peer pointer before it hands the message to the
+// peer's strand, so it runs on the caller's executor instead of first hopping to this strand.
 Task<void> MemoryTransport::write_json(nlohmann::json message) {
-    auto state = state_;
-    return boost::asio::co_spawn(state->strand,
-                                 detail::MemoryTransportState::write(state, std::move(message)),
-                                 boost::asio::use_awaitable);
+    return detail::MemoryTransportState::write(state_, std::move(message));
 }
 
 Task<void> MemoryTransport::write_message(std::string_view message) {
-    auto state = state_;
-    return boost::asio::co_spawn(state->strand,
-                                 detail::MemoryTransportState::write(state, std::string(message)),
-                                 boost::asio::use_awaitable);
+    return detail::MemoryTransportState::write(state_, std::string(message));
 }
 
 void MemoryTransport::close() {
