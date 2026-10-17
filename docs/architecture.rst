@@ -223,7 +223,7 @@ The SDK includes OAuth 2.1 helpers in ``mcp::auth``:
 * ``OAuthAuthenticator``: concrete OAuth 2.0 implementation of the ``Authenticator`` interface
 * ``OAuthHttpClient`` for token and metadata HTTP calls
 * ``OAuthDiscoveryClient`` for protected resource and authorization-server discovery
-* ``OAuthClientTransport`` for injecting Bearer tokens into outgoing MCP requests, with automatic token refresh on ``-32001`` or ``-32000`` error responses
+* ``OAuthClientTransport`` for supplying Bearer tokens on outgoing MCP requests (in the HTTP ``Authorization`` header over ``HttpClientTransport``, in ``_meta.auth_token`` otherwise), with automatic token refresh on an HTTP 401 or a ``-32000`` error response
 * ``InMemoryTokenStore`` as a simple token persistence implementation
 
 This keeps authentication concerns out of the core client/server types while

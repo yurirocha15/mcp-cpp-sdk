@@ -22,6 +22,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `StreamableHttpSessionManager` (with the `BearerTokenValidator` type and the
   `http_bearer_token()` helper), and `HttpStatusError` for a non-success HTTP
   status seen by the client.
+- `OAuthClientTransportOptions` and an `OAuthClientTransport` constructor
+  that takes it, bounding how many requests, and how many bytes of them, are
+  kept for a replay after a token refresh, and for how long.
 - `Context` takes a `MessageSender`, so handlers can write to the peer through
   the session's serialized writer. `MemoryTransport` is exported from the
   shared library and is no longer copyable.
@@ -35,6 +38,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `g_REQUEST_TIMEOUT` (`ClientOptions::request_timeout`, or
   `RequestOptions::timeout` for one `send_request()` call). Previously a
   request waited until the peer answered.
+- Over an `HttpClientTransport`, `OAuthClientTransport` sends the access
+  token in the HTTP `Authorization: Bearer` header and no longer adds
+  `_meta.auth_token` to requests, so a server that checks tokens with
+  `make_auth_middleware()` rejects them; such a server should use
+  `set_bearer_token_validator()`. Other transports still carry the token in
+  `_meta.auth_token`. The transport refreshes the token on an HTTP 401 or a
+  `-32000` error response; `-32001` is now the client's request timeout code
+  and no longer triggers a refresh.
 - `Client::connect()` throws `McpError` when called a second time, and
   `send_request()` throws when called before `connect()`.
 - The client rejects an incoming message whose `jsonrpc` member is missing or
