@@ -68,7 +68,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   TLS support, so in this release it can reach only an authorization server
   on a loopback address. It renews a grant only after it has authorized in
   the same process; a refresh token loaded from a persistent `TokenStore`
-  after a restart is not used.
+  after a restart is not used. Its `close()` aborts the work in flight and
+  refuses later attempts; a challenge on a closed manager fails when the
+  returned task is awaited, not when `try_handle_challenge()` is called.
 - `MetadataFetchPolicy`, which every `OAuthHttpClient` request passes: allowed
   and denied origins, an `origin_allowance` hook, address classification that
   refuses private, link-local and reserved targets and loopback unless
