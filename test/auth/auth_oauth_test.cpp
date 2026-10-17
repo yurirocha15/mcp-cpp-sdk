@@ -1444,6 +1444,10 @@ struct TwinFixture {
 // The hazard itself, with the race taken out of it: the exchange is started at a point the test
 // chooses, inside the gap between the two setter calls. It sees the new resolver under the old,
 // wider allow list every time, because that is simply what the client's state is at that instant.
+//
+// This is the positive control for the test below: it shows the fixture tells the two servers
+// apart and that the mixed state is reachable at all. It does not pin a defect that a later change
+// could fix. Two separate calls always have a moment between them, which is why configure() exists.
 TEST(OAuthSetterPairAtomicity, TheTwoSingleSettersLeaveAWindowAnExchangeCanFallInto) {
     MCP_TWIN_LOOPBACK_PORT_OR_SKIP(port);
     TwinFixture fixture(port);
