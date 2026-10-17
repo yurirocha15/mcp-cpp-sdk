@@ -608,6 +608,10 @@ class MCP_API OAuthAuthorizationManager : public Authenticator {
     /**
      * @brief Renew the stored token using its refresh token, when one is present.
      *
+     * @details Renewal needs the token endpoint and client identity of an authorization this
+     * manager completed in the same process. Without one, for instance with a refresh token loaded
+     * from a persistent TokenStore after a restart, this returns false without network I/O.
+     *
      * @return true when a renewed token was persisted.
      */
     Task<bool> try_refresh_token() override;
