@@ -242,8 +242,8 @@ The C++ SDK comparison follows this sequence:
    measured operations per second. Copy the resource samples and container/image
    evidence from that same run; do not combine resources from another run.
 
-The counterbalanced schedule varies server position and neighboring servers
-across rounds, reducing fixed-order thermal and cache bias. In a three-round
+The counterbalanced schedule varies server position across rounds, reducing
+fixed-order thermal and cache bias. In a three-round
 schedule of five servers, or of any even number from four up as in `full`, each
 server runs in three different positions and every pair runs in both orders.
 Its seed and exact per-round order are retained with the result bundle.
