@@ -62,7 +62,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   authorization specification requires. Injected credentials that carry a
   `client_secret` must name their authorization server
   (`OAuthAuthorizationConfig::client_issuer` or the pre-registered `issuer`);
-  a secret bound to no issuer is never presented. The built-in client has no
+  a secret bound to no issuer is never presented, and a config that sets the
+  `client_id` shorthand alongside `client_identity.pre_registered` is refused
+  with `std::invalid_argument`. The built-in client has no
   TLS support, so in this release it can reach only an authorization server
   on a loopback address. It renews a grant only after it has authorized in
   the same process; a refresh token loaded from a persistent `TokenStore`

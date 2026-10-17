@@ -1787,6 +1787,14 @@ OAuthAuthorizationManager::OAuthAuthorizationManager(const net::any_io_executor&
         throw std::invalid_argument(
             "OAuthAuthorizationManager requires a token store and an authorization callback");
     }
+    if (config.client_identity.pre_registered &&
+        (!config.client_id.empty() || config.client_secret || !config.client_issuer.empty())) {
+        // The shorthand fields describe pre-registered credentials too, so with both present one
+        // set would be ignored.
+        throw std::invalid_argument(
+            "OAuthAuthorizationConfig sets client_id, client_secret or client_issuer alongside "
+            "client_identity.pre_registered; set only one of them");
+    }
     impl_ = std::make_shared<Impl>(executor, std::move(token_store), std::move(config),
                                    std::move(callback));
 }

@@ -593,6 +593,9 @@ class MCP_API OAuthAuthorizationManager : public Authenticator {
      * @param token_store Storage for the acquired access token.
      * @param config Client identity, redirect URI and outbound-request policy.
      * @param callback Application consent step invoked once per authorization attempt.
+     * @throws std::invalid_argument When @p token_store or @p callback is empty, or when @p config
+     *         sets `client_id`, `client_secret` or `client_issuer` together with
+     *         `client_identity.pre_registered`.
      */
     OAuthAuthorizationManager(const net::any_io_executor& executor,
                               std::shared_ptr<TokenStore> token_store, OAuthAuthorizationConfig config,

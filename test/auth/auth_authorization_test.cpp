@@ -2936,3 +2936,28 @@ TEST(AuthProtectedResourceValidationTest,
     EXPECT_EQ(server.targets(), expected_targets);
     EXPECT_EQ(credentials->stores, 0);
 }
+
+// The shorthand fields and client_identity.pre_registered both describe injected credentials, so a
+// config that sets both is refused instead of silently using one of them.
+TEST(AuthAuthorizationConfigTest, RefusesShorthandCredentialsAlongsidePreRegisteredOnes) {
+    asio::io_context io_ctx;
+    const auto callback =
+        [](const mcp::auth::AuthorizationRequest&) -> mcp::Task<mcp::auth::AuthorizationResponse> {
+        co_return mcp::auth::AuthorizationResponse{};
+    };
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = "http://127.0.0.1:1/mcp";
+    config.client_id = "shorthand-client";
+    mcp::auth::OAuthClientInformation injected;
+    injected.client_id = "injected-client";
+    config.client_identity.pre_registered = injected;
+    EXPECT_THROW(
+        mcp::auth::OAuthAuthorizationManager(
+            io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(), config, callback),
+        std::invalid_argument);
+
+    config.client_id.clear();
+    EXPECT_NO_THROW(mcp::auth::OAuthAuthorizationManager(
+        io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(), config, callback));
+}
