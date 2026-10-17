@@ -1013,6 +1013,65 @@ TEST_F(ServerHandlersTest, ToolsListPaginationFirstPage) {
     EXPECT_EQ(result["nextCursor"], "2");
 }
 
+TEST_F(ServerHandlersTest, ToolsListResultIsTheListToolsResultOfTheRegisteredTools) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+    setup.server.set_page_size(2);
+
+    mcp::Tool typed;
+    typed.name = "add";
+    typed.description = "Adds two numbers";
+    typed.inputSchema = nlohmann::json{{"type", "object"}, {"required", {"augend", "addend"}}};
+    typed.outputSchema =
+        nlohmann::json{{"type", "object"}, {"properties", {{"sum", {{"type", "integer"}}}}}};
+    setup.server.add_tool<AddParams, AddResult>(
+        typed.name, *typed.description, typed.inputSchema, *typed.outputSchema,
+        [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
+
+    mcp::Tool raw;
+    raw.name = "raw";
+    raw.title = "Raw tool";
+    raw.inputSchema = nlohmann::json{{"type", "object"}};
+    raw.annotations = mcp::ToolAnnotations{};
+    raw.annotations->readOnlyHint = true;
+    setup.server.add_raw_tool(
+        raw, [](const nlohmann::json&) -> nlohmann::json { return mcp::make_tool_text_result("raw"); });
+
+    setup.server.add_tool<AddParams, AddResult>(
+        "third", "Not on the first page", nlohmann::json{{"type", "object"}},
+        [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    setup.raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"}, {"id", "2"}, {"method", "tools/list"}}.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    mcp::ListToolsResult expected;
+    expected.tools = {typed, raw};
+    expected.nextCursor = "2";
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1],
+              (nlohmann::json{{"jsonrpc", "2.0"}, {"id", "2"}, {"result", nlohmann::json(expected)}}));
+}
+
 TEST_F(ServerHandlersTest, ToolsListPaginationWithCursor) {
     mcp::ServerCapabilities caps;
     mcp::ServerCapabilities::ToolsCapability tools_cap;

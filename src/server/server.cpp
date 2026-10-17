@@ -1092,14 +1092,19 @@ Task<std::string> Server::handle_tools_list_wire(const nlohmann::json& json_msg)
                                   "Invalid pagination cursor");
     }
 
-    ListToolsResult list_result;
+    // The members ListToolsResult serializes, built from the registered tools rather than a copy.
     auto [begin, end, next_cursor] = *page;
-    list_result.tools.assign(impl_->tools.begin() + static_cast<std::ptrdiff_t>(begin),
-                             impl_->tools.begin() + static_cast<std::ptrdiff_t>(end));
-    list_result.nextCursor = std::move(next_cursor);
+    nlohmann::json tools_json = nlohmann::json::array();
+    for (auto index = begin; index < end; ++index) {
+        tools_json.push_back(impl_->tools[index]);
+    }
+    nlohmann::json list_result = nlohmann::json::object();
+    list_result["tools"] = std::move(tools_json);
+    if (next_cursor) {
+        list_result["nextCursor"] = std::move(*next_cursor);
+    }
 
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(),
-                               nlohmann::json(std::move(list_result)));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(list_result));
 }
 
 Task<void> Server::handle_resources_list(const nlohmann::json& json_msg) {
@@ -1329,10 +1334,13 @@ Task<std::string> Server::handle_complete_wire(const nlohmann::json& json_msg) {
 }
 
 std::string Server::make_result_wire(const RequestId& id, nlohmann::json result) {
-    JSONRPCResultResponse response;
-    response.id = id;
-    response.result = std::move(result);
-    return nlohmann::json(std::move(response)).dump();
+    // The members JSONRPCResultResponse serializes, with the result moved in: its to_json takes the
+    // response by const reference and would copy the whole result.
+    nlohmann::json response = nlohmann::json::object();
+    response["id"] = id;
+    response["jsonrpc"] = "2.0";
+    response["result"] = std::move(result);
+    return response.dump();
 }
 
 std::string Server::make_error_wire(const RequestId& id, int code, std::string message) {
