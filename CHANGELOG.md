@@ -48,8 +48,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `ServerCapabilities`, keyed by extension name. Adding it changes the layout
   of both structs.
 - `g_PROTOCOL_VERSION_2026_07_28` and `g_DISCOVERABLE_PROTOCOL_VERSIONS`, the
-  version list for `server/discover`. `g_SUPPORTED_PROTOCOL_VERSIONS`, which
-  governs `initialize` negotiation, is unchanged.
+  version list for a `server/discover` response, which the SDK does not serve
+  yet. `g_SUPPORTED_PROTOCOL_VERSIONS`, which governs `initialize` negotiation,
+  is unchanged.
 
 ### Changed
 
