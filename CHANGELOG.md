@@ -64,7 +64,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   (`OAuthAuthorizationConfig::client_issuer` or the pre-registered `issuer`);
   a secret bound to no issuer is never presented. The built-in client has no
   TLS support, so in this release it can reach only an authorization server
-  on a loopback address.
+  on a loopback address. It renews a grant only after it has authorized in
+  the same process; a refresh token loaded from a persistent `TokenStore`
+  after a restart is not used.
 - `MetadataFetchPolicy`, which every `OAuthHttpClient` request passes: allowed
   and denied origins, an `origin_allowance` hook, address classification that
   refuses private, link-local and reserved targets and loopback unless
@@ -77,7 +79,20 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `BearerChallenge` for reading `WWW-Authenticate` headers.
 - The `server/discover` method, answered over HTTP before and after a session
   exists, with `Server::set_instructions()`, `set_discover_ttl_ms()` and
-  `set_discover_cache_scope()`.
+  `set_discover_cache_scope()`, and the `DiscoverRequest`, `DiscoverResult`
+  and `CacheScope` types.
+- `AuthorizationRequest`, `AuthorizationResponse` and
+  `parse_authorization_response()` for the consent callback, and the client
+  identity types `OAuthClientMetadata`, `OAuthClientInformation`,
+  `ClientIdentityConfig` and `InMemoryClientCredentialStore`.
+- `OAuthHttpClient::post_json()` and `abort_pending()`, an
+  `OAuthDiscoveryClient::discover_protected_resource()` overload that takes
+  the `resource_metadata` URL from a challenge,
+  `OAuthConfig::token_endpoint_auth_method`, and the
+  `authorization_response_iss_parameter_supported`,
+  `client_id_metadata_document_supported` and
+  `token_endpoint_auth_methods_supported` members of `AuthServerMetadata`.
+  The new members change the layout of `OAuthConfig` and `AuthServerMetadata`.
 - The conformance harness runs the client authorization scenarios, and all 14
   of them pass.
 
@@ -189,7 +204,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   rejected. Previously any document was accepted.
 - `OAuthHttpClient` constructed without a `MetadataFetchPolicy` now refuses
   every request (deny-all default) instead of allowing any target; callers
-  must supply an explicit policy.
+  must supply an explicit policy. No policy lets it reach a host other than
+  a loopback address: it refuses plain `http` to any other host and has no
+  TLS support for `https`, so token refresh against such a host no longer
+  works.
 - `OAuthClientTransport` follows an HTTP `401` into the authorization flow its
   `WWW-Authenticate` challenge names when renewing the access token is not
   possible or the renewed token is refused too, renewing at most once and
