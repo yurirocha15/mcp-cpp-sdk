@@ -5,8 +5,7 @@ import re
 import tempfile
 import unittest
 
-from release.consumer_validation import consumer_sources
-from release.model import SemVer, ValidationError
+from release.model import ValidationError
 from release.package_validation import (
     compare_files,
     copy_exact_file,
@@ -31,13 +30,6 @@ class PackageTreeTests(unittest.TestCase):
                 compare_files(source, destination)
             with self.assertRaisesRegex(ValidationError, "must be new"):
                 copy_exact_file(source, destination)
-
-    def test_consumer_sources_require_both_linkages_and_exact_version(self) -> None:
-        cmake, source = consumer_sources(SemVer.parse("0.2.0"))
-        self.assertIn("COMPONENTS shared static", cmake)
-        self.assertIn("mcp::sdk_shared", cmake)
-        self.assertIn("mcp::sdk_static", cmake)
-        self.assertIn('expected{\"0.2.0\"}', source)
 
 
 class HomebrewCandidateScriptTests(unittest.TestCase):

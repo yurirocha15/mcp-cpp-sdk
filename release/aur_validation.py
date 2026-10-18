@@ -8,14 +8,12 @@ import re
 from typing import Sequence
 
 from .artifacts import write_atomic
-from .consumer_validation import write_consumer_project
+from .consumer_validation import validate_elf_dependencies, write_consumer_project
 from .model import SemVer, ValidationError
 
 
 _ARCHITECTURES = frozenset({"x86_64"})
 _PACKAGE_EXTENSION = r"pkg\.tar\.(?:zst|xz|gz|bz2|lrz|lzo|Z)"
-_NEEDED_RE = re.compile(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]")
-_SDK_SONAME_RE = re.compile(r"libmcp-cpp-sdk\.so(?:\..+)?")
 
 
 def write_consumer(directory: Path, version_text: str) -> None:
@@ -76,39 +74,6 @@ def validate_package_list(
     canonical = tuple(sorted(packages, key=lambda path: path.name))
     write_atomic(output, "".join(f"{path}\n" for path in canonical).encode("utf-8"))
     return canonical
-
-
-def _needed_libraries(path: Path) -> tuple[str, ...]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeError as error:
-        raise ValidationError("readelf dynamic dependency output is not UTF-8") from error
-    dependencies = tuple(_NEEDED_RE.findall(text))
-    if not dependencies or len(dependencies) != len(set(dependencies)):
-        raise ValidationError("readelf dynamic dependency output is empty or duplicated")
-    return dependencies
-
-
-def validate_elf_dependencies(
-    *,
-    shared_readelf: Path,
-    static_readelf: Path,
-    version_text: str,
-) -> None:
-    """Prove that installed shared/static CMake targets select distinct linkage."""
-
-    version = SemVer.parse(version_text, stable_only=True)
-    expected_shared = f"libmcp-cpp-sdk.so.{version.abi_version}"
-    shared_sdk = tuple(
-        name for name in _needed_libraries(shared_readelf) if _SDK_SONAME_RE.fullmatch(name)
-    )
-    static_sdk = tuple(
-        name for name in _needed_libraries(static_readelf) if _SDK_SONAME_RE.fullmatch(name)
-    )
-    if shared_sdk != (expected_shared,):
-        raise ValidationError("shared AUR consumer does not bind the exact SDK ABI SONAME")
-    if static_sdk:
-        raise ValidationError("static AUR consumer has an SDK dynamic dependency")
 
 
 def _parser() -> argparse.ArgumentParser:

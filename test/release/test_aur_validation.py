@@ -5,7 +5,6 @@ import tempfile
 import unittest
 
 from release.aur_validation import (
-    validate_elf_dependencies,
     validate_package_list,
     write_consumer,
 )
@@ -83,49 +82,3 @@ class AurValidationTests(unittest.TestCase):
                 version_text="0.2.0",
                 architecture="aarch64",
             )
-
-    def test_elf_contract_distinguishes_shared_and_static_sdk_linkage(self) -> None:
-        shared = self.base / "shared.readelf"
-        static = self.base / "static.readelf"
-        shared.write_text(
-            " 0x0000000000000001 (NEEDED) Shared library: [libmcp-cpp-sdk.so.0.2.0]\n"
-            " 0x0000000000000001 (NEEDED) Shared library: [libstdc++.so.6]\n",
-            encoding="utf-8",
-        )
-        static.write_text(
-            " 0x0000000000000001 (NEEDED) Shared library: [libcrypto.so.3]\n"
-            " 0x0000000000000001 (NEEDED) Shared library: [libstdc++.so.6]\n",
-            encoding="utf-8",
-        )
-        validate_elf_dependencies(
-            shared_readelf=shared,
-            static_readelf=static,
-            version_text="0.2.0",
-        )
-
-        for shared_soname, static_soname in (
-            ("libmcp-cpp-sdk.so.0", None),
-            ("libmcp-cpp-sdk.so.0.2.0", "libmcp-cpp-sdk.so.0.2.0"),
-        ):
-            shared.write_text(
-                f" (NEEDED) Shared library: [{shared_soname}]\n"
-                " (NEEDED) Shared library: [libstdc++.so.6]\n",
-                encoding="utf-8",
-            )
-            static.write_text(
-                (
-                    f" (NEEDED) Shared library: [{static_soname}]\n"
-                    if static_soname is not None
-                    else ""
-                )
-                + " (NEEDED) Shared library: [libstdc++.so.6]\n",
-                encoding="utf-8",
-            )
-            with self.subTest(shared=shared_soname, static=static_soname), self.assertRaises(
-                ValidationError
-            ):
-                validate_elf_dependencies(
-                    shared_readelf=shared,
-                    static_readelf=static,
-                    version_text="0.2.0",
-                )

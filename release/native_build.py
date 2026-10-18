@@ -12,8 +12,7 @@ import shutil
 import subprocess
 from typing import Iterable, Sequence
 
-from .aur_validation import validate_elf_dependencies
-from .consumer_validation import write_consumer_project
+from .consumer_validation import validate_elf_dependencies, write_consumer_project
 from .model import SemVer, ValidationError
 from .templates import render_file
 

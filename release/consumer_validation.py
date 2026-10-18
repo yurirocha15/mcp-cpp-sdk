@@ -1,11 +1,16 @@
-"""Generate the shared/static CMake consumer used by package validators."""
+"""Generate and check the shared/static CMake consumer used by package validators."""
 
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import shutil
 
 from .model import SemVer, ValidationError
+
+
+_NEEDED_RE = re.compile(r"\(NEEDED\)\s+Shared library: \[([^\]]+)\]")
+_SDK_SONAME_RE = re.compile(r"libmcp-cpp-sdk\.so(?:\..+)?")
 
 
 def consumer_sources(version: SemVer) -> tuple[str, str]:
@@ -51,3 +56,36 @@ def write_consumer_project(
     (directory / "main.cpp").write_text(
         source, encoding="utf-8", newline="\n"
     )
+
+
+def _needed_libraries(path: Path) -> tuple[str, ...]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeError as error:
+        raise ValidationError("readelf dynamic dependency output is not UTF-8") from error
+    dependencies = tuple(_NEEDED_RE.findall(text))
+    if not dependencies or len(dependencies) != len(set(dependencies)):
+        raise ValidationError("readelf dynamic dependency output is empty or duplicated")
+    return dependencies
+
+
+def validate_elf_dependencies(
+    *,
+    shared_readelf: Path,
+    static_readelf: Path,
+    version_text: str,
+) -> None:
+    """Prove that installed shared/static CMake targets select distinct linkage."""
+
+    version = SemVer.parse(version_text, stable_only=True)
+    expected_shared = f"libmcp-cpp-sdk.so.{version.abi_version}"
+    shared_sdk = tuple(
+        name for name in _needed_libraries(shared_readelf) if _SDK_SONAME_RE.fullmatch(name)
+    )
+    static_sdk = tuple(
+        name for name in _needed_libraries(static_readelf) if _SDK_SONAME_RE.fullmatch(name)
+    )
+    if shared_sdk != (expected_shared,):
+        raise ValidationError("shared package consumer does not bind the exact SDK ABI SONAME")
+    if static_sdk:
+        raise ValidationError("static package consumer has an SDK dynamic dependency")
