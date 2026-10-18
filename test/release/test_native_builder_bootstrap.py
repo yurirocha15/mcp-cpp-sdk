@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,37 @@ class NativeBuilderBootstrapTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_isolated_runner_allows_every_module_the_release_scripts_call(self) -> None:
+        callers = [
+            path
+            for pattern in ("scripts/release/*.ps1", "scripts/release/*.sh", "release/*.py")
+            for path in sorted(ROOT.glob(pattern))
+        ]
+        called = set()
+        for caller in callers:
+            text = caller.read_text(encoding="utf-8")
+            called.update(
+                re.findall(r"run_release_tool\.py\W+(release\.[a-z_]+)", text)
+            )
+        self.assertTrue(called)
+        for module in sorted(called):
+            with self.subTest(module=module):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-I",
+                        "-S",
+                        str(ROOT / "scripts/run_release_tool.py"),
+                        module,
+                        "--help",
+                    ],
+                    cwd=ROOT,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_matrix_uses_the_exact_hosted_runner_inventory(self) -> None:
         matrix = json.loads(bootstrap_matrix(lock=LOCK, stage="resolve-bases"))

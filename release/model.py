@@ -84,3 +84,8 @@ class SemVer:
     def __str__(self) -> str:
         suffix = f"-rc.{self.rc}" if self.rc is not None else ""
         return f"{self.core}{suffix}"
+
+    @property
+    def abi_version(self) -> str:
+        """Return the CMake SOVERSION used in native package identities."""
+        return self.core if self.major == 0 else str(self.major)

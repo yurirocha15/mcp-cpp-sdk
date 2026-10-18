@@ -8,7 +8,15 @@ import runpy
 import sys
 
 
-_ALLOWED_MODULES = frozenset({"release.native_builder_bootstrap"})
+_ALLOWED_MODULES = frozenset(
+    {
+        "release.aur_validation",
+        "release.conan_validation",
+        "release.native_builder",
+        "release.native_builder_bootstrap",
+        "release.package_validation",
+    }
+)
 
 
 def main() -> int:

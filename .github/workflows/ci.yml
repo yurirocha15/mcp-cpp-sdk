@@ -53,6 +53,16 @@ jobs:
         echo "CONAN_HOME=C:\.c" >> $GITHUB_ENV
       shell: bash
 
+    - name: Parse release PowerShell
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: ./scripts/release/check_powershell_syntax.ps1
+
+    - name: Test deterministic release ZIP
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: ./scripts/release/test_deterministic_zip.ps1
+
     - name: Cache Conan packages
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:

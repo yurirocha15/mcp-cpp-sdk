@@ -1,5 +1,6 @@
 {
     "debian/control.in": [
+        "ABI_VERSION",
         "MAINTAINER"
     ],
     "debian/copyright.in": [
@@ -14,10 +15,13 @@
     "debian/rules.in": [],
     "debian/not-installed.in": [],
     "debian/source/format.in": [],
-    "debian/libmcp-cpp-sdk0.2.install.in": [],
+    "debian/libmcp-cpp-sdk.install.in": [
+        "ABI_VERSION"
+    ],
     "debian/libmcp-cpp-sdk-dev.install.in": [],
     "debian/libmcp-cpp-sdk-static-dev.install.in": [],
     "rpm/mcp-cpp-sdk.spec.in": [
+        "ABI_VERSION",
         "RPM_VERSION",
         "RPM_RELEASE",
         "RPM_CHANGELOG_DATE",

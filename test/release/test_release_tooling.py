@@ -265,6 +265,7 @@ class TemplateTests(unittest.TestCase):
         inventory = json.loads((packaging / "templates.json").read_text(encoding="utf-8"))
         values = {
             "VERSION": "0.2.0",
+            "ABI_VERSION": "0.2.0",
             "DEBIAN_VERSION": "0.2.0-1",
             "DEBIAN_DISTRIBUTION": "noble",
             "MAINTAINER": "MCP C++ SDK Maintainers <maintainer@example.invalid>",
@@ -300,6 +301,16 @@ class TemplateTests(unittest.TestCase):
                 )
 
             ET.parse(output_root / "chocolatey/mcp-cpp-sdk.nuspec")
+            control = (output_root / "debian/control").read_text(encoding="utf-8")
+            self.assertIn("Package: libmcp-cpp-sdk0.2.0\n", control)
+            self.assertIn("Depends: libmcp-cpp-sdk0.2.0 (= ${binary:Version})", control)
+            self.assertEqual(
+                (output_root / "debian/libmcp-cpp-sdk.install").read_text(encoding="utf-8"),
+                "usr/lib/*/libmcp-cpp-sdk.so.0.2.0*\n",
+            )
+            spec = (output_root / "rpm/mcp-cpp-sdk.spec").read_text(encoding="utf-8")
+            self.assertIn("%package -n mcp-cpp-sdk0.2.0-libs\n", spec)
+            self.assertIn("%{_libdir}/libmcp-cpp-sdk.so.0.2.0*\n", spec)
             compile(
                 (output_root / "conan-center/all/conanfile.py").read_text(encoding="utf-8"),
                 "conanfile.py",
