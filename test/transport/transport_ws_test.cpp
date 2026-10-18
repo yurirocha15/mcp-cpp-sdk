@@ -14,16 +14,20 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/read_until.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/streambuf.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
+#include <boost/asio/write.hpp>
 #include <boost/beast/core/error.hpp>
-#include <boost/system/system_error.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
 #include <boost/beast/http/field.hpp>
 #include <boost/beast/websocket/stream.hpp>
+#include <boost/system/system_error.hpp>
 #include <chrono>
 #include <exception>
 #include <functional>
@@ -699,6 +703,49 @@ TEST_F(WebSocketTransportTest, ConnectTimeoutTooLongForTheClockMeansNoLimit) {
     ASSERT_TRUE(finished) << "close() did not end the pending connect";
     EXPECT_ANY_THROW(result.get());
     EXPECT_FALSE(timed_out.load());
+}
+
+// The handshake is several socket operations, and the connect timeout can pass between two of them,
+// here because the client's only io thread is busy when the first part of the response arrives.
+// The pending call fails with a timeout like any other expired setup.
+TEST_F(WebSocketTransportTest, ConnectTimeoutPassingBetweenTwoHandshakeReadsReportsATimeout) {
+    asio::io_context server_io;
+    tcp::acceptor acceptor(server_io, tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0));
+    const auto port = acceptor.local_endpoint().port();
+
+    std::thread server([&]() {
+        tcp::socket socket(server_io);
+        acceptor.accept(socket);
+        asio::streambuf request;
+        asio::read_until(socket, request, "\r\n\r\n");
+        asio::post(io_ctx_, []() { std::this_thread::sleep_for(600ms); });
+        std::this_thread::sleep_for(50ms);
+        asio::write(socket, asio::buffer(std::string("HTTP/1.1 101 Switching Protocols\r\n")));
+        std::this_thread::sleep_for(1s);
+    });
+
+    mcp::WebSocketClientTransport transport(io_ctx_.get_executor(), "127.0.0.1", std::to_string(port),
+                                            "/", 200ms);
+    auto result = asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
+        },
+        asio::use_future);
+    std::thread runner([this]() { io_ctx_.run(); });
+    const bool finished = result.wait_for(5s) == std::future_status::ready;
+    transport.close();
+    io_ctx_.stop();
+    runner.join();
+    server.join();
+
+    ASSERT_TRUE(finished);
+    try {
+        result.get();
+        ADD_FAILURE() << "the handshake succeeded";
+    } catch (const boost::system::system_error& error) {
+        EXPECT_EQ(error.code(), boost::beast::error::timeout) << error.code().message();
+    }
 }
 
 #ifdef __linux__

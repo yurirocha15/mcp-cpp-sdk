@@ -1,5 +1,7 @@
 #include <mcp/transport/websocket.hpp>
 
+#include "../detail/socket_deadline.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
@@ -466,6 +468,7 @@ struct WebSocketClientTransport::Impl {
 
         state->connection_state = ConnectionState::Connecting;
         state->connect_error = nullptr;
+        std::optional<detail::SocketDeadline> deadline;
         try {
             auto results =
                 co_await state->resolver.async_resolve(state->host, state->port, asio::use_awaitable);
@@ -476,19 +479,24 @@ struct WebSocketClientTransport::Impl {
             // One deadline covers the TCP connect and the handshake: a peer that accepts and then
             // says nothing would otherwise hold the pending call forever.
             if (state->connect_timeout > std::chrono::milliseconds::zero()) {
-                state->ws.next_layer().expires_after(state->connect_timeout);
+                deadline.emplace(state->strand, state->ws.next_layer().socket(),
+                                 state->connect_timeout);
             }
             co_await state->ws.next_layer().async_connect(results, asio::use_awaitable);
             co_await state->ws.async_handshake(state->host + ":" + state->port, state->path,
                                                asio::use_awaitable);
-            state->ws.next_layer().expires_never();
+            deadline.reset();
             throw_if_closed(state);
             state->connection_state = ConnectionState::Connected;
         } catch (...) {
-            state->connect_error = std::current_exception();
+            const bool timed_out = deadline && deadline->expired();
+            deadline.reset();
+            state->connect_error =
+                timed_out ? std::make_exception_ptr(boost::system::system_error(beast::error::timeout))
+                          : std::current_exception();
             state->connection_state = ConnectionState::Failed;
             notify_connection_waiters(state);
-            throw;
+            std::rethrow_exception(state->connect_error);
         }
         notify_connection_waiters(state);
     }
