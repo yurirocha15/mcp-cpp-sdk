@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-import json
 from pathlib import Path
 import re
 
 from .model import ValidationError
+from .strict_json import load_strict
 
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
@@ -45,15 +45,6 @@ _BASE_IMAGES = {
 }
 
 
-def _strict_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValidationError(f"native builder lock contains duplicate key: {key}")
-        result[key] = value
-    return result
-
-
 def _string(name: str, value: object) -> str:
     if (
         not isinstance(value, str)
@@ -66,18 +57,8 @@ def _string(name: str, value: object) -> str:
     return value
 
 
-def _document(path: Path) -> object:
-    try:
-        data = path.read_bytes()
-        if not data or len(data) > 1024 * 1024:
-            raise ValidationError("native builder lock must be a non-empty file below 1 MiB")
-        return json.loads(data.decode("utf-8"), object_pairs_hook=_strict_pairs)
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ValidationError(f"native builder lock is malformed: {error}") from error
-
-
 def load_builder_lock(path: Path, *, require_resolved: bool) -> tuple[dict[str, str], ...]:
-    document = _document(path)
+    document = load_strict(path, label="native builder lock")
     if (
         not isinstance(document, Mapping)
         or set(document) != {"schema_version", "targets"}

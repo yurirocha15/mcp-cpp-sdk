@@ -18,11 +18,12 @@ from .artifacts import (
     write_atomic,
 )
 from .model import DispatchRequest, ReleaseLedger, SemVer, ValidationError
+from .strict_json import load_strict
 from .templates import render_file
 
 
 def _json_object(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = load_strict(path, label=path.name)
     if not isinstance(value, dict):
         raise ValidationError(f"{path} must contain a JSON object")
     return value
@@ -129,7 +130,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(args.output)
         else:
             raise AssertionError(f"unhandled command: {args.command}")
-    except (OSError, json.JSONDecodeError, TypeError, KeyError, ValidationError) as error:
+    except (OSError, TypeError, KeyError, ValidationError) as error:
         print(f"release-tool: {error}", file=sys.stderr)
         return 2
     return 0
