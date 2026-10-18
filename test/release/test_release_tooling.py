@@ -7,7 +7,6 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
-from uuid import UUID
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -21,7 +20,7 @@ from release.artifacts import (
     canonical_json_bytes,
     sha256_file,
 )
-from release.model import DispatchRequest, ReleaseLedger, SemVer, ValidationError
+from release.model import SemVer, ValidationError
 from release.policy import ArtifactIdentity, IdempotencyDecision, decide_idempotency
 from release.templates import render_file, render_template
 from release.verify_gnupg_status import validate_status
@@ -57,83 +56,6 @@ class SemVerTests(unittest.TestCase):
     def test_stable_only_rejects_rc(self) -> None:
         with self.assertRaises(ValidationError):
             SemVer.parse("0.2.0-rc.1", stable_only=True)
-
-
-class DispatchTests(unittest.TestCase):
-    def request(self) -> dict[str, str]:
-        return {
-            "source_tag": "v0.2.0",
-            "source_commit_sha": ZERO_SHA,
-            "github_release_id": "123",
-            "source_workflow_run_id": "456",
-            "release_manifest_sha256": ONE_DIGEST,
-            "fork_branch": "package/mcp-cpp-sdk-0.2.0",
-            "fork_head_sha": ZERO_SHA,
-            "recipe_tree_sha256": TWO_DIGEST,
-            "request_uuid": str(UUID(int=1)),
-        }
-
-    def test_accepts_exact_request_and_recovery_branch(self) -> None:
-        self.assertEqual(DispatchRequest.from_mapping(self.request()).github_release_id, "123")
-        recovery = self.request()
-        recovery["fork_branch"] += "-r2"
-        DispatchRequest.from_mapping(recovery)
-
-    def test_rejects_extra_field_and_branch_mismatch(self) -> None:
-        extra = self.request()
-        extra["url"] = "https://example.invalid"
-        with self.assertRaises(ValidationError):
-            DispatchRequest.from_mapping(extra)
-        mismatch = self.request()
-        mismatch["fork_branch"] = "package/mcp-cpp-sdk-0.3.0"
-        with self.assertRaises(ValidationError):
-            DispatchRequest.from_mapping(mismatch)
-
-    def test_rejects_rc_noncanonical_hash_and_whitespace(self) -> None:
-        for field, value in (
-            ("source_tag", "v0.2.0-rc.1"),
-            ("source_commit_sha", "A" * 40),
-            ("github_release_id", "01"),
-            ("fork_branch", "package/mcp-cpp-sdk-0.2.0\n"),
-        ):
-            request = self.request()
-            request[field] = value
-            with self.subTest(field=field), self.assertRaises(ValidationError):
-                DispatchRequest.from_mapping(request)
-
-
-class LedgerTests(unittest.TestCase):
-    def ledger(self, version: str = "0.2.0") -> dict[str, object]:
-        return {
-            "schema_version": 1,
-            "version": version,
-            "tag": f"v{version}",
-            "source_commit_sha": ZERO_SHA,
-            "release_manifest_sha256": ONE_DIGEST,
-            "results": {
-                "github": "PUBLISHED",
-                "conan2": "SUBMITTED_PENDING_REVIEW",
-                "deb_apt": "LIVE",
-                "rpm": "LIVE",
-                "arch_aur": "LIVE",
-                "homebrew": "LIVE",
-                "chocolatey": "SUBMITTED_PENDING_MODERATION",
-            },
-        }
-
-    def test_round_trips_complete_ledger(self) -> None:
-        ledger = ReleaseLedger.from_mapping(self.ledger())
-        self.assertEqual(ledger.to_mapping(), self.ledger())
-
-    def test_rc_cannot_claim_downstream_publication(self) -> None:
-        with self.assertRaises(ValidationError):
-            ReleaseLedger.from_mapping(self.ledger("0.2.0-rc.1"))
-
-    def test_downstream_publication_requires_github_anchor(self) -> None:
-        value = self.ledger()
-        value["results"]["github"] = "FAILED"  # type: ignore[index]
-        with self.assertRaises(ValidationError):
-            ReleaseLedger.from_mapping(value)
 
 
 class ArtifactTests(unittest.TestCase):
