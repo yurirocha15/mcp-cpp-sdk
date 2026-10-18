@@ -20,6 +20,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/system/error_code.hpp>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <ctime>
@@ -253,9 +254,25 @@ std::string sanitize_for_diagnostics(std::string_view body) {
     return cleaned;
 }
 
+/// Does `reference` begin with an RFC 3986 §3.1 scheme, `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`
+/// followed by ':', before any '/', '?' or '#'? Only then is it an absolute URI; "://" further on,
+/// say in a query, does not make it one.
+bool has_uri_scheme(std::string_view reference) {
+    const auto colon = reference.find_first_of(":/?#");
+    if (colon == std::string_view::npos || colon == 0 || reference[colon] != ':' ||
+        std::isalpha(static_cast<unsigned char>(reference.front())) == 0) {
+        return false;
+    }
+    return std::all_of(reference.begin(), reference.begin() + static_cast<std::ptrdiff_t>(colon),
+                       [](char ch) {
+                           return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '+' ||
+                                  ch == '-' || ch == '.';
+                       });
+}
+
 /// Resolve a `Location` header against the URL that produced it.
 std::string resolve_redirect_target(const std::string& base, const std::string& location) {
-    if (location.find("://") != std::string::npos) {
+    if (has_uri_scheme(location)) {
         return location;
     }
     const auto origin = metadata_url_origin(base);

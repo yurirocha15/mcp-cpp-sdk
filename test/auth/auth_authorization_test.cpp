@@ -888,6 +888,46 @@ TEST(AuthMetadataRedirectTest, BoundsTheRedirectChain) {
     EXPECT_EQ(server.accepts(), 3);
 }
 
+// A relative Location stays relative even when its query carries a URL: only a scheme at its start
+// makes a reference absolute (RFC 3986 section 4.3).
+TEST(AuthMetadataRedirectTest, FollowsARelativeRedirectWhoseQueryNamesAUrl) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+
+    server.set_handler([](const http::request<http::string_body>& request) {
+        if (request.target() == "/prm") {
+            http::response<http::string_body> response{http::status::found, 11};
+            response.set(http::field::location, "/moved?from=http://example.com/");
+            return response;
+        }
+        return json_response({{"ok", true}});
+    });
+    asio::co_spawn(io_ctx, server.serve(2), asio::detached);
+
+    std::string failure;
+    json body;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+            client.set_metadata_policy(loopback_policy(server.origin()));
+            try {
+                body = co_await client.get_json(server.base_url() + "/prm");
+            } catch (const std::exception& error) {
+                failure = error.what();
+            }
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_EQ(failure, "");
+    EXPECT_EQ(body, json({{"ok", true}}));
+    ASSERT_EQ(server.targets().size(), 2U);
+    EXPECT_EQ(server.targets()[1], "/moved?from=http://example.com/");
+}
+
 TEST(AuthMetadataSizeCapTest, RejectsAnOversizedMetadataResponse) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
