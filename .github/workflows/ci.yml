@@ -343,6 +343,9 @@ jobs:
       run: |
         python3 -m unittest discover -s test/release -p 'test_*.py' -v
 
+    - name: Check the vendored jsoncons tree
+      run: python3 scripts/vendor_jsoncons.py --check
+
     - name: Compile release Python without executing it
       run: >-
         python3 -m compileall -q

@@ -46,7 +46,7 @@ def _aur_srcinfo(
     return (
         "pkgbase = mcp-cpp-sdk\n\tpkgdesc = Model Context Protocol C++ SDK\n"
         f"\tpkgver = {version}\n\tpkgrel = 1\n\turl = https://github.com/{repository}\n"
-        "\tarch = x86_64\n\tlicense = Apache-2.0\n"
+        "\tarch = x86_64\n\tlicense = Apache-2.0\n\tlicense = BSL-1.0\n"
         "\tmakedepends = cmake>=3.20\n\tmakedepends = gtest\n"
         "\tmakedepends = ninja\n\tmakedepends = python\n"
         "\tdepends = boost>=1.74\n\tdepends = nlohmann-json>=3.10.5\n"

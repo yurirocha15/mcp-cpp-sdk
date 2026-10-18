@@ -6,7 +6,7 @@ pkgrel=@PKGREL@
 pkgdesc='Model Context Protocol C++ SDK'
 arch=('x86_64')
 url='https://github.com/yurirocha15/mcp-cpp-sdk'
-license=('Apache-2.0')
+license=('Apache-2.0' 'BSL-1.0')
 options=('!debug' 'staticlibs')
 depends=('boost>=1.74' 'nlohmann-json>=3.10.5' 'openssl>=3.0')
 makedepends=('cmake>=3.20' 'gtest' 'ninja' 'python')

@@ -154,6 +154,25 @@ class AurPublishPolicyTests(unittest.TestCase):
         self.assertIn("'python'", template)
         self.assertIn('makedepends = python\\n', renderer)
 
+    def test_srcinfo_declares_the_pkgbuild_licenses(self) -> None:
+        template = (ROOT / "packaging/aur/PKGBUILD.in").read_text(encoding="utf-8")
+        declared = next(line for line in template.splitlines() if line.startswith("license=("))
+        pkgbuild_licenses = declared.removeprefix("license=(").removesuffix(")").replace("'", "").split()
+        srcinfo = _aur_srcinfo(
+            version=SemVer.parse("0.2.0"),
+            repository="yurirocha15/mcp-cpp-sdk",
+            source_url="https://example.invalid/mcp-cpp-sdk-0.2.0.tar.gz",
+            source_sha256="a" * 64,
+            fingerprint="A" * 40,
+        )
+        srcinfo_licenses = [
+            line.removeprefix("\tlicense = ")
+            for line in srcinfo.splitlines()
+            if line.startswith("\tlicense = ")
+        ]
+        self.assertEqual(srcinfo_licenses, pkgbuild_licenses)
+        self.assertEqual(pkgbuild_licenses, ["Apache-2.0", "BSL-1.0"])
+
     def test_dependency_metadata_matches_the_public_header_interface(self) -> None:
         template = (ROOT / "packaging/aur/PKGBUILD.in").read_text(encoding="utf-8")
         self.assertIn(
