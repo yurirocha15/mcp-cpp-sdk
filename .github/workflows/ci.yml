@@ -400,8 +400,10 @@ jobs:
       run: |
         python3 -m unittest discover -s test/release -p 'test_*.py' -v
 
-    - name: Check the vendored jsoncons tree
-      run: python3 scripts/vendor_jsoncons.py --check
+    - name: Check the vendored jsoncons tree and JSON Schema test data
+      run: |
+        python3 scripts/vendor_jsoncons.py --check
+        python3 scripts/vendor_json_schema_test_suite.py --check
 
     - name: Compile release Python without executing it
       run: >-
