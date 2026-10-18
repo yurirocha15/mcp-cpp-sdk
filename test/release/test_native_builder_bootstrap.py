@@ -50,6 +50,17 @@ class NativeBuilderBootstrapTests(unittest.TestCase):
             {"ubuntu-24.04", "ubuntu-24.04-arm"},
         )
 
+    def test_every_builder_copy_source_exists(self) -> None:
+        dockerfiles = sorted((ROOT / "release/native-builders").glob("*.Dockerfile"))
+        self.assertTrue(dockerfiles)
+        for dockerfile in dockerfiles:
+            for line in dockerfile.read_text(encoding="utf-8").splitlines():
+                parts = line.split()
+                if parts and parts[0] in {"COPY", "ADD"}:
+                    for source in parts[1:-1]:
+                        with self.subTest(dockerfile=dockerfile.name, source=source):
+                            self.assertTrue((ROOT / source).is_file())
+
     def test_selects_one_platform_manifest(self) -> None:
         index = json.dumps(
             {
