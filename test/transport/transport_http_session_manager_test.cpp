@@ -1,3 +1,5 @@
+#include "mcp/client/client.hpp"
+#include "mcp/transport/http_client.hpp"
 #include "mcp/transport/http_session_manager.hpp"
 
 #include <gtest/gtest.h>
@@ -20,6 +22,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -1356,4 +1359,55 @@ TEST_F(SessionManagerTest, StatelessDispatchUsesConfiguredToolExecutor) {
     EXPECT_TRUE(handler_ran.load(std::memory_order_acquire));
     EXPECT_FALSE(handler_ran_on_http_thread.load(std::memory_order_acquire));
     EXPECT_EQ(json::parse(response.body)["result"]["content"][0]["text"], "tool executor");
+}
+
+// One refused HTTP request is that request's failure. After a request draws a 401, the client's
+// next request on the same session is still sent and served.
+TEST_F(SessionManagerTest, ClientRequestAfterARefusedOneIsStillSent) {
+    const unsigned short port = 19881;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    std::atomic<bool> accept_tokens{true};
+    manager.set_bearer_token_validator(
+        [&accept_tokens](std::string_view) { return accept_tokens.load(); });
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    std::string refused_error;
+    std::string follow_up_error;
+    std::string follow_up_text;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            auto transport = std::make_shared<mcp::HttpClientTransport>(
+                io_ctx_.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
+            transport->set_bearer_token_provider([] { return std::string("token"); });
+            mcp::Client client(transport, io_ctx_.get_executor());
+            co_await client.connect("test-client", "1.0.0");
+
+            const std::string tool = "echo";
+            const json refused_arguments = {{"message", "refused"}};
+            const json served_arguments = {{"message", "served"}};
+            accept_tokens = false;
+            try {
+                (void)co_await client.call_tool(tool, refused_arguments);
+            } catch (const std::exception& error) {
+                refused_error = error.what();
+            }
+            accept_tokens = true;
+            try {
+                const mcp::CallToolResult result = co_await client.call_tool(tool, served_arguments);
+                follow_up_text = json(result).dump();
+            } catch (const std::exception& error) {
+                follow_up_error = error.what();
+            }
+            client.close();
+            manager.close();
+        },
+        [&manager](const std::exception_ptr&) { manager.close(); });
+
+    io_ctx_.run();
+
+    ASSERT_NE(refused_error.find("401"), std::string::npos) << refused_error;
+    EXPECT_EQ(follow_up_error, "");
+    EXPECT_NE(follow_up_text.find("served"), std::string::npos) << follow_up_text;
 }

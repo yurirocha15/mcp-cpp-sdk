@@ -22,8 +22,8 @@ struct SerializedTransportWriterState;
  * @brief Serializes asynchronous writes to a shared transport.
  *
  * Calls are queued on an Asio strand and written in FIFO order. A failed
- * transport write fails the active call, every queued call, and future calls.
- * The shared implementation keeps both the transport and outstanding writes
+ * transport write fails only the call that made it; the calls queued behind it
+ * are still written. The shared implementation keeps both the transport and outstanding writes
  * alive if this lightweight wrapper is destroyed.
  */
 class MCP_API SerializedTransportWriter {

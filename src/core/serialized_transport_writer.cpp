@@ -53,16 +53,6 @@ struct SerializedTransportWriterState {
         operation->completion.expires_at(std::chrono::steady_clock::time_point::min(), ignored);
     }
 
-    void fail_queue(std::exception_ptr error) {
-        failure = error;
-        while (!queue.empty()) {
-            auto operation = std::move(queue.front());
-            queue.pop_front();
-            complete(operation, error);
-        }
-        draining = false;
-    }
-
     static Task<void> drain(std::shared_ptr<SerializedTransportWriterState> state) {
         while (!state->queue.empty()) {
             auto operation = state->queue.front();
@@ -73,15 +63,19 @@ struct SerializedTransportWriterState {
                                         boost::asio::error::operation_aborted)));
                 continue;
             }
+            // A failed write fails only its own call. HttpClientTransport answers a refused request
+            // or a dropped connection with an error and opens a new connection for the next one,
+            // so failing every later call as well would end a client over one request. A transport
+            // that cannot recover fails each later call on its own.
+            std::exception_ptr error;
             try {
                 co_await state->transport->write_message(*operation->message);
             } catch (...) {
-                state->fail_queue(std::current_exception());
-                co_return;
+                error = std::current_exception();
             }
 
             state->queue.pop_front();
-            complete(operation);
+            complete(operation, std::move(error));
         }
 
         state->draining = false;
@@ -90,10 +84,6 @@ struct SerializedTransportWriterState {
     static Task<void> enqueue_and_wait(std::shared_ptr<SerializedTransportWriterState> state,
                                        std::shared_ptr<const std::string> message,
                                        std::shared_ptr<const std::atomic<bool>> cancel_before_start) {
-        if (state->failure) {
-            std::rethrow_exception(state->failure);
-        }
-
         auto operation = std::make_shared<Operation>(state->strand, std::move(message),
                                                      std::move(cancel_before_start));
         state->queue.push_back(operation);
@@ -117,7 +107,6 @@ struct SerializedTransportWriterState {
     std::shared_ptr<ITransport> transport;
     boost::asio::strand<boost::asio::any_io_executor> strand;
     std::deque<std::shared_ptr<Operation>> queue;
-    std::exception_ptr failure;
     bool draining{false};
 };
 
