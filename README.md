@@ -129,8 +129,9 @@ server.add_tool<nlohmann::json, nlohmann::json>("long_task", "A task with progre
 GCC 12 and GCC 13 crash with an internal compiler error when a `co_await`
 expression contains an initializer list whose elements have non-trivial
 destructors. GCC 13 is the default compiler on Ubuntu 24.04, so this is easy to
-hit on a stock toolchain. The error looks like this, and names the closing brace
-of the enclosing lambda rather than the offending argument:
+hit on a stock toolchain. The error looks like this with GCC 13.3 (GCC 12.4
+reports line 10556), and names the closing brace of the enclosing lambda rather
+than the offending argument:
 
 ```
 internal compiler error: in build_special_member_call, at cp/call.cc:11096

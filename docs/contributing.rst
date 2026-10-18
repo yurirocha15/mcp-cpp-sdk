@@ -394,6 +394,8 @@ have non-trivial destructors.** GCC 12 and GCC 13 crash outright:
 
    internal compiler error: in build_special_member_call, at cp/call.cc:11096
 
+That is GCC 13.3's line number; GCC 12.4 reports ``cp/call.cc:10556``.
+
 Unlike the GCC 11 bug above, this is a compile-time failure, not a runtime one, and the
 diagnostic points at the closing brace of the enclosing lambda rather than the offending
 argument. GCC 13 is the default compiler on Ubuntu 24.04.
