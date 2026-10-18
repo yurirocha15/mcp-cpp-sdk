@@ -1368,9 +1368,10 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
     auto params = deserialize_request_params<CallToolParams>(json_msg, "tools/call");
     if (!tool_handlers.contains(params.name)) {
         // This, not the throw in invoke_tool_impl, is the site a remote client actually reaches:
-        // the RPC path refuses before dispatch. The name is entirely the client's, so flatten and
-        // bound it before it reaches the operator's log.
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_METHOD_NOT_FOUND,
+        // the RPC path refuses before dispatch. The tools spec lists an unknown tool as -32602
+        // (Invalid params). The name is entirely the client's, so flatten and bound it before it
+        // reaches the operator's log.
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
                                   "Unknown tool: " + detail::sanitize_for_diagnostics(params.name));
     }
 
@@ -1566,7 +1567,8 @@ Task<std::string> Server::Impl::handle_prompts_get_wire(const nlohmann::json& js
     auto params = deserialize_request_params<GetPromptRequestParams>(json_msg, "prompts/get");
     auto iter = prompt_handlers.find(params.name);
     if (iter == prompt_handlers.end()) {
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_METHOD_NOT_FOUND,
+        // The prompts spec lists an invalid prompt name as -32602 (Invalid params).
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
                                   "Unknown prompt: " + params.name);
     }
 

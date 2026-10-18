@@ -12,6 +12,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   the SDK is the top-level CMake project. Added with FetchContent or
   `add_subdirectory`, the SDK no longer builds its tests and examples or needs
   GTest; setting an option still overrides the default.
+- `tools/call` naming an unknown tool and `prompts/get` naming an unknown
+  prompt are answered with `g_INVALID_PARAMS` (`-32602`), as the tools and
+  prompts specifications list, instead of `g_METHOD_NOT_FOUND` (`-32601`).
 
 ### Fixed
 
