@@ -136,9 +136,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   or `set_allow_all_origins(true)` was called. Upgrades without an `Origin`
   header are unaffected. Previously every upgrade was accepted.
 - A server session enforces the initialization sequence: until
-  `notifications/initialized` arrives, every request other than `initialize`
-  and `ping` is answered with `g_INVALID_REQUEST`, and a second `initialize`
-  within a session is rejected. When `Server::run()` is given an
+  `notifications/initialized` arrives, every request other than `initialize`,
+  `ping` and `server/discover` is answered with `g_INVALID_REQUEST`, and a
+  second `initialize` within a session is rejected. When `Server::run()` is given an
   `HttpServerTransport` (not a transport that wraps one), a session the client
   ended with `DELETE` is over, and the next client must send `initialize` to
   start a new one. Nothing of the ended session reaches the next one: its
