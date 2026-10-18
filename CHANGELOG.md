@@ -122,6 +122,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Fixed
 
+- `HttpClientTransport` opens a new connection after a response with
+  `Connection: close`; previously the next request was written to the closed
+  connection and failed.
 - `HttpServerTransport` no longer takes a request the server sends to the
   client for the response to a client request that has the same id.
 

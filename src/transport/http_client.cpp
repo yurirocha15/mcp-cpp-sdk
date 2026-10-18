@@ -413,6 +413,11 @@ struct HttpClientTransport::Impl {
             beast::flat_buffer response_buffer;
             StringResponse response;
             co_await http::async_read(stream, response_buffer, response, net::use_awaitable);
+            if (!response.keep_alive()) {
+                // The server closes the connection after this response (RFC 9112 section 9.6), so
+                // the next request has to open a new one.
+                impl->reset_connection();
+            }
 
             impl->capture_session_id(response);
             impl->process_response(response);

@@ -1572,3 +1572,87 @@ TEST_F(HttpTransportTest, ServerRequestWithAPendingIdIsNotTakenForTheResponse) {
     EXPECT_EQ(call.body.find("\"method\""), std::string::npos) << call.body;
     EXPECT_NE(call.body.find("done"), std::string::npos) << call.body;
 }
+
+namespace {
+
+/// Answers each request on its own connection: the response says `Connection: close` and the
+/// socket is closed once it has been written, as an HTTP/1.1 server may do.
+mcp::Task<void> serve_one_request_per_connection(asio::ip::tcp::acceptor& acceptor, int& requests) {
+    for (;;) {
+        auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+        beast::flat_buffer buffer;
+        http::request<http::string_body> request;
+        boost::system::error_code read_error;
+        co_await http::async_read(socket, buffer, request,
+                                  asio::redirect_error(asio::use_awaitable, read_error));
+        if (read_error) {
+            continue;
+        }
+        ++requests;
+        http::response<http::string_body> response{http::status::accepted, request.version()};
+        if (request.method() == http::verb::post) {
+            const auto message = nlohmann::json::parse(request.body());
+            if (message.contains("id")) {
+                nlohmann::json result = nlohmann::json::object();
+                if (message.value("method", "") == "initialize") {
+                    result = {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                              {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
+                              {"capabilities", nlohmann::json::object()}};
+                }
+                response.result(http::status::ok);
+                response.set(http::field::content_type, "application/json");
+                response.body() =
+                    nlohmann::json{{"jsonrpc", "2.0"}, {"id", message.at("id")}, {"result", result}}
+                        .dump();
+            }
+        } else {
+            response.result(http::status::ok);
+        }
+        response.set("MCP-Session-Id", "session-1");
+        response.keep_alive(false);
+        response.prepare_payload();
+        boost::system::error_code write_error;
+        co_await http::async_write(socket, response,
+                                   asio::redirect_error(asio::use_awaitable, write_error));
+        boost::system::error_code ignored;
+        socket.shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+        socket.close(ignored);
+    }
+}
+
+}  // namespace
+
+// A response carrying `Connection: close` ends that connection (RFC 9112 section 9.6), so the
+// client's next request has to go out on a new one rather than on the socket the server closed.
+TEST_F(HttpTransportTest, ClientOpensANewConnectionAfterConnectionClose) {
+    asio::ip::tcp::acceptor acceptor(io_ctx_, {asio::ip::make_address("127.0.0.1"), 0});
+    const auto port = acceptor.local_endpoint().port();
+    int requests = 0;
+    asio::co_spawn(io_ctx_, serve_one_request_per_connection(acceptor, requests),
+                   [](const std::exception_ptr&) {});
+
+    std::string failure;
+    bool pinged = false;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            auto client_transport = std::make_shared<mcp::HttpClientTransport>(
+                io_ctx_.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
+            mcp::Client client(client_transport, io_ctx_.get_executor());
+            try {
+                co_await client.connect("test-client", "1.0.0");
+                co_await client.ping();
+                pinged = true;
+            } catch (const std::exception& error) {
+                failure = error.what();
+            }
+            client.close();
+            boost::system::error_code ignored;
+            acceptor.close(ignored);
+        },
+        [](const std::exception_ptr&) {});
+
+    io_ctx_.run_for(std::chrono::seconds(10));
+
+    EXPECT_TRUE(pinged) << "failure: " << failure << " after " << requests << " request(s)";
+}
