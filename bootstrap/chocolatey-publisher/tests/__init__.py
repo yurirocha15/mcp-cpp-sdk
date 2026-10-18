@@ -1,1 +1,0 @@
-"""Chocolatey publisher policy tests."""
