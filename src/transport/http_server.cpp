@@ -55,8 +55,8 @@ struct HttpServerTransport::Impl {
         std::optional<std::string> response_body;
         std::optional<std::string> session_header;
         std::optional<std::string> event_id;
-        // Set only for a request carried under a sentinel id. Holds the id the caller actually
-        // sent, so run_write can put it back before the response leaves the transport.
+        /// Set only for a request carried under a sentinel id. Holds the id the caller actually
+        /// sent, so run_write can put it back before the response leaves the transport.
         std::optional<nlohmann::json> client_request_id;
         bool response_ready{false};
         /// Set when a DELETE ended the session this request was sent in.
@@ -316,10 +316,10 @@ struct HttpServerTransport::Impl {
         co_return timer_signal;
     }
 
-    // A transport-private id for a request that arrives with no session credential. The random
-    // prefix is drawn once per transport from the same secure source as the session id, so a
-    // peer cannot construct an id that collides with a live sentinel, and the counter keeps
-    // concurrent sentinels distinct from each other.
+    /// A transport-private id for a request that arrives with no session credential. The random
+    /// prefix is drawn once per transport from the same secure source as the session id, so a
+    /// peer cannot construct an id that collides with a live sentinel, and the counter keeps
+    /// concurrent sentinels distinct from each other.
     std::string next_sentinel_request_id() {
         if (sentinel_id_prefix.empty()) {
             sentinel_id_prefix = "mcp-pregate-" + generate_session_id() + "-";
@@ -518,21 +518,15 @@ struct HttpServerTransport::Impl {
             co_return std::move(*error);
         }
 
-        // server/discover is a pre-gate method: it MUST stay reachable with zero prior session
-        // state, so a discover REQUEST that carries no MCP-Session-Id header skips the POST
-        // session gate — mirroring HttpSessionManager, which intercepts sessionless discover
-        // before resolve_session_for_post. Nothing else is exempted: any other method, and
-        // discover WITH a session header, still goes through validate_post_session unchanged,
-        // and this path neither creates nor mutates session state.
+        // server/discover is a pre-gate method: it MUST stay reachable with zero prior session state,
+        // so a discover request with no MCP-Session-Id header skips the POST session gate. Any other
+        // method, and discover with a session header, still goes through validate_post_session, and
+        // this path neither creates nor mutates session state.
         //
-        // The "id" requirement is deliberate and does NOT mirror the sibling transport. Without
-        // it a sessionless JSON-RPC *notification* named server/discover would skip the gate and
-        // push its whole body onto the unbounded incoming queue below, answering 202 without
-        // ever waiting for the server. server/discover is a request method, so demanding an id
-        // costs nothing and keeps that unbounded enqueue behind the session gate. The id must also
-        // be one JSON-RPC allows (a string or an integer): this path replaces it with a sentinel
-        // before the server sees it, so the server's own id check would never run, and anything
-        // else is left to the path every other request takes.
+        // The "id" requirement keeps a sessionless *notification* named server/discover from skipping
+        // the gate and pushing its body onto the unbounded incoming queue below. The id must also be a
+        // string or an integer: this path replaces it with a sentinel, so the server's own id check
+        // never runs on it.
         const bool has_valid_id =
             request_json.contains("id") &&
             (request_json.at("id").is_string() || request_json.at("id").is_number_integer());
@@ -565,22 +559,12 @@ struct HttpServerTransport::Impl {
                     .dump());
         }
 
-        // A sessionless discover carries an id chosen by an unauthenticated party, so it is given
-        // a transport-private sentinel id here and the caller's own id is restored in run_write
-        // before the response leaves. Registering it under the raw id would share a key space with
-        // the established session: a prober could claim an id the session then needs and force a
-        // spurious "Request id already pending", and the raw id would also land in
-        // sessionless_request_ids, which decides replay-store exclusion, letting the prober steer
-        // what the session's replay history contains.
-        //
-        // Only this pre-gate path pays the rewrite; session-gated requests are registered under,
-        // and forwarded with, the exact bytes the peer sent.
-        //
-        // Do not replace this with a per-session or per-principal map that lets both parties hold
-        // the same raw id. Correlation keys on the id the peer echoes back, so a response for id N
-        // could belong to either holder and the transport would have to guess -- and guessing
-        // wrong hands one party another party's response body, which is worse than the denial it
-        // replaces.
+        // A sessionless discover carries an id chosen by an unauthenticated party, so it is
+        // registered under a transport-private sentinel id and the caller's own id is restored in
+        // run_write. The raw id would share a key space with the established session: a prober could
+        // claim an id the session then needs ("Request id already pending"), and could steer
+        // replay-store exclusion through sessionless_request_ids. Session-gated requests keep the
+        // exact bytes the peer sent.
         std::string request_id_key;
         std::optional<nlohmann::json> client_request_id;
         std::string sentinel_body;
@@ -966,11 +950,11 @@ struct HttpServerTransport::Impl {
     AsyncBearerTokenValidator async_bearer_token_validator;
     std::size_t max_request_body_bytes{constants::g_default_max_request_body_bytes};
     BearerChallengeConfig bearer_challenge;
-    // Rendered once when the challenge or the metadata changes, so serving a 401 never formats.
+    /// Rendered once when the challenge or the metadata changes, so serving a 401 never formats.
     std::string www_authenticate_value{"Bearer"};
     std::optional<ProtectedResourceMetadataConfig> protected_resource_metadata;
     std::string protected_resource_metadata_body;
-    // The resolved serving path: `path` when set, else derived from `resource`.
+    /// The resolved serving path: `path` when set, else derived from `resource`.
     std::string protected_resource_metadata_path;
     std::unordered_set<std::string> unauthenticated_paths;
 

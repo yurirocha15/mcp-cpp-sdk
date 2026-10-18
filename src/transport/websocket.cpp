@@ -1,5 +1,7 @@
 #include <mcp/transport/websocket.hpp>
 
+#include "../detail/socket_deadline.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
@@ -37,6 +39,16 @@ namespace asio = boost::asio;
 using WsStream = beast::websocket::stream<beast::tcp_stream>;
 
 namespace {
+
+// The timer counts in its own, finer duration, so a limit beyond half its range -- about 146 years
+// -- would overflow on conversion or when added to the current time. Such a value, including
+// milliseconds::max(), can only mean "no limit", so it becomes zero, which is how no limit is
+// spelled here.
+std::chrono::milliseconds effective_connect_timeout(std::chrono::milliseconds requested) {
+    constexpr auto longest =
+        std::chrono::duration_cast<std::chrono::milliseconds>(asio::steady_timer::duration::max() / 2);
+    return requested > longest ? std::chrono::milliseconds::zero() : requested;
+}
 
 constexpr auto kNever = std::chrono::steady_clock::time_point::max();
 
@@ -386,6 +398,7 @@ struct WebSocketClientTransport::Impl {
         Failed,
     };
 
+    std::chrono::milliseconds connect_timeout;
     asio::strand<asio::any_io_executor> strand;
     asio::ip::tcp::resolver resolver;
     WsStream ws;
@@ -400,8 +413,9 @@ struct WebSocketClientTransport::Impl {
     bool read_active{false};
 
     Impl(const asio::any_io_executor& executor, std::string host_arg, std::string port_arg,
-         std::string path_arg)
-        : strand(asio::make_strand(executor)),
+         std::string path_arg, std::chrono::milliseconds connect_timeout_arg)
+        : connect_timeout(effective_connect_timeout(connect_timeout_arg)),
+          strand(asio::make_strand(executor)),
           resolver(strand),
           ws(strand),
           host(std::move(host_arg)),
@@ -454,19 +468,35 @@ struct WebSocketClientTransport::Impl {
 
         state->connection_state = ConnectionState::Connecting;
         state->connect_error = nullptr;
+        std::optional<detail::SocketDeadline> deadline;
         try {
             auto results =
                 co_await state->resolver.async_resolve(state->host, state->port, asio::use_awaitable);
+            // A close() that ran while the resolve could no longer be cancelled closed a socket
+            // that was not open yet. From here to the socket opening inside async_connect()
+            // nothing suspends, so a later close() runs on the strand after it and closes it.
+            throw_if_closed(state);
+            // One deadline covers the TCP connect and the handshake: a peer that accepts and then
+            // says nothing would otherwise hold the pending call forever.
+            if (state->connect_timeout > std::chrono::milliseconds::zero()) {
+                deadline.emplace(state->strand, state->ws.next_layer().socket(),
+                                 state->connect_timeout);
+            }
             co_await state->ws.next_layer().async_connect(results, asio::use_awaitable);
             co_await state->ws.async_handshake(state->host + ":" + state->port, state->path,
                                                asio::use_awaitable);
+            deadline.reset();
             throw_if_closed(state);
             state->connection_state = ConnectionState::Connected;
         } catch (...) {
-            state->connect_error = std::current_exception();
+            const bool timed_out = deadline && deadline->expired();
+            deadline.reset();
+            state->connect_error =
+                timed_out ? std::make_exception_ptr(boost::system::system_error(beast::error::timeout))
+                          : std::current_exception();
             state->connection_state = ConnectionState::Failed;
             notify_connection_waiters(state);
-            throw;
+            std::rethrow_exception(state->connect_error);
         }
         notify_connection_waiters(state);
     }
@@ -509,8 +539,10 @@ struct WebSocketClientTransport::Impl {
 };
 
 WebSocketClientTransport::WebSocketClientTransport(const asio::any_io_executor& executor,
-                                                   std::string host, std::string port, std::string path)
-    : impl_(std::make_shared<Impl>(executor, std::move(host), std::move(port), std::move(path))) {}
+                                                   std::string host, std::string port, std::string path,
+                                                   std::chrono::milliseconds connect_timeout)
+    : impl_(std::make_shared<Impl>(executor, std::move(host), std::move(port), std::move(path),
+                                   connect_timeout)) {}
 
 WebSocketClientTransport::~WebSocketClientTransport() {
     try {

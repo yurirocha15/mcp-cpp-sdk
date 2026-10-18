@@ -958,7 +958,10 @@ TEST_F(ClientCoreTest, ConcurrentRequestsRemainCorrelatedOnMultiThreadedExecutor
     auto [client_transport, server_transport] =
         mcp::create_memory_transport_pair(io_ctx_.get_executor());
     mcp::ClientOptions options;
-    options.request_timeout = 2s;
+    // This timeout and the watchdog below only end a run that has gone wrong. They are wide
+    // because a sanitizer can stop every thread for seconds while it prepares a report, including
+    // one a suppression then discards.
+    options.request_timeout = 30s;
     mcp::Client client(client_transport, io_ctx_.get_executor(), options);
 
     std::atomic_size_t completed{0};
@@ -1022,7 +1025,7 @@ TEST_F(ClientCoreTest, ConcurrentRequestsRemainCorrelatedOnMultiThreadedExecutor
         boost::asio::detached);
 
     boost::asio::steady_timer watchdog(io_ctx_);
-    watchdog.expires_after(5s);
+    watchdog.expires_after(60s);
     watchdog.async_wait([&client, &completed, &stop_poll](const boost::system::error_code& error) {
         if (!error && completed.load(std::memory_order_acquire) != request_count) {
             stop_poll.store(true, std::memory_order_release);

@@ -1,4 +1,5 @@
 #include "../detail/peer_json.hpp"
+#include "../detail/socket_deadline.hpp"
 
 #include <mcp/core/constants.hpp>
 #include <mcp/transport/http_client.hpp>
@@ -127,11 +128,18 @@ struct HttpClientTransport::Impl {
 
         auto resolved_endpoints =
             co_await state->resolver.async_resolve(host, port, net::use_awaitable);
+        // A close() that ran while the resolve could no longer be cancelled found no socket to
+        // cancel either. From here to the socket opening inside async_connect() nothing suspends,
+        // so a later close() runs on the strand after it and closes that socket.
+        if (state->closed.load(std::memory_order_acquire)) {
+            throw std::runtime_error("HttpClientTransport is closed");
+        }
         if (!state->stream) {
             state->stream.emplace(strand);
         }
         auto& stream = *state->stream;
-        stream.expires_after(std::chrono::seconds(constants::g_http_timeout_seconds));
+        const detail::SocketDeadline deadline(stream.get_executor(), stream.socket(),
+                                              std::chrono::seconds(constants::g_http_timeout_seconds));
         co_await stream.async_connect(resolved_endpoints, net::use_awaitable);
     }
 
@@ -391,6 +399,7 @@ struct HttpClientTransport::Impl {
         state.operation_active = true;
         const bool initialize_operation = impl->capture_initialize_request(message);
 
+        std::optional<detail::SocketDeadline> deadline;
         try {
             co_await impl->ensure_connected();
 
@@ -418,12 +427,14 @@ struct HttpClientTransport::Impl {
                 throw std::runtime_error("HttpClientTransport stream is not initialized");
             }
             auto& stream = *state.stream;
-            stream.expires_after(std::chrono::seconds(constants::g_http_timeout_seconds));
+            deadline.emplace(stream.get_executor(), stream.socket(),
+                             std::chrono::seconds(constants::g_http_timeout_seconds));
             co_await http::async_write(stream, request, net::use_awaitable);
 
             beast::flat_buffer response_buffer;
             StringResponse response;
             co_await http::async_read(stream, response_buffer, response, net::use_awaitable);
+            deadline.reset();
             if (!response.keep_alive()) {
                 // The server closes the connection after this response (RFC 9112 section 9.6), so
                 // the next request has to open a new one.
@@ -437,11 +448,21 @@ struct HttpClientTransport::Impl {
             }
             complete_operation(impl->state);
         } catch (...) {
+            const bool timed_out = deadline && deadline->expired();
+            deadline.reset();
             if (initialize_operation) {
                 state.initialize_request_key.reset();
             }
             impl->reset_connection();
             complete_operation(impl->state);
+            // close() closes the socket under the write, and what the socket layer then reports
+            // depends on the platform and on which operation the close landed in.
+            if (state.closed.load(std::memory_order_acquire)) {
+                throw boost::system::system_error(net::error::operation_aborted);
+            }
+            if (timed_out) {
+                throw boost::system::system_error(beast::error::timeout);
+            }
             throw;
         }
     }
@@ -479,8 +500,8 @@ std::string HttpClientTransport::last_event_id() const {
     return impl_->state->last_event_id;
 }
 
-// Safe to call at any time, including mid-flight: a request already started keeps the provider it
-// pinned, and the next one picks up the new value.
+/// Safe to call at any time, including mid-flight: a request already started keeps the provider it
+/// pinned, and the next one picks up the new value.
 void HttpClientTransport::set_bearer_token_provider(std::function<std::string()> provider) {
     std::lock_guard lock(impl_->provider_mutex);
     impl_->bearer_token_provider = std::move(provider);
@@ -517,8 +538,11 @@ void HttpClientTransport::close() {
             if (shared_state->operation_active) {
                 shared_state->resolver.cancel();
                 if (shared_state->stream) {
+                    // Closed, not cancelled: a cancel reaches only an operation that is pending
+                    // right now, and the write may be between two of them or have one already
+                    // completed and waiting to resume. A closed socket fails the next one too.
                     beast::error_code ignored;
-                    shared_state->stream->socket().cancel(ignored);
+                    shared_state->stream->socket().close(ignored);
                 }
                 while (shared_state->operation_active) {
                     try {
@@ -528,6 +552,10 @@ void HttpClientTransport::close() {
                             co_return;
                         }
                     }
+                }
+                // A write that had already finished keeps its stream, now with a closed socket.
+                if (shared_state->stream && !shared_state->stream->socket().is_open()) {
+                    shared_state->stream.reset();
                 }
             }
 
@@ -541,7 +569,8 @@ void HttpClientTransport::close() {
                             close_target->host, close_target->port, net::use_awaitable);
 
                         shared_state->stream.emplace(shared_state->timer.get_executor());
-                        shared_state->stream->expires_after(
+                        const detail::SocketDeadline connect_deadline(
+                            shared_state->stream->get_executor(), shared_state->stream->socket(),
                             std::chrono::seconds(constants::g_http_timeout_seconds));
                         co_await shared_state->stream->async_connect(resolved_endpoints,
                                                                      net::use_awaitable);
@@ -559,7 +588,8 @@ void HttpClientTransport::close() {
                         }
                     }
 
-                    shared_state->stream->expires_after(
+                    const detail::SocketDeadline deadline(
+                        shared_state->stream->get_executor(), shared_state->stream->socket(),
                         std::chrono::seconds(constants::g_http_timeout_seconds));
                     co_await http::async_write(*shared_state->stream, delete_request,
                                                net::use_awaitable);

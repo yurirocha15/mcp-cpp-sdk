@@ -183,6 +183,19 @@ Versioning; a `0.x` version is a stable release unless its version has an
   per-request override, that a request outliving it fails with
   `g_REQUEST_TIMEOUT` while the peer may still be running it, and that no
   value disables the deadline.
+- `python scripts/build.py --tsan --test` builds and runs the tests under
+  ThreadSanitizer (CMake option `ENABLE_TSAN`), and `--msan --test` under
+  MemorySanitizer, against a libc++ and dependencies it builds instrumented.
+  `--compiler clang` compiles the AddressSanitizer and ThreadSanitizer builds
+  with Clang. CI runs all of them on pushes to `main` and on pull requests
+  into it, and the AddressSanitizer run now also checks for stack use after
+  return.
+- `WebSocketClientTransport` takes a `connect_timeout` (default 30 seconds)
+  that bounds the TCP connect and the WebSocket handshake together. A peer
+  that accepts the connection and then stalls now fails the pending call with
+  a timeout instead of holding it forever. Zero, a negative value, or one too
+  long for the clock to represent, such as `std::chrono::milliseconds::max()`,
+  disables the limit.
 
 ### Changed
 
@@ -444,6 +457,38 @@ Versioning; a `0.x` version is a stable release unless its version has an
   throws from `close()`, or a drain wait that fails for any reason other than
   cancellation. Previously such a failure left the session registered and
   every later `run()` was refused for the lifetime of the `Server`.
+- Closing an OAuth client transport from a thread that does not run the
+  `io_context` could be lost while a metadata lookup was resolving: the close
+  found no socket to shut, and the flow went on to connect and blocked until
+  the HTTP timeout. The abort latch is now checked again just before the
+  connection is opened. `OAuthHttpClient` also keeps every request on the
+  client's one strand, so this holds when several threads run the `io_context`.
+  A request used to leave that strand at its first suspension, so a close could
+  run on another thread at the same time: a data race on the socket that could
+  crash, or a close lost in the instant before the socket opened. Callers are
+  still resumed on their own executor and never on the client's strand,
+  including a caller that has been cancelled. An installed `HostResolver` is
+  called on that strand too, so one that blocks holds up every other request
+  on the client and the closes that end them; it must return promptly.
+- Closing `HttpClientTransport` or `WebSocketClientTransport` from a thread
+  that does not run the `io_context` could be lost while the transport was
+  resolving its server's address: the close found no socket to act on, and the
+  transport went on to connect. The HTTP write blocked until the HTTP timeout,
+  and the WebSocket connect waited on its handshake with no limit. Both
+  transports now check for the close again once the address is known and fail
+  the pending call instead of connecting. For `WebSocketClientTransport` this
+  holds however many threads run the `io_context`.
+- `HttpClientTransport::close()` now closes the socket of a write that is in
+  flight instead of cancelling its pending operation once. A close that arrived
+  between two socket operations, or just after one had completed, cancelled
+  nothing and the write carried on until the HTTP timeout; with several threads
+  running the `io_context` that included a close racing the connect. The write
+  now fails promptly in each of these cases, however many threads run the
+  `io_context`, and reports `operation_aborted` on every platform, whatever the
+  closed socket itself reported. The session `DELETE` that `close()` sends
+  afterwards uses a new connection. It already did after a cancelled write;
+  when the response had already arrived as `close()` ran, it used to reuse the
+  write's connection and now opens a new one as well.
 
 ### Fixed
 
@@ -452,6 +497,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   connection and failed.
 - `HttpServerTransport` no longer takes a request the server sends to the
   client for the response to a client request that has the same id.
+- `HttpClientTransport` and `OAuthHttpClient` no longer end the process when
+  a request's 30-second deadline passes between two of its socket operations,
+  for example while the io thread is busy as the response arrives; Boost.Beast
+  1.86 aborts when an operation starts after its stream's deadline. The
+  deadline now closes the socket, and the request fails with
+  `boost::beast::error::timeout`.
 
 ### Security
 

@@ -17,10 +17,9 @@
 //   [wire-builders]      make_result_wire/make_error_wire are synchronous helpers;
 //                        do NOT convert them to Task<T> coroutines.
 //
-// These conventions are the guard against that bug, and they are the only guard. GCC 11 is also
-// sensitive to the shape of the coroutine frames themselves, so an unrelated refactor can move a
-// failure in or out of existence without touching anything the conventions describe. A green
-// ubuntu-22.04 therefore means the bug is not currently being tripped, not that it is fixed.
+// These conventions are the only guard. GCC 11 is also sensitive to the shape of the coroutine
+// frames, so an unrelated refactor can move a failure in or out of existence; a green ubuntu-22.04
+// means the bug is not currently tripped, not that it is fixed.
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -1793,15 +1792,10 @@ void Server::Impl::reset_session(const std::shared_ptr<Session>& session) {
     }
 
     // Runs on whatever thread destroys the Server, so it does only what is safe from any thread:
-    // `stopping` is atomic, the session pointer is mutex-guarded, and ITransport::close() is what
-    // wakes a blocked reader. The request maps are plain std::maps that only the session strand
-    // may touch, so abandoning their entries is handed to that strand instead.
-    //
-    // The hand-off is a post that is never waited on. Waiting would deadlock when the destructor
-    // runs on the session strand itself, and would never return at all when the io_context is
-    // stopped or was never run -- which is the ordinary way a Server reaches its destructor. On a
-    // stopped context the posted work simply never runs, which is the same outcome as before:
-    // cancelling a timer whose executor has nothing driving it delivers nothing either.
+    // `stopping` is atomic, the session pointer is mutex-guarded, and ITransport::close() wakes a
+    // blocked reader. The request maps belong to the session strand, so abandoning their entries is
+    // posted there and never waited on: waiting would deadlock on the session strand itself, and
+    // would never return when the io_context is stopped or was never run.
     session->stopping.store(true, std::memory_order_release);
     if (session->strand) {
         // Guarded for the same reason as the close below: queueing the hand-off allocates, and an

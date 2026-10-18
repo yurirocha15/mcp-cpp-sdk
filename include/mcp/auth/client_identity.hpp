@@ -33,9 +33,8 @@ enum class ClientIdentitySource {
  * @brief Client metadata sent at dynamic registration and published as a client ID metadata
  *        document.
  *
- * @details The defaults describe the client this SDK implements: an authorization-code client that
- * also intends to renew its grant, which is why `refresh_token` is advertised in `grant_types`
- * without any assumption that the server will actually issue one.
+ * @details The defaults describe an authorization-code client that also intends to renew its grant:
+ * `refresh_token` is advertised in `grant_types` whether or not the server issues one.
  */
 struct OAuthClientMetadata {
     std::vector<std::string> redirect_uris;  ///< Redirect URIs the client will use.
@@ -107,10 +106,8 @@ MCP_API void to_json(nlohmann::json& json, const OAuthClientInformation& informa
 /**
  * @brief Storage for acquired client credentials, keyed by authorization-server issuer.
  *
- * @details Deliberately separate from TokenStore, which is keyed by MCP server URL. One MCP server
- * URL can be protected by different authorization servers over time, and one authorization server
- * can protect several MCP server URLs, so a server-URL key would eventually present one server's
- * credentials to another. Keying by issuer is what makes the SEP-2352 binding hold.
+ * @details Separate from TokenStore, which is keyed by MCP server URL: credentials are bound to one
+ * authorization server (SEP-2352), so they are keyed by issuer.
  */
 class ClientCredentialStore {
    public:
@@ -201,9 +198,6 @@ struct ClientIdentityConfig {
 
 /**
  * @brief The authorization-server facts client identity selection depends on.
- *
- * @details Deliberately a small value rather than the whole metadata document, so selection is a
- * pure decision over four inputs and can be tested without any discovery machinery.
  */
 struct ClientIdentityServerFacts {
     std::string issuer;                                 ///< Issuer recorded from the metadata.
@@ -241,26 +235,17 @@ enum class ClientIdentityDecision {
  *
  * @details Precedence, highest first:
  *
- * 1. Injected credentials, subject to their issuer binding. They win outright and there is no
- *    fallback: if the application named a client, registering a different one behind its back
- *    would silently change who the user is consenting to. The binding is the precondition on that
- *    precedence, and it decides between three outcomes:
+ * 1. Injected credentials, with no fallback. Their issuer binding decides:
  *    - `pre_registered.issuer` names the issuer being contacted: the credentials are used.
- *    - `pre_registered.issuer` names a different issuer: `unavailable`, never a fallback. Handing
- *      one authorization server's secret to another is credential misbinding.
- *    - `pre_registered.issuer` is empty: the credentials are unbound. A public client (no
- *      `client_secret`) is still used, because a `client_id` is not a secret. A `client_secret`
- *      with no issuer is refused with `unavailable`: the authorization server was named by the
- *      protected-resource document, and "bound to no issuer" must not be read as "bound to every
- *      issuer". Set `pre_registered.issuer` (or `OAuthAuthorizationConfig::client_issuer` on the
- *      shorthand path) to use a confidential client.
+ *    - It names a different issuer: `unavailable`.
+ *    - It is empty: a public client (no `client_secret`) is used; a `client_secret` is refused with
+ *      `unavailable` until `pre_registered.issuer` (or `OAuthAuthorizationConfig::client_issuer` on
+ *      the shorthand path) is set.
  * 2. A configured client ID metadata document URL, when the server advertises support for one.
- *    Dynamic registration is skipped entirely on this path.
- * 3. Credentials already registered with this exact issuer. A stored entry whose recorded issuer
- *    disagrees with the issuer being contacted is ignored rather than presented, which is also what
- *    makes an authorization-server change fall through to a fresh registration.
- * 4. Dynamic registration, when the server publishes a registration endpoint. RFC 7591 registration
- *    is deprecated in favour of client ID metadata documents, so it is only ever reached last.
+ *    Dynamic registration is skipped on this path.
+ * 3. Credentials stored for this exact issuer; an entry recorded under another issuer is ignored.
+ * 4. Dynamic registration (RFC 7591, deprecated in favour of client ID metadata documents), when
+ *    the server publishes a registration endpoint.
  */
 [[nodiscard]] MCP_API ClientIdentityDecision
 select_client_identity(const ClientIdentityConfig& config, const ClientIdentityServerFacts& server,
@@ -273,9 +258,8 @@ select_client_identity(const ClientIdentityConfig& config, const ClientIdentityS
  * @param server Facts recorded from the authorization server's metadata.
  * @return The JSON request body.
  *
- * @details Carries `application_type` (SEP-837) unconditionally. `offline_access` is appended to
- * the requested scope only when the server advertises it in `scopes_supported`, because asking for
- * a scope the server never published is a request it is entitled to reject outright.
+ * @details Carries `application_type` (SEP-837) unconditionally. `offline_access` is appended to the
+ * requested scope only when the server advertises it in `scopes_supported`.
  */
 [[nodiscard]] MCP_API nlohmann::json build_registration_request(
     const OAuthClientMetadata& metadata, const ClientIdentityServerFacts& server);

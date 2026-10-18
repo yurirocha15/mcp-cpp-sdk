@@ -20,9 +20,8 @@
 ///
 /// @warning Authorization goes through OAuthAuthorizationManager. Driving OAuthDiscoveryClient
 /// and OAuthHttpClient::exchange_code() by hand compiles and appears to work, but performs no
-/// issuer binding, no `state` check and no RFC 9207 validation. See the long comment in
-/// run_client_demo(), and the "Challenge-driven authorization" section of
-/// docs/concepts/oauth.rst.
+/// issuer binding, no `state` check and no RFC 9207 validation. See the comment in
+/// run_client_demo() and the "Challenge-driven authorization" section of docs/concepts/oauth.rst.
 
 #include <mcp/auth/oauth.hpp>
 #include <mcp/client/client.hpp>
@@ -430,27 +429,15 @@ auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
         state->resource = runtime.mock_oauth->protected_resource_url();
 
         // ---------------------------------------------------------------------------------
-        // Authorization runs through OAuthAuthorizationManager. Do not hand-roll this flow.
+        // Authorization runs through OAuthAuthorizationManager. Do not hand-roll this flow:
+        // driving OAuthDiscoveryClient and OAuthHttpClient::exchange_code() yourself compiles
+        // and appears to work, but skips the checks the manager performs:
         //
-        // The manager is the only supported way to act on a `WWW-Authenticate` challenge,
-        // because it is where the security checks live. Driving OAuthDiscoveryClient and
-        // OAuthHttpClient::exchange_code() yourself compiles and appears to work, but it
-        // silently skips every one of them:
-        //
-        //   * the issuer in the authorization-server metadata is bound byte-for-byte to the
-        //     URL the document was fetched from, so a redirect or a substituted document
-        //     cannot move you to an attacker's issuer;
-        //   * the `state` parameter is generated from a cryptographic random source and the
-        //     response is rejected unless it matches;
-        //   * RFC 9207 `iss` validation runs before the response's `error` fields are read
-        //     or displayed, so a mismatched issuer cannot smuggle text to your user;
+        //   * the metadata issuer is bound byte-for-byte to the URL the document was fetched from;
+        //   * `state` comes from a cryptographic random source and must match the response;
+        //   * RFC 9207 `iss` is validated before the response's `error` fields are read;
         //   * PKCE S256 is generated and the verifier is retained for the token request;
-        //   * the RFC 8707 `resource` indicator is carried into the code exchange, so the
-        //     token you receive is bound to this MCP server and not replayable elsewhere.
-        //
-        // A challenge-supplied metadata URL is attacker-influenced input. Fetching it and
-        // then trusting whatever comes back is the whole attack, and that is precisely what
-        // the manual route does.
+        //   * the RFC 8707 `resource` indicator is carried into the code exchange.
         // ---------------------------------------------------------------------------------
 
         // docs-begin: manager-flow
@@ -473,17 +460,15 @@ auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
 
         state->token_store = std::make_shared<mcp::auth::InMemoryTokenStore>();
 
-        // The consent step. The SDK never launches a browser and never binds a listener for the
-        // redirect: carrying the user agent to request.authorization_url and collecting the
-        // response is the application's job.
+        // The consent step. The SDK never launches a browser or binds a listener for the
+        // redirect; that is the application's job.
         //
-        // DO NOT COPY THIS CALLBACK. It stands in for a browser by minting the code directly
-        // from the mock authorization server, which is only possible because this example owns
-        // both ends. A real client opens request.authorization_url, waits for the redirect to
-        // request.redirect_uri, and returns parse_authorization_response(redirect_url). What it
-        // must not do is invent the values below: `state` and `iss` are echoed here because a
-        // genuine authorization server would echo them, and the manager rejects the response if
-        // they do not match what it recorded.
+        // DO NOT COPY THIS CALLBACK. It mints the code directly from the mock authorization
+        // server, which is only possible because this example owns both ends. A real client
+        // opens request.authorization_url, waits for the redirect to request.redirect_uri, and
+        // returns parse_authorization_response(redirect_url). `state` and `iss` are echoed here
+        // as a genuine authorization server would echo them; the manager rejects the response
+        // if they do not match what it recorded.
         auto* mock_oauth = runtime.mock_oauth;
         auto authorize = [mock_oauth](const mcp::auth::AuthorizationRequest& request)
             -> mcp::Task<mcp::auth::AuthorizationResponse> {

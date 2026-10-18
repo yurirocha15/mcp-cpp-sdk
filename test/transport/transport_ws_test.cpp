@@ -2,7 +2,11 @@
 
 #include <gtest/gtest.h>
 
+#include "../support/resolve_gate.hpp"
+#include "../support/stalling_server.hpp"
+
 #include <algorithm>
+#include <atomic>
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/cancellation_signal.hpp>
@@ -10,14 +14,20 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/read_until.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/streambuf.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
+#include <boost/asio/write.hpp>
+#include <boost/beast/core/error.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
 #include <boost/beast/http/field.hpp>
 #include <boost/beast/websocket/stream.hpp>
+#include <boost/system/system_error.hpp>
 #include <chrono>
 #include <exception>
 #include <functional>
@@ -624,6 +634,187 @@ TEST_F(WebSocketTransportTest, CanceledQueuedWriteDoesNotBlockSubsequentWrites) 
     EXPECT_NO_THROW(server.get());
     EXPECT_TRUE(canceled_write_failed);
 }
+
+// A peer that accepts the connection and then never answers the upgrade request must not hold a
+// pending call forever: the connect timeout ends it.
+TEST_F(WebSocketTransportTest, StalledHandshakeFailsAfterTheConnectTimeout) {
+    StallingServer stalling(io_ctx_);
+    stalling.accept_and_stall();
+
+    mcp::WebSocketClientTransport transport(io_ctx_.get_executor(), "127.0.0.1",
+                                            std::to_string(stalling.port()), "/",
+                                            std::chrono::milliseconds(200));
+
+    auto result = asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<bool> {
+            try {
+                co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
+            } catch (const boost::system::system_error& error) {
+                co_return error.code() == boost::beast::error::timeout;
+            }
+            co_return false;
+        },
+        asio::use_future);
+
+    std::thread runner([this]() { io_ctx_.run(); });
+    const bool finished = result.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    io_ctx_.stop();
+    runner.join();
+
+    ASSERT_TRUE(finished) << "the stalled handshake was never cut off";
+    EXPECT_TRUE(result.get()) << "the pending call must fail with a timeout";
+    EXPECT_EQ(stalling.accepted(), 1);
+}
+
+// milliseconds::max() is the usual way to spell "no limit", and it does not fit the timer's
+// nanosecond duration. It must mean no limit rather than overflow into a deadline already passed.
+TEST_F(WebSocketTransportTest, ConnectTimeoutTooLongForTheClockMeansNoLimit) {
+    StallingServer stalling(io_ctx_);
+    stalling.accept_and_stall();
+
+    mcp::WebSocketClientTransport transport(io_ctx_.get_executor(), "127.0.0.1",
+                                            std::to_string(stalling.port()), "/",
+                                            std::chrono::milliseconds::max());
+
+    std::atomic<bool> timed_out{false};
+    auto result = asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
+            } catch (const boost::system::system_error& error) {
+                timed_out = error.code() == boost::beast::error::timeout;
+                throw;
+            }
+        },
+        asio::use_future);
+
+    std::thread runner([this]() { io_ctx_.run(); });
+    // Still waiting on the stalled handshake after a while: no deadline fired.
+    const bool still_pending =
+        result.wait_for(std::chrono::milliseconds(300)) == std::future_status::timeout;
+    transport.close();
+    const bool finished = result.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    io_ctx_.stop();
+    runner.join();
+
+    EXPECT_TRUE(still_pending) << "the handshake was cut off although no limit was set";
+    ASSERT_TRUE(finished) << "close() did not end the pending connect";
+    EXPECT_ANY_THROW(result.get());
+    EXPECT_FALSE(timed_out.load());
+}
+
+// The handshake is several socket operations, and the connect timeout can pass between two of them,
+// here because the client's only io thread is busy when the first part of the response arrives.
+// The pending call fails with a timeout like any other expired setup.
+TEST_F(WebSocketTransportTest, ConnectTimeoutPassingBetweenTwoHandshakeReadsReportsATimeout) {
+    asio::io_context server_io;
+    tcp::acceptor acceptor(server_io, tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0));
+    const auto port = acceptor.local_endpoint().port();
+
+    std::thread server([&]() {
+        tcp::socket socket(server_io);
+        acceptor.accept(socket);
+        asio::streambuf request;
+        asio::read_until(socket, request, "\r\n\r\n");
+        asio::post(io_ctx_, []() { std::this_thread::sleep_for(600ms); });
+        std::this_thread::sleep_for(50ms);
+        asio::write(socket, asio::buffer(std::string("HTTP/1.1 101 Switching Protocols\r\n")));
+        std::this_thread::sleep_for(1s);
+    });
+
+    mcp::WebSocketClientTransport transport(io_ctx_.get_executor(), "127.0.0.1", std::to_string(port),
+                                            "/", 200ms);
+    auto result = asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
+        },
+        asio::use_future);
+    std::thread runner([this]() { io_ctx_.run(); });
+    const bool finished = result.wait_for(5s) == std::future_status::ready;
+    transport.close();
+    io_ctx_.stop();
+    runner.join();
+    server.join();
+
+    ASSERT_TRUE(finished);
+    try {
+        result.get();
+        ADD_FAILURE() << "the handshake succeeded";
+    } catch (const boost::system::system_error& error) {
+        EXPECT_EQ(error.code(), boost::beast::error::timeout) << error.code().message();
+    }
+}
+
+#ifdef __linux__
+
+// close() called from a thread that does not run the io_context, while the connect is suspended
+// in its resolve. Asio's resolver thread checks its cancel token once, before it calls
+// getaddrinfo(), so a close() that arrives while that call is in progress finds a resolve it can
+// no longer cancel and a socket that is not open yet. The gate holds the lookup inside
+// getaddrinfo() until close() has done its cancelling, so the connect resumes with usable addresses
+// on a transport that is already closed. It must stop there. Without the closed check in
+// ensure_connected() it connects to the stalling server and waits on a handshake that never ends.
+TEST_F(WebSocketTransportTest, CloseWhileTheResolverIsPastItsCancelCheckOpensNoConnection) {
+    StallingServer stalling(io_ctx_);
+    stalling.accept_and_stall();
+
+    auto transport = std::make_shared<mcp::WebSocketClientTransport>(
+        io_ctx_.get_executor(), "127.0.0.1", std::to_string(stalling.port()));
+
+    resolve_gate().arm(stalling.port());
+
+    std::exception_ptr failure;
+    std::promise<void> write_done;
+    auto write_finished = write_done.get_future();
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            write_done.set_value();
+        },
+        asio::detached);
+
+    std::thread runner([this]() { io_ctx_.run(); });
+
+    const auto limit = std::chrono::seconds(10);
+    const bool lookup_held = resolve_gate().wait_until_entered(limit);
+
+    // close() posts its cancelling to the transport's strand, which is one hop through the
+    // io_context. Two further hops through the same queue cannot complete before it has.
+    std::promise<void> cancel_done;
+    auto cancel_finished = cancel_done.get_future();
+    bool cancel_ran = false;
+    if (lookup_held) {
+        transport->close();
+        asio::post(io_ctx_, [&]() { asio::post(io_ctx_, [&]() { cancel_done.set_value(); }); });
+        cancel_ran = cancel_finished.wait_for(limit) == std::future_status::ready;
+    }
+
+    resolve_gate().release();
+    const bool finished = write_finished.wait_for(limit) == std::future_status::ready;
+
+    // Everything below reads state the runner thread wrote, so it stops first.
+    io_ctx_.stop();
+    runner.join();
+
+    ASSERT_TRUE(lookup_held) << "the connect never reached getaddrinfo()";
+    ASSERT_TRUE(cancel_ran) << "the cancelling posted by close() never ran on the io_context";
+    EXPECT_TRUE(finished) << "close() was lost: the connect resumed from the lookup after the "
+                             "transport closed and is still running";
+    EXPECT_EQ(stalling.accepted(), 0) << "the transport connected after it had been closed";
+    if (finished) {
+        EXPECT_NE(failure, nullptr) << "a write cut short by close() must report an error";
+    }
+}
+
+#endif  // __linux__
 
 namespace {
 

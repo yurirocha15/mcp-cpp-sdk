@@ -341,8 +341,8 @@ TEST(AuthMetadataPolicyTest, OriginAllowanceCallbackReceivesTheCanonicalOrigin) 
         return true;
     };
     // The scheme is kept lowercase here because the separate https-required check further down is
-    // deliberately byte-exact and out of scope for this fix; only the host case, the explicit
-    // default port and the origin passed to the callback are under test.
+    // deliberately byte-exact; only the host case, the explicit default port and the origin passed to
+    // the callback are under test.
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://Evil.example:443/prm"),
               mcp::auth::MetadataUrlDecision::allowed);
     EXPECT_EQ(observed, "https://evil.example");
@@ -487,8 +487,8 @@ TEST(AuthMetadataPolicyTest, MalformedDenyEntryIsReportedEvenAfterAMatchingEntry
     }
 }
 
-// The fix must not turn every deny list into an error: a well-formed list still denies exactly
-// what it names, and still admits everything else the allow list permits.
+// A malformed entry must not turn every deny list into an error: a well-formed list still denies
+// exactly what it names, and still admits everything else the allow list permits.
 TEST(AuthMetadataPolicyTest, WellFormedDenyListStillDeniesAndStillAdmits) {
     auto policy = allow_origin("https://as.test");
     policy.allowed_origins.emplace_back("https://evil.example");

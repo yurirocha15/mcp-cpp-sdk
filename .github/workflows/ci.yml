@@ -102,7 +102,12 @@ jobs:
       run: python scripts/check_stdio_streams.py build/release
 
   sanitize:
+    name: sanitize (${{ matrix.compiler }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [default, clang]
 
     steps:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -132,14 +137,108 @@ jobs:
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
       with:
-        key: ubuntu-24.04-sanitize-ccache-${{ github.ref }}
-        restore-keys: ubuntu-24.04-sanitize-ccache-
+        key: ubuntu-24.04-sanitize-${{ matrix.compiler }}-ccache-${{ github.ref }}
+        restore-keys: ubuntu-24.04-sanitize-${{ matrix.compiler }}-ccache-
         max-size: 500M
 
     - name: Build and Test with Sanitizers
       env:
         MCP_REQUIRE_TWIN_LOOPBACK: '1'
-      run: python scripts/build.py --sanitize --test
+      run: python scripts/build.py --sanitize --compiler ${{ matrix.compiler }} --test
+
+  tsan:
+    name: tsan (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [default, clang]
+
+    steps:
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      with:
+        persist-credentials: false
+
+    - name: Set up Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: '3.12'
+
+    - name: Install CMake
+      uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
+      with:
+        cmake-version: '3.25'
+
+    - name: Cache Conan packages
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.conan2/p
+        key: ubuntu-24.04-conan-tsan-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
+        restore-keys: ubuntu-24.04-conan-
+
+    - name: Install Dependencies
+      run: python scripts/init.py
+
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
+      with:
+        key: ubuntu-24.04-tsan-${{ matrix.compiler }}-ccache-${{ github.ref }}
+        restore-keys: ubuntu-24.04-tsan-${{ matrix.compiler }}-ccache-
+        max-size: 500M
+
+    - name: Build and Test with ThreadSanitizer
+      env:
+        MCP_REQUIRE_TWIN_LOOPBACK: '1'
+      run: python scripts/build.py --tsan --compiler ${{ matrix.compiler }} --test
+
+  msan:
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      with:
+        persist-credentials: false
+
+    - name: Set up Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: '3.12'
+
+    - name: Install CMake
+      uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
+      with:
+        cmake-version: '3.25'
+
+    # The dependencies are rebuilt instrumented, so this cache shares nothing with the other jobs.
+    - name: Cache Conan packages
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.conan2/p
+        key: ubuntu-24.04-conan-msan-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
+        restore-keys: ubuntu-24.04-conan-msan-
+
+    # Keyed on MSAN_LLVM_COMMIT in scripts/build.py. A cache from another commit is rebuilt by
+    # build.py rather than used, so a key left behind costs time and nothing else.
+    - name: Cache instrumented libc++
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: build/msan-libcxx
+        key: ubuntu-24.04-msan-libcxx-3b5b5c1ec4a3
+
+    - name: Install Dependencies
+      run: python scripts/init.py
+
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
+      with:
+        key: ubuntu-24.04-msan-ccache-${{ github.ref }}
+        restore-keys: ubuntu-24.04-msan-ccache-
+        max-size: 500M
+
+    - name: Build and Test with MemorySanitizer
+      env:
+        MCP_REQUIRE_TWIN_LOOPBACK: '1'
+      run: python scripts/build.py --msan --test
 
   release-safety:
     name: Release safety contracts
