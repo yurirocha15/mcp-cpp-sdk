@@ -1640,7 +1640,8 @@ struct OAuthAuthorizationManager::Impl {
         /// cancel() rather than by its leader finishing sees this false.
         bool finished{false};
         /// Set by cancel(). The leader's HTTP client is aborted, so it fails at its next network
-        /// call, and its followers are released instead of waiting for it: a challenge's with an
+        /// call, or a challenge's sooner, before it records its request and calls the consent
+        /// callback. Its followers are released instead of waiting for it: a challenge's with an
         /// error, a refresh's reporting that no token was renewed.
         bool cancelled{false};
         bool succeeded{false};
@@ -1988,6 +1989,12 @@ struct OAuthAuthorizationManager::Impl {
                                                      operation->request, operation->identity);
         {
             std::lock_guard lock(owner.state_mutex);
+            // cancel() stops a leader through its aborted client, but one served discovery from the
+            // cache with a pre-registered identity makes no network call before the consent
+            // callback, so the abort alone would not keep it from prompting the user.
+            if (operation->flight->cancelled) {
+                throw std::runtime_error("OAuth authorization attempt was cancelled");
+            }
             owner.last_request = operation->request;
             owner.last_identity = operation->identity;
         }
@@ -2632,6 +2639,47 @@ struct OAuthClientTransport::Impl {
         return challenge && challenge->error == "insufficient_scope";
     }
 
+    /// close() cancels only the authenticator work already in flight, so a write that is still in
+    /// its retry loop checks for it before asking the authenticator for anything new. Otherwise a
+    /// refresh that close() cut short would hand over to an interactive authorization for a
+    /// transport nobody can use any more.
+    static bool is_closed(Impl& owner) {
+        std::lock_guard lock(owner.pending_mutex);
+        return owner.closed;
+    }
+
+    static void throw_if_closed(Impl& owner) {
+        if (is_closed(owner)) {
+            throw std::runtime_error("OAuthClientTransport is closed");
+        }
+    }
+
+    /// Await `attempt`, which the authenticator registered when it was called. This is the second
+    /// check: a close() from another thread that landed between throw_if_closed() and that call
+    /// found nothing to cancel, so the write cancels the attempt itself. It still awaits it rather
+    /// than dropping it. The authenticator may hold state that only the attempt's own completion
+    /// clears -- OAuthAuthorizationManager's flight, which every later caller would otherwise join
+    /// and wait on -- and an authenticator whose cancel_pending() is the default no-op cancels
+    /// nothing.
+    static Task<bool> await_unless_closed(std::shared_ptr<Impl> owner, Task<bool> attempt) {
+        const bool closed = is_closed(*owner);
+        if (closed) {
+            owner->authenticator->cancel_pending();
+        }
+        bool authorized = false;
+        try {
+            authorized = co_await std::move(attempt);
+        } catch (...) {
+            if (!closed) {
+                throw;
+            }
+        }
+        if (closed) {
+            throw std::runtime_error("OAuthClientTransport is closed");
+        }
+        co_return authorized;
+    }
+
     static Task<void> run_write(std::shared_ptr<WriteOperation> operation) {
         while (true) {
             operation->write_error = nullptr;
@@ -2680,13 +2728,17 @@ struct OAuthClientTransport::Impl {
                 // insufficient-scope refusal, so a 403 goes straight to the challenge.
                 if (operation->refresh_allowed && !operation->refreshed) {
                     operation->refreshed = true;
-                    authorized = co_await operation->owner->authenticator->try_refresh_token();
+                    throw_if_closed(*operation->owner);
+                    authorized = co_await await_unless_closed(
+                        operation->owner, operation->owner->authenticator->try_refresh_token());
                 }
                 if (!authorized && !operation->authenticate_challenge.empty()) {
                     operation->authorized_after_unauthorized =
                         operation->authorized_after_unauthorized || operation->refresh_allowed;
-                    authorized = co_await operation->owner->authenticator->try_handle_challenge(
-                        operation->authenticate_challenge);
+                    throw_if_closed(*operation->owner);
+                    authorized = co_await await_unless_closed(
+                        operation->owner, operation->owner->authenticator->try_handle_challenge(
+                                              operation->authenticate_challenge));
                 }
             } catch (...) {
                 erase_pending(operation);

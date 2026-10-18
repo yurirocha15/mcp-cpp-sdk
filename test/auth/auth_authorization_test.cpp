@@ -3851,6 +3851,298 @@ TEST(AuthAuthorizationManagerTest, ARefreshThatBeganEarlierDoesNotPresentARotate
     EXPECT_EQ(original_presented, 1) << "the original refresh token was presented more than once";
 }
 
+// A challenge cancelled before it reaches the consent callback must not ask for consent. Served
+// discovery from the cache with a pre-registered identity, it makes no network call before the
+// callback, so its aborted client alone would not stop it.
+TEST(AuthAuthorizationManagerTest, ACancelledChallengeDoesNotAskForConsent) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    int refresh_grants = 0;
+    server.set_handler(refresh_counting_handler(base, &refresh_grants));
+    asio::co_spawn(io_ctx, server.serve(10), asio::detached);
+
+    ManagerFixture fixture;
+    fixture.config.server_url = base + "/mcp";
+    fixture.config.client_id = "test-client";
+    fixture.config.redirect_uri = "http://127.0.0.1:9999/callback";
+    fixture.config.policy = loopback_policy(server.origin());
+    int consent_prompts = 0;
+    auto echo = echoing_callback(nullptr);
+    mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store, fixture.config,
+                                                 [&](const mcp::auth::AuthorizationRequest& request) {
+                                                     ++consent_prompts;
+                                                     return echo(request);
+                                                 });
+
+    bool authorized = false;
+    bool cancelled_result = false;
+    std::string cancelled_error;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            authorized = co_await authorize_against(manager, base);
+            auto cancelled = manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                          R"(/prm", scope="step-up")");
+            manager.cancel_pending();
+            try {
+                cancelled_result = co_await std::move(cancelled);
+            } catch (const std::exception& error) {
+                cancelled_error = error.what();
+            }
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    ASSERT_TRUE(authorized);
+    EXPECT_FALSE(cancelled_result);
+    EXPECT_EQ(cancelled_error, "OAuth authorization attempt was cancelled");
+    EXPECT_EQ(consent_prompts, 1);
+    const auto last = manager.last_authorization_request();
+    ASSERT_TRUE(last.has_value());
+    EXPECT_FALSE(last->scope.has_value()) << "the cancelled attempt replaced the recorded request";
+}
+
+namespace {
+
+/// Closes the transport while its write's refresh is on the wire, then answers that refresh with
+/// `refresh_refused` deciding between a new grant and invalid_grant. The write must fail without
+/// starting a new authorization.
+void expect_close_during_refresh_starts_no_authorization(bool refresh_refused) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    std::shared_ptr<mcp::auth::OAuthClientTransport> transport;
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/mcp") {
+            http::response<http::string_body> challenge{http::status::unauthorized, 11};
+            challenge.set(http::field::www_authenticate,
+                          R"(Bearer resource_metadata=")" + base + R"(/prm")");
+            return challenge;
+        }
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        if (target == "/token") {
+            if (request.body().find("grant_type=refresh_token") != std::string::npos) {
+                transport->close();
+                if (refresh_refused) {
+                    http::response<http::string_body> refused{http::status::bad_request, 11};
+                    refused.set(http::field::content_type, "application/json");
+                    refused.body() = R"({"error":"invalid_grant"})";
+                    return refused;
+                }
+                return json_response({{"access_token", "renewed-access-token"},
+                                      {"token_type", "Bearer"},
+                                      {"refresh_token", "renewed-refresh-token"},
+                                      {"expires_in", 3600}});
+            }
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(20), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+    int consent_prompts = 0;
+    auto echo = echoing_callback(nullptr);
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+        io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(), config,
+        [&](const mcp::auth::AuthorizationRequest& request) {
+            ++consent_prompts;
+            return echo(request);
+        });
+    transport = std::make_shared<mcp::auth::OAuthClientTransport>(
+        std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp"), manager);
+
+    bool authorized = false;
+    std::string write_failure;
+    bool done = false;
+    bool timed_out = false;
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error && !done) {
+            timed_out = true;
+            io_ctx.stop();
+        }
+    });
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            authorized = co_await authorize_against(*manager, base);
+            try {
+                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+            } catch (const std::exception& error) {
+                write_failure = error.what();
+            }
+            done = true;
+            watchdog.cancel();
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    ASSERT_FALSE(timed_out) << "watchdog: the write outlived its transport's close()";
+    ASSERT_TRUE(authorized);
+    EXPECT_FALSE(write_failure.empty());
+    EXPECT_EQ(consent_prompts, 1) << "the closed transport's write asked for consent again";
+    // Authorizing takes three requests; the write adds its 401 and the refresh, and nothing after.
+    EXPECT_EQ(server.targets().size(), 5U);
+}
+
+}  // namespace
+
+// close() cancels the refresh a write is waiting on. The write then has no transport left to retry
+// on, so it fails instead of falling through to a new interactive authorization.
+TEST(AuthTransportCloseTest, ClosingDuringAWritesRefreshStartsNoNewAuthorization) {
+    expect_close_during_refresh_starts_no_authorization(false);
+}
+
+TEST(AuthTransportCloseTest, ClosingDuringAWritesRefusedRefreshStartsNoNewAuthorization) {
+    expect_close_during_refresh_starts_no_authorization(true);
+}
+
+namespace {
+
+/// Forwards to a manager, but closes the transport just before forwarding a challenge: a close()
+/// from another thread that lands after the write's own check and before the manager has
+/// registered the attempt, so close() finds nothing to cancel. With `forwards_cancel` false it
+/// keeps the default no-op cancel_pending(), as a wrapper written before that call existed would.
+class CloseBeforeChallengeAuthenticator final : public mcp::auth::Authenticator {
+   public:
+    CloseBeforeChallengeAuthenticator(std::shared_ptr<mcp::auth::OAuthAuthorizationManager> manager,
+                                      bool forwards_cancel)
+        : manager_(std::move(manager)), forwards_cancel_(forwards_cancel) {}
+
+    [[nodiscard]] std::string get_access_token() const override { return manager_->get_access_token(); }
+    mcp::Task<bool> try_refresh_token() override { return manager_->try_refresh_token(); }
+    mcp::Task<bool> try_handle_challenge(const std::string& www_authenticate) override {
+        if (const auto closing = transport.lock()) {
+            closing->close();
+        }
+        return manager_->try_handle_challenge(www_authenticate);
+    }
+    void cancel_pending() override {
+        if (forwards_cancel_) {
+            manager_->cancel_pending();
+        }
+    }
+
+    std::weak_ptr<mcp::auth::OAuthClientTransport> transport;
+
+   private:
+    std::shared_ptr<mcp::auth::OAuthAuthorizationManager> manager_;
+    bool forwards_cancel_;
+};
+
+/// Writes through a transport that closes as the write hands a challenge to the authenticator, then
+/// authorizes the manager directly. The write fails as closed either way, and the manager must be
+/// left ready for the next caller. Returns how many consent prompts the write itself caused.
+int consent_prompts_for_a_write_whose_transport_closes(bool forwards_cancel) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    int refresh_grants = 0;
+    const auto metadata_and_tokens = refresh_counting_handler(base, &refresh_grants);
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        if (request.target() == "/mcp") {
+            http::response<http::string_body> challenge{http::status::unauthorized, 11};
+            challenge.set(http::field::www_authenticate,
+                          R"(Bearer resource_metadata=")" + base + R"(/prm")");
+            return challenge;
+        }
+        return metadata_and_tokens(request);
+    });
+    asio::co_spawn(io_ctx, server.serve(20), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+    int consent_prompts = 0;
+    auto echo = echoing_callback(nullptr);
+    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+        io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(), config,
+        [&](const mcp::auth::AuthorizationRequest& request) {
+            ++consent_prompts;
+            return echo(request);
+        });
+    auto authenticator = std::make_shared<CloseBeforeChallengeAuthenticator>(manager, forwards_cancel);
+    auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(
+        std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp"),
+        authenticator);
+    authenticator->transport = transport;
+
+    std::string write_failure;
+    int prompts_for_the_write = -1;
+    bool authorized_afterwards = false;
+    bool done = false;
+    bool timed_out = false;
+    asio::steady_timer watchdog(io_ctx);
+    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.async_wait([&](boost::system::error_code error) {
+        if (!error && !done) {
+            timed_out = true;
+            io_ctx.stop();
+        }
+    });
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+            } catch (const std::exception& error) {
+                write_failure = error.what();
+            }
+            prompts_for_the_write = consent_prompts;
+            authorized_afterwards = co_await authorize_against(*manager, base);
+            done = true;
+            watchdog.cancel();
+            server.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_FALSE(timed_out) << "watchdog: the attempt the write started left the manager's flight "
+                               "parked";
+    EXPECT_EQ(write_failure, "OAuthClientTransport is closed");
+    EXPECT_TRUE(authorized_afterwards);
+    EXPECT_EQ(consent_prompts, prompts_for_the_write + 1);
+    return prompts_for_the_write;
+}
+
+}  // namespace
+
+// A write whose transport closes just as it hands a challenge to the authenticator cancels the
+// attempt it started, so nobody is asked for consent on behalf of a closed transport.
+TEST(AuthTransportCloseTest, AWriteCancelsTheAuthorizationItStartsAsItsTransportCloses) {
+    EXPECT_EQ(consent_prompts_for_a_write_whose_transport_closes(true), 0);
+}
+
+// An authenticator whose cancel_pending() does nothing cannot have that attempt cancelled. The
+// write still waits for it instead of abandoning it, because the manager's flight is cleared only
+// when the attempt finishes, and an abandoned one would leave every later challenge waiting on it.
+TEST(AuthTransportCloseTest, AWriteWaitsForAnAttemptItsAuthenticatorCannotCancel) {
+    EXPECT_EQ(consent_prompts_for_a_write_whose_transport_closes(false), 1);
+}
+
 TEST(AuthIssuerBindingTest, RejectsAuthServerMetadataWhoseIssuerIsNotItsDiscoveryLocation) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);

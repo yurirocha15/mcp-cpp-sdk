@@ -652,7 +652,8 @@ class Authenticator {
      * by several transports and can outlive any of them, so this ends only the work already
      * started; the next refresh or authorization runs as usual. An implementation that holds no
      * cancellable network state may leave the default no-op, which keeps existing Authenticator
-     * implementations source-compatible. Safe to call more than once and from any thread.
+     * implementations source-compatible; one that forwards to another authenticator should forward
+     * this call too. Safe to call more than once and from any thread.
      */
     virtual void cancel_pending() {}
 
@@ -834,7 +835,8 @@ class MCP_API OAuthAuthorizationManager : public Authenticator {
      *
      * @note As with close(), a leader parked inside the application's own authorization callback is
      * not reachable from here. It stays parked until that callback returns, then fails at its next
-     * network call.
+     * network call. A leader that has not yet recorded its authorization request when this runs
+     * fails without calling the callback.
      */
     void cancel_pending() override;
 
@@ -931,7 +933,10 @@ class MCP_API OAuthClientTransport final : public ITransport {
      * @brief Cancel the authenticator's in-flight work and close the wrapped transport.
      *
      * @details Calls Authenticator::cancel_pending(), not Authenticator::close(): the authenticator
-     * stays usable, so another transport built on it can still refresh and authorize.
+     * stays usable, so another transport built on it can still refresh and authorize. A write on
+     * this transport that is still retrying after a 401 or 403 fails. Once close() has run, the
+     * write asks the authenticator for no new refresh or authorization; one it started while
+     * close() was running is cancelled through Authenticator::cancel_pending() and waited for.
      */
     void close() override;
 

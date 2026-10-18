@@ -246,8 +246,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - Closing an `OAuthClientTransport` cancels the authorization work its
   authenticator has in flight, through `cancel_pending()`, and leaves the
   authenticator usable, so a new transport over the same `OAuthAuthenticator`
-  or `OAuthAuthorizationManager` can still refresh and authorize. Calling
-  `close()` on the authenticator itself is permanent.
+  or `OAuthAuthorizationManager` can still refresh and authorize. A write still
+  retrying on the closed transport fails without asking the authenticator for a
+  new refresh or authorization; one it started while the transport was closing
+  is cancelled through `cancel_pending()` and waited for. Calling `close()` on
+  the authenticator itself is permanent.
 - `OAuthAuthenticator` rejects a null `OAuthHttpClient` with
   `std::invalid_argument` when constructed, and its `close()` ends only the
   requests it issued, leaving the client usable by anyone else sharing it.
