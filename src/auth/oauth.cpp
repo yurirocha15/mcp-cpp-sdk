@@ -2,6 +2,7 @@
 
 #include "../detail/middleware_rejection.hpp"
 #include "../detail/peer_json.hpp"
+#include "../detail/socket_deadline.hpp"
 #include "oauth_internal.hpp"
 
 #include <mcp/transport/http_client.hpp>
@@ -570,16 +571,38 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 
         // Connect only to the addresses this single lookup produced. They are pinned for the
         // exchange, so a name that resolves differently later cannot redirect it.
-        exchange->stream->expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
-        co_await exchange->stream->async_connect(exchange->endpoints, net::use_awaitable);
+        const mcp::detail::SocketDeadline deadline(
+            exchange->stream->get_executor(), exchange->stream->socket(),
+            std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
+        try {
+            co_await exchange->stream->async_connect(exchange->endpoints, net::use_awaitable);
+        } catch (const boost::system::system_error&) {
+            throw_if_expired(deadline);
+            throw;
+        }
+    }
+
+    /// An operation the deadline cut off fails however the closed socket made it fail; report the
+    /// timeout instead.
+    static void throw_if_expired(const mcp::detail::SocketDeadline& deadline) {
+        if (deadline.expired()) {
+            throw boost::system::system_error(beast::error::timeout);
+        }
     }
 
     template <typename Request>
     static Task<void> exchange_once(const std::shared_ptr<Exchange>& exchange, Request& request) {
         co_await connect(exchange);
 
-        exchange->stream->expires_after(std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
-        co_await http::async_write(*exchange->stream, request, net::use_awaitable);
+        const mcp::detail::SocketDeadline deadline(
+            exchange->stream->get_executor(), exchange->stream->socket(),
+            std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
+        try {
+            co_await http::async_write(*exchange->stream, request, net::use_awaitable);
+        } catch (const boost::system::system_error&) {
+            throw_if_expired(deadline);
+            throw;
+        }
         try {
             co_await http::async_read(*exchange->stream, exchange->buffer, *exchange->parser,
                                       net::use_awaitable);
@@ -587,6 +610,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             beast::error_code discard_error;
             (void)exchange->stream->socket().shutdown(net::ip::tcp::socket::shutdown_both,
                                                       discard_error);
+            throw_if_expired(deadline);
             if (error.code() == http::error::body_limit) {
                 // The body is abandoned mid-read rather than buffered to completion.
                 throw MetadataPolicyError(MetadataUrlDecision::response_too_large, exchange->url);

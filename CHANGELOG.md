@@ -497,6 +497,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   connection and failed.
 - `HttpServerTransport` no longer takes a request the server sends to the
   client for the response to a client request that has the same id.
+- `HttpClientTransport` and `OAuthHttpClient` no longer end the process when
+  a request's 30-second deadline passes between two of its socket operations,
+  for example while the io thread is busy as the response arrives; Boost.Beast
+  1.86 aborts when an operation starts after its stream's deadline. The
+  deadline now closes the socket, and the request fails with
+  `boost::beast::error::timeout`.
 
 ### Security
 
