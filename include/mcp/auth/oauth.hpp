@@ -782,6 +782,9 @@ class MCP_API OAuthAuthorizationManager : public Authenticator {
      * @details Renewal needs the token endpoint and client identity of an authorization this
      * manager completed in the same process. Without one, for instance with a refresh token loaded
      * from a persistent TokenStore after a restart, this returns false without network I/O.
+     * Overlapping calls share one refresh grant, and the refresh token is read from the TokenStore
+     * only by the call that leads it, so no call sends a token that another refresh has already
+     * replaced in the store.
      *
      * @return true when a renewed token was persisted.
      */

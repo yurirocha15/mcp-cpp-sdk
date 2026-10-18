@@ -2185,11 +2185,6 @@ struct OAuthAuthorizationManager::Impl {
     }
 
     static Task<bool> try_refresh(std::shared_ptr<Impl> owner) {
-        auto stored = owner->token_store->load(owner->config.server_url);
-        if (!stored || !stored->refresh_token) {
-            return return_false();
-        }
-
         auto operation = std::make_shared<RefreshOperation>();
         std::shared_ptr<Flight> joined;
         {
@@ -2214,7 +2209,6 @@ struct OAuthAuthorizationManager::Impl {
             return await_refresh(std::move(owner), std::move(joined));
         }
         operation->owner = std::move(owner);
-        operation->stored_token = std::move(*stored);
         return run_leading_refresh(std::move(operation));
     }
 
@@ -2268,6 +2262,14 @@ struct OAuthAuthorizationManager::Impl {
     }
 
     static Task<bool> run_refresh(std::shared_ptr<RefreshOperation> operation) {
+        // Read only once this refresh leads the flight. A token read before that may already have
+        // been rotated by a refresh that finished in between, and presenting it again is the reuse
+        // the flight is there to prevent.
+        auto stored = operation->owner->token_store->load(operation->owner->config.server_url);
+        if (!stored || !stored->refresh_token) {
+            co_return false;
+        }
+        operation->stored_token = std::move(*stored);
         try {
             operation->new_token = co_await operation->http_client->refresh_token(
                 operation->token_config, *operation->stored_token.refresh_token);

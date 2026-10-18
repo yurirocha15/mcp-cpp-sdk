@@ -254,7 +254,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - Challenges that arrive while `OAuthAuthorizationManager` is already
   authorizing wait for that attempt, and each of them reports its outcome,
   rethrowing the same exception when it fails. Refreshes that overlap share
-  one refresh grant in the same way.
+  one refresh grant in the same way, and only the refresh that leads it reads
+  the refresh token, so none sends a token another refresh already replaced in
+  the store.
 - `scripts/build.py --sanitize --test` runs with LeakSanitizer enabled.
 
 ### Fixed

@@ -34,6 +34,7 @@
 #include "../../src/auth/oauth_internal.hpp"
 
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
@@ -3741,6 +3742,113 @@ TEST(AuthAuthorizationManagerTest, CancelReleasesARefreshInFlightAndLeavesRefres
     EXPECT_TRUE(refreshed_after_cancel);
     EXPECT_GE(refresh_grants, 1);
     EXPECT_EQ(manager.get_access_token(), "renewed-access-token");
+}
+
+namespace {
+
+/// Token store whose load() on one chosen thread reads the token and then parks until released,
+/// like a file or keychain store whose reader is descheduled mid-call.
+class ParkingTokenStore final : public mcp::auth::TokenStore {
+   public:
+    void store(const std::string& server_url, mcp::auth::TokenResponse token) override {
+        inner_.store(server_url, std::move(token));
+    }
+    [[nodiscard]] std::optional<mcp::auth::TokenResponse> load(
+        const std::string& server_url) const override {
+        auto token = inner_.load(server_url);
+        if (park_thread_.load() == std::this_thread::get_id()) {
+            mark_started();
+            released_.wait();
+        }
+        return token;
+    }
+    void remove(const std::string& server_url) override { inner_.remove(server_url); }
+
+    void park_loads_on_this_thread() { park_thread_ = std::this_thread::get_id(); }
+    /// Signals that the parked thread's refresh call has begun: from load() when the call reads
+    /// the store, or by the caller once the call returns without having read it.
+    void mark_started() const {
+        std::call_once(started_once_, [this] { started_.set_value(); });
+    }
+    void wait_started() const { started_.get_future().wait(); }
+    void release() { release_.set_value(); }
+
+   private:
+    mcp::auth::InMemoryTokenStore inner_;
+    std::atomic<std::thread::id> park_thread_{};
+    mutable std::once_flag started_once_;
+    mutable std::promise<void> started_;
+    std::promise<void> release_;
+    std::shared_future<void> released_{release_.get_future().share()};
+};
+
+}  // namespace
+
+// A refresh whose call began before another refresh finished still must not present the refresh
+// token that the other one rotated. The token is read by whichever refresh leads the exchange,
+// once it leads it, not when the call begins.
+TEST(AuthAuthorizationManagerTest, ARefreshThatBeganEarlierDoesNotPresentARotatedRefreshToken) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    int refresh_grants = 0;
+    server.set_handler(refresh_counting_handler(base, &refresh_grants));
+    asio::co_spawn(io_ctx, server.serve(10), asio::detached);
+
+    auto store = std::make_shared<ParkingTokenStore>();
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+    mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                 echoing_callback(nullptr));
+
+    std::thread second;
+    bool authorized = false;
+    bool first_refreshed = false;
+    bool second_refreshed = false;
+    int completed = 0;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            authorized = co_await authorize_against(manager, base);
+            second = std::thread([&] {
+                store->park_loads_on_this_thread();
+                auto refresh = manager.try_refresh_token();
+                store->mark_started();
+                asio::co_spawn(
+                    io_ctx,
+                    [&, refresh = std::move(refresh)]() mutable -> mcp::Task<void> {
+                        second_refreshed = co_await std::move(refresh);
+                        if (++completed == 2) {
+                            server.close();
+                        }
+                    },
+                    asio::detached);
+            });
+            store->wait_started();
+            first_refreshed = co_await manager.try_refresh_token();
+            store->release();
+            if (++completed == 2) {
+                server.close();
+            }
+        },
+        asio::detached);
+
+    io_ctx.run();
+    second.join();
+
+    ASSERT_TRUE(authorized);
+    EXPECT_TRUE(first_refreshed);
+    EXPECT_TRUE(second_refreshed);
+    EXPECT_EQ(refresh_grants, 1);
+    const auto original_presented =
+        std::count_if(server.bodies().begin(), server.bodies().end(), [](const std::string& body) {
+            return body.find("grant_type=refresh_token") != std::string::npos &&
+                   body.find("refresh_token=granted-refresh-token") != std::string::npos;
+        });
+    EXPECT_EQ(original_presented, 1) << "the original refresh token was presented more than once";
 }
 
 TEST(AuthIssuerBindingTest, RejectsAuthServerMetadataWhoseIssuerIsNotItsDiscoveryLocation) {
