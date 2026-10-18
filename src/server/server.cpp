@@ -33,12 +33,13 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <ranges>
-#include <regex>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -50,20 +51,85 @@ namespace mcp {
 
 namespace {
 
-struct UriTemplatePattern {
-    std::string source;
-    std::regex matcher;
+/// One state of a URI template's matching automaton.
+struct UriMatchState {
+    enum class Kind : std::uint8_t {
+        eLiteral,  ///< Consumes `literal`.
+        eExcept,   ///< Consumes one character that is not in `excluded`.
+        eSplit,    ///< Consumes nothing and continues at both `next` and `alternative`.
+        eMatch,    ///< The whole URI matched if the input ends here.
+    };
+    Kind kind{Kind::eMatch};
+    char literal{0};
+    std::string_view excluded;
+    std::size_t next{0};
+    std::size_t alternative{0};
 };
 
-// The input is bounded because the matcher cannot be trusted with it, not because 512 is a policy
-// anyone chose for resource names. Every std::regex implementation spends stack in proportion to
-// the subject's length, by an amount each decides for itself, and the smallest default thread
-// stack this SDK runs on — 512 KB for a non-main thread on macOS — has to survive the longest URI
-// accepted here. Real resource identifiers sit far below this. A full-length filesystem path does
-// not, but no bound a backtracking matcher could be given would reach it either: matching an
-// RFC 6570 level-2 template ({var}, {+var}) needs no backtracking at all, so a linear, stack-free
-// segment matcher would retire this limit entirely. That replacement is deferred, not rejected.
+struct UriTemplatePattern {
+    /// The template's language written as a regular expression. Two templates with the same
+    /// source match the same URIs.
+    std::string source;
+    std::vector<UriMatchState> matcher;
+};
+
+// Matching a URI against every registered template costs time in proportion to the URI's length
+// times the templates' size, so the length is bounded to keep one resources/read cheap whatever a
+// client sends. Real resource identifiers sit far below this.
 constexpr std::size_t g_MAX_TEMPLATE_MATCH_URI_LENGTH = 512;
+
+/// Does `uri` match the automaton `states` from start to end? Every state the input can be in is
+/// followed at once, as in Thompson's construction, so the work is linear in the URI's length and
+/// needs no recursion, whatever the template. A backtracking regular-expression engine can take
+/// time exponential in the number of expressions on a URI that almost matches.
+bool uri_template_matches(const std::vector<UriMatchState>& states, std::string_view uri) {
+    constexpr auto unseen = std::numeric_limits<std::size_t>::max();
+    std::vector<std::size_t> seen(states.size(), unseen);
+    std::vector<std::size_t> current;
+    std::vector<std::size_t> following;
+    std::vector<std::size_t> pending;
+    // Adds `start` and every state reachable from it without consuming input; `step` marks the
+    // states already added for this input position.
+    const auto add = [&](std::vector<std::size_t>& set, std::size_t start, std::size_t step) {
+        pending.push_back(start);
+        while (!pending.empty()) {
+            const auto index = pending.back();
+            pending.pop_back();
+            if (seen[index] == step) {
+                continue;
+            }
+            seen[index] = step;
+            if (states[index].kind == UriMatchState::Kind::eSplit) {
+                pending.push_back(states[index].alternative);
+                pending.push_back(states[index].next);
+            } else {
+                set.push_back(index);
+            }
+        }
+    };
+
+    add(current, 0, 0);
+    for (std::size_t position = 0; position < uri.size(); ++position) {
+        const char ch = uri[position];
+        following.clear();
+        for (const auto index : current) {
+            const auto& state = states[index];
+            const bool consumes =
+                (state.kind == UriMatchState::Kind::eLiteral && state.literal == ch) ||
+                (state.kind == UriMatchState::Kind::eExcept &&
+                 state.excluded.find(ch) == std::string_view::npos);
+            if (consumes) {
+                add(following, state.next, position + 1);
+            }
+        }
+        if (following.empty()) {
+            return false;
+        }
+        current.swap(following);
+    }
+    return std::ranges::any_of(
+        current, [&](std::size_t index) { return states[index].kind == UriMatchState::Kind::eMatch; });
+}
 
 bool is_uri_template_operator(char ch) {
     constexpr std::string_view operators = "+#./;?&";
@@ -130,34 +196,79 @@ void append_regex_literal(std::string& pattern, char ch) {
     pattern.push_back(ch);
 }
 
-void append_uri_expression_pattern(std::string& pattern, std::string_view expression) {
+void append_literal_state(std::vector<UriMatchState>& states, char ch) {
+    states.push_back({UriMatchState::Kind::eLiteral, ch, {}, states.size() + 1, 0});
+}
+
+/// `[^excluded]+`
+void append_run_states(std::vector<UriMatchState>& states, std::string_view excluded) {
+    const auto first = states.size();
+    states.push_back({UriMatchState::Kind::eExcept, 0, excluded, first + 1, 0});
+    states.push_back({UriMatchState::Kind::eSplit, 0, {}, first, first + 2});
+}
+
+/// `(?:<prefix>[^excluded]+)?` when `non_empty`, else `(?:<prefix>[^excluded]*)?`.
+void append_prefixed_run_states(std::vector<UriMatchState>& states, char prefix,
+                                std::string_view excluded, bool non_empty) {
+    const auto first = states.size();
+    const auto end = first + 4;
+    states.push_back({UriMatchState::Kind::eSplit, 0, {}, first + 1, end});
+    states.push_back({UriMatchState::Kind::eLiteral, prefix, {}, first + 2, 0});
+    if (non_empty) {
+        states.push_back({UriMatchState::Kind::eExcept, 0, excluded, first + 3, 0});
+        states.push_back({UriMatchState::Kind::eSplit, 0, {}, first + 2, end});
+    } else {
+        states.push_back({UriMatchState::Kind::eSplit, 0, {}, first + 3, end});
+        states.push_back({UriMatchState::Kind::eExcept, 0, excluded, first + 2, 0});
+    }
+}
+
+/// `(?:\.[^/?#]+)*`, the label expansion's `(?:\.[^/?#]+(?:\.[^/?#]+)*)?`.
+void append_label_states(std::vector<UriMatchState>& states) {
+    const auto first = states.size();
+    states.push_back({UriMatchState::Kind::eSplit, 0, {}, first + 1, first + 4});
+    states.push_back({UriMatchState::Kind::eLiteral, '.', {}, first + 2, 0});
+    states.push_back({UriMatchState::Kind::eExcept, 0, "/?#", first + 3, 0});
+    states.push_back({UriMatchState::Kind::eSplit, 0, {}, first + 2, first});
+}
+
+void append_uri_expression_pattern(std::string& pattern, std::vector<UriMatchState>& states,
+                                   std::string_view expression) {
     validate_uri_template_variables(expression);
     char expression_operator = is_uri_template_operator(expression.front()) ? expression.front() : 0;
 
     switch (expression_operator) {
         case '+':
             pattern += R"([^?#]+)";
+            append_run_states(states, "?#");
             break;
         case '#':
             pattern += R"((?:#[^#]*)?)";
+            append_prefixed_run_states(states, '#', "#", false);
             break;
         case '.':
             pattern += R"((?:\.[^/?#]+(?:\.[^/?#]+)*)?)";
+            append_label_states(states);
             break;
         case '/':
             pattern += R"((?:/[^?#]+)?)";
+            append_prefixed_run_states(states, '/', "?#", true);
             break;
         case ';':
             pattern += R"((?:;[^?#]*)?)";
+            append_prefixed_run_states(states, ';', "?#", false);
             break;
         case '?':
             pattern += R"((?:\?[^#]*)?)";
+            append_prefixed_run_states(states, '?', "#", false);
             break;
         case '&':
             pattern += R"((?:&[^#]*)?)";
+            append_prefixed_run_states(states, '&', "#", false);
             break;
         default:
             pattern += R"([^/?#]+)";
+            append_run_states(states, "/?#");
             break;
     }
 }
@@ -168,6 +279,7 @@ UriTemplatePattern compile_uri_template(std::string_view uri_template) {
     }
 
     std::string pattern = "^";
+    std::vector<UriMatchState> states;
     // The operator of the previous token, when that token was an expression.
     std::optional<char> previous_operator;
     for (std::size_t index = 0; index < uri_template.size();) {
@@ -176,6 +288,7 @@ UriTemplatePattern compile_uri_template(std::string_view uri_template) {
         }
         if (uri_template[index] != '{') {
             append_regex_literal(pattern, uri_template[index]);
+            append_literal_state(states, uri_template[index]);
             previous_operator.reset();
             ++index;
             continue;
@@ -190,8 +303,8 @@ UriTemplatePattern compile_uri_template(std::string_view uri_template) {
         // Two expressions with nothing between them compile to adjacent runs. The boundary is
         // decidable only when the second expands with a leading literal (every operator but '+'
         // does) that the first can never contain, as in {+path}{?query} or {id}{#section}.
-        // Otherwise the regex engine can only resolve it by backtracking over every way of
-        // splitting the input, and the variables' values are ambiguous anyway, so reject it.
+        // Otherwise any split of the input between the two would do, so the variables' values
+        // are ambiguous: reject it.
         if (previous_operator) {
             const bool has_leading_literal = expression_operator != 0 && expression_operator != '+';
             if (!has_leading_literal ||
@@ -201,13 +314,14 @@ UriTemplatePattern compile_uri_template(std::string_view uri_template) {
                     "Resource URI template must separate adjacent expressions with a literal");
             }
         }
-        append_uri_expression_pattern(pattern, expression);
+        append_uri_expression_pattern(pattern, states, expression);
         previous_operator = expression_operator;
         index = close + 1;
     }
     pattern += '$';
+    states.push_back({UriMatchState::Kind::eMatch, 0, {}, 0, 0});
 
-    return UriTemplatePattern{pattern, std::regex(pattern, std::regex::ECMAScript)};
+    return UriTemplatePattern{std::move(pattern), std::move(states)};
 }
 
 void validate_call_tool_result(const nlohmann::json& result) {
@@ -419,7 +533,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     struct ResourceTemplateRegistration {
         ResourceTemplate metadata;
         std::string matcher_source;
-        std::regex matcher;
+        std::vector<UriMatchState> matcher;
         TypeErasedHandler handler;
     };
 
@@ -1367,7 +1481,7 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
         if (!resource_template.handler) {
             continue;
         }
-        if (!std::regex_match(params.uri, resource_template.matcher)) {
+        if (!uri_template_matches(resource_template.matcher, params.uri)) {
             continue;
         }
         if (match != nullptr) {

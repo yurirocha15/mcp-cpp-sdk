@@ -8,11 +8,15 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
+#include <vector>
 
 struct AddParams {
     int augend = 0;
@@ -786,8 +790,7 @@ TEST_F(ServerHandlersTest, OverlongUriIsRejectedWithoutReachingTemplateMatching)
 }
 
 // A URI at the accepted limit is served, so the bound admits what it claims to admit. The match is
-// run on a std::thread, which carries the platform's default stack — the configuration the bound is
-// sized for. On gtest's main thread (8 MB on Linux and macOS) this would prove nothing.
+// run on a std::thread, which carries the platform's default stack rather than gtest's main thread's.
 TEST_F(ServerHandlersTest, UriAtTheLengthLimitIsStillMatchedByTemplate) {
     mcp::ServerCapabilities caps;
     caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
@@ -839,6 +842,137 @@ TEST_F(ServerHandlersTest, UriAtTheLengthLimitIsStillMatchedByTemplate) {
     ASSERT_EQ(responses.size(), 2);
     ASSERT_TRUE(responses[1].contains("result"));
     EXPECT_EQ(responses[1]["result"]["contents"][0]["text"], "matched");
+}
+
+// Each expression operator matches exactly the URIs its expansion can produce: the cases below
+// pin the matcher to the regular expressions the templates are documented to compile to.
+TEST_F(ServerHandlersTest, TemplateExpressionsMatchWhatTheirOperatorExpandsTo) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    struct Case {
+        const char* uri;
+        bool matches;
+    };
+    const std::vector<std::pair<std::string, std::vector<Case>>> templates = {
+        {"a://{x}", {{"a://abc", true}, {"a://", false}, {"a://ab/c", false}, {"a://a?b", false}}},
+        {"b://{+path}", {{"b://x/y/z", true}, {"b://x?y", false}, {"b://", false}}},
+        {"c://item{#frag}",
+         {{"c://item", true}, {"c://item#top", true}, {"c://item#a#b", false}, {"c://itemx", false}}},
+        {"d://file{.ext}",
+         {{"d://file", true},
+          {"d://file.tar.gz", true},
+          {"d://file..a", true},
+          {"d://file.", false},
+          {"d://file.a/b", false}}},
+        {"e://root{/seg}",
+         {{"e://root", true}, {"e://root/a/b", true}, {"e://root/", false}, {"e://root/a?x", false}}},
+        {"f://matrix{;params}",
+         {{"f://matrix", true},
+          {"f://matrix;", true},
+          {"f://matrix;a=1;b", true},
+          {"f://matrix;a?x", false}}},
+        {"g://search{?q}",
+         {{"g://search", true},
+          {"g://search?", true},
+          {"g://search?q=a&b=c", true},
+          {"g://search?q#x", false}}},
+        {"h://list?a=1{&b}",
+         {{"h://list?a=1", true}, {"h://list?a=1&b=2", true}, {"h://list?a=1#x", false}}},
+        {"i://a.b{x}", {{"i://a.bz", true}, {"i://aXbz", false}}},
+    };
+
+    std::vector<std::pair<std::string, const Case*>> requests;
+    for (const auto& [uri_template, cases] : templates) {
+        mcp::ResourceTemplate tmpl;
+        tmpl.uriTemplate = uri_template;
+        tmpl.name = uri_template;
+        setup.server.add_resource_template<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+            tmpl, [name = uri_template](mcp::ReadResourceRequestParams params) {
+                mcp::TextResourceContents content;
+                content.uri = params.uri;
+                content.text = name;
+                mcp::ReadResourceResult result;
+                result.contents.emplace_back(std::move(content));
+                return result;
+            });
+        for (const auto& test_case : cases) {
+            requests.emplace_back(uri_template, &test_case);
+        }
+    }
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        if (responses.size() == requests.size() + 1) {
+            setup.raw_transport->close();
+        }
+    });
+    setup.raw_transport->enqueue_message(make_initialize_request("init").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    for (std::size_t index = 0; index < requests.size(); ++index) {
+        setup.raw_transport->enqueue_message(
+            nlohmann::json{{"jsonrpc", "2.0"},
+                           {"id", static_cast<std::int64_t>(index)},
+                           {"method", "resources/read"},
+                           {"params", {{"uri", requests[index].second->uri}}}}
+                .dump());
+    }
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), requests.size() + 1);
+    for (const auto& response : responses) {
+        if (!response["id"].is_number_integer()) {
+            continue;
+        }
+        const auto& [uri_template, test_case] = requests.at(response["id"].get<std::size_t>());
+        SCOPED_TRACE(uri_template + " against " + test_case->uri);
+        if (test_case->matches) {
+            ASSERT_TRUE(response.contains("result")) << response.dump();
+            EXPECT_EQ(response["result"]["contents"][0]["text"], uri_template);
+        } else {
+            ASSERT_TRUE(response.contains("error")) << response.dump();
+            EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_PARAMS);
+        }
+    }
+}
+
+// Expressions separated by a literal their values may also contain, here '-', leave the matcher
+// many ways to split a URI. One that almost matches must still be answered at once rather than
+// after trying every split.
+TEST_F(ServerHandlersTest, ANearlyMatchingUriIsAnsweredInBoundedTime) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::ResourceTemplate tmpl;
+    tmpl.uriTemplate = "metrics://{year}-{month}-{day}-{hour}";
+    tmpl.name = "metrics";
+    setup.server.add_resource_template<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        tmpl, [](mcp::ReadResourceRequestParams) { return mcp::ReadResourceResult{}; });
+
+    std::string uri = "metrics://";
+    uri += std::string(512 - uri.size() - 1, '-');
+    uri += '/';
+    ASSERT_EQ(uri.size(), 512U);
+
+    const auto started = std::chrono::steady_clock::now();
+    auto responses = run_request(
+        setup,
+        nlohmann::json{
+            {"jsonrpc", "2.0"}, {"id", "2"}, {"method", "resources/read"}, {"params", {{"uri", uri}}}});
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_LT(elapsed, std::chrono::seconds(1));
 }
 
 TEST_F(ServerHandlersTest, ExactResourceIsServedRegardlessOfUriLength) {

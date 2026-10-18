@@ -376,10 +376,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
   and `connect()` or a `list_*` call threw when a server sent
   `"listChanged": null` or `"nextCursor": null`.
 - A `resources/read` URI longer than 512 characters is now answered
-  `-32602` naming the limit, instead of being handed to the regular-expression
-  template matcher, whose stack use grows with the subject and can overrun the
-  smallest thread stack the SDK runs on. Exact resource lookups happen first
-  and are unaffected by the limit.
+  `-32602` naming the limit instead of being matched against the resource
+  templates. Exact resource lookups happen first and are unaffected by the
+  limit.
+- Resource templates are matched without `std::regex`, in time linear in the
+  URI's length. A URI that nearly matches a template whose expressions are
+  separated by a literal their values may also contain, such as
+  `metrics://{year}-{month}-{day}-{hour}`, is answered at once instead of
+  holding the server's executor while a backtracking matcher tries every split.
 - Messages from a peer that nest arrays and objects more than 128 levels deep
   are refused before they are decoded: the server answers `-32700`, the client
   drops the message and reports it through `ClientOptions::on_protocol_error`,
@@ -390,9 +394,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   registration with `std::invalid_argument` when the boundary between them is
   ambiguous: the second expression has no leading literal (`{a}{b}`,
   `{a}{+b}`), or its literal can occur in the first expression's value
-  (`{name}{.ext}`, `{+path}{/segment}`). Such a template compiled to adjacent
-  runs that the matcher could only resolve by backtracking over every split of
-  the input. Adjacent expressions with a decidable boundary, such as
+  (`{name}{.ext}`, `{+path}{/segment}`). Any split of a URI between two such
+  expressions would match, so their values would be ambiguous. Adjacent
+  expressions with a decidable boundary, such as
   `{+path}{?query}` and `{id}{#section}`, are accepted.
 - A tool handler that throws something not derived from `std::exception` is
   answered with a tool error result carrying the fixed text
