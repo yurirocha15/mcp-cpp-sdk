@@ -1,3 +1,5 @@
+#include "../detail/memory_transport_read.hpp"
+
 #include <mcp/detail/serialized_transport_writer.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_server.hpp>
@@ -413,6 +415,16 @@ void Server::register_tool(const Tool& tool, const std::string& name, TypeErased
     impl_->tool_handlers.emplace(name, Impl::ToolRegistration{std::move(handler), result_mode});
 }
 
+void Server::register_tool(Tool&& tool, TypeErasedHandler handler, detail::ToolResultMode result_mode) {
+    if (impl_->tool_handlers.contains(tool.name)) {
+        throw std::invalid_argument("Duplicate tool registration: " + tool.name);
+    }
+    auto name = tool.name;
+    impl_->tools.push_back(std::move(tool));
+    impl_->tool_handlers.emplace(std::move(name),
+                                 Impl::ToolRegistration{std::move(handler), result_mode});
+}
+
 void Server::register_resource(const Resource& resource, TypeErasedHandler handler) {
     auto uri = resource.uri;
     if (impl_->resource_handlers.contains(uri)) {
@@ -611,7 +623,12 @@ Task<void> Server::run_session(std::shared_ptr<Session> session) {
             bool parse_failed = false;
             try {
                 if (session->memory_transport) {
-                    json_msg = co_await session->memory_transport->read_json();
+                    auto message = co_await detail::MemoryTransportAccess::read_json_until_closed(
+                        *session->memory_transport);
+                    if (!message) {
+                        break;
+                    }
+                    json_msg = std::move(*message);
                 } else {
                     auto raw = co_await session->transport->read_message();
                     json_msg = nlohmann::json::parse(raw);
@@ -1085,14 +1102,19 @@ Task<std::string> Server::handle_tools_list_wire(const nlohmann::json& json_msg)
                                   "Invalid pagination cursor");
     }
 
-    ListToolsResult list_result;
+    // The members ListToolsResult serializes, built from the registered tools rather than a copy.
     auto [begin, end, next_cursor] = *page;
-    list_result.tools.assign(impl_->tools.begin() + static_cast<std::ptrdiff_t>(begin),
-                             impl_->tools.begin() + static_cast<std::ptrdiff_t>(end));
-    list_result.nextCursor = std::move(next_cursor);
+    nlohmann::json tools_json = nlohmann::json::array();
+    for (auto index = begin; index < end; ++index) {
+        tools_json.push_back(impl_->tools[index]);
+    }
+    nlohmann::json list_result = nlohmann::json::object();
+    list_result["tools"] = std::move(tools_json);
+    if (next_cursor) {
+        list_result["nextCursor"] = std::move(*next_cursor);
+    }
 
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(),
-                               nlohmann::json(std::move(list_result)));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(list_result));
 }
 
 Task<void> Server::handle_resources_list(const nlohmann::json& json_msg) {
@@ -1322,10 +1344,13 @@ Task<std::string> Server::handle_complete_wire(const nlohmann::json& json_msg) {
 }
 
 std::string Server::make_result_wire(const RequestId& id, nlohmann::json result) {
-    JSONRPCResultResponse response;
-    response.id = id;
-    response.result = std::move(result);
-    return nlohmann::json(std::move(response)).dump();
+    // The members JSONRPCResultResponse serializes, with the result moved in: its to_json takes the
+    // response by const reference and would copy the whole result.
+    nlohmann::json response = nlohmann::json::object();
+    response["id"] = id;
+    response["jsonrpc"] = "2.0";
+    response["result"] = std::move(result);
+    return response.dump();
 }
 
 std::string Server::make_error_wire(const RequestId& id, int code, std::string message) {

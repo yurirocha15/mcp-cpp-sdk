@@ -30,6 +30,27 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Context` takes a `MessageSender`, so handlers can write to the peer through
   the session's serialized writer. `MemoryTransport` is exported from the
   shared library and is no longer copyable.
+- Fixtures and a pinned harness for the official MCP conformance runner
+  (`@modelcontextprotocol/conformance@0.1.16`, spec revision `2025-11-25`),
+  with a regression baseline in `conformance/expected-failures.yml`, a
+  `--conformance` build flag, and a CI workflow that fails on any drift.
+- Reproducible cross-SDK benchmark tooling (order counterbalancing,
+  environment/container capture, resource-headroom validation, protocol
+  verification) and audited benchmark results.
+- Project policy documents: `ROADMAP.md` (tier gates), `MAINTENANCE.md`
+  (triage SLAs), `VERSIONING.md` (compatibility surface), and
+  `DEPENDENCY_POLICY.md` (runtime dependency floors).
+- GitHub issue templates and a label manifest (`.github/labels.yml`).
+- JSON-RPC error code constants from the spec-reserved band:
+  `g_HEADER_MISMATCH` (`-32020`), `g_MISSING_REQUIRED_CLIENT_CAPABILITY`
+  (`-32021`) and `g_UNSUPPORTED_PROTOCOL_VERSION` (`-32022`).
+- An optional `extensions` member on `ClientCapabilities` and
+  `ServerCapabilities`, keyed by extension name. Adding it changes the layout
+  of both structs.
+- `g_PROTOCOL_VERSION_2026_07_28` and `g_DISCOVERABLE_PROTOCOL_VERSIONS`, the
+  version list for a `server/discover` response, which the SDK does not serve
+  yet. `g_SUPPORTED_PROTOCOL_VERSIONS`, which governs `initialize` negotiation,
+  is unchanged.
 
 ### Changed
 
@@ -125,6 +146,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
   written with `"id": null`.
 - `HttpClientTransport::session_id()` and `last_event_id()` return
   `std::string` by value.
+- Documentation guides and feature examples refreshed to match the compiled
+  runtime split.
+- Less work per request in `StreamableHttpSessionManager` sessions: responses
+  are routed by their id without parsing the whole message, the session's
+  read loops and response waits end without throwing, and `MemoryTransport`
+  writes go straight to the peer's strand. Tool results and typed tool
+  registrations are moved rather than copied, and a `tools/list` page is
+  serialized from the registered tools without first copying them.
 
 ### Fixed
 

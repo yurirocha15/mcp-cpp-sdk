@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -33,6 +34,15 @@ constexpr std::string_view g_PROTOCOL_VERSION_2025_06_18 = "2025-06-18";
 constexpr std::string_view g_PROTOCOL_VERSION_2025_11_25 = "2025-11-25";
 
 /**
+ * @brief Protocol version 2026-07-28 (stateless protocol revision).
+ *
+ * @details Deliberately absent from g_SUPPORTED_PROTOCOL_VERSIONS: legacy initialize
+ * negotiation must only resolve to versions whose semantics this SDK fully serves. It is
+ * listed only in g_DISCOVERABLE_PROTOCOL_VERSIONS.
+ */
+constexpr std::string_view g_PROTOCOL_VERSION_2026_07_28 = "2026-07-28";
+
+/**
  * @brief The latest supported protocol version.
  */
 constexpr std::string_view g_LATEST_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2025_11_25;
@@ -43,6 +53,18 @@ constexpr std::string_view g_LATEST_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2025_1
 constexpr std::array<std::string_view, 4> g_SUPPORTED_PROTOCOL_VERSIONS = {
     g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
     g_PROTOCOL_VERSION_2025_11_25};
+
+/**
+ * @brief Protocol versions for a 2026-07-28 server/discover response.
+ *
+ * @details Deliberately distinct from g_SUPPORTED_PROTOCOL_VERSIONS, which alone governs
+ * legacy initialize negotiation. The SDK does not serve server/discover yet, so nothing reads
+ * this list. Listing a version here makes no promise to the negotiation path: a legacy peer
+ * requesting 2026-07-28 in initialize still negotiates g_LATEST_PROTOCOL_VERSION.
+ */
+constexpr std::array<std::string_view, 5> g_DISCOVERABLE_PROTOCOL_VERSIONS = {
+    g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
+    g_PROTOCOL_VERSION_2025_11_25, g_PROTOCOL_VERSION_2026_07_28};
 
 /**
  * @brief Check whether a protocol version is supported by this SDK.
@@ -298,6 +320,8 @@ struct ClientCapabilities {
     std::optional<RootsCapability> roots;        ///< Support for roots/list requests.
     std::optional<SamplingCapability> sampling;  ///< Support for sampling/createMessage requests.
     std::optional<TasksCapability> tasks;        ///< Support for task lifecycle endpoints.
+    std::optional<std::map<std::string, nlohmann::json>>
+        extensions;  ///< Extension capability negotiation, keyed by extension name.
 };
 
 inline void to_json(nlohmann::json& j, const ClientCapabilities::ElicitationCapability& cap) {
@@ -445,6 +469,9 @@ inline void to_json(nlohmann::json& j, const ClientCapabilities& cap) {
     if (cap.tasks) {
         j["tasks"] = *cap.tasks;
     }
+    if (cap.extensions) {
+        j["extensions"] = *cap.extensions;
+    }
 }
 
 inline void from_json(const nlohmann::json& j, ClientCapabilities& cap) {
@@ -462,6 +489,9 @@ inline void from_json(const nlohmann::json& j, ClientCapabilities& cap) {
     }
     if (j.contains("tasks")) {
         cap.tasks = j.at("tasks").get<ClientCapabilities::TasksCapability>();
+    }
+    if (j.contains("extensions")) {
+        cap.extensions = j.at("extensions").get<std::map<std::string, nlohmann::json>>();
     }
 }
 
@@ -528,6 +558,8 @@ struct ServerCapabilities {
     std::optional<ResourcesCapability> resources;  ///< Support for resource endpoints.
     std::optional<TasksCapability> tasks;          ///< Support for task lifecycle endpoints.
     std::optional<ToolsCapability> tools;          ///< Support for tool endpoints.
+    std::optional<std::map<std::string, nlohmann::json>>
+        extensions;  ///< Extension capability negotiation, keyed by extension name.
 };
 
 inline void to_json(nlohmann::json& j, const ServerCapabilities::PromptsCapability& cap) {
@@ -652,6 +684,9 @@ inline void to_json(nlohmann::json& j, const ServerCapabilities& cap) {
     if (cap.tools) {
         j["tools"] = *cap.tools;
     }
+    if (cap.extensions) {
+        j["extensions"] = *cap.extensions;
+    }
 }
 
 inline void from_json(const nlohmann::json& j, ServerCapabilities& cap) {
@@ -675,6 +710,9 @@ inline void from_json(const nlohmann::json& j, ServerCapabilities& cap) {
     }
     if (j.contains("tools")) {
         cap.tools = j.at("tools").get<ServerCapabilities::ToolsCapability>();
+    }
+    if (j.contains("extensions")) {
+        cap.extensions = j.at("extensions").get<std::map<std::string, nlohmann::json>>();
     }
 }
 

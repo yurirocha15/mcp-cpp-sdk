@@ -16,17 +16,28 @@ A static resource is a direct mapping from a fixed URI to a specific value or
 handler. These are ideal for configuration files, documentation, or fixed data
 sets that don't change their identification scheme.
 
-You can add a static resource using the ``add_resource`` method. The library
-provides high-level overloads for common use cases:
+Register metadata and a typed read handler with ``add_resource``:
 
 .. code-block:: cpp
 
    #include <mcp/mcp.hpp>
 
-   server.add_resource("mcp://logs/system", "System logs", "text/plain",
-                       []() -> std::string {
-                           return "System is running normally.";
-                       });
+   mcp::Resource resource;
+   resource.uri = "mcp://logs/system";
+   resource.name = "System logs";
+   resource.mimeType = "text/plain";
+
+   server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+       resource, [](mcp::ReadResourceRequestParams request) {
+           mcp::TextResourceContents contents;
+           contents.uri = std::move(request.uri);
+           contents.mimeType = "text/plain";
+           contents.text = "System is running normally.";
+
+           mcp::ReadResourceResult result;
+           result.contents.emplace_back(std::move(contents));
+           return result;
+       });
 
 For more complex resources, you can use the structured protocol types:
 
@@ -39,21 +50,30 @@ For more complex resources, you can use the structured protocol types:
 Resource Templates
 ------------------
 
-Resource templates allow you to define a URI pattern with parameters using the
-RFC 6570 URI Template syntax. This is powerful for exposing collections of data
-where the specific resource identity depends on a parameter, such as a database
-record ID or a filename.
-
-The server will expand the URI when a client requests it, and pass the extracted
-parameters to your handler.
+Resource templates let one handler serve a family of URIs. The current matcher
+supports the common RFC 6570 expression forms for routing, but it is not a full
+RFC 6570 expansion or variable-extraction engine. The handler receives the full
+requested URI and can parse or validate application-specific segments itself.
 
 .. code-block:: cpp
 
-   server.add_resource_template("mcp://logs/{node}", "Node logs",
-                                [](const std::map<std::string, std::string>& params) -> std::string {
-                                    std::string node = params.at("node");
-                                    return "Logs for node: " + node;
-                                });
+   mcp::ResourceTemplate logs;
+   logs.uriTemplate = "mcp://logs/{node}";
+   logs.name = "Node logs";
+   logs.mimeType = "text/plain";
+
+   server.add_resource_template<mcp::ReadResourceRequestParams,
+                                mcp::ReadResourceResult>(
+       logs, [](mcp::ReadResourceRequestParams request) {
+           mcp::TextResourceContents contents;
+           contents.uri = std::move(request.uri);
+           contents.mimeType = "text/plain";
+           contents.text = "Logs for requested node";
+
+           mcp::ReadResourceResult result;
+           result.contents.emplace_back(std::move(contents));
+           return result;
+       });
 
 Templates are particularly useful when you have a large or open-ended set of
 resources that share the same schema or purpose.
@@ -95,17 +115,19 @@ For more details on how notifications work across the protocol, see :doc:`/index
 Resource Change Notifications
 -----------------------------
 
-When a resource's content changes, the server should notify all active
-subscribers using ``notify_resource_updated``. The library handles the
-routing of these notifications to the correct clients.
+When a resource's content changes, call ``notify_resource_updated`` on the
+``Server`` instance for the relevant session. The method sends only when that
+session subscribed to the exact URI. In a multi-session deployment, the
+application is responsible for invoking the notification on each relevant
+per-session server instance.
 
 .. code-block:: cpp
 
    // Notify subscribers that a specific resource has changed
    co_await server.notify_resource_updated("mcp://status/counter");
 
-This mechanism ensures that the LLM or the client application always has
-access to the most up-to-date information without constant polling.
+The notification tells a subscribed client that it should read the resource
+again; delivery and refresh timing still depend on the connection and client.
 
 .. literalinclude:: ../../examples/features/notifications_subscriptions.cpp
    :language: cpp
@@ -137,6 +159,7 @@ Best Practices
   interpret the data.
 - **Error Handling**: Throwing an exception in a resource handler will
   automatically return an appropriate JSON-RPC error to the client.
-- **Context Awareness**: Use the handler's ``Context`` object for logging or
-  reporting progress for long-running resource generation. See :doc:`context`
-  for more information.
+- **Context Awareness**: A resource handler can use ``Context`` for logging and
+  reverse requests. Resource reads do not currently propagate a request
+  ``progressToken`` into the handler context, so do not rely on progress
+  reporting for them. See :doc:`context` for more information.

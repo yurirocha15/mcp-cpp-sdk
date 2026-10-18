@@ -11,6 +11,7 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
 #include <boost/asio/thread_pool.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
@@ -1489,4 +1490,79 @@ TEST_F(SessionManagerTest, RequestWithAnUnusableIdIsAnswered) {
     ASSERT_FALSE(timed_out) << "the request was never answered";
     EXPECT_EQ(response.status, 400);
     EXPECT_NE(response.body.find("-32600"), std::string::npos) << "body: " << response.body;
+}
+
+TEST_F(SessionManagerTest, RequestPendingWhenItsSessionIsDeletedIsAnswered) {
+    const unsigned short port = 19123;
+    std::atomic<bool> tool_started{false};
+    std::atomic<bool> tool_finished{false};
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx_.get_executor(), "127.0.0.1", port,
+        [&](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities caps;
+            caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+            auto server = std::make_unique<mcp::Server>(
+                mcp::Implementation{"test-slow-server", "1.0.0"}, std::move(caps));
+            server->add_tool<json, mcp::CallToolResult>(
+                "slow", "Finishes after its session is gone", json{{"type", "object"}},
+                [&](json) -> mcp::Task<mcp::CallToolResult> {
+                    tool_started.store(true, std::memory_order_release);
+                    asio::steady_timer delay(co_await asio::this_coro::executor,
+                                             std::chrono::milliseconds(500));
+                    boost::system::error_code ignored;
+                    co_await delay.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+                    tool_finished.store(true, std::memory_order_release);
+                    co_return mcp::make_tool_text_result("late");
+                });
+            return server;
+        });
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse call_response;
+    RawResponse delete_response;
+    std::atomic<bool> call_answered{false};
+    bool tool_finished_before_answer = true;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            auto init = co_await do_initialize(io_ctx_.get_executor(), port);
+            auto initialized = co_await send_initialized(io_ctx_.get_executor(), port, init.session_id);
+            EXPECT_EQ(initialized.status, 202);
+
+            asio::co_spawn(
+                io_ctx_,
+                [&, session_id = init.session_id]() -> mcp::Task<void> {
+                    json request = {{"jsonrpc", "2.0"},
+                                    {"method", "tools/call"},
+                                    {"params", {{"name", "slow"}, {"arguments", json::object()}}},
+                                    {"id", 2}};
+                    call_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                         "/mcp", request.dump(), session_id);
+                    tool_finished_before_answer = tool_finished.load(std::memory_order_acquire);
+                    call_answered.store(true, std::memory_order_release);
+                },
+                asio::detached);
+
+            asio::steady_timer poll(io_ctx_.get_executor());
+            while (!tool_started.load(std::memory_order_acquire)) {
+                poll.expires_after(std::chrono::milliseconds(5));
+                co_await poll.async_wait(asio::use_awaitable);
+            }
+            delete_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_,
+                                                   "/mcp", {}, init.session_id);
+            while (!call_answered.load(std::memory_order_acquire)) {
+                poll.expires_after(std::chrono::milliseconds(5));
+                co_await poll.async_wait(asio::use_awaitable);
+            }
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(delete_response.status, 200);
+    EXPECT_EQ(call_response.status, 500);
+    EXPECT_FALSE(tool_finished_before_answer);
+    EXPECT_EQ(manager.session_count(), 0);
 }
