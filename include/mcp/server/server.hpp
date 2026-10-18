@@ -322,6 +322,36 @@ class MCP_API Server {
     void set_page_size(std::size_t size);
 
     /**
+     * @brief Set the instructions string returned by initialize and server/discover.
+     *
+     * @details Read unsynchronized by request handlers; must be called before run().
+     *
+     * @param instructions Natural-language guidance for LLMs on how to use this server.
+     */
+    void set_instructions(std::string instructions);
+
+    /**
+     * @brief Set the `ttlMs` caching hint returned by server/discover.
+     *
+     * @details Defaults to `0` ("do not cache") until overridden. Read unsynchronized by
+     * request handlers; must be called before run().
+     *
+     * @param ttl_ms How long, in milliseconds, the client MAY consider the discover result fresh.
+     * @throws std::invalid_argument If `ttl_ms` is negative.
+     */
+    void set_discover_ttl_ms(std::int64_t ttl_ms);
+
+    /**
+     * @brief Set the `cacheScope` caching hint returned by server/discover.
+     *
+     * @details Defaults to `CacheScope::ePrivate` until overridden. Read unsynchronized by
+     * request handlers; must be called before run().
+     *
+     * @param scope The intended cache scope of the discover result.
+     */
+    void set_discover_cache_scope(CacheScope scope);
+
+    /**
      * @brief Send a JSON-RPC request to the connected client and await its response.
      *
      * @param method JSON-RPC method name.
@@ -513,6 +543,8 @@ class MCP_API Server {
 
     Task<void> handle_ping(const nlohmann::json& json_msg);
     Task<std::string> handle_ping_wire(const nlohmann::json& json_msg);
+
+    Task<std::string> handle_discover_wire(const nlohmann::json& json_msg);
 
     Task<void> handle_tools_call(const nlohmann::json& json_msg);
     Task<std::string> handle_tools_call_wire(const nlohmann::json& json_msg);

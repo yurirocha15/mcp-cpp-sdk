@@ -100,6 +100,12 @@ inline bool is_initialize_request(const nlohmann::json& request_json) {
            request_json.at("method").get<std::string>() == "initialize";
 }
 
+inline bool is_discover_request(const nlohmann::json& request_json) {
+    return request_json.is_object() && request_json.contains("method") &&
+           request_json.at("method").is_string() &&
+           request_json.at("method").get<std::string>() == "server/discover";
+}
+
 inline std::optional<std::string> initialize_protocol_version(const nlohmann::json& request_json) {
     if (!request_json.is_object() || !request_json.contains("params") ||
         !request_json.at("params").is_object()) {
@@ -204,6 +210,10 @@ struct StreamableHttpSessionManager::Impl {
     std::unordered_set<std::shared_ptr<Connection>> active_connections_;
     mutable std::shared_mutex sessions_mutex_;
     SessionMap sessions;
+    // Answers sessionless server/discover requests. Built once on the first one, so a peer that
+    // needs no session or credential cannot make the factory run per request.
+    std::mutex discover_server_mutex_;
+    std::shared_ptr<Server> discover_server_;
 
     Impl(const boost::asio::any_io_executor& exec, std::string host_arg, unsigned short port_arg,
          StreamableHttpSessionManager::ServerFactory factory_arg, std::size_t capacity)
@@ -512,7 +522,12 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         const bool is_initialize = detail_session_mgr::is_initialize_request(request_json);
-        if (!is_initialize && !has_valid_protocol_header(request)) {
+        const bool is_discover = detail_session_mgr::is_discover_request(request_json);
+        // server/discover advertises protocol versions (see g_DISCOVERABLE_PROTOCOL_VERSIONS)
+        // outside g_SUPPORTED_PROTOCOL_VERSIONS, which alone backs has_valid_protocol_header;
+        // exempt it from that check exactly like initialize is exempted, rather than widening
+        // the check itself for every method.
+        if (!is_initialize && !is_discover && !has_valid_protocol_header(request)) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid MCP-Protocol-Version header");
         }
@@ -528,6 +543,34 @@ struct StreamableHttpSessionManager::Impl {
 
         auto response_body = co_await boost::asio::co_spawn(
             dispatch_executor, dispatch_on_executor(stateless_server.get(), std::move(request_json)),
+            boost::asio::use_awaitable);
+        co_return detail_session_mgr::make_json_response(request, http::status::ok,
+                                                         std::move(response_body));
+    }
+
+    // server/discover is a pre-gate method: it MUST be reachable with zero prior state, so a
+    // sessionless discover request in stateful mode is dispatched directly against a
+    // throwaway Server instance instead of going through resolve_session_for_post — no
+    // session is created, registered, or otherwise touched, and no Mcp-Session-Id is issued.
+    Task<StringResponse> handle_sessionless_discover(const StringRequest& request,
+                                                     nlohmann::json request_json) {
+        if (closed.load(std::memory_order_acquire)) {
+            co_return detail_session_mgr::make_error_response(
+                request, http::status::service_unavailable, "Transport closed");
+        }
+
+        const auto dispatch_executor = tool_executor_ ? tool_executor_ : executor;
+        std::shared_ptr<Server> discover_server;
+        {
+            std::lock_guard lock(discover_server_mutex_);
+            if (!discover_server_) {
+                discover_server_ = factory(dispatch_executor);
+            }
+            discover_server = discover_server_;
+        }
+
+        auto response_body = co_await boost::asio::co_spawn(
+            dispatch_executor, dispatch_on_executor(discover_server.get(), std::move(request_json)),
             boost::asio::use_awaitable);
         co_return detail_session_mgr::make_json_response(request, http::status::ok,
                                                          std::move(response_body));
@@ -656,6 +699,11 @@ struct StreamableHttpSessionManager::Impl {
             co_return detail_session_mgr::make_jsonrpc_error_response(
                 request, http::status::bad_request, g_INVALID_REQUEST,
                 "JSON-RPC request id must be a string or an integer");
+        }
+
+        if (detail_session_mgr::is_discover_request(request_json) &&
+            request.find("Mcp-Session-Id") == request.end()) {
+            co_return co_await handle_sessionless_discover(request, std::move(request_json));
         }
 
         auto session_var = resolve_session_for_post(request, request_json, conn_strand);

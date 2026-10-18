@@ -9,9 +9,12 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/redirect_error.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <chrono>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/core/constants.hpp>
 #include <nlohmann/json.hpp>
@@ -43,6 +46,17 @@ using AcceptorCallback =
 asio::awaitable<void> run_mock_server(asio::ip::tcp::acceptor& acceptor, AcceptorCallback handler) {
     auto socket = co_await acceptor.async_accept(asio::use_awaitable);
     co_await handler(std::move(socket), acceptor);
+}
+
+/// A policy admitting exactly the plain-http loopback fixture these tests drive directly. A
+/// policy-less `OAuthHttpClient` now defaults to deny-all, so every test that talks to a mock
+/// server without going through `OAuthAuthorizationManager` (which always installs its own policy)
+/// must opt in explicitly.
+mcp::auth::MetadataFetchPolicy loopback_policy(unsigned short port) {
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allowed_origins.push_back("http://127.0.0.1:" + std::to_string(port));
+    policy.allow_plain_http_loopback = true;
+    return policy;
 }
 
 }  // namespace
@@ -295,6 +309,7 @@ TEST_F(MockTokenServer, ExchangeCodeProducesValidToken) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthConfig config;
             config.client_id = "test_client";
             config.token_endpoint = "http://127.0.0.1:" + std::to_string(port) + "/token";
@@ -356,6 +371,7 @@ TEST_F(MockTokenServer, ExchangeCodeWithClientSecret) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthConfig config;
             config.client_id = "test_client";
             config.client_secret = "super_secret";
@@ -413,6 +429,7 @@ TEST_F(MockTokenServer, RefreshTokenProducesNewToken) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthConfig config;
             config.client_id = "test_client";
             config.token_endpoint = "http://127.0.0.1:" + std::to_string(port) + "/token";
@@ -465,6 +482,7 @@ TEST_F(MockTokenServer, TokenExchangeErrorThrows) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthConfig config;
             config.client_id = "test_client";
             config.token_endpoint = "http://127.0.0.1:" + std::to_string(port) + "/token";
@@ -481,6 +499,71 @@ TEST_F(MockTokenServer, TokenExchangeErrorThrows) {
     io_ctx_.run();
 
     EXPECT_TRUE(threw);
+}
+
+TEST_F(MockTokenServer, DoesNotReplayThePostAfterAnAmbiguousMidResponseFailure) {
+    // The connection dies after the request is fully read but before any response is written: from
+    // the client's point of view the server may or may not have acted on it, so this POST must never
+    // be silently replayed within the same exchange_code() call. Redirects are already never
+    // followed for a POST (src/auth/oauth.cpp: run_post_json) for the same reason; this proves there
+    // is no other path that re-sends it.
+    constexpr unsigned short port = 18111;
+
+    asio::ip::tcp::acceptor acceptor(io_ctx_, {asio::ip::make_address("127.0.0.1"), port});
+    int requests_seen = 0;
+
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> asio::awaitable<void> {
+            auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+            beast::tcp_stream stream(std::move(socket));
+            beast::flat_buffer buffer;
+            http::request<http::string_body> req;
+            co_await http::async_read(stream, buffer, req, asio::use_awaitable);
+            ++requests_seen;
+            beast::error_code ec;
+            stream.socket().close(ec);
+
+            // Give a bounded window for a (forbidden) replay to arrive, then cancel the accept so
+            // the test never hangs waiting for a connection that -- correctly -- never comes.
+            asio::steady_timer cutoff(io_ctx_);
+            cutoff.expires_after(std::chrono::milliseconds(300));
+            cutoff.async_wait([&](boost::system::error_code) { acceptor.cancel(); });
+
+            boost::system::error_code accept_error;
+            (void)co_await acceptor.async_accept(
+                asio::redirect_error(asio::use_awaitable, accept_error));
+            if (!accept_error) {
+                ++requests_seen;
+            }
+            cutoff.cancel();
+        },
+        asio::detached);
+
+    bool threw = false;
+
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> asio::awaitable<void> {
+            mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
+            mcp::auth::OAuthConfig config;
+            config.client_id = "test_client";
+            config.token_endpoint = "http://127.0.0.1:" + std::to_string(port) + "/token";
+            config.redirect_uri = "http://localhost/callback";
+
+            try {
+                co_await client.exchange_code(config, "a-code", "verifier");
+            } catch (const std::exception&) {
+                threw = true;
+            }
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_TRUE(threw);
+    EXPECT_EQ(requests_seen, 1);
 }
 
 TEST_F(MockTokenServer, GetJsonReturnsValidJson) {
@@ -518,6 +601,7 @@ TEST_F(MockTokenServer, GetJsonReturnsValidJson) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             result =
                 co_await client.get_json("http://127.0.0.1:" + std::to_string(port) + "/well-known");
         },
@@ -560,6 +644,7 @@ TEST_F(MockTokenServer, GetJsonErrorThrows) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
             try {
                 co_await client.get_json("http://127.0.0.1:" + std::to_string(port) + "/nope");
             } catch (const std::runtime_error&) {
@@ -630,6 +715,36 @@ TEST(AuthDiscoveryMetadataTest, AuthServerMinimalFields) {
     EXPECT_FALSE(metadata.scopes_supported.has_value());
 }
 
+TEST(AuthDiscoveryMetadataTest, AuthServerW5ExtensionFieldsParsedWhenPresent) {
+    json j = {{"issuer", "https://auth.example.com"},
+              {"authorization_endpoint", "https://auth.example.com/authorize"},
+              {"token_endpoint", "https://auth.example.com/token"},
+              {"authorization_response_iss_parameter_supported", true},
+              {"client_id_metadata_document_supported", true},
+              {"token_endpoint_auth_methods_supported", {"client_secret_basic", "none"}}};
+
+    auto metadata = j.get<mcp::auth::AuthServerMetadata>();
+    ASSERT_TRUE(metadata.authorization_response_iss_parameter_supported.has_value());
+    EXPECT_TRUE(metadata.authorization_response_iss_parameter_supported.value());
+    ASSERT_TRUE(metadata.client_id_metadata_document_supported.has_value());
+    EXPECT_TRUE(metadata.client_id_metadata_document_supported.value());
+    ASSERT_TRUE(metadata.token_endpoint_auth_methods_supported.has_value());
+    ASSERT_EQ(metadata.token_endpoint_auth_methods_supported->size(), 2);
+    EXPECT_EQ(metadata.token_endpoint_auth_methods_supported->at(0), "client_secret_basic");
+    EXPECT_EQ(metadata.token_endpoint_auth_methods_supported->at(1), "none");
+}
+
+TEST(AuthDiscoveryMetadataTest, AuthServerW5ExtensionFieldsAbsentByDefault) {
+    json j = {{"issuer", "https://auth.example.com"},
+              {"authorization_endpoint", "https://auth.example.com/authorize"},
+              {"token_endpoint", "https://auth.example.com/token"}};
+
+    auto metadata = j.get<mcp::auth::AuthServerMetadata>();
+    EXPECT_FALSE(metadata.authorization_response_iss_parameter_supported.has_value());
+    EXPECT_FALSE(metadata.client_id_metadata_document_supported.has_value());
+    EXPECT_FALSE(metadata.token_endpoint_auth_methods_supported.has_value());
+}
+
 TEST(AuthCacheTest, CachedEntryNotExpired) {
     mcp::auth::CachedEntry<int> entry{42, std::chrono::steady_clock::now() + std::chrono::hours(1)};
     EXPECT_FALSE(entry.is_expired());
@@ -682,6 +797,7 @@ TEST_F(DiscoveryTest, DiscoverProtectedResource) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
 
             result = co_await discovery.discover_protected_resource("http://127.0.0.1:" +
@@ -735,6 +851,7 @@ TEST_F(DiscoveryTest, DiscoverProtectedResourceWithPath) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
 
             result = co_await discovery.discover_protected_resource(
@@ -787,6 +904,7 @@ TEST_F(DiscoveryTest, DiscoverAuthServer) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
 
             result =
@@ -863,6 +981,7 @@ TEST_F(DiscoveryTest, DiscoverAuthServerFallsBackToOIDC) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
 
             result =
@@ -916,6 +1035,7 @@ TEST_F(DiscoveryTest, CacheHitSkipsNetworkCall) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(300));
 
             result1 =
@@ -971,6 +1091,7 @@ TEST_F(DiscoveryTest, ClearCacheInvalidatesEntries) {
         io_ctx_,
         [&]() -> asio::awaitable<void> {
             auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+            http_client->set_metadata_policy(loopback_policy(port));
             mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(300));
 
             co_await discovery.discover_auth_server("http://127.0.0.1:" + std::to_string(port));
@@ -982,4 +1103,146 @@ TEST_F(DiscoveryTest, ClearCacheInvalidatesEntries) {
     io_ctx_.run();
 
     EXPECT_EQ(request_count, 2);
+}
+
+// A policy-less client now defaults to deny-all rather than allow-all: no origin is on the (empty)
+// allow list, and plain http is refused outright. Refusal happens in `enforce_url_policy` before
+// any lookup, so the host resolver this test installs must never run.
+TEST(AuthOAuthHttpClientDefaultPolicyTest, PolicyLessClientRefusesAnHttpLoopbackUrlWithoutResolving) {
+    asio::io_context io_ctx;
+    mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+
+    int resolver_calls = 0;
+    client.set_host_resolver(
+        [&resolver_calls](const std::string&, const std::string&) -> std::vector<std::string> {
+            ++resolver_calls;
+            return {"127.0.0.1"};
+        });
+
+    bool threw = false;
+    auto decision = mcp::auth::MetadataUrlDecision::allowed;
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> asio::awaitable<void> {
+            try {
+                (void)co_await client.get_json("http://127.0.0.1:18199/probe");
+            } catch (const mcp::auth::MetadataPolicyError& error) {
+                threw = true;
+                decision = error.decision();
+            }
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_TRUE(threw);
+    EXPECT_TRUE(decision == mcp::auth::MetadataUrlDecision::origin_not_allowed ||
+                decision == mcp::auth::MetadataUrlDecision::scheme_not_allowed)
+        << "unexpected decision: " << mcp::auth::describe(decision);
+    EXPECT_EQ(resolver_calls, 0);
+}
+
+namespace {
+
+struct RecordedRequest {
+    std::string target;
+    std::string host;
+};
+
+// Accept one request on 127.0.0.1, record its target and Host header, and answer an empty object.
+asio::awaitable<void> record_one_request(asio::ip::tcp::acceptor& acceptor, RecordedRequest& recorded) {
+    auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+    beast::tcp_stream stream(std::move(socket));
+    beast::flat_buffer buffer;
+    http::request<http::string_body> request;
+    co_await http::async_read(stream, buffer, request, asio::use_awaitable);
+    recorded.target = std::string(request.target());
+    recorded.host = std::string(request[http::field::host]);
+
+    http::response<http::string_body> response{http::status::ok, request.version()};
+    response.set(http::field::content_type, "application/json");
+    response.body() = "{}";
+    response.prepare_payload();
+    co_await http::async_write(stream, response, asio::use_awaitable);
+    beast::error_code ignored;
+    stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+}
+
+}  // namespace
+
+// The authority ends at a query as well as at a path, as the fetch policy splits it, so a query with
+// no path is sent as the root path's query rather than becoming part of the host.
+TEST(AuthOAuthHttpClientUrlTest, AQueryWithoutAPathIsSentOnTheRootPath) {
+    asio::io_context io_ctx;
+    asio::ip::tcp::acceptor acceptor(io_ctx, {asio::ip::make_address("127.0.0.1"), 0});
+    const auto port = acceptor.local_endpoint().port();
+    RecordedRequest recorded;
+    asio::co_spawn(io_ctx, record_one_request(acceptor, recorded), asio::detached);
+
+    bool fetched = false;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> asio::awaitable<void> {
+            mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+            client.set_metadata_policy(loopback_policy(port));
+            try {
+                (void)co_await client.get_json("http://127.0.0.1:" + std::to_string(port) +
+                                               "?probe=1#ignored");
+                fetched = true;
+            } catch (const std::exception&) {
+            }
+            acceptor.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_TRUE(fetched);
+    EXPECT_EQ(recorded.target, "/?probe=1");
+    EXPECT_EQ(recorded.host, "127.0.0.1");
+}
+
+// An IPv6 literal is resolved without its brackets and keeps them in the Host header. The resolver
+// hook maps it onto the IPv4 test server, so the test needs no IPv6 on the host.
+TEST(AuthOAuthHttpClientUrlTest, AnIpv6LiteralHostIsResolvedWithoutItsBrackets) {
+    asio::io_context io_ctx;
+    asio::ip::tcp::acceptor acceptor(io_ctx, {asio::ip::make_address("127.0.0.1"), 0});
+    const auto port = std::to_string(acceptor.local_endpoint().port());
+    RecordedRequest recorded;
+    asio::co_spawn(io_ctx, record_one_request(acceptor, recorded), asio::detached);
+
+    std::string resolved_host;
+    std::string resolved_port;
+    bool fetched = false;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> asio::awaitable<void> {
+            mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+            mcp::auth::MetadataFetchPolicy policy;
+            policy.allowed_origins.push_back("http://[::1]:" + port);
+            policy.allow_plain_http_loopback = true;
+            client.set_metadata_policy(policy);
+            client.set_host_resolver(
+                [&](const std::string& host, const std::string& service) -> std::vector<std::string> {
+                    resolved_host = host;
+                    resolved_port = service;
+                    return {"127.0.0.1"};
+                });
+            try {
+                (void)co_await client.get_json("http://[::1]:" + port + "/prm");
+                fetched = true;
+            } catch (const std::exception&) {
+            }
+            acceptor.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    EXPECT_TRUE(fetched);
+    EXPECT_EQ(resolved_host, "::1");
+    EXPECT_EQ(resolved_port, port);
+    EXPECT_EQ(recorded.target, "/prm");
+    EXPECT_EQ(recorded.host, "[::1]");
 }
