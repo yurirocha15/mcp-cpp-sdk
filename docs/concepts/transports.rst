@@ -130,6 +130,13 @@ streams for bidirectional data, WebSockets provide a native persistent connectio
    // On the client, the transport performs the TCP + WebSocket handshake.
    mcp::WebSocketClientTransport client_transport(io_ctx.get_executor(), "127.0.0.1", "9001");
 
+``WebSocketServerTransport`` refuses an upgrade request that carries an
+``Origin`` header with ``403`` unless that origin was added with
+``set_allowed_origins()`` or ``set_allow_all_origins(true)`` was called, as
+the HTTP transports do. An upgrade without an ``Origin`` header is accepted.
+Configure origins before the first ``read_message()`` or ``write_message()``,
+which perform the handshake.
+
 MemoryTransport for Testing
 ---------------------------
 

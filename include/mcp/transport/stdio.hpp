@@ -29,6 +29,12 @@ class MCP_API StdioTransport final : public ITransport {
      * @param executor The executor to use for async operations.
      * @param input    Input stream to read messages from (default: std::cin).
      * @param output   Output stream to write messages to (default: std::cout).
+     *
+     * @note The input and output streams must outlive the transport. Once a
+     * read has started, destruction waits for the blocking input operation to
+     * finish. Because a generic std::istream cannot be cancelled, callers
+     * using a blocking custom stream must make it return EOF before destroying
+     * the transport.
      */
     explicit StdioTransport(const boost::asio::any_io_executor& executor,
                             std::istream& input = std::cin, std::ostream& output = std::cout);
@@ -42,6 +48,9 @@ class MCP_API StdioTransport final : public ITransport {
 
     /**
      * @brief Read the next newline-delimited message from the input stream.
+     *
+     * At most one read may be outstanding at a time. A concurrent read
+     * completes with std::logic_error.
      *
      * Throws std::runtime_error if the transport is closed or the input stream
      * reaches EOF.
@@ -59,6 +68,9 @@ class MCP_API StdioTransport final : public ITransport {
 
     /**
      * @brief Close the transport. Safe to call multiple times.
+     *
+     * Wakes the asynchronous reader, but cannot interrupt a blocking operation
+     * inside the supplied std::istream.
      */
     void close() override;
 

@@ -4,11 +4,23 @@
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
 namespace mcp {
+
+namespace detail {
+
+inline void validate_jsonrpc_version(std::string_view version) {
+    if (version != "2.0") {
+        throw std::invalid_argument("jsonrpc must be \"2.0\"");
+    }
+}
+
+}  // namespace detail
 
 // MCP Protocol Constants
 
@@ -21,6 +33,11 @@ inline constexpr int g_UNAUTHORIZED = -32000;
  * @brief JSON-RPC error code for request timeout.
  */
 inline constexpr int g_REQUEST_TIMEOUT = -32001;
+
+/**
+ * @brief JSON-RPC-compatible client error code used when the transport closes.
+ */
+inline constexpr int g_CONNECTION_CLOSED = -32002;
 
 /**
  * @brief JSON-RPC error code for invalid requests.
@@ -91,8 +108,7 @@ struct RequestId {
     bool operator==(const RequestId&) const = default;
 
     /**
-     * @brief Converts the request ID to a string representation (used as map key for pending request
-     * correlation).
+     * @brief Converts the request ID to its unadorned string representation.
      */
     [[nodiscard]] std::string to_string() const {
         return std::visit(
@@ -101,6 +117,19 @@ struct RequestId {
                     return val;
                 } else {
                     return std::to_string(val);
+                }
+            },
+            value);
+    }
+
+    /** @brief Return a type-preserving key for request correlation. */
+    [[nodiscard]] std::string correlation_key() const {
+        return std::visit(
+            [](const auto& val) -> std::string {
+                if constexpr (std::is_same_v<std::decay_t<decltype(val)>, std::string>) {
+                    return "s:" + val;
+                } else {
+                    return "i:" + std::to_string(val);
                 }
             },
             value);
@@ -236,6 +265,7 @@ inline void to_json(nlohmann::json& json_obj, const JSONRPCRequest& req) {
 inline void from_json(const nlohmann::json& json_obj, JSONRPCRequest& req) {
     req.id = json_obj.at("id").get<RequestId>();
     json_obj.at("jsonrpc").get_to(req.jsonrpc);
+    detail::validate_jsonrpc_version(req.jsonrpc);
     json_obj.at("method").get_to(req.method);
     if (json_obj.contains("params")) {
         req.params = json_obj.at("params");
@@ -260,6 +290,7 @@ inline void to_json(nlohmann::json& json_obj, const JSONRPCNotification& notif) 
 
 inline void from_json(const nlohmann::json& json_obj, JSONRPCNotification& notif) {
     json_obj.at("jsonrpc").get_to(notif.jsonrpc);
+    detail::validate_jsonrpc_version(notif.jsonrpc);
     json_obj.at("method").get_to(notif.method);
     if (json_obj.contains("params")) {
         notif.params = json_obj.at("params");
@@ -285,6 +316,7 @@ inline void to_json(nlohmann::json& json_obj, const JSONRPCResultResponse& resp)
 inline void from_json(const nlohmann::json& json_obj, JSONRPCResultResponse& resp) {
     resp.id = json_obj.at("id").get<RequestId>();
     json_obj.at("jsonrpc").get_to(resp.jsonrpc);
+    detail::validate_jsonrpc_version(resp.jsonrpc);
     json_obj.at("result").get_to(resp.result);
 }
 
@@ -294,12 +326,13 @@ inline void from_json(const nlohmann::json& json_obj, JSONRPCResultResponse& res
 struct JSONRPCErrorResponse {
     Error error;                  ///< The error object.
     std::string jsonrpc = "2.0";  ///< JSON-RPC version (always "2.0").
-    std::optional<RequestId> id;  ///< The request ID (may be absent for parse errors).
+    std::optional<RequestId> id;  ///< The request ID, or no value when it cannot be determined.
 };
 
 inline void to_json(nlohmann::json& json_obj, const JSONRPCErrorResponse& resp) {
     json_obj = nlohmann::json::object();
     json_obj["error"] = resp.error;
+    json_obj["id"] = nullptr;
     json_obj["jsonrpc"] = resp.jsonrpc;
     if (resp.id) {
         json_obj["id"] = *resp.id;
@@ -309,8 +342,11 @@ inline void to_json(nlohmann::json& json_obj, const JSONRPCErrorResponse& resp) 
 inline void from_json(const nlohmann::json& json_obj, JSONRPCErrorResponse& resp) {
     json_obj.at("error").get_to(resp.error);
     json_obj.at("jsonrpc").get_to(resp.jsonrpc);
-    if (json_obj.contains("id")) {
+    detail::validate_jsonrpc_version(resp.jsonrpc);
+    if (json_obj.contains("id") && !json_obj.at("id").is_null()) {
         resp.id = json_obj.at("id").get<RequestId>();
+    } else {
+        resp.id.reset();
     }
 }
 

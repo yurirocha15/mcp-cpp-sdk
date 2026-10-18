@@ -82,9 +82,13 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
     std::vector<std::string> written_messages;
     raw_transport->set_on_write([&write_count, &written_messages, raw_transport](std::string_view msg) {
         try {
+            auto json_msg = nlohmann::json::parse(msg);
+            if (json_msg.value("id", "") == "initialize") {
+                return;
+            }
+
             ++write_count;
             written_messages.emplace_back(msg);
-            auto json_msg = nlohmann::json::parse(msg);
 
             if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
                 auto request_id = json_msg["id"].get<std::string>();
@@ -117,6 +121,8 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
     tools_call_request["method"] = "tools/call";
     tools_call_request["params"] = {{"name", "ask_llm"}, {"arguments", {{"text", "hello"}}}};
 
+    raw_transport->enqueue_message(make_initialize_request("initialize").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tools_call_request.dump());
 
     boost::asio::co_spawn(
@@ -221,6 +227,9 @@ TEST_F(SamplingTest, SamplingResponseWithToolUseContent) {
     raw_transport->set_on_write([raw_transport](std::string_view msg) {
         try {
             auto json_msg = nlohmann::json::parse(msg);
+            if (json_msg.value("id", "") == "initialize") {
+                return;
+            }
 
             if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
                 auto request_id = json_msg["id"].get<std::string>();
@@ -255,6 +264,8 @@ TEST_F(SamplingTest, SamplingResponseWithToolUseContent) {
     tools_call_request["method"] = "tools/call";
     tools_call_request["params"] = {{"name", "ask_with_tools"}, {"arguments", {{"text", "weather"}}}};
 
+    raw_transport->enqueue_message(make_initialize_request("initialize").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tools_call_request.dump());
 
     boost::asio::co_spawn(
@@ -326,6 +337,9 @@ TEST_F(SamplingTest, SamplingResponseWithToolResultContent) {
     raw_transport->set_on_write([raw_transport](std::string_view msg) {
         try {
             auto json_msg = nlohmann::json::parse(msg);
+            if (json_msg.value("id", "") == "initialize") {
+                return;
+            }
 
             if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
                 auto request_id = json_msg["id"].get<std::string>();
@@ -362,6 +376,8 @@ TEST_F(SamplingTest, SamplingResponseWithToolResultContent) {
     tools_call_request["method"] = "tools/call";
     tools_call_request["params"] = {{"name", "ask_tool_result"}, {"arguments", {{"text", "result"}}}};
 
+    raw_transport->enqueue_message(make_initialize_request("initialize").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tools_call_request.dump());
 
     boost::asio::co_spawn(
@@ -462,8 +478,12 @@ TEST_F(SamplingTest, SampleLlmErrorResponseThrows) {
     std::vector<std::string> written_messages;
     raw_transport->set_on_write([&written_messages, raw_transport](std::string_view msg) {
         try {
-            written_messages.emplace_back(msg);
             auto json_msg = nlohmann::json::parse(msg);
+            if (json_msg.value("id", "") == "initialize") {
+                return;
+            }
+
+            written_messages.emplace_back(msg);
 
             if (json_msg.contains("method") && json_msg["method"] == "sampling/createMessage") {
                 auto request_id = json_msg["id"].get<std::string>();
@@ -490,6 +510,8 @@ TEST_F(SamplingTest, SampleLlmErrorResponseThrows) {
     tools_call_request["method"] = "tools/call";
     tools_call_request["params"] = {{"name", "fail_tool"}, {"arguments", {{"text", "test"}}}};
 
+    raw_transport->enqueue_message(make_initialize_request("initialize").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tools_call_request.dump());
 
     boost::asio::co_spawn(

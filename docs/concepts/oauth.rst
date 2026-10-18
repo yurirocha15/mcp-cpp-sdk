@@ -74,19 +74,20 @@ For secure authorization code flows, use `generate_pkce_pair()` to create a code
 Client-Side Authentication
 --------------------------
 
-The `OAuthAuthenticator` and `OAuthClientTransport` work together to automate authentication. The transport wrapper automatically injects the `auth_token` into the `_meta` field of every MCP request.
+The `OAuthAuthenticator` and `OAuthClientTransport` work together to automate authentication. Over an `HttpClientTransport`, the transport wrapper sends the access token in the HTTP `Authorization: Bearer` header, which the server checks with `set_bearer_token_validator()`. Over any other transport, it injects the token into the `_meta.auth_token` field of every MCP request, which `make_auth_middleware()` checks; over HTTP that field is not sent, so `make_auth_middleware()` rejects the requests of an HTTP client.
 
 .. literalinclude:: ../../examples/features/oauth_flow.cpp
    :language: cpp
-   :lines: 410-413
+   :start-at: state->authenticator = std::make_shared<mcp::auth::OAuthAuthenticator>(
+   :end-at: runtime.client_base_transport, state->authenticator);
    :dedent: 8
 
 Automatic Token Refresh
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-If a request fails with an authentication error (JSON-RPC codes -32001 or -32000), the `OAuthClientTransport` will:
+If a request fails with an authentication error (HTTP status 401 over an `HttpClientTransport`, or JSON-RPC code -32000), the `OAuthClientTransport` will:
 
-1. Catch the error response.
+1. Catch the error.
 2. Call `authenticator->try_refresh_token()` using the stored refresh token.
 3. If successful, automatically replay the original request with the new token.
 
@@ -99,7 +100,8 @@ On the server side, you can protect your tools and resources using `make_auth_mi
 
 .. literalinclude:: ../../examples/features/oauth_flow.cpp
    :language: cpp
-   :lines: 524-530
+   :start-at: server.use(
+   :end-at: }));
    :dedent: 8
 
 Example Walkthrough
@@ -109,7 +111,8 @@ The following example demonstrates a complete OAuth integration, from discovery 
 
 .. literalinclude:: ../../examples/features/oauth_flow.cpp
    :language: cpp
-   :lines: 378-474
+   :start-at: auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
+   :end-before: }  // namespace
    :dedent: 0
 
 Cross-References

@@ -1,7 +1,11 @@
 #pragma once
 
+#include <mcp/core/export.hpp>
+
 #include <boost/beast/http.hpp>
+#include <functional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -26,5 +30,16 @@ using StringRequest = boost::beast::http::request<boost::beast::http::string_bod
  * @brief Alias for a Boost.Beast HTTP response with a string body.
  */
 using StringResponse = boost::beast::http::response<boost::beast::http::string_body>;
+
+/// @brief Synchronous validator invoked at the HTTP boundary for a bearer token.
+using BearerTokenValidator = std::function<bool(std::string_view)>;
+
+/**
+ * @brief Extract a bearer token from an HTTP Authorization header.
+ * @param authorization_header Complete Authorization header value.
+ * @return The characters after the Bearer scheme, or an empty view when the
+ *         scheme is absent or no characters follow it.
+ */
+MCP_API std::string_view http_bearer_token(std::string_view authorization_header);
 
 }  // namespace mcp

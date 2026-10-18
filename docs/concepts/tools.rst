@@ -17,7 +17,13 @@ Basic Tool Registration
 -----------------------
 
 The simplest way to register a tool is with a synchronous handler that takes
-`nlohmann::json` and returns `nlohmann::json`.
+`nlohmann::json` and returns `nlohmann::json`. A returned object made only of
+``CallToolResult`` members (``content``, ``structuredContent``, ``isError``,
+``_meta``) that decodes as one is sent as the result, as in the example below.
+Any other value is turned into a ``CallToolResult``: a string becomes the text
+block, an object becomes ``structuredContent`` with its serialization as the
+text block, and anything else is serialized into the text block. An object
+whose only member is an empty ``content`` array is treated as data and wrapped.
 
 .. code-block:: cpp
 
@@ -113,11 +119,10 @@ Error Handling
 
 There are two primary ways to handle errors in tool handlers:
 
-1. **Throwing Exceptions**: The synchronous ``add_tool(name, description,
-   schema, std::function<nlohmann::json(const nlohmann::json&)>)`` overload
-   catches handler exceptions and converts them into a tool error response
-   (``isError: true``). Typed and asynchronous handlers propagate exceptions as
-   JSON-RPC internal errors instead.
+1. **Throwing Exceptions**: A ``std::exception`` thrown by any tool handler
+   (synchronous, typed or asynchronous) or by middleware during ``tools/call``
+   is converted into a tool error result (``isError: true``) whose text is the
+   exception message.
 2. **Explicit Error Returns**: You can return a `mcp::CallToolResult` object
    with the `isError` field set to `true`. This gives you full control over
    the error message and any additional metadata you want to return.
@@ -126,13 +131,12 @@ The following example demonstrates both patterns:
 
 .. literalinclude:: ../../examples/features/error_handling.cpp
    :language: cpp
-   :lines: 45-76
+   :lines: 45-73
 
 Use ``isError: true`` when the tool completed normally but needs to report an
-application-level failure back to the client. Unhandled exceptions from typed or
-async handlers become JSON-RPC errors, while exceptions from the raw synchronous
-JSON overload are converted into tool error results. In both cases, the SDK
-keeps the session alive when possible. This is a critical distinction:
+application-level failure back to the client. Either way the client receives a
+normal ``tools/call`` result and the session stays open. This is a critical
+distinction:
 
 - **Protocol Errors**: Issues like malformed JSON, invalid method names, or
   disconnected transports cause JSON-RPC level errors.
@@ -149,8 +153,9 @@ tool, enabling better integration with typed systems or UI rendering.
 
 When an ``outputSchema`` is provided, the SDK includes it in the tool definition sent to clients.
 The schema is advertised as ``outputSchema`` in the tool's metadata, enabling clients to understand
-the structure of the tool's output. Note that the SDK does not validate handler output against this
-schema at runtime — it is advisory for clients.
+the structure of the tool's output. A tool with an ``outputSchema`` must return
+``structuredContent`` (unless the result is an error); otherwise the call fails with a JSON-RPC
+error. The SDK does not validate that content against the schema at runtime.
 
 .. code-block:: cpp
 
@@ -179,7 +184,7 @@ content blocks.
 
 .. literalinclude:: ../../examples/features/error_handling.cpp
    :language: cpp
-   :lines: 97-113
+   :lines: 94-109
 
 See Also
 --------

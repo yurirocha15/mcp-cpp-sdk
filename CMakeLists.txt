@@ -85,11 +85,18 @@ configure_file(
 set(MCP_CPP_SDK_SOURCES
     src/core/version.cpp
     src/core/runtime.cpp
+    src/core/secure_random.cpp
+    src/core/serialized_transport_writer.cpp
+    src/protocol/tools.cpp
+    src/auth/oauth.cpp
+    src/client/client.cpp
     src/server/server_stdio.cpp
     src/server/server_http.cpp
     src/server/server_tool.cpp
     src/server/server.cpp
     src/transport/stdio.cpp
+    src/transport/memory.cpp
+    src/transport/http_types.cpp
     src/transport/http_server.cpp
     src/transport/http_client.cpp
     src/transport/http_session_manager.cpp
@@ -235,6 +242,7 @@ if(BUILD_TESTING)
       test/core/concepts_test.cpp
       test/core/core_test.cpp
       test/core/protocol_test.cpp
+      test/core/serialized_transport_writer_test.cpp
       test/server/roots_test.cpp
       test/server/sampling_test.cpp
       test/server/server_core_test.cpp
@@ -262,9 +270,22 @@ if(BUILD_TESTING)
       test/core/gcc11_sso_crash_test.cpp)
   add_executable(mcp-sdk-tests ${TEST_SRCS})
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
+  if(MSVC)
+    # A gtest translation unit emits a COMDAT section per template
+    # instantiation, and the suites built on nlohmann::json and Boost.Asio
+    # instantiate enough of them to pass the 65,279 sections a COFF object can
+    # hold (error C1128). The flag lifts that limit to 2^32; the only cost is a
+    # larger object file.
+    target_compile_options(mcp-sdk-tests PRIVATE /bigobj)
+  endif()
 
   include(GoogleTest)
-  gtest_discover_tests(mcp-sdk-tests)
+  # Default per-test timeout so one deadlocked test cannot stall a ctest run for
+  # the 25-minute ctest default (or forever without --timeout).
+  gtest_discover_tests(
+    mcp-sdk-tests
+    PROPERTIES
+    TIMEOUT 120)
 
   option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
   if(ENABLE_COVERAGE)

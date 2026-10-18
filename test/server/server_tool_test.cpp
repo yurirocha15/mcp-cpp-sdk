@@ -33,6 +33,38 @@ class ServerToolTest : public ::testing::Test {
                   }(),
                   std::move(caps)) {}
     };
+
+    std::vector<nlohmann::json> call_tool(ServerSetup& setup, std::string name) {
+        return call_tool(setup, std::move(name), io_ctx_);
+    }
+
+    static std::vector<nlohmann::json> call_tool(ServerSetup& setup, std::string name,
+                                                 boost::asio::io_context& io_ctx) {
+        std::vector<nlohmann::json> responses;
+        setup.raw_transport->set_on_write([&responses, &setup](std::string_view message) {
+            responses.push_back(nlohmann::json::parse(message));
+            if (responses.size() == 2) {
+                setup.raw_transport->close();
+            }
+        });
+        setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+        setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+        setup.raw_transport->enqueue_message(nlohmann::json{
+            {"jsonrpc", "2.0"},
+            {"id", "2"},
+            {"method", "tools/call"},
+            {"params", {{"name", std::move(name)}, {"arguments", nlohmann::json::object()}}}}
+                                                 .dump());
+
+        boost::asio::co_spawn(
+            io_ctx,
+            [&]() -> mcp::Task<void> {
+                co_await setup.server.run(setup.transport, io_ctx.get_executor());
+            },
+            boost::asio::detached);
+        io_ctx.run();
+        return responses;
+    }
 };
 
 TEST_F(ServerToolTest, NonTemplateSyncHandlerReturnsResult) {
@@ -56,6 +88,7 @@ TEST_F(ServerToolTest, NonTemplateSyncHandlerReturnsResult) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";
@@ -76,10 +109,11 @@ TEST_F(ServerToolTest, NonTemplateSyncHandlerReturnsResult) {
     ASSERT_EQ(responses.size(), 2);
     EXPECT_EQ(responses[1]["id"], "2");
     ASSERT_TRUE(responses[1].contains("result"));
-    EXPECT_EQ(responses[1]["result"]["message"], "Hello, Alice!");
+    EXPECT_EQ(responses[1]["result"]["structuredContent"]["message"], "Hello, Alice!");
+    EXPECT_EQ(responses[1]["result"]["content"][0]["type"], "text");
 }
 
-TEST_F(ServerToolTest, NonTemplateHandlerExceptionBecomesJsonRpcError) {
+TEST_F(ServerToolTest, NonTemplateHandlerExceptionBecomesToolError) {
     mcp::ServerCapabilities caps;
     caps.tools = mcp::ServerCapabilities::ToolsCapability{};
     ServerSetup setup(io_ctx_, std::move(caps));
@@ -97,6 +131,7 @@ TEST_F(ServerToolTest, NonTemplateHandlerExceptionBecomesJsonRpcError) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";
@@ -124,6 +159,93 @@ TEST_F(ServerToolTest, NonTemplateHandlerExceptionBecomesJsonRpcError) {
     EXPECT_NE(err_text.find("something broke"), std::string::npos);
 }
 
+TEST_F(ServerToolTest, NonTemplateSyncHandlerReturningCallToolResultIsNotRewrapped) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool("greet", "Greets a user", nlohmann::json{{"type", "object"}},
+                          [](const nlohmann::json&) -> nlohmann::json {
+                              return nlohmann::json(mcp::make_tool_text_result("Hello, Alice!"));
+                          });
+
+    auto responses = call_tool(setup, "greet");
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("result"));
+    EXPECT_EQ(responses[1]["result"]["content"][0]["text"], "Hello, Alice!");
+    EXPECT_FALSE(responses[1]["result"].contains("structuredContent"));
+}
+
+TEST_F(ServerToolTest, NonTemplateSyncHandlerReturningErrorResultKeepsItsErrorFlag) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool("deny", "Denies every call", nlohmann::json{{"type", "object"}},
+                          [](const nlohmann::json&) -> nlohmann::json {
+                              return nlohmann::json(mcp::make_tool_error_result("not permitted"));
+                          });
+
+    auto responses = call_tool(setup, "deny");
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("result"));
+    EXPECT_TRUE(responses[1]["result"]["isError"].get<bool>());
+    EXPECT_EQ(responses[1]["result"]["content"][0]["text"], "not permitted");
+}
+
+TEST_F(ServerToolTest, NonTemplateSyncHandlerReturningLiteralResultJsonIsNotRewrapped) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.add_tool(
+        "echo", "Echoes a message", nlohmann::json{{"type", "object"}},
+        [](const nlohmann::json&) -> nlohmann::json {
+            return nlohmann::json{{"content", nlohmann::json::array({nlohmann::json{
+                                                  {"type", "text"}, {"text", "hello"}}})}};
+        });
+
+    auto responses = call_tool(setup, "echo");
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("result"));
+    ASSERT_EQ(responses[1]["result"]["content"].size(), 1);
+    EXPECT_EQ(responses[1]["result"]["content"][0]["text"], "hello");
+    EXPECT_FALSE(responses[1]["result"].contains("structuredContent"));
+}
+
+// Only an object made entirely of CallToolResult members is passed through. Domain data is wrapped
+// whatever its "content" holds, so the shape of the response does not depend on the data.
+TEST_F(ServerToolTest, DomainObjectNamedContentIsStillWrapped) {
+    const std::vector<nlohmann::json> domain_values = {
+        {{"content", nlohmann::json::array({"first", "second"})}},
+        {{"content", nlohmann::json::array()}},
+        {{"content", nlohmann::json::array()}, {"total", 0}, {"page", 1}},
+        {{"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "row"}}})},
+         {"total", 1}},
+    };
+
+    for (const auto& value : domain_values) {
+        SCOPED_TRACE(value.dump());
+        boost::asio::io_context io_ctx;
+        mcp::ServerCapabilities caps;
+        caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+        ServerSetup setup(io_ctx, std::move(caps));
+
+        setup.server.add_tool("fetch", "Returns domain data", nlohmann::json{{"type", "object"}},
+                              [value](const nlohmann::json&) -> nlohmann::json { return value; });
+
+        auto responses = call_tool(setup, "fetch", io_ctx);
+
+        ASSERT_EQ(responses.size(), 2);
+        ASSERT_TRUE(responses[1].contains("result")) << responses[1].dump();
+        EXPECT_EQ(responses[1]["result"]["structuredContent"], value);
+        EXPECT_EQ(responses[1]["result"]["content"][0]["type"], "text");
+    }
+}
+
 TEST_F(ServerToolTest, NonTemplateToolAppearsInToolsList) {
     mcp::ServerCapabilities caps;
     caps.tools = mcp::ServerCapabilities::ToolsCapability{};
@@ -142,6 +264,7 @@ TEST_F(ServerToolTest, NonTemplateToolAppearsInToolsList) {
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
 
     nlohmann::json list_req;
     list_req["jsonrpc"] = "2.0";
@@ -165,4 +288,59 @@ TEST_F(ServerToolTest, NonTemplateToolAppearsInToolsList) {
     EXPECT_EQ(tools_arr[0]["name"], "echo");
     EXPECT_EQ(tools_arr[0]["description"], "Echoes input");
     EXPECT_EQ(tools_arr[0]["inputSchema"], schema);
+}
+
+TEST_F(ServerToolTest, ResultHelpersProduceProtocolValidShapes) {
+    nlohmann::json text = mcp::make_tool_text_result("done");
+    ASSERT_EQ(text["content"].size(), 1);
+    EXPECT_EQ(text["content"][0], nlohmann::json({{"type", "text"}, {"text", "done"}}));
+
+    nlohmann::json error = mcp::make_tool_error_result("failed");
+    EXPECT_TRUE(error["isError"].get<bool>());
+    EXPECT_EQ(error["content"][0]["text"], "failed");
+
+    nlohmann::json structured = mcp::make_tool_structured_result({{"answer", 42}}, "forty-two");
+    EXPECT_EQ(structured["structuredContent"]["answer"], 42);
+    EXPECT_EQ(structured["content"][0]["text"], "forty-two");
+    EXPECT_THROW(static_cast<void>(mcp::make_tool_structured_result(nlohmann::json::array())),
+                 std::invalid_argument);
+}
+
+TEST_F(ServerToolTest, RawToolAcceptsCompleteCallToolResult) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::Tool tool;
+    tool.name = "raw";
+    tool.inputSchema = {{"type", "object"}};
+    setup.server.add_raw_tool(tool, [](const nlohmann::json&) -> nlohmann::json {
+        return mcp::make_tool_text_result("raw result");
+    });
+
+    auto responses = call_tool(setup, "raw");
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1]["result"]["content"][0]["text"], "raw result");
+    EXPECT_FALSE(responses[1]["result"].contains("structuredContent"));
+}
+
+TEST_F(ServerToolTest, RawToolRejectsIncompleteCallToolResult) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::Tool tool;
+    tool.name = "invalid-raw";
+    tool.inputSchema = {{"type", "object"}};
+    setup.server.add_raw_tool(tool, [](const nlohmann::json&) -> nlohmann::json {
+        return {{"message", "not a CallToolResult"}};
+    });
+
+    auto responses = call_tool(setup, "invalid-raw");
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INTERNAL_ERROR);
+    EXPECT_NE(responses[1]["error"]["message"].get<std::string>().find("CallToolResult"),
+              std::string::npos);
 }
