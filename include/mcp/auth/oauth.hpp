@@ -249,10 +249,12 @@ class MCP_API OAuthHttpClient {
      * @param policy Policy governing schemes, origins, resolved addresses, response size and
      *        redirect depth.
      *
-     * @details Must be installed before the first request. Once installed, each request is
-     * validated before host resolution, every resolved address is classified before connecting,
-     * the addresses from that single resolution are pinned for the connection, response bodies are
-     * capped, and redirects are bounded and individually re-validated.
+     * @details May be called at any time, including while requests are in flight: an exchange
+     * already running keeps the policy it started with, and the next one picks up the new value.
+     * Once installed, each request is validated before host resolution, every resolved address is
+     * classified before connecting, the addresses from that single resolution are pinned for the
+     * connection, response bodies are capped, and redirects are bounded and individually
+     * re-validated.
      *
      * @warning Do not pair this with set_host_resolver() to change both. This setter and that one
      * are individually atomic and do NOT compose: between the two calls the client holds one new
@@ -585,6 +587,10 @@ using TokenValidator = std::function<Task<bool>(const std::string& token)>;
  *
  * For Streamable HTTP servers, prefer set_bearer_token_validator() on the HTTP transport or
  * session manager so authentication is enforced at the HTTP boundary.
+ *
+ * A missing or refused token is answered with a tool error result (`isError: true`) on
+ * `tools/call`, and with a JSON-RPC `-32603` error on every other request the middleware wraps,
+ * such as `resources/read` and `prompts/get`. The handler is not invoked.
  *
  * @param validator Async callback that returns true when the token is accepted.
  * @return Middleware enforcing presence and validity of `_meta.auth_token`.

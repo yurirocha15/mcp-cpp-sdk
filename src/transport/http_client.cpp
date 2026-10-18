@@ -1,3 +1,5 @@
+#include "../detail/peer_json.hpp"
+
 #include <mcp/core/constants.hpp>
 #include <mcp/transport/http_client.hpp>
 #include <mcp/transport/http_types.hpp>
@@ -231,7 +233,7 @@ struct HttpClientTransport::Impl {
         }
 
         try {
-            const auto response = nlohmann::json::parse(message);
+            const auto response = detail::parse_peer_json(message);
             if (!response.is_object() || !response.contains("id") ||
                 (!response.at("id").is_string() && !response.at("id").is_number_integer()) ||
                 response.at("id").get<RequestId>().correlation_key() !=
@@ -357,7 +359,16 @@ struct HttpClientTransport::Impl {
         }
     }
 
-    static Task<void> run_write(std::shared_ptr<Impl> impl, std::string message) {
+    /// Read the provider once, whole, under the mutex that guards it. Callers pin it at the call
+    /// that starts a request -- write_message() and close(), both on the application thread -- so
+    /// no code path on the strand reads the member itself afterwards.
+    std::function<std::string()> pin_bearer_token_provider() const {
+        std::lock_guard lock(provider_mutex);
+        return bearer_token_provider;
+    }
+
+    static Task<void> run_write(std::shared_ptr<Impl> impl, std::string message,
+                                std::function<std::string()> bearer_token_provider) {
         auto& state = *impl->state;
         if (state.closed.load(std::memory_order_acquire)) {
             throw std::runtime_error("HttpClientTransport is closed");
@@ -388,8 +399,8 @@ struct HttpClientTransport::Impl {
             request.set(http::field::content_type, "application/json");
             request.set(http::field::accept, "application/json, text/event-stream");
             request.set("MCP-Protocol-Version", state.protocol_version);
-            if (impl->bearer_token_provider) {
-                const auto token = impl->bearer_token_provider();
+            if (bearer_token_provider) {
+                const auto token = bearer_token_provider();
                 if (!token.empty()) {
                     request.set(http::field::authorization, "Bearer " + token);
                 }
@@ -440,6 +451,9 @@ struct HttpClientTransport::Impl {
     std::string host;
     std::string port;
     std::string path;
+    mutable std::mutex provider_mutex;
+    /// Guarded by provider_mutex: written by set_bearer_token_provider(), read once per request in
+    /// pin_bearer_token_provider().
     std::function<std::string()> bearer_token_provider;
 };
 
@@ -465,7 +479,10 @@ std::string HttpClientTransport::last_event_id() const {
     return impl_->state->last_event_id;
 }
 
+// Safe to call at any time, including mid-flight: a request already started keeps the provider it
+// pinned, and the next one picks up the new value.
 void HttpClientTransport::set_bearer_token_provider(std::function<std::string()> provider) {
+    std::lock_guard lock(impl_->provider_mutex);
     impl_->bearer_token_provider = std::move(provider);
 }
 
@@ -476,7 +493,12 @@ Task<std::string> HttpClientTransport::read_message() {
 
 Task<void> HttpClientTransport::write_message(std::string_view message) {
     auto impl = impl_;
-    return net::co_spawn(impl->strand, Impl::run_write(impl, std::string(message)), net::use_awaitable);
+    // Pinned here, on the caller's thread, before the coroutine is created: this call is where the
+    // request starts, so this is the value it means. Nothing on the strand reads the member later.
+    auto bearer_token_provider = impl->pin_bearer_token_provider();
+    return net::co_spawn(impl->strand,
+                         Impl::run_write(impl, std::string(message), std::move(bearer_token_provider)),
+                         net::use_awaitable);
 }
 
 void HttpClientTransport::close() {
@@ -488,7 +510,7 @@ void HttpClientTransport::close() {
     net::post(shared_state->timer.get_executor(), [shared_state]() { shared_state->timer.cancel(); });
 
     auto close_target = std::make_shared<Impl::CloseTarget>(
-        Impl::CloseTarget{impl_->host, impl_->port, impl_->path, impl_->bearer_token_provider});
+        Impl::CloseTarget{impl_->host, impl_->port, impl_->path, impl_->pin_bearer_token_provider()});
     net::co_spawn(
         impl_->strand,
         [shared_state, close_target = std::move(close_target)]() -> Task<void> {

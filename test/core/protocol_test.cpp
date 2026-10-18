@@ -12,9 +12,13 @@
 #include "mcp/protocol/tasks.hpp"
 #include "mcp/protocol/tools.hpp"
 
+#include "../../src/detail/peer_json.hpp"
+
 #include <gtest/gtest.h>
 
 #include <nlohmann/json.hpp>
+
+#include <string>
 
 using json = nlohmann::json;
 
@@ -2396,4 +2400,286 @@ TEST(ProtocolTest, DiscoverableVersionsDoNotLeakIntoLegacyNegotiation) {
                   mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.end());
     }
     EXPECT_EQ(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.back(), mcp::g_PROTOCOL_VERSION_2026_07_28);
+}
+
+// --- Explicit-null optional members ---
+//
+// A JSON member serialized as explicit `null` says the same thing as an absent one: "no
+// value". nlohmann 3.12.0 has no std::optional support, so a `contains(key)` guard lets the
+// null through and `get<T>()` then throws type_error.302. Each case below decodes a payload
+// that a conforming peer may legitimately send.
+
+TEST(ProtocolTest, GetPromptRequestParamsDecodesExplicitNullArguments) {
+    json params_json = {{"name", "greeting"}, {"arguments", nullptr}};
+
+    mcp::GetPromptRequestParams params;
+    ASSERT_NO_THROW(params = params_json.get<mcp::GetPromptRequestParams>());
+    EXPECT_EQ(params.name, "greeting");
+    EXPECT_FALSE(params.arguments.has_value());
+}
+
+TEST(ProtocolTest, ResourceDecodesExplicitNullOptionals) {
+    json resource_json = {{"uri", "file:///a.txt"}, {"name", "a.txt"}, {"description", nullptr},
+                          {"mimeType", nullptr},    {"size", nullptr}, {"title", nullptr},
+                          {"icons", nullptr}};
+
+    mcp::Resource resource;
+    ASSERT_NO_THROW(resource = resource_json.get<mcp::Resource>());
+    EXPECT_EQ(resource.uri, "file:///a.txt");
+    EXPECT_EQ(resource.name, "a.txt");
+    EXPECT_FALSE(resource.description.has_value());
+    EXPECT_FALSE(resource.mimeType.has_value());
+    EXPECT_FALSE(resource.size.has_value());
+    EXPECT_FALSE(resource.title.has_value());
+    EXPECT_FALSE(resource.icons.has_value());
+}
+
+TEST(ProtocolTest, ResourceTemplateDecodesExplicitNullOptionals) {
+    json tmpl_json = {{"uriTemplate", "file:///{path}"},
+                      {"name", "files"},
+                      {"description", nullptr},
+                      {"mimeType", nullptr},
+                      {"title", nullptr},
+                      {"icons", nullptr}};
+
+    mcp::ResourceTemplate tmpl;
+    ASSERT_NO_THROW(tmpl = tmpl_json.get<mcp::ResourceTemplate>());
+    EXPECT_EQ(tmpl.uriTemplate, "file:///{path}");
+    EXPECT_FALSE(tmpl.description.has_value());
+    EXPECT_FALSE(tmpl.mimeType.has_value());
+    EXPECT_FALSE(tmpl.title.has_value());
+    EXPECT_FALSE(tmpl.icons.has_value());
+}
+
+TEST(ProtocolTest, ToolDecodesExplicitNullOptionals) {
+    json tool_json = {{"name", "add"},          {"inputSchema", {{"type", "object"}}},
+                      {"description", nullptr}, {"title", nullptr},
+                      {"icons", nullptr},       {"execution", nullptr}};
+
+    mcp::Tool tool;
+    ASSERT_NO_THROW(tool = tool_json.get<mcp::Tool>());
+    EXPECT_EQ(tool.name, "add");
+    EXPECT_FALSE(tool.description.has_value());
+    EXPECT_FALSE(tool.title.has_value());
+    EXPECT_FALSE(tool.icons.has_value());
+    EXPECT_FALSE(tool.execution.has_value());
+}
+
+TEST(ProtocolTest, CallToolResultDecodesExplicitNullIsError) {
+    json result_json = {{"content", json::array()}, {"isError", nullptr}};
+
+    mcp::CallToolResult result;
+    ASSERT_NO_THROW(result = result_json.get<mcp::CallToolResult>());
+    EXPECT_FALSE(result.isError.has_value());
+}
+
+TEST(ProtocolTest, ToolResultContentDecodesExplicitNullIsError) {
+    json content_json = {{"type", "tool_result"},
+                         {"toolUseId", "call-1"},
+                         {"content", json::array()},
+                         {"isError", nullptr}};
+
+    mcp::ToolResultContent content;
+    ASSERT_NO_THROW(content = content_json.get<mcp::ToolResultContent>());
+    EXPECT_EQ(content.toolUseId, "call-1");
+    EXPECT_FALSE(content.isError.has_value());
+}
+
+// An explicitly null member must round-trip as an ABSENT one. Deciding this by "does it
+// throw" is the wrong test: _meta and annotations do not throw, they decode into an ENGAGED
+// optional, so re-encoding fabricates a member the peer never sent -- annotations: null
+// becomes annotations: {}, which a consumer reads as "annotations supplied, none set" rather
+// than "no annotations". Each case below compares against the absent-input control.
+
+TEST(ProtocolTest, ResourceTreatsExplicitNullMetaAndAnnotationsAsAbsent) {
+    const json control = {{"uri", "file:///a.txt"}, {"name", "a.txt"}};
+    const json absent = json(control.get<mcp::Resource>());
+
+    json with_nulls = control;
+    with_nulls["_meta"] = nullptr;
+    with_nulls["annotations"] = nullptr;
+
+    const auto decoded = with_nulls.get<mcp::Resource>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_FALSE(decoded.annotations.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, ResourceTemplateTreatsExplicitNullMetaAndAnnotationsAsAbsent) {
+    const json control = {{"uriTemplate", "file:///{path}"}, {"name", "files"}};
+    const json absent = json(control.get<mcp::ResourceTemplate>());
+
+    json with_nulls = control;
+    with_nulls["_meta"] = nullptr;
+    with_nulls["annotations"] = nullptr;
+
+    const auto decoded = with_nulls.get<mcp::ResourceTemplate>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_FALSE(decoded.annotations.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, ToolTreatsExplicitNullMetaAnnotationsAndSchemaAsAbsent) {
+    const json control = {{"name", "add"}, {"inputSchema", {{"type", "object"}}}};
+    const json absent = json(control.get<mcp::Tool>());
+
+    json with_nulls = control;
+    with_nulls["_meta"] = nullptr;
+    with_nulls["annotations"] = nullptr;
+    with_nulls["outputSchema"] = nullptr;
+
+    const auto decoded = with_nulls.get<mcp::Tool>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_FALSE(decoded.annotations.has_value());
+    EXPECT_FALSE(decoded.outputSchema.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, CallToolResultTreatsExplicitNullMetaAndStructuredAsAbsent) {
+    const json control = {{"content", json::array()}};
+    const json absent = json(control.get<mcp::CallToolResult>());
+
+    json with_nulls = control;
+    with_nulls["_meta"] = nullptr;
+    with_nulls["structuredContent"] = nullptr;
+
+    const auto decoded = with_nulls.get<mcp::CallToolResult>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_FALSE(decoded.structuredContent.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, ToolResultContentTreatsExplicitNullMetaAndStructuredAsAbsent) {
+    const json control = {{"type", "tool_result"}, {"toolUseId", "call-1"}, {"content", json::array()}};
+    const json absent = json(control.get<mcp::ToolResultContent>());
+
+    json with_nulls = control;
+    with_nulls["_meta"] = nullptr;
+    with_nulls["structuredContent"] = nullptr;
+
+    const auto decoded = with_nulls.get<mcp::ToolResultContent>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_FALSE(decoded.structuredContent.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, ImplementationDecodesExplicitNullOptionals) {
+    json impl_json = {{"name", "test-client"},  {"version", "0.1"},      {"title", nullptr},
+                      {"description", nullptr}, {"websiteUrl", nullptr}, {"icons", nullptr}};
+
+    mcp::Implementation impl;
+    ASSERT_NO_THROW(impl = impl_json.get<mcp::Implementation>());
+    EXPECT_EQ(impl.name, "test-client");
+    EXPECT_EQ(impl.version, "0.1");
+    EXPECT_FALSE(impl.title.has_value());
+    EXPECT_FALSE(impl.description.has_value());
+    EXPECT_FALSE(impl.websiteUrl.has_value());
+    EXPECT_FALSE(impl.icons.has_value());
+}
+
+TEST(ProtocolTest, ClientCapabilitiesDecodeExplicitNullOptionals) {
+    // What a client that writes absent optionals as null sends in initialize.
+    json caps_json = {{"roots", {{"listChanged", nullptr}}}, {"extensions", nullptr}};
+
+    mcp::ClientCapabilities caps;
+    ASSERT_NO_THROW(caps = caps_json.get<mcp::ClientCapabilities>());
+    ASSERT_TRUE(caps.roots.has_value());
+    EXPECT_FALSE(caps.roots->listChanged.has_value());
+    EXPECT_FALSE(caps.extensions.has_value());
+}
+
+TEST(ProtocolTest, ServerCapabilitiesDecodeExplicitNullOptionals) {
+    json caps_json = {{"tools", {{"listChanged", nullptr}}},
+                      {"resources", {{"listChanged", nullptr}, {"subscribe", nullptr}}},
+                      {"prompts", {{"listChanged", nullptr}}},
+                      {"extensions", nullptr}};
+
+    mcp::ServerCapabilities caps;
+    ASSERT_NO_THROW(caps = caps_json.get<mcp::ServerCapabilities>());
+    ASSERT_TRUE(caps.tools.has_value());
+    EXPECT_FALSE(caps.tools->listChanged.has_value());
+    ASSERT_TRUE(caps.resources.has_value());
+    EXPECT_FALSE(caps.resources->listChanged.has_value());
+    EXPECT_FALSE(caps.resources->subscribe.has_value());
+    ASSERT_TRUE(caps.prompts.has_value());
+    EXPECT_FALSE(caps.prompts->listChanged.has_value());
+    EXPECT_FALSE(caps.extensions.has_value());
+}
+
+TEST(ProtocolTest, ListRequestsAndResultsDecodeExplicitNullCursors) {
+    mcp::ListToolsRequestParams request;
+    ASSERT_NO_THROW(request = json({{"cursor", nullptr}}).get<mcp::ListToolsRequestParams>());
+    EXPECT_FALSE(request.cursor.has_value());
+
+    mcp::ListToolsResult tools;
+    ASSERT_NO_THROW(
+        tools = json({{"tools", json::array()}, {"nextCursor", nullptr}}).get<mcp::ListToolsResult>());
+    EXPECT_FALSE(tools.nextCursor.has_value());
+
+    mcp::ListResourcesResult resources;
+    ASSERT_NO_THROW(resources = json({{"resources", json::array()}, {"nextCursor", nullptr}})
+                                    .get<mcp::ListResourcesResult>());
+    EXPECT_FALSE(resources.nextCursor.has_value());
+
+    mcp::ListPromptsResult prompts;
+    ASSERT_NO_THROW(
+        prompts =
+            json({{"prompts", json::array()}, {"nextCursor", nullptr}}).get<mcp::ListPromptsResult>());
+    EXPECT_FALSE(prompts.nextCursor.has_value());
+}
+
+TEST(ProtocolTest, CompleteParamsDecodesExplicitNullContextArguments) {
+    json params_json = {{"ref", {{"type", "ref/prompt"}, {"name", "p"}}},
+                        {"argument", {{"name", "a"}, {"value", "v"}}},
+                        {"context", {{"arguments", nullptr}}}};
+
+    mcp::CompleteParams params;
+    ASSERT_NO_THROW(params = params_json.get<mcp::CompleteParams>());
+    ASSERT_TRUE(params.context.has_value());
+    EXPECT_FALSE(params.context->arguments.has_value());
+}
+
+TEST(ProtocolTest, CallToolParamsTreatsExplicitNullMetaAsAbsent) {
+    // Independent of the deliberate `arguments` rejection below it: to_json emits _meta only
+    // when engaged, so absence is representable and a null must round-trip as absent.
+    const json control = {{"name", "add"}, {"arguments", json::object()}};
+    const json absent = json(control.get<mcp::CallToolParams>());
+
+    json with_null = control;
+    with_null["_meta"] = nullptr;
+
+    const auto decoded = with_null.get<mcp::CallToolParams>();
+    EXPECT_FALSE(decoded.meta.has_value());
+    EXPECT_EQ(json(decoded), absent);
+}
+
+TEST(ProtocolTest, CallToolParamsStillRejectsNonObjectArguments) {
+    // Pins the deliberate rejection: arguments is emitted unconditionally, so absence is not
+    // representable and a null there can only be malformed. This must NOT become acceptance.
+    EXPECT_THROW((void)(json{{"name", "add"}, {"arguments", nullptr}}).get<mcp::CallToolParams>(),
+                 std::invalid_argument);
+}
+
+TEST(PeerJsonTest, CountsNestingOutsideStringsOnly) {
+    using mcp::detail::exceeds_json_depth;
+    EXPECT_FALSE(exceeds_json_depth(R"({"a":[1,{"b":2}]})", 3));
+    EXPECT_TRUE(exceeds_json_depth(R"({"a":[1,{"b":2}]})", 2));
+    // Brackets inside strings are text, including after an escaped quote, and an escaped backslash
+    // does not escape the quote that follows it.
+    EXPECT_FALSE(exceeds_json_depth(R"({"a":"[[[[{{{{"})", 1));
+    EXPECT_FALSE(exceeds_json_depth(R"({"a":"\"[[[["})", 1));
+    EXPECT_TRUE(exceeds_json_depth(R"({"a":"\\","b":[[1]]})", 2));
+}
+
+TEST(PeerJsonTest, ParsePeerJsonDiscardsDocumentsNestedTooDeeplyOrInvalid) {
+    const auto nested = [](std::size_t depth) {
+        return std::string(depth, '[') + std::string(depth, ']');
+    };
+    EXPECT_FALSE(
+        mcp::detail::parse_peer_json(nested(mcp::detail::g_MAX_PEER_JSON_DEPTH)).is_discarded());
+    EXPECT_TRUE(
+        mcp::detail::parse_peer_json(nested(mcp::detail::g_MAX_PEER_JSON_DEPTH + 1)).is_discarded());
+    EXPECT_TRUE(mcp::detail::parse_peer_json("{not json").is_discarded());
+    // Two megabytes of brackets: refused before anything is built from them.
+    EXPECT_TRUE(mcp::detail::parse_peer_json(nested(1'000'000)).is_discarded());
 }

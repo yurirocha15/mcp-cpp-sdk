@@ -33,7 +33,7 @@ inline void to_json(nlohmann::json& json_obj, const ToolChoice& choice) {
  * @param choice The ToolChoice object to populate.
  */
 inline void from_json(const nlohmann::json& json_obj, ToolChoice& choice) {
-    if (json_obj.contains("mode")) {
+    if (detail::has_json_value(json_obj, "mode")) {
         choice.mode = json_obj.at("mode").get<std::string>();
     }
 }
@@ -65,7 +65,7 @@ inline void to_json(nlohmann::json& json_obj, const ModelHint& hint) {
  * @param hint The ModelHint object to populate.
  */
 inline void from_json(const nlohmann::json& json_obj, ModelHint& hint) {
-    if (json_obj.contains("name")) {
+    if (detail::has_json_value(json_obj, "name")) {
         hint.name = json_obj.at("name").get<std::string>();
     }
 }
@@ -109,16 +109,16 @@ inline void to_json(nlohmann::json& json_obj, const ModelPreferences& prefs) {
  * @param prefs The ModelPreferences object to populate.
  */
 inline void from_json(const nlohmann::json& json_obj, ModelPreferences& prefs) {
-    if (json_obj.contains("costPriority")) {
+    if (detail::has_json_value(json_obj, "costPriority")) {
         prefs.costPriority = json_obj.at("costPriority").get<double>();
     }
-    if (json_obj.contains("hints")) {
+    if (detail::has_json_value(json_obj, "hints")) {
         prefs.hints = json_obj.at("hints").get<std::vector<ModelHint>>();
     }
-    if (json_obj.contains("intelligencePriority")) {
+    if (detail::has_json_value(json_obj, "intelligencePriority")) {
         prefs.intelligencePriority = json_obj.at("intelligencePriority").get<double>();
     }
-    if (json_obj.contains("speedPriority")) {
+    if (detail::has_json_value(json_obj, "speedPriority")) {
         prefs.speedPriority = json_obj.at("speedPriority").get<double>();
     }
 }
@@ -268,22 +268,22 @@ inline void to_json(nlohmann::json& json_obj, const CreateMessageRequestParams& 
 inline void from_json(const nlohmann::json& json_obj, CreateMessageRequestParams& params) {
     json_obj.at("messages").get_to(params.messages);
     json_obj.at("maxTokens").get_to(params.maxTokens);
-    if (json_obj.contains("systemPrompt")) {
+    if (detail::has_json_value(json_obj, "systemPrompt")) {
         params.systemPrompt = json_obj.at("systemPrompt").get<std::string>();
     }
-    if (json_obj.contains("temperature")) {
+    if (detail::has_json_value(json_obj, "temperature")) {
         params.temperature = json_obj.at("temperature").get<double>();
     }
-    if (json_obj.contains("stopSequences")) {
+    if (detail::has_json_value(json_obj, "stopSequences")) {
         params.stopSequences = json_obj.at("stopSequences").get<std::vector<std::string>>();
     }
     if (json_obj.contains("modelPreferences")) {
         params.modelPreferences = json_obj.at("modelPreferences").get<ModelPreferences>();
     }
-    if (json_obj.contains("includeContext")) {
+    if (detail::has_json_value(json_obj, "includeContext")) {
         params.includeContext = json_obj.at("includeContext").get<std::string>();
     }
-    if (json_obj.contains("tools")) {
+    if (detail::has_json_value(json_obj, "tools")) {
         params.tools = json_obj.at("tools").get<std::vector<Tool>>();
     }
     if (json_obj.contains("toolChoice")) {

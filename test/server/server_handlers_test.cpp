@@ -4,13 +4,19 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
 
 struct AddParams {
     int augend = 0;
@@ -754,6 +760,289 @@ TEST_F(ServerHandlersTest, UnknownResourceTemplateReturnsInvalidParams) {
 
     ASSERT_EQ(responses.size(), 2);
     EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+}
+
+TEST_F(ServerHandlersTest, OverlongUriIsRejectedWithoutReachingTemplateMatching) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::ResourceTemplate tmpl;
+    tmpl.uriTemplate = "file:///{+path}";
+    tmpl.name = "files";
+    setup.server.add_resource_template<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        tmpl, [](mcp::ReadResourceRequestParams) { return mcp::ReadResourceResult{}; });
+
+    const std::string uri = "file:///" + std::string(64 * 1024, 'a');
+    auto responses = run_request(
+        setup,
+        nlohmann::json{
+            {"jsonrpc", "2.0"}, {"id", "2"}, {"method", "resources/read"}, {"params", {{"uri", uri}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("error"));
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+    // Says the URI was too long, rather than that no such resource exists, and does not echo it.
+    const auto message = responses[1]["error"]["message"].get<std::string>();
+    EXPECT_NE(message.find("limit"), std::string::npos);
+    EXPECT_EQ(message.find("Unknown resource"), std::string::npos);
+    EXPECT_LT(message.size(), uri.size());
+}
+
+// A URI at the accepted limit is served, so the bound admits what it claims to admit. The match is
+// run on a std::thread, which carries the platform's default stack rather than gtest's main thread's.
+TEST_F(ServerHandlersTest, UriAtTheLengthLimitIsStillMatchedByTemplate) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::ResourceTemplate tmpl;
+    tmpl.uriTemplate = "file:///{+path}";
+    tmpl.name = "files";
+    setup.server.add_resource_template<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        tmpl, [](mcp::ReadResourceRequestParams params) {
+            mcp::TextResourceContents content;
+            content.uri = params.uri;
+            content.text = "matched";
+            mcp::ReadResourceResult result;
+            result.contents.emplace_back(std::move(content));
+            return result;
+        });
+
+    constexpr std::size_t limit = 512;
+    const std::string prefix = "file:///";
+    const std::string uri = prefix + std::string(limit - prefix.size(), 'a');
+    ASSERT_EQ(uri.size(), limit);
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    setup.raw_transport->enqueue_message(nlohmann::json{
+        {"jsonrpc", "2.0"},
+        {"id", "2"},
+        {"method", "resources/read"},
+        {"params", {{"uri", uri}}}}.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    std::thread pump([this]() { io_ctx_.run(); });
+    pump.join();
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("result"));
+    EXPECT_EQ(responses[1]["result"]["contents"][0]["text"], "matched");
+}
+
+// Each expression operator matches exactly the URIs its expansion can produce: the cases below
+// pin the matcher to the regular expressions the templates are documented to compile to.
+TEST_F(ServerHandlersTest, TemplateExpressionsMatchWhatTheirOperatorExpandsTo) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    struct Case {
+        const char* uri;
+        bool matches;
+    };
+    const std::vector<std::pair<std::string, std::vector<Case>>> templates = {
+        {"a://{x}", {{"a://abc", true}, {"a://", false}, {"a://ab/c", false}, {"a://a?b", false}}},
+        {"b://{+path}", {{"b://x/y/z", true}, {"b://x?y", false}, {"b://", false}}},
+        {"c://item{#frag}",
+         {{"c://item", true}, {"c://item#top", true}, {"c://item#a#b", false}, {"c://itemx", false}}},
+        {"d://file{.ext}",
+         {{"d://file", true},
+          {"d://file.tar.gz", true},
+          {"d://file..a", true},
+          {"d://file.", false},
+          {"d://file.a/b", false}}},
+        {"e://root{/seg}",
+         {{"e://root", true}, {"e://root/a/b", true}, {"e://root/", false}, {"e://root/a?x", false}}},
+        {"f://matrix{;params}",
+         {{"f://matrix", true},
+          {"f://matrix;", true},
+          {"f://matrix;a=1;b", true},
+          {"f://matrix;a?x", false}}},
+        {"g://search{?q}",
+         {{"g://search", true},
+          {"g://search?", true},
+          {"g://search?q=a&b=c", true},
+          {"g://search?q#x", false}}},
+        {"h://list?a=1{&b}",
+         {{"h://list?a=1", true}, {"h://list?a=1&b=2", true}, {"h://list?a=1#x", false}}},
+        {"i://a.b{x}", {{"i://a.bz", true}, {"i://aXbz", false}}},
+    };
+
+    std::vector<std::pair<std::string, const Case*>> requests;
+    for (const auto& [uri_template, cases] : templates) {
+        mcp::ResourceTemplate tmpl;
+        tmpl.uriTemplate = uri_template;
+        tmpl.name = uri_template;
+        setup.server.add_resource_template<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+            tmpl, [name = uri_template](mcp::ReadResourceRequestParams params) {
+                mcp::TextResourceContents content;
+                content.uri = params.uri;
+                content.text = name;
+                mcp::ReadResourceResult result;
+                result.contents.emplace_back(std::move(content));
+                return result;
+            });
+        for (const auto& test_case : cases) {
+            requests.emplace_back(uri_template, &test_case);
+        }
+    }
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        if (responses.size() == requests.size() + 1) {
+            setup.raw_transport->close();
+        }
+    });
+    setup.raw_transport->enqueue_message(make_initialize_request("init").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    for (std::size_t index = 0; index < requests.size(); ++index) {
+        setup.raw_transport->enqueue_message(
+            nlohmann::json{{"jsonrpc", "2.0"},
+                           {"id", static_cast<std::int64_t>(index)},
+                           {"method", "resources/read"},
+                           {"params", {{"uri", requests[index].second->uri}}}}
+                .dump());
+    }
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), requests.size() + 1);
+    for (const auto& response : responses) {
+        if (!response["id"].is_number_integer()) {
+            continue;
+        }
+        const auto& [uri_template, test_case] = requests.at(response["id"].get<std::size_t>());
+        SCOPED_TRACE(uri_template + " against " + test_case->uri);
+        if (test_case->matches) {
+            ASSERT_TRUE(response.contains("result")) << response.dump();
+            EXPECT_EQ(response["result"]["contents"][0]["text"], uri_template);
+        } else {
+            ASSERT_TRUE(response.contains("error")) << response.dump();
+            EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_PARAMS);
+        }
+    }
+}
+
+// Expressions separated by a literal their values may also contain, here '-', leave the matcher
+// many ways to split a URI. One that almost matches must still be answered at once rather than
+// after trying every split.
+TEST_F(ServerHandlersTest, ANearlyMatchingUriIsAnsweredInBoundedTime) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::ResourceTemplate tmpl;
+    tmpl.uriTemplate = "metrics://{year}-{month}-{day}-{hour}";
+    tmpl.name = "metrics";
+    setup.server.add_resource_template<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        tmpl, [](mcp::ReadResourceRequestParams) { return mcp::ReadResourceResult{}; });
+
+    std::string uri = "metrics://";
+    uri += std::string(512 - uri.size() - 1, '-');
+    uri += '/';
+    ASSERT_EQ(uri.size(), 512U);
+
+    const auto started = std::chrono::steady_clock::now();
+    auto responses = run_request(
+        setup,
+        nlohmann::json{
+            {"jsonrpc", "2.0"}, {"id", "2"}, {"method", "resources/read"}, {"params", {{"uri", uri}}}});
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_LT(elapsed, std::chrono::seconds(1));
+}
+
+TEST_F(ServerHandlersTest, ExactResourceIsServedRegardlessOfUriLength) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::Resource exact;
+    exact.uri = "file:///" + std::string(64 * 1024, 'a');
+    exact.name = "long";
+    setup.server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        exact, [](mcp::ReadResourceRequestParams params) {
+            mcp::TextResourceContents content;
+            content.uri = params.uri;
+            content.text = "exact";
+            mcp::ReadResourceResult result;
+            result.contents.emplace_back(std::move(content));
+            return result;
+        });
+
+    auto responses = run_request(setup, nlohmann::json{{"jsonrpc", "2.0"},
+                                                       {"id", "2"},
+                                                       {"method", "resources/read"},
+                                                       {"params", {{"uri", exact.uri}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1]["result"]["contents"][0]["text"], "exact");
+}
+
+TEST_F(ServerHandlersTest, AdjacentTemplateExpressionsAreRejectedAtRegistration) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::ResourceTemplate adjacent;
+    adjacent.uriTemplate = "file:///{dir}{name}";
+    adjacent.name = "adjacent";
+    EXPECT_THROW(setup.server.add_resource_template(adjacent), std::invalid_argument);
+
+    mcp::ResourceTemplate separated;
+    separated.uriTemplate = "file:///{dir}/{name}";
+    separated.name = "separated";
+    EXPECT_NO_THROW(setup.server.add_resource_template(separated));
+
+    // Ambiguous: the second expression has no leading literal, or its literal can occur inside
+    // the first expression's value.
+    for (const char* uri_template : {"file:///{dir}{+name}", "file:///{name}{.ext}",
+                                     "file:///{+path}{/segment}", "file:///{?q}{&r}"}) {
+        SCOPED_TRACE(uri_template);
+        mcp::ResourceTemplate ambiguous;
+        ambiguous.uriTemplate = uri_template;
+        ambiguous.name = uri_template;
+        EXPECT_THROW(setup.server.add_resource_template(ambiguous), std::invalid_argument);
+    }
+}
+
+TEST_F(ServerHandlersTest, AdjacentExpressionsWithADecidableBoundaryAreAccepted) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    // The second expression starts with a character the first can never contain.
+    for (const char* uri_template : {"file:///{+path}{?format}", "users://{id}{#section}",
+                                     "users://{id}{/detail}", "file:///{+path}{#fragment}"}) {
+        SCOPED_TRACE(uri_template);
+        mcp::ResourceTemplate decidable;
+        decidable.uriTemplate = uri_template;
+        decidable.name = uri_template;
+        EXPECT_NO_THROW(setup.server.add_resource_template(decidable));
+    }
 }
 
 TEST_F(ServerHandlersTest, DuplicateNamedRegistrationsAreRejected) {
@@ -1542,4 +1831,348 @@ TEST_F(ServerHandlersTest, CompletionWithoutHandlerReturnsError) {
     auto& error_response = responses[1];
     ASSERT_TRUE(error_response.contains("error"));
     EXPECT_EQ(error_response["error"]["code"], mcp::g_METHOD_NOT_FOUND);
+}
+
+// A tool name is chosen entirely by the client, and an unknown one is the ordinary error path of
+// any `tools/call`. The name reaches a diagnostic that the server operator reads, so a name
+// carrying CR/LF forges a line in whatever that diagnostic lands in, and a bidi override reorders
+// the rest of it. Same defect as the peer-controlled text in the auth diagnostics, opposite
+// direction: here the untrusted side is the client.
+TEST_F(ServerHandlersTest, UnknownToolDiagnosticFlattensClientChosenName) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    // "zqtripwire" is a token no other code path produces; see the tripwire assertions below.
+    // \xe2\x80\xae is U+202E RIGHT-TO-LEFT OVERRIDE, written escaped so this source file does not
+    // itself contain a bidi override.
+    const std::string forged_name =
+        "zqtripwire\r\n2026-09-20 ERROR forged line from the client\xe2\x80\xae reordered tail";
+
+    nlohmann::json call_req;
+    call_req["jsonrpc"] = "2.0";
+    call_req["id"] = "2";
+    call_req["method"] = "tools/call";
+    call_req["params"] = nlohmann::json{{"name", forged_name}, {"arguments", nlohmann::json::object()}};
+
+    auto responses = run_request(setup, std::move(call_req));
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& error_response = responses[1];
+    ASSERT_TRUE(error_response.contains("error")) << "response: " << error_response.dump();
+    const auto message = error_response["error"]["message"].get<std::string>();
+
+    // Tripwire. The payload must actually have reached the "Unknown tool" site rather than being
+    // rejected earlier by params validation or routed to some other diagnostic that flattens its
+    // own message; either would make the assertions below pass for a reason unrelated to the site
+    // under test. The code pins WHICH of the two "Unknown tool" sites this is: the RPC path refuses
+    // in handle_tools_call_wire with g_METHOD_NOT_FOUND, whereas the invoke_tool path throws and
+    // surfaces as g_INTERNAL_ERROR through the dispatcher. Dump the message on failure so a vacuous
+    // pass cannot hide.
+    ASSERT_EQ(error_response["error"]["code"], mcp::g_METHOD_NOT_FOUND)
+        << "response: " << error_response.dump();
+    ASSERT_EQ(message.rfind("Unknown tool: ", 0), 0U) << "actual message: " << message;
+    ASSERT_NE(message.find("zqtripwire"), std::string::npos) << "actual message: " << message;
+
+    EXPECT_EQ(message.find('\r'), std::string::npos) << "actual message: " << message;
+    EXPECT_EQ(message.find('\n'), std::string::npos) << "actual message: " << message;
+    EXPECT_EQ(message.find("\xe2\x80\xae"), std::string::npos) << "actual message: " << message;
+}
+
+// The same site must also bound the name, so a client cannot flood the operator's log through a
+// megabyte-long tool name.
+TEST_F(ServerHandlersTest, UnknownToolDiagnosticBoundsClientChosenName) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    const std::string forged_name = "zqtripwire" + std::string(64 * 1024, 'A');
+
+    nlohmann::json call_req;
+    call_req["jsonrpc"] = "2.0";
+    call_req["id"] = "2";
+    call_req["method"] = "tools/call";
+    call_req["params"] = nlohmann::json{{"name", forged_name}, {"arguments", nlohmann::json::object()}};
+
+    auto responses = run_request(setup, std::move(call_req));
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& error_response = responses[1];
+    ASSERT_TRUE(error_response.contains("error")) << "response: " << error_response.dump();
+    const auto message = error_response["error"]["message"].get<std::string>();
+
+    ASSERT_EQ(error_response["error"]["code"], mcp::g_METHOD_NOT_FOUND)
+        << "actual message prefix: " << message.substr(0, 64);
+    ASSERT_EQ(message.rfind("Unknown tool: ", 0), 0U)
+        << "actual message prefix: " << message.substr(0, 64);
+    ASSERT_NE(message.find("zqtripwire"), std::string::npos)
+        << "actual message prefix: " << message.substr(0, 64);
+    EXPECT_LT(message.size(), forged_name.size()) << "message size: " << message.size();
+    EXPECT_LE(message.size(), std::size_t{512}) << "message size: " << message.size();
+}
+
+// The second "Unknown tool" site. `invoke_tool` bypasses the JSON-RPC loop for json_only
+// deployments, so the name it is given is whatever the embedding passes in -- peer-chosen text in
+// exactly the deployments that use this entry point. It is a distinct site from the one the RPC
+// path takes, and it throws rather than building an error frame, so it needs its own test.
+TEST_F(ServerHandlersTest, InvokeToolUnknownNameDiagnosticIsFlattened) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    const std::string forged_name =
+        "zqtripwire\r\n2026-09-20 ERROR forged line from the caller\xe2\x80\xae reordered tail";
+
+    std::string message;
+    bool threw = false;
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            try {
+                static_cast<void>(
+                    co_await setup.server.invoke_tool(forged_name, nlohmann::json::object()));
+            } catch (const std::exception& error) {
+                threw = true;
+                message = error.what();
+            }
+        },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    // Tripwire: the name must have reached the invoke_tool site itself, not some earlier refusal.
+    ASSERT_TRUE(threw) << "invoke_tool accepted an unknown tool name";
+    ASSERT_EQ(message.rfind("Unknown tool: ", 0), 0U) << "actual message: " << message;
+    ASSERT_NE(message.find("zqtripwire"), std::string::npos) << "actual message: " << message;
+
+    EXPECT_EQ(message.find('\r'), std::string::npos) << "actual message: " << message;
+    EXPECT_EQ(message.find('\n'), std::string::npos) << "actual message: " << message;
+    EXPECT_EQ(message.find("\xe2\x80\xae"), std::string::npos) << "actual message: " << message;
+}
+
+// --- Explicit-null request members ---
+//
+// An absent JSON member and one serialized as explicit `null` are the same statement on the
+// wire. Both requests below are messages a conforming peer may send; neither may be rejected.
+
+TEST_F(ServerHandlersTest, PromptsGetAcceptsExplicitNullArguments) {
+    mcp::ServerCapabilities caps;
+    mcp::ServerCapabilities::PromptsCapability prompts_cap;
+    caps.prompts = std::move(prompts_cap);
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    mcp::Prompt prompt;
+    prompt.name = "greeting";
+    setup.server.add_prompt<mcp::GetPromptRequestParams, mcp::GetPromptResult>(
+        std::move(prompt), [](mcp::GetPromptRequestParams params) -> mcp::GetPromptResult {
+            EXPECT_FALSE(params.arguments.has_value());
+
+            mcp::TextContent text;
+            text.text = "Hello, World!";
+
+            mcp::PromptMessage msg;
+            msg.role = mcp::Role::eUser;
+            msg.content = std::move(text);
+
+            mcp::GetPromptResult result;
+            result.messages.push_back(std::move(msg));
+            return result;
+        });
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+
+    nlohmann::json get_req;
+    get_req["jsonrpc"] = "2.0";
+    get_req["id"] = "2";
+    get_req["method"] = "prompts/get";
+    get_req["params"] = nlohmann::json{{"name", "greeting"}, {"arguments", nullptr}};
+    setup.raw_transport->enqueue_message(get_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& get_response = responses[1];
+    EXPECT_EQ(get_response["id"], "2");
+    ASSERT_FALSE(get_response.contains("error")) << "actual error: " << get_response["error"].dump();
+    ASSERT_TRUE(get_response.contains("result"));
+    auto& messages = get_response["result"]["messages"];
+    ASSERT_EQ(messages.size(), 1);
+    EXPECT_EQ(messages[0]["content"]["text"], "Hello, World!");
+}
+
+TEST_F(ServerHandlersTest, ToolsListPaginationAcceptsExplicitNullCursor) {
+    // Only reachable with a page size set and a non-empty collection: paginate() returns the
+    // whole slice before it ever looks at the cursor when either is absent.
+    mcp::ServerCapabilities caps;
+    mcp::ServerCapabilities::ToolsCapability tools_cap;
+    caps.tools = std::move(tools_cap);
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    setup.server.set_page_size(2);
+
+    for (int i = 0; i < 5; ++i) {
+        auto name = "tool_" + std::to_string(i);
+        setup.server.add_tool<AddParams, AddResult>(
+            name, "Tool " + std::to_string(i), nlohmann::json{{"type", "object"}},
+            [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
+    }
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+
+    nlohmann::json list_req;
+    list_req["jsonrpc"] = "2.0";
+    list_req["id"] = "2";
+    list_req["method"] = "tools/list";
+    list_req["params"] = nlohmann::json{{"cursor", nullptr}};
+    setup.raw_transport->enqueue_message(list_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& list_response = responses[1];
+    ASSERT_FALSE(list_response.contains("error")) << "actual error: " << list_response["error"].dump();
+    auto& result = list_response["result"];
+    ASSERT_EQ(result["tools"].size(), 2);
+    EXPECT_EQ(result["tools"][0]["name"], "tool_0");
+    ASSERT_TRUE(result.contains("nextCursor"));
+    EXPECT_EQ(result["nextCursor"], "2");
+}
+
+TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullClientInfoOptionals) {
+    // clientInfo is an Implementation, so this breaks the handshake on a peer's first message.
+    ServerSetup setup(io_ctx_, mcp::ServerCapabilities{});
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        setup.raw_transport->close();
+    });
+
+    auto init_req = make_initialize_request("1");
+    init_req["params"]["clientInfo"]["title"] = nullptr;
+    init_req["params"]["clientInfo"]["description"] = nullptr;
+    init_req["params"]["clientInfo"]["websiteUrl"] = nullptr;
+    init_req["params"]["clientInfo"]["icons"] = nullptr;
+    setup.raw_transport->enqueue_message(init_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 1);
+    auto& init_response = responses[0];
+    ASSERT_FALSE(init_response.contains("error")) << "actual error: " << init_response["error"].dump();
+    ASSERT_TRUE(init_response.contains("result"));
+    EXPECT_EQ(init_response["result"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+}
+
+TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullCapabilityFlags) {
+    ServerSetup setup(io_ctx_, mcp::ServerCapabilities{});
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        setup.raw_transport->close();
+    });
+
+    auto init_req = make_initialize_request("1");
+    init_req["params"]["capabilities"]["roots"] = {{"listChanged", nullptr}};
+    init_req["params"]["capabilities"]["extensions"] = nullptr;
+    setup.raw_transport->enqueue_message(init_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 1);
+    auto& init_response = responses[0];
+    ASSERT_FALSE(init_response.contains("error")) << "actual error: " << init_response["error"].dump();
+    ASSERT_TRUE(init_response.contains("result"));
+}
+
+TEST_F(ServerHandlersTest, MessageNestedBeyondTheDepthLimitIsAParseError) {
+    ServerSetup setup(io_ctx_, mcp::ServerCapabilities{});
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            setup.raw_transport->close();
+        }
+    });
+
+    // A ping whose whole document nests `depth` levels: the envelope and params are two of them.
+    const auto ping_nested_to = [](const std::string& id, std::size_t depth) {
+        const std::size_t arrays = depth - 2;
+        return R"({"jsonrpc":"2.0","id":")" + id + R"(","method":"ping","params":{"data":)" +
+               std::string(arrays, '[') + std::string(arrays, ']') + "}}";
+    };
+    setup.raw_transport->enqueue_message(ping_nested_to("at-limit", 128));
+    setup.raw_transport->enqueue_message(ping_nested_to("over-limit", 129));
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2U);
+    const auto with_id = [&responses](const nlohmann::json& id) {
+        const auto found = std::find_if(responses.begin(), responses.end(),
+                                        [&id](const nlohmann::json& r) { return r.at("id") == id; });
+        return found == responses.end() ? nlohmann::json() : *found;
+    };
+    const auto answered = with_id("at-limit");
+    ASSERT_TRUE(answered.is_object()) << "the ping at the limit got no response";
+    EXPECT_TRUE(answered.contains("result")) << answered.dump();
+    // The id of a message that was never decoded is unknown, so the error carries a null id.
+    const auto refused = with_id(nullptr);
+    ASSERT_TRUE(refused.is_object()) << "the ping over the limit got no parse error";
+    EXPECT_EQ(refused.at("error").at("code"), mcp::g_PARSE_ERROR);
 }

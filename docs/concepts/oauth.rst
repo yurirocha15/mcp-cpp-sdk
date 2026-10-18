@@ -107,6 +107,188 @@ metadata document, or a dynamic registration.
 A complete runnable flow, including a mock authorization server, is in
 ``examples/features/oauth_flow.cpp``.
 
+.. _oauth-protecting-a-server:
+
+Protecting a server
+-------------------
+
+The other half of the flow above is a server that tells an unauthorized client
+where to get a token. Both HTTP server transports —
+:cpp:class:`mcp::StreamableHttpSessionManager` and
+:cpp:class:`mcp::HttpServerTransport` — take the same three settings, and one
+call is enough to make the flow work end to end:
+
+.. code-block:: cpp
+
+   mcp::StreamableHttpSessionManager manager(executor, host, port, factory);
+   manager.set_bearer_token_validator(
+       [](std::string_view token) { return validate_token(token); });
+
+   mcp::ProtectedResourceMetadataConfig metadata;
+   metadata.resource = "https://mcp.example.com/mcp";
+   metadata.authorization_servers = {"https://auth.example.com"};
+   metadata.scopes_supported = {"mcp:read", "mcp:write"};
+   manager.set_protected_resource_metadata(metadata);
+
+:cpp:func:`set_protected_resource_metadata` does two things. It serves the
+RFC 9728 document, answering GET requests at its path without an
+``Authorization`` header so a client holding no token can read it. And it fills
+the ``resource_metadata`` parameter of the ``WWW-Authenticate`` challenge with
+that document's URL, which is the value ``try_handle_challenge`` needs to begin
+discovery.
+
+Both the path and the URL are derived from ``resource``, and from nothing else.
+RFC 9728 §3.1 inserts the well-known segment between the authority and the
+resource's own path, so the example above publishes at
+``https://mcp.example.com/.well-known/oauth-protected-resource/mcp``. Only a
+resource sitting at the origin root is described at the bare
+``/.well-known/oauth-protected-resource``. Set ``metadata.path`` to override the
+derivation; leave it empty to get it.
+
+The same derivation is available to a caller serving the document itself:
+:cpp:func:`mcp::protected_resource_metadata_path` returns the path,
+:cpp:func:`mcp::protected_resource_metadata_url` the absolute URL to advertise
+in the challenge, and :cpp:func:`mcp::format_protected_resource_metadata` the
+JSON body. Both path functions throw ``std::invalid_argument`` when ``resource``
+is not an absolute URL with an authority.
+
+.. important::
+
+   The advertised URL is never inferred from the address the transport is bound
+   to. Behind a TLS terminator, a reverse proxy, or a container port mapping —
+   which is to say in most deployments — the listener's own origin is not the one
+   clients can reach, so a URL built from it would send clients somewhere they
+   cannot fetch. ``resource`` is what the outside world calls this server, and it
+   is required for exactly that reason.
+
+To send other challenge parameters, or to point at metadata this server does not
+host itself, set them explicitly:
+
+.. code-block:: cpp
+
+   mcp::BearerChallengeConfig challenge;
+   challenge.realm = "mcp";
+   challenge.scope = "mcp:read";
+   challenge.error = "invalid_token";
+   manager.set_bearer_challenge(challenge);
+
+Parameters are sent in the order realm, error, scope, resource_metadata, each as
+an RFC 7235 quoted-string. A ``resource_metadata`` set here is kept as written
+and is not overwritten by the metadata document's URL. The two setters are
+order-independent: each renders from the whole current configuration, so calling
+them in either order produces the same header. A value that cannot appear in a
+quoted-string is rejected by the setter with ``std::invalid_argument``, so it
+cannot reach the wire as a header injection.
+:cpp:func:`mcp::format_www_authenticate` renders the same string for a caller
+that wants to serve the challenge from its own code.
+
+Validating tokens
+~~~~~~~~~~~~~~~~~
+
+``set_bearer_token_validator`` takes a synchronous predicate, which suits a
+locally-verifiable token such as a signed JWT whose key is already in memory.
+When the decision needs I/O — token introspection, a JWKS fetch — use
+``set_async_bearer_token_validator`` instead, so the wait suspends rather than
+blocking the executor that is concurrently serving MCP traffic:
+
+.. code-block:: cpp
+
+   manager.set_async_bearer_token_validator(
+       [](std::string token) -> mcp::Task<bool> {
+           co_return co_await introspect(std::move(token));
+       });
+
+The token is passed by value because the validator may suspend, and a view into
+the request buffer is not guaranteed to survive that. A transport accepts one
+validator: installing both throws ``std::logic_error``. A server that installs
+only the synchronous one pays nothing for the asynchronous path.
+
+A validator that returns ``false`` gets the client a ``401`` with the bearer
+challenge. One that throws, because an introspection endpoint is down for
+example, gets it a ``500`` with no challenge: the server failed to decide, and
+a ``401`` would send the client into re-authorization for a token that may be
+perfectly valid.
+
+The two signatures are exported as :cpp:type:`mcp::BearerTokenValidator`
+(``bool(std::string_view)``) and :cpp:type:`mcp::AsyncBearerTokenValidator`
+(``Task<bool>(std::string)``), so a validator can be stored and passed around
+rather than written inline at the call. Neither is ever handed the
+``Authorization`` header itself: the transports strip the scheme first with
+:cpp:func:`mcp::http_bearer_token`, which returns the characters after
+``Bearer`` and an empty view when the scheme is absent, and an empty token is
+rejected before any validator runs.
+
+Health checks and other routes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Routes that must answer before a token exists are named individually:
+
+.. code-block:: cpp
+
+   manager.set_unauthenticated_paths({"/health"});
+
+Each entry is matched for equality against the path component of the request
+target, with any query string or fragment removed first, so ``/health`` also
+exempts ``/health?probe=1``. :cpp:func:`mcp::http_request_path` performs that
+split and is exported, so a custom request handler can key off exactly the same
+path the exemption check used.
+
+``HttpServerTransport`` has no custom request handler, so on that transport
+the only exempt path that is answered with content is the protected-resource
+metadata route; every other exempt path gets ``404 Not Found``. A health check
+that has to answer without a token needs ``StreamableHttpSessionManager`` and
+its custom request handler.
+
+.. warning::
+
+   An exempt path is excused from the bearer check **and** excluded from MCP
+   dispatch. MCP is otherwise served on every path the custom handler declines,
+   so exempting a path without also excluding it would serve MCP there with no
+   authentication at all — and naming the path MCP runs on would silently
+   disable authentication for the whole server. An exempt request that the
+   metadata route and the custom request handler both decline is therefore
+   answered ``404 Not Found``, which makes that misconfiguration fail loudly
+   instead of quietly.
+
+The request pipeline runs the protected-resource metadata route first, then the
+unauthenticated path list, then the bearer check, then the custom request
+handler on ``StreamableHttpSessionManager``, then MCP dispatch. Every one of
+these settings is opt-in: a server that sets none of them behaves exactly as
+before, down to the bare ``Bearer`` challenge on a 401. All of them must be
+configured before ``listen()`` starts, and a setter called afterwards throws
+``std::logic_error``.
+
+``examples/features/oauth_flow.cpp`` builds its challenge and its metadata route
+from one ``ProtectedResourceMetadataConfig`` through these same functions, so it
+shows the derivation running rather than restating its result.
+
+Request body size
+~~~~~~~~~~~~~~~~~
+
+Both transports cap the HTTP request body they will read, answering
+``413 Payload Too Large`` and closing the connection beyond it. The default is
+:cpp:var:`mcp::constants::g_default_max_request_body_bytes`, 8 MiB, and
+``set_max_request_body_bytes`` overrides it.
+
+The body is read before the bearer token is checked, so the cap also bounds
+what a client without a valid token can make the server buffer on each
+connection. The body is parsed as JSON only after the origin and bearer checks
+pass.
+
+The default is deliberately well above Boost.Beast's own 1 MB. Binary content
+reaches an MCP server as base64 inside the JSON body — ``ImageContent::data``,
+``BlobResourceContents::blob`` and ``AudioContent`` have no out-of-band or
+streaming path — and base64 inflates by 4/3, so a 1 MB cap admits only about
+750 KB of raw bytes, which ordinary phone photos and screenshots already exceed.
+
+.. warning::
+
+   Lower this only deliberately. A rejection happens in the HTTP parser, before
+   the request becomes an MCP message, so it is reported as a ``413`` on the
+   transport and not through the MCP error channel. A cap set near the size of
+   the raw content presents to users as large tool calls failing for no visible
+   reason.
+
 .. _oauth-security-boundary:
 
 Security boundary
@@ -226,7 +408,9 @@ listener:
    manager.set_bearer_token_validator(
        [](std::string_view token) { return validate_token(token); });
 
-``HttpServerTransport`` exposes the same validator. The older
+``HttpServerTransport`` exposes the same validator. The validator decides
+whether a token is acceptable; what an unauthorized client is told to do next is
+the challenge, covered under :ref:`oauth-protecting-a-server`. The older
 ``make_auth_middleware`` helper checks ``_meta.auth_token`` and exists for
 non-HTTP or legacy integrations; it should not replace authentication at the
 HTTP boundary.
@@ -246,6 +430,16 @@ should not be copied there.
 Its MCP-side authentication uses the legacy ``_meta.auth_token`` middleware
 path, so it does not demonstrate the HTTP ``Authorization: Bearer`` boundary
 described above.
+
+Both ends of the flow are in the SDK. A server configured as
+:ref:`oauth-protecting-a-server` describes answers an unauthenticated request
+with a challenge naming its protected-resource metadata, serves that metadata
+without a token, and ``OAuthAuthorizationManager`` drives the rest from that
+header. The server side is deliberately narrow: it advertises a challenge and
+publishes a metadata document, and it neither issues tokens nor validates them
+beyond calling the ``BearerTokenValidator`` the application supplies, so an
+authorization server and the token verification behind that callback remain the
+deployment's own.
 
 The client passes every OAuth scenario of the official conformance suite: the
 protected-resource metadata variants, CIMD and pre-registration, scope

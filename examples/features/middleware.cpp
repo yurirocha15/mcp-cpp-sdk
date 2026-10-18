@@ -84,7 +84,8 @@ int main() {
                 params.at("arguments").at("block").get<bool>()) {
                 std::cout << "[Middleware C] Short-circuiting: block flag detected\n";
                 co_await ctx.log_info("Middleware C: short-circuit");
-                // Exceptions are converted into protocol-valid tool errors.
+                // A throw from middleware is answered as a JSON-RPC error (-32603), which
+                // call_tool() raises as McpError.
                 throw std::runtime_error("Request blocked by middleware C");
             }
 
@@ -160,8 +161,8 @@ int main() {
 
                     // ========== TEST 2: Short-circuit execution ==========
                     std::cout << "=== TEST 2: Short-circuit execution (middleware C blocks) ===\n";
-                    std::cout << "Expected order: A before -> B before -> C before (short-circuit) -> "
-                                 "B after -> A after\n";
+                    std::cout << "Expected order: A before -> B before -> C before (short-circuit); "
+                                 "the error propagates out through B and A\n";
                     std::cout << "Handler should NOT be called\n\n";
 
                     try {

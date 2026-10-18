@@ -140,14 +140,14 @@ TEST(ServerMiddlewareTest, MiddlewareShortCircuits) {
     // Verify the tool was never executed
     EXPECT_FALSE(tool_executed);
 
-    // Check that middleware exceptions become protocol-valid tool errors.
+    // A middleware that throws is signalling that the call must not proceed, which belongs on the
+    // protocol channel rather than in a successful tool result.
     auto it = std::find_if(responses.begin(), responses.end(), [](const json& msg) {
-        return msg.contains("id") && msg["id"] == "2" && msg.contains("result");
+        return msg.contains("id") && msg["id"] == "2" && msg.contains("error");
     });
     ASSERT_NE(it, responses.end());
-    EXPECT_TRUE((*it)["result"]["isError"].get<bool>());
-    EXPECT_TRUE((*it)["result"]["content"][0]["text"].get<std::string>().find("forbidden") !=
-                std::string::npos);
+    EXPECT_EQ((*it)["error"]["code"], mcp::g_INTERNAL_ERROR);
+    EXPECT_TRUE((*it)["error"]["message"].get<std::string>().find("forbidden") != std::string::npos);
 }
 
 // Test 3: Multiple middlewares execute in order (1→2→handler→2→1)
@@ -288,4 +288,100 @@ TEST(ServerMiddlewareTest, MiddlewarePostProcessesResult) {
     ASSERT_NE(it, responses.end());
     EXPECT_EQ((*it)["result"]["structuredContent"]["sum"], 40);
     EXPECT_EQ((*it)["result"]["structuredContent"]["metadata"], "processed by middleware");
+}
+
+namespace {
+
+// Runs one tools/call for `tool` through `server` and returns its response.
+json call_one_tool(Server& server, const std::string& tool) {
+    boost::asio::io_context io;
+    auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
+    auto* transport_ptr = transport.get();
+
+    std::vector<json> responses;
+    transport_ptr->set_on_write([&responses, transport_ptr](std::string_view msg) {
+        responses.push_back(json::parse(msg));
+        if (responses.size() >= 2) {
+            transport_ptr->close();
+        }
+    });
+
+    transport_ptr->enqueue_message(make_initialize_request("1").dump());
+    transport_ptr->enqueue_message(make_initialized_notification().dump());
+    transport_ptr->enqueue_message(json{{"jsonrpc", "2.0"},
+                                        {"id", "2"},
+                                        {"method", "tools/call"},
+                                        {"params", {{"name", tool}, {"arguments", json::object()}}}}
+                                       .dump());
+
+    boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
+    io.run();
+
+    auto it = std::find_if(responses.begin(), responses.end(),
+                           [](const json& msg) { return msg.contains("id") && msg["id"] == "2"; });
+    return it == responses.end() ? json() : *it;
+}
+
+Server make_tool_server() {
+    ServerCapabilities caps;
+    caps.tools = ServerCapabilities::ToolsCapability{};
+    Implementation info;
+    info.name = "test-server";
+    info.version = "1.0";
+    return Server(std::move(info), std::move(caps));
+}
+
+}  // namespace
+
+// A middleware that refuses a tool call with a tool error returns a complete CallToolResult, and
+// that result reaches the client as it is rather than wrapped as structuredContent.
+TEST(ServerMiddlewareTest, MiddlewareReturningAToolErrorResultIsSentUnchanged) {
+    auto server = make_tool_server();
+    bool handler_called = false;
+    server.use([](Context&, const json&, TypeErasedHandler) -> Task<json> {
+        co_return json(make_tool_error_result("blocked by policy"));
+    });
+    server.add_tool<json, json>("guarded", "Guarded tool", json{{"type", "object"}},
+                                [&handler_called](const json&) -> json {
+                                    handler_called = true;
+                                    return json::object();
+                                });
+
+    const auto response = call_one_tool(server, "guarded");
+
+    ASSERT_TRUE(response.contains("result")) << response.dump();
+    EXPECT_FALSE(handler_called);
+    EXPECT_TRUE(response["result"]["isError"].get<bool>());
+    EXPECT_EQ(response["result"]["content"][0]["text"], "blocked by policy");
+    EXPECT_FALSE(response["result"].contains("structuredContent")) << response.dump();
+}
+
+// A tool handler's exception is turned into an isError result inside the guard, before middleware
+// sees anything, so a middleware wrapping next() in a try/catch receives a result, not a throw.
+TEST(ServerMiddlewareTest, ToolExceptionReachesMiddlewareAsAnErrorResult) {
+    auto server = make_tool_server();
+    bool middleware_caught = false;
+    bool middleware_saw_error_result = false;
+    server.use([&](Context& ctx, const json& params, TypeErasedHandler next) -> Task<json> {
+        json result;
+        try {
+            result = co_await next(ctx, params);
+        } catch (...) {
+            middleware_caught = true;
+            throw;
+        }
+        middleware_saw_error_result = result.value("isError", false);
+        co_return result;
+    });
+    server.add_tool<json, json>("failing", "Always throws", json{{"type", "object"}},
+                                [](const json&) -> json { throw std::runtime_error("tool broke"); });
+
+    const auto response = call_one_tool(server, "failing");
+
+    ASSERT_TRUE(response.contains("result")) << response.dump();
+    EXPECT_FALSE(middleware_caught);
+    EXPECT_TRUE(middleware_saw_error_result);
+    EXPECT_TRUE(response["result"]["isError"].get<bool>());
+    EXPECT_NE(response["result"]["content"][0]["text"].get<std::string>().find("tool broke"),
+              std::string::npos);
 }

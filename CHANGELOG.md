@@ -123,6 +123,66 @@ Versioning; a `0.x` version is a stable release unless its version has an
   to the same place as standard output (`2>&1`) is not protected.
 - CI compiles the README code snippets and checks that the stdio examples
   write nothing but protocol messages to standard output.
+- Server-side OAuth challenge support on `HttpServerTransport` and
+  `StreamableHttpSessionManager`. `set_bearer_challenge()` sets the parameters
+  sent in the `WWW-Authenticate` header of every 401, rendered as RFC 7235
+  quoted-strings in the order `realm`, `error`, `scope`, `resource_metadata`;
+  `set_protected_resource_metadata()` serves an RFC 9728 protected-resource
+  metadata document, answered without an `Authorization` header so a client
+  holding no token can read it; and `set_unauthenticated_paths()` exempts
+  request paths from the bearer check while also removing them from MCP
+  dispatch, so an exempt path that no other route claims is answered
+  `404 Not Found` rather than serving MCP without authentication. A challenge
+  that carries no `resource_metadata` is filled in with the metadata
+  document's URL. The document's path defaults to the RFC 9728 3.1 derivation
+  — a resource at `https://host/mcp` is described at
+  `/.well-known/oauth-protected-resource/mcp` — and its URL is built from the
+  configured `resource`, never from the address the listener is bound to.
+  `<mcp/transport/http_types.hpp>` gains `BearerChallengeConfig`,
+  `ProtectedResourceMetadataConfig`, `format_www_authenticate()`,
+  `protected_resource_metadata_path()`, `protected_resource_metadata_url()`,
+  `format_protected_resource_metadata()` and `http_request_path()`.
+- `set_async_bearer_token_validator()` on `HttpServerTransport` and
+  `StreamableHttpSessionManager`, taking the new `AsyncBearerTokenValidator`
+  (`std::function<Task<bool>(std::string)>`), so a token decision that needs
+  I/O — introspection, a JWKS fetch — suspends instead of blocking the
+  executor serving MCP traffic. Installing it alongside the synchronous
+  validator throws `std::logic_error`. A validator of either kind that throws
+  is answered `500 Internal Server Error` without a challenge, so a failing
+  introspection endpoint does not send clients into re-authorization.
+- `set_max_request_body_bytes()` on `HttpServerTransport` and
+  `StreamableHttpSessionManager`, together with
+  `mcp::constants::g_default_max_request_body_bytes` (8 MiB), the new default.
+  A body over the cap is answered `413 Payload Too Large` and its connection
+  closed before MCP dispatch; zero is rejected with `std::invalid_argument`.
+  The default replaces Beast's own 1 MB limit, which admitted only about
+  750 KB of raw content once base64 inflation inside the JSON body is
+  accounted for. The body is read up to the cap before the bearer token is
+  checked, and parsed as JSON only after the origin and bearer checks pass.
+- `ClientOptions::on_protocol_error`, invoked when the client discards an
+  incoming message instead of dispatching it: a message the peer sent that
+  could not be decoded, reported as `g_PARSE_ERROR`, or an exception thrown by
+  an application notification callback, reported as `g_INTERNAL_ERROR` with
+  the notification method in the message. It runs on the read loop and must
+  not block.
+- A build check that every protocol type with a `from_json` is either covered
+  by the peer-input matrix test (`test/core/json_peer_input_matrix_test.cpp`)
+  or excluded with a stated reason, and that the test matches what
+  `scripts/gen_json_matrix.py` generates. It exits 2 for a row whose decoder
+  now throws on an explicit null or an absent key, and the generator refuses
+  to write such a row unless it is named with `--accept-regression`. The
+  check is governed by the new `MCP_CPP_SDK_CHECK_JSON_MATRIX` option: `ON` in
+  a checkout, where a `BUILD_TESTING=ON` build needs Python 3.9+, and `OFF` in
+  source archives, which do not ship the scripts.
+- Documentation for the server-side OAuth challenge work: the OAuth guide now
+  names the protected-resource metadata helpers and the exported bearer and
+  request-path helpers, and renders its example challenge through the
+  server-side API rather than hand-writing the header. The client guide now
+  covers the default 30-second request timeout, including that the typed
+  helpers such as `call_tool()` and `read_resource()` accept no
+  per-request override, that a request outliving it fails with
+  `g_REQUEST_TIMEOUT` while the peer may still be running it, and that no
+  value disables the deadline.
 
 ### Changed
 
@@ -145,8 +205,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `send_request()` throws when called before `connect()`.
 - The client rejects an incoming message whose `jsonrpc` member is missing or
   not `"2.0"` (`ClientOptions::strict_protocol_validation`, on by default):
-  the read loop stops, pending requests fail with `g_CONNECTION_CLOSED`, and
-  the transport is closed.
+  the message is dropped and reported through `ClientOptions::on_protocol_error`.
 - `HttpServerTransport` and `StreamableHttpSessionManager` answer `403` to a
   request that carries an `Origin` header unless that origin was added with
   `set_allowed_origins()` or `set_allow_all_origins(true)` was called.
@@ -184,11 +243,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `add_raw_tool()` handlers must return a valid `CallToolResult`, and a tool
   with an `outputSchema` must return `structuredContent`.
 - A `std::exception` thrown by any tool handler, typed and asynchronous ones
-  included, or by middleware during `tools/call`, is answered with a tool
-  error result (`isError: true`) carrying the exception message. Previously
-  only the synchronous JSON `add_tool()` overload did this, and other tool
-  handlers' exceptions were answered with `-32603`. Resource and prompt
-  handler exceptions are still answered with `-32603`.
+  included, is answered with a tool error result (`isError: true`) carrying
+  the exception message. Previously only the synchronous JSON `add_tool()`
+  overload did this, and other tool handlers' exceptions were answered with
+  `-32603`. Resource and prompt handler exceptions are still answered with
+  `-32603`.
 - Request params that fail to decode are answered with `-32602` (previously
   `-32603`). A message the server cannot parse is answered with `-32700` and
   the session stays open; previously the session ended.
@@ -261,6 +320,130 @@ Versioning; a `0.x` version is a stable release unless its version has an
   the refresh token, so none sends a token another refresh already replaced in
   the store.
 - `scripts/build.py --sanitize --test` runs with LeakSanitizer enabled.
+- An optional member serialized as an explicit `null` is now read the same way
+  as an absent one. The protocol `from_json` overloads test presence through
+  the new `detail::has_json_value` helper instead of `contains()`, which
+  previously accepted the null and then threw when the value was extracted;
+  this covers `Error::data`, `RelatedTaskMetadata::title`, `TaskMetadata`'s
+  `ttl` and `relatedTasks`, request and notification `params`, response `id`
+  and `error`, and the notification `_meta`, `reason`, `total`, `message`,
+  `logger` and `metadata` members. An `Error` whose `message` is missing or
+  null now decodes to an empty message rather than throwing, so the `code` a
+  caller acts on survives. The server reads a null `error` member as absent
+  when validating request, notification and response envelopes and when
+  dispatching a response, and a null notification `params` as no params. The
+  client is asymmetric on purpose: a null `error` is the absence of an error,
+  while a null `result` is a legitimate empty result and still counts as
+  present. The same treatment covers the optional members of the protocol
+  types a peer's payload reaches: `description`, `mimeType`, `size`, `title`
+  and `icons` on `Resource` and `ResourceTemplate`; `description`, `title`,
+  `icons` and `execution` on `Tool`; and `isError` on both `CallToolResult`
+  and `ToolResultContent`.
+- A peer whose serializer writes absent optionals as explicit nulls could not
+  complete initialization at all. `clientInfo` is an `Implementation`, whose
+  `from_json` guarded `title`, `description`, `websiteUrl` and `icons` with a
+  bare presence test, so `"clientInfo": {"name": "x", "version": "1",
+  "title": null}` failed to decode and the `initialize` request was answered
+  `-32602`. Because `initialize` is the peer's first message, the failure was
+  unconditional: no such client could connect at all. Those members are now
+  read as absent when they arrive as null.
+- Explicit nulls in request parameters that previously drew `-32602` are now
+  read as absent: `arguments` on `prompts/get`, `context.arguments` on
+  `completion/complete`, and the pagination `cursor`, where `"cursor": null`
+  on a list request was rejected as an invalid cursor instead of returning the
+  first page. `CallToolParams::arguments` is deliberately unchanged: it is a
+  required member carrying a shape rule rather than an optional one, so
+  rejecting a null there remains correct.
+- An explicit null `_meta` or `annotations` no longer decodes to a value the
+  peer never sent. Unlike the members above these never threw: the guard
+  accepted the null and produced an engaged optional, so the SDK re-emitted
+  `"_meta": null` and turned `"annotations": null` into `"annotations": {}` —
+  a structurally present `Annotations` that a consumer reads as "annotations
+  supplied, carrying no constraints" rather than as none at all. Neither side
+  saw anything wrong, which is what made this worse than a rejection. The
+  affected members are `_meta` and `annotations` on `Resource`,
+  `ResourceTemplate`, `Tool`, `CallToolResult` and `ToolResultContent`,
+  `Tool::outputSchema`, `structuredContent` on `CallToolResult` and
+  `ToolResultContent`, and `CallToolParams::_meta` on the `tools/call` path.
+- The remaining optional members of the protocol types read an explicit null
+  as absent too: the capability flags (`listChanged`, `subscribe` and
+  `extensions` on both sides), `cursor` and `nextCursor` on every list request
+  and result, and the optional members of `Annotations`, `Icon`, `Prompt`,
+  `PromptArgument`, `ResourceLink`, `Root`, `ToolAnnotations`, the sampling and
+  elicitation types, completion results and tasks. Before this, `initialize`
+  was answered `-32602` when a client sent `"roots": {"listChanged": null}`,
+  and `connect()` or a `list_*` call threw when a server sent
+  `"listChanged": null` or `"nextCursor": null`.
+- A `resources/read` URI longer than 512 characters is now answered
+  `-32602` naming the limit instead of being matched against the resource
+  templates. Exact resource lookups happen first and are unaffected by the
+  limit.
+- Resource templates are matched without `std::regex`, in time linear in the
+  URI's length. A URI that nearly matches a template whose expressions are
+  separated by a literal their values may also contain, such as
+  `metrics://{year}-{month}-{day}-{hour}`, is answered at once instead of
+  holding the server's executor while a backtracking matcher tries every split.
+- Messages from a peer that nest arrays and objects more than 128 levels deep
+  are refused before they are decoded: the server answers `-32700`, the client
+  drops the message and reports it through `ClientOptions::on_protocol_error`,
+  and the HTTP transports answer `400`. Copying a decoded document recurses
+  once per level, so a request of a few hundred kilobytes made of nothing but
+  brackets could exhaust the stack and crash the process.
+- A resource URI template with two adjacent expressions is rejected at
+  registration with `std::invalid_argument` when the boundary between them is
+  ambiguous: the second expression has no leading literal (`{a}{b}`,
+  `{a}{+b}`), or its literal can occur in the first expression's value
+  (`{name}{.ext}`, `{+path}{/segment}`). Any split of a URI between two such
+  expressions would match, so their values would be ambiguous. Adjacent
+  expressions with a decidable boundary, such as
+  `{+path}{?query}` and `{id}{#section}`, are accepted.
+- A tool handler that throws something not derived from `std::exception` is
+  answered with a tool error result carrying the fixed text
+  `Tool handler failed`, and every tool exception message is flattened and
+  length-bounded before it reaches the peer. Such a throw from a resource or
+  prompt handler, or from middleware, still ends the request without a
+  response.
+- Middleware runs outside the tool handler's exception guard. An exception
+  thrown by middleware is answered with `-32603` for every request kind,
+  `tools/call` included, since middleware decides whether a call may proceed
+  at all. A tool handler's exception reaches middleware as an `isError`
+  result rather than as an exception. `make_auth_middleware()` answers a
+  missing or refused token with a tool error result on `tools/call` and with
+  `-32603` on `resources/read` and `prompts/get`, without invoking the
+  handler.
+- An incoming message the client cannot decode no longer ends the session.
+  Only a failure of `read_message()` — the peer hung up, the socket died, the
+  client was closed — fails pending requests and closes the transport;
+  anything that goes wrong after the bytes are off the wire is reported
+  through `ClientOptions::on_protocol_error` and the message is dropped.
+- An explicit `ProtectedResourceMetadataConfig::path` is now validated rather
+  than concatenated onto the origin verbatim. A path that does not begin with
+  `/` is rejected with `std::invalid_argument`, as is one carrying a `.` or
+  `..` whole segment. Previously `path = "evil"` produced `https://hevil` — a
+  corrupted authority rather than merely a bad path — and `path = "/../../x"`
+  was published unresolved. Only whole segments count, so a path such as
+  `/.well-known/a..b/c.d` is still accepted; dots inside a segment are
+  ordinary characters, and refusing them would refuse the well-known prefix
+  the derivation itself produces. The function does not normalize, and its
+  result is published to clients as the authoritative location of the
+  document, so an unusable path is refused rather than advertised. The
+  transport and session-manager setters reject it at configuration time and
+  leave the server unchanged.
+- A `Server` may now be destroyed while a session started with `run()` still
+  has handlers in flight. The implementation outlives the `Server` until that
+  work finishes, so such a handler no longer runs against freed state. Work
+  started through `dispatch()`, `dispatch_request_direct()` or the
+  `notify_*()` calls does not extend it, so the `Server` must outlive those. A
+  reverse request issued from a handler whose `Server` is gone throws
+  `std::runtime_error` naming that cause instead of faulting — distinct from
+  the failure reported for a session that is merely closing. Destroying a
+  `Server` from a thread other than the one running its session no longer
+  races on that session's request maps either: those entries are abandoned on
+  the session strand, which is the only executor permitted to touch them.
+- A session is now unregistered even when teardown throws — a transport that
+  throws from `close()`, or a drain wait that fails for any reason other than
+  cancellation. Previously such a failure left the session registered and
+  every later `run()` was refused for the lifetime of the `Server`.
 
 ### Fixed
 

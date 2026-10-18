@@ -1,5 +1,7 @@
 #include <mcp/auth/oauth.hpp>
 
+#include "../detail/middleware_rejection.hpp"
+#include "../detail/peer_json.hpp"
 #include "oauth_internal.hpp"
 
 #include <mcp/transport/http_client.hpp>
@@ -708,9 +710,9 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         }
     }
 
-    /// Hand out a fresh latch. There are no scope ids any more and so nothing to reuse: a scope is
-    /// identified by the control block itself, which every party that can consult it keeps alive,
-    /// so a new scope can never alias a latched one the way a recycled id could.
+    /// Hand out a fresh latch. A scope is identified by the control block itself, which every party
+    /// that can consult it keeps alive, so a new scope can never alias a latched one the way a
+    /// recycled id could. Do not reintroduce scope ids.
     static std::shared_ptr<detail::OAuthScopeState> new_scope() {
         return std::make_shared<detail::OAuthScopeState>();
     }
@@ -718,8 +720,6 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     // Every request carries the scope it was issued under, so aborting that scope reaches exactly
     // these exchanges and no others. A null scope is the client's own unscoped work.
     /// Build an exchange with the fetch policy and host resolver PINNED for its whole lifetime.
-    ///
-    /// Two reasons, and the second is not about threads at all.
     ///
     /// set_metadata_policy() and set_host_resolver() are plain writes to state the exchange
     /// coroutines read, which ThreadSanitizer confirmed as a real race for anyone driving this
@@ -802,7 +802,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         }
 
         exchange->body = exchange->response().body();
-        auto response_json = nlohmann::json::parse(exchange->body, nullptr, false);
+        auto response_json = mcp::detail::parse_peer_json(exchange->body);
         if (response_json.is_discarded()) {
             throw std::runtime_error("Failed to parse JSON from " +
                                      sanitize_for_diagnostics(exchange->url));
@@ -843,7 +843,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         }
 
         exchange->body = exchange->response().body();
-        auto response_json = nlohmann::json::parse(exchange->body, nullptr, false);
+        auto response_json = mcp::detail::parse_peer_json(exchange->body);
         if (response_json.is_discarded()) {
             throw std::runtime_error("Failed to parse JSON from " +
                                      sanitize_for_diagnostics(exchange->url));
@@ -863,28 +863,23 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     net::strand<net::any_io_executor> strand;
     std::mutex active_mutex;
     /// Both guarded by active_mutex: written by the setters, read once per exchange in
-    /// make_exchange(). They used to be plain unsynchronised state that request coroutines read on
-    /// the client strand while an application thread could be writing it.
+    /// make_exchange().
     MetadataFetchPolicy policy;
     HostResolver host_resolver;
     std::vector<std::weak_ptr<Exchange>> active_exchanges;
     /// Set once by abort_pending(); makes the abort sticky so an exchange started afterward is
     /// refused instead of running to completion. Guarded by active_mutex alongside the list above.
     bool aborted{false};
-    // A scope's own abort latch lives on the scope (detail::OAuthScopeState), not in a container
-    // here. The client used to hold a set of aborted scope ids that nothing ever erased, so a
-    // long-lived client with a churn of short-lived scopes grew by one entry per closed scope for
-    // the life of the process. Nothing about a closed scope is retained here now.
+    // A scope's abort latch lives on the scope itself (detail::OAuthScopeState). Do not add a
+    // container of scope state here: it would have to outlive every exchange that could still
+    // consult it, which in practice means never being cleaned up.
 };
 
 OAuthHttpClient::OAuthHttpClient(const net::any_io_executor& executor)
     : impl_(std::make_shared<Impl>(executor)) {}
 
-// Both take active_mutex rather than trusting that nobody calls them after the first request. The
-// doc comments ask for that ordering, but nothing enforced it and nothing told a caller who broke
-// it: the result was a data race, which is silent right up until it is not. Installing either
-// mid-flight is now well defined -- exchanges already running keep what they started with, and the
-// next one picks up the new value.
+// Safe to call at any time, including mid-flight: exchanges already running keep what they started
+// with, and the next one picks up the new value. See configure() below for changing both together.
 void OAuthHttpClient::set_metadata_policy(MetadataFetchPolicy policy) {
     std::lock_guard lock(impl_->active_mutex);
     impl_->policy = std::move(policy);
@@ -895,13 +890,10 @@ void OAuthHttpClient::set_host_resolver(HostResolver resolver) {
     impl_->host_resolver = std::move(resolver);
 }
 
-// The two setters above are each atomic; the PAIR of them is not, and that is a security defect
-// rather than a tidiness one. Calling them one after the other leaves an interval holding one new
-// value and one old one, and make_exchange() pins whatever it finds. Resolver-first is the natural
-// order to write and the dangerous one: the redirection lands before the narrowing does, so an
-// exchange in the interval is sent where the new resolver says while being checked against the old,
-// wider allow list. The interval is however long the caller takes between the two statements. One
-// hold of the mutex for both values removes the interval outright.
+// Installs both values under one lock. Use this rather than the two setters above whenever both
+// change: calling them in sequence leaves an interval holding one new value and one old one, and
+// make_exchange() pins whatever it finds. Resolver-first is the natural order to write and the
+// dangerous one. See the @warning on set_metadata_policy() in include/mcp/auth/oauth.hpp for why.
 void OAuthHttpClient::configure(MetadataFetchPolicy policy, HostResolver resolver) {
     std::lock_guard lock(impl_->active_mutex);
     impl_->policy = std::move(policy);
@@ -1361,11 +1353,13 @@ struct MiddlewareInvocation {
 };
 
 Task<nlohmann::json> invoke_auth_middleware(std::shared_ptr<MiddlewareInvocation> invocation) {
+    // A tool call reports the refusal as a tool error result; other requests answer it as a
+    // JSON-RPC error. See MiddlewareRejection.
     if (invocation->token.empty()) {
-        throw std::runtime_error("Unauthorized: missing Bearer token");
+        throw mcp::detail::MiddlewareRejection("Unauthorized: missing Bearer token");
     }
     if (!co_await invocation->validator(invocation->token)) {
-        throw std::runtime_error("Unauthorized: invalid Bearer token");
+        throw mcp::detail::MiddlewareRejection("Unauthorized: invalid Bearer token");
     }
     co_return co_await invocation->next(*invocation->context, invocation->params);
 }
@@ -1515,11 +1509,11 @@ void OAuthAuthenticator::store_token(TokenResponse token) {
     impl_->token_store->store(impl_->server_url, std::move(token));
 }
 
-/// Ends only this authenticator's requests. It used to call abort_pending(), which latches the
-/// whole client irreversibly -- correct for a client its owner created, wrong for one the
-/// application supplied and may share. Two authenticators for two servers sharing one client meant
-/// closing either one silently disabled the other: run_refresh() reports a failed refresh as a
-/// plain `false`, so the survivor got no error, only tokens that quietly stopped renewing.
+/// Ends only this authenticator's requests. Do not reach for abort_pending() here: it latches the
+/// whole client irreversibly, which is correct for a client its owner created and wrong for one the
+/// application supplied and may share. Two authenticators for two servers on one client would then
+/// silently disable each other -- run_refresh() reports a failed refresh as a plain `false`, so the
+/// survivor gets no error, only tokens that quietly stop renewing.
 void OAuthAuthenticator::close() { impl_->close(); }
 
 void OAuthAuthenticator::cancel_pending() { impl_->cancel_pending(); }
@@ -1579,8 +1573,8 @@ std::optional<std::string> union_scopes(const std::optional<std::string>& primar
 ///
 /// A server that publishes the list has told the client which methods it will accept, so the
 /// client picks the strongest one it can actually satisfy rather than guessing. A server that
-/// publishes nothing leaves the decision unset, which keeps the pre-existing behaviour of sending
-/// the secret, when there is one, in the request body.
+/// publishes nothing leaves the decision unset, which sends the secret, when there is one, in the
+/// request body.
 std::optional<std::string> select_token_endpoint_auth_method(
     const std::optional<std::vector<std::string>>& supported, bool has_client_secret) {
     if (!supported || supported->empty()) {
@@ -1617,14 +1611,12 @@ struct OAuthAuthorizationManager::Impl {
     /// One coalescing authorization attempt, and the channel every follower of it reads its result
     /// from.
     ///
-    /// The outcome lives here, on the attempt, rather than on the manager. It used to be a single
-    /// `bool last_flight_succeeded` member of Impl, which was wrong twice over. It was not
-    /// correlated with the attempt a follower actually joined, so a follower of one flight that
-    /// woke after a later flight had already finished read the later flight's result as its own and
-    /// could report success for an attempt that failed. And being a bare bool it carried no reason,
-    /// so a follower coalesced onto a failing leader got a bare "not authorized" while the leader
-    /// itself surfaced the full diagnostic -- including, since credentials became issuer-bound, a
-    /// refusal that names exactly what the caller has to change.
+    /// The outcome lives here, on the attempt, rather than on the manager. Holding it per-attempt
+    /// is what keeps a follower's result correlated with the flight it actually joined: a
+    /// manager-wide field would let a follower that wakes after a later flight finished read that
+    /// flight's result as its own. Carrying the exception rather than a bool is what lets a
+    /// coalesced follower see the same diagnostic as the leader, which for an issuer-bound
+    /// credential refusal names exactly what the caller has to change.
     ///
     /// `succeeded` and `failure` are written once by the leader in run_leading_challenge() and read
     /// by followers after they wake, both under `state_mutex`. `expire_flight()` is what wakes
@@ -1711,8 +1703,7 @@ struct OAuthAuthorizationManager::Impl {
         auto client = std::make_shared<OAuthHttpClient>(executor);
         // One call rather than two, even here where the client has not yet issued a request: the
         // pair method is what a reader should find at a site that installs both. An empty
-        // `host_resolver` leaves this client on the executor's system resolver, which is exactly
-        // what the guard that used to skip the second call achieved.
+        // `host_resolver` leaves this client on the executor's system resolver.
         client->configure(config.policy, config.host_resolver);
         return client;
     }
@@ -1825,9 +1816,8 @@ struct OAuthAuthorizationManager::Impl {
                 if (injected && !injected->client_id.empty() && injected->issuer.empty() &&
                     injected->client_secret && !injected->client_secret->empty()) {
                     // Both spellings are named, with the condition on each, because they are not
-                    // interchangeable and the old wording presented `client_issuer` as though they
-                    // were. `client_issuer` only fills in credentials given as client_id and
-                    // client_secret; the constructor refuses it next to a populated
+                    // interchangeable. `client_issuer` only fills in credentials given as client_id
+                    // and client_secret; the constructor refuses it next to a populated
                     // `client_identity.pre_registered`, so a caller who built that struct
                     // themselves has to set the issuer on it.
                     throw std::runtime_error(
@@ -1928,16 +1918,14 @@ struct OAuthAuthorizationManager::Impl {
         // Both checks that decide whether this document may be acted on, handed to discovery as its
         // acceptance test rather than applied after the fact.
         //
-        // Applying them afterwards left a real hole: run_protected_discovery() wrote every document
-        // that merely parsed into the resource cache before returning it, so a refused document was
-        // already planted for the full TTL and the next attempt was served it without a fetch. As
-        // the acceptor they gate the cache write instead, and they run on a cache hit too, so a
-        // document can never be trusted later on the strength of an earlier attempt that refused
-        // it.
+        // Handed to discovery rather than applied afterwards, because discovery writes a parsed
+        // document to the resource cache before returning it: applied after the fact, a refused
+        // document would already be planted for the full TTL and the next attempt served it without
+        // a fetch. As the acceptor they gate the cache write, and they run on a cache hit too.
         //
-        // The order of the two is load-bearing and unchanged: a document that both lists no
-        // authorization servers and carries a resource that is not ours still reports the missing
-        // authorization servers, exactly as it did when these ran here.
+        // The order of the two is load-bearing: a document that both lists no authorization servers
+        // and carries a resource that is not ours must still report the missing authorization
+        // servers.
         auto accept = [owner = operation->owner](const ProtectedResourceMetadata& resource) {
             if (resource.authorization_servers.empty()) {
                 throw std::runtime_error("Protected resource metadata listed no authorization servers");
@@ -2087,7 +2075,7 @@ struct OAuthAuthorizationManager::Impl {
                 throw std::runtime_error("OAuth authorization attempt was cancelled");
             }
             // Read off the flight this follower actually waited on. Reading a manager-wide field
-            // here is what let a late waker report a different attempt's outcome.
+            // here would let a late waker report a different attempt's outcome.
             //
             // `finished` is a guard rather than a case that arises today: the only things that
             // expire this timer are the leader recording its result, close() and cancel(), and the
@@ -2107,11 +2095,11 @@ struct OAuthAuthorizationManager::Impl {
         // rethrows the same exception_ptr, which is safe -- the object it refers to is shared and
         // read-only.
         //
-        // This is a new throw on the follower path, so: nothing between here and the application
-        // swallows it. run_write() catches (...) only to erase_pending() and rethrow, and
-        // run_leading_challenge() is not on a follower's path at all. The catch-alls that discard
-        // and move to the next candidate live in the discovery fallback loops, which a follower
-        // never enters, and the one in the refresh path is a different call entirely.
+        // Nothing between here and the application swallows this throw on the follower path.
+        // run_write() catches (...) only to erase_pending() and rethrow, and run_leading_challenge()
+        // is not on a follower's path at all. The catch-alls that discard and move to the next
+        // candidate live in the discovery fallback loops, which a follower never enters, and the one
+        // in the refresh path is a different call entirely.
         if (failure) {
             std::rethrow_exception(failure);
         }
@@ -2756,7 +2744,10 @@ struct OAuthClientTransport::Impl {
     static std::shared_ptr<const std::string> take_retry_wire(const std::shared_ptr<Impl>& owner,
                                                               std::string_view raw) {
         try {
-            const auto json_message = nlohmann::json::parse(raw);
+            const auto json_message = mcp::detail::parse_peer_json(raw);
+            if (json_message.is_discarded()) {
+                return {};
+            }
             const auto message = json_message.get<JSONRPCMessage>();
 
             std::optional<std::string> key;

@@ -1,3 +1,4 @@
+#include "mcp/auth/oauth.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/transport/http_client.hpp"
 #include "mcp/transport/http_session_manager.hpp"
@@ -14,6 +15,7 @@
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/thread_pool.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/write.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
@@ -46,6 +48,7 @@ struct RawResponse {
     std::string session_id;
     std::string content_type;
     std::string allow;
+    std::string www_authenticate;
 };
 
 /// Fire a single HTTP request and return the response.
@@ -97,6 +100,7 @@ mcp::Task<RawResponse> raw_request(
     result.body = response.body();
     result.content_type = std::string(response[http::field::content_type]);
     result.allow = std::string(response[http::field::allow]);
+    result.www_authenticate = std::string(response[http::field::www_authenticate]);
 
     auto session_it = response.find("Mcp-Session-Id");
     if (session_it != response.end()) {
@@ -331,6 +335,171 @@ TEST_F(SessionManagerTest, OriginHeadersAreDeniedUntilExplicitlyAllowed) {
 
     EXPECT_EQ(denied_response.status, 403);
     EXPECT_EQ(allowed_response.status, 200);
+}
+
+namespace {
+
+/// The initialize body the origin tests below post; none of them gets far enough to care what is
+/// in it, only whether the origin check let it through.
+std::string make_initialize_body() {
+    return json{{"jsonrpc", "2.0"},
+                {"method", "initialize"},
+                {"params",
+                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                  {"clientInfo", {{"name", "test"}, {"version", "1"}}},
+                  {"capabilities", json::object()}}},
+                {"id", 1}}
+        .dump();
+}
+
+}  // namespace
+
+// The allow-list is a set of exact strings, not the canonicalizing comparison the client-side
+// MetadataFetchPolicy performs on the origins it will fetch from. An explicit default port, a
+// different scheme case and a trailing slash all denote the same web origin, and all three are
+// refused here. A deployment that wants them admitted must list every spelling it will receive.
+TEST_F(SessionManagerTest, AllowedOriginComparisonIsExactRatherThanCanonicalizing) {
+    const unsigned short port = 19150;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_allowed_origins({"https://trusted.example"});
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    const std::vector<std::string> spellings = {"https://trusted.example:443",
+                                                "HTTPS://trusted.example", "https://Trusted.example",
+                                                "https://trusted.example/"};
+    std::vector<unsigned int> statuses;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            for (const auto& origin : spellings) {
+                const auto response = co_await raw_request(
+                    io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
+                    std::string(mcp::g_LATEST_PROTOCOL_VERSION), origin);
+                statuses.push_back(response.status);
+            }
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(statuses.size(), spellings.size());
+    for (std::size_t index = 0; index < spellings.size(); ++index) {
+        SCOPED_TRACE(spellings[index]);
+        EXPECT_EQ(statuses[index], 403u);
+    }
+}
+
+// set_allow_all_origins(true) is the documented escape hatch for a deployment that fronts the
+// transport with its own origin policy. Nothing else has to be configured for it to take effect.
+TEST_F(SessionManagerTest, AllowAllOriginsAdmitsAnOriginThatWasNeverListed) {
+    const unsigned short port = 19151;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_allow_all_origins(true);
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            response = co_await raw_request(
+                io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
+                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(response.status, 200);
+}
+
+// set_allowed_origins() names the origins that may connect, so it also revokes a blanket allowance
+// granted earlier. Leaving allow-all in force behind an allow-list would make the narrower call
+// silently do nothing.
+TEST_F(SessionManagerTest, NamingAllowedOriginsRevokesAnEarlierAllowAll) {
+    const unsigned short port = 19152;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_allow_all_origins(true);
+    manager.set_allowed_origins({"https://trusted.example"});
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse denied_response;
+    RawResponse allowed_response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            denied_response = co_await raw_request(
+                io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
+                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
+            allowed_response = co_await raw_request(
+                io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
+                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://trusted.example");
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(denied_response.status, 403);
+    EXPECT_EQ(allowed_response.status, 200);
+}
+
+// On this transport the origin check runs once, before everything else a request could be
+// refused for, so a rebinding attempt is answered 403 without disclosing whether a token would
+// have been accepted or what the protected-resource metadata says. HttpServerTransport reaches
+// the same two answers by running the check per route instead, and the two diverge only on an
+// unauthenticated path -- see the companion test in transport_http_test.cpp.
+TEST_F(SessionManagerTest, TheOriginCheckPrecedesTheBearerCheckAndTheMetadataRoute) {
+    const unsigned short port = 19153;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_allowed_origins({"https://trusted.example"});
+    manager.set_bearer_token_validator([](std::string_view token) { return token == "valid-token"; });
+    manager.set_unauthenticated_paths({"/health"});
+
+    mcp::ProtectedResourceMetadataConfig metadata;
+    metadata.resource = "https://mcp.example.com/mcp";
+    manager.set_protected_resource_metadata(metadata);
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse untokened_response;
+    RawResponse metadata_response;
+    RawResponse exempt_response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            untokened_response = co_await raw_request(
+                io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
+                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
+            metadata_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get,
+                                                     "/.well-known/oauth-protected-resource/mcp", {},
+                                                     {}, std::string(mcp::g_LATEST_PROTOCOL_VERSION),
+                                                     "https://untrusted.example");
+            exempt_response = co_await raw_request(
+                io_ctx_.get_executor(), port, http::verb::get, "/health", {}, {},
+                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(untokened_response.status, 403);
+    EXPECT_TRUE(untokened_response.www_authenticate.empty());
+    EXPECT_EQ(metadata_response.status, 403);
+
+    // HttpServerTransport answers this same request 404: it decides an exempt path is not served
+    // before any origin check runs. Neither status discloses anything a disallowed origin could
+    // not already infer, but the two transports do not agree on which one to send.
+    EXPECT_EQ(exempt_response.status, 403);
 }
 
 TEST_F(SessionManagerTest, BearerTokensAreValidatedAtHttpBoundary) {
@@ -1502,6 +1671,11 @@ TEST_F(SessionManagerTest, NonAtomicConfigurationLocksWhenListeningStarts) {
     EXPECT_THROW(manager.set_bearer_token_validator({}), std::logic_error);
     EXPECT_THROW(manager.set_stateless_json_mode(true), std::logic_error);
     EXPECT_THROW(manager.set_tool_executor(io_ctx_.get_executor()), std::logic_error);
+    EXPECT_THROW(manager.set_bearer_challenge({}), std::logic_error);
+    EXPECT_THROW(manager.set_protected_resource_metadata({}), std::logic_error);
+    EXPECT_THROW(manager.set_unauthenticated_paths({"/health"}), std::logic_error);
+    EXPECT_THROW(manager.set_async_bearer_token_validator({}), std::logic_error);
+    EXPECT_THROW(manager.set_max_request_body_bytes(4096), std::logic_error);
 
     manager.close();
     asio::co_spawn(io_ctx_, std::move(listener), asio::detached);
@@ -1559,6 +1733,525 @@ TEST_F(SessionManagerTest, StatelessDispatchUsesConfiguredToolExecutor) {
     EXPECT_TRUE(handler_ran.load(std::memory_order_acquire));
     EXPECT_FALSE(handler_ran_on_http_thread.load(std::memory_order_acquire));
     EXPECT_EQ(json::parse(response.body)["result"]["content"][0]["text"], "tool executor");
+}
+
+// ===========================================================================
+// Server-side OAuth challenge, metadata route and unauthenticated paths
+// ===========================================================================
+
+TEST_F(SessionManagerTest, UnconfiguredManagerSendsBareBearerChallenge) {
+    const unsigned short port = 19130;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse denied;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            denied = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp");
+            manager.close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(denied.status, 401);
+    EXPECT_EQ(denied.www_authenticate, "Bearer");
+}
+
+TEST_F(SessionManagerTest, ConfiguredChallengeIsSentOnUnauthorized) {
+    const unsigned short port = 19131;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+
+    mcp::BearerChallengeConfig challenge;
+    challenge.realm = "mcp";
+    challenge.error = "invalid_token";
+    challenge.scope = "mcp:read";
+    challenge.resource_metadata = "http://127.0.0.1:9000/.well-known/oauth-protected-resource/mcp";
+    manager.set_bearer_challenge(challenge);
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse denied;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            denied = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp");
+            manager.close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(denied.status, 401);
+    EXPECT_EQ(denied.www_authenticate,
+              R"(Bearer realm="mcp", error="invalid_token", scope="mcp:read", )"
+              R"(resource_metadata="http://127.0.0.1:9000/.well-known/oauth-protected-resource/mcp")");
+}
+
+TEST_F(SessionManagerTest, ProtectedResourceMetadataIsReadableWithoutAToken) {
+    const unsigned short port = 19132;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+
+    mcp::ProtectedResourceMetadataConfig metadata;
+    metadata.resource = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    metadata.authorization_servers = {"http://127.0.0.1:9000"};
+    metadata.scopes_supported = {"mcp:read", "mcp:write"};
+    manager.set_protected_resource_metadata(metadata);
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse document;
+    RawResponse denied;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            document = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get,
+                                            "/.well-known/oauth-protected-resource/mcp");
+            denied = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp");
+            manager.close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    ASSERT_EQ(document.status, 200);
+    EXPECT_EQ(document.content_type, "application/json");
+    const auto parsed = json::parse(document.body);
+    EXPECT_EQ(parsed.at("resource"), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
+    EXPECT_EQ(parsed.at("authorization_servers"), json::array({"http://127.0.0.1:9000"}));
+    EXPECT_EQ(parsed.at("scopes_supported"), json::array({"mcp:read", "mcp:write"}));
+
+    EXPECT_EQ(denied.status, 401);
+    EXPECT_EQ(denied.www_authenticate, R"(Bearer resource_metadata="http://127.0.0.1:)" +
+                                           std::to_string(port) +
+                                           R"(/.well-known/oauth-protected-resource/mcp")");
+}
+
+TEST_F(SessionManagerTest, MetadataRouteIsServedAheadOfTheCustomRequestHandler) {
+    const unsigned short port = 19133;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    manager.set_custom_request_handler(
+        [](const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
+            mcp::StringResponse response{http::status::ok, request.version()};
+            response.body() = "from custom handler";
+            response.prepare_payload();
+            return response;
+        });
+
+    mcp::ProtectedResourceMetadataConfig metadata;
+    metadata.resource = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    manager.set_protected_resource_metadata(metadata);
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse document;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            document = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get,
+                                            "/.well-known/oauth-protected-resource/mcp");
+            manager.close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    ASSERT_EQ(document.status, 200);
+    EXPECT_EQ(json::parse(document.body).at("resource"),
+              "http://127.0.0.1:" + std::to_string(port) + "/mcp");
+}
+
+TEST_F(SessionManagerTest, UnauthenticatedPathsBypassTheBearerCheck) {
+    const unsigned short port = 19134;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    manager.set_unauthenticated_paths({"/health"});
+    manager.set_custom_request_handler(
+        [](const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
+            if (mcp::http_request_path(request.target()) != "/health") {
+                return std::nullopt;
+            }
+            mcp::StringResponse response{http::status::ok, request.version()};
+            response.body() = "healthy";
+            response.prepare_payload();
+            return response;
+        });
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse exempt;
+    RawResponse exempt_with_query;
+    RawResponse guarded;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            exempt = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/health");
+            exempt_with_query =
+                co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/health?probe=1");
+            guarded = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/healthy");
+            manager.close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(exempt.status, 200);
+    EXPECT_EQ(exempt.body, "healthy");
+    EXPECT_EQ(exempt_with_query.status, 200);
+    EXPECT_EQ(exempt_with_query.body, "healthy");
+    EXPECT_EQ(guarded.status, 401);
+}
+
+TEST_F(SessionManagerTest, RequestBodyBeyondTheLimitIsRejected) {
+    const unsigned short port = 19135;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    unsigned int status = 0;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            // Announcing the length is enough: the parser rejects the request before the body is
+            // sent, which is the point of the limit.
+            const std::string header =
+                "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                "Content-Length: " +
+                std::to_string(mcp::constants::g_default_max_request_body_bytes + 1) + "\r\n\r\n";
+
+            beast::tcp_stream stream(io_ctx_.get_executor());
+            asio::ip::tcp::resolver resolver(io_ctx_.get_executor());
+            auto endpoints =
+                co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
+            co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+            co_await asio::async_write(stream, asio::buffer(header), asio::use_awaitable);
+
+            beast::flat_buffer response_buffer;
+            http::response<http::string_body> response;
+            co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
+            status = response.result_int();
+
+            beast::error_code shutdown_error;
+            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
+        },
+        [&manager](const std::exception_ptr&) { manager.close(); });
+    io_ctx_.run();
+
+    EXPECT_EQ(status, 413);
+}
+
+// The two setters are order-independent: each renders from the whole current configuration, so
+// neither call can strand the other's contribution. Both orders are exercised against real
+// listeners and the resulting headers compared to each other.
+TEST_F(SessionManagerTest, TheTwoChallengeSettersAreOrderIndependent) {
+    const auto run = [this](unsigned short port, bool metadata_first) -> std::string {
+        asio::io_context io_ctx;
+        mcp::StreamableHttpSessionManager manager(io_ctx.get_executor(), "127.0.0.1", port,
+                                                  make_echo_server_factory());
+        manager.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+
+        mcp::ProtectedResourceMetadataConfig metadata;
+        metadata.resource = "https://mcp.example.com/mcp";
+        mcp::BearerChallengeConfig challenge;
+        challenge.realm = "mcp";
+        challenge.scope = "mcp:read";
+
+        if (metadata_first) {
+            manager.set_protected_resource_metadata(metadata);
+            manager.set_bearer_challenge(challenge);
+        } else {
+            manager.set_bearer_challenge(challenge);
+            manager.set_protected_resource_metadata(metadata);
+        }
+
+        asio::co_spawn(io_ctx, manager.listen(), asio::detached);
+        RawResponse denied;
+        asio::co_spawn(
+            io_ctx,
+            [&]() -> mcp::Task<void> {
+                denied = co_await raw_request(io_ctx.get_executor(), port, http::verb::get, "/mcp");
+                manager.close();
+            },
+            asio::detached);
+        io_ctx.run();
+        return denied.www_authenticate;
+    };
+
+    const auto metadata_first = run(19136, true);
+    const auto challenge_first = run(19137, false);
+
+    EXPECT_EQ(metadata_first, challenge_first);
+    EXPECT_EQ(
+        metadata_first,
+        R"(Bearer realm="mcp", scope="mcp:read", )"
+        R"(resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp")");
+}
+
+// Exempting the path MCP is served on must not hand out unauthenticated MCP. The session count is
+// the assertion that matters: a 404 that still created a session would have dispatched.
+TEST_F(SessionManagerTest, ExemptingTheMcpPathRefusesToServeMcpUnauthenticated) {
+    const unsigned short port = 19138;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    manager.set_unauthenticated_paths({"/mcp"});
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse initialized;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            initialized = co_await do_initialize(io_ctx_.get_executor(), port);
+            manager.close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(initialized.status, 404);
+    EXPECT_TRUE(initialized.session_id.empty());
+    EXPECT_EQ(manager.session_count(), 0U) << "an exempt path created an unauthenticated session";
+}
+
+TEST_F(SessionManagerTest, AsyncBearerValidatorCanSuspendBeforeDeciding) {
+    const unsigned short port = 19139;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    std::atomic<int> validator_calls{0};
+    manager.set_async_bearer_token_validator([&validator_calls](std::string token) -> mcp::Task<bool> {
+        validator_calls.fetch_add(1, std::memory_order_relaxed);
+        asio::steady_timer timer(co_await asio::this_coro::executor);
+        timer.expires_after(std::chrono::milliseconds(1));
+        co_await timer.async_wait(asio::use_awaitable);
+        co_return token == "valid-token";
+    });
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse denied;
+    RawResponse accepted;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const auto init_body =
+                json{{"jsonrpc", "2.0"},
+                     {"method", "initialize"},
+                     {"params",
+                      {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                       {"clientInfo", {{"name", "test"}, {"version", "1"}}},
+                       {"capabilities", json::object()}}},
+                     {"id", 1}}
+                    .dump();
+            denied = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                          init_body, {}, std::string(mcp::g_LATEST_PROTOCOL_VERSION),
+                                          std::nullopt, "wrong-token");
+            accepted = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                            init_body, {}, std::string(mcp::g_LATEST_PROTOCOL_VERSION),
+                                            std::nullopt, "valid-token");
+            manager.close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(denied.status, 401);
+    EXPECT_EQ(accepted.status, 200);
+    EXPECT_EQ(validator_calls.load(std::memory_order_relaxed), 2);
+}
+
+// A validator that throws has failed to decide, which is the server's failure rather than the
+// client's: answered 500, and never 401, which would send the client into re-authorization.
+TEST_F(SessionManagerTest, ThrowingBearerValidatorIsAnsweredWithAServerError) {
+    const unsigned short async_port = 19154;
+    const unsigned short sync_port = 19155;
+    mcp::StreamableHttpSessionManager async_manager(io_ctx_.get_executor(), "127.0.0.1", async_port,
+                                                    make_echo_server_factory());
+    async_manager.set_async_bearer_token_validator([](std::string) -> mcp::Task<bool> {
+        throw std::runtime_error("introspection endpoint unreachable");
+        co_return false;
+    });
+    mcp::StreamableHttpSessionManager sync_manager(io_ctx_.get_executor(), "127.0.0.1", sync_port,
+                                                   make_echo_server_factory());
+    sync_manager.set_bearer_token_validator(
+        [](std::string_view) -> bool { throw std::runtime_error("token cache unavailable"); });
+
+    asio::co_spawn(io_ctx_, async_manager.listen(), asio::detached);
+    asio::co_spawn(io_ctx_, sync_manager.listen(), asio::detached);
+
+    unsigned int async_status = 0;
+    unsigned int sync_status = 0;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const auto init_body =
+                json{{"jsonrpc", "2.0"},
+                     {"method", "initialize"},
+                     {"params",
+                      {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                       {"clientInfo", {{"name", "test"}, {"version", "1"}}},
+                       {"capabilities", json::object()}}},
+                     {"id", 1}}
+                    .dump();
+            for (auto [port, status] :
+                 {std::pair{async_port, &async_status}, std::pair{sync_port, &sync_status}}) {
+                try {
+                    const auto response = co_await raw_request(
+                        io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
+                        std::string(mcp::g_LATEST_PROTOCOL_VERSION), std::nullopt, "token");
+                    *status = response.status;
+                } catch (const std::exception&) {
+                    // The connection was dropped without a response; status stays 0.
+                }
+            }
+            async_manager.close();
+            sync_manager.close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(async_status, 500U);
+    EXPECT_EQ(sync_status, 500U);
+    EXPECT_EQ(async_manager.session_count(), 0U);
+    EXPECT_EQ(sync_manager.session_count(), 0U);
+}
+
+TEST_F(SessionManagerTest, OnlyOneBearerValidatorMayBeInstalled) {
+    const unsigned short port = 19140;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_bearer_token_validator([](std::string_view) { return true; });
+    EXPECT_THROW(manager.set_async_bearer_token_validator(
+                     [](std::string) -> mcp::Task<bool> { co_return true; }),
+                 std::logic_error);
+    manager.close();
+}
+
+TEST_F(SessionManagerTest, RequestBodyLimitIsConfigurable) {
+    const unsigned short port = 19141;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_max_request_body_bytes(4096);
+    EXPECT_THROW(manager.set_max_request_body_bytes(0), std::invalid_argument);
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    unsigned int status = 0;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const std::string header =
+                "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                "Content-Length: 8192\r\n\r\n";
+
+            beast::tcp_stream stream(io_ctx_.get_executor());
+            asio::ip::tcp::resolver resolver(io_ctx_.get_executor());
+            auto endpoints =
+                co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
+            co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+            co_await asio::async_write(stream, asio::buffer(header), asio::use_awaitable);
+
+            beast::flat_buffer response_buffer;
+            http::response<http::string_body> response;
+            co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
+            status = response.result_int();
+
+            beast::error_code shutdown_error;
+            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
+        },
+        [&manager](const std::exception_ptr&) { manager.close(); });
+    io_ctx_.run();
+
+    // 8 KB clears the default but not the 4 KB cap installed above, so the cap is what answered.
+    EXPECT_EQ(status, 413);
+}
+
+// ===========================================================================
+// End to end: the SDK's own client completes discovery against the SDK's own server
+// ===========================================================================
+
+// The gap this API closes was that the SDK's client could not be driven by the SDK's server: the
+// challenge named no metadata location, so discovery had nothing to start from. This exercises the
+// whole path on real sockets — an unauthenticated request draws a 401, the challenge is parsed by
+// the SDK's own parser, the URL it names is fetched by the SDK's own discovery client, and the
+// document that comes back is the one the server was configured with. Nothing here is a string
+// comparison against a hand-written header.
+TEST_F(SessionManagerTest, SdkClientDiscoversAuthorizationFromTheSdkServersOwnChallenge) {
+    const unsigned short port = 19142;
+    const auto origin = "http://127.0.0.1:" + std::to_string(port);
+    const auto resource = origin + "/mcp";
+
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    manager.set_bearer_token_validator([](std::string_view token) { return token == "valid-token"; });
+
+    mcp::ProtectedResourceMetadataConfig metadata;
+    metadata.resource = resource;
+    metadata.authorization_servers = {"https://auth.example.com"};
+    metadata.scopes_supported = {"mcp:read"};
+    manager.set_protected_resource_metadata(metadata);
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse challenge_response;
+    std::optional<mcp::auth::ProtectedResourceMetadata> discovered;
+    std::string discovery_failure;
+    std::string advertised_metadata_url;
+
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            // 1. An unauthenticated request draws the challenge.
+            challenge_response =
+                co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp");
+
+            // 2. The SDK's own parser reads it, exactly as OAuthAuthorizationManager would.
+            const auto challenges =
+                mcp::auth::parse_www_authenticate(challenge_response.www_authenticate);
+            const auto bearer = mcp::auth::select_bearer_challenge(challenges);
+            if (bearer.has_value() && bearer->resource_metadata.has_value()) {
+                advertised_metadata_url = *bearer->resource_metadata;
+
+                // 3. The SDK's own discovery client fetches the URL the challenge named.
+                mcp::auth::MetadataFetchPolicy policy;
+                policy.allowed_origins.push_back(origin);
+                policy.allow_plain_http_loopback = true;
+
+                auto http_client =
+                    std::make_shared<mcp::auth::OAuthHttpClient>(co_await asio::this_coro::executor);
+                http_client->set_metadata_policy(policy);
+                http_client->set_host_resolver([](const std::string&, const std::string&) {
+                    return std::vector<std::string>{"127.0.0.1"};
+                });
+                mcp::auth::OAuthDiscoveryClient discovery(http_client);
+                try {
+                    discovered = co_await discovery.discover_protected_resource(
+                        resource, advertised_metadata_url);
+                } catch (const std::exception& error) {
+                    discovery_failure = error.what();
+                }
+            }
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(challenge_response.status, 401U);
+    EXPECT_EQ(advertised_metadata_url, origin + "/.well-known/oauth-protected-resource/mcp")
+        << "challenge was: " << challenge_response.www_authenticate;
+
+    ASSERT_TRUE(discovered.has_value()) << "discovery failed: " << discovery_failure;
+    EXPECT_EQ(discovered->resource, resource);
+    ASSERT_EQ(discovered->authorization_servers.size(), 1U);
+    EXPECT_EQ(discovered->authorization_servers.front(), "https://auth.example.com");
+    ASSERT_TRUE(discovered->scopes_supported.has_value());
+    EXPECT_EQ(discovered->scopes_supported->front(), "mcp:read");
 }
 
 // One refused HTTP request is that request's failure. After a request draws a 401, the client's

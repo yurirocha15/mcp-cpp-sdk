@@ -51,19 +51,19 @@ inline void to_json(nlohmann::json& json_obj, const ToolAnnotations& annotations
  * @param annotations The ToolAnnotations object to populate.
  */
 inline void from_json(const nlohmann::json& json_obj, ToolAnnotations& annotations) {
-    if (json_obj.contains("destructiveHint")) {
+    if (detail::has_json_value(json_obj, "destructiveHint")) {
         annotations.destructiveHint = json_obj.at("destructiveHint").get<bool>();
     }
-    if (json_obj.contains("idempotentHint")) {
+    if (detail::has_json_value(json_obj, "idempotentHint")) {
         annotations.idempotentHint = json_obj.at("idempotentHint").get<bool>();
     }
-    if (json_obj.contains("openWorldHint")) {
+    if (detail::has_json_value(json_obj, "openWorldHint")) {
         annotations.openWorldHint = json_obj.at("openWorldHint").get<bool>();
     }
-    if (json_obj.contains("readOnlyHint")) {
+    if (detail::has_json_value(json_obj, "readOnlyHint")) {
         annotations.readOnlyHint = json_obj.at("readOnlyHint").get<bool>();
     }
-    if (json_obj.contains("title")) {
+    if (detail::has_json_value(json_obj, "title")) {
         annotations.title = json_obj.at("title").get<std::string>();
     }
 }
@@ -132,25 +132,25 @@ inline void to_json(nlohmann::json& json_obj, const Tool& tool) {
 inline void from_json(const nlohmann::json& json_obj, Tool& tool) {
     json_obj.at("name").get_to(tool.name);
     json_obj.at("inputSchema").get_to(tool.inputSchema);
-    if (json_obj.contains("description")) {
+    if (detail::has_json_value(json_obj, "description")) {
         tool.description = json_obj.at("description").get<std::string>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         tool.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
-    if (json_obj.contains("annotations")) {
+    if (detail::has_json_value(json_obj, "annotations")) {
         tool.annotations = json_obj.at("annotations").get<ToolAnnotations>();
     }
-    if (json_obj.contains("outputSchema")) {
+    if (detail::has_json_value(json_obj, "outputSchema")) {
         tool.outputSchema = json_obj.at("outputSchema").get<nlohmann::json>();
     }
-    if (json_obj.contains("title")) {
+    if (detail::has_json_value(json_obj, "title")) {
         tool.title = json_obj.at("title").get<std::string>();
     }
-    if (json_obj.contains("icons")) {
+    if (detail::has_json_value(json_obj, "icons")) {
         tool.icons = json_obj.at("icons").get<std::vector<Icon>>();
     }
-    if (json_obj.contains("execution")) {
+    if (detail::has_json_value(json_obj, "execution")) {
         tool.execution = json_obj.at("execution").get<ToolExecution>();
     }
 }
@@ -178,7 +178,7 @@ inline void from_json(const nlohmann::json& json_obj, CallToolParams& params) {
     }
     params.arguments =
         json_obj.contains("arguments") ? json_obj.at("arguments") : nlohmann::json::object();
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         params.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
@@ -252,13 +252,13 @@ inline void to_json(nlohmann::json& json_obj, const CallToolResult& result) {
  */
 inline void from_json(const nlohmann::json& json_obj, CallToolResult& result) {
     json_obj.at("content").get_to(result.content);
-    if (json_obj.contains("isError")) {
+    if (detail::has_json_value(json_obj, "isError")) {
         result.isError = json_obj.at("isError").get<bool>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         result.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
-    if (json_obj.contains("structuredContent")) {
+    if (detail::has_json_value(json_obj, "structuredContent")) {
         result.structuredContent = json_obj.at("structuredContent").get<nlohmann::json>();
     }
 }
@@ -285,7 +285,7 @@ inline void to_json(nlohmann::json& j, const ListToolsRequestParams& p) {
     }
 }
 inline void from_json(const nlohmann::json& j, ListToolsRequestParams& p) {
-    if (j.contains("cursor")) {
+    if (detail::has_json_value(j, "cursor")) {
         p.cursor = j.at("cursor").get<std::string>();
     }
 }
@@ -329,7 +329,7 @@ inline void to_json(nlohmann::json& j, const ListToolsResult& r) {
 }
 inline void from_json(const nlohmann::json& j, ListToolsResult& r) {
     j.at("tools").get_to(r.tools);
-    if (j.contains("nextCursor")) {
+    if (detail::has_json_value(j, "nextCursor")) {
         r.nextCursor = j.at("nextCursor").get<std::string>();
     }
     if (j.contains("_meta")) {

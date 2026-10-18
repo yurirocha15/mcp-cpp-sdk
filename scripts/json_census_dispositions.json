@@ -1,0 +1,102 @@
+{
+    "_comment": [
+        "A disposition for every row the census flags. 'Flagged but unexamined' is",
+        "not a terminal state: scripts/json_census.py --check-dispositions fails if",
+        "any flagged row matches no rule here, so a new intolerant site cannot",
+        "arrive without someone deciding what it means.",
+        "",
+        "Rules are tried in order; the first match wins. Match keys are compared",
+        "against the row's fields, plus the derived 'defect_class'.",
+        "",
+        "Dispositions: 'fix' (a defect, routed to an owner), 'accept' (correct",
+        "behaviour, with the reason it is correct), 'record' (real but not worth",
+        "changing now, and known)."
+    ],
+    "rules": [
+        {
+            "match": {
+                "defect_class": "misroute",
+                "field_name": "error"
+            },
+            "disposition": "fix",
+            "reason":
+                "'error': null is not an error. A peer that serialises absent optionals as explicit null -- Go without omitempty, a dumped Python dataclass -- sends this as a matter of course, and a presence test routes the message to the error arm or rejects it outright. On a correlation path the request is then dropped silently and hangs to its timeout.",
+            "owner": "server/client envelope"
+        },
+        {
+            "match": {
+                "defect_class": "misroute",
+                "field_name": "id"
+            },
+            "disposition": "fix",
+            "reason":
+                "'id': null is what JSON-RPC prescribes when the id cannot be determined. Testing presence alone treats that as an id and correlates against a null.",
+            "owner": "server/client envelope"
+        },
+        {
+            "match": {
+                "defect_class": "null-fragile",
+                "fatality": "session"
+            },
+            "disposition": "fix",
+            "reason":
+                "A present-and-null optional throws on a path where the throw ends the session: the read loop leaves its for(;;) and no further message is read. This is the class that has now outrun prediction three times.",
+            "owner": "client and server dispatch"
+        },
+        {
+            "match": {
+                "defect_class": "null-fragile",
+                "fatality": "process"
+            },
+            "disposition": "fix",
+            "reason": "A present-and-null optional throws where nothing catches it.",
+            "owner": "client and server dispatch"
+        },
+        {
+            "match": {
+                "defect_class": "null-fragile"
+            },
+            "disposition": "fix",
+            "reason":
+                "A peer that serialises absent optionals as explicit null is careless, not hostile, and reaches every one of these. The throw is contained to one message here rather than the session, which makes it lower priority than the session-fatal rows -- not correct behaviour.",
+            "owner": "protocol serialiser"
+        },
+        {
+            "match": {
+                "defect_class": "required",
+                "site_kind": "macro_required"
+            },
+            "disposition": "accept",
+            "reason":
+                "NLOHMANN_DEFINE_TYPE reads every listed member with at(). Those members are non-optional in the struct, so a message missing one is malformed and rejecting it is the correct reading of the protocol.",
+            "owner": null
+        },
+        {
+            "match": {
+                "defect_class": "required"
+            },
+            "disposition": "accept",
+            "reason":
+                "The field is read with at() and is declared non-optional: it is required by the protocol, and a message without it is malformed. Rejecting it is correct, provided the throw is contained -- which the fatality column records separately.",
+            "owner": null
+        },
+        {
+            "match": {
+                "defect_class": "untyped"
+            },
+            "disposition": "accept",
+            "reason":
+                "A value of the wrong JSON type is malformed under any reading of the protocol. Throwing is correct; only the blast radius is in question, and the fatality column carries that.",
+            "owner": null
+        },
+        {
+            "match": {
+                "oversized": "unbounded"
+            },
+            "disposition": "record",
+            "reason":
+                "No deserialisation site bounds a value's size. A ceiling belongs at the transport, where the message is read, rather than at each of several hundred field accesses -- bounding here would be both incomplete and in the wrong place. Recorded so the absence is deliberate and visible.",
+            "owner": null
+        }
+    ]
+}

@@ -160,7 +160,8 @@ jobs:
         python3 scripts/check_release_workflow.py
         PYTHONPATH=scripts python3 -m unittest -v \
           scripts.test_release_dispatch_contract \
-          scripts.test_release_workflow_policy
+          scripts.test_release_workflow_policy \
+          scripts.test_check_json_matrix
 
     - name: Validate release artifacts and package templates
       run: |

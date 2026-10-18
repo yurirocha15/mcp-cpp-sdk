@@ -24,7 +24,7 @@ inline void to_json(nlohmann::json& json_obj, const PaginatedRequestParams& para
 }
 
 inline void from_json(const nlohmann::json& json_obj, PaginatedRequestParams& params) {
-    if (json_obj.contains("cursor")) {
+    if (detail::has_json_value(json_obj, "cursor")) {
         params.cursor = json_obj.at("cursor").get<std::string>();
     }
     if (json_obj.contains("_meta")) {
@@ -106,7 +106,7 @@ inline void to_json(nlohmann::json& json_obj, const CompleteContext& context) {
  * @param context The CompleteContext object to populate.
  */
 inline void from_json(const nlohmann::json& json_obj, CompleteContext& context) {
-    if (json_obj.contains("arguments")) {
+    if (detail::has_json_value(json_obj, "arguments")) {
         context.arguments = json_obj.at("arguments").get<std::map<std::string, std::string>>();
     }
 }
@@ -187,10 +187,10 @@ inline void to_json(nlohmann::json& json_obj, const CompletionResultDetails& det
  */
 inline void from_json(const nlohmann::json& json_obj, CompletionResultDetails& details) {
     json_obj.at("values").get_to(details.values);
-    if (json_obj.contains("total")) {
+    if (detail::has_json_value(json_obj, "total")) {
         details.total = json_obj.at("total").get<int64_t>();
     }
-    if (json_obj.contains("hasMore")) {
+    if (detail::has_json_value(json_obj, "hasMore")) {
         details.hasMore = json_obj.at("hasMore").get<bool>();
     }
 }
