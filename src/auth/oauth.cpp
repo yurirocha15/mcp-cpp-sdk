@@ -1597,7 +1597,6 @@ struct OAuthAuthorizationManager::Impl {
             std::lock_guard lock(owner.state_mutex);
             owner.last_request = operation->request;
             owner.last_identity = operation->identity;
-            owner.token_config = operation->token_config;
         }
 
         operation->response = co_await owner.callback(operation->request);
@@ -1611,6 +1610,10 @@ struct OAuthAuthorizationManager::Impl {
             operation->token_config, *operation->response.code, operation->request.code_verifier);
         {
             std::lock_guard lock(owner.state_mutex);
+            // Recorded only now that this server issued a token. Until then the stored refresh token
+            // still belongs to the server before it, and a refresh must keep going there: a step-up
+            // that fails at consent or at the exchange must not point it at the new server.
+            owner.token_config = operation->token_config;
             // What the server actually granted, falling back to what was asked for when the token
             // response stays silent (RFC 6749 §5.1 makes `scope` optional in that case).
             owner.granted_scope =

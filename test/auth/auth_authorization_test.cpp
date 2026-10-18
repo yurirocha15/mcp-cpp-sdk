@@ -1664,6 +1664,111 @@ TEST(AuthScopeStepUpTest, StopsAfterThreeAuthorizationChallengesForOneRequest) {
     EXPECT_EQ(requested_scopes.size(), 3U);
 }
 
+// A step-up whose challenge names a different authorization server, and which that server's user
+// refuses, leaves the grant with the server that issued it: the next refresh sends the stored
+// refresh token to that server, not to the one that refused.
+TEST(AuthScopeStepUpTest, AFailedStepUpToAnotherServerKeepsRefreshingWithTheFirst) {
+    asio::io_context io_ctx;
+    LoopbackServer server_a(io_ctx);
+    LoopbackServer server_b(io_ctx);
+    const auto base_a = server_a.base_url();
+    const auto base_b = server_b.base_url();
+
+    server_a.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base_a + "/mcp"}, {"authorization_servers", json::array({base_a})}});
+        }
+        if (target == "/prm-step-up") {
+            return json_response(
+                {{"resource", base_a + "/mcp"}, {"authorization_servers", json::array({base_b})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base_a, true));
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    server_b.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base_b, true));
+        }
+        if (target == "/token") {
+            return json_response(
+                {{"access_token", "b-access-token"}, {"token_type", "Bearer"}, {"expires_in", 3600}});
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server_a.serve(8), asio::detached);
+    asio::co_spawn(io_ctx, server_b.serve(8), asio::detached);
+
+    ManagerFixture fixture;
+    fixture.config.server_url = base_a + "/mcp";
+    fixture.config.client_id = "test-client";
+    fixture.config.redirect_uri = "http://127.0.0.1:9999/callback";
+    fixture.config.policy = loopback_policy(server_a.origin());
+    fixture.config.policy.allowed_origins.push_back(server_b.origin());
+
+    int consents = 0;
+    auto callback = [&consents](const mcp::auth::AuthorizationRequest& request)
+        -> mcp::Task<mcp::auth::AuthorizationResponse> {
+        ++consents;
+        mcp::auth::AuthorizationResponse response;
+        response.state = request.state;
+        response.iss = request.issuer;
+        if (consents == 1) {
+            response.code = "test-authorization-code";
+        } else {
+            response.error = "access_denied";
+        }
+        co_return response;
+    };
+
+    bool authorized = false;
+    bool step_up_failed = false;
+    bool refreshed = false;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
+                                                         fixture.config, callback);
+            const std::string challenge = R"(Bearer resource_metadata=")" + base_a + R"(/prm")";
+            authorized = co_await manager.try_handle_challenge(challenge);
+            const std::string step_up = R"(Bearer error="insufficient_scope", scope="more", )"
+                                        R"(resource_metadata=")" +
+                                        base_a + R"(/prm-step-up")";
+            try {
+                (void)co_await manager.try_handle_challenge(step_up);
+            } catch (const std::exception&) {
+                step_up_failed = true;
+            }
+            refreshed = co_await manager.try_refresh_token();
+            server_a.close();
+            server_b.close();
+        },
+        asio::detached);
+
+    io_ctx.run();
+
+    ASSERT_TRUE(authorized);
+    ASSERT_TRUE(step_up_failed);
+    EXPECT_TRUE(refreshed);
+    for (const auto& body : server_b.bodies()) {
+        EXPECT_EQ(body.find("granted-refresh-token"), std::string::npos) << body;
+    }
+    std::size_t refreshes_at_a = 0;
+    for (const auto& body : server_a.bodies()) {
+        if (body.find("grant_type=refresh_token") != std::string::npos) {
+            ++refreshes_at_a;
+        }
+    }
+    EXPECT_EQ(refreshes_at_a, 1U);
+}
+
 TEST(AuthScopeStepUpTest, CoalescesConcurrentChallengesIntoASingleAuthorizationFlow) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
