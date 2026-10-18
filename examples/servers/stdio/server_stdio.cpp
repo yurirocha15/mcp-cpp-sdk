@@ -144,6 +144,39 @@ int main() {
 
         server.add_resource_template(user_template);
 
+        // docs-begin: untyped-prompt
+        // Prompt: greet (untyped JSON handler)
+        Prompt greet_prompt;
+        greet_prompt.name = "greet";
+        greet_prompt.description = "Greet someone by name";
+
+        PromptArgument who_arg;
+        who_arg.name = "who";
+        who_arg.description = "Name of the person to greet";
+        who_arg.required = true;
+
+        greet_prompt.arguments = std::vector<PromptArgument>{std::move(who_arg)};
+
+        server.add_prompt<nlohmann::json, nlohmann::json>(
+            greet_prompt, [](const nlohmann::json& params) -> nlohmann::json {
+                // params is the whole GetPromptRequestParams, not just the arguments:
+                // {"name":"greet","arguments":{"who":"world"}}
+                const auto arguments = params.value("arguments", nlohmann::json::object());
+                const auto who = arguments.value("who", std::string{"world"});
+
+                PromptMessage msg;
+                msg.role = Role::eUser;
+                TextContent text_content;
+                text_content.text = "Say hello to " + who + ".";
+                msg.content = std::move(text_content);
+
+                GetPromptResult result;
+                result.description = "Greeting prompt";
+                result.messages.push_back(std::move(msg));
+                return result;
+            });
+        // docs-end: untyped-prompt
+
         // Prompt: code_review (parameterized)
         Prompt review_prompt;
         review_prompt.name = "code_review";

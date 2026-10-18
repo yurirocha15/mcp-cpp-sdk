@@ -14,18 +14,32 @@ specific arguments to get a list of messages to include in the conversation.
 Registering a Basic Prompt
 --------------------------
 
-A basic prompt can be registered using the `add_prompt` method. The simplest
-overload takes a name, description, and a set of arguments (as JSON schema)
-along with a synchronous handler. This method is ideal for simple use cases
-where you don't need full type safety for the handler parameters or result.
+Prompts are registered with `add_prompt`, which is a template over the handler's
+input and output types: ``add_prompt<In, Out>(prompt, handler)``. Passing
+`nlohmann::json` for both is the untyped route, and suits simple cases where you
+don't need full type safety for the handler parameters or result.
 
 .. literalinclude:: ../../examples/servers/stdio/server_stdio.cpp
    :language: cpp
-   :lines: 125-132
+   :start-after: docs-begin: untyped-prompt
+   :end-before: docs-end: untyped-prompt
    :dedent: 8
 
-The handler receives a `nlohmann::json` object containing the arguments and
-returns a `nlohmann::json` object representing the `GetPromptResult`.
+.. warning::
+
+   A prompt handler receives the **entire** ``GetPromptRequestParams``, not just
+   the arguments. For a ``prompts/get`` request naming ``greet`` with argument
+   ``who``, the handler is passed ``{"name": "greet", "arguments": {"who":
+   "world"}}``, so the argument is read as
+   ``params.value("arguments", json::object()).value("who", ...)``. Reading
+   ``params.value("who", ...)`` directly compiles, raises no error, and silently
+   yields the default value.
+
+   This differs from tool handlers, which receive the tool arguments already
+   unwrapped. A prompt carries a name its handler may need, so the whole
+   parameter object is passed through.
+
+The handler returns a `nlohmann::json` object representing the `GetPromptResult`.
 
 Parameterized Prompts and Arguments
 -----------------------------------

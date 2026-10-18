@@ -284,7 +284,8 @@ TEST_F(ServerCoreTest, NotificationsAreSilentlyIgnored) {
 }
 
 TEST_F(ServerCoreTest, ContextLogInfoSendsNotification) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     nlohmann::json notification;
     raw_transport->set_on_write(
@@ -311,7 +312,8 @@ TEST_F(ServerCoreTest, ContextLogInfoSendsNotification) {
 }
 
 TEST_F(ServerCoreTest, ContextLogInfoMultipleMessages) {
-    auto* raw_transport = new ScriptedTransport(io_ctx_.get_executor());
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
 
     std::vector<nlohmann::json> notifications;
     raw_transport->set_on_write([&notifications](std::string_view msg) {
