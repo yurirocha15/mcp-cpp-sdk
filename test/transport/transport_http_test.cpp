@@ -2353,7 +2353,8 @@ mcp::Task<ChallengeProbeResult> probe(const asio::any_io_executor& executor, uns
                                       http::verb method, const std::string& target,
                                       const std::string& body = {},
                                       const std::string& bearer_token = {},
-                                      const std::string& origin = {}) {
+                                      const std::string& origin = {},
+                                      const std::string& protocol_version = {}) {
     beast::tcp_stream stream(executor);
     asio::ip::tcp::resolver resolver(executor);
     auto endpoints =
@@ -2368,6 +2369,9 @@ mcp::Task<ChallengeProbeResult> probe(const asio::any_io_executor& executor, uns
     }
     if (!origin.empty()) {
         request.set(http::field::origin, origin);
+    }
+    if (!protocol_version.empty()) {
+        request.set("MCP-Protocol-Version", protocol_version);
     }
     request.body() = body;
     request.prepare_payload();
@@ -2472,6 +2476,35 @@ TEST_F(HttpTransportTest, UnauthenticatedPostIsRefusedBeforeItsBodyIsParsed) {
 
     EXPECT_EQ(denied.status, 401);
     EXPECT_EQ(denied.www_authenticate, "Bearer");
+}
+
+TEST_F(HttpTransportTest, InvalidTokenIsRefusedBeforeTheProtocolVersionOnEveryMethod) {
+    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    const auto port = server->port();
+    asio::co_spawn(io_ctx_, server->listen(), asio::detached);
+
+    ChallengeProbeResult post;
+    ChallengeProbeResult get;
+    ChallengeProbeResult del;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            post = co_await probe(executor, port, http::verb::post, "/mcp",
+                                  std::string(g_notification_body), "bad", {}, "1999-01-01");
+            get = co_await probe(executor, port, http::verb::get, "/mcp", {}, "bad", {}, "1999-01-01");
+            del = co_await probe(executor, port, http::verb::delete_, "/mcp", {}, "bad", {},
+                                 "1999-01-01");
+            server->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    for (const auto* result : {&post, &get, &del}) {
+        EXPECT_EQ(result->status, 401);
+        EXPECT_EQ(result->www_authenticate, "Bearer");
+    }
 }
 
 TEST_F(HttpTransportTest, ConfiguredChallengeIsSentOnUnauthorized) {

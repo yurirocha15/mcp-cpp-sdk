@@ -668,10 +668,6 @@ struct HttpServerTransport::Impl {
     }
 
     Task<StringResponse> handle_delete(const StringRequest& request) {
-        const nlohmann::json request_json = {"method", "delete"};
-        if (auto error = check_protocol_version(request, request_json)) {
-            co_return std::move(*error);
-        }
         if (auto error = check_origin(request)) {
             co_return std::move(*error);
         }
@@ -682,6 +678,10 @@ struct HttpServerTransport::Impl {
             if (auto error = co_await check_authorization_async(request)) {
                 co_return std::move(*error);
             }
+        }
+        const nlohmann::json request_json = {"method", "delete"};
+        if (auto error = check_protocol_version(request, request_json)) {
+            co_return std::move(*error);
         }
 
         const auto session_check = co_await validate_delete_session(request);
@@ -695,10 +695,6 @@ struct HttpServerTransport::Impl {
     }
 
     Task<StringResponse> handle_get(const StringRequest& request) {
-        const nlohmann::json request_json = {"method", "get"};
-        if (auto error = check_protocol_version(request, request_json)) {
-            co_return std::move(*error);
-        }
         if (auto error = check_origin(request)) {
             co_return std::move(*error);
         }
@@ -709,6 +705,10 @@ struct HttpServerTransport::Impl {
             if (auto error = co_await check_authorization_async(request)) {
                 co_return std::move(*error);
             }
+        }
+        const nlohmann::json request_json = {"method", "get"};
+        if (auto error = check_protocol_version(request, request_json)) {
+            co_return std::move(*error);
         }
 
         if (!session_id.has_value()) {
