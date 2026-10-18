@@ -119,10 +119,11 @@ not demonstrate the HTTP ``Authorization: Bearer`` boundary described above.
 The example exercises discovery, PKCE, code exchange, legacy token injection,
 and one refresh without exposing secret values.
 
-The official client conformance baseline records the OAuth scenarios that are
-not yet implemented. In particular, the SDK does not currently orchestrate all
-protected-resource metadata variants, CIMD/pre-registration, scope escalation,
-or token-endpoint authentication modes as a complete end-user flow.
+The client passes every OAuth scenario of the official conformance suite: the
+protected-resource metadata variants, CIMD and pre-registration, scope
+selection and step-up, and the ``basic``, ``post`` and ``none``
+token-endpoint authentication scenarios. ``conformance/expected-failures.yml``
+lists the scenarios the SDK does not pass yet.
 
 Cross-references
 ----------------
