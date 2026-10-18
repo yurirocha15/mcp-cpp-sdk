@@ -65,6 +65,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `HttpServerTransport` (not a transport that wraps one), a session the client
   ended with `DELETE` is over, and the next client must send `initialize` to
   start a new one.
+- `HttpServerTransport` and `StreamableHttpSessionManager` answer a request
+  whose id is neither a string nor an integer with `400` and a `-32600`
+  error response.
 - Tool results are always sent as a `CallToolResult`. A value returned by a
   JSON tool handler, or by a typed handler whose result type is not
   `CallToolResult`, is sent unchanged only when it is an object made of

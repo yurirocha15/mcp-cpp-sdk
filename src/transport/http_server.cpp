@@ -396,6 +396,18 @@ struct HttpServerTransport::Impl {
             enqueue_incoming_message(request.body());
             co_return make_empty_json_response(request, http::status::accepted);
         }
+        // The Server answers a request whose id is neither a string nor an integer with a null id,
+        // since it has none it may echo, so that answer could never be matched to this request.
+        if (!request_json.at("id").is_string() && !request_json.at("id").is_number_integer()) {
+            co_return make_json_response(
+                request, http::status::bad_request,
+                nlohmann::json{{"jsonrpc", "2.0"},
+                               {"id", nullptr},
+                               {"error",
+                                {{"code", g_INVALID_REQUEST},
+                                 {"message", "JSON-RPC request id must be a string or an integer"}}}}
+                    .dump());
+        }
 
         const auto request_id_key = request_json.at("id").dump();
         const auto timer_signal = co_await register_pending_request(request_id_key);

@@ -643,6 +643,15 @@ struct StreamableHttpSessionManager::Impl {
                                                      stateless_server);
         }
 
+        // The Server answers a request whose id is neither a string nor an integer with a null id,
+        // since it has none it may echo, so that answer could never be matched to this request.
+        if (request_json.contains("id") && request_json.contains("method") &&
+            !request_json.at("id").is_string() && !request_json.at("id").is_number_integer()) {
+            co_return detail_session_mgr::make_jsonrpc_error_response(
+                request, http::status::bad_request, g_INVALID_REQUEST,
+                "JSON-RPC request id must be a string or an integer");
+        }
+
         auto session_var = resolve_session_for_post(request, request_json, conn_strand);
         if (std::holds_alternative<StringResponse>(session_var)) {
             co_return std::get<StringResponse>(session_var);

@@ -1452,3 +1452,41 @@ TEST_F(SessionManagerTest, RefusedRepeatInitializeKeepsTheNegotiatedProtocolVers
         << "body: " << repeat_response.body;
     EXPECT_EQ(list_response.status, 200) << "body: " << list_response.body;
 }
+
+// The Server answers a request whose id is neither a string nor an integer with -32600 and a null
+// id, since it has no usable id to echo. The HTTP request that carried it must still be answered.
+TEST_F(SessionManagerTest, RequestWithAnUnusableIdIsAnswered) {
+    const unsigned short port = 19883;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    bool timed_out = false;
+    asio::steady_timer watchdog(io_ctx_.get_executor(), std::chrono::seconds(5));
+    watchdog.async_wait([&](const boost::system::error_code& error) {
+        if (!error) {
+            timed_out = true;
+            manager.close();
+        }
+    });
+
+    RawResponse response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            auto init = co_await do_initialize(io_ctx_.get_executor(), port);
+            (void)co_await send_initialized(io_ctx_.get_executor(), port, init.session_id);
+            response =
+                co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                     R"({"jsonrpc":"2.0","method":"ping","id":1.5})", init.session_id);
+            watchdog.cancel();
+            manager.close();
+        },
+        [](const std::exception_ptr&) {});
+
+    io_ctx_.run();
+
+    ASSERT_FALSE(timed_out) << "the request was never answered";
+    EXPECT_EQ(response.status, 400);
+    EXPECT_NE(response.body.find("-32600"), std::string::npos) << "body: " << response.body;
+}

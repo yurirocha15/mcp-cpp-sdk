@@ -1,3 +1,4 @@
+#include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
 #include "mcp/transport/http_server.hpp"
@@ -9,6 +10,8 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/address.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -19,8 +22,10 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -1121,4 +1126,131 @@ TEST_F(HttpTransportTest, ServerAcceptsANewSessionAfterTheClientDeletesTheOldOne
     EXPECT_NE(second.session_id, first.session_id);
     ASSERT_EQ(listed.status, 200U) << listed.body;
     EXPECT_TRUE(nlohmann::json::parse(listed.body).contains("result")) << listed.body;
+}
+
+namespace {
+
+struct SessionReply {
+    unsigned status{0};
+    std::string session_id;
+    std::string body;
+};
+
+/// One request on its own connection, as a client of an HttpServerTransport session would send it.
+mcp::Task<SessionReply> session_send(const asio::any_io_executor& executor, const std::string& port,
+                                     http::verb verb, std::string body, const std::string& session_id,
+                                     const std::string& last_event_id = {}) {
+    beast::tcp_stream stream(executor);
+    auto resolver = asio::ip::tcp::resolver(executor);
+    auto endpoints = co_await resolver.async_resolve("127.0.0.1", port, asio::use_awaitable);
+    co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+
+    http::request<http::string_body> request{verb, "/mcp", 11};
+    request.set(http::field::host, "127.0.0.1");
+    request.set(http::field::content_type, "application/json");
+    request.set(http::field::accept, "application/json, text/event-stream");
+    if (!session_id.empty()) {
+        request.set("MCP-Session-Id", session_id);
+    }
+    if (!last_event_id.empty()) {
+        request.set("Last-Event-ID", last_event_id);
+    }
+    request.body() = std::move(body);
+    request.prepare_payload();
+    co_await http::async_write(stream, request, asio::use_awaitable);
+
+    beast::flat_buffer buffer;
+    http::response<http::string_body> response;
+    co_await http::async_read(stream, buffer, response, asio::use_awaitable);
+    beast::error_code ignored;
+    stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+    co_return SessionReply{response.result_int(), std::string(response["MCP-Session-Id"]),
+                           std::move(response.body())};
+}
+
+std::string session_initialize_body() {
+    const nlohmann::json initialize = {
+        {"jsonrpc", "2.0"},
+        {"id", 1},
+        {"method", "initialize"},
+        {"params",
+         {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+          {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
+          {"capabilities", nlohmann::json::object()}}}};
+    return initialize.dump();
+}
+
+constexpr std::string_view g_session_initialized =
+    R"({"jsonrpc":"2.0","method":"notifications/initialized"})";
+
+/// The id of the first SSE event in `body`, or an empty string when it has none.
+std::string first_event_id(const std::string& body) {
+    const auto start = body.find("id: ");
+    if (start == std::string::npos) {
+        return {};
+    }
+    const auto end = body.find('\n', start);
+    return body.substr(start + 4, end - start - 4);
+}
+
+/// Opens an HttpServerTransport on an ephemeral port and runs `server` on it.
+std::shared_ptr<mcp::HttpServerTransport> run_on_http_transport(asio::io_context& io_ctx,
+                                                                mcp::Server& server) {
+    auto transport = std::make_shared<mcp::HttpServerTransport>(io_ctx.get_executor(), "127.0.0.1", 0);
+    asio::co_spawn(io_ctx, transport->listen(), asio::detached);
+    asio::co_spawn(
+        io_ctx,
+        [&server, &io_ctx, transport]() -> mcp::Task<void> {
+            co_await server.run(transport, io_ctx.get_executor());
+        },
+        asio::detached);
+    return transport;
+}
+
+}  // namespace
+
+// The Server answers a request whose id is neither a string nor an integer with -32600 and a null
+// id. The HTTP request that carried it must still be answered.
+TEST_F(HttpTransportTest, RequestWithAnUnusableIdIsAnswered) {
+    mcp::Server server(mcp::Implementation{"test-server", "1.0"}, mcp::ServerCapabilities{});
+    auto transport = run_on_http_transport(io_ctx_, server);
+    transport->set_json_only(true);
+    const auto port = std::to_string(transport->port());
+
+    bool timed_out = false;
+    asio::steady_timer watchdog(io_ctx_.get_executor(), std::chrono::seconds(5));
+    watchdog.async_wait([&](const boost::system::error_code& error) {
+        if (!error) {
+            timed_out = true;
+            transport->close();
+        }
+    });
+
+    std::vector<SessionReply> replies;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            auto first =
+                co_await session_send(executor, port, http::verb::post, session_initialize_body(), "");
+            (void)co_await session_send(executor, port, http::verb::post,
+                                        std::string(g_session_initialized), first.session_id);
+            for (const std::string id : {"1.5", "true", "{}", "null"}) {
+                replies.push_back(co_await session_send(
+                    executor, port, http::verb::post,
+                    R"({"jsonrpc":"2.0","method":"ping","id":)" + id + "}", first.session_id));
+            }
+            watchdog.cancel();
+            transport->close();
+        },
+        [](const std::exception_ptr&) {});
+
+    io_ctx_.run();
+
+    ASSERT_FALSE(timed_out) << "a request was never answered";
+    ASSERT_EQ(replies.size(), 4U);
+    for (const auto& reply : replies) {
+        EXPECT_EQ(reply.status, 400U) << reply.body;
+        EXPECT_NE(reply.body.find("-32600"), std::string::npos) << reply.body;
+    }
 }
