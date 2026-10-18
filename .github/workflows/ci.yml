@@ -265,18 +265,11 @@ jobs:
     - name: Validate release artifacts and package templates
       run: |
         python3 -m unittest discover -s test/release -p 'test_*.py' -v
-        python3 -m unittest discover -s bootstrap/tests -p 'test_*.py' -v
-
-    - name: Validate isolated publisher repositories
-      run: |
-        (cd bootstrap/conan-release-control && python3 -m unittest -v)
-        (cd bootstrap/homebrew-tap && python3 -m unittest -v)
-        (cd bootstrap/chocolatey-publisher && python3 -m unittest -v)
 
     - name: Compile release Python without executing it
       run: >-
         python3 -m compileall -q
-        release scripts test/release bootstrap
+        release scripts test/release
 
   benchmark-tooling:
     name: Benchmark tooling tests

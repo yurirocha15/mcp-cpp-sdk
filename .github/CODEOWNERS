@@ -3,7 +3,6 @@
 /.github/actionlint.yaml @yurirocha15
 /release/ @yurirocha15
 /packaging/ @yurirocha15
-/bootstrap/ @yurirocha15
 /scripts/check_release_workflow.py @yurirocha15
 /scripts/release_dispatch_contract.py @yurirocha15
 /keys/ @yurirocha15
