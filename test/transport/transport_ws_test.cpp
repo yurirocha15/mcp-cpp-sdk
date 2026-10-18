@@ -15,8 +15,12 @@
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
+#include <boost/beast/core/tcp_stream.hpp>
+#include <boost/beast/http/field.hpp>
+#include <boost/beast/websocket/stream.hpp>
 #include <chrono>
 #include <exception>
+#include <functional>
 #include <future>
 #include <memory>
 #include <optional>
@@ -619,4 +623,110 @@ TEST_F(WebSocketTransportTest, CanceledQueuedWriteDoesNotBlockSubsequentWrites) 
     EXPECT_NO_THROW(client.get());
     EXPECT_NO_THROW(server.get());
     EXPECT_TRUE(canceled_write_failed);
+}
+
+namespace {
+
+struct OriginHandshakeResult {
+    bool handshake_accepted{false};
+    std::optional<std::string> server_received;
+};
+
+/// Opens a WebSocket to a fresh WebSocketServerTransport, sending `origin` with the upgrade when it
+/// is set, and reports whether the handshake succeeded and what the server read.
+OriginHandshakeResult handshake_with_origin(
+    const std::optional<std::string>& origin,
+    const std::function<void(mcp::WebSocketServerTransport&)>& configure,
+    const std::function<void(mcp::WebSocketServerTransport&)>& after_first_read = {}) {
+    asio::io_context io_ctx;
+    tcp::acceptor acceptor(io_ctx, tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0));
+    const auto port = acceptor.local_endpoint().port();
+
+    OriginHandshakeResult result;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+            mcp::WebSocketServerTransport transport(std::move(socket));
+            configure(transport);
+            result.server_received = co_await transport.read_message();
+            if (after_first_read) {
+                after_first_read(transport);
+            }
+            transport.close();
+        },
+        [](const std::exception_ptr&) {});
+
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            boost::beast::websocket::stream<boost::beast::tcp_stream> ws(io_ctx);
+            co_await ws.next_layer().async_connect(
+                tcp::endpoint(asio::ip::make_address("127.0.0.1"), port), asio::use_awaitable);
+            ws.set_option(boost::beast::websocket::stream_base::decorator(
+                [origin](boost::beast::websocket::request_type& request) {
+                    if (origin) {
+                        request.set(boost::beast::http::field::origin, *origin);
+                    }
+                }));
+            co_await ws.async_handshake("127.0.0.1:" + std::to_string(port), "/", asio::use_awaitable);
+            result.handshake_accepted = true;
+            const std::string message = R"({"jsonrpc":"2.0","id":1,"method":"tools/list"})";
+            co_await ws.async_write(asio::buffer(message), asio::use_awaitable);
+        },
+        [](const std::exception_ptr&) {});
+
+    io_ctx.run_for(5s);
+    return result;
+}
+
+}  // namespace
+
+// A browser lets any web page open a WebSocket to a local port and sends the page's Origin with the
+// upgrade; WebSockets are not covered by CORS. Like the HTTP transports, the WebSocket server
+// refuses an upgrade whose Origin it has not been told to allow.
+TEST(WebSocketOriginTest, AnUpgradeFromAnOriginNotAllowedIsRefused) {
+    const auto result =
+        handshake_with_origin("https://elsewhere.example", [](mcp::WebSocketServerTransport&) {});
+    EXPECT_FALSE(result.handshake_accepted);
+    EXPECT_FALSE(result.server_received.has_value()) << *result.server_received;
+}
+
+TEST(WebSocketOriginTest, AnUpgradeFromAnAllowedOriginIsAccepted) {
+    const auto result =
+        handshake_with_origin("https://trusted.example", [](mcp::WebSocketServerTransport& server) {
+            server.set_allowed_origins({"https://trusted.example"});
+        });
+    EXPECT_TRUE(result.handshake_accepted);
+    EXPECT_TRUE(result.server_received.has_value());
+}
+
+TEST(WebSocketOriginTest, AllowingEveryOriginAcceptsAnyOrigin) {
+    const auto result = handshake_with_origin(
+        "https://elsewhere.example",
+        [](mcp::WebSocketServerTransport& server) { server.set_allow_all_origins(true); });
+    EXPECT_TRUE(result.handshake_accepted);
+    EXPECT_TRUE(result.server_received.has_value());
+}
+
+// A non-browser client sends no Origin and is not affected by the allowlist.
+TEST(WebSocketOriginTest, AnUpgradeWithoutAnOriginIsAccepted) {
+    const auto result = handshake_with_origin(std::nullopt, [](mcp::WebSocketServerTransport&) {});
+    EXPECT_TRUE(result.handshake_accepted);
+    EXPECT_TRUE(result.server_received.has_value());
+}
+
+TEST(WebSocketOriginTest, OriginsCannotChangeOnceTheHandshakeHasStarted) {
+    std::optional<std::string> refusal;
+    const auto result = handshake_with_origin(
+        std::nullopt, [](mcp::WebSocketServerTransport&) {},
+        [&refusal](mcp::WebSocketServerTransport& server) {
+            try {
+                server.set_allowed_origins({"https://late.example"});
+            } catch (const std::logic_error& error) {
+                refusal = error.what();
+            }
+        });
+    ASSERT_TRUE(result.server_received.has_value());
+    EXPECT_TRUE(refusal.has_value());
 }

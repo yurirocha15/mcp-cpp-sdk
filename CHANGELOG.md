@@ -25,6 +25,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `OAuthClientTransportOptions` and an `OAuthClientTransport` constructor
   that takes it, bounding how many requests, and how many bytes of them, are
   kept for a replay after a token refresh, and for how long.
+- `WebSocketServerTransport::set_allowed_origins()` and
+  `set_allow_all_origins()`.
 - `Context` takes a `MessageSender`, so handlers can write to the peer through
   the session's serialized writer. `MemoryTransport` is exported from the
   shared library and is no longer copyable.
@@ -58,6 +60,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   Requests without an `Origin` header are unaffected. `Server::run_http()`
   uses these defaults; to accept browser clients, configure an
   `HttpServerTransport` and pass it to `Server::run()`.
+- `WebSocketServerTransport` answers `403` to an upgrade request that carries
+  an `Origin` header unless that origin was added with `set_allowed_origins()`
+  or `set_allow_all_origins(true)` was called. Upgrades without an `Origin`
+  header are unaffected. Previously every upgrade was accepted.
 - A server session enforces the initialization sequence: until
   `notifications/initialized` arrives, every request other than `initialize`
   and `ping` is answered with `g_INVALID_REQUEST`, and a second `initialize`

@@ -9,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace mcp {
 
@@ -51,6 +52,27 @@ class MCP_API WebSocketServerTransport final : public ITransport {
      * @param message The message to send.
      */
     Task<void> write_message(std::string_view message) override;
+
+    /**
+     * @brief Replace the allowlist used for upgrade requests carrying an Origin header.
+     *
+     * An upgrade without an Origin header remains valid for non-browser MCP clients. One carrying
+     * an Origin header is refused with 403 by default until its exact value appears in this
+     * allowlist, as HttpServerTransport refuses such a request. Configure the allowlist before the
+     * first read_message() or write_message(), which perform the handshake.
+     *
+     * @throws std::logic_error If the handshake has started or the transport is closed.
+     */
+    void set_allowed_origins(std::vector<std::string> origins);
+
+    /**
+     * @brief Explicitly opt into accepting every Origin header value.
+     *
+     * Configure this before the first read_message() or write_message().
+     *
+     * @throws std::logic_error If the handshake has started or the transport is closed.
+     */
+    void set_allow_all_origins(bool allow_all);
 
     /**
      * @brief Close the WebSocket connection. Safe to call multiple times.

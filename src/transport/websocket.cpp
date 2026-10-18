@@ -12,15 +12,21 @@
 #include <boost/beast/core/buffers_to_string.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
+#include <boost/beast/http/read.hpp>
+#include <boost/beast/http/string_body.hpp>
+#include <boost/beast/http/write.hpp>
 #include <boost/beast/websocket/stream.hpp>
 #include <boost/system/system_error.hpp>
 #include <chrono>
 #include <deque>
 #include <exception>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -175,6 +181,12 @@ struct WebSocketServerTransport::Impl {
     SerializedWriteGate write_gate;
     bool read_active{false};
 
+    mutable std::mutex configuration_mutex;
+    std::unordered_set<std::string> allowed_origins;
+    bool allow_all_origins{false};
+    /// Set once the handshake starts; the Origin policy is fixed from then on.
+    bool configuration_locked{false};
+
     explicit Impl(asio::ip::tcp::socket socket)
         : ws(std::move(socket)),
           strand(asio::make_strand(ws.get_executor())),
@@ -184,6 +196,45 @@ struct WebSocketServerTransport::Impl {
 
     static void throw_if_closed(const std::shared_ptr<Impl>& state) {
         require_open(state->closed, "WebSocketServerTransport");
+    }
+
+    void ensure_configurable() const {
+        if (configuration_locked || closed.load(std::memory_order_acquire)) {
+            throw std::logic_error(
+                "WebSocketServerTransport origins must be set before the first read or write");
+        }
+    }
+
+    /// Fix the Origin policy for the handshake and report whether an upgrade carrying `origin`,
+    /// or none when it is empty, may open the connection.
+    bool lock_configuration_and_allow(const std::optional<std::string>& origin) {
+        std::lock_guard lock(configuration_mutex);
+        configuration_locked = true;
+        return !origin || allow_all_origins || allowed_origins.contains(*origin);
+    }
+
+    /// Accept the WebSocket upgrade, refusing one whose Origin is not allowed. A browser sends the
+    /// page's Origin with the upgrade and applies no cross-origin check to WebSockets itself, so
+    /// without this any web page could open a connection to a local server.
+    static Task<void> accept_upgrade(std::shared_ptr<Impl> state) {
+        beast::flat_buffer buffer;
+        beast::http::request<beast::http::string_body> upgrade;
+        co_await beast::http::async_read(state->ws.next_layer(), buffer, upgrade, asio::use_awaitable);
+        const auto origin_it = upgrade.find(beast::http::field::origin);
+        const auto origin =
+            origin_it == upgrade.end() ? std::nullopt : std::optional<std::string>(origin_it->value());
+        if (!state->lock_configuration_and_allow(origin)) {
+            beast::http::response<beast::http::string_body> refusal{beast::http::status::forbidden,
+                                                                    upgrade.version()};
+            refusal.set(beast::http::field::content_type, "text/plain");
+            refusal.body() = "Origin not allowed";
+            refusal.keep_alive(false);
+            refusal.prepare_payload();
+            co_await beast::http::async_write(state->ws.next_layer(), refusal, asio::use_awaitable);
+            throw std::runtime_error("WebSocketServerTransport refused an upgrade from Origin " +
+                                     *origin);
+        }
+        co_await state->ws.async_accept(upgrade, asio::use_awaitable);
     }
 
     static void notify_handshake_waiters(const std::shared_ptr<Impl>& state) {
@@ -226,7 +277,7 @@ struct WebSocketServerTransport::Impl {
 
         state->handshake_state = HandshakeState::Accepting;
         try {
-            co_await state->ws.async_accept(asio::use_awaitable);
+            co_await accept_upgrade(state);
             throw_if_closed(state);
             state->handshake_state = HandshakeState::Open;
         } catch (...) {
@@ -296,6 +347,23 @@ Task<void> WebSocketServerTransport::write_message(std::string_view message) {
     auto owned_message = std::string(message);
     return asio::co_spawn(state->strand, Impl::write(state, std::move(owned_message)),
                           asio::use_awaitable);
+}
+
+void WebSocketServerTransport::set_allowed_origins(std::vector<std::string> origins) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->allowed_origins.clear();
+    impl_->allowed_origins.reserve(origins.size());
+    for (auto& origin : origins) {
+        impl_->allowed_origins.insert(std::move(origin));
+    }
+    impl_->allow_all_origins = false;
+}
+
+void WebSocketServerTransport::set_allow_all_origins(bool allow_all) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->allow_all_origins = allow_all;
 }
 
 void WebSocketServerTransport::close() {
