@@ -1,0 +1,80 @@
+name: Release provider preflight
+
+on:
+  workflow_call:
+    inputs:
+      provider:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      anchor_existed:
+        required: true
+        type: string
+    outputs:
+      control_sha:
+        value: ${{ jobs.preflight.outputs.control_sha }}
+      repository_id:
+        value: ${{ jobs.preflight.outputs.repository_id }}
+      repository:
+        value: ${{ jobs.preflight.outputs.repository }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+    outputs:
+      control_sha: ${{ steps.control.outputs.control_sha }}
+      repository_id: ${{ steps.control.outputs.repository_id }}
+      repository: ${{ steps.control.outputs.repository }}
+    env:
+      APP_OWNER: ${{ inputs.provider == 'homebrew' && vars.HOMEBREW_APP_OWNER || inputs.provider == 'chocolatey' && vars.CHOCOLATEY_APP_OWNER || vars.CONAN_BROKER_APP_OWNER }}
+      APP_REPOSITORY: ${{ inputs.provider == 'homebrew' && vars.HOMEBREW_APP_REPOSITORY || inputs.provider == 'chocolatey' && vars.CHOCOLATEY_APP_REPOSITORY || vars.CONAN_BROKER_APP_REPOSITORY }}
+      EXPECTED_REPOSITORY_ID: ${{ inputs.provider == 'homebrew' && vars.HOMEBREW_APP_REPOSITORY_ID || inputs.provider == 'chocolatey' && vars.CHOCOLATEY_APP_REPOSITORY_ID || vars.CONAN_BROKER_APP_REPOSITORY_ID }}
+      WORKFLOW: ${{ inputs.provider == 'homebrew' && vars.HOMEBREW_APP_WORKFLOW || inputs.provider == 'chocolatey' && vars.CHOCOLATEY_APP_WORKFLOW || vars.CONAN_BROKER_APP_WORKFLOW }}
+    steps:
+      - name: Validate fixed provider environment
+        env:
+          PROVIDER: ${{ inputs.provider }}
+          PROVIDER_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          case "${PROVIDER}:${PROVIDER_ENVIRONMENT}" in
+            homebrew:release-homebrew|chocolatey:release-chocolatey|conan:release-control-dispatch) ;;
+            *) exit 2 ;;
+          esac
+      - name: Checkout protected current provider policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download historical signed publication policy
+        if: ${{ inputs.anchor_existed == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: existing-anchor
+      - name: Verify exact repository, workflow, and immutable control
+        id: control
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVIDER: ${{ inputs.provider }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.provider_preflight workflow
+          --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
+          --expected-repository-id "${EXPECTED_REPOSITORY_ID}" --workflow "${WORKFLOW}"
+          --controls packaging/provider-controls.json --provider "${PROVIDER}"
+          --policy-source "${{ inputs.anchor_existed == 'true' && 'embedded' || 'current' }}"
+          --signed-contract existing-anchor/release-publication-contract.json
+          --github-output "${GITHUB_OUTPUT}"

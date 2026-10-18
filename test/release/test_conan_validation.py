@@ -9,6 +9,7 @@ import unittest
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
+from release.artifacts import load_conan_requirements
 from release.conan_validation import (
     LOCKED_REQUIREMENTS,
     _validate_lockfile,
@@ -142,13 +143,15 @@ class ConanCandidateTests(unittest.TestCase):
 
 
     def test_locked_requirements_match_both_recipes(self) -> None:
-        for recipe in ("conanfile.py", "packaging/conan-center/all/conanfile.py.in"):
-            text = (ROOT / recipe).read_text(encoding="utf-8")
-            with self.subTest(recipe=recipe):
-                self.assertEqual(
-                    tuple(sorted(re.findall(r'self\.requires\(\s*"([^"]+)"', text))),
-                    LOCKED_REQUIREMENTS,
-                )
+        text = (ROOT / "conanfile.py").read_text(encoding="utf-8")
+        self.assertEqual(
+            tuple(sorted(re.findall(r'self\.requires\(\s*"([^"]+)"', text))),
+            LOCKED_REQUIREMENTS,
+        )
+        self.assertEqual(
+            load_conan_requirements(ROOT / "packaging/conan-center/requirements.json"),
+            LOCKED_REQUIREMENTS,
+        )
 
 
 class ConanCandidatePowerShellTests(unittest.TestCase):

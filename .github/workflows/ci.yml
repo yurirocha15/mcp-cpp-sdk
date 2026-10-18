@@ -281,6 +281,9 @@ jobs:
         python3 -m compileall -q
         release scripts test/release
 
+    - name: Lint all GitHub Actions workflows
+      run: scripts/release/lint_workflows.sh
+
   benchmark-tooling:
     name: Benchmark tooling tests
     runs-on: ubuntu-24.04

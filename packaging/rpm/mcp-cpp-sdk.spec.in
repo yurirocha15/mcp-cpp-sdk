@@ -12,10 +12,10 @@ BuildRequires:  gcc-c++ >= 11
 BuildRequires:  ninja-build
 BuildRequires:  boost-devel >= 1.74
 BuildRequires:  gtest-devel
+# Enterprise Linux 9/10 builders enable CRB + EPEL before resolving json-devel.
 BuildRequires:  json-devel >= 3.10.5
 BuildRequires:  openssl-devel >= 3.0
 BuildRequires:  pkgconfig
-BuildRequires:  zlib-devel
 
 %description
 A C++20 implementation of the Model Context Protocol for clients and servers.
@@ -39,7 +39,6 @@ Headers, shared-library link metadata, CMake configuration, and pkg-config data.
 %package static
 Summary: Static library for mcp-cpp-sdk
 Requires: %{name}-devel%{?_isa} = %{version}-%{release}
-Requires: zlib-devel
 
 %description static
 Static library and private dependency metadata for explicit static consumers.

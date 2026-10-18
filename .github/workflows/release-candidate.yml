@@ -1,0 +1,630 @@
+name: Release candidate construction and validation
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      release_kind:
+        required: true
+        type: string
+      anchor_exists:
+        required: true
+        type: string
+      commit:
+        required: true
+        type: string
+      source_date_epoch:
+        required: true
+        type: string
+      native_matrix:
+        required: true
+        type: string
+      aur_builder:
+        required: true
+        type: string
+      conan_builder:
+        required: true
+        type: string
+      homebrew_control_sha:
+        required: true
+        type: string
+      homebrew_repository_id:
+        required: true
+        type: string
+      homebrew_repository:
+        required: true
+        type: string
+      chocolatey_control_sha:
+        required: true
+        type: string
+      chocolatey_repository_id:
+        required: true
+        type: string
+      chocolatey_repository:
+        required: true
+        type: string
+      conan_control_sha:
+        required: true
+        type: string
+      conan_repository_id:
+        required: true
+        type: string
+      conan_repository:
+        required: true
+        type: string
+      cloudsmith_namespace:
+        required: true
+        type: string
+      cloudsmith_repository:
+        required: true
+        type: string
+      cloudsmith_repository_gpg_fingerprint:
+        required: true
+        type: string
+    secrets:
+      RELEASE_GPG_PRIVATE_KEY_B64:
+        required: false
+      RELEASE_GPG_PASSPHRASE:
+        required: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+env:
+  RELEASE_ARTIFACT_RETENTION_DAYS: "30"
+
+jobs:
+  construct-core:
+    name: Construct deterministic source and recipe artifacts
+    if: ${{ inputs.anchor_exists == 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the exact tagged commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Build deterministic archives, SBOMs, and publisher recipes
+        env:
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ inputs.commit }}
+          SOURCE_DATE_EPOCH: ${{ inputs.source_date_epoch }}
+          RELEASE_KIND: ${{ inputs.release_kind }}
+          PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
+          ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
+          HOMEBREW_CONTROL_SHA: ${{ inputs.homebrew_control_sha }}
+          CHOCOLATEY_CONTROL_SHA: ${{ inputs.chocolatey_control_sha }}
+          CONAN_CONTROL_SHA: ${{ inputs.conan_control_sha }}
+          CLOUDSMITH_NAMESPACE: ${{ inputs.cloudsmith_namespace }}
+          CLOUDSMITH_REPOSITORY: ${{ inputs.cloudsmith_repository }}
+          CLOUDSMITH_REPOSITORY_GPG_FINGERPRINT: ${{ inputs.cloudsmith_repository_gpg_fingerprint }}
+          HOMEBREW_REPOSITORY_ID: ${{ inputs.homebrew_repository_id }}
+          HOMEBREW_REPOSITORY: ${{ inputs.homebrew_repository }}
+          CHOCOLATEY_REPOSITORY_ID: ${{ inputs.chocolatey_repository_id }}
+          CHOCOLATEY_REPOSITORY: ${{ inputs.chocolatey_repository }}
+          CONAN_CONTROL_REPOSITORY_ID: ${{ inputs.conan_repository_id }}
+          CONAN_CONTROL_REPOSITORY: ${{ inputs.conan_repository }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.construct_core
+          --root . --output out --version "${VERSION}" --tag "${TAG}"
+          --commit "${COMMIT}" --source-date-epoch "${SOURCE_DATE_EPOCH}"
+          --release-kind "${RELEASE_KIND}" --repository "${GITHUB_REPOSITORY}"
+          --primary-fingerprint "${PRIMARY_FINGERPRINT}"
+          --artifact-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}"
+          --homebrew-control-commit "${HOMEBREW_CONTROL_SHA}"
+          --chocolatey-control-commit "${CHOCOLATEY_CONTROL_SHA}"
+          --conan-control-commit "${CONAN_CONTROL_SHA}"
+          --cloudsmith-namespace "${CLOUDSMITH_NAMESPACE}"
+          --cloudsmith-repository "${CLOUDSMITH_REPOSITORY}"
+          --cloudsmith-repository-gpg-fingerprint "${CLOUDSMITH_REPOSITORY_GPG_FINGERPRINT}"
+          --homebrew-repository "${HOMEBREW_REPOSITORY}"
+          --homebrew-repository-id "${HOMEBREW_REPOSITORY_ID}"
+          --chocolatey-repository "${CHOCOLATEY_REPOSITORY}"
+          --chocolatey-repository-id "${CHOCOLATEY_REPOSITORY_ID}"
+          --conan-control-repository "${CONAN_CONTROL_REPOSITORY}"
+          --conan-control-repository-id "${CONAN_CONTROL_REPOSITORY_ID}"
+      - name: Upload core artifact part
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-core-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
+
+  build-native:
+    name: Build ${{ matrix.format }} ${{ matrix.id }}
+    if: ${{ inputs.release_kind == 'stable' && inputs.anchor_exists == 'false' }}
+    needs:
+      - construct-core
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.native_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact tagged commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download canonical source archive for RPM construction
+        if: ${{ matrix.format == 'rpm' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-core-${{ github.run_id }}-${{ github.run_attempt }}
+          path: core
+      - name: Build native package
+        env:
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+          FORMAT: ${{ matrix.format }}
+          ROUTE_ID: ${{ matrix.id }}
+          DISTRIBUTION: ${{ matrix.distribution }}
+          RELEASE: ${{ matrix.release }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+          SOURCE_DATE_EPOCH: ${{ inputs.source_date_epoch }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.native_builder run
+          --lock release/native-builders/lock.json --image "${{ matrix.builder_image }}"
+          --kind "${FORMAT}" --version "${VERSION}" --tag "${TAG}"
+          --repository "${GITHUB_REPOSITORY}" --target-id "${ROUTE_ID}"
+          --distribution "${DISTRIBUTION}"
+          --release "${RELEASE}" --architecture "${ARCHITECTURE}"
+          --source-date-epoch "${SOURCE_DATE_EPOCH}" --core core --output out
+      - name: Upload native package artifact part
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.format }}-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
+
+  build-windows:
+    name: Build signed-anchor Windows payload input
+    if: ${{ inputs.release_kind == 'stable' && inputs.anchor_exists == 'false' }}
+    needs:
+      - construct-core
+    runs-on: windows-2022
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout exact tagged commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up the reviewed Python runtime
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: ${{ vars.WINDOWS_RELEASE_PYTHON_VERSION }}
+          check-latest: false
+      - name: Enter the installed x64 Visual Studio developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+      - name: Install the exact hash-locked Conan 2 client
+        env:
+          WINDOWS_RELEASE_CONAN_VERSION: ${{ vars.WINDOWS_RELEASE_CONAN_VERSION }}
+        run: >-
+          & ./scripts/release/install_windows_conan.ps1
+          -PythonPath (Get-Command python.exe -CommandType Application).Source
+          -ExpectedVersion $env:WINDOWS_RELEASE_CONAN_VERSION
+          -Requirements release/windows/conan-requirements.txt
+          -GitHubPath $env:GITHUB_PATH
+      - name: Build and package the MSVC 2022 SDK
+        env:
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+          WINDOWS_RELEASE_CMAKE_VERSION: ${{ vars.WINDOWS_RELEASE_CMAKE_VERSION }}
+          WINDOWS_RELEASE_CONAN_VERSION: ${{ vars.WINDOWS_RELEASE_CONAN_VERSION }}
+          WINDOWS_RELEASE_CHOCO_VERSION: ${{ vars.WINDOWS_RELEASE_CHOCO_VERSION }}
+          WINDOWS_RELEASE_PYTHON_VERSION: ${{ vars.WINDOWS_RELEASE_PYTHON_VERSION }}
+          WINDOWS_RELEASE_VCTOOLS_VERSION: ${{ vars.WINDOWS_RELEASE_VCTOOLS_VERSION }}
+          WINDOWS_RELEASE_MSC_VER: ${{ vars.WINDOWS_RELEASE_MSC_VER }}
+        run: >-
+          & ./scripts/release/build_windows.ps1
+          -Version $env:VERSION -Tag $env:TAG -Repository $env:GITHUB_REPOSITORY
+          -ExpectedCMakeVersion $env:WINDOWS_RELEASE_CMAKE_VERSION
+          -ExpectedConanVersion $env:WINDOWS_RELEASE_CONAN_VERSION
+          -ExpectedChocolateyVersion $env:WINDOWS_RELEASE_CHOCO_VERSION
+          -ExpectedPythonVersion $env:WINDOWS_RELEASE_PYTHON_VERSION
+          -ExpectedVCToolsVersion $env:WINDOWS_RELEASE_VCTOOLS_VERSION
+          -ExpectedMscVer ([int]$env:WINDOWS_RELEASE_MSC_VER)
+      - name: Upload Windows artifact part
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
+
+  assemble-unsigned:
+    name: Assemble and bind unsigned release payloads
+    if: >-
+      ${{ always() && needs.construct-core.result == 'success' &&
+          (needs.build-native.result == 'success' || needs.build-native.result == 'skipped') &&
+          (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') }}
+    needs:
+      - construct-core
+      - build-native
+      - build-windows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected current release construction code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download core artifact part
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-core-${{ github.run_id }}-${{ github.run_attempt }}
+          path: parts
+      - name: Download APT artifact parts
+        if: ${{ inputs.release_kind == 'stable' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-apt-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: parts
+          merge-multiple: true
+      - name: Download RPM artifact parts
+        if: ${{ inputs.release_kind == 'stable' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-rpm-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: parts
+          merge-multiple: true
+      - name: Download Windows artifact part
+        if: ${{ inputs.release_kind == 'stable' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: parts
+      - name: Construct release manifest and unsigned checksum boundary
+        env:
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ inputs.commit }}
+          PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
+          TAG_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_TAG_SUBKEY_FINGERPRINT }}
+          ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.assemble_unsigned
+          --parts parts --output unsigned --version "${VERSION}" --tag "${TAG}"
+          --commit "${COMMIT}" --primary-fingerprint "${PRIMARY_FINGERPRINT}"
+          --tag-subkey-fingerprint "${TAG_SUBKEY_FINGERPRINT}"
+          --artifact-subkey-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}"
+      - name: Upload unsigned release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+          path: unsigned/
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
+
+  signing:
+    name: Sign the assembled release payloads
+    if: ${{ inputs.anchor_exists == 'false' }}
+    needs:
+      - assemble-unsigned
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release-signing
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected current signing tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download unsigned release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-unsigned-${{ github.run_id }}-${{ github.run_attempt }}
+          path: signed
+      - name: Verify unsigned boundary and create detached signatures
+        env:
+          RELEASE_GPG_PRIVATE_KEY_B64: ${{ secrets.RELEASE_GPG_PRIVATE_KEY_B64 }}
+          RELEASE_GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
+          ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
+        run: bash scripts/release/sign_release.sh signed
+      - name: Upload signed release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-signed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: signed/
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
+  candidate-gate:
+    name: Verify the complete signed candidate before publication
+    if: ${{ inputs.anchor_exists == 'false' }}
+    needs:
+      - signing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected current verification policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download the signed candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-signed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate
+      - name: Verify exact identity, inventory, checksums, and signatures
+        env:
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ inputs.commit }}
+          PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
+          TAG_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_TAG_SUBKEY_FINGERPRINT }}
+          ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
+        run: |
+          python3 -I -S scripts/run_release_tool.py release.verify_candidate \
+            --directory candidate --tag "${TAG}" --commit "${COMMIT}" \
+            --primary-fingerprint "${PRIMARY_FINGERPRINT}" \
+            --tag-fingerprint "${TAG_SUBKEY_FINGERPRINT}" \
+            --artifact-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}" \
+            --public-key keys/release-signing-key.asc --targets packaging/targets.json \
+            --native-builder-lock release/native-builders/lock.json \
+            --conan-requirements packaging/conan-center/requirements.json \
+            --release-notes included
+      - name: Upload the verified candidate handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate/
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
+
+  validate-homebrew-package:
+    name: Validate Homebrew package (${{ matrix.bottle_tag }})
+    if: ${{ inputs.release_kind == 'stable' && inputs.anchor_exists == 'false' }}
+    needs:
+      - candidate-gate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            bottle_tag: sequoia
+          - runner: macos-15
+            bottle_tag: arm64_sequoia
+          - runner: ubuntu-24.04
+            bottle_tag: x86_64_linux
+          - runner: ubuntu-24.04-arm
+            bottle_tag: arm64_linux
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Configure Linuxbrew command path
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x /home/linuxbrew/.linuxbrew/bin/brew
+          echo /home/linuxbrew/.linuxbrew/bin >>"${GITHUB_PATH}"
+      - name: Checkout protected current package validation policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download signed immutable-release candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets
+      - name: Audit, install, test, and consume the exact formula
+        env:
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: >-
+          scripts/release/validate_homebrew_candidate.sh
+          "${VERSION}" release-assets
+          "${RUNNER_TEMP}/mcp-cpp-sdk-homebrew-validation"
+
+  validate-conan-linux:
+    name: Validate ConanCenter recipe (Linux shared and static)
+    if: ${{ inputs.release_kind == 'stable' && inputs.anchor_exists == 'false' }}
+    needs:
+      - candidate-gate
+    runs-on: ${{ fromJSON(inputs.conan_builder).runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected current Conan validation policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download signed immutable-release candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets
+      - name: Create and consume the exact recipe with both linkages
+        env:
+          VERSION: ${{ inputs.version }}
+          BUILDER_IMAGE: ${{ fromJSON(inputs.conan_builder).builder_image }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.native_builder run
+          --lock release/native-builders/lock.json --image "${BUILDER_IMAGE}"
+          --kind conan --target-id conan-linux-x86_64 --architecture x86_64
+          --version "${VERSION}" --assets release-assets --output conan-validation
+      - name: Upload exact Linux Conan validation evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: conan-validation-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: conan-validation/
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
+
+  validate-conan-windows:
+    name: Validate ConanCenter recipe (Windows shared and static)
+    if: ${{ inputs.release_kind == 'stable' && inputs.anchor_exists == 'false' }}
+    needs:
+      - candidate-gate
+    runs-on: windows-2022
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout protected current Conan validation policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up the reviewed Python runtime
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: ${{ vars.WINDOWS_RELEASE_PYTHON_VERSION }}
+          check-latest: false
+      - name: Enter the installed x64 Visual Studio developer environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+      - name: Install the exact hash-locked Conan 2 client
+        env:
+          WINDOWS_RELEASE_CONAN_VERSION: ${{ vars.WINDOWS_RELEASE_CONAN_VERSION }}
+        run: >-
+          & ./scripts/release/install_windows_conan.ps1
+          -PythonPath (Get-Command python.exe -CommandType Application).Source
+          -ExpectedVersion $env:WINDOWS_RELEASE_CONAN_VERSION
+          -Requirements release/windows/conan-requirements.txt
+          -GitHubPath $env:GITHUB_PATH
+      - name: Download signed immutable-release candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets
+      - name: Create and consume the exact recipe with both linkages
+        env:
+          VERSION: ${{ inputs.version }}
+          WINDOWS_RELEASE_CONAN_VERSION: ${{ vars.WINDOWS_RELEASE_CONAN_VERSION }}
+          WINDOWS_RELEASE_VCTOOLS_VERSION: ${{ vars.WINDOWS_RELEASE_VCTOOLS_VERSION }}
+          WINDOWS_RELEASE_MSC_VER: ${{ vars.WINDOWS_RELEASE_MSC_VER }}
+        run: |
+          New-Item -ItemType Directory -Path conan-validation | Out-Null
+          & ./scripts/release/validate_conan_candidate.ps1 `
+            -Version $env:VERSION `
+            -CandidateDirectory release-assets `
+            -WorkDirectory "$env:RUNNER_TEMP/mcp-cpp-sdk-conan-candidate" `
+            -Evidence conan-validation/conan-validation-windows.json `
+            -ExpectedConanVersion $env:WINDOWS_RELEASE_CONAN_VERSION `
+            -ExpectedVCToolsVersion $env:WINDOWS_RELEASE_VCTOOLS_VERSION `
+            -ExpectedMscVer ([int]$env:WINDOWS_RELEASE_MSC_VER)
+      - name: Upload exact Windows Conan validation evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: conan-validation-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: conan-validation/
+          if-no-files-found: error
+          retention-days: ${{ env.RELEASE_ARTIFACT_RETENTION_DAYS }}
+
+  package-validation-gate:
+    name: Require package-manager validation before a stable anchor
+    if: ${{ always() }}
+    needs:
+      - validate-homebrew-package
+      - validate-conan-linux
+      - validate-conan-windows
+      - validate-aur-packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected current package-result policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Enforce every required package-manager result
+        env:
+          RELEASE_KIND: ${{ inputs.release_kind }}
+          ANCHOR_EXISTS: ${{ inputs.anchor_exists }}
+          HOMEBREW_RESULT: ${{ needs.validate-homebrew-package.result }}
+          CONAN_LINUX_RESULT: ${{ needs.validate-conan-linux.result }}
+          CONAN_WINDOWS_RESULT: ${{ needs.validate-conan-windows.result }}
+          AUR_RESULT: ${{ needs.validate-aur-packages.result }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.workflow_gate packages
+          --release-kind "${RELEASE_KIND}" --anchor-exists "${ANCHOR_EXISTS}"
+          --homebrew-result "${HOMEBREW_RESULT}"
+          --conan-linux-result "${CONAN_LINUX_RESULT}"
+          --conan-windows-result "${CONAN_WINDOWS_RESULT}"
+          --aur-result "${AUR_RESULT}"
+
+  validate-aur-packages:
+    name: Validate AUR package (x86_64)
+    if: ${{ inputs.release_kind == 'stable' && inputs.anchor_exists == 'false' }}
+    needs:
+      - candidate-gate
+    runs-on: ${{ fromJSON(inputs.aur_builder).runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected current validation policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download signed immutable-release candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets
+      - name: Build, install, and consume both AUR split packages
+        env:
+          VERSION: ${{ inputs.version }}
+          BUILDER_IMAGE: ${{ fromJSON(inputs.aur_builder).builder_image }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.native_builder run
+          --lock release/native-builders/lock.json --image "${BUILDER_IMAGE}"
+          --kind aur --target-id aur-x86_64 --architecture x86_64
+          --version "${VERSION}" --assets release-assets --output aur-validation
