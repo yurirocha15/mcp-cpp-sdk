@@ -205,8 +205,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `send_request()` throws when called before `connect()`.
 - The client rejects an incoming message whose `jsonrpc` member is missing or
   not `"2.0"` (`ClientOptions::strict_protocol_validation`, on by default):
-  the read loop stops, pending requests fail with `g_CONNECTION_CLOSED`, and
-  the transport is closed.
+  the message is dropped and reported through `ClientOptions::on_protocol_error`.
 - `HttpServerTransport` and `StreamableHttpSessionManager` answer `403` to a
   request that carries an `Origin` header unless that origin was added with
   `set_allowed_origins()` or `set_allow_all_origins(true)` was called.
