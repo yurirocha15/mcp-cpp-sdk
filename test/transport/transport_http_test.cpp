@@ -1254,3 +1254,84 @@ TEST_F(HttpTransportTest, RequestWithAnUnusableIdIsAnswered) {
         EXPECT_NE(reply.body.find("-32600"), std::string::npos) << reply.body;
     }
 }
+
+// The Server numbers its own requests to the client "1", "2", ..., which the client's requests may
+// also use. Only a response completes a pending POST; a request from the Server that carries the
+// same id must not be handed to the client as the answer to its own.
+TEST_F(HttpTransportTest, ServerRequestWithAPendingIdIsNotTakenForTheResponse) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    mcp::Server server(mcp::Implementation{"test-server", "1.0"}, std::move(caps));
+    asio::steady_timer gate(io_ctx_.get_executor());
+    gate.expires_at(std::chrono::steady_clock::time_point::max());
+    bool tool_started = false;
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "block", "Answers once the test opens the gate", nlohmann::json{{"type", "object"}},
+        [&](nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+            tool_started = true;
+            boost::system::error_code ignored;
+            co_await gate.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+            co_return mcp::make_tool_text_result("done");
+        });
+    auto transport = run_on_http_transport(io_ctx_, server);
+    transport->set_json_only(true);
+    const auto port = std::to_string(transport->port());
+
+    bool timed_out = false;
+    asio::steady_timer watchdog(io_ctx_.get_executor(), std::chrono::seconds(5));
+    watchdog.async_wait([&](const boost::system::error_code& error) {
+        if (!error) {
+            timed_out = true;
+            gate.cancel();
+            transport->close();
+        }
+    });
+
+    SessionReply call;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            auto first =
+                co_await session_send(executor, port, http::verb::post, session_initialize_body(), "");
+            (void)co_await session_send(executor, port, http::verb::post,
+                                        std::string(g_session_initialized), first.session_id);
+
+            bool answered = false;
+            asio::co_spawn(
+                executor,
+                [&, session_id = first.session_id]() -> mcp::Task<void> {
+                    call = co_await session_send(
+                        executor, port, http::verb::post,
+                        R"({"jsonrpc":"2.0","id":"1","method":"tools/call","params":{"name":"block","arguments":{}}})",
+                        session_id);
+                    answered = true;
+                },
+                [](const std::exception_ptr&) {});
+
+            asio::steady_timer poll(executor);
+            while (!tool_started && !timed_out) {
+                poll.expires_after(std::chrono::milliseconds(5));
+                co_await poll.async_wait(asio::use_awaitable);
+            }
+            // The client never answers this; the request ends when the transport closes.
+            asio::co_spawn(executor, server.send_request("ping", std::nullopt),
+                           [](const std::exception_ptr&, const nlohmann::json&) {});
+            poll.expires_after(std::chrono::milliseconds(100));
+            co_await poll.async_wait(asio::use_awaitable);
+            gate.cancel();
+            while (!answered && !timed_out) {
+                poll.expires_after(std::chrono::milliseconds(5));
+                co_await poll.async_wait(asio::use_awaitable);
+            }
+            watchdog.cancel();
+            transport->close();
+        },
+        [](const std::exception_ptr&) {});
+
+    io_ctx_.run();
+
+    ASSERT_FALSE(timed_out);
+    EXPECT_EQ(call.body.find("\"method\""), std::string::npos) << call.body;
+    EXPECT_NE(call.body.find("done"), std::string::npos) << call.body;
+}

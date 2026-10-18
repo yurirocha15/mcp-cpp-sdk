@@ -634,7 +634,9 @@ struct HttpServerTransport::Impl {
             event_id = impl->event_store.append(message);
         }
 
-        if (!response_json.contains("id")) {
+        // A request the Server sends to the client also carries an id, and it may equal the id of
+        // a client request still waiting here; only a response answers that request.
+        if (!response_json.contains("id") || response_json.contains("method")) {
             co_return;
         }
 

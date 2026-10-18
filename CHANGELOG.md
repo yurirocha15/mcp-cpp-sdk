@@ -116,6 +116,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `HttpClientTransport::session_id()` and `last_event_id()` return
   `std::string` by value.
 
+### Fixed
+
+- `HttpServerTransport` no longer takes a request the server sends to the
+  client for the response to a client request that has the same id.
+
 ### Security
 
 - HTTP session ids for `HttpServerTransport` and
