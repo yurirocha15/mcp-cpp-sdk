@@ -660,7 +660,10 @@ struct StreamableHttpSessionManager::Impl {
                 co_return detail_session_mgr::make_error_response(
                     request, http::status::bad_request, "Invalid MCP-Protocol-Version header");
             }
-        } else {
+        } else if (request.find("Mcp-Session-Id") == request.end()) {
+            // Only the initialize that creates a session negotiates its version. The Server refuses
+            // an initialize on a session that already has one, and that refusal must not change
+            // the version the client and the session agreed on.
             const auto requested_protocol_version =
                 detail_session_mgr::initialize_protocol_version(request_json)
                     .value_or(std::string(g_LATEST_PROTOCOL_VERSION));

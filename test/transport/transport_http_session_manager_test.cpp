@@ -1411,3 +1411,44 @@ TEST_F(SessionManagerTest, ClientRequestAfterARefusedOneIsStillSent) {
     EXPECT_EQ(follow_up_error, "");
     EXPECT_NE(follow_up_text.find("served"), std::string::npos) << follow_up_text;
 }
+
+// The Server refuses a second initialize on a live session, and that refusal must leave the
+// session on the protocol version it negotiated: the client's next request, carrying that version,
+// is still served.
+TEST_F(SessionManagerTest, RefusedRepeatInitializeKeepsTheNegotiatedProtocolVersion) {
+    const unsigned short port = 19882;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse repeat_response;
+    RawResponse list_response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            auto init = co_await do_initialize(io_ctx_.get_executor(), port);
+            (void)co_await send_initialized(io_ctx_.get_executor(), port, init.session_id);
+
+            const json repeat = {{"jsonrpc", "2.0"},
+                                 {"method", "initialize"},
+                                 {"params",
+                                  {{"protocolVersion", "2024-11-05"},
+                                   {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
+                                   {"capabilities", json::object()}}},
+                                 {"id", 2}};
+            repeat_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                   "/mcp", repeat.dump(), init.session_id);
+
+            const json list = {{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 3}};
+            list_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                                 list.dump(), init.session_id);
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_NE(repeat_response.body.find("already been initialized"), std::string::npos)
+        << "body: " << repeat_response.body;
+    EXPECT_EQ(list_response.status, 200) << "body: " << list_response.body;
+}
