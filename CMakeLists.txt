@@ -90,6 +90,7 @@ set(MCP_CPP_SDK_SOURCES
     src/core/regex.cpp
     src/core/secure_random.cpp
     src/core/serialized_transport_writer.cpp
+    src/protocol/schema.cpp
     src/protocol/tools.cpp
     src/auth/challenge.cpp
     src/auth/client_identity.cpp
@@ -121,6 +122,12 @@ function(mcp_cpp_sdk_configure_library target)
   target_link_libraries(
     ${target} PUBLIC Boost::headers nlohmann_json::nlohmann_json
                      OpenSSL::Crypto)
+  # Vendored jsoncons, used only by src/protocol/schema.cpp. PRIVATE keeps it
+  # out of the installed and exported interface; SYSTEM keeps its warnings out
+  # of the SDK's own.
+  target_include_directories(
+    ${target} SYSTEM
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/jsoncons/include")
   if(WIN32)
     target_compile_definitions(${target} PUBLIC _WIN32_WINNT=0x0A00)
   endif()
@@ -263,6 +270,26 @@ if(BUILD_TESTING)
       ${CMAKE_COMMAND} "${MCP_CPP_SDK_CONFIG_VERSION_TEMPLATE_ARGUMENT}"
       "${MCP_CPP_SDK_CONFIG_VERSION_STABLE_OUTPUT_ARGUMENT}" -P
       "${MCP_CPP_SDK_CONFIG_VERSION_STABLE_TEST}")
+  if(CMAKE_NM
+     AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux"
+     AND NOT CMAKE_CROSSCOMPILING)
+    set(MCP_CPP_SDK_VENDORED_SYMBOLS_ARGUMENTS
+        "-DMCP_CPP_SDK_NM=${CMAKE_NM}"
+        "-DMCP_CPP_SDK_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}")
+    if(MCP_CPP_SDK_BUILD_STATIC)
+      list(APPEND MCP_CPP_SDK_VENDORED_SYMBOLS_ARGUMENTS
+           "-DMCP_CPP_SDK_STATIC_LIBRARY=$<TARGET_FILE:mcp-cpp-sdk-static>")
+    endif()
+    if(MCP_CPP_SDK_BUILD_SHARED)
+      list(APPEND MCP_CPP_SDK_VENDORED_SYMBOLS_ARGUMENTS
+           "-DMCP_CPP_SDK_SHARED_LIBRARY=$<TARGET_FILE:mcp-cpp-sdk-shared>")
+    endif()
+    add_test(
+      NAME packaging-vendored-jsoncons-private
+      COMMAND
+        ${CMAKE_COMMAND} ${MCP_CPP_SDK_VENDORED_SYMBOLS_ARGUMENTS} -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/verify-vendored-symbols.cmake")
+  endif()
   find_program(MCP_CPP_SDK_PKG_CONFIG_EXECUTABLE pkg-config)
   if(MCP_CPP_SDK_BUILD_STATIC
      AND MCP_CPP_SDK_PKG_CONFIG_EXECUTABLE
@@ -309,6 +336,7 @@ if(BUILD_TESTING)
       test/core/concepts_test.cpp
       test/core/core_test.cpp
       test/core/jsonrpc_envelope_test.cpp
+      test/core/json_schema_test.cpp
       test/core/protocol_test.cpp
       test/core/regex_test.cpp
       test/core/serialized_transport_writer_test.cpp
@@ -341,6 +369,9 @@ if(BUILD_TESTING)
       test/core/json_peer_input_matrix_test.cpp)
   add_executable(mcp-sdk-tests ${TEST_SRCS})
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
+  target_compile_definitions(
+    mcp-sdk-tests
+    PRIVATE MCP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # The resolve and socket gates interpose getaddrinfo() and socket() and
     # forward with dlsym(), which lives in libdl before glibc 2.34.

@@ -6,6 +6,16 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [Unreleased]
 
+### Added
+
+- `CompiledSchema` (`mcp/protocol/schema.hpp`): compiles a JSON Schema and
+  validates values against it, reporting violations with instance paths.
+  A schema without `$schema` is read as 2020-12; 2019-09, draft-07, draft-06
+  and draft-04 may be named, and any other `$schema` is refused with
+  `SchemaError`. The schema itself is checked against its dialect's
+  metaschema. `SchemaOptions` bounds the nesting of a validated value
+  (64 levels by default) and the number of violations reported.
+
 ### Changed
 
 - `tools/call` naming an unknown tool and `prompts/get` naming an unknown
