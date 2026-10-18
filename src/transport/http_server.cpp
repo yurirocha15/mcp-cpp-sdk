@@ -51,12 +51,15 @@ struct HttpServerTransport::Impl {
         std::optional<std::string> session_header;
         std::optional<std::string> event_id;
         bool response_ready{false};
+        /// Set when a DELETE ended the session this request was sent in.
+        bool session_ended{false};
     };
 
     struct PendingResult {
         std::optional<std::string> response_body;
         std::optional<std::string> session_header;
         std::optional<std::string> event_id;
+        bool session_ended{false};
     };
 
     struct SessionCheckResult {
@@ -295,9 +298,9 @@ struct HttpServerTransport::Impl {
             co_return PendingResult{};
         }
 
-        PendingResult pending_result{std::move(pending_it->second.response_body),
-                                     std::move(pending_it->second.session_header),
-                                     std::move(pending_it->second.event_id)};
+        PendingResult pending_result{
+            std::move(pending_it->second.response_body), std::move(pending_it->second.session_header),
+            std::move(pending_it->second.event_id), pending_it->second.session_ended};
         pending_responses.erase(pending_it);
         co_return pending_result;
     }
@@ -310,6 +313,16 @@ struct HttpServerTransport::Impl {
         session_active = false;
         if (ended) {
             terminated_sessions.fetch_add(1, std::memory_order_release);
+            session_ended_awaiting_next = true;
+            // Nothing of the ended session carries over to the next client: not its replay
+            // history, and not the requests still waiting for an answer, which the Server no
+            // longer sends once it sees the session has ended.
+            event_store.clear();
+            for (auto& [request_id_key, pending] : pending_responses) {
+                pending.session_ended = true;
+                pending.response_ready = true;
+                pending.ready_timer->cancel();
+            }
         }
         co_return;
     }
@@ -439,6 +452,9 @@ struct HttpServerTransport::Impl {
         }
 
         const auto pending_result = co_await consume_pending_response(request_id_key);
+        if (pending_result.session_ended) {
+            co_return make_error_response(request, http::status::not_found, "Session terminated");
+        }
         if (!pending_result.response_body.has_value()) {
             co_return make_error_response(request, http::status::internal_server_error,
                                           "Missing response body for request");
@@ -629,8 +645,11 @@ struct HttpServerTransport::Impl {
             co_return;
         }
 
+        // Between a DELETE and the next client's initialize result nobody holds a session, and
+        // anything recorded then would become part of the next client's replay history.
         std::optional<std::string> event_id;
-        if (!impl->json_only_.load(std::memory_order_acquire)) {
+        if (!impl->json_only_.load(std::memory_order_acquire) &&
+            (!impl->session_ended_awaiting_next || is_initialize_result_response(response_json))) {
             event_id = impl->event_store.append(message);
         }
 
@@ -660,6 +679,7 @@ struct HttpServerTransport::Impl {
             }
             pending_it->second.session_header = impl->session_id;
             impl->session_active = true;
+            impl->session_ended_awaiting_next = false;
         }
 
         pending_it->second.ready_timer->cancel();
@@ -679,6 +699,8 @@ struct HttpServerTransport::Impl {
     std::optional<std::string> session_id;
     std::string negotiated_protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
     bool session_active{false};
+    /// Set by a DELETE that ended a session, cleared by the next initialize result.
+    bool session_ended_awaiting_next{false};
     std::atomic<std::uint64_t> terminated_sessions{0};
 
     bool allow_all_origins{false};

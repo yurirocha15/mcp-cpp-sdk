@@ -1209,6 +1209,243 @@ std::shared_ptr<mcp::HttpServerTransport> run_on_http_transport(asio::io_context
 
 }  // namespace
 
+// Once a client ends its session with DELETE, the next client to initialize starts a different
+// session, and replaying with Last-Event-ID must not hand it the messages of the one before.
+TEST_F(HttpTransportTest, ANewSessionCannotReplayTheEndedSessionsMessages) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    mcp::Server server(mcp::Implementation{"test-server", "1.0"}, std::move(caps));
+    server.add_tool(
+        "secret", "Returns the first client's secret", nlohmann::json{{"type", "object"}},
+        [](const nlohmann::json&) -> nlohmann::json { return {{"secret", "first-session-secret"}}; });
+    auto transport = run_on_http_transport(io_ctx_, server);
+    const auto port = std::to_string(transport->port());
+
+    SessionReply first_call;
+    SessionReply second_init;
+    std::vector<SessionReply> replays;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            auto first =
+                co_await session_send(executor, port, http::verb::post, session_initialize_body(), "");
+            (void)co_await session_send(executor, port, http::verb::post,
+                                        std::string(g_session_initialized), first.session_id);
+            first_call = co_await session_send(
+                executor, port, http::verb::post,
+                R"({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"secret","arguments":{}}})",
+                first.session_id);
+            (void)co_await session_send(executor, port, http::verb::delete_, "", first.session_id);
+
+            second_init =
+                co_await session_send(executor, port, http::verb::post, session_initialize_body(), "");
+            (void)co_await session_send(executor, port, http::verb::post,
+                                        std::string(g_session_initialized), second_init.session_id);
+            // Every id the first session's events could have had.
+            for (const std::string id : {"0", "1", "2", "3"}) {
+                replays.push_back(co_await session_send(executor, port, http::verb::get, "",
+                                                        second_init.session_id, id));
+            }
+            transport->close();
+        },
+        [](const std::exception_ptr&) {});
+
+    io_ctx_.run();
+
+    ASSERT_NE(first_call.body.find("first-session-secret"), std::string::npos) << first_call.body;
+    ASSERT_EQ(second_init.status, 200U) << second_init.body;
+    ASSERT_EQ(replays.size(), 4U);
+    for (const auto& replay : replays) {
+        EXPECT_EQ(replay.body.find("first-session-secret"), std::string::npos) << replay.body;
+    }
+}
+
+// A resource subscription belongs to the session that made it. After that session ends, an update
+// to the resource reaches nobody, not the next client, which never subscribed.
+TEST_F(HttpTransportTest, ANewSessionDoesNotReceiveTheEndedSessionsSubscriptionUpdates) {
+    mcp::ServerCapabilities caps;
+    mcp::ServerCapabilities::ResourcesCapability resources;
+    resources.subscribe = true;
+    caps.resources = std::move(resources);
+    mcp::Server server(mcp::Implementation{"test-server", "1.0"}, std::move(caps));
+    auto transport = run_on_http_transport(io_ctx_, server);
+    const auto port = std::to_string(transport->port());
+
+    SessionReply subscribed;
+    SessionReply replay;
+    std::string second_init_event;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            auto first =
+                co_await session_send(executor, port, http::verb::post, session_initialize_body(), "");
+            (void)co_await session_send(executor, port, http::verb::post,
+                                        std::string(g_session_initialized), first.session_id);
+            subscribed = co_await session_send(
+                executor, port, http::verb::post,
+                R"({"jsonrpc":"2.0","id":2,"method":"resources/subscribe","params":{"uri":"file:///first.txt"}})",
+                first.session_id);
+            (void)co_await session_send(executor, port, http::verb::delete_, "", first.session_id);
+
+            auto second =
+                co_await session_send(executor, port, http::verb::post, session_initialize_body(), "");
+            second_init_event = first_event_id(second.body);
+            (void)co_await session_send(executor, port, http::verb::post,
+                                        std::string(g_session_initialized), second.session_id);
+            co_await server.notify_resource_updated("file:///first.txt");
+            replay = co_await session_send(executor, port, http::verb::get, "", second.session_id,
+                                           second_init_event);
+            transport->close();
+        },
+        [](const std::exception_ptr&) {});
+
+    io_ctx_.run();
+
+    ASSERT_NE(subscribed.body.find("\"result\""), std::string::npos) << subscribed.body;
+    ASSERT_FALSE(second_init_event.empty());
+    EXPECT_EQ(replay.body.find("notifications/resources/updated"), std::string::npos) << replay.body;
+}
+
+// A handler still running when its client ends the session sends nothing more: neither its log
+// messages nor its result reach the next client. The request it was answering is told the session
+// ended instead of waiting for an answer that will not come.
+TEST_F(HttpTransportTest, OutputOfTheEndedSessionDoesNotReachTheNextSession) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    caps.logging = nlohmann::json::object();
+    mcp::Server server(mcp::Implementation{"test-server", "1.0"}, std::move(caps));
+    asio::steady_timer gate(io_ctx_.get_executor());
+    gate.expires_at(std::chrono::steady_clock::time_point::max());
+    bool tool_started = false;
+    bool tool_finished = false;
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "slow", "Answers once the test opens the gate", nlohmann::json{{"type", "object"}},
+        [&](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+            tool_started = true;
+            boost::system::error_code ignored;
+            co_await gate.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+            co_await context.log_info("late-log-from-the-first-session");
+            tool_finished = true;
+            co_return mcp::make_tool_text_result("late-result-from-the-first-session");
+        });
+    auto transport = run_on_http_transport(io_ctx_, server);
+    const auto port = std::to_string(transport->port());
+
+    bool timed_out = false;
+    asio::steady_timer watchdog(io_ctx_.get_executor(), std::chrono::seconds(10));
+    watchdog.async_wait([&](const boost::system::error_code& error) {
+        if (!error) {
+            timed_out = true;
+            gate.cancel();
+            transport->close();
+        }
+    });
+
+    SessionReply first_call;
+    bool first_call_answered = false;
+    SessionReply replay;
+    std::string second_init_event;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            auto first =
+                co_await session_send(executor, port, http::verb::post, session_initialize_body(), "");
+            (void)co_await session_send(executor, port, http::verb::post,
+                                        std::string(g_session_initialized), first.session_id);
+            asio::co_spawn(
+                executor,
+                [&, session_id = first.session_id]() -> mcp::Task<void> {
+                    first_call = co_await session_send(
+                        executor, port, http::verb::post,
+                        R"({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"slow","arguments":{}}})",
+                        session_id);
+                    first_call_answered = true;
+                },
+                [](const std::exception_ptr&) {});
+
+            asio::steady_timer poll(executor);
+            while (!tool_started && !timed_out) {
+                poll.expires_after(std::chrono::milliseconds(5));
+                co_await poll.async_wait(asio::use_awaitable);
+            }
+            (void)co_await session_send(executor, port, http::verb::delete_, "", first.session_id);
+            while (!first_call_answered && !timed_out) {
+                poll.expires_after(std::chrono::milliseconds(5));
+                co_await poll.async_wait(asio::use_awaitable);
+            }
+
+            auto second =
+                co_await session_send(executor, port, http::verb::post, session_initialize_body(), "");
+            second_init_event = first_event_id(second.body);
+            (void)co_await session_send(executor, port, http::verb::post,
+                                        std::string(g_session_initialized), second.session_id);
+
+            gate.cancel();
+            while (!tool_finished && !timed_out) {
+                poll.expires_after(std::chrono::milliseconds(5));
+                co_await poll.async_wait(asio::use_awaitable);
+            }
+            // Let the finished handler's result take whatever path it takes.
+            poll.expires_after(std::chrono::milliseconds(100));
+            co_await poll.async_wait(asio::use_awaitable);
+            replay = co_await session_send(executor, port, http::verb::get, "", second.session_id,
+                                           second_init_event);
+            watchdog.cancel();
+            transport->close();
+        },
+        [](const std::exception_ptr&) {});
+
+    io_ctx_.run();
+
+    ASSERT_FALSE(timed_out);
+    EXPECT_EQ(first_call.status, 404U) << first_call.body;
+    ASSERT_FALSE(second_init_event.empty());
+    EXPECT_EQ(replay.body.find("first-session"), std::string::npos) << replay.body;
+}
+
+// The log level is chosen by a client for its session. A client that starts a new session after
+// the previous one ended gets the server's default, not the level the previous client set.
+TEST_F(HttpTransportTest, ANewSessionStartsAtTheDefaultLogLevel) {
+    mcp::ServerCapabilities caps;
+    caps.logging = nlohmann::json::object();
+    mcp::Server server(mcp::Implementation{"test-server", "1.0"}, std::move(caps));
+    const auto default_level = server.get_log_level();
+    auto transport = run_on_http_transport(io_ctx_, server);
+    const auto port = std::to_string(transport->port());
+
+    std::optional<mcp::LoggingLevel> level_set_by_the_first_client;
+    std::optional<mcp::LoggingLevel> level_for_the_second_client;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            auto first =
+                co_await session_send(executor, port, http::verb::post, session_initialize_body(), "");
+            (void)co_await session_send(executor, port, http::verb::post,
+                                        std::string(g_session_initialized), first.session_id);
+            (void)co_await session_send(
+                executor, port, http::verb::post,
+                R"({"jsonrpc":"2.0","id":2,"method":"logging/setLevel","params":{"level":"error"}})",
+                first.session_id);
+            level_set_by_the_first_client = server.get_log_level();
+            (void)co_await session_send(executor, port, http::verb::delete_, "", first.session_id);
+
+            (void)co_await session_send(executor, port, http::verb::post, session_initialize_body(),
+                                        "");
+            level_for_the_second_client = server.get_log_level();
+            transport->close();
+        },
+        [](const std::exception_ptr&) {});
+
+    io_ctx_.run();
+
+    ASSERT_EQ(level_set_by_the_first_client, mcp::LoggingLevel::eError);
+    EXPECT_EQ(level_for_the_second_client, default_level);
+}
+
 // The Server answers a request whose id is neither a string nor an integer with -32600 and a null
 // id. The HTTP request that carried it must still be answered.
 TEST_F(HttpTransportTest, RequestWithAnUnusableIdIsAnswered) {

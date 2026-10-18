@@ -64,7 +64,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   within a session is rejected. When `Server::run()` is given an
   `HttpServerTransport` (not a transport that wraps one), a session the client
   ended with `DELETE` is over, and the next client must send `initialize` to
-  start a new one.
+  start a new one. Nothing of the ended session reaches the next one: its
+  events are not replayed, its resource subscriptions deliver no updates, its
+  handlers' responses, notifications and requests are not sent, and the log
+  level is reset to the default. Its requests still waiting for an answer are
+  answered with `404`.
 - `HttpServerTransport` and `StreamableHttpSessionManager` answer a request
   whose id is neither a string nor an integer with `400` and a `-32600`
   error response.

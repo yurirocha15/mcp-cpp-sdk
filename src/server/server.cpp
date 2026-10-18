@@ -308,7 +308,9 @@ struct Server::Session {
     std::shared_ptr<detail::SerializedTransportWriter> writer;
     std::map<std::string, PendingRequest> pending_requests;
     std::map<std::string, std::shared_ptr<std::atomic<bool>>> in_flight;
-    std::map<std::string, bool> subscriptions;
+    /// Subscribed URI to the session_epoch() it was made in. A subscription from a session the
+    /// client has since ended delivers nothing.
+    std::map<std::string, std::uint64_t> subscriptions;
     std::shared_ptr<boost::asio::steady_timer> drain_timer;
     std::atomic_size_t active_dispatches{0};
     std::atomic_bool stopping{false};
@@ -349,6 +351,19 @@ struct Server::Impl {
         TypeErasedHandler handler;
     };
 
+    static constexpr LoggingLevel g_default_log_level = LoggingLevel::eDebug;
+
+    /// Which HTTP session `session` is serving: its transport's count of ended sessions, or 0 for a
+    /// transport without sessions. Work tagged with one value belongs to a session that is over
+    /// once the count moves on.
+    static std::uint64_t session_epoch(const Session& session) {
+        return session.http_transport != nullptr
+                   ? detail::terminated_session_count(*session.http_transport)
+                   : 0;
+    }
+
+    static Task<void> skip_write() { co_return; }
+
     Implementation server_info;
     ServerCapabilities capabilities;
     std::atomic<LifecycleState> lifecycle{LifecycleState::eUninitialized};
@@ -359,7 +374,7 @@ struct Server::Impl {
     mutable std::mutex session_mutex;
     std::shared_ptr<Session> session;
     std::atomic<int64_t> next_request_id{1};
-    std::atomic<LoggingLevel> log_level{LoggingLevel::eDebug};
+    std::atomic<LoggingLevel> log_level{g_default_log_level};
     std::size_t page_size{0};
 
     CompletionHandler completion_handler;
@@ -707,17 +722,27 @@ Context Server::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
     ITransport* transport = &null_transport();
     MessageSender message_sender;
     auto session = session_snapshot();
+    std::uint64_t epoch = 0;
     if (session && session->transport) {
         transport = session->transport.get();
-        auto writer = session->writer;
-        message_sender = [writer = std::move(writer)](std::string_view message) {
-            return writer->write_message(message);
+        epoch = Impl::session_epoch(*session);
+        // A handler whose session the client has ended sends nothing more: the transport would
+        // hand its messages to the next client.
+        message_sender = [session, epoch](std::string_view message) {
+            if (Impl::session_epoch(*session) != epoch) {
+                return Impl::skip_write();
+            }
+            return session->writer->write_message(message);
         };
     }
 
     return {*transport,
-            [this](std::string method, std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
-                co_return co_await send_request(std::move(method), std::move(params));
+            [this, session, epoch](std::string method,
+                                   std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
+                if (session && Impl::session_epoch(*session) != epoch) {
+                    throw std::runtime_error("the client ended the session this request belongs to");
+                }
+                return send_request(method, params);
             },
             std::move(cancelled),
             std::move(progress_token),
@@ -732,7 +757,13 @@ Task<void> Server::dispatch_request(nlohmann::json json_msg) {
     if (!session || !session->writer) {
         throw std::runtime_error("server dispatch requires an active session");
     }
-    co_await session->writer->write_message(co_await dispatch_request_wire(std::move(json_msg), true));
+    const auto epoch = Impl::session_epoch(*session);
+    auto wire = co_await dispatch_request_wire(std::move(json_msg), true);
+    if (Impl::session_epoch(*session) != epoch) {
+        // The client ended this request's session while it ran; the answer is for nobody now.
+        co_return;
+    }
+    co_await session->writer->write_message(wire);
 }
 
 Task<std::string> Server::dispatch_request_wire(nlohmann::json json_msg, bool enforce_lifecycle) {
@@ -902,8 +933,13 @@ Task<std::string> Server::handle_initialize_wire(const nlohmann::json& json_msg,
 
     if (update_lifecycle) {
         if (auto session = session_snapshot(); session && session->http_transport != nullptr) {
-            impl_->terminated_sessions_at_initialize.store(
-                detail::terminated_session_count(*session->http_transport), std::memory_order_relaxed);
+            const auto epoch = Impl::session_epoch(*session);
+            if (epoch != impl_->terminated_sessions_at_initialize.load(std::memory_order_relaxed)) {
+                // A client starting a new session gets the server's default level, not the one the
+                // client before it chose.
+                impl_->log_level.store(Impl::g_default_log_level, std::memory_order_relaxed);
+            }
+            impl_->terminated_sessions_at_initialize.store(epoch, std::memory_order_relaxed);
         }
         impl_->lifecycle.store(Impl::LifecycleState::eAwaitingInitialized, std::memory_order_relaxed);
     }
@@ -1171,7 +1207,7 @@ Task<std::string> Server::handle_subscribe_wire(const nlohmann::json& json_msg) 
     auto params = deserialize_request_params<ResourceSubscribeParams>(json_msg, "resources/subscribe");
     auto session = session_snapshot();
     if (session) {
-        session->subscriptions[params.uri] = true;
+        session->subscriptions[params.uri] = Impl::session_epoch(*session);
     }
     if (impl_->subscribe_handler) {
         impl_->subscribe_handler(params.uri);
@@ -1351,7 +1387,11 @@ Task<void> Server::notify_resource_updated_on_strand(std::shared_ptr<Session> se
     }
 
     auto it = session->subscriptions.find(*uri);
-    if (it == session->subscriptions.end() || !it->second) {
+    if (it == session->subscriptions.end()) {
+        co_return;
+    }
+    if (it->second != Impl::session_epoch(*session)) {
+        session->subscriptions.erase(it);
         co_return;
     }
 
