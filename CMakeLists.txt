@@ -87,6 +87,7 @@ configure_file(
 set(MCP_CPP_SDK_SOURCES
     src/core/version.cpp
     src/core/runtime.cpp
+    src/core/regex.cpp
     src/core/secure_random.cpp
     src/core/serialized_transport_writer.cpp
     src/protocol/tools.cpp
@@ -309,6 +310,7 @@ if(BUILD_TESTING)
       test/core/core_test.cpp
       test/core/jsonrpc_envelope_test.cpp
       test/core/protocol_test.cpp
+      test/core/regex_test.cpp
       test/core/serialized_transport_writer_test.cpp
       test/server/roots_test.cpp
       test/server/sampling_test.cpp
