@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -24,6 +25,26 @@
 
 namespace mcp_detail_jsoncons {
 namespace jsonschema {
+
+    // Added by mcp-cpp-sdk (scripts/vendor_jsoncons.py): a size keyword's value. A double
+    // beyond std::size_t saturates instead of converting with undefined behavior; the metaschema
+    // has already checked that the value is a non-negative integer.
+    template <typename Json>
+    std::size_t keyword_size_value(const Json& value)
+    {
+        if (value.is_double())
+        {
+            const double number = value.template as<double>();
+            const double largest = static_cast<double>((std::numeric_limits<std::size_t>::max)());
+            if (!(number > 0))
+            {
+                return 0;
+            }
+            return number >= largest ? (std::numeric_limits<std::size_t>::max)()
+                                     : static_cast<std::size_t>(number);
+        }
+        return value.template as<std::size_t>();
+    }
 
     template <typename Json>
     using resolve_uri_type = std::function<Json(const mcp_detail_jsoncons::uri & /*id*/)>;
@@ -111,7 +132,7 @@ namespace jsonschema {
                 const std::string message("maxLength must be a number value");
                 MCP_DETAIL_JSONCONS_THROW(schema_error(schema_location.string() + ": " + message));
             }
-            auto value = sch.template as<std::size_t>();
+            auto value = keyword_size_value(sch);
             return mcp_detail_jsoncons::make_unique<max_length_validator<Json>>(parent, schema_location, context.get_custom_message("maxLength"), 
                 value);
         }
@@ -125,7 +146,7 @@ namespace jsonschema {
                 const std::string message("minLength must be an integer value");
                 MCP_DETAIL_JSONCONS_THROW(schema_error(schema_location.string() + ": " + message));
             }
-            auto value = sch.template as<std::size_t>();
+            auto value = keyword_size_value(sch);
             return mcp_detail_jsoncons::make_unique<min_length_validator<Json>>(parent, schema_location, context.get_custom_message("minLength"), value);
         }
 
@@ -472,7 +493,7 @@ namespace jsonschema {
                 const std::string message("maxItems must be a number value");
                 MCP_DETAIL_JSONCONS_THROW(schema_error(schema_location.string() + ": " + message));
             }
-            auto value = sch.template as<std::size_t>();
+            auto value = keyword_size_value(sch);
             return mcp_detail_jsoncons::make_unique<max_items_validator<Json>>(parent, schema_location, context.get_custom_message(keyword), value);
         }
 
@@ -487,7 +508,7 @@ namespace jsonschema {
                 const std::string message("minItems must be a number value");
                 MCP_DETAIL_JSONCONS_THROW(schema_error(schema_location.string() + ": " + message));
             }
-            auto value = sch.template as<std::size_t>();
+            auto value = keyword_size_value(sch);
             return mcp_detail_jsoncons::make_unique<min_items_validator<Json>>(parent, schema_location, context.get_custom_message(keyword), value);
         }
 
@@ -501,7 +522,7 @@ namespace jsonschema {
                 const std::string message("maxProperties must be a number value");
                 MCP_DETAIL_JSONCONS_THROW(schema_error(schema_location.string() + ": " + message));
             }
-            auto value = sch.template as<std::size_t>();
+            auto value = keyword_size_value(sch);
             return mcp_detail_jsoncons::make_unique<max_properties_validator<Json>>(parent, schema_location, context.get_custom_message(keyword), value);
         }
 
@@ -515,7 +536,7 @@ namespace jsonschema {
                 const std::string message("minProperties must be a number value");
                 MCP_DETAIL_JSONCONS_THROW(schema_error(schema_location.string() + ": " + message));
             }
-            auto value = sch.template as<std::size_t>();
+            auto value = keyword_size_value(sch);
             return mcp_detail_jsoncons::make_unique<min_properties_validator<Json>>(parent, schema_location, context.get_custom_message(keyword), value);
         }
 
@@ -531,7 +552,7 @@ namespace jsonschema {
             if (it != parent.object_range().end()) 
             {
                 uri path = context.make_schema_location("maxContains");
-                auto value = (*it).value().template as<std::size_t>();
+                auto value = keyword_size_value((*it).value());
                 max_contains = mcp_detail_jsoncons::make_unique<max_contains_keyword<Json>>(parent, path, context.get_custom_message("maxContains"), value);
             }
             else
@@ -545,7 +566,7 @@ namespace jsonschema {
             if (it != parent.object_range().end()) 
             {
                 uri path = context.make_schema_location("minContains");
-                auto value = (*it).value().template as<std::size_t>();
+                auto value = keyword_size_value((*it).value());
                 min_contains = mcp_detail_jsoncons::make_unique<min_contains_keyword<Json>>(parent, path, context.get_custom_message("minContains"), value);
             }
             else

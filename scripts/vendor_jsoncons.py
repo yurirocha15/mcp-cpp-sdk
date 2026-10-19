@@ -4,7 +4,7 @@
 The SDK compiles jsoncons's JSON Schema extension into one private translation
 unit. The vendored tree is never edited by hand: this script downloads the
 pinned release tarball, verifies its SHA-256, copies the headers the extension
-needs and applies three recorded transformations:
+needs and applies four recorded transformations:
 
 1. ``std::regex`` is replaced with ``mcp::detail::Regex``. libstdc++'s
    ``std::regex`` recurses once per input character, so a schema ``pattern``
@@ -17,7 +17,14 @@ needs and applies three recorded transformations:
    (``{"$ref": "#"}``) recurses until the stack overflows, and branching
    applicators over recursive references take time exponential in the value's
    depth.
-3. The ``jsoncons`` namespace becomes ``mcp_detail_jsoncons`` and the
+3. Large doubles are handled without undefined behavior. The ``integer``
+   type check and the size keywords such as ``maxLength`` converted a double
+   to an integer type whatever its range; now ``1e308`` is an integer, as JSON
+   Schema defines it, and a size keyword's value saturates. With ``1e308``
+   counted as an integer, ``multipleOf`` must also reject a quotient that
+   overflows, as the JSON-Schema-Test-Suite expects: its tolerance of one
+   unit in the last place of the value accepts any multiple at that size.
+4. The ``jsoncons`` namespace becomes ``mcp_detail_jsoncons`` and the
    ``JSONCONS_`` macro prefix becomes ``MCP_DETAIL_JSONCONS_``, so the copy
    compiled into the SDK (a static archive included) cannot collide with a
    jsoncons the application uses itself.
@@ -48,7 +55,7 @@ VERSION = "1.10.0"
 TARBALL_URL = f"https://github.com/danielaparker/jsoncons/archive/refs/tags/v{VERSION}.tar.gz"
 TARBALL_SHA256 = "c829350a2eece662beb378143e2ab1c1cbb07d703687bf168626665a8a7d8bc1"
 # Bump when the transformation below changes, so PROVENANCE records which one produced the tree.
-TRANSFORM_VERSION = 2
+TRANSFORM_VERSION = 3
 
 # Header directories, relative to the release's include/, that the extension needs.
 SUBSET = ("jsoncons", "jsoncons_ext/jsonschema", "jsoncons_ext/jsonpointer")
@@ -144,6 +151,69 @@ EVAL_PATH_CONSTRUCTOR = re.compile(
     r"(eval_path_\(parent\.eval_path\(\) / (?:name|index)\),\s*flags_\((?:parent\.flags_|flags)\)\s*)\{\s*\}"
 )
 
+KEYWORD_VALIDATOR_PATH = "jsoncons_ext/jsonschema/common/keyword_validator.hpp"
+KEYWORD_FACTORY_PATH = "jsoncons_ext/jsonschema/common/keyword_validator_factory.hpp"
+
+# (path, old, new, expected count). The integer check converted the double to int64_t to compare.
+NUMERIC_REPLACEMENTS = (
+    (KEYWORD_VALIDATOR_PATH, "#include <cassert>\n", "#include <cassert>\n#include <cmath>\n", 1),
+    (
+        KEYWORD_VALIDATOR_PATH,
+        "instance.is_double() && static_cast<double>(instance.template as<int64_t>()) == "
+        "instance.template as<double>()",
+        "instance.is_double() && std::isfinite(instance.template as<double>()) && "
+        "std::trunc(instance.template as<double>()) == instance.template as<double>()",
+        1,
+    ),
+    (
+        KEYWORD_VALIDATOR_PATH,
+        "            double rem = std::remainder(x, multiple_of);\n",
+        """            // Added by mcp-cpp-sdk (scripts/vendor_jsoncons.py): a quotient that overflows
+            // is not a multiple.
+            if (!std::isfinite(x / multiple_of))
+            {
+                return false;
+            }
+            double rem = std::remainder(x, multiple_of);\n""",
+        1,
+    ),
+    (KEYWORD_FACTORY_PATH, "#include <functional>\n", "#include <functional>\n#include <limits>\n", 1),
+    (
+        KEYWORD_FACTORY_PATH,
+        "    template <typename Json>\n    using resolve_uri_type",
+        """    // Added by mcp-cpp-sdk (scripts/vendor_jsoncons.py): a size keyword's value. A double
+    // beyond std::size_t saturates instead of converting with undefined behavior; the metaschema
+    // has already checked that the value is a non-negative integer.
+    template <typename Json>
+    std::size_t keyword_size_value(const Json& value)
+    {
+        if (value.is_double())
+        {
+            const double number = value.template as<double>();
+            const double largest = static_cast<double>((std::numeric_limits<std::size_t>::max)());
+            if (!(number > 0))
+            {
+                return 0;
+            }
+            return number >= largest ? (std::numeric_limits<std::size_t>::max)()
+                                     : static_cast<std::size_t>(number);
+        }
+        return value.template as<std::size_t>();
+    }
+
+    template <typename Json>
+    using resolve_uri_type""",
+        1,
+    ),
+    (KEYWORD_FACTORY_PATH, "sch.template as<std::size_t>()", "keyword_size_value(sch)", 6),
+    (
+        KEYWORD_FACTORY_PATH,
+        "(*it).value().template as<std::size_t>()",
+        "keyword_size_value((*it).value())",
+        2,
+    ),
+)
+
 # `jsoncons` as an identifier, not as part of an include path (`jsoncons/`) or of a longer
 # name (`jsoncons_ext`).
 NAMESPACE_PATTERN = re.compile(r"(?<![\w/])jsoncons(?![\w/])")
@@ -201,6 +271,13 @@ def transform(headers: dict[str, str]) -> dict[str, str]:
             raise SystemExit(f"std::regex left in {path} after the replacements")
         if path == EVAL_CONTEXT_PATH:
             text = add_evaluation_limits(text)
+        for target, old, new, expected in NUMERIC_REPLACEMENTS:
+            if target == path:
+                if text.count(old) != expected:
+                    raise SystemExit(
+                        f"expected {expected} occurrence(s) of {old!r} in {path}, found {text.count(old)}"
+                    )
+                text = text.replace(old, new)
         text = NAMESPACE_PATTERN.sub("mcp_detail_jsoncons", text)
         text = MACRO_PATTERN.sub("MCP_DETAIL_JSONCONS_", text)
         result[path] = text
@@ -232,8 +309,9 @@ def provenance() -> str:
         f"sha256: {TARBALL_SHA256}\n"
         f"subset: {', '.join(SUBSET)}\n"
         f"transform: {TRANSFORM_VERSION} (scripts/vendor_jsoncons.py: std::regex replaced with "
-        "mcp::detail::Regex; evaluation depth and work limits added to eval_context; namespace "
-        "jsoncons renamed mcp_detail_jsoncons; macro prefix JSONCONS_ renamed MCP_DETAIL_JSONCONS_)\n"
+        "mcp::detail::Regex; evaluation depth and work limits added to eval_context; integer type "
+        "check, size keywords and multipleOf made safe for large doubles; namespace jsoncons renamed "
+        "mcp_detail_jsoncons; macro prefix JSONCONS_ renamed MCP_DETAIL_JSONCONS_)\n"
     )
 
 
