@@ -408,6 +408,24 @@ TEST(SchemaBridge, NumbersStringsAndNullsKeepTheirMeaning) {
         is_valid({{"const", {{"a", {1, 2}}, {"b", nullptr}}}}, {{"b", nullptr}, {"a", {1, 2}}}));
 }
 
+// Doubles beyond the range of the integer types: JSON Schema counts any number with a zero
+// fractional part as an integer, and none of these may convert with undefined behavior (the
+// sanitizer jobs check that).
+TEST(SchemaBridge, LargeDoublesAreHandled) {
+    EXPECT_TRUE(is_valid({{"type", "integer"}}, 1e308));
+    EXPECT_TRUE(is_valid({{"type", "integer"}}, -1e19));
+    EXPECT_FALSE(is_valid({{"type", "integer"}}, 2.5));
+    // The quotient overflows, so 1e308 is not a multiple (JSON-Schema-Test-Suite "float
+    // division = inf").
+    EXPECT_FALSE(is_valid({{"multipleOf", 0.123456789}}, 1e308));
+    EXPECT_TRUE(is_valid({{"multipleOf", 0.5}}, 1e300));
+    // Size keywords beyond std::size_t saturate.
+    EXPECT_TRUE(is_valid({{"maxLength", 1e308}}, "abc"));
+    EXPECT_FALSE(is_valid({{"minLength", 1e308}}, "abc"));
+    EXPECT_TRUE(is_valid({{"maxItems", 1e300}}, {1, 2, 3}));
+    EXPECT_FALSE(is_valid({{"maxItems", 2.0}}, {1, 2, 3}));
+}
+
 TEST(CompiledSchema, CopiesShareTheSchema) {
     const auto original = CompiledSchema::compile({{"type", "string"}});
     const CompiledSchema copy = original;  // NOLINT(performance-unnecessary-copy-initialization)

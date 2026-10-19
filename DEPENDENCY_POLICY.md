@@ -62,7 +62,8 @@ downloads the release pinned in the script, verifies its SHA-256, copies the
 headers the extension needs and applies the recorded transformation described
 in the script and in `third_party/jsoncons/PROVENANCE`: `std::regex` is replaced
 with the SDK's linear-time matcher, the evaluation context gets limits on
-evaluation depth and work, and the namespace and macro prefix are renamed. CI runs `python3 scripts/vendor_jsoncons.py --check`, which fails when
+evaluation depth and work, the numeric keywords handle large doubles without
+undefined behavior, and the namespace and macro prefix are renamed. CI runs `python3 scripts/vendor_jsoncons.py --check`, which fails when
 the committed tree differs from the pinned release plus that transformation.
 
 jsoncons was chosen because it implements JSON Schema drafts 4, 6, 7, 2019-09
