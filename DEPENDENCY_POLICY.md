@@ -53,8 +53,10 @@ and optional whenever possible.
 (Boost Software License 1.0), whose JSON Schema extension the SDK uses to
 validate tool schemas and the values checked against them. It is compiled into
 the SDK library and is not a dependency of anything that links the SDK: its
-headers are not installed, its symbols are not exported, and its namespace is
-renamed so that it cannot collide with a jsoncons an application uses itself.
+headers are not installed, its symbols are not exported (hidden visibility, and
+on ELF platforms a linker version script, `cmake/vendored-symbols.map`), and
+its namespace is renamed so that it cannot collide with a jsoncons an
+application uses itself.
 Distribution packages declare it as bundled.
 
 The tree is generated, never edited by hand. `scripts/vendor_jsoncons.py`

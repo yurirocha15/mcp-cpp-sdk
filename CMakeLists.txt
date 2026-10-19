@@ -161,6 +161,15 @@ if(MCP_CPP_SDK_BUILD_SHARED)
       mcp-cpp-sdk-shared
       PRIVATE "SHELL:-include ${MCP_CPP_SDK_BEAST_VISIBILITY_HEADER}")
   endif()
+  if(NOT WIN32 AND NOT APPLE)
+    set(MCP_CPP_SDK_VENDORED_SYMBOLS_MAP
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/vendored-symbols.map")
+    target_link_options(
+      mcp-cpp-sdk-shared PRIVATE
+      "LINKER:--version-script=${MCP_CPP_SDK_VENDORED_SYMBOLS_MAP}")
+    set_property(TARGET mcp-cpp-sdk-shared APPEND
+                 PROPERTY LINK_DEPENDS "${MCP_CPP_SDK_VENDORED_SYMBOLS_MAP}")
+  endif()
   add_library(mcp::sdk_shared ALIAS mcp-cpp-sdk-shared)
   list(APPEND MCP_CPP_SDK_INSTALL_TARGETS mcp-cpp-sdk-shared)
 endif()
