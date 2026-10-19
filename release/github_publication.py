@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 import re
 import subprocess
@@ -42,6 +43,21 @@ def _mapping(value: object, label: str) -> Mapping[str, Any]:
     return value
 
 
+def _instant(value: object, label: str) -> datetime:
+    """Parse one offset-qualified timestamp; GitHub formats it in the caller's zone."""
+
+    if not isinstance(value, str):
+        raise PublicationPolicyError(f"{label} must be a timestamp")
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        instant = datetime.fromisoformat(text)
+    except ValueError as error:
+        raise PublicationPolicyError(f"{label} is malformed") from error
+    if instant.utcoffset() is None:
+        raise PublicationPolicyError(f"{label} has no UTC offset")
+    return instant
+
+
 def verify_tag_ruleset(
     value: object, *, ruleset_id: int, repository: str, expected_updated_at: str
 ) -> None:
@@ -49,13 +65,14 @@ def verify_tag_ruleset(
 
     ruleset = _mapping(value, "tag ruleset")
     rules = ruleset.get("rules")
+    expected_instant = _instant(expected_updated_at, "expected ruleset update time")
     if (
         ruleset.get("id") != ruleset_id
         or ruleset.get("target") != "tag"
         or ruleset.get("enforcement") != "active"
         or ruleset.get("source_type") != "Repository"
         or ruleset.get("source") != repository
-        or ruleset.get("updated_at") != expected_updated_at
+        or _instant(ruleset.get("updated_at"), "ruleset update time") != expected_instant
         or ruleset.get("bypass_actors") != []
         or ruleset.get("conditions")
         != {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}}

@@ -65,6 +65,28 @@ class GithubPublicationPolicyTest(unittest.TestCase):
             tag_object_sha=TAG_OBJECT, commit_sha=COMMIT,
         )
 
+    def test_ruleset_update_time_is_compared_as_an_instant(self):
+        for rendered in (
+            "2026-07-19T10:00:00Z",
+            "2026-07-19T19:00:00+09:00",
+            "2026-07-19T06:00:00.000-04:00",
+        ):
+            ruleset = self.ruleset()
+            ruleset["updated_at"] = rendered
+            with self.subTest(rendered=rendered):
+                verify_tag_ruleset(
+                    ruleset, ruleset_id=42, repository="example/mcp-cpp-sdk",
+                    expected_updated_at="2026-07-19T10:00:00Z",
+                )
+        for rendered in ("2026-07-19T10:00:00", "not a time", None):
+            ruleset = self.ruleset()
+            ruleset["updated_at"] = rendered
+            with self.subTest(rendered=rendered), self.assertRaises(PublicationPolicyError):
+                verify_tag_ruleset(
+                    ruleset, ruleset_id=42, repository="example/mcp-cpp-sdk",
+                    expected_updated_at="2026-07-19T10:00:00Z",
+                )
+
     @mock.patch("release.github_publication._gh_json")
     def test_live_policy_reads_each_fixed_repository_boundary(self, gh_json):
         gh_json.side_effect = [
