@@ -43,8 +43,10 @@ class MCP_API SchemaError : public std::invalid_argument {
                               ///< dialect's metaschema. Nothing is fetched.
     };
 
+    /// Construct with the reason @p category and the description @p message.
     SchemaError(Category category, const std::string& message);
 
+    /// Why the schema was refused.
     [[nodiscard]] Category category() const noexcept { return category_; }
 
    private:

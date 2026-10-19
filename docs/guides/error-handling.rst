@@ -151,6 +151,18 @@ Catching Server Errors
 
 When a server returns a JSON-RPC error response, the ``Client`` methods (like ``call_tool`` or ``read_resource``) throw ``mcp::McpError``, a ``std::runtime_error`` that carries the error code and message. This simplifies the client logic, as you can use standard C++ exception handling for both local and remote failures.
 
+Schema Validation Errors
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The client checks a tool result's ``structuredContent`` against the
+``outputSchema`` the server listed for the tool and throws
+``mcp::StructuredContentError`` when it does not conform. It is an
+``mcp::McpError`` with code ``-32603``; ``data()`` holds
+``{"violations": [{"instancePath": ..., "message": ...}]}``. Tools whose schemas
+the client cannot use are left out of ``list_tools()`` and reported through
+``ClientOptions::on_tool_schema_error``. See :doc:`../concepts/tools` for the
+server-side checks, which answer invalid arguments with an ``isError`` result.
+
 Handling Application Errors
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

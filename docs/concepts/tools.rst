@@ -10,7 +10,8 @@ class. Each tool requires:
 
 - **Name**: A unique identifier for the tool.
 - **Description**: A human-readable explanation of what the tool does.
-- **Input Schema**: A JSON Schema defining the input parameters.
+- **Input Schema**: A JSON Schema object defining the input parameters. It must
+  declare ``"type": "object"``, since tool arguments are always an object.
 - **Handler**: A C++ function or lambda that executes the tool logic.
 
 Basic Tool Registration
@@ -156,8 +157,8 @@ tool, enabling better integration with typed systems or UI rendering.
 When an ``outputSchema`` is provided, the SDK includes it in the tool definition sent to clients.
 The schema is advertised as ``outputSchema`` in the tool's metadata, enabling clients to understand
 the structure of the tool's output. A tool with an ``outputSchema`` must return
-``structuredContent`` (unless the result is an error); otherwise the call fails with a JSON-RPC
-error. The SDK does not validate that content against the schema at runtime.
+``structuredContent`` (unless the result is an error), and that content must conform to the
+schema; otherwise the call fails with a JSON-RPC error (see `Schema Validation`_).
 
 .. code-block:: cpp
 
@@ -187,6 +188,101 @@ content blocks.
 .. literalinclude:: ../../examples/features/error_handling.cpp
    :language: cpp
    :lines: 94-109
+
+Schema Validation
+-----------------
+
+Both protocol revisions the SDK serves (2025-11-25 and 2026-07-28) require a
+server to validate tool inputs and to return structured results that conform
+to the output schema. The SDK does both by default.
+
+**At registration.** ``add_tool()`` and ``add_raw_tool()`` compile the input and
+output schemas and throw ``mcp::SchemaError`` (a ``std::invalid_argument``)
+naming the tool and the field when a schema cannot be used.
+``SchemaError::category()`` says why:
+
+- ``eInvalidSchema``: the schema is not a JSON object, fails its dialect's
+  metaschema, or (for ``inputSchema``) does not declare ``"type": "object"``.
+- ``eUnsupportedDialect``: ``$schema`` names a dialect the SDK does not
+  implement.
+- ``eUnresolvedRef``: a ``$ref`` points outside the document.
+
+**Dialects.** A schema without ``$schema`` is JSON Schema 2020-12, the default
+the specification sets. ``$schema`` may also name 2019-09, draft-07, draft-06 or
+draft-04.
+
+**References.** ``$ref`` resolves within the document (JSON Pointer fragments,
+anchors, subschemas identified by ``$id``) and to the metaschemas of the
+supported dialects. Anything else, such as an ``http:`` or ``file:`` URI or a
+relative file name, is refused; the SDK never fetches a schema.
+
+**Patterns.** ``pattern`` and ``patternProperties`` use a linear-time matcher
+for the ECMA-262 subset JSON Schema recommends. Backreferences, lookaround and
+Unicode property escapes (``\p{...}``) are not supported, and a schema using
+them is refused as ``eInvalidSchema``.
+
+**Arguments.** Each ``tools/call`` checks the arguments against the input schema
+just before the handler would run, after any middleware. Arguments that do not
+conform are answered with an ``isError: true`` result whose text lists the
+violations (``Invalid arguments: /quantity: ...``), and the handler does not
+run. ``Server::invoke_tool()`` applies the same check.
+
+**Structured results.** A successful result's ``structuredContent`` is checked
+against the ``outputSchema``. A result that does not conform is a fault in the
+tool and is answered with ``Internal error (-32603)`` naming the violations.
+Error results are not checked.
+
+**Turning checks off.** An application that validates on its own can turn
+either check off before ``run()``; ``tool_validation_stats()`` counts the calls
+each check refused:
+
+.. code-block:: cpp
+
+   mcp::ToolValidationOptions validation;
+   validation.validate_arguments = false;
+   validation.validate_structured_content = true;
+   server.set_tool_validation(validation);
+
+   auto stats = server.tool_validation_stats();
+   // stats.argument_rejections, stats.structured_content_rejections
+
+**Limits.** Validation is bounded so that neither a schema nor a value can
+exhaust the stack or take time exponential in its size. A value nested deeper
+than 64 levels is invalid (``SchemaOptions::max_instance_depth``). The
+evaluation path through the schema is limited to 192 keywords and array
+indexes, which a schema recursing through ``anyOf`` and ``$ref`` at every level
+reaches at about 48 levels of the value, and the evaluation work per value is
+budgeted in proportion to its size and nesting. A schema that exceeds a limit
+even for a trivial value, such as ``{"$ref": "#"}``, is refused at
+registration. Schema documents may nest up to 64 levels; checking a 2020-12
+schema against its metaschema reaches the path limit when ``properties`` nest 27
+levels deep.
+
+**Cost.** A 2020-12 schema that uses only ``type``, ``enum``, ``const``, the
+numeric bounds, ``minLength``, ``maxLength``, ``pattern``, ``items``,
+``minItems``, ``maxItems``, ``properties``, ``required``,
+``additionalProperties``, ``minProperties``, ``maxProperties``, boolean
+subschemas and annotations is evaluated directly on the arguments; other
+schemas are evaluated by the bundled jsoncons library, which costs several
+microseconds more per call for typical arguments. Violation messages are
+written for people and their wording may change.
+
+**On the client.** ``Client::list_tools()`` compiles the schemas of the listed
+tools, leaves out a tool whose schema cannot be used and reports it through
+``ClientOptions::on_tool_schema_error``. ``Client::call_tool()`` checks a
+successful result's ``structuredContent`` against the tool's listed
+``outputSchema`` and throws ``mcp::StructuredContentError`` when it does not
+conform. ``ClientOptions::validate_tool_schemas = false`` turns both off.
+
+``mcp::CompiledSchema`` (``mcp/protocol/schema.hpp``) is the validator behind
+all of this and can be used directly:
+
+.. code-block:: cpp
+
+   auto schema = mcp::CompiledSchema::compile(
+       {{"type", "object"}, {"required", {"id"}}});
+   auto result = schema.validate({{"name", "x"}});
+   // result.valid == false; result.violations[0].message names "id"
 
 See Also
 --------
