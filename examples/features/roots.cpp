@@ -42,8 +42,9 @@ int main() {
         Server server(server_info, server_caps);
 
         // ========== TOOL REGISTRATION ==========
-        nlohmann::json tool_schema = {
-            {"type", "object"}, {"properties", {}}, {"required", nlohmann::json::array()}};
+        nlohmann::json tool_schema = {{"type", "object"},
+                                      {"properties", nlohmann::json::object()},
+                                      {"required", nlohmann::json::array()}};
 
         server.add_tool<nlohmann::json, nlohmann::json>(
             "discover_roots", "Discovers and displays the client's declared root URIs", tool_schema,

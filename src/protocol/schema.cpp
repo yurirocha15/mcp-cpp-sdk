@@ -172,6 +172,16 @@ std::string_view without_default_base(std::string_view uri) {
     return uri;
 }
 
+/// The innermost problem @p message reports. The 2020-12 and 2019-09 metaschemas combine their
+/// vocabularies with `allOf`, so the outermost message only says that a subschema failed.
+const jcs::validation_message& innermost(const jcs::validation_message& message) {
+    const auto* current = &message;
+    while (!current->details().empty()) {
+        current = &current->details().front();
+    }
+    return *current;
+}
+
 std::string describe(std::string_view prefix, std::string_view detail) {
     return std::string(prefix) + detail::sanitize_for_diagnostics(detail);
 }
@@ -226,7 +236,8 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
         const WorkBudget budget(schema_shape.levels);
         metaschema(dialect).validate(converted, [&](const jcs::validation_message& message) {
             if (!schema_invalid) {
-                first_problem = {message.instance_location().string(), message.message()};
+                const auto& problem = innermost(message);
+                first_problem = {problem.instance_location().string(), problem.message()};
                 schema_invalid = true;
             }
             return jcs::walk_state::abort;

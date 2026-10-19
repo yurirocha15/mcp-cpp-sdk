@@ -5,6 +5,7 @@
 #include "../detail/spawn_awaitable.hpp"
 
 #include <mcp/detail/serialized_transport_writer.hpp>
+#include <mcp/protocol/schema.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/memory.hpp>
@@ -50,6 +51,44 @@
 namespace mcp {
 
 namespace {
+
+struct CompiledToolSchemas {
+    CompiledSchema input;
+    std::optional<CompiledSchema> output;
+};
+
+/// Compiles @p tool's schemas, refusing the tool when either is not a JSON Schema the SDK can use.
+/// Tool arguments are always objects, so the input schema must also declare `"type": "object"`,
+/// as the schema of both protocol revisions requires.
+CompiledToolSchemas compile_tool_schemas(const Tool& tool) {
+    const auto refuse = [&tool](SchemaError::Category category, std::string_view field,
+                                std::string_view problem) {
+        return SchemaError(category, "Tool '" + detail::sanitize_for_diagnostics(tool.name) + "' " +
+                                         std::string(field) + ": " + std::string(problem));
+    };
+    const auto compile = [&](const nlohmann::json& schema, std::string_view field) {
+        if (!schema.is_object()) {
+            throw refuse(SchemaError::Category::eInvalidSchema, field, "must be a JSON object");
+        }
+        try {
+            return CompiledSchema::compile(schema);
+        } catch (const SchemaError& error) {
+            throw refuse(error.category(), field, error.what());
+        }
+    };
+
+    auto input = compile(tool.inputSchema, "inputSchema");
+    const auto type = tool.inputSchema.find("type");
+    if (type == tool.inputSchema.end() || *type != "object") {
+        throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema",
+                     R"(must declare "type": "object")");
+    }
+    std::optional<CompiledSchema> output;
+    if (tool.outputSchema) {
+        output = compile(*tool.outputSchema, "outputSchema");
+    }
+    return {std::move(input), std::move(output)};
+}
 
 /// One state of a URI template's matching automaton.
 struct UriMatchState {
@@ -528,6 +567,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     struct ToolRegistration {
         TypeErasedHandler handler;
         detail::ToolResultMode result_mode;
+        CompiledToolSchemas schemas;
     };
 
     struct ResourceTemplateRegistration {
@@ -667,18 +707,21 @@ void Server::register_tool(const Tool& tool, const std::string& name, TypeErased
     if (impl_->tool_handlers.contains(name)) {
         throw std::invalid_argument("Duplicate tool registration: " + name);
     }
+    auto schemas = compile_tool_schemas(tool);
     impl_->tools.push_back(tool);
-    impl_->tool_handlers.emplace(name, Impl::ToolRegistration{std::move(handler), result_mode});
+    impl_->tool_handlers.emplace(
+        name, Impl::ToolRegistration{std::move(handler), result_mode, std::move(schemas)});
 }
 
 void Server::register_tool(Tool&& tool, TypeErasedHandler handler, detail::ToolResultMode result_mode) {
     if (impl_->tool_handlers.contains(tool.name)) {
         throw std::invalid_argument("Duplicate tool registration: " + tool.name);
     }
+    auto schemas = compile_tool_schemas(tool);
     auto name = tool.name;
     impl_->tools.push_back(std::move(tool));
-    impl_->tool_handlers.emplace(std::move(name),
-                                 Impl::ToolRegistration{std::move(handler), result_mode});
+    impl_->tool_handlers.emplace(
+        std::move(name), Impl::ToolRegistration{std::move(handler), result_mode, std::move(schemas)});
 }
 
 void Server::register_resource(const Resource& resource, TypeErasedHandler handler) {
