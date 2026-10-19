@@ -4,13 +4,20 @@
 The SDK compiles jsoncons's JSON Schema extension into one private translation
 unit. The vendored tree is never edited by hand: this script downloads the
 pinned release tarball, verifies its SHA-256, copies the headers the extension
-needs and applies two recorded transformations:
+needs and applies three recorded transformations:
 
 1. ``std::regex`` is replaced with ``mcp::detail::Regex``. libstdc++'s
    ``std::regex`` recurses once per input character, so a schema ``pattern``
    matched against a long string overflows the stack; ``mcp::detail::Regex``
    runs in linear time without recursion.
-2. The ``jsoncons`` namespace becomes ``mcp_detail_jsoncons`` and the
+2. ``eval_context``, which jsoncons creates for every keyword it evaluates,
+   enforces a limit on the evaluation depth and on the evaluation work in one
+   validation, where a step costs one more than the length of its evaluation
+   path. Without them a reference cycle that never descends into the value
+   (``{"$ref": "#"}``) recurses until the stack overflows, and branching
+   applicators over recursive references take time exponential in the value's
+   depth.
+3. The ``jsoncons`` namespace becomes ``mcp_detail_jsoncons`` and the
    ``JSONCONS_`` macro prefix becomes ``MCP_DETAIL_JSONCONS_``, so the copy
    compiled into the SDK (a static archive included) cannot collide with a
    jsoncons the application uses itself.
@@ -41,7 +48,7 @@ VERSION = "1.10.0"
 TARBALL_URL = f"https://github.com/danielaparker/jsoncons/archive/refs/tags/v{VERSION}.tar.gz"
 TARBALL_SHA256 = "c829350a2eece662beb378143e2ab1c1cbb07d703687bf168626665a8a7d8bc1"
 # Bump when the transformation below changes, so PROVENANCE records which one produced the tree.
-TRANSFORM_VERSION = 1
+TRANSFORM_VERSION = 2
 
 # Header directories, relative to the release's include/, that the extension needs.
 SUBSET = ("jsoncons", "jsoncons_ext/jsonschema", "jsoncons_ext/jsonpointer")
@@ -83,6 +90,58 @@ REGEX_REPLACEMENTS = (
         "if (schema_pp.first.search(prop.key()))",
         2,
     ),
+)
+
+EVAL_CONTEXT_PATH = "jsoncons_ext/jsonschema/common/eval_context.hpp"
+
+EVALUATION_LIMITS = """// Added by mcp-cpp-sdk (scripts/vendor_jsoncons.py): limits on one validation. A reference
+// cycle that never descends into the value makes evaluation recurse without end, and branching
+// applicators over recursive references can make the number of evaluation steps exponential in
+// the value's depth. eval_context is created for every keyword evaluated, so it enforces both.
+// Creating one copies the evaluation path and the dynamic scope, so a step costs work in
+// proportion to the path's length, and the budget is charged accordingly.
+class evaluation_limit_error : public std::runtime_error
+{
+public:
+    using std::runtime_error::runtime_error;
+};
+
+struct evaluation_limits
+{
+    // Longest evaluation path, counted in keywords and array indexes.
+    static constexpr std::size_t max_depth = 192;
+
+    // Evaluation work left for the validation running on this thread. A step with an evaluation
+    // path of n tokens costs n + 1. The caller sets it before each validation; the initial value
+    // does not limit anything.
+    static std::size_t& work_left()
+    {
+        static thread_local std::size_t work = static_cast<std::size_t>(-1);
+        return work;
+    }
+
+    static void enter(std::size_t depth)
+    {
+        if (depth > max_depth)
+        {
+            throw evaluation_limit_error("schema evaluation nests too deeply");
+        }
+        std::size_t& work = work_left();
+        if (work <= depth)
+        {
+            throw evaluation_limit_error("schema evaluation takes too many steps");
+        }
+        work -= depth + 1;
+    }
+};
+
+template <typename Json>
+class eval_context
+{"""
+
+# The four eval_context constructors that extend the evaluation path.
+EVAL_PATH_CONSTRUCTOR = re.compile(
+    r"(eval_path_\(parent\.eval_path\(\) / (?:name|index)\),\s*flags_\((?:parent\.flags_|flags)\)\s*)\{\s*\}"
 )
 
 # `jsoncons` as an identifier, not as part of an include path (`jsoncons/`) or of a longer
@@ -140,6 +199,8 @@ def transform(headers: dict[str, str]) -> dict[str, str]:
             text = text.replace(old, new)
         if "std::regex" in text:
             raise SystemExit(f"std::regex left in {path} after the replacements")
+        if path == EVAL_CONTEXT_PATH:
+            text = add_evaluation_limits(text)
         text = NAMESPACE_PATTERN.sub("mcp_detail_jsoncons", text)
         text = MACRO_PATTERN.sub("MCP_DETAIL_JSONCONS_", text)
         result[path] = text
@@ -149,6 +210,21 @@ def transform(headers: dict[str, str]) -> dict[str, str]:
     return result
 
 
+def add_evaluation_limits(text: str) -> str:
+    anchor = "template <typename Json>\nclass eval_context\n{"
+    if text.count(anchor) != 1 or text.count("#include <vector>\n") != 1:
+        raise SystemExit(f"{EVAL_CONTEXT_PATH} changed upstream; review the evaluation limits patch")
+    text = text.replace("#include <vector>\n", "#include <stdexcept>\n#include <vector>\n")
+    text = text.replace(anchor, EVALUATION_LIMITS)
+    text, count = EVAL_PATH_CONSTRUCTOR.subn(
+        lambda match: match.group(1) + "{\n        evaluation_limits::enter(eval_path_.tokens().size());\n    }",
+        text,
+    )
+    if count != 4:
+        raise SystemExit(f"expected 4 eval_context constructors that extend the path, found {count}")
+    return text
+
+
 def provenance() -> str:
     return (
         f"jsoncons {VERSION}\n"
@@ -156,8 +232,8 @@ def provenance() -> str:
         f"sha256: {TARBALL_SHA256}\n"
         f"subset: {', '.join(SUBSET)}\n"
         f"transform: {TRANSFORM_VERSION} (scripts/vendor_jsoncons.py: std::regex replaced with "
-        "mcp::detail::Regex; namespace jsoncons renamed mcp_detail_jsoncons; macro prefix "
-        "JSONCONS_ renamed MCP_DETAIL_JSONCONS_)\n"
+        "mcp::detail::Regex; evaluation depth and work limits added to eval_context; namespace "
+        "jsoncons renamed mcp_detail_jsoncons; macro prefix JSONCONS_ renamed MCP_DETAIL_JSONCONS_)\n"
     )
 
 
@@ -186,9 +262,13 @@ def main() -> int:
     transformed = transform(headers)
 
     if not args.check:
+        readme = OUTPUT_DIR / "README.md"
+        readme_text = readme.read_bytes() if readme.exists() else None
         if OUTPUT_DIR.exists():
             shutil.rmtree(OUTPUT_DIR)
         write_tree(OUTPUT_DIR, transformed, license_text)
+        if readme_text is not None:
+            readme.write_bytes(readme_text)
         print(f"wrote {len(transformed)} headers to {OUTPUT_DIR.relative_to(REPO_ROOT)}")
         return 0
 

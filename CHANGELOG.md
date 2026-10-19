@@ -15,6 +15,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `SchemaError`. The schema itself is checked against its dialect's
   metaschema. `SchemaOptions` bounds the nesting of a validated value
   (64 levels by default) and the number of violations reported.
+  References resolve only within the document and to the supported
+  metaschemas; any other `$ref` is refused with
+  `SchemaError::Category::eUnresolvedRef`, and nothing is fetched. Evaluation
+  is bounded in path length and work: a validation that exceeds them reports
+  the value as invalid, and a schema that exceeds them for any value, such as
+  `{"$ref": "#"}`, is refused when compiled.
 
 ### Changed
 
