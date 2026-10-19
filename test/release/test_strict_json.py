@@ -16,6 +16,8 @@ class StrictJsonTests(unittest.TestCase):
             ('{"outer":{"value":1,"value":2}}', "duplicate key"),
             ('{"value":NaN}', "non-finite number"),
             ('{"value":-Infinity}', "non-finite number"),
+            ('{"value":1e400}', "non-finite number"),
+            ('{"value":-1e400}', "non-finite number"),
         ):
             with self.subTest(document=document), self.assertRaisesRegex(
                 ValidationError, message

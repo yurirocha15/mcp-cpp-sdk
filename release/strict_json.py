@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from .model import ValidationError
@@ -25,12 +26,19 @@ def loads_strict(data: str | bytes, *, label: str) -> object:
     def reject_constant(value: str) -> None:
         raise ValidationError(f"{label} contains non-finite number: {value}")
 
+    def reject_overflow(value: str) -> float:
+        number = float(value)
+        if not math.isfinite(number):
+            reject_constant(value)
+        return number
+
     try:
         text = data.decode("utf-8") if isinstance(data, bytes) else data
         return json.loads(
             text,
             object_pairs_hook=reject_duplicates,
             parse_constant=reject_constant,
+            parse_float=reject_overflow,
         )
     except (UnicodeError, json.JSONDecodeError) as error:
         raise ValidationError(f"{label} is malformed JSON") from error
