@@ -9,6 +9,7 @@
 #define MCP_DETAIL_JSONCONS_EXT_JSONSCHEMA_COMMON_KEYWORD_VALIDATOR_HPP
 
 #include <cassert>
+#include <cmath>
 #include <cstddef>
 #include <map>
 #include <set>
@@ -1947,6 +1948,12 @@ namespace jsonschema {
 
         static bool is_multiple_of(double x, double multiple_of) 
         {
+            // Added by mcp-cpp-sdk (scripts/vendor_jsoncons.py): a quotient that overflows
+            // is not a multiple.
+            if (!std::isfinite(x / multiple_of))
+            {
+                return false;
+            }
             double rem = std::remainder(x, multiple_of);
             double eps = std::nextafter(x, 0) - x;
             return std::fabs(rem) < std::fabs(eps);
@@ -2452,7 +2459,7 @@ namespace jsonschema {
                         {
                             is_type_found = true;
                         }
-                        else if (instance.is_double() && static_cast<double>(instance.template as<int64_t>()) == instance.template as<double>())
+                        else if (instance.is_double() && std::isfinite(instance.template as<double>()) && std::trunc(instance.template as<double>()) == instance.template as<double>())
                         {
                             is_type_found = true;
                         }
