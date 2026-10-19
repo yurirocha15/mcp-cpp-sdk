@@ -27,6 +27,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `tools/call` naming an unknown tool and `prompts/get` naming an unknown
   prompt are answered with `g_INVALID_PARAMS` (`-32602`), as the tools and
   prompts specifications list, instead of `g_METHOD_NOT_FOUND` (`-32601`).
+- `Server::add_tool()` and `add_raw_tool()` compile the tool's `inputSchema`
+  and `outputSchema` and throw `SchemaError` when either is not a JSON Schema
+  object that `CompiledSchema` accepts, or when the input schema does not
+  declare `"type": "object"`, which the schema of both protocol revisions
+  requires. Previously any JSON value was advertised as the schema.
 
 ### Fixed
 

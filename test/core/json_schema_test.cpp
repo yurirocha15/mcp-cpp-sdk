@@ -35,6 +35,15 @@ SchemaError::Category compile_error(const json& schema) {
     return SchemaError::Category::eInvalidSchema;
 }
 
+std::string compile_message(const json& schema) {
+    try {
+        (void)CompiledSchema::compile(schema);
+    } catch (const SchemaError& error) {
+        return error.what();
+    }
+    return {};
+}
+
 TEST(SchemaDialect, DefaultIs2020_12WithoutDollarSchema) {
     // prefixItems exists only in 2020-12; under draft-07 it would be an ignored unknown keyword.
     const json schema = {{"prefixItems", {{{"type", "integer"}}}}};
@@ -110,6 +119,13 @@ TEST(SchemaDialect, MetaschemaViolationIsInvalidSchema) {
     EXPECT_EQ(compile_error({{"minLength", -1}}), SchemaError::Category::eInvalidSchema);
     EXPECT_EQ(compile_error({{"required", "name"}}), SchemaError::Category::eInvalidSchema);
     EXPECT_EQ(compile_error({{"$schema", 7}}), SchemaError::Category::eInvalidSchema);
+}
+
+// The 2020-12 metaschema wraps its vocabularies in allOf; the message names the problem inside.
+TEST(SchemaDialect, MetaschemaViolationNamesTheInnermostProblem) {
+    const auto message = compile_message({{"type", "object"}, {"properties", nullptr}});
+    EXPECT_NE(message.find("'/properties'"), std::string::npos) << message;
+    EXPECT_NE(message.find("found null"), std::string::npos) << message;
 }
 
 TEST(SchemaDialect, NullAndNonObjectSchemasRejected) {
@@ -198,15 +214,6 @@ TEST(SchemaValidation, DeeplyNestedSchemaIsRejected) {
         schema = {{"properties", {{"a", std::move(schema)}}}};
     }
     EXPECT_EQ(compile_error(schema), SchemaError::Category::eInvalidSchema);
-}
-
-std::string compile_message(const json& schema) {
-    try {
-        (void)CompiledSchema::compile(schema);
-    } catch (const SchemaError& error) {
-        return error.what();
-    }
-    return {};
 }
 
 TEST(SchemaRefPolicy, LocalFragmentAndAnchorResolve) {
