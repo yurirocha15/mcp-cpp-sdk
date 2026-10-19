@@ -99,6 +99,7 @@ set(MCP_CPP_SDK_SOURCES
     src/core/regex.cpp
     src/core/secure_random.cpp
     src/core/serialized_transport_writer.cpp
+    src/protocol/native_schema.cpp
     src/protocol/schema.cpp
     src/protocol/tools.cpp
     src/auth/challenge.cpp

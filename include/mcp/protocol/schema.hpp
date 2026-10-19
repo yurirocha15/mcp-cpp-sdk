@@ -94,6 +94,9 @@ struct CompiledSchemaImpl;
  * exceeds. A schema that exceeds a bound even for a trivial value, such as `{"$ref": "#"}`, is
  * refused when it is compiled.
  *
+ * Violation messages are written for people and their wording may change; `valid` and
+ * `instance_path` are the stable parts of a result.
+ *
  * A compiled schema is immutable: copies share it, and `validate()` may be called from several
  * threads at once.
  */
