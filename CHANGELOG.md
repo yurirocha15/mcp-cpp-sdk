@@ -48,6 +48,13 @@ Versioning; a `0.x` version is a stable release unless its version has an
   to. A result that does not conform is answered with `g_INTERNAL_ERROR`
   naming the violations (`ToolValidationOptions::validate_structured_content`
   turns the check off).
+- `Client::list_tools()` compiles each listed tool's schemas and leaves out a
+  tool whose schema cannot be used (invalid, an unsupported dialect, or a
+  `$ref` outside the document), reporting it through
+  `ClientOptions::on_tool_schema_error`. `Client::call_tool()` checks the
+  `structuredContent` of a successful result against the tool's listed
+  `outputSchema` and throws `StructuredContentError` when it does not conform.
+  `ClientOptions::validate_tool_schemas = false` turns both off.
 
 ### Fixed
 

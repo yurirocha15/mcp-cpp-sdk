@@ -63,6 +63,17 @@ class MCP_API McpError : public std::runtime_error {
     Error error_;
 };
 
+/**
+ * @brief Thrown by Client::call_tool() when the `structuredContent` of a successful result does not
+ * conform to the output schema the tool declared (see ClientOptions::validate_tool_schemas).
+ *
+ * code() is g_INTERNAL_ERROR; data() is `{"violations": [{"instancePath": ..., "message": ...}]}`.
+ */
+class MCP_API StructuredContentError : public McpError {
+   public:
+    using McpError::McpError;
+};
+
 /** @brief Client-wide runtime behavior. */
 struct ClientOptions {
     /**
@@ -91,6 +102,23 @@ struct ClientOptions {
      * discarded: there is nowhere left to report a failure of the reporting path itself.
      */
     std::function<void(const Error&)> on_protocol_error;
+    /**
+     * @brief Check the schemas of the tools the server lists.
+     *
+     * list_tools() compiles each tool's `inputSchema` and `outputSchema` and leaves out a tool
+     * whose schema is not one CompiledSchema accepts (invalid, an unsupported dialect, or a `$ref`
+     * outside the document), reporting it through on_tool_schema_error. call_tool() then checks the
+     * `structuredContent` of a successful result against the output schema from the most recent
+     * list_tools() result that included the tool, and throws StructuredContentError when it does
+     * not conform. A tool the client has not seen listed is not checked.
+     */
+    bool validate_tool_schemas{true};
+    /**
+     * @brief Invoked for each tool list_tools() leaves out because its schema cannot be used.
+     *
+     * Runs inside list_tools(), so it must not block. An exception thrown from it is discarded.
+     */
+    std::function<void(const Tool&, const SchemaError&)> on_tool_schema_error;
 };
 
 /** @brief Overrides for one outgoing request. */
@@ -214,6 +242,8 @@ class MCP_API Client {
      * @param name The name of the tool to call.
      * @param arguments The arguments to pass to the tool.
      * @return A task that resolves to the server's CallToolResult.
+     * @throws StructuredContentError when the result's `structuredContent` does not conform to
+     *         the tool's output schema (see ClientOptions::validate_tool_schemas).
      */
     template <JsonSerializable Args>
     Task<CallToolResult> call_tool(const std::string& name, const Args& arguments) {
@@ -221,11 +251,13 @@ class MCP_API Client {
         CallToolParams call_params;
         call_params.name = name;
         call_params.arguments = nlohmann::json(arguments);
-        return call_and_parse<CallToolResult>("tools/call", nlohmann::json(std::move(call_params)));
+        return call_tool_with(std::move(call_params));
     }
 
     /**
      * @brief List available tools from the server.
+     *
+     * Tools whose schemas cannot be used are left out (see ClientOptions::validate_tool_schemas).
      *
      * @param cursor Optional pagination cursor.
      * @return A task that resolves to the server's ListToolsResult.
@@ -370,6 +402,8 @@ class MCP_API Client {
     void on_roots_list(std::function<Task<ListRootsResult>(const nlohmann::json&)> handler);
 
    private:
+    Task<CallToolResult> call_tool_with(CallToolParams params);
+
     // [gcc11-sso: string_view] nlohmann::json is heap-allocated; string_view is trivially copyable.
     template <typename Result>
     Task<Result> call_and_parse(std::string_view method, std::optional<nlohmann::json> params) {
