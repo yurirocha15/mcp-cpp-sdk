@@ -53,6 +53,31 @@ McpError::McpError(Error error)
 McpError::McpError(int code, std::string message, std::optional<nlohmann::json> data)
     : McpError(Error{code, std::move(message), std::move(data)}) {}
 
+namespace {
+
+/// Checks a tools/call result against the tool's output schema, when the client has one for it.
+Task<CallToolResult> checked_call_result(Task<nlohmann::json> request,
+                                         std::optional<CompiledSchema> output_schema) {
+    auto result_json = co_await std::move(request);
+    auto result = result_json.get<CallToolResult>();
+    if (output_schema && !result.isError.value_or(false) && result.structuredContent) {
+        const auto validation = output_schema->validate(*result.structuredContent);
+        if (!validation.valid) {
+            std::string message = "structuredContent does not conform to the tool's outputSchema";
+            nlohmann::json violations = nlohmann::json::array();
+            for (const auto& violation : validation.violations) {
+                violations.push_back(
+                    {{"instancePath", violation.instance_path}, {"message", violation.message}});
+            }
+            throw StructuredContentError(g_INTERNAL_ERROR, std::move(message),
+                                         nlohmann::json{{"violations", std::move(violations)}});
+        }
+    }
+    co_return result;
+}
+
+}  // namespace
+
 struct Client::Impl {
     struct PendingRequest {
         PendingRequest(const boost::asio::any_io_executor& executor, std::chrono::milliseconds timeout)
@@ -550,6 +575,92 @@ struct Client::Impl {
     std::map<std::string, RequestHandler, std::less<>> request_handlers;
     std::vector<Root> roots;
     ClientCapabilities client_capabilities;
+
+    /// What the client knows of a listed tool's schemas. The serialized schemas let a later
+    /// listing reuse the compiled output schema when nothing changed.
+    struct ListedTool {
+        std::string input_text;
+        std::optional<std::string> output_text;
+        std::optional<CompiledSchema> output_schema;
+    };
+    mutable std::mutex listed_tools_mutex;
+    std::map<std::string, ListedTool, std::less<>> listed_tools;
+
+    /// The output schema to check a call of @p name against, if the client has one.
+    std::optional<CompiledSchema> output_schema_for(std::string_view name) const {
+        if (!options.validate_tool_schemas) {
+            return std::nullopt;
+        }
+        std::lock_guard lock(listed_tools_mutex);
+        const auto found = listed_tools.find(name);
+        if (found == listed_tools.end()) {
+            return std::nullopt;
+        }
+        return found->second.output_schema;
+    }
+
+    /// Compiles @p tool's schemas and remembers its output schema; the problem when a schema cannot
+    /// be used.
+    std::optional<SchemaError> remember_tool(const Tool& tool) {
+        ListedTool listed{
+            tool.inputSchema.dump(),
+            tool.outputSchema ? std::optional<std::string>(tool.outputSchema->dump()) : std::nullopt,
+            std::nullopt};
+        {
+            std::lock_guard lock(listed_tools_mutex);
+            const auto found = listed_tools.find(tool.name);
+            if (found != listed_tools.end() && found->second.input_text == listed.input_text &&
+                found->second.output_text == listed.output_text) {
+                return std::nullopt;
+            }
+        }
+        std::string_view field = "inputSchema";
+        try {
+            (void)CompiledSchema::compile(tool.inputSchema);
+            field = "outputSchema";
+            if (tool.outputSchema) {
+                listed.output_schema = CompiledSchema::compile(*tool.outputSchema);
+            }
+        } catch (const SchemaError& error) {
+            std::lock_guard lock(listed_tools_mutex);
+            listed_tools.erase(tool.name);
+            return SchemaError(error.category(), std::string(field) + ": " + error.what());
+        }
+        std::lock_guard lock(listed_tools_mutex);
+        listed_tools.insert_or_assign(tool.name, std::move(listed));
+        return std::nullopt;
+    }
+
+    /// Leaves out of @p result the tools whose schemas cannot be used, reporting each.
+    void accept_listed_tools(ListToolsResult& result) {
+        if (!options.validate_tool_schemas) {
+            return;
+        }
+        std::vector<Tool> usable;
+        usable.reserve(result.tools.size());
+        for (auto& tool : result.tools) {
+            auto problem = remember_tool(tool);
+            if (!problem) {
+                usable.push_back(std::move(tool));
+                continue;
+            }
+            if (options.on_tool_schema_error) {
+                try {
+                    options.on_tool_schema_error(tool, *problem);
+                } catch (...) {
+                    // Documented: the callback reports; a failure of its own has no listener.
+                }
+            }
+        }
+        result.tools = std::move(usable);
+    }
+
+    static Task<ListToolsResult> accepted_tools(std::shared_ptr<Impl> state,
+                                                Task<ListToolsResult> request) {
+        auto result = co_await std::move(request);
+        state->accept_listed_tools(result);
+        co_return result;
+    }
 };
 
 Client::Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_executor& executor,
@@ -634,7 +745,16 @@ void Client::close() {
 }
 
 Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& cursor) {
-    return call_and_parse<ListToolsResult>("tools/list", make_paginated_params(cursor));
+    // [gcc11-sso: not-a-coroutine]
+    return Impl::accepted_tools(
+        impl_, call_and_parse<ListToolsResult>("tools/list", make_paginated_params(cursor)));
+}
+
+Task<CallToolResult> Client::call_tool_with(CallToolParams params) {
+    // [gcc11-sso: not-a-coroutine]
+    auto output_schema = impl_->output_schema_for(params.name);
+    return checked_call_result(send_request("tools/call", nlohmann::json(std::move(params))),
+                               std::move(output_schema));
 }
 
 Task<ListResourcesResult> Client::list_resources(const std::optional<std::string>& cursor) {
