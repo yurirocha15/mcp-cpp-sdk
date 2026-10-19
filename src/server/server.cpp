@@ -57,6 +57,27 @@ struct CompiledToolSchemas {
     std::optional<CompiledSchema> output;
 };
 
+/// The tool result for @p arguments that do not conform to @p schema, or nothing when they do.
+std::optional<nlohmann::json> argument_rejection(const CompiledSchema& schema,
+                                                 const nlohmann::json& arguments) {
+    auto result = schema.validate(arguments);
+    if (result.valid) {
+        return std::nullopt;
+    }
+    std::string text = "Invalid arguments: ";
+    for (std::size_t i = 0; i < result.violations.size(); ++i) {
+        const auto& violation = result.violations[i];
+        if (i > 0) {
+            text += "; ";
+        }
+        if (!violation.instance_path.empty()) {
+            text += violation.instance_path + ": ";
+        }
+        text += violation.message;
+    }
+    return nlohmann::json(make_tool_error_result(std::move(text)));
+}
+
 /// Compiles @p tool's schemas, refusing the tool when either is not a JSON Schema the SDK can use.
 /// Tool arguments are always objects, so the input schema must also declare `"type": "object"`,
 /// as the schema of both protocol revisions requires.
@@ -613,6 +634,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
 
     std::vector<Tool> tools;
     std::map<std::string, ToolRegistration, std::less<>> tool_handlers;
+    ToolValidationOptions tool_validation;
+    std::atomic<std::uint64_t> argument_rejections{0};
 
     std::vector<Resource> resources;
     std::map<std::string, TypeErasedHandler, std::less<>> resource_handlers;
@@ -765,6 +788,14 @@ void Server::use(Middleware mw) { impl_->middlewares.push_back(std::move(mw)); }
 
 void Server::set_completion_provider(CompletionHandler handler) {
     impl_->completion_handler = std::move(handler);
+}
+
+void Server::set_tool_validation(const ToolValidationOptions& options) {
+    impl_->tool_validation = options;
+}
+
+ToolValidationStats Server::tool_validation_stats() const {
+    return {impl_->argument_rejections.load(std::memory_order_relaxed)};
 }
 
 void Server::set_page_size(std::size_t size) { impl_->page_size = size; }
@@ -1355,9 +1386,22 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
     // A tool that throws has failed at its own job, which the protocol reports inside the result as
     // isError. Middleware is not the tool: it decides whether the call may proceed at all, so it
     // runs outside this catch and a middleware failure surfaces as a JSON-RPC error instead.
-    TypeErasedHandler guarded_handler = [original_handler = iter->second.handler](
-                                            Context& inner_ctx,
+    // Arguments that do not conform to the input schema are a tool execution error too, so the
+    // check runs here, after middleware and in place of the handler.
+    std::optional<CompiledSchema> input_schema;
+    if (tool_validation.validate_arguments) {
+        input_schema = iter->second.schemas.input;
+    }
+    TypeErasedHandler guarded_handler =
+        [original_handler = iter->second.handler, input_schema = std::move(input_schema),
+         rejections = &argument_rejections](Context& inner_ctx,
                                             const nlohmann::json& arguments) -> Task<nlohmann::json> {
+        if (input_schema) {
+            if (auto rejection = argument_rejection(*input_schema, arguments)) {
+                rejections->fetch_add(1, std::memory_order_relaxed);
+                co_return std::move(*rejection);
+            }
+        }
         try {
             co_return co_await original_handler(inner_ctx, arguments);
         } catch (const std::exception& error) {
