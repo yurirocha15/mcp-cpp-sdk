@@ -137,6 +137,9 @@ struct ToolValidationOptions {
     /// Check `tools/call` arguments against the tool's input schema. Arguments that do not conform
     /// are answered with an `isError` result listing the violations, and the handler does not run.
     bool validate_arguments = true;
+    /// Check the `structuredContent` of a successful result against the tool's output schema. A
+    /// result that does not conform is a fault in the tool, answered with `g_INTERNAL_ERROR`.
+    bool validate_structured_content = true;
 };
 
 /**
@@ -144,6 +147,8 @@ struct ToolValidationOptions {
  */
 struct ToolValidationStats {
     std::uint64_t argument_rejections = 0;  ///< Calls whose arguments did not conform.
+    /// Calls whose result's `structuredContent` did not conform to the output schema.
+    std::uint64_t structured_content_rejections = 0;
 };
 
 /**
