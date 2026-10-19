@@ -9,7 +9,9 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
+#include <random>
 #include <set>
 #include <string>
 #include <thread>
@@ -389,9 +391,9 @@ TEST(SchemaLimits, SchemaNestingWithinTheMetaschemaBoundCompiles) {
     EXPECT_EQ(compile_error(schema), SchemaError::Category::eInvalidSchema);
 }
 
-// A schema that constrains only the value's type is checked without jsoncons. Adding "not": false,
-// which constrains nothing, sends the same schema through jsoncons; both must agree on every value,
-// messages included.
+// A 2020-12 schema that constrains only the value's type is evaluated natively, with the same
+// message as jsoncons gives. Adding "not": false, which constrains nothing, sends the same schema
+// through jsoncons; both must agree on every value, messages included.
 TEST(SchemaValidation, TypeOnlySchemasMatchFullEvaluation) {
     const std::vector<json> values = {
         nullptr,
@@ -444,6 +446,184 @@ TEST(SchemaValidation, TypeOnlySchemasMatchFullEvaluation) {
     }
     EXPECT_FALSE(CompiledSchema::compile({{"type", "array"}}, options).validate(deep).valid);
     EXPECT_FALSE(CompiledSchema::compile(true, options).validate(deep).valid);
+}
+
+/// @p schema with "not": false added, which constrains nothing but keeps the schema off the native
+/// evaluation, so it is evaluated by jsoncons.
+json through_jsoncons(json schema) {
+    schema["not"] = false;
+    return schema;
+}
+
+// Messages only the native evaluation produces show that a schema using just the keywords it
+// implements is evaluated that way.
+TEST(SchemaNative, SupportedSchemaIsEvaluatedNatively) {
+    const auto schema = CompiledSchema::compile(json::parse(R"({
+        "type": "object",
+        "properties": {"n": {"type": "integer", "minimum": 1}},
+        "required": ["n", "m"],
+        "additionalProperties": false
+    })"));
+    const auto result = schema.validate({{"n", 0}, {"x~/y", true}});
+    ASSERT_FALSE(result.valid);
+    std::vector<std::pair<std::string, std::string>> violations;
+    for (const auto& violation : result.violations) {
+        violations.emplace_back(violation.instance_path, violation.message);
+    }
+    const std::vector<std::pair<std::string, std::string>> expected = {
+        {"", "Required property 'm' is missing"},
+        {"/n", "Value must be at least 1"},
+        {"/x~0~1y", "Additional property 'x~/y' is not allowed"},
+    };
+    EXPECT_EQ(violations, expected);
+}
+
+// Generated schemas over the keywords the native evaluation implements, against generated values:
+// both evaluations must agree on every one.
+TEST(SchemaNative, AgreesWithJsonconsOnGeneratedSchemas) {
+    std::mt19937 random(20261019);
+    const auto pick = [&](std::size_t count) {
+        return std::uniform_int_distribution<std::size_t>(0, count - 1)(random);
+    };
+    const auto chance = [&](int percent) { return static_cast<int>(pick(100)) < percent; };
+    const std::vector<json> scalars = {
+        nullptr,
+        true,
+        false,
+        0,
+        1,
+        -1,
+        2,
+        3,
+        1.0,
+        2.5,
+        -0.5,
+        1e300,
+        std::numeric_limits<std::uint64_t>::max(),
+        "",
+        "a",
+        "ab1",
+        "zzz",
+        "\xc3\xa9\xc3\xa9",
+    };
+    const std::vector<std::string> names = {"a", "b", "c", "d"};
+    const std::vector<std::string> types = {"null",   "boolean", "integer", "number",
+                                            "string", "array",   "object"};
+    const std::vector<std::string> patterns = {"^a", "1$", "[0-9]", "^[a-z]*$", "^.{2}$"};
+
+    std::function<json(int)> make_value = [&](int depth) -> json {
+        const auto kind = pick(depth > 0 ? 4 : 2);
+        if (kind < 2) {
+            return scalars[pick(scalars.size())];
+        }
+        if (kind == 2) {
+            json array = json::array();
+            for (std::size_t i = pick(4); i > 0; --i) {
+                array.push_back(make_value(depth - 1));
+            }
+            return array;
+        }
+        json object = json::object();
+        for (std::size_t i = pick(4); i > 0; --i) {
+            object[names[pick(names.size())]] = make_value(depth - 1);
+        }
+        return object;
+    };
+    const auto number = [&]() -> json {
+        const std::vector<json> numbers = {0, 1, 2, -1, 1.5, 2.0, -0.5};
+        return numbers[pick(numbers.size())];
+    };
+    std::function<json(int)> make_schema = [&](int depth) -> json {
+        if (chance(10)) {
+            return chance(70);
+        }
+        json schema = json::object();
+        if (chance(50)) {
+            if (chance(70)) {
+                schema["type"] = types[pick(types.size())];
+            } else {
+                json list = json::array();
+                for (const auto& type : types) {
+                    if (chance(35)) {
+                        list.push_back(type);
+                    }
+                }
+                if (list.empty()) {
+                    list.push_back("string");
+                }
+                schema["type"] = list;
+            }
+        }
+        if (chance(15)) {
+            json values = json::array();
+            for (std::size_t i = pick(3) + 1; i > 0; --i) {
+                values.push_back(make_value(1));
+            }
+            schema["enum"] = values;
+        }
+        if (chance(8)) {
+            schema["const"] = make_value(1);
+        }
+        for (const auto* keyword : {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"}) {
+            if (chance(12)) {
+                schema[keyword] = number();
+            }
+        }
+        for (const auto* keyword :
+             {"minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties"}) {
+            if (chance(12)) {
+                schema[keyword] = pick(4);
+            }
+        }
+        if (chance(15)) {
+            schema["pattern"] = patterns[pick(patterns.size())];
+        }
+        if (depth > 0 && chance(30)) {
+            schema["items"] = make_schema(depth - 1);
+        }
+        if (depth > 0 && chance(40)) {
+            json properties = json::object();
+            for (const auto& name : names) {
+                if (chance(40)) {
+                    properties[name] = make_schema(depth - 1);
+                }
+            }
+            schema["properties"] = properties;
+        }
+        if (chance(25)) {
+            json required = json::array();
+            for (const auto& name : names) {
+                if (chance(30)) {
+                    required.push_back(name);
+                }
+            }
+            schema["required"] = required;
+        }
+        if (depth > 0 && chance(25)) {
+            schema["additionalProperties"] = make_schema(depth - 1);
+        }
+        if (chance(10)) {
+            schema["description"] = "annotation";
+        }
+        return schema;
+    };
+
+    int compared = 0;
+    for (int i = 0; i < 600; ++i) {
+        const auto schema = make_schema(2);
+        if (!schema.is_object()) {
+            continue;
+        }
+        const auto native = CompiledSchema::compile(schema);
+        const auto full = CompiledSchema::compile(through_jsoncons(schema));
+        for (int j = 0; j < 12; ++j) {
+            const auto value = make_value(2);
+            SCOPED_TRACE(schema.dump() + " against " + value.dump());
+            EXPECT_EQ(native.validate(value).valid, full.validate(value).valid);
+            ++compared;
+        }
+    }
+    EXPECT_GT(compared, 5000);
 }
 
 TEST(SchemaBridge, NumbersStringsAndNullsKeepTheirMeaning) {
