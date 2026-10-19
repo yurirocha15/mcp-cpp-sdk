@@ -364,9 +364,11 @@ jobs:
           REPOSITORY: ${{ vars.CLOUDSMITH_REPOSITORY }}
           REPOSITORY_GPG_FINGERPRINT: ${{ vars.CLOUDSMITH_REPOSITORY_GPG_FINGERPRINT }}
         run: |
-          echo "namespace=${NAMESPACE}" >>"${GITHUB_OUTPUT}"
-          echo "repository=${REPOSITORY}" >>"${GITHUB_OUTPUT}"
-          echo "repository_gpg_fingerprint=${REPOSITORY_GPG_FINGERPRINT}" >>"${GITHUB_OUTPUT}"
+          {
+            echo "namespace=${NAMESPACE}"
+            echo "repository=${REPOSITORY}"
+            echo "repository_gpg_fingerprint=${REPOSITORY_GPG_FINGERPRINT}"
+          } >>"${GITHUB_OUTPUT}"
 
   preflight-aur:
     name: Preflight AUR required by this anchor or batch
@@ -710,8 +712,10 @@ jobs:
           RELEASE_ID: ${{ needs.existing-anchor-policy.outputs.release_id }}
           MANIFEST_SHA256: ${{ needs.existing-anchor-policy.outputs.manifest_sha256 }}
         run: |
-          echo "release_id=${RELEASE_ID}" >>"${GITHUB_OUTPUT}"
-          echo "manifest_sha256=${MANIFEST_SHA256}" >>"${GITHUB_OUTPUT}"
+          {
+            echo "release_id=${RELEASE_ID}"
+            echo "manifest_sha256=${MANIFEST_SHA256}"
+          } >>"${GITHUB_OUTPUT}"
       - name: Upload verified immutable release bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -773,15 +777,17 @@ jobs:
     steps:
       - name: Write final workflow summary
         run: |
-          echo "# Release ${TAG}" >>"${GITHUB_STEP_SUMMARY}"
-          echo "Operation: ${OPERATION}" >>"${GITHUB_STEP_SUMMARY}"
-          echo "" >>"${GITHUB_STEP_SUMMARY}"
-          echo "| Stage | Result | Downstream run |" >>"${GITHUB_STEP_SUMMARY}"
-          echo "|---|---|---|" >>"${GITHUB_STEP_SUMMARY}"
-          echo "| Candidate workflow | ${CANDIDATE_RESULT} | |" >>"${GITHUB_STEP_SUMMARY}"
-          echo "| GitHub anchor | ${ANCHOR_RESULT} | |" >>"${GITHUB_STEP_SUMMARY}"
-          echo "| Cloudsmith | ${CLOUDSMITH_RESULT} | |" >>"${GITHUB_STEP_SUMMARY}"
-          echo "| AUR | ${AUR_RESULT} | |" >>"${GITHUB_STEP_SUMMARY}"
-          echo "| Homebrew | ${HOMEBREW_RESULT} | ${HOMEBREW_URL} |" >>"${GITHUB_STEP_SUMMARY}"
-          echo "| Chocolatey | ${CHOCOLATEY_RESULT} | ${CHOCOLATEY_URL} |" >>"${GITHUB_STEP_SUMMARY}"
-          echo "| ConanCenter | ${CONAN_RESULT} | ${CONAN_URL} |" >>"${GITHUB_STEP_SUMMARY}"
+          {
+            echo "# Release ${TAG}"
+            echo "Operation: ${OPERATION}"
+            echo ""
+            echo "| Stage | Result | Downstream run |"
+            echo "|---|---|---|"
+            echo "| Candidate workflow | ${CANDIDATE_RESULT} | |"
+            echo "| GitHub anchor | ${ANCHOR_RESULT} | |"
+            echo "| Cloudsmith | ${CLOUDSMITH_RESULT} | |"
+            echo "| AUR | ${AUR_RESULT} | |"
+            echo "| Homebrew | ${HOMEBREW_RESULT} | ${HOMEBREW_URL} |"
+            echo "| Chocolatey | ${CHOCOLATEY_RESULT} | ${CHOCOLATEY_URL} |"
+            echo "| ConanCenter | ${CONAN_RESULT} | ${CONAN_URL} |"
+          } >>"${GITHUB_STEP_SUMMARY}"

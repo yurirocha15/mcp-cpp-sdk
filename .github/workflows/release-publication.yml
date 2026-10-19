@@ -263,11 +263,13 @@ jobs:
           CHOCOLATEY_URL: ${{ needs.chocolatey.outputs.downstream_html_url }}
           CONAN_URL: ${{ needs.conan.outputs.downstream_html_url }}
         run: |
-          echo "cloudsmith_result=${CLOUDSMITH_RESULT}" >>"${GITHUB_OUTPUT}"
-          echo "aur_result=${AUR_RESULT}" >>"${GITHUB_OUTPUT}"
-          echo "homebrew_result=${HOMEBREW_RESULT}" >>"${GITHUB_OUTPUT}"
-          echo "chocolatey_result=${CHOCOLATEY_RESULT}" >>"${GITHUB_OUTPUT}"
-          echo "conan_result=${CONAN_RESULT}" >>"${GITHUB_OUTPUT}"
-          echo "homebrew_url=${HOMEBREW_URL}" >>"${GITHUB_OUTPUT}"
-          echo "chocolatey_url=${CHOCOLATEY_URL}" >>"${GITHUB_OUTPUT}"
-          echo "conan_url=${CONAN_URL}" >>"${GITHUB_OUTPUT}"
+          {
+            echo "cloudsmith_result=${CLOUDSMITH_RESULT}"
+            echo "aur_result=${AUR_RESULT}"
+            echo "homebrew_result=${HOMEBREW_RESULT}"
+            echo "chocolatey_result=${CHOCOLATEY_RESULT}"
+            echo "conan_result=${CONAN_RESULT}"
+            echo "homebrew_url=${HOMEBREW_URL}"
+            echo "chocolatey_url=${CHOCOLATEY_URL}"
+            echo "conan_url=${CONAN_URL}"
+          } >>"${GITHUB_OUTPUT}"
