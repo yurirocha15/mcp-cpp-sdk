@@ -729,3 +729,88 @@ TEST_F(ServerToolArgsTest, MiddlewareSeesARefusedCall) {
     EXPECT_TRUE(saw_error);
     EXPECT_EQ(handler_runs_, 0);
 }
+
+class ServerToolOutputTest : public ServerToolTest {
+   protected:
+    /// Registers "measure" with an output schema requiring a non-negative integer "size"; the tool
+    /// returns @p structured as its structuredContent (or an error result when @p error is set).
+    static void add_measure_tool(ServerSetup& setup, nlohmann::json structured, bool error = false) {
+        mcp::Tool tool;
+        tool.name = "measure";
+        tool.inputSchema = {{"type", "object"}};
+        tool.outputSchema = nlohmann::json::parse(R"({
+            "type": "object",
+            "properties": {"size": {"type": "integer", "minimum": 0}},
+            "required": ["size"]
+        })");
+        setup.server.add_raw_tool(
+            tool, [structured = std::move(structured), error](const nlohmann::json&) -> nlohmann::json {
+                auto result = mcp::make_tool_structured_result(structured);
+                if (error) {
+                    result.isError = true;
+                }
+                return result;
+            });
+    }
+};
+
+TEST_F(ServerToolOutputTest, NonConformingStructuredContentIsAnInternalError) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    add_measure_tool(setup, {{"size", -3}});
+
+    auto responses = call_tool(setup, "measure");
+
+    ASSERT_EQ(responses.size(), 2);
+    const auto& error = responses[1].at("error");
+    EXPECT_EQ(error.at("code"), mcp::g_INTERNAL_ERROR);
+    const auto message = error.at("message").get<std::string>();
+    EXPECT_NE(message.find("outputSchema"), std::string::npos) << message;
+    EXPECT_NE(message.find("/size"), std::string::npos) << message;
+    EXPECT_EQ(setup.server.tool_validation_stats().structured_content_rejections, 1U);
+}
+
+TEST_F(ServerToolOutputTest, ConformingStructuredContentIsReturned) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    add_measure_tool(setup, {{"size", 7}});
+
+    auto responses = call_tool(setup, "measure");
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1].at("result").at("structuredContent").at("size"), 7);
+    EXPECT_EQ(setup.server.tool_validation_stats().structured_content_rejections, 0U);
+}
+
+TEST_F(ServerToolOutputTest, ErrorResultsAreNotChecked) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    add_measure_tool(setup, {{"reason", "disk unavailable"}}, true);
+
+    auto responses = call_tool(setup, "measure");
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_TRUE(responses[1].at("result").value("isError", false));
+}
+
+TEST_F(ServerToolOutputTest, CheckCanBeTurnedOff) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    setup.server.set_tool_validation({.validate_structured_content = false});
+    add_measure_tool(setup, {{"size", "large"}});
+
+    auto responses = call_tool(setup, "measure");
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1].at("result").at("structuredContent").at("size"), "large");
+}
+
+// Typed tools produce structuredContent from the handler's return value; it is checked the same way.
+TEST_F(ServerToolOutputTest, TypedToolResultIsChecked) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    setup.server.add_tool<nlohmann::json, nlohmann::json>(
+        "typed", "Returns a size", {{"type", "object"}},
+        nlohmann::json::parse(R"({"type": "object", "required": ["size"]})"),
+        [](const nlohmann::json&) { return nlohmann::json{{"length", 3}}; });
+
+    auto responses = call_tool(setup, "typed");
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1].at("error").at("code"), mcp::g_INTERNAL_ERROR);
+}

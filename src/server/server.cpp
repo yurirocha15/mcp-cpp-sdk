@@ -57,6 +57,33 @@ struct CompiledToolSchemas {
     std::optional<CompiledSchema> output;
 };
 
+/// Throws when the `structuredContent` of @p result does not conform to @p schema; the dispatcher
+/// answers that with g_INTERNAL_ERROR, since the tool broke its own declared contract.
+void check_structured_content(const CompiledSchema& schema, std::string_view tool_name,
+                              const nlohmann::json& result) {
+    const auto content = result.find("structuredContent");
+    if (content == result.end()) {
+        return;
+    }
+    const auto validation = schema.validate(*content);
+    if (validation.valid) {
+        return;
+    }
+    std::string text = "Tool '" + std::string(tool_name) +
+                       "' returned structuredContent that does not conform to its outputSchema: ";
+    for (std::size_t i = 0; i < validation.violations.size(); ++i) {
+        const auto& violation = validation.violations[i];
+        if (i > 0) {
+            text += "; ";
+        }
+        if (!violation.instance_path.empty()) {
+            text += violation.instance_path + ": ";
+        }
+        text += violation.message;
+    }
+    throw std::runtime_error(text);
+}
+
 /// The tool result for @p arguments that do not conform to @p schema, or nothing when they do.
 std::optional<nlohmann::json> argument_rejection(const CompiledSchema& schema,
                                                  const nlohmann::json& arguments) {
@@ -636,6 +663,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::map<std::string, ToolRegistration, std::less<>> tool_handlers;
     ToolValidationOptions tool_validation;
     std::atomic<std::uint64_t> argument_rejections{0};
+    std::atomic<std::uint64_t> structured_content_rejections{0};
 
     std::vector<Resource> resources;
     std::map<std::string, TypeErasedHandler, std::less<>> resource_handlers;
@@ -795,7 +823,8 @@ void Server::set_tool_validation(const ToolValidationOptions& options) {
 }
 
 ToolValidationStats Server::tool_validation_stats() const {
-    return {impl_->argument_rejections.load(std::memory_order_relaxed)};
+    return {impl_->argument_rejections.load(std::memory_order_relaxed),
+            impl_->structured_content_rejections.load(std::memory_order_relaxed)};
 }
 
 void Server::set_page_size(std::size_t size) { impl_->page_size = size; }
@@ -1446,6 +1475,15 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
         !handler_result.contains("structuredContent")) {
         throw std::invalid_argument("Tool with outputSchema must return structuredContent: " +
                                     params.name);
+    }
+    const auto& output_schema = iter->second.schemas.output;
+    if (output_schema && !is_error_result && tool_validation.validate_structured_content) {
+        try {
+            check_structured_content(*output_schema, params.name, handler_result);
+        } catch (const std::runtime_error&) {
+            structured_content_rejections.fetch_add(1, std::memory_order_relaxed);
+            throw;
+        }
     }
 
     co_return handler_result;
