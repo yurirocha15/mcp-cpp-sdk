@@ -39,6 +39,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   to `Server::invoke_tool()`. `Server::set_tool_validation()` with
   `ToolValidationOptions::validate_arguments = false` turns it off, and
   `Server::tool_validation_stats()` counts refused calls.
+- The `structuredContent` of a successful tool result is checked against the
+  tool's `outputSchema`, which both protocol revisions require it to conform
+  to. A result that does not conform is answered with `g_INTERNAL_ERROR`
+  naming the violations (`ToolValidationOptions::validate_structured_content`
+  turns the check off).
 
 ### Fixed
 
