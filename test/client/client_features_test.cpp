@@ -9,8 +9,11 @@
 #include <boost/asio/io_context.hpp>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -510,4 +513,202 @@ TEST_F(ClientFeaturesTest, CompleteSendsCorrectWireFormat) {
     EXPECT_EQ(result.completion.values[1], "beta");
     ASSERT_TRUE(result.completion.hasMore.has_value());
     EXPECT_TRUE(*result.completion.hasMore);
+}
+
+class ClientToolSchemaTest : public ::testing::Test {
+   protected:
+    boost::asio::io_context io_ctx_;
+    std::shared_ptr<ScriptedTransport> transport_ =
+        std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    nlohmann::json tools_ = nlohmann::json::array();  ///< What tools/list answers.
+    nlohmann::json call_result_;                      ///< What tools/call answers.
+
+    void SetUp() override {
+        auto* raw = transport_.get();
+        raw->set_on_write([this, raw](std::string_view msg) {
+            auto json_msg = nlohmann::json::parse(msg);
+            if (!json_msg.contains("id")) {
+                return;
+            }
+            const auto id = json_msg["id"].get<std::string>();
+            const auto method = json_msg.value("method", "");
+            if (method == "initialize") {
+                raw->enqueue_message(make_result_response(id, make_initialize_result()).dump());
+            } else if (method == "tools/list") {
+                raw->enqueue_message(make_result_response(id, {{"tools", tools_}}).dump());
+            } else if (method == "tools/call") {
+                raw->enqueue_message(make_result_response(id, call_result_).dump());
+            }
+        });
+    }
+
+    /// Connects a client with @p options, runs @p body with it and closes the transport.
+    void run(mcp::ClientOptions options, std::function<mcp::Task<void>(mcp::Client&)> body) {
+        mcp::Client client(transport_, io_ctx_.get_executor(), std::move(options));
+        boost::asio::co_spawn(
+            io_ctx_,
+            [&]() -> mcp::Task<void> {
+                // An exception escaping here would leave the transport open and io_ctx_.run()
+                // waiting, so it is recorded and the transport closed either way.
+                try {
+                    co_await client.connect("test-client", "0.1");
+                    co_await body(client);
+                } catch (const std::exception& error) {
+                    unexpected_error_ = error.what();
+                }
+                transport_->close();
+            },
+            boost::asio::detached);
+        io_ctx_.run();
+        EXPECT_EQ(unexpected_error_, "");
+    }
+
+    std::string unexpected_error_;
+
+    static nlohmann::json tool(std::string name, nlohmann::json input_schema,
+                               std::optional<nlohmann::json> output_schema = std::nullopt) {
+        nlohmann::json definition = {{"name", std::move(name)},
+                                     {"inputSchema", std::move(input_schema)}};
+        if (output_schema) {
+            definition["outputSchema"] = std::move(*output_schema);
+        }
+        return definition;
+    }
+
+    static nlohmann::json size_schema() {
+        return nlohmann::json::parse(R"({
+            "type": "object",
+            "properties": {"size": {"type": "integer", "minimum": 0}},
+            "required": ["size"]
+        })");
+    }
+
+    static nlohmann::json structured_result(nlohmann::json structured, bool error = false) {
+        return {{"content", nlohmann::json::array()},
+                {"structuredContent", std::move(structured)},
+                {"isError", error}};
+    }
+};
+
+TEST_F(ClientToolSchemaTest, ToolsWithUnusableSchemasAreLeftOutAndReported) {
+    tools_ = nlohmann::json::array({
+        tool("usable", {{"type", "object"}}, size_schema()),
+        tool("invalid", {{"type", "object"}, {"properties", nullptr}}),
+        tool("dialect", {{"$schema", "https://example.com/dialect"}, {"type", "object"}}),
+        tool("remote",
+             {{"type", "object"}, {"properties", {{"a", {{"$ref", "https://example.com/a.json"}}}}}}),
+        tool("bad-output", {{"type", "object"}}, nlohmann::json{{"type", "objekt"}}),
+        tool("no-object-type", nlohmann::json::object()),
+    });
+    std::vector<std::pair<std::string, mcp::SchemaError::Category>> reported;
+    std::vector<std::string> messages;
+    mcp::ClientOptions options;
+    options.on_tool_schema_error = [&](const mcp::Tool& tool, const mcp::SchemaError& error) {
+        reported.emplace_back(tool.name, error.category());
+        messages.emplace_back(error.what());
+    };
+    std::vector<std::string> listed;
+    run(std::move(options), [&](mcp::Client& client) -> mcp::Task<void> {
+        auto result = co_await client.list_tools();
+        for (const auto& listed_tool : result.tools) {
+            listed.push_back(listed_tool.name);
+        }
+    });
+
+    EXPECT_EQ(listed, (std::vector<std::string>{"usable", "no-object-type"}));
+    const std::vector<std::pair<std::string, mcp::SchemaError::Category>> expected = {
+        {"invalid", mcp::SchemaError::Category::eInvalidSchema},
+        {"dialect", mcp::SchemaError::Category::eUnsupportedDialect},
+        {"remote", mcp::SchemaError::Category::eUnresolvedRef},
+        {"bad-output", mcp::SchemaError::Category::eInvalidSchema},
+    };
+    EXPECT_EQ(reported, expected);
+    ASSERT_EQ(messages.size(), 4U);
+    EXPECT_EQ(messages[0].rfind("inputSchema: ", 0), 0U) << messages[0];
+    EXPECT_EQ(messages[3].rfind("outputSchema: ", 0), 0U) << messages[3];
+}
+
+TEST_F(ClientToolSchemaTest, NonConformingStructuredContentThrows) {
+    tools_ = nlohmann::json::array({tool("measure", {{"type", "object"}}, size_schema())});
+    call_result_ = structured_result({{"size", -1}});
+    std::optional<mcp::StructuredContentError> thrown;
+    run({}, [&](mcp::Client& client) -> mcp::Task<void> {
+        co_await client.list_tools();
+        try {
+            co_await client.call_tool("measure", nlohmann::json::object());
+        } catch (const mcp::StructuredContentError& error) {
+            thrown = error;
+        }
+    });
+
+    ASSERT_TRUE(thrown.has_value());
+    EXPECT_EQ(thrown->code(), mcp::g_INTERNAL_ERROR);
+    ASSERT_TRUE(thrown->data().has_value());
+    const auto& violations = thrown->data()->at("violations");
+    ASSERT_EQ(violations.size(), 1U);
+    EXPECT_EQ(violations[0].at("instancePath"), "/size");
+}
+
+TEST_F(ClientToolSchemaTest, ConformingAndErrorResultsAreReturned) {
+    tools_ = nlohmann::json::array({tool("measure", {{"type", "object"}}, size_schema())});
+    std::optional<mcp::CallToolResult> conforming;
+    std::optional<mcp::CallToolResult> error_result;
+    run({}, [&](mcp::Client& client) -> mcp::Task<void> {
+        co_await client.list_tools();
+        call_result_ = structured_result({{"size", 4}});
+        conforming = co_await client.call_tool("measure", nlohmann::json::object());
+        call_result_ = structured_result({{"reason", "unavailable"}}, true);
+        error_result = co_await client.call_tool("measure", nlohmann::json::object());
+    });
+
+    ASSERT_TRUE(conforming.has_value());
+    EXPECT_EQ(conforming->structuredContent->at("size"), 4);
+    ASSERT_TRUE(error_result.has_value());
+    EXPECT_TRUE(error_result->isError.value_or(false));
+}
+
+TEST_F(ClientToolSchemaTest, UnlistedToolIsNotChecked) {
+    call_result_ = structured_result({{"size", "anything"}});
+    std::optional<mcp::CallToolResult> result;
+    run({}, [&](mcp::Client& client) -> mcp::Task<void> {
+        result = co_await client.call_tool("measure", nlohmann::json::object());
+    });
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->structuredContent->at("size"), "anything");
+}
+
+TEST_F(ClientToolSchemaTest, ALaterListingReplacesTheOutputSchema) {
+    tools_ = nlohmann::json::array({tool("measure", {{"type", "object"}}, size_schema())});
+    call_result_ = structured_result({{"size", "large"}});
+    std::optional<mcp::CallToolResult> result;
+    run({}, [&](mcp::Client& client) -> mcp::Task<void> {
+        co_await client.list_tools();
+        tools_ = nlohmann::json::array({tool(
+            "measure", {{"type", "object"}},
+            nlohmann::json{{"type", "object"}, {"properties", {{"size", {{"type", "string"}}}}}})});
+        co_await client.list_tools();
+        result = co_await client.call_tool("measure", nlohmann::json::object());
+    });
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->structuredContent->at("size"), "large");
+}
+
+TEST_F(ClientToolSchemaTest, ChecksCanBeTurnedOff) {
+    tools_ = nlohmann::json::array({tool("measure", {{"type", "object"}}, size_schema()),
+                                    tool("invalid", {{"type", "object"}, {"required", "a"}})});
+    call_result_ = structured_result({{"size", -1}});
+    mcp::ClientOptions options;
+    options.validate_tool_schemas = false;
+    std::size_t listed = 0;
+    std::optional<mcp::CallToolResult> result;
+    run(std::move(options), [&](mcp::Client& client) -> mcp::Task<void> {
+        listed = (co_await client.list_tools()).tools.size();
+        result = co_await client.call_tool("measure", nlohmann::json::object());
+    });
+
+    EXPECT_EQ(listed, 2U);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->structuredContent->at("size"), -1);
 }
