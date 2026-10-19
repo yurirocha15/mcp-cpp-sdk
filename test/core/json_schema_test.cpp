@@ -9,6 +9,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <string>
 #include <thread>
@@ -386,6 +387,63 @@ TEST(SchemaLimits, SchemaNestingWithinTheMetaschemaBoundCompiles) {
     EXPECT_NO_THROW((void)CompiledSchema::compile(schema));
     schema = {{"type", "object"}, {"properties", {{"c", std::move(schema)}}}};
     EXPECT_EQ(compile_error(schema), SchemaError::Category::eInvalidSchema);
+}
+
+// A schema that constrains only the value's type is checked without jsoncons. Adding "not": false,
+// which constrains nothing, sends the same schema through jsoncons; both must agree on every value,
+// messages included.
+TEST(SchemaValidation, TypeOnlySchemasMatchFullEvaluation) {
+    const std::vector<json> values = {
+        nullptr,
+        true,
+        0,
+        -7,
+        std::numeric_limits<std::uint64_t>::max(),
+        1.5,
+        1e308,
+        "",
+        "text",
+        json::array(),
+        json::array({1, "a"}),
+        json::object(),
+        json{{"a", {{"b", 1}}}},
+    };
+    std::vector<json> schemas = {json::object(), json{{"title", "anything"}, {"x-note", 1}}};
+    for (const auto* type : {"object", "array", "string", "boolean", "null", "number"}) {
+        schemas.push_back({{"type", type}});
+        schemas.push_back({{"type", type},
+                           {"description", "d"},
+                           {"$comment", "c"},
+                           {"default", nullptr},
+                           {"$schema", "http://json-schema.org/draft-07/schema#"}});
+    }
+    for (const auto& schema : schemas) {
+        auto full_schema = schema;
+        full_schema["not"] = false;
+        const auto fast = CompiledSchema::compile(schema);
+        const auto full = CompiledSchema::compile(full_schema);
+        for (const auto& value : values) {
+            SCOPED_TRACE(schema.dump() + " against " + value.dump());
+            const auto fast_result = fast.validate(value);
+            const auto full_result = full.validate(value);
+            EXPECT_EQ(fast_result.valid, full_result.valid);
+            ASSERT_EQ(fast_result.violations.size(), full_result.violations.size());
+            for (std::size_t i = 0; i < fast_result.violations.size(); ++i) {
+                EXPECT_EQ(fast_result.violations[i].instance_path,
+                          full_result.violations[i].instance_path);
+                EXPECT_EQ(fast_result.violations[i].message, full_result.violations[i].message);
+            }
+        }
+    }
+    // The depth limit applies on both paths.
+    mcp::SchemaOptions options;
+    options.max_instance_depth = 4;
+    json deep = json::array();
+    for (int i = 0; i < 10; ++i) {
+        deep = json::array({std::move(deep)});
+    }
+    EXPECT_FALSE(CompiledSchema::compile({{"type", "array"}}, options).validate(deep).valid);
+    EXPECT_FALSE(CompiledSchema::compile(true, options).validate(deep).valid);
 }
 
 TEST(SchemaBridge, NumbersStringsAndNullsKeepTheirMeaning) {

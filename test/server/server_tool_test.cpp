@@ -11,6 +11,7 @@
 #include <boost/asio/steady_timer.hpp>
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -38,12 +39,14 @@ class ServerToolTest : public ::testing::Test {
                   std::move(caps)) {}
     };
 
-    std::vector<nlohmann::json> call_tool(ServerSetup& setup, std::string name) {
-        return call_tool(setup, std::move(name), io_ctx_);
+    std::vector<nlohmann::json> call_tool(ServerSetup& setup, std::string name,
+                                          nlohmann::json arguments = nlohmann::json::object()) {
+        return call_tool(setup, std::move(name), io_ctx_, std::move(arguments));
     }
 
     static std::vector<nlohmann::json> call_tool(ServerSetup& setup, std::string name,
-                                                 boost::asio::io_context& io_ctx) {
+                                                 boost::asio::io_context& io_ctx,
+                                                 nlohmann::json arguments = nlohmann::json::object()) {
         std::vector<nlohmann::json> responses;
         setup.raw_transport->set_on_write([&responses, &setup](std::string_view message) {
             responses.push_back(nlohmann::json::parse(message));
@@ -53,12 +56,12 @@ class ServerToolTest : public ::testing::Test {
         });
         setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
         setup.raw_transport->enqueue_message(make_initialized_notification().dump());
-        setup.raw_transport->enqueue_message(nlohmann::json{
-            {"jsonrpc", "2.0"},
-            {"id", "2"},
-            {"method", "tools/call"},
-            {"params", {{"name", std::move(name)}, {"arguments", nlohmann::json::object()}}}}
-                                                 .dump());
+        setup.raw_transport->enqueue_message(
+            nlohmann::json{{"jsonrpc", "2.0"},
+                           {"id", "2"},
+                           {"method", "tools/call"},
+                           {"params", {{"name", std::move(name)}, {"arguments", std::move(arguments)}}}}
+                .dump());
 
         boost::asio::co_spawn(
             io_ctx,
@@ -549,4 +552,180 @@ TEST(ServerToolSchema, RefusedToolIsNotRegistered) {
     EXPECT_NO_THROW(server.add_raw_tool(tool_with_input({{"type", "object"}}), raw_result));
     EXPECT_THROW(server.add_raw_tool(tool_with_input({{"type", "object"}}), raw_result),
                  std::invalid_argument);
+}
+
+namespace {
+
+const nlohmann::json& order_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"({
+        "type": "object",
+        "properties": {
+            "item": {"type": "string", "minLength": 1},
+            "quantity": {"type": "integer", "minimum": 1}
+        },
+        "required": ["item", "quantity"],
+        "additionalProperties": false
+    })");
+    return schema;
+}
+
+mcp::ServerCapabilities tool_capabilities() {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    return caps;
+}
+
+}  // namespace
+
+class ServerToolArgsTest : public ServerToolTest {
+   protected:
+    /// Registers "order" with order_schema(); the handler counts its runs and echoes the arguments.
+    void add_order_tool(ServerSetup& setup) {
+        setup.server.add_tool("order", "Place an order", order_schema(),
+                              [this](const nlohmann::json& arguments) {
+                                  ++handler_runs_;
+                                  return nlohmann::json{{"ordered", arguments}};
+                              });
+    }
+
+    int handler_runs_ = 0;
+};
+
+TEST_F(ServerToolArgsTest, NonConformingArgumentsGiveAnErrorResultWithoutRunningTheHandler) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    add_order_tool(setup);
+
+    auto responses = call_tool(setup, "order", {{"item", ""}, {"quantity", 0}, {"extra", true}});
+
+    ASSERT_EQ(responses.size(), 2);
+    const auto& result = responses[1].at("result");
+    EXPECT_TRUE(result.value("isError", false));
+    const auto text = result.at("content").at(0).at("text").get<std::string>();
+    EXPECT_EQ(text.rfind("Invalid arguments: ", 0), 0U) << text;
+    EXPECT_NE(text.find("/item"), std::string::npos) << text;
+    EXPECT_NE(text.find("/quantity"), std::string::npos) << text;
+    EXPECT_EQ(handler_runs_, 0);
+    EXPECT_EQ(setup.server.tool_validation_stats().argument_rejections, 1U);
+}
+
+TEST_F(ServerToolArgsTest, MissingRequiredArgumentIsReported) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    add_order_tool(setup);
+
+    auto responses = call_tool(setup, "order", {{"item", "tea"}});
+
+    ASSERT_EQ(responses.size(), 2);
+    const auto& result = responses[1].at("result");
+    EXPECT_TRUE(result.value("isError", false));
+    EXPECT_NE(result.at("content").at(0).at("text").get<std::string>().find("quantity"),
+              std::string::npos);
+    EXPECT_EQ(handler_runs_, 0);
+}
+
+// Arguments that are not an object are refused while decoding the request, before validation.
+TEST_F(ServerToolArgsTest, ArgumentsThatAreNotAnObjectAreInvalidParams) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    add_order_tool(setup);
+
+    auto responses = call_tool(setup, "order", nlohmann::json::array({"tea", 2}));
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1].at("error").at("code"), mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(handler_runs_, 0);
+    EXPECT_EQ(setup.server.tool_validation_stats().argument_rejections, 0U);
+}
+
+TEST_F(ServerToolArgsTest, ConformingArgumentsReachTheHandler) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    add_order_tool(setup);
+
+    const nlohmann::json arguments = {{"item", "tea"}, {"quantity", 2}};
+    auto responses = call_tool(setup, "order", arguments);
+
+    ASSERT_EQ(responses.size(), 2);
+    const auto& result = responses[1].at("result");
+    EXPECT_FALSE(result.value("isError", false));
+    EXPECT_EQ(handler_runs_, 1);
+    EXPECT_EQ(setup.server.tool_validation_stats().argument_rejections, 0U);
+}
+
+// Values a lenient implementation might mangle on the way to the validator: integral doubles,
+// integers beyond int64, non-ASCII text, nesting within the depth limit, many elements.
+TEST_F(ServerToolArgsTest, ValidCorpusIsNeverRejected) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    const auto schema = nlohmann::json::parse(R"({
+        "type": "object",
+        "properties": {
+            "count": {"type": "integer"},
+            "big": {"type": "integer", "minimum": 0},
+            "ratio": {"type": "number", "exclusiveMaximum": 1},
+            "name": {"type": "string", "maxLength": 5, "pattern": "^[^0-9]+$"},
+            "tree": {"$ref": "#/$defs/node"},
+            "values": {"type": "array", "items": {"type": "number"}, "maxItems": 10000}
+        },
+        "$defs": {"node": {"type": "object", "properties": {"child": {"$ref": "#/$defs/node"}}}}
+    })");
+    setup.server.add_tool("corpus", "Accepts the corpus", schema, [this](const nlohmann::json&) {
+        ++handler_runs_;
+        return nlohmann::json{{"ok", true}};
+    });
+    nlohmann::json tree = nlohmann::json::object();
+    for (int i = 0; i < 30; ++i) {
+        tree = {{"child", std::move(tree)}};
+    }
+    nlohmann::json values = nlohmann::json::array();
+    for (int i = 0; i < 10000; ++i) {
+        values.push_back(i % 2 == 0 ? nlohmann::json(i) : nlohmann::json(i + 0.25));
+    }
+    const nlohmann::json arguments = {
+        {"count", 3.0},
+        {"big", std::numeric_limits<std::uint64_t>::max()},
+        {"ratio", 0.999999},
+        {"name", "\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9"},  // five code points, ten bytes
+        {"tree", std::move(tree)},
+        {"values", std::move(values)},
+    };
+
+    auto responses = call_tool(setup, "corpus", arguments);
+
+    ASSERT_EQ(responses.size(), 2);
+    const auto& result = responses[1].at("result");
+    EXPECT_FALSE(result.value("isError", false)) << result.dump().substr(0, 400);
+    EXPECT_EQ(handler_runs_, 1);
+}
+
+TEST_F(ServerToolArgsTest, ValidationCanBeTurnedOff) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    setup.server.set_tool_validation({.validate_arguments = false});
+    add_order_tool(setup);
+
+    auto responses = call_tool(setup, "order", {{"quantity", "many"}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_FALSE(responses[1].at("result").value("isError", false));
+    EXPECT_EQ(handler_runs_, 1);
+    EXPECT_EQ(setup.server.tool_validation_stats().argument_rejections, 0U);
+}
+
+// Middleware runs first and sees the call; the check stands in for the handler.
+TEST_F(ServerToolArgsTest, MiddlewareSeesARefusedCall) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    add_order_tool(setup);
+    int middleware_runs = 0;
+    bool saw_error = false;
+    setup.server.use([&](mcp::Context& ctx, const nlohmann::json& params,
+                         mcp::TypeErasedHandler next) -> mcp::Task<nlohmann::json> {
+        ++middleware_runs;
+        auto result = co_await next(ctx, params);
+        saw_error = result.value("isError", false);
+        co_return result;
+    });
+
+    auto responses = call_tool(setup, "order", {{"item", 7}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_TRUE(responses[1].at("result").value("isError", false));
+    EXPECT_EQ(middleware_runs, 1);
+    EXPECT_TRUE(saw_error);
+    EXPECT_EQ(handler_runs_, 0);
 }

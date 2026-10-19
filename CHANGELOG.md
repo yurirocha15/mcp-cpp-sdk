@@ -32,6 +32,13 @@ Versioning; a `0.x` version is a stable release unless its version has an
   object that `CompiledSchema` accepts, or when the input schema does not
   declare `"type": "object"`, which the schema of both protocol revisions
   requires. Previously any JSON value was advertised as the schema.
+- `tools/call` arguments are validated against the tool's input schema, as
+  both protocol revisions require of servers. Arguments that do not conform
+  are answered with an `isError` result listing the violations, and the
+  handler does not run; middleware still sees the call. The check also applies
+  to `Server::invoke_tool()`. `Server::set_tool_validation()` with
+  `ToolValidationOptions::validate_arguments = false` turns it off, and
+  `Server::tool_validation_stats()` counts refused calls.
 
 ### Fixed
 

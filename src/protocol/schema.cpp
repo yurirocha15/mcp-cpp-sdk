@@ -8,6 +8,7 @@
 #include <jsoncons/json.hpp>
 #include <jsoncons_ext/jsonschema/jsonschema.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <exception>
@@ -182,6 +183,74 @@ const jcs::validation_message& innermost(const jcs::validation_message& message)
     return *current;
 }
 
+/// Keywords that only annotate a schema; validation ignores them, as it does keywords starting
+/// with "x-".
+bool is_annotation(std::string_view keyword) {
+    static constexpr std::array<std::string_view, 10> annotations = {
+        "$schema", "$id",      "$comment",   "title",    "description",
+        "default", "examples", "deprecated", "readOnly", "writeOnly",
+    };
+    return keyword.substr(0, 2) == "x-" ||
+           std::find(annotations.begin(), annotations.end(), keyword) != annotations.end();
+}
+
+/// When @p schema constrains nothing but the value's type, that type, or "" when it constrains
+/// nothing at all. `integer` is left to jsoncons, whose meaning for `1.0` depends on the dialect.
+std::optional<std::string_view> type_only(const nlohmann::json& schema) {
+    if (schema.is_boolean()) {
+        return schema.get<bool>() ? std::optional<std::string_view>("") : std::nullopt;
+    }
+    static constexpr std::array<std::string_view, 6> simple_types = {
+        "object", "array", "string", "boolean", "null", "number",
+    };
+    std::string_view type;
+    for (const auto& [keyword, value] : schema.items()) {
+        if (keyword == "type" && value.is_string()) {
+            const auto& name = value.get_ref<const std::string&>();
+            const auto found = std::find(simple_types.begin(), simple_types.end(), name);
+            if (found == simple_types.end()) {
+                return std::nullopt;
+            }
+            type = *found;
+        } else if (!is_annotation(keyword)) {
+            return std::nullopt;
+        }
+    }
+    return type;
+}
+
+/// The JSON Schema type name of @p value, as jsoncons reports it.
+std::string_view type_name(const nlohmann::json& value) {
+    switch (value.type()) {
+        case nlohmann::json::value_t::null:
+            return "null";
+        case nlohmann::json::value_t::boolean:
+            return "boolean";
+        case nlohmann::json::value_t::number_integer:
+        case nlohmann::json::value_t::number_unsigned:
+            return "integer";
+        case nlohmann::json::value_t::number_float:
+            return "number";
+        case nlohmann::json::value_t::string:
+            return "string";
+        case nlohmann::json::value_t::array:
+            return "array";
+        case nlohmann::json::value_t::object:
+            return "object";
+        case nlohmann::json::value_t::binary:
+        case nlohmann::json::value_t::discarded:
+            break;
+    }
+    return "unknown";
+}
+
+bool has_type(const nlohmann::json& value, std::string_view type) {
+    if (type == "number") {
+        return value.is_number();
+    }
+    return type_name(value) == type;
+}
+
 std::string describe(std::string_view prefix, std::string_view detail) {
     return std::string(prefix) + detail::sanitize_for_diagnostics(detail);
 }
@@ -192,6 +261,9 @@ struct CompiledSchemaImpl {
     nlohmann::json source;
     SchemaOptions options;
     jcs::json_schema<jc::json> compiled;
+    /// Set when the schema constrains only the value's type (see type_only()); validation then
+    /// checks the type itself instead of converting the value for jsoncons.
+    std::optional<std::string_view> only_type;
 };
 
 SchemaError::SchemaError(Category category, const std::string& message)
@@ -295,7 +367,7 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
     }
 
     return CompiledSchema(std::make_shared<const CompiledSchemaImpl>(
-        CompiledSchemaImpl{schema, options, std::move(*compiled)}));
+        CompiledSchemaImpl{schema, options, std::move(*compiled), type_only(schema)}));
 }
 
 ValidationResult CompiledSchema::validate(const nlohmann::json& instance) const {
@@ -306,6 +378,16 @@ ValidationResult CompiledSchema::validate(const nlohmann::json& instance) const 
         result.valid = false;
         result.violations.push_back(
             {"", "value nests deeper than " + std::to_string(options.max_instance_depth) + " levels"});
+        return result;
+    }
+
+    if (impl_->only_type) {
+        const auto type = *impl_->only_type;
+        if (!type.empty() && !has_type(instance, type)) {
+            result.valid = false;
+            result.violations.push_back(
+                {"", "Expected " + std::string(type) + ", found " + std::string(type_name(instance))});
+        }
         return result;
     }
 
