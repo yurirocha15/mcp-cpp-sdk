@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 #include <jsoncons/config/jsoncons_config.hpp>
@@ -55,6 +56,47 @@ operator&=(evaluation_flags& lhs, evaluation_flags rhs) noexcept
 constexpr evaluation_flags&
 operator^=(evaluation_flags& lhs, evaluation_flags rhs) noexcept
 { return lhs = lhs ^ rhs; }
+
+// Added by mcp-cpp-sdk (scripts/vendor_jsoncons.py): limits on one validation. A reference
+// cycle that never descends into the value makes evaluation recurse without end, and branching
+// applicators over recursive references can make the number of evaluation steps exponential in
+// the value's depth. eval_context is created for every keyword evaluated, so it enforces both.
+// Creating one copies the evaluation path and the dynamic scope, so a step costs work in
+// proportion to the path's length, and the budget is charged accordingly.
+class evaluation_limit_error : public std::runtime_error
+{
+public:
+    using std::runtime_error::runtime_error;
+};
+
+struct evaluation_limits
+{
+    // Longest evaluation path, counted in keywords and array indexes.
+    static constexpr std::size_t max_depth = 192;
+
+    // Evaluation work left for the validation running on this thread. A step with an evaluation
+    // path of n tokens costs n + 1. The caller sets it before each validation; the initial value
+    // does not limit anything.
+    static std::size_t& work_left()
+    {
+        static thread_local std::size_t work = static_cast<std::size_t>(-1);
+        return work;
+    }
+
+    static void enter(std::size_t depth)
+    {
+        if (depth > max_depth)
+        {
+            throw evaluation_limit_error("schema evaluation nests too deeply");
+        }
+        std::size_t& work = work_left();
+        if (work <= depth)
+        {
+            throw evaluation_limit_error("schema evaluation takes too many steps");
+        }
+        work -= depth + 1;
+    }
+};
 
 template <typename Json>
 class eval_context
@@ -107,6 +149,7 @@ public:
           flags_(parent.flags_)
           
     {
+        evaluation_limits::enter(eval_path_.tokens().size());
     }
 
     eval_context(const eval_context& parent, mcp_detail_jsoncons::string_view name,
@@ -114,12 +157,14 @@ public:
         : dynamic_scope_{parent.dynamic_scope_}, eval_path_(parent.eval_path() / name),
           flags_(flags)
     {
+        evaluation_limits::enter(eval_path_.tokens().size());
     }
 
     eval_context(const eval_context& parent, std::size_t index)
         : dynamic_scope_{parent.dynamic_scope_}, eval_path_(parent.eval_path() / index),
           flags_(parent.flags_)
     {
+        evaluation_limits::enter(eval_path_.tokens().size());
     }
 
     eval_context(const eval_context& parent, std::size_t index,
@@ -127,6 +172,7 @@ public:
         : dynamic_scope_{parent.dynamic_scope_}, eval_path_(parent.eval_path() / index),
           flags_(flags)
     {
+        evaluation_limits::enter(eval_path_.tokens().size());
     }
 
     const std::vector<const schema_validator<Json>*>& dynamic_scope() const

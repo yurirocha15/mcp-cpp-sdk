@@ -1,9 +1,12 @@
 #include <mcp/protocol/schema.hpp>
 
 #include <gtest/gtest.h>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -194,6 +197,187 @@ TEST(SchemaValidation, DeeplyNestedSchemaIsRejected) {
     for (int i = 0; i < 40; ++i) {
         schema = {{"properties", {{"a", std::move(schema)}}}};
     }
+    EXPECT_EQ(compile_error(schema), SchemaError::Category::eInvalidSchema);
+}
+
+std::string compile_message(const json& schema) {
+    try {
+        (void)CompiledSchema::compile(schema);
+    } catch (const SchemaError& error) {
+        return error.what();
+    }
+    return {};
+}
+
+TEST(SchemaRefPolicy, LocalFragmentAndAnchorResolve) {
+    const json schema = json::parse(R"({
+        "$defs": {"positive": {"type": "integer", "minimum": 1},
+                  "named": {"$anchor": "word", "type": "string"}},
+        "properties": {"n": {"$ref": "#/$defs/positive"}, "w": {"$ref": "#word"}}
+    })");
+    EXPECT_TRUE(is_valid(schema, {{"n", 2}, {"w", "x"}}));
+    EXPECT_FALSE(is_valid(schema, {{"n", 0}}));
+    EXPECT_FALSE(is_valid(schema, {{"w", 1}}));
+}
+
+TEST(SchemaRefPolicy, EmbeddedIdResolvesWithoutFetching) {
+    const json schema = json::parse(R"({
+        "$id": "https://example.com/root.json",
+        "$defs": {"item": {"$id": "item.json", "type": "string"}},
+        "items": {"$ref": "item.json"}
+    })");
+    EXPECT_TRUE(is_valid(schema, {"a", "b"}));
+    EXPECT_FALSE(is_valid(schema, {"a", 1}));
+}
+
+TEST(SchemaRefPolicy, MetaschemaReferenceResolves) {
+    const json schema = {{"$ref", "https://json-schema.org/draft/2020-12/schema"}};
+    EXPECT_TRUE(is_valid(schema, {{"type", "string"}}));
+    EXPECT_FALSE(is_valid(schema, {{"type", 5}}));
+}
+
+// A $ref to a remote schema is refused at compile time and no connection is attempted: a listener
+// on the referenced port never sees one.
+TEST(SchemaRefPolicy, HttpReferenceIsUnresolvedWithoutConnecting) {
+    boost::asio::io_context io_ctx;
+    boost::asio::ip::tcp::acceptor acceptor(io_ctx, {boost::asio::ip::make_address("127.0.0.1"), 0});
+    acceptor.non_blocking(true);
+    const auto url =
+        "http://127.0.0.1:" + std::to_string(acceptor.local_endpoint().port()) + "/schema.json";
+    const json schema = {{"properties", {{"a", {{"$ref", url}}}}}};
+    EXPECT_EQ(compile_error(schema), SchemaError::Category::eUnresolvedRef);
+    EXPECT_NE(compile_message(schema).find(url), std::string::npos);
+    boost::system::error_code accepted;
+    boost::asio::ip::tcp::socket socket(io_ctx);
+    acceptor.accept(socket, accepted);
+    EXPECT_EQ(accepted, boost::asio::error::would_block);
+}
+
+TEST(SchemaRefPolicy, FileAndRelativeReferencesAreUnresolved) {
+    EXPECT_EQ(compile_error({{"$ref", "file:///etc/passwd"}}), SchemaError::Category::eUnresolvedRef);
+    EXPECT_EQ(compile_error({{"$ref", "other.json"}}), SchemaError::Category::eUnresolvedRef);
+    EXPECT_EQ(compile_error({{"$ref", "other.json#/$defs/x"}}), SchemaError::Category::eUnresolvedRef);
+}
+
+TEST(SchemaRefPolicy, MissingLocalTargetIsUnresolved) {
+    EXPECT_EQ(compile_error({{"$ref", "#/$defs/missing"}}), SchemaError::Category::eUnresolvedRef);
+    EXPECT_EQ(compile_error({{"$ref", "#nope"}}), SchemaError::Category::eUnresolvedRef);
+    // Reported as written, not against the base URI jsoncons assumes for a document without $id.
+    const auto message = compile_message({{"$ref", "#/$defs/missing"}});
+    EXPECT_NE(message.find(": #/$defs/missing"), std::string::npos) << message;
+    EXPECT_EQ(message.find("jsoncons"), std::string::npos) << message;
+}
+
+// Each of these schemas evaluates itself again without descending into the value, which would
+// recurse until the stack overflows. They are refused when compiled.
+TEST(SchemaLimits, NonDescendingReferenceCyclesAreRefused) {
+    for (
+        const auto* text : {
+            R"({"$ref": "#"})",
+            R"({"allOf": [{"$ref": "#"}]})",
+            R"({"anyOf": [{"$ref": "#"}]})",
+            R"({"$defs": {"a": {"$ref": "#/$defs/b"}, "b": {"$ref": "#/$defs/a"}}, "$ref": "#/$defs/a"})",
+            R"({"$dynamicAnchor": "n", "$dynamicRef": "#n"})",
+            R"({"not": {"$ref": "#"}})",
+        }) {
+        SCOPED_TRACE(text);
+        EXPECT_EQ(compile_error(json::parse(text)), SchemaError::Category::eInvalidSchema);
+    }
+}
+
+// Two branches per level that both descend give 2^depth evaluations. The work budget stops it
+// long before that finishes; the value is reported as invalid. 30 levels stay within the
+// evaluation path bound, so it is the work budget that stops this.
+TEST(SchemaLimits, ExponentialEvaluationIsStopped) {
+    const auto schema = CompiledSchema::compile(json::parse(R"({
+        "anyOf": [{"items": {"$ref": "#"}, "maxItems": 0}, {"items": {"$ref": "#"}}]
+    })"));
+    json value = json::array();
+    for (int i = 0; i < 30; ++i) {
+        value = json::array({std::move(value)});
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const auto result = schema.validate(value);
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(10));
+    EXPECT_FALSE(result.valid);
+    ASSERT_EQ(result.violations.size(), 1U);
+    EXPECT_NE(result.violations.front().message.find("too many steps"), std::string::npos)
+        << result.violations.front().message;
+}
+
+// A recursive schema through anyOf adds several keywords to the evaluation path per level of the
+// value, so it reaches the path bound before max_instance_depth; the value is then invalid.
+TEST(SchemaLimits, EvaluationPathIsBounded) {
+    const auto schema = CompiledSchema::compile(json::parse(R"({
+        "anyOf": [{"type": "array", "items": {"$ref": "#"}}, {"type": "null"}]
+    })"));
+    json value = nullptr;
+    for (int i = 0; i < 40; ++i) {
+        value = json::array({std::move(value)});
+    }
+    EXPECT_TRUE(schema.validate(value).valid);
+    for (int i = 40; i < 63; ++i) {
+        value = json::array({std::move(value)});
+    }
+    const auto result = schema.validate(value);
+    EXPECT_FALSE(result.valid);
+    ASSERT_EQ(result.violations.size(), 1U);
+    EXPECT_NE(result.violations.front().message.find("nests too deeply"), std::string::npos)
+        << result.violations.front().message;
+}
+
+// Values within the depth limit, and large flat values, validate normally under the limits.
+TEST(SchemaLimits, OrdinaryValuesStayWithinTheLimits) {
+    const auto nested =
+        CompiledSchema::compile(json::parse(R"({"type": "array", "items": {"$ref": "#"}})"));
+    json deep = json::array();
+    for (int i = 0; i < 63; ++i) {
+        deep = json::array({std::move(deep)});
+    }
+    EXPECT_TRUE(nested.validate(deep).valid);
+
+    const auto records = CompiledSchema::compile(json::parse(R"({
+        "type": "array",
+        "items": {"type": "object", "required": ["id", "tags"],
+                  "properties": {"id": {"type": "integer"},
+                                 "name": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+                                 "tags": {"type": "array", "items": {"enum": ["a", "b", "c"]}}},
+                  "additionalProperties": false}
+    })"));
+    json many = json::array();
+    for (int i = 0; i < 20'000; ++i) {
+        many.push_back({{"id", i}, {"name", "item-" + std::to_string(i)}, {"tags", {"a", "c"}}});
+    }
+    EXPECT_TRUE(records.validate(many).valid);
+
+    // Any JSON value, through anyOf and $ref at every level: the most work per node and level
+    // among ordinary schemas.
+    const auto any_value = CompiledSchema::compile(json::parse(R"({
+        "$defs": {"v": {"anyOf": [
+            {"type": "null"}, {"type": "boolean"}, {"type": "number"}, {"type": "string"},
+            {"type": "array", "items": {"$ref": "#/$defs/v"}},
+            {"type": "object", "additionalProperties": {"$ref": "#/$defs/v"}}]}},
+        "$ref": "#/$defs/v"
+    })"));
+    const json some(many.begin(), many.begin() + 2'000);
+    EXPECT_TRUE(any_value.validate(some).valid);
+    json wide_and_deep = json::array();
+    for (int i = 0; i < 200; ++i) {
+        wide_and_deep.push_back({{"id", i}, {"tags", {"a", "b"}}});
+    }
+    for (int i = 0; i < 40; ++i) {
+        wide_and_deep = json::array({std::move(wide_and_deep), i});
+    }
+    EXPECT_TRUE(any_value.validate(wide_and_deep).valid);
+}
+
+TEST(SchemaLimits, SchemaNestingWithinTheMetaschemaBoundCompiles) {
+    json schema = {{"type", "string"}};
+    for (int i = 0; i < 26; ++i) {
+        schema = {{"type", "object"}, {"properties", {{"c", std::move(schema)}}}};
+    }
+    EXPECT_NO_THROW((void)CompiledSchema::compile(schema));
+    schema = {{"type", "object"}, {"properties", {{"c", std::move(schema)}}}};
     EXPECT_EQ(compile_error(schema), SchemaError::Category::eInvalidSchema);
 }
 

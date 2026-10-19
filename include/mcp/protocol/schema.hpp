@@ -36,8 +36,11 @@ class MCP_API SchemaError : public std::invalid_argument {
    public:
     /// Why the schema was refused.
     enum class Category {
-        eInvalidSchema,       ///< The schema is not valid under its dialect's metaschema.
+        eInvalidSchema,       ///< The schema is not valid under its dialect's metaschema, or
+                              ///< evaluating it exceeds the evaluation limits on any value.
         eUnsupportedDialect,  ///< `$schema` names a dialect this SDK does not implement.
+        eUnresolvedRef,       ///< A `$ref` target is neither in the document nor a supported
+                              ///< dialect's metaschema. Nothing is fetched.
     };
 
     SchemaError(Category category, const std::string& message);
@@ -74,6 +77,22 @@ struct CompiledSchemaImpl;
  * refused with `SchemaError::Category::eUnsupportedDialect`. The schema itself is checked against
  * its dialect's metaschema. `pattern` and `patternProperties` use `mcp::detail::Regex`, which
  * matches in linear time.
+ *
+ * References resolve within the document only: JSON Pointer fragments, anchors, and subschemas
+ * identified by `$id`, plus the metaschemas of the supported dialects. A `$ref` to anything else
+ * (an `http:` or `file:` URI, a relative file name, a location missing from the document) is
+ * refused with `SchemaError::Category::eUnresolvedRef`; no network or file access is ever
+ * attempted.
+ *
+ * Validation is bounded: the value's nesting (`SchemaOptions::max_instance_depth`), the length
+ * of the evaluation path through the schema (192 keywords and array indexes), and the evaluation
+ * work, which may grow with the size and nesting of the value but not exponentially. A value whose
+ * validation exceeds a bound is reported as invalid. The evaluation path grows by several keywords
+ * per level of the value when a recursive schema passes through `anyOf` and `$ref` at every
+ * level; such a schema reaches the bound at about 48 levels. The same bounds apply when the schema
+ * is checked against its metaschema, which a 2020-12 schema nesting `properties` 27 levels deep
+ * exceeds. A schema that exceeds a bound even for a trivial value, such as `{"$ref": "#"}`, is
+ * refused when it is compiled.
  *
  * A compiled schema is immutable: copies share it, and `validate()` may be called from several
  * threads at once.
