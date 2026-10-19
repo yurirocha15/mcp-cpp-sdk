@@ -162,6 +162,9 @@ class MCP_API Server {
      * @param description  Human-readable description.
      * @param input_schema JSON schema for the tool's input parameters.
      * @param handler      Handler invoked on tools/call requests.
+     * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
+     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_tool(const std::string& name, const std::string& description,
@@ -183,6 +186,10 @@ class MCP_API Server {
      *
      * Like add_tool(), but also sets the tool's outputSchema so results include
      * a structuredContent field alongside content.
+     *
+     * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
+     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_tool(const std::string& name, const std::string& description,
@@ -211,6 +218,9 @@ class MCP_API Server {
      * @param description  Human-readable description.
      * @param input_schema JSON schema for the tool's input parameters.
      * @param handler      Synchronous handler: takes JSON params, returns JSON result.
+     * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
+     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     void add_tool(const std::string& name, const std::string& description,
                   const nlohmann::json& input_schema,
@@ -225,6 +235,9 @@ class MCP_API Server {
      *
      * @param tool Tool metadata.
      * @param handler Asynchronous raw handler receiving tool arguments.
+     * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
+     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     void add_raw_tool(const Tool& tool, TypeErasedHandler handler);
 
@@ -233,6 +246,9 @@ class MCP_API Server {
      *
      * @param tool Tool metadata.
      * @param handler Synchronous raw handler receiving tool arguments.
+     * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
+     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     void add_raw_tool(const Tool& tool, std::function<nlohmann::json(const nlohmann::json&)> handler);
 

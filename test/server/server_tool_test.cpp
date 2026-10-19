@@ -1,5 +1,6 @@
 #include "../test_utils.hpp"
 
+#include "mcp/protocol/schema.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -420,4 +421,132 @@ TEST_F(ServerToolTest, RawToolRejectsIncompleteCallToolResult) {
     EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INTERNAL_ERROR);
     EXPECT_NE(responses[1]["error"]["message"].get<std::string>().find("CallToolResult"),
               std::string::npos);
+}
+
+namespace {
+
+mcp::Server make_tool_server() {
+    mcp::Implementation info;
+    info.name = "schema-server";
+    info.version = "1.0";
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    return {info, caps};
+}
+
+mcp::Tool tool_with_input(const nlohmann::json& input_schema) {
+    mcp::Tool tool;
+    tool.name = "t";
+    tool.inputSchema = input_schema;
+    return tool;
+}
+
+nlohmann::json raw_result(const nlohmann::json& /*arguments*/) {
+    return mcp::make_tool_text_result("ok");
+}
+
+/// The category of the SchemaError registering @p tool throws, after checking that the message
+/// names the tool and @p field.
+mcp::SchemaError::Category registration_error(const mcp::Tool& tool, std::string_view field) {
+    auto server = make_tool_server();
+    try {
+        server.add_raw_tool(tool, raw_result);
+    } catch (const mcp::SchemaError& error) {
+        const std::string message = error.what();
+        EXPECT_NE(message.find("Tool '" + tool.name + "'"), std::string::npos) << message;
+        EXPECT_NE(message.find(field), std::string::npos) << message;
+        return error.category();
+    }
+    ADD_FAILURE() << "tool registered: " << nlohmann::json(tool).dump();
+    return mcp::SchemaError::Category::eInvalidSchema;
+}
+
+}  // namespace
+
+TEST(ServerToolSchema, InvalidInputSchemaIsRefused) {
+    EXPECT_EQ(registration_error(tool_with_input({{"type", "object"}, {"properties", nullptr}}),
+                                 "inputSchema"),
+              mcp::SchemaError::Category::eInvalidSchema);
+    EXPECT_EQ(
+        registration_error(tool_with_input({{"type", "object"}, {"required", "a"}}), "inputSchema"),
+        mcp::SchemaError::Category::eInvalidSchema);
+}
+
+TEST(ServerToolSchema, InputSchemaMustBeAnObject) {
+    for (const auto& schema :
+         {nlohmann::json(), nlohmann::json(true), nlohmann::json::array(), nlohmann::json("object")}) {
+        SCOPED_TRACE(schema.dump());
+        EXPECT_EQ(registration_error(tool_with_input(schema), "inputSchema"),
+                  mcp::SchemaError::Category::eInvalidSchema);
+    }
+}
+
+TEST(ServerToolSchema, InputSchemaMustDeclareObjectType) {
+    for (const auto& schema : {nlohmann::json::object(), nlohmann::json{{"type", "string"}},
+                               nlohmann::json{{"type", {"object", "null"}}},
+                               nlohmann::json{{"properties", {{"a", {{"type", "string"}}}}}}}) {
+        SCOPED_TRACE(schema.dump());
+        EXPECT_EQ(registration_error(tool_with_input(schema), "inputSchema"),
+                  mcp::SchemaError::Category::eInvalidSchema);
+    }
+}
+
+TEST(ServerToolSchema, UnsupportedDialectIsRefused) {
+    EXPECT_EQ(registration_error(
+                  tool_with_input({{"$schema", "https://example.com/my-dialect"}, {"type", "object"}}),
+                  "inputSchema"),
+              mcp::SchemaError::Category::eUnsupportedDialect);
+}
+
+TEST(ServerToolSchema, RemoteReferenceIsRefused) {
+    EXPECT_EQ(registration_error(
+                  tool_with_input(
+                      {{"type", "object"},
+                       {"properties", {{"a", {{"$ref", "https://example.com/schemas/a.json"}}}}}}),
+                  "inputSchema"),
+              mcp::SchemaError::Category::eUnresolvedRef);
+}
+
+TEST(ServerToolSchema, InvalidOutputSchemaIsRefused) {
+    auto tool = tool_with_input({{"type", "object"}});
+    tool.outputSchema = {{"type", "object"}, {"properties", {{"n", {{"minimum", "zero"}}}}}};
+    EXPECT_EQ(registration_error(tool, "outputSchema"), mcp::SchemaError::Category::eInvalidSchema);
+    tool.outputSchema = true;
+    EXPECT_EQ(registration_error(tool, "outputSchema"), mcp::SchemaError::Category::eInvalidSchema);
+
+    auto server = make_tool_server();
+    EXPECT_THROW((server.add_tool<nlohmann::json, nlohmann::json>(
+                     "typed", "typed tool", {{"type", "object"}}, {{"type", "objekt"}},
+                     [](const nlohmann::json& args) { return args; })),
+                 mcp::SchemaError);
+}
+
+TEST(ServerToolSchema, AcceptsAnyKeywordOf2020_12) {
+    const auto schema = nlohmann::json::parse(R"({
+        "type": "object",
+        "$defs": {"id": {"type": "string", "pattern": "^[a-z]+-[0-9]+$"}},
+        "properties": {
+            "id": {"$ref": "#/$defs/id"},
+            "mode": {"enum": ["a", "b"], "x-mcp-header": "Mode"},
+            "pair": {"type": "array", "prefixItems": [{"type": "string"}, {"type": "integer"}]},
+            "choice": {"oneOf": [{"type": "string"}, {"type": "integer", "minimum": 0}]}
+        },
+        "required": ["id"],
+        "if": {"properties": {"mode": {"const": "a"}}},
+        "then": {"required": ["pair"]},
+        "dependentSchemas": {"pair": {"not": {"required": ["choice"]}}},
+        "unevaluatedProperties": false
+    })");
+    auto tool = tool_with_input(schema);
+    tool.outputSchema = nlohmann::json::parse(R"({"anyOf": [{"type": "object"}, {"type": "array"}]})");
+    auto server = make_tool_server();
+    EXPECT_NO_THROW(server.add_raw_tool(tool, raw_result));
+}
+
+TEST(ServerToolSchema, RefusedToolIsNotRegistered) {
+    auto server = make_tool_server();
+    EXPECT_THROW(server.add_raw_tool(tool_with_input(nlohmann::json()), raw_result), mcp::SchemaError);
+    EXPECT_NO_THROW(server.add_raw_tool(tool_with_input({{"type", "object"}}), raw_result));
+    EXPECT_THROW(server.add_raw_tool(tool_with_input({{"type", "object"}}), raw_result),
+                 std::invalid_argument);
 }

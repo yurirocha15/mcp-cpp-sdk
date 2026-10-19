@@ -83,10 +83,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ToolExecution, taskSupport)
 struct Tool {
     std::string name;                            ///< The name of the tool.
     std::optional<std::string> description;      ///< Optional description of the tool.
-    nlohmann::json inputSchema;                  ///< The JSON schema for the tool's input arguments.
+    nlohmann::json inputSchema;                  ///< JSON Schema object for the arguments; declares
+                                                 ///< `"type": "object"`.
     std::optional<nlohmann::json> meta;          ///< Reserved for protocol use.
     std::optional<ToolAnnotations> annotations;  ///< Optional additional tool information.
-    std::optional<nlohmann::json> outputSchema;  ///< Optional JSON schema for the tool's output.
+    std::optional<nlohmann::json> outputSchema;  ///< Optional JSON Schema object for the output.
     std::optional<std::string> title;            ///< Human-readable title for the tool.
     std::optional<std::vector<Icon>> icons;      ///< Icons for the tool.
     std::optional<ToolExecution> execution;      ///< Tool execution requirements.
