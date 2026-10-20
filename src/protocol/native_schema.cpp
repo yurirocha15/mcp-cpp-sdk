@@ -243,8 +243,44 @@ bool has_type(const nlohmann::json& value, std::string_view type) {
     return type_name(value) == type;
 }
 
-/// Compares two numbers exactly when both are integers, and as doubles otherwise: negative,
-/// zero or positive as @p left is less than, equal to or greater than @p right.
+/// Compares the integer @p integer with the finite double @p number exactly: negative, zero or
+/// positive as @p integer is less than, equal to or greater than @p number. Converting the integer
+/// to a double instead would round integers beyond 2^53.
+int compare_integer_with_double(const nlohmann::json& integer, double number) {
+    constexpr double two_pow_63 = 9223372036854775808.0;
+    constexpr double two_pow_64 = 18446744073709551616.0;
+    if (integer.is_number_unsigned()) {
+        if (number < 0) {
+            return 1;
+        }
+        if (number >= two_pow_64) {
+            return -1;
+        }
+        const double whole = std::floor(number);
+        const auto truncated = static_cast<std::uint64_t>(whole);
+        const auto value = integer.get<std::uint64_t>();
+        if (value != truncated) {
+            return value < truncated ? -1 : 1;
+        }
+        return number > whole ? -1 : 0;
+    }
+    if (number >= two_pow_63) {
+        return -1;
+    }
+    if (number < -two_pow_63) {
+        return 1;
+    }
+    const double whole = std::floor(number);
+    const auto truncated = static_cast<std::int64_t>(whole);
+    const auto value = integer.get<std::int64_t>();
+    if (value != truncated) {
+        return value < truncated ? -1 : 1;
+    }
+    return number > whole ? -1 : 0;
+}
+
+/// Compares two numbers exactly: negative, zero or positive as @p left is less than, equal to or
+/// greater than @p right.
 int compare_numbers(const nlohmann::json& left, const nlohmann::json& right) {
     if (left.is_number_integer() && right.is_number_integer()) {
         const bool left_unsigned = left.is_number_unsigned();
@@ -268,6 +304,12 @@ int compare_numbers(const nlohmann::json& left, const nlohmann::json& right) {
             return a < static_cast<std::uint64_t>(b) ? -1 : (a > static_cast<std::uint64_t>(b) ? 1 : 0);
         }
         return -compare_numbers(right, left);
+    }
+    if (left.is_number_integer()) {
+        return compare_integer_with_double(left, right.get<double>());
+    }
+    if (right.is_number_integer()) {
+        return -compare_integer_with_double(right, left.get<double>());
     }
     const double a = left.get<double>();
     const double b = right.get<double>();
