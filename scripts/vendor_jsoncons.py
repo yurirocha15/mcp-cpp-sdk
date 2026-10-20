@@ -26,6 +26,9 @@ needs and applies five recorded transformations:
    unit in the last place of the value accepts any multiple at that size.
 4. Keyword fixes. ``uniqueItems`` compares only elements whose hashes match,
    instead of every pair of elements in time quadratic in the array's length.
+   Subschemas under ``definitions`` are registered in every dialect, so a
+   ``$ref`` such as ``#/definitions/name`` resolves in 2019-09 and 2020-12
+   too, not only in jsoncons's compatibility mode.
 5. The ``jsoncons`` namespace becomes ``mcp_detail_jsoncons`` and the
    ``JSONCONS_`` macro prefix becomes ``MCP_DETAIL_JSONCONS_``, so the copy
    compiled into the SDK (a static archive included) cannot collide with a
@@ -57,7 +60,7 @@ VERSION = "1.10.0"
 TARBALL_URL = f"https://github.com/danielaparker/jsoncons/archive/refs/tags/v{VERSION}.tar.gz"
 TARBALL_SHA256 = "c829350a2eece662beb378143e2ab1c1cbb07d703687bf168626665a8a7d8bc1"
 # Bump when the transformation below changes, so PROVENANCE records which one produced the tree.
-TRANSFORM_VERSION = 4
+TRANSFORM_VERSION = 5
 
 # Header directories, relative to the release's include/, that the extension needs.
 SUBSET = ("jsoncons", "jsoncons_ext/jsonschema", "jsoncons_ext/jsonpointer")
@@ -155,6 +158,8 @@ EVAL_PATH_CONSTRUCTOR = re.compile(
 
 KEYWORD_VALIDATOR_PATH = "jsoncons_ext/jsonschema/common/keyword_validator.hpp"
 KEYWORD_FACTORY_PATH = "jsoncons_ext/jsonschema/common/keyword_validator_factory.hpp"
+DRAFT_2020_12_FACTORY_PATH = "jsoncons_ext/jsonschema/draft202012/schema_validator_factory_202012.hpp"
+DRAFT_2019_09_FACTORY_PATH = "jsoncons_ext/jsonschema/draft201909/schema_validator_factory_201909.hpp"
 
 # (path, old, new, expected count). The integer check converted the double to int64_t to compare.
 NUMERIC_REPLACEMENTS = (
@@ -309,6 +314,29 @@ EVALUATION_REPLACEMENTS = (
 """,
         1,
     ),
+    # `definitions` holds subschemas in every dialect the SDK accepts: the 2019-09 and 2020-12
+    # metaschemas keep it next to `$defs`, and a `$ref` such as "#/definitions/name" names a
+    # location in the document whatever keywords sit around it. jsoncons only registers those
+    # subschemas in its "compatibility mode", which also turns on other pre-2019 keywords, so the
+    # registration is made unconditional instead.
+    (
+        DRAFT_2020_12_FACTORY_PATH,
+        """            if (this->options().compatibility_mode())
+            {
+                it = sch.find("definitions");""",
+        """            {
+                it = sch.find("definitions");""",
+        1,
+    ),
+    (
+        DRAFT_2019_09_FACTORY_PATH,
+        """            if (this->options().compatibility_mode())
+            {
+                auto it = sch.find("definitions");""",
+        """            {
+                auto it = sch.find("definitions");""",
+        1,
+    ),
 )
 
 # `jsoncons` as an identifier, not as part of an include path (`jsoncons/`) or of a longer
@@ -408,7 +436,8 @@ def provenance() -> str:
         f"transform: {TRANSFORM_VERSION} (scripts/vendor_jsoncons.py: std::regex replaced with "
         "mcp::detail::Regex; evaluation depth and work limits added to eval_context; integer type "
         "check, size keywords and multipleOf made safe for large doubles; uniqueItems compares only "
-        "elements with equal hashes; namespace jsoncons renamed "
+        "elements with equal hashes; subschemas under definitions registered in every dialect; "
+        "namespace jsoncons renamed "
         "mcp_detail_jsoncons; macro prefix JSONCONS_ renamed MCP_DETAIL_JSONCONS_)\n"
     )
 
