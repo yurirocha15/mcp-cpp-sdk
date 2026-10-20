@@ -148,6 +148,21 @@ TEST(SchemaDialect, UnsupportedPatternSyntaxIsInvalidSchema) {
               SchemaError::Category::eInvalidSchema);
 }
 
+// `$schema` names the dialect wherever it appears; an embedded resource that names one the SDK does
+// not implement is an unsupported dialect, not a reference that failed to resolve.
+TEST(SchemaDialect, UnsupportedDialectOfAnEmbeddedResourceIsReportedAsSuch) {
+    const json schema = {{"type", "object"},
+                         {"$defs",
+                          {{"inner",
+                            {{"$id", "https://example.com/inner"},
+                             {"$schema", "https://example.com/dialect"},
+                             {"type", "string"}}}}},
+                         {"properties", {{"a", {{"$ref", "https://example.com/inner"}}}}}};
+    EXPECT_EQ(compile_error(schema), SchemaError::Category::eUnsupportedDialect)
+        << compile_message(schema);
+    EXPECT_NE(compile_message(schema).find("https://example.com/dialect"), std::string::npos);
+}
+
 TEST(SchemaValidation, ReportsViolationsWithInstancePaths) {
     const auto schema = CompiledSchema::compile(json::parse(R"({
         "type": "object",
