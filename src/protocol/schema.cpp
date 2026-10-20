@@ -191,6 +191,37 @@ const jcs::validation_message& innermost(const jcs::validation_message& message)
     return *current;
 }
 
+/// Whether @p document has a `$schema` member whose value is @p uri, compared without an empty
+/// trailing fragment. Iterative, so it is safe on any document.
+bool declares_dialect(const nlohmann::json& document, std::string_view uri) {
+    const auto without_fragment = [](std::string_view text) {
+        if (!text.empty() && text.back() == '#') {
+            text.remove_suffix(1);
+        }
+        return text;
+    };
+    uri = without_fragment(uri);
+    std::vector<const nlohmann::json*> pending{&document};
+    while (!pending.empty()) {
+        const auto* node = pending.back();
+        pending.pop_back();
+        if (node->is_object()) {
+            for (const auto& [key, member] : node->items()) {
+                if (key == "$schema" && member.is_string() &&
+                    without_fragment(member.get_ref<const std::string&>()) == uri) {
+                    return true;
+                }
+                pending.push_back(&member);
+            }
+        } else if (node->is_array()) {
+            for (const auto& member : *node) {
+                pending.push_back(&member);
+            }
+        }
+    }
+    return false;
+}
+
 std::string describe(std::string_view prefix, std::string_view detail) {
     return std::string(prefix) + detail::sanitize_for_diagnostics(detail);
 }
@@ -288,6 +319,11 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
         compiled.emplace(jcs::make_json_schema(std::move(converted), refuse, evaluation));
     } catch (const std::exception& error) {
         if (!refused.empty()) {
+            // jsoncons also asks for the metaschema of an embedded resource's `$schema`.
+            if (declares_dialect(schema, refused.front())) {
+                throw SchemaError(SchemaError::Category::eUnsupportedDialect,
+                                  describe("unsupported JSON Schema dialect: ", refused.front()));
+            }
             throw SchemaError(SchemaError::Category::eUnresolvedRef,
                               describe("JSON Schema reference cannot be resolved in the document: ",
                                        without_default_base(refused.front())));
