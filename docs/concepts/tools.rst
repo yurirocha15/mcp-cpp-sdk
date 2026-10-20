@@ -202,7 +202,8 @@ naming the tool and the field when a schema cannot be used.
 ``SchemaError::category()`` says why:
 
 - ``eInvalidSchema``: the schema is not a JSON object, fails its dialect's
-  metaschema, or (for ``inputSchema``) does not declare ``"type": "object"``.
+  metaschema, holds NaN or Infinity (which JSON cannot represent), or (for
+  ``inputSchema``) does not declare ``"type": "object"``.
 - ``eUnsupportedDialect``: ``$schema`` names a dialect the SDK does not
   implement.
 - ``eUnresolvedRef``: a ``$ref`` points outside the document.
@@ -230,6 +231,7 @@ run. ``Server::invoke_tool()`` applies the same check.
 **Structured results.** A successful result's ``structuredContent`` is checked
 against the ``outputSchema``. A result that does not conform is a fault in the
 tool and is answered with ``Internal error (-32603)`` naming the violations.
+A NaN or Infinity in the result is checked as the ``null`` it would be sent as.
 Error results are not checked.
 
 **Turning checks off.** An application that validates on its own can turn

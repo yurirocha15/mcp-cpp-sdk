@@ -730,6 +730,31 @@ TEST(SchemaBridge, LargeDoublesAreHandled) {
     EXPECT_FALSE(is_valid({{"maxItems", 2.0}}, {1, 2, 3}));
 }
 
+// JSON has no NaN or Infinity, and nlohmann::json writes them as null, so a value holding one is
+// checked as the null a peer would receive. A schema holding one is refused: what a peer would
+// receive is not the schema that was compiled.
+TEST(SchemaBridge, NonFiniteNumbersAreCheckedAsNull) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double infinity = std::numeric_limits<double>::infinity();
+    for (const bool through_jsoncons : {false, true}) {
+        SCOPED_TRACE(through_jsoncons ? "jsoncons" : "native");
+        json number = {{"type", "number"}};
+        json null = {{"type", "null"}};
+        if (through_jsoncons) {
+            number["$defs"] = json::object();
+            null["$defs"] = json::object();
+        }
+        for (const double value : {nan, infinity, -infinity}) {
+            EXPECT_FALSE(is_valid(number, value));
+            EXPECT_TRUE(is_valid(null, value));
+            EXPECT_TRUE(is_valid({{"items", null}}, json::array({value, value})));
+        }
+    }
+    EXPECT_EQ(compile_error({{"maximum", nan}}), SchemaError::Category::eInvalidSchema);
+    EXPECT_EQ(compile_error({{"properties", {{"a", {{"const", -infinity}}}}}}),
+              SchemaError::Category::eInvalidSchema);
+}
+
 TEST(CompiledSchema, CopiesShareTheSchema) {
     const auto original = CompiledSchema::compile({{"type", "string"}});
     const CompiledSchema copy = original;  // NOLINT(performance-unnecessary-copy-initialization)
