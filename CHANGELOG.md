@@ -14,7 +14,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   and draft-04 may be named, and any other `$schema` is refused with
   `SchemaError`. The schema itself is checked against its dialect's
   metaschema. `SchemaOptions` bounds the nesting of a validated value
-  (64 levels by default) and the number of violations reported.
+  (64 levels by default) and the number of violations reported. JSON cannot
+  represent NaN or Infinity: a schema holding one is refused, and a value
+  holding one is checked as the `null` it would be sent as.
   References resolve only within the document and to the supported
   metaschemas; any other `$ref` is refused with
   `SchemaError::Category::eUnresolvedRef`, and nothing is fetched. Evaluation
@@ -30,20 +32,20 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Server::add_tool()` and `add_raw_tool()` compile the tool's `inputSchema`
   and `outputSchema` and throw `SchemaError` when either is not a JSON Schema
   object that `CompiledSchema` accepts, or when the input schema does not
-  declare `"type": "object"`, which the schema of both protocol revisions
-  requires. Previously any JSON value was advertised as the schema.
+  declare `"type": "object"`, which the 2025-11-25 and 2026-07-28 schemas
+  require. Previously any JSON value was advertised as the schema.
 - `tools/call` arguments are validated against the tool's input schema, as
-  both protocol revisions require of servers. Arguments that do not conform
-  are answered with an `isError` result listing the violations, and the
-  handler does not run; middleware still sees the call. The check also applies
-  to `Server::invoke_tool()`. `Server::set_tool_validation()` with
+  the 2025-11-25 and 2026-07-28 revisions require of servers. Arguments that
+  do not conform are answered with an `isError` result listing the
+  violations, and the handler does not run; middleware still sees the call.
+  The check also applies to `Server::invoke_tool()`. `Server::set_tool_validation()` with
   `ToolValidationOptions::validate_arguments = false` turns it off, and
   `Server::tool_validation_stats()` counts refused calls.
 - The `structuredContent` of a successful tool result is checked against the
-  tool's `outputSchema`, which both protocol revisions require it to conform
-  to. A result that does not conform is answered with `g_INTERNAL_ERROR`
-  naming the violations (`ToolValidationOptions::validate_structured_content`
-  turns the check off).
+  tool's `outputSchema`, which the 2025-11-25 and 2026-07-28 revisions require
+  it to conform to. A result that does not conform is answered with
+  `g_INTERNAL_ERROR` naming the violations
+  (`ToolValidationOptions::validate_structured_content` turns the check off).
 - `Client::list_tools()` compiles each listed tool's schemas and leaves out a
   tool whose schema cannot be used (invalid, an unsupported dialect, or a
   `$ref` outside the document), reporting it through
