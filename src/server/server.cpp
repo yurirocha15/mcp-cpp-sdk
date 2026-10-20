@@ -107,7 +107,7 @@ std::optional<nlohmann::json> argument_rejection(const CompiledSchema& schema,
 
 /// Compiles @p tool's schemas, refusing the tool when either is not a JSON Schema the SDK can use.
 /// Tool arguments are always objects, so the input schema must also declare `"type": "object"`,
-/// as the schema of both protocol revisions requires.
+/// as the 2025-11-25 and 2026-07-28 schemas require.
 CompiledToolSchemas compile_tool_schemas(const Tool& tool) {
     const auto refuse = [&tool](SchemaError::Category category, std::string_view field,
                                 std::string_view problem) {

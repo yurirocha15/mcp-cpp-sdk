@@ -192,7 +192,7 @@ content blocks.
 Schema Validation
 -----------------
 
-Both protocol revisions the SDK serves (2025-11-25 and 2026-07-28) require a
+The two most recent protocol revisions (2025-11-25 and 2026-07-28) require a
 server to validate tool inputs and to return structured results that conform
 to the output schema. The SDK does both by default.
 
