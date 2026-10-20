@@ -257,7 +257,6 @@ namespace draft202012 {
                 local_anchor_dict.emplace(value, context.get_base_uri());
             }
 
-            if (this->options().compatibility_mode())
             {
                 it = sch.find("definitions");
                 if (it != sch.object_range().end()) 

@@ -2,4 +2,4 @@ jsoncons 1.10.0
 source: https://github.com/danielaparker/jsoncons/archive/refs/tags/v1.10.0.tar.gz
 sha256: c829350a2eece662beb378143e2ab1c1cbb07d703687bf168626665a8a7d8bc1
 subset: jsoncons, jsoncons_ext/jsonschema, jsoncons_ext/jsonpointer
-transform: 4 (scripts/vendor_jsoncons.py: std::regex replaced with mcp::detail::Regex; evaluation depth and work limits added to eval_context; integer type check, size keywords and multipleOf made safe for large doubles; uniqueItems compares only elements with equal hashes; namespace jsoncons renamed mcp_detail_jsoncons; macro prefix JSONCONS_ renamed MCP_DETAIL_JSONCONS_)
+transform: 5 (scripts/vendor_jsoncons.py: std::regex replaced with mcp::detail::Regex; evaluation depth and work limits added to eval_context; integer type check, size keywords and multipleOf made safe for large doubles; uniqueItems compares only elements with equal hashes; subschemas under definitions registered in every dialect; namespace jsoncons renamed mcp_detail_jsoncons; macro prefix JSONCONS_ renamed MCP_DETAIL_JSONCONS_)

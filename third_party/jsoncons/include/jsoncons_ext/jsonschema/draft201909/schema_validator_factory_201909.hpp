@@ -255,7 +255,6 @@ namespace draft201909 {
             bool recursive_anchor = false;
             std::map<std::string,schema_validator_ptr_type,transparent_string_less<std::string>> defs;
 
-            if (this->options().compatibility_mode())
             {
                 auto it = sch.find("definitions");
                 if (it != sch.object_range().end()) 

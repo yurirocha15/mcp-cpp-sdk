@@ -230,6 +230,29 @@ TEST(SchemaRefPolicy, LocalFragmentAndAnchorResolve) {
     EXPECT_FALSE(is_valid(schema, {{"w", 1}}));
 }
 
+// "#/definitions/name" is a JSON Pointer into the document, so it resolves in every dialect. The
+// 2019-09 and 2020-12 metaschemas keep `definitions` next to `$defs`, and schemas written for
+// draft-07 keep their subschemas there.
+TEST(SchemaRefPolicy, PointerIntoDefinitionsResolvesInEveryDialect) {
+    for (const char* dialect :
+         {"", "https://json-schema.org/draft/2020-12/schema",
+          "https://json-schema.org/draft/2019-09/schema", "http://json-schema.org/draft-07/schema#"}) {
+        SCOPED_TRACE(dialect);
+        json schema = {{"definitions", {{"name", {{"type", "string"}}}}},
+                       {"properties", {{"a", {{"$ref", "#/definitions/name"}}}}}};
+        if (*dialect != '\0') {
+            schema["$schema"] = dialect;
+        }
+        try {
+            const auto compiled = CompiledSchema::compile(schema);
+            EXPECT_TRUE(compiled.validate({{"a", "x"}}).valid);
+            EXPECT_FALSE(compiled.validate({{"a", 5}}).valid);
+        } catch (const SchemaError& error) {
+            ADD_FAILURE() << error.what();
+        }
+    }
+}
+
 TEST(SchemaRefPolicy, EmbeddedIdResolvesWithoutFetching) {
     const json schema = json::parse(R"({
         "$id": "https://example.com/root.json",
