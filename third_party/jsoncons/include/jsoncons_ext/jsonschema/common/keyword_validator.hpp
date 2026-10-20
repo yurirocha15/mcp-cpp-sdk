@@ -9,7 +9,10 @@
 #define MCP_DETAIL_JSONCONS_EXT_JSONSCHEMA_COMMON_KEYWORD_VALIDATOR_HPP
 
 #include <cassert>
+#include <algorithm>
 #include <cmath>
+#include <functional>
+#include <memory>
 #include <cstddef>
 #include <map>
 #include <set>
@@ -1082,15 +1085,66 @@ namespace jsonschema {
             return walk_state::advance;
         }
 
-        static bool array_has_unique_items(const Json& a) 
+        // Added by mcp-cpp-sdk (scripts/vendor_jsoncons.py): upstream compares every pair, in time
+        // quadratic in the array's length. Equal values have equal hashes, so only elements whose
+        // hashes match are compared.
+        static std::size_t unique_items_hash(const Json& value)
         {
-            for (auto it = a.array_range().begin(); it != a.array_range().end(); ++it) 
+            auto mix = [](std::size_t seed, std::size_t part) {
+                return seed ^ (part + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2));
+            };
+            if (value.is_number())
             {
-                for (auto jt = it+1; jt != a.array_range().end(); ++jt) 
+                // Integers and doubles that are equal must hash alike; -0.0 and 0.0 are equal.
+                const double number = value.template as<double>();
+                return mix(1, number == 0 ? 0 : std::hash<double>()(number));
+            }
+            if (value.is_string())
+            {
+                return mix(2, std::hash<std::string>()(value.template as<std::string>()));
+            }
+            if (value.is_array())
+            {
+                std::size_t seed = 3;
+                for (const auto& element : value.array_range())
                 {
-                    if (*it == *jt) 
+                    seed = mix(seed, unique_items_hash(element));
+                }
+                return seed;
+            }
+            if (value.is_object())
+            {
+                // Members have no order that matters, so combine them with a commutative sum.
+                std::size_t sum = 0;
+                for (const auto& member : value.object_range())
+                {
+                    sum += mix(std::hash<std::string>()(std::string(member.key())),
+                               unique_items_hash(member.value()));
+                }
+                return mix(4, sum);
+            }
+            return mix(5, value.is_null() ? 0 : (value.template as<bool>() ? 1 : 2));
+        }
+
+        static bool array_has_unique_items(const Json& a)
+        {
+            std::vector<std::pair<std::size_t, const Json*>> hashed;
+            hashed.reserve(a.size());
+            for (const auto& element : a.array_range())
+            {
+                hashed.emplace_back(unique_items_hash(element), std::addressof(element));
+            }
+            std::sort(hashed.begin(), hashed.end(), [](const std::pair<std::size_t, const Json*>& lhs,
+                                                       const std::pair<std::size_t, const Json*>& rhs) {
+                return lhs.first < rhs.first;
+            });
+            for (std::size_t i = 0; i < hashed.size(); ++i)
+            {
+                for (std::size_t j = i + 1; j < hashed.size() && hashed[j].first == hashed[i].first; ++j)
+                {
+                    if (*hashed[i].second == *hashed[j].second)
                     {
-                        return false; // contains duplicates 
+                        return false; // contains duplicates
                     }
                 }
             }

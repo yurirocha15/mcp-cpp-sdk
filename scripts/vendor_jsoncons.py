@@ -4,7 +4,7 @@
 The SDK compiles jsoncons's JSON Schema extension into one private translation
 unit. The vendored tree is never edited by hand: this script downloads the
 pinned release tarball, verifies its SHA-256, copies the headers the extension
-needs and applies four recorded transformations:
+needs and applies five recorded transformations:
 
 1. ``std::regex`` is replaced with ``mcp::detail::Regex``. libstdc++'s
    ``std::regex`` recurses once per input character, so a schema ``pattern``
@@ -24,7 +24,9 @@ needs and applies four recorded transformations:
    counted as an integer, ``multipleOf`` must also reject a quotient that
    overflows, as the JSON-Schema-Test-Suite expects: its tolerance of one
    unit in the last place of the value accepts any multiple at that size.
-4. The ``jsoncons`` namespace becomes ``mcp_detail_jsoncons`` and the
+4. Keyword fixes. ``uniqueItems`` compares only elements whose hashes match,
+   instead of every pair of elements in time quadratic in the array's length.
+5. The ``jsoncons`` namespace becomes ``mcp_detail_jsoncons`` and the
    ``JSONCONS_`` macro prefix becomes ``MCP_DETAIL_JSONCONS_``, so the copy
    compiled into the SDK (a static archive included) cannot collide with a
    jsoncons the application uses itself.
@@ -55,7 +57,7 @@ VERSION = "1.10.0"
 TARBALL_URL = f"https://github.com/danielaparker/jsoncons/archive/refs/tags/v{VERSION}.tar.gz"
 TARBALL_SHA256 = "c829350a2eece662beb378143e2ab1c1cbb07d703687bf168626665a8a7d8bc1"
 # Bump when the transformation below changes, so PROVENANCE records which one produced the tree.
-TRANSFORM_VERSION = 3
+TRANSFORM_VERSION = 4
 
 # Header directories, relative to the release's include/, that the extension needs.
 SUBSET = ("jsoncons", "jsoncons_ext/jsonschema", "jsoncons_ext/jsonpointer")
@@ -214,6 +216,101 @@ NUMERIC_REPLACEMENTS = (
     ),
 )
 
+# (path, old, new, expected count), applied after NUMERIC_REPLACEMENTS.
+EVALUATION_REPLACEMENTS = (
+    (
+        KEYWORD_VALIDATOR_PATH,
+        "#include <cmath>\n",
+        "#include <algorithm>\n#include <cmath>\n#include <functional>\n#include <memory>\n",
+        1,
+    ),
+    (
+        KEYWORD_VALIDATOR_PATH,
+        """        static bool array_has_unique_items(const Json& a)\x20
+        {
+            for (auto it = a.array_range().begin(); it != a.array_range().end(); ++it)\x20
+            {
+                for (auto jt = it+1; jt != a.array_range().end(); ++jt)\x20
+                {
+                    if (*it == *jt)\x20
+                    {
+                        return false; // contains duplicates\x20
+                    }
+                }
+            }
+            return true; // elements are unique
+        }
+""",
+        """        // Added by mcp-cpp-sdk (scripts/vendor_jsoncons.py): upstream compares every pair, in time
+        // quadratic in the array's length. Equal values have equal hashes, so only elements whose
+        // hashes match are compared.
+        static std::size_t unique_items_hash(const Json& value)
+        {
+            auto mix = [](std::size_t seed, std::size_t part) {
+                return seed ^ (part + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2));
+            };
+            if (value.is_number())
+            {
+                // Integers and doubles that are equal must hash alike; -0.0 and 0.0 are equal.
+                const double number = value.template as<double>();
+                return mix(1, number == 0 ? 0 : std::hash<double>()(number));
+            }
+            if (value.is_string())
+            {
+                return mix(2, std::hash<std::string>()(value.template as<std::string>()));
+            }
+            if (value.is_array())
+            {
+                std::size_t seed = 3;
+                for (const auto& element : value.array_range())
+                {
+                    seed = mix(seed, unique_items_hash(element));
+                }
+                return seed;
+            }
+            if (value.is_object())
+            {
+                // Members have no order that matters, so combine them with a commutative sum.
+                std::size_t sum = 0;
+                for (const auto& member : value.object_range())
+                {
+                    sum += mix(std::hash<std::string>()(std::string(member.key())),
+                               unique_items_hash(member.value()));
+                }
+                return mix(4, sum);
+            }
+            return mix(5, value.is_null() ? 0 : (value.template as<bool>() ? 1 : 2));
+        }
+
+        static bool array_has_unique_items(const Json& a)
+        {
+            std::vector<std::pair<std::size_t, const Json*>> hashed;
+            hashed.reserve(a.size());
+            for (const auto& element : a.array_range())
+            {
+                hashed.emplace_back(unique_items_hash(element), std::addressof(element));
+            }
+            std::sort(hashed.begin(), hashed.end(), [](const std::pair<std::size_t, const Json*>& lhs,
+                                                       const std::pair<std::size_t, const Json*>& rhs) {
+                return lhs.first < rhs.first;
+            });
+            for (std::size_t i = 0; i < hashed.size(); ++i)
+            {
+                for (std::size_t j = i + 1; j < hashed.size() && hashed[j].first == hashed[i].first; ++j)
+                {
+                    if (*hashed[i].second == *hashed[j].second)
+                    {
+                        return false; // contains duplicates
+                    }
+                }
+            }
+            return true; // elements are unique
+        }
+""",
+        1,
+    ),
+)
+
 # `jsoncons` as an identifier, not as part of an include path (`jsoncons/`) or of a longer
 # name (`jsoncons_ext`).
 NAMESPACE_PATTERN = re.compile(r"(?<![\w/])jsoncons(?![\w/])")
@@ -271,7 +368,7 @@ def transform(headers: dict[str, str]) -> dict[str, str]:
             raise SystemExit(f"std::regex left in {path} after the replacements")
         if path == EVAL_CONTEXT_PATH:
             text = add_evaluation_limits(text)
-        for target, old, new, expected in NUMERIC_REPLACEMENTS:
+        for target, old, new, expected in NUMERIC_REPLACEMENTS + EVALUATION_REPLACEMENTS:
             if target == path:
                 if text.count(old) != expected:
                     raise SystemExit(
@@ -310,7 +407,8 @@ def provenance() -> str:
         f"subset: {', '.join(SUBSET)}\n"
         f"transform: {TRANSFORM_VERSION} (scripts/vendor_jsoncons.py: std::regex replaced with "
         "mcp::detail::Regex; evaluation depth and work limits added to eval_context; integer type "
-        "check, size keywords and multipleOf made safe for large doubles; namespace jsoncons renamed "
+        "check, size keywords and multipleOf made safe for large doubles; uniqueItems compares only "
+        "elements with equal hashes; namespace jsoncons renamed "
         "mcp_detail_jsoncons; macro prefix JSONCONS_ renamed MCP_DETAIL_JSONCONS_)\n"
     )
 
