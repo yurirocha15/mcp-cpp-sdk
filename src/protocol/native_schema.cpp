@@ -317,6 +317,12 @@ class Evaluation {
 
     /// Checks @p value against @p node; false once enough violations are recorded.
     bool check(const Node& node, const nlohmann::json& value) {
+        if (value.is_number_float() && !std::isfinite(value.get<double>())) {
+            // JSON cannot carry NaN or Infinity; nlohmann writes them as null, which is what the
+            // peer would receive, so that is what is checked.
+            static const nlohmann::json null_value;
+            return check(node, null_value);
+        }
         if (node.reject_all) {
             return report("No value is allowed here");
         }

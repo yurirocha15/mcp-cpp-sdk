@@ -10,6 +10,7 @@
 #include <jsoncons_ext/jsonschema/jsonschema.hpp>
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <optional>
@@ -62,7 +63,8 @@ constexpr std::size_t g_work_per_level = 256;
 
 struct ValueShape {
     bool too_deep = false;
-    std::size_t levels = 0;  ///< Sum over the value's nodes of their depth plus one.
+    bool non_finite = false;  ///< Holds a NaN or an infinity, which JSON cannot represent.
+    std::size_t levels = 0;   ///< Sum over the value's nodes of their depth plus one.
 };
 
 /// Measures @p value and checks its nesting against @p depth_limit. Iterative, so it is safe on any
@@ -75,6 +77,8 @@ ValueShape measure(const nlohmann::json& value, std::size_t depth_limit) {
         pending.pop_back();
         shape.levels += depth + 1;
         if (!node->is_structured()) {
+            shape.non_finite =
+                shape.non_finite || (node->is_number_float() && !std::isfinite(node->get<double>()));
             continue;
         }
         if (depth + 1 > depth_limit) {
@@ -115,8 +119,12 @@ jc::json to_jsoncons(const nlohmann::json& value) {
             return jc::json(value.get<std::int64_t>());
         case nlohmann::json::value_t::number_unsigned:
             return jc::json(value.get<std::uint64_t>());
-        case nlohmann::json::value_t::number_float:
-            return jc::json(value.get<double>());
+        case nlohmann::json::value_t::number_float: {
+            // JSON cannot carry NaN or Infinity; nlohmann writes them as null, which is what a
+            // peer would receive, so that is what is checked.
+            const auto number = value.get<double>();
+            return std::isfinite(number) ? jc::json(number) : jc::json::null();
+        }
         case nlohmann::json::value_t::string:
             return jc::json(value.get_ref<const std::string&>());
         case nlohmann::json::value_t::array: {
@@ -214,6 +222,11 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
         throw SchemaError(
             SchemaError::Category::eInvalidSchema,
             "JSON Schema nests deeper than " + std::to_string(g_max_schema_depth) + " levels");
+    }
+    if (schema_shape.non_finite) {
+        // Serialized for a peer, it would carry null in that place: not the schema checked here.
+        throw SchemaError(SchemaError::Category::eInvalidSchema,
+                          "JSON Schema contains NaN or Infinity, which JSON cannot represent");
     }
 
     std::string_view dialect = supported_dialects()[0];
