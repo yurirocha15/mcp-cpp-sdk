@@ -3018,16 +3018,15 @@ namespace jsonschema {
                             }
                             if (!local_reporter.errors.empty())
                             {
-                                std::string message{"Additional property '"};
-                                message.append(prop.key().c_str());
-                                message.append("' found but was invalid.");
-                                result = reporter.error(this->make_validation_message(
-                                    this_context.eval_path(),
-                                    instance_location, 
-                                    message), patch);
-                                if (result == walk_state::abort)
+                                // Added by mcp-cpp-sdk (scripts/vendor_jsoncons.py): report what the
+                                // member's subschema reported, at the member, not one summary.
+                                for (const auto& error : local_reporter.errors)
                                 {
-                                    return result;
+                                    result = reporter.error(error, patch);
+                                    if (result == walk_state::abort)
+                                    {
+                                        return result;
+                                    }
                                 }
                             }
                             else if (context.require_evaluated_properties())

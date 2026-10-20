@@ -28,7 +28,10 @@ needs and applies five recorded transformations:
    instead of every pair of elements in time quadratic in the array's length.
    Subschemas under ``definitions`` are registered in every dialect, so a
    ``$ref`` such as ``#/definitions/name`` resolves in 2019-09 and 2020-12
-   too, not only in jsoncons's compatibility mode.
+   too, not only in jsoncons's compatibility mode. A member that fails the
+   ``additionalProperties`` subschema is reported at the member, with what the
+   subschema reported, like the other applicators, instead of as one summary
+   at the object.
 5. The ``jsoncons`` namespace becomes ``mcp_detail_jsoncons`` and the
    ``JSONCONS_`` macro prefix becomes ``MCP_DETAIL_JSONCONS_``, so the copy
    compiled into the SDK (a static archive included) cannot collide with a
@@ -60,7 +63,7 @@ VERSION = "1.10.0"
 TARBALL_URL = f"https://github.com/danielaparker/jsoncons/archive/refs/tags/v{VERSION}.tar.gz"
 TARBALL_SHA256 = "c829350a2eece662beb378143e2ab1c1cbb07d703687bf168626665a8a7d8bc1"
 # Bump when the transformation below changes, so PROVENANCE records which one produced the tree.
-TRANSFORM_VERSION = 5
+TRANSFORM_VERSION = 6
 
 # Header directories, relative to the release's include/, that the extension needs.
 SUBSET = ("jsoncons", "jsoncons_ext/jsonschema", "jsoncons_ext/jsonpointer")
@@ -337,6 +340,43 @@ EVALUATION_REPLACEMENTS = (
                 auto it = sch.find("definitions");""",
         1,
     ),
+    # jsoncons reports a member that fails the `additionalProperties` subschema as one summary at
+    # the object ("Additional property 'a' found but was invalid."). `properties`, `items` and the
+    # other applicators report what the subschema reported, at the failing member, which is what a
+    # violation's instance path promises; this does the same.
+    (
+        KEYWORD_VALIDATOR_PATH,
+        """                            if (!local_reporter.errors.empty())
+                            {
+                                std::string message{"Additional property '"};
+                                message.append(prop.key().c_str());
+                                message.append("' found but was invalid.");
+                                result = reporter.error(this->make_validation_message(
+                                    this_context.eval_path(),
+                                    instance_location,\x20
+                                    message), patch);
+                                if (result == walk_state::abort)
+                                {
+                                    return result;
+                                }
+                            }
+""",
+        """                            if (!local_reporter.errors.empty())
+                            {
+                                // Added by mcp-cpp-sdk (scripts/vendor_jsoncons.py): report what the
+                                // member's subschema reported, at the member, not one summary.
+                                for (const auto& error : local_reporter.errors)
+                                {
+                                    result = reporter.error(error, patch);
+                                    if (result == walk_state::abort)
+                                    {
+                                        return result;
+                                    }
+                                }
+                            }
+""",
+        1,
+    ),
 )
 
 # `jsoncons` as an identifier, not as part of an include path (`jsoncons/`) or of a longer
@@ -437,6 +477,7 @@ def provenance() -> str:
         "mcp::detail::Regex; evaluation depth and work limits added to eval_context; integer type "
         "check, size keywords and multipleOf made safe for large doubles; uniqueItems compares only "
         "elements with equal hashes; subschemas under definitions registered in every dialect; "
+        "additionalProperties violations reported at the member; "
         "namespace jsoncons renamed "
         "mcp_detail_jsoncons; macro prefix JSONCONS_ renamed MCP_DETAIL_JSONCONS_)\n"
     )
