@@ -521,6 +521,29 @@ TEST(SchemaNative, SupportedSchemaIsEvaluatedNatively) {
     EXPECT_EQ(violations, expected);
 }
 
+// A member that fails the additionalProperties subschema is reported at the member, as `properties`
+// reports its members, whichever evaluation runs: adding `$defs` sends the schema through jsoncons.
+// Only the instance paths are compared; the two evaluations word some messages differently.
+TEST(SchemaValidation, AdditionalPropertyViolationsNameTheMember) {
+    for (const bool through_jsoncons : {false, true}) {
+        SCOPED_TRACE(through_jsoncons ? "jsoncons" : "native");
+        json schema = {{"type", "object"},
+                       {"properties", {{"known", {{"type", "string"}}}}},
+                       {"additionalProperties", {{"type", "integer"}, {"minimum", 3}}}};
+        if (through_jsoncons) {
+            schema["$defs"] = json::object();
+        }
+        const auto result =
+            CompiledSchema::compile(schema).validate({{"known", 1}, {"a", "x"}, {"b", 1}, {"ok", 5}});
+        ASSERT_FALSE(result.valid);
+        std::set<std::string> paths;
+        for (const auto& violation : result.violations) {
+            paths.insert(violation.instance_path);
+        }
+        EXPECT_EQ(paths, (std::set<std::string>{"/a", "/b", "/known"}));
+    }
+}
+
 // Generated schemas over the keywords the native evaluation implements, against generated values:
 // both evaluations must agree on every one.
 TEST(SchemaNative, AgreesWithJsonconsOnGeneratedSchemas) {
