@@ -391,6 +391,26 @@ TEST(SchemaLimits, SchemaNestingWithinTheMetaschemaBoundCompiles) {
     EXPECT_EQ(compile_error(schema), SchemaError::Category::eInvalidSchema);
 }
 
+// uniqueItems must not compare every pair of elements: a request-sized array would then take time
+// quadratic in its length, outside the evaluation work budget.
+TEST(SchemaLimits, UniqueItemsOnALargeArrayTakesBoundedTime) {
+    const auto schema = CompiledSchema::compile({{"uniqueItems", true}});
+    json items = json::array();
+    for (int i = 0; i < 100'000; ++i) {
+        items.push_back(i);
+    }
+    const auto start = std::chrono::steady_clock::now();
+    EXPECT_TRUE(schema.validate(items).valid);
+    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
+
+    items.push_back(json::array({1, {{"a", 2}}}));
+    items.push_back(json::array({1.0, {{"a", 2.0}}}));
+    EXPECT_FALSE(schema.validate(items).valid);
+    items.erase(items.size() - 1);
+    items.push_back(-0.0);
+    EXPECT_FALSE(schema.validate(items).valid);
+}
+
 // A 2020-12 schema that constrains only the value's type is evaluated natively, with the same
 // message as jsoncons gives. Adding "not": false, which constrains nothing, sends the same schema
 // through jsoncons; both must agree on every value, messages included.
