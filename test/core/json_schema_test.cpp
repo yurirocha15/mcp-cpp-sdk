@@ -544,6 +544,35 @@ TEST(SchemaValidation, AdditionalPropertyViolationsNameTheMember) {
     }
 }
 
+// JSON Schema compares numbers by value. Converting an integer beyond 2^53 to a double rounds it,
+// so the native evaluation compares an integer with a double exactly.
+TEST(SchemaNative, IntegersAndDoublesCompareExactly) {
+    // 18446744073709551616 (2^64) does not fit std::uint64_t and is read as a double.
+    const json above_uint64_max = json::parse("18446744073709551616");
+    ASSERT_TRUE(above_uint64_max.is_number_float());
+    EXPECT_FALSE(is_valid(json::parse(R"({"maximum": 18446744073709551615})"), above_uint64_max));
+    EXPECT_FALSE(
+        is_valid(json::parse(R"({"exclusiveMaximum": 18446744073709551615})"), above_uint64_max));
+    EXPECT_TRUE(is_valid(json::parse(R"({"minimum": 18446744073709551615})"), above_uint64_max));
+    EXPECT_FALSE(is_valid(json::parse(R"({"const": 18446744073709551615})"), above_uint64_max));
+    EXPECT_FALSE(is_valid(json::parse(R"({"enum": [9223372036854775807]})"),
+                          json::parse("9223372036854775808.0")));
+    EXPECT_TRUE(
+        is_valid(json::parse(R"({"maximum": 9007199254740993})"), json::parse("9007199254740992.0")));
+    EXPECT_FALSE(
+        is_valid(json::parse(R"({"maximum": 9007199254740992.0})"), json::parse("9007199254740993")));
+    EXPECT_FALSE(
+        is_valid(json::parse(R"({"const": 9007199254740993})"), json::parse("9007199254740992.0")));
+    EXPECT_FALSE(is_valid(json::parse(R"({"maximum": -2.5})"), json(-2)));
+    EXPECT_TRUE(is_valid(json::parse(R"({"minimum": -2.5})"), json(-2)));
+    // Equal values stay equal whatever their representation.
+    EXPECT_TRUE(
+        is_valid(json::parse(R"({"const": 9007199254740992})"), json::parse("9007199254740992.0")));
+    EXPECT_TRUE(is_valid(json::parse(R"({"const": -9223372036854775808})"),
+                         json::parse("-9223372036854775808.0")));
+    EXPECT_TRUE(is_valid(json::parse(R"({"const": 0})"), json(-0.0)));
+}
+
 // Generated schemas over the keywords the native evaluation implements, against generated values:
 // both evaluations must agree on every one.
 TEST(SchemaNative, AgreesWithJsonconsOnGeneratedSchemas) {
