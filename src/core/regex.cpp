@@ -654,7 +654,14 @@ class Compiler {
     void compile_repeat(const Node& node) {
         const auto child = node.children.front();
         for (std::uint32_t i = 0; i < node.min; ++i) {
+            const auto before = program_.size();
             compile(child);
+            if (program_.size() == before) {
+                // The operand compiles to nothing, so more copies add nothing either. Expanding
+                // them would multiply the compile time by `min` per nesting level without ever
+                // reaching the program-size limit.
+                break;
+            }
         }
         if (!node.max) {
             // L1: split L2, L3; L2: child; jump L1; L3:
