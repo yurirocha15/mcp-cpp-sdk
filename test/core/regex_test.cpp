@@ -234,4 +234,12 @@ TEST(Regex, LongInputOnTheDefaultStack) {
     EXPECT_FALSE(regex.search(std::string(200'000, 'a') + "c"));
 }
 
+// A quantified group that compiles to no instructions adds nothing however often it repeats, so
+// nesting such groups must not multiply the compile time.
+TEST(Regex, NestedRepetitionOfAnEmptyGroupCompilesQuickly) {
+    const Regex regex("(?:(?:(?:(?:){1000}){1000}){1000}){1000}");
+    EXPECT_TRUE(regex.search(""));
+    EXPECT_TRUE(regex.search("abc"));
+}
+
 }  // namespace
