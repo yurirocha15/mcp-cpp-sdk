@@ -16,6 +16,8 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 class ServerToolTest : public ::testing::Test {
    protected:
@@ -813,4 +815,35 @@ TEST_F(ServerToolOutputTest, TypedToolResultIsChecked) {
 
     ASSERT_EQ(responses.size(), 2);
     EXPECT_EQ(responses[1].at("error").at("code"), mcp::g_INTERNAL_ERROR);
+}
+
+// JSON has no NaN or Infinity, and nlohmann::json writes them as null, so a structured result
+// holding one would reach the client as null, which a `number` schema refuses.
+TEST_F(ServerToolOutputTest, NonFiniteNumberIsRefused) {
+    // `$defs` sends the schema through jsoncons instead of the native evaluation.
+    for (const auto& [value, through_jsoncons] :
+         std::vector<std::pair<double, bool>>{{std::numeric_limits<double>::quiet_NaN(), false},
+                                              {std::numeric_limits<double>::infinity(), true}}) {
+        ServerSetup setup(io_ctx_, tool_capabilities());
+        mcp::Tool tool;
+        tool.name = "ratio";
+        tool.inputSchema = {{"type", "object"}};
+        tool.outputSchema = nlohmann::json{{"type", "object"},
+                                           {"properties", {{"value", {{"type", "number"}}}}},
+                                           {"required", {"value"}}};
+        if (through_jsoncons) {
+            (*tool.outputSchema)["$defs"] = nlohmann::json::object();
+        }
+        setup.server.add_raw_tool(tool, [value = value](const nlohmann::json&) -> nlohmann::json {
+            return mcp::make_tool_structured_result(nlohmann::json{{"value", value}});
+        });
+
+        io_ctx_.restart();
+        auto responses = call_tool(setup, "ratio");
+
+        ASSERT_EQ(responses.size(), 2U);
+        ASSERT_TRUE(responses[1].contains("error")) << responses[1].dump();
+        EXPECT_EQ(responses[1].at("error").at("code"), mcp::g_INTERNAL_ERROR);
+        EXPECT_EQ(setup.server.tool_validation_stats().structured_content_rejections, 1U);
+    }
 }
