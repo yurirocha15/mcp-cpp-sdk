@@ -18,6 +18,7 @@ from typing import Mapping, Sequence
 from .artifacts import canonical_json_bytes, write_atomic
 from .model import ValidationError
 from .native_builder_lock import load_builder_lock
+from .strict_json import loads_strict
 
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
@@ -35,18 +36,7 @@ _STAGES = ("resolve-bases", "build-images")
 
 
 def _json_object(data: bytes, *, label: str) -> Mapping[str, object]:
-    def strict_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValidationError(f"{label} contains duplicate key: {key}")
-            result[key] = value
-        return result
-
-    try:
-        value = json.loads(data.decode("utf-8"), object_pairs_hook=strict_pairs)
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise ValidationError(f"{label} is malformed") from error
+    value = loads_strict(data, label=label)
     if not isinstance(value, Mapping):
         raise ValidationError(f"{label} is not an object")
     return value
@@ -172,10 +162,7 @@ def inspect_local_image(
     """Verify the built platform, revision label, and required offline tools."""
 
     raw = _run_bytes(("docker", "image", "inspect", image))
-    try:
-        images = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise ValidationError("Docker returned malformed local image inspection") from error
+    images = loads_strict(raw, label="Docker local image inspection")
     if not isinstance(images, list) or len(images) != 1 or not isinstance(images[0], Mapping):
         raise ValidationError("Docker local image inspection is not singular")
     value: Mapping[str, object] = images[0]
