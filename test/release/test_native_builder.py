@@ -56,12 +56,20 @@ class NativeBuilderLockTests(unittest.TestCase):
         path.write_text(json.dumps(document), encoding="utf-8")
         return path
 
-    def test_checked_in_bootstrap_lock_is_exact_but_release_use_fails_closed(self) -> None:
-        targets = load_builder_lock(LOCK, require_resolved=False)
+    def test_checked_in_lock_is_exact_and_resolved(self) -> None:
+        targets = load_builder_lock(LOCK, require_resolved=True)
         self.assertEqual(len(targets), 20)
         self.assertEqual({target["runner"] for target in targets}, {"ubuntu-24.04", "ubuntu-24.04-arm"})
-        with self.assertRaisesRegex(ValidationError, "builder bootstrap"):
-            load_builder_lock(LOCK, require_resolved=True)
+
+    def test_release_use_of_a_bootstrap_lock_fails_closed(self) -> None:
+        for field in ("base_digest", "image_digest"):
+            document = json.loads(LOCK.read_text(encoding="utf-8"))
+            document["targets"][0][field] = "UNRESOLVED"
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                path = self.write(document, Path(directory))
+                self.assertEqual(len(load_builder_lock(path, require_resolved=False)), 20)
+                with self.assertRaisesRegex(ValidationError, "builder bootstrap"):
+                    load_builder_lock(path, require_resolved=True)
 
     def test_resolved_lock_binds_every_native_matrix_and_x86_aur(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
