@@ -29,7 +29,7 @@ The initial native-package baselines are:
 * Fedora 43 and 44 on x86_64 and aarch64;
 * Enterprise Linux 9 and 10 on x86_64 and aarch64; AlmaLinux, Rocky Linux,
   and other derivatives require their own recorded clean consumer check;
-* current Arch Linux on x86_64 and aarch64;
+* current Arch Linux on x86_64;
 * current supported Homebrew macOS and Linux bottle runners; and
 * Windows x64 with MSVC 2022 and the dynamic CRT.
 
@@ -99,13 +99,13 @@ Then install shared development files, with the optional static archive:
    sudo apt install libmcp-cpp-sdk-dev
    sudo apt install libmcp-cpp-sdk-static-dev  # optional static target
 
-The package manager installs the matching ``libmcp-cpp-sdk0.2`` shared runtime
+The package manager installs the matching ``libmcp-cpp-sdk0.2.0`` shared runtime
 when needed.  Remove the SDK with:
 
 .. code-block:: bash
 
    sudo apt remove libmcp-cpp-sdk-dev libmcp-cpp-sdk-static-dev \
-     libmcp-cpp-sdk0.2
+     libmcp-cpp-sdk0.2.0
 
 RPM
 ---
@@ -130,7 +130,7 @@ Uninstall with:
 .. code-block:: bash
 
    sudo dnf remove mcp-cpp-sdk-static mcp-cpp-sdk-devel \
-     mcp-cpp-sdk0.2-libs
+     mcp-cpp-sdk0.2.0-libs
 
 Arch Linux and derivatives
 --------------------------
@@ -183,7 +183,8 @@ install the x64 developer SDK from an elevated shell:
 
    choco install mcp-cpp-sdk --version=0.2.0
 
-The package contains shared and static SDK variants for MSVC 2022.  Remove it
+The package contains shared and static SDK variants for MSVC 2022 and depends
+on the ``vcredist140`` package for the Visual C++ runtime.  Remove it
 with ``choco uninstall mcp-cpp-sdk``.  A new shell receives
 ``MCP_CPP_SDK_ROOT``; pass it to CMake when configuring a consumer:
 

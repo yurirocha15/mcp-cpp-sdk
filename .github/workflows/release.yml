@@ -457,15 +457,16 @@ jobs:
               (out / "aur-SRCINFO").write_text(
                   "pkgbase = mcp-cpp-sdk\n\tpkgdesc = Model Context Protocol C++ SDK\n"
                   f"\tpkgver = {version}\n\tpkgrel = 1\n\turl = https://github.com/{repository}\n"
-                  "\tarch = x86_64\n\tarch = aarch64\n\tlicense = Apache-2.0\n"
-                  "\tmakedepends = boost>=1.74\n\tmakedepends = cmake>=3.20\n\tmakedepends = gtest\n\tmakedepends = ninja\n"
-                  "\tdepends = boost-libs>=1.74\n\tdepends = nlohmann-json>=3.10.5\n\tdepends = openssl>=3.0\n"
+                  "\tarch = x86_64\n\tlicense = Apache-2.0\n"
+                  "\tmakedepends = cmake>=3.20\n\tmakedepends = gtest\n\tmakedepends = ninja\n\tmakedepends = python\n"
+                  "\tdepends = boost>=1.74\n\tdepends = nlohmann-json>=3.10.5\n\tdepends = openssl>=3.0\n"
                   "\toptions = !debug\n\toptions = staticlibs\n"
                   f"\tsource = mcp-cpp-sdk-{version}.tar.gz::{source_url}\n"
                   f"\tsource = mcp-cpp-sdk-{version}.tar.gz.asc::{source_url}.asc\n"
                   f"\tvalidpgpkeys = {os.environ['PRIMARY_FINGERPRINT']}\n"
                   f"\tsha256sums = {source_sha}\n\tsha256sums = SKIP\n"
-                  "\npkgname = mcp-cpp-sdk\n\npkgname = mcp-cpp-sdk-static\n\tdepends = mcp-cpp-sdk\n",
+                  "\npkgname = mcp-cpp-sdk\n\npkgname = mcp-cpp-sdk-static\n"
+                  f"\tdepends = mcp-cpp-sdk={version}-1\n",
                   encoding="utf-8",
               )
               render_file(Path("packaging/homebrew/mcp-cpp-sdk.rb.in"), out / "homebrew-mcp-cpp-sdk.rb", {
@@ -568,10 +569,17 @@ jobs:
           for template in source.rglob("*.in"):
               relative = template.relative_to(source)
               output = target / Path(str(relative).removesuffix(".in"))
+              if template.name == "libmcp-cpp-sdk.install.in":
+                  output = target / f"libmcp-cpp-sdk{version.abi_version}.install"
               output.parent.mkdir(parents=True, exist_ok=True)
               tokens = {}
               if template.name == "control.in":
-                  tokens = {"MAINTAINER": "mcp-cpp-sdk maintainers <releases@users.noreply.github.com>"}
+                  tokens = {
+                      "ABI_VERSION": version.abi_version,
+                      "MAINTAINER": "mcp-cpp-sdk maintainers <releases@users.noreply.github.com>",
+                  }
+              elif template.name == "libmcp-cpp-sdk.install.in":
+                  tokens = {"ABI_VERSION": version.abi_version}
               elif template.name == "copyright.in":
                   tokens = {"COPYRIGHT": "mcp-cpp-sdk contributors"}
               elif template.name == "changelog.in":
@@ -677,6 +685,7 @@ jobs:
           rpm_version, rpm_release = version.rpm_version_release
           archive = Path("core") / f"mcp-cpp-sdk-{version}.tar.gz"
           render_file(Path("packaging/rpm/mcp-cpp-sdk.spec.in"), Path("rpmbuild/SPECS/mcp-cpp-sdk.spec"), {
+              "ABI_VERSION": version.abi_version,
               "RPM_VERSION": rpm_version,
               "RPM_RELEASE": rpm_release,
               "RPM_CHANGELOG_DATE": datetime.fromtimestamp(
@@ -989,7 +998,6 @@ jobs:
       matrix:
         include:
           - {architecture: x86_64, runner: release-arch-x86_64}
-          - {architecture: aarch64, runner: release-arch-aarch64}
     runs-on: [self-hosted, release, "${{ matrix.runner }}"]
     timeout-minutes: 60
     permissions:

@@ -20,15 +20,15 @@ BuildRequires:  zlib-devel
 %description
 A C++20 implementation of the Model Context Protocol for clients and servers.
 
-%package -n mcp-cpp-sdk0.2-libs
+%package -n mcp-cpp-sdk@ABI_VERSION@-libs
 Summary: Shared library for mcp-cpp-sdk
 
-%description -n mcp-cpp-sdk0.2-libs
+%description -n mcp-cpp-sdk@ABI_VERSION@-libs
 Runtime shared library for mcp-cpp-sdk.
 
 %package devel
 Summary: Development files for mcp-cpp-sdk
-Requires: mcp-cpp-sdk0.2-libs%{?_isa} = %{version}-%{release}
+Requires: mcp-cpp-sdk@ABI_VERSION@-libs%{?_isa} = %{version}-%{release}
 Requires: boost-devel >= 1.74
 Requires: json-devel >= 3.10.5
 Requires: openssl-devel >= 3.0
@@ -58,9 +58,9 @@ Static library and private dependency metadata for explicit static consumers.
 %cmake_install
 rm -rf %{buildroot}%{_licensedir}/mcp-cpp-sdk
 
-%files -n mcp-cpp-sdk0.2-libs
+%files -n mcp-cpp-sdk@ABI_VERSION@-libs
 %license LICENSE
-%{_libdir}/libmcp-cpp-sdk.so.0.2*
+%{_libdir}/libmcp-cpp-sdk.so.@ABI_VERSION@*
 
 %files devel
 %{_includedir}/mcp/
