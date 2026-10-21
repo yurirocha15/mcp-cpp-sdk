@@ -152,9 +152,13 @@ TEST(Regex, BoundsNestingRepetitionAndProgramSize) {
     const std::string too_deep =
         std::string(Regex::max_nesting + 1, '(') + "a" + std::string(Regex::max_nesting + 1, ')');
     EXPECT_THROW(Regex{too_deep}, RegexError);
-    EXPECT_NO_THROW(Regex{"a{1000}"});
-    EXPECT_THROW(Regex{"a{1001}"}, RegexError);
+    EXPECT_NO_THROW(Regex{"a{10000}"});
+    EXPECT_THROW(Regex{"a{10001}"}, RegexError);
     EXPECT_THROW(Regex{"(a{1000}){1000}"}, RegexError);
+    // Length limits written as patterns stay within the program size limit.
+    EXPECT_TRUE(Regex{"^.{1,2000}$"}.search(std::string(2000, 'a')));
+    EXPECT_FALSE(Regex{"^.{1,2000}$"}.search(std::string(2001, 'a')));
+    EXPECT_TRUE(Regex{"^[a-z0-9]{1,4096}$"}.search(std::string(4096, 'z')));
 }
 
 TEST(Regex, CopiesShareTheCompiledPattern) {
