@@ -75,7 +75,14 @@ class NativeBuilderBootstrapTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_matrix_uses_the_exact_hosted_runner_inventory(self) -> None:
-        matrix = json.loads(bootstrap_matrix(lock=LOCK, stage="resolve-bases"))
+        # The base stage only runs on the initial lock, so rebuild it from the reviewed one.
+        initial = json.loads(LOCK.read_text(encoding="utf-8"))
+        for target in initial["targets"]:
+            target["base_digest"] = target["image_digest"] = "UNRESOLVED"
+        with tempfile.TemporaryDirectory() as directory:
+            lock = Path(directory) / "lock.json"
+            lock.write_text(json.dumps(initial), encoding="utf-8")
+            matrix = json.loads(bootstrap_matrix(lock=lock, stage="resolve-bases"))
         self.assertEqual(len(matrix["include"]), 20)
         self.assertEqual(
             {row["runner"] for row in matrix["include"]},

@@ -15,3 +15,9 @@ race:boost::asio::execution::detail::shared_target_executor
 # construction, an ordering ThreadSanitizer cannot see; the service is never used before it is
 # built.
 race:boost_asio_signal_handler
+
+# libstdc++ frees an exception object once its atomic reference count reaches zero, but the
+# decrement runs in the uninstrumented libstdc++.so, so ThreadSanitizer cannot see the ordering.
+# co_spawn() keeps its own copy of a failed coroutine's exception_ptr and drops it on the spawning
+# thread after the caller has already inspected the exception on another thread.
+race:std::__exception_ptr::exception_ptr::_M_release

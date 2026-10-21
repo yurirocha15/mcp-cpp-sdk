@@ -3,7 +3,7 @@
     "targets": [
         {
             "architecture": "x86_64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:98510ac07bb4545e389be502a8918b385c018bfe4ceeb5ac7e0375c782268b04",
             "base_image": "ubuntu:22.04",
             "dockerfile": "release/native-builders/apt.Dockerfile",
             "id": "ubuntu-jammy-amd64",
@@ -14,7 +14,7 @@
         },
         {
             "architecture": "aarch64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:88881eb36da489f9ff8746ece8048ca16cc94f80e8cd3ae7e8335d8822631591",
             "base_image": "ubuntu:22.04",
             "dockerfile": "release/native-builders/apt.Dockerfile",
             "id": "ubuntu-jammy-arm64",
@@ -25,7 +25,7 @@
         },
         {
             "architecture": "x86_64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:a2d43bffc46670d7108bb3c0468c67c5557c4c92e83e1e34cbff1322ad1b94dc",
             "base_image": "ubuntu:24.04",
             "dockerfile": "release/native-builders/apt.Dockerfile",
             "id": "ubuntu-noble-amd64",
@@ -36,7 +36,7 @@
         },
         {
             "architecture": "aarch64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:18b33ff3829707f31ada654a963b9ee35f2e6f0241b964bd17a22a9b330cb63d",
             "base_image": "ubuntu:24.04",
             "dockerfile": "release/native-builders/apt.Dockerfile",
             "id": "ubuntu-noble-arm64",
@@ -47,7 +47,7 @@
         },
         {
             "architecture": "x86_64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:42527649dbc4f9197a6073f426f488cbff0e9cc9f2afce32d91c383e4875634a",
             "base_image": "ubuntu:26.04",
             "dockerfile": "release/native-builders/apt.Dockerfile",
             "id": "ubuntu-resolute-amd64",
@@ -58,7 +58,7 @@
         },
         {
             "architecture": "aarch64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:7f787d965bc0e4cd42b5f74c013515d6e24ce691c881c81c42e4db59a791e5ce",
             "base_image": "ubuntu:26.04",
             "dockerfile": "release/native-builders/apt.Dockerfile",
             "id": "ubuntu-resolute-arm64",
@@ -69,7 +69,7 @@
         },
         {
             "architecture": "x86_64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:f9c4778ec75d6b054367315b1eb4f3992ee5866b50de6d591a33e8904cba3f17",
             "base_image": "debian:12",
             "dockerfile": "release/native-builders/apt.Dockerfile",
             "id": "debian-bookworm-amd64",
@@ -80,7 +80,7 @@
         },
         {
             "architecture": "aarch64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:441888b788d52d35c32f28c10abb5c748f3427c7836f61612700d30afb4572cb",
             "base_image": "debian:12",
             "dockerfile": "release/native-builders/apt.Dockerfile",
             "id": "debian-bookworm-arm64",
@@ -91,7 +91,7 @@
         },
         {
             "architecture": "x86_64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:15a71cc87173e191d5046f9c4288db4e8954b67f92e48d9587087826b0afe562",
             "base_image": "debian:13",
             "dockerfile": "release/native-builders/apt.Dockerfile",
             "id": "debian-trixie-amd64",
@@ -102,7 +102,7 @@
         },
         {
             "architecture": "aarch64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:0daf3052d9359adaa0de63035b87949cc6c7966bfd6d60746d318ee1999f5edb",
             "base_image": "debian:13",
             "dockerfile": "release/native-builders/apt.Dockerfile",
             "id": "debian-trixie-arm64",
@@ -113,7 +113,7 @@
         },
         {
             "architecture": "x86_64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:1ad64e0ebefee83263fffacc5cb139b37ff70def215e4fe44720896c83353132",
             "base_image": "fedora:43",
             "dockerfile": "release/native-builders/fedora.Dockerfile",
             "id": "fedora-43-x86_64",
@@ -124,7 +124,7 @@
         },
         {
             "architecture": "aarch64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:8de9a064b0d0371271a1ba30980563cb92af15e3be2a94b56d2b19fa215a4a45",
             "base_image": "fedora:43",
             "dockerfile": "release/native-builders/fedora.Dockerfile",
             "id": "fedora-43-aarch64",
@@ -135,7 +135,7 @@
         },
         {
             "architecture": "x86_64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:be9d65e2344d805cc11114319c685ecaa96b6d9b4350a0a6460cdb931babbd19",
             "base_image": "fedora:44",
             "dockerfile": "release/native-builders/fedora.Dockerfile",
             "id": "fedora-44-x86_64",
@@ -146,7 +146,7 @@
         },
         {
             "architecture": "aarch64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:e402cca673711fee025f9ce21c6c08b1bd25ee26b3c482119c8675fbaaedbc85",
             "base_image": "fedora:44",
             "dockerfile": "release/native-builders/fedora.Dockerfile",
             "id": "fedora-44-aarch64",
@@ -157,7 +157,7 @@
         },
         {
             "architecture": "x86_64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:dc973f4dffd28a1e6ae4d1662086d83bac34cd26f3b701e7ba51f4dcb300c80d",
             "base_image": "almalinux:9.8",
             "dockerfile": "release/native-builders/el.Dockerfile",
             "id": "el-9-x86_64",
@@ -168,7 +168,7 @@
         },
         {
             "architecture": "aarch64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:bcddb578f9b3d13526e46dff2ec54051c7380eafa3a1f891b6845066e30cb92d",
             "base_image": "almalinux:9.8",
             "dockerfile": "release/native-builders/el.Dockerfile",
             "id": "el-9-aarch64",
@@ -179,7 +179,7 @@
         },
         {
             "architecture": "x86_64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:ba31c3299856068f77bc10574cad51b0a4f6a3dafb882668656e1639bee63db6",
             "base_image": "almalinux:10.2",
             "dockerfile": "release/native-builders/el.Dockerfile",
             "id": "el-10-x86_64",
@@ -190,7 +190,7 @@
         },
         {
             "architecture": "aarch64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:1e560bcbefdbb000a5ea7b97fd213e3fb1877359a5ffac1c5f91a78b460c4b55",
             "base_image": "almalinux:10.2",
             "dockerfile": "release/native-builders/el.Dockerfile",
             "id": "el-10-aarch64",
@@ -201,7 +201,7 @@
         },
         {
             "architecture": "x86_64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:5b0bb8064e4fcb1b2092fdee45e959c3c2d18dc7fb986a046aaddaae4d731993",
             "base_image": "archlinux:base",
             "dockerfile": "release/native-builders/arch.Dockerfile",
             "id": "aur-x86_64",
@@ -212,7 +212,7 @@
         },
         {
             "architecture": "x86_64",
-            "base_digest": "UNRESOLVED",
+            "base_digest": "sha256:a2d43bffc46670d7108bb3c0468c67c5557c4c92e83e1e34cbff1322ad1b94dc",
             "base_image": "ubuntu:24.04",
             "dockerfile": "release/native-builders/conan.Dockerfile",
             "id": "conan-linux-x86_64",
