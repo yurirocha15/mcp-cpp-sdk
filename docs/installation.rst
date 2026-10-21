@@ -5,14 +5,17 @@ Availability rule
 -----------------
 
 The release pipeline prepares GitHub Release, Conan 2, APT/DEB, RPM, AUR,
-Homebrew, and Chocolatey outputs.  A command in this page is supported only
-when the corresponding immutable GitHub Release record says that the route is
-``LIVE``.  ``LIVE`` means the public package was queried afresh, installed in a
-clean supported environment, and used to compile and run a C++ consumer.
+Homebrew, and Chocolatey outputs.  The GitHub, Cloudsmith (APT/RPM), and AUR
+publishers report success only after the exact public object matches the
+release identity.  ConanCenter, Homebrew, and Chocolatey are
+provider-controlled review or moderation routes and remain pending until the
+destination accepts the release.
 
-Before the first stable release, or while a registry submission is pending,
-use a reviewed source revision.  Do not infer availability from this page,
-from an uploaded file, or from an open package-repository pull request.
+A package-manager route is installable only after the requested version
+appears at that route's public provider.  Before the first stable release, or
+while a submission is pending, use a reviewed source revision.  Do not infer
+availability from this page, an uploaded file, or an open package-repository
+pull request.
 
 Supported baseline
 ------------------
@@ -22,20 +25,32 @@ nlohmann_json 3.10.5 or newer, and OpenSSL 3.0 or newer.  Supported compiler
 minima are GCC 11, Clang 14, AppleClang 15, and MSVC 2022 with the v143
 toolset.  C++20 and C++23 consumers are tested independently.
 
-The initial native-package baselines are:
+Every ``0.x.y`` is a stable release unless its version has an ``-rc.N``
+suffix, but SemVer does not promise binary compatibility before 1.0.  Each
+stable 0.x release therefore has an exact shared-library/DLL identity and an
+exact CMake package-version match.  Rebuild or relink consumers when changing
+0.x versions; do not replace one 0.x shared binary underneath an executable
+built against another.  A 1.x dispatch is deliberately blocked until the
+project adopts and validates ABI policy for every released platform family.
+
+The native-package build matrix targets:
 
 * Ubuntu 22.04, 24.04, and 26.04 on amd64 and arm64;
 * Debian 12 and 13 on amd64 and arm64;
 * Fedora 43 and 44 on x86_64 and aarch64;
 * Enterprise Linux 9 and 10 on x86_64 and aarch64; AlmaLinux, Rocky Linux,
-  and other derivatives require their own recorded clean consumer check;
+  and other compatible derivatives can use the matching Enterprise Linux
+  route but are not independently tested;
 * current Arch Linux on x86_64;
 * current supported Homebrew macOS and Linux bottle runners; and
 * Windows x64 with MSVC 2022 and the dynamic CRT.
 
-A derivative is not automatically a tested baseline.  It is supported only
-after a clean install and consumer test for that derivative is recorded by a
-release.
+Compatible Ubuntu and Debian derivatives can use the route for their base
+distribution, compatible Fedora derivatives can use the matching Fedora or
+Enterprise Linux route, and Arch derivatives can build the AUR package.  Only
+the exact systems listed above are release-build baselines, so verify the
+derivative's base version, architecture, dependency versions, and ABI before
+deployment.
 
 CMake linkage selection
 -----------------------
@@ -56,7 +71,7 @@ For an explicit variant:
 
 .. code-block:: cmake
 
-   find_package(mcp-cpp-sdk 0.2 CONFIG REQUIRED)
+   find_package(mcp-cpp-sdk 0.2.0 EXACT CONFIG REQUIRED)
    target_link_libraries(my_application PRIVATE mcp::sdk_shared)
 
 Replace the last target with ``mcp::sdk_static`` for static linkage.  Do not
@@ -66,8 +81,8 @@ Conan 2
 -------
 
 Conan packages are delivered through a recipe contribution to ConanCenter;
-there is no private Conan server.  After the release record marks ConanCenter
-``LIVE``:
+there is no private Conan server.  Install only after the exact version appears
+in ConanCenter's public package index:
 
 .. code-block:: bash
 
@@ -82,14 +97,15 @@ route.
 APT / DEB
 ---------
 
-The public APT repository is hosted by Cloudsmith.  Once the release record
-marks the exact distribution route ``LIVE``, obtain the repository setup
-instructions from the public repository and inspect the downloaded script
-before running it.  The canonical setup endpoint is:
+The public APT repository is hosted by Cloudsmith.  The publisher reads each
+exact package identity back before reporting success.  Once
+the requested version appears for your distribution, obtain the repository
+setup instructions from the public repository and inspect the downloaded
+script before running it.  The canonical setup endpoint is:
 
 .. code-block:: text
 
-   https://dl.cloudsmith.io/public/yurirocha15/mcp-cpp-sdk/cfg/setup/bash.deb.sh
+   https://dl.cloudsmith.io/public/mcp-cpp-sdk/mcp-cpp-sdk/cfg/setup/bash.deb.sh
 
 Then install shared development files, with the optional static archive:
 
@@ -110,13 +126,29 @@ when needed.  Remove the SDK with:
 RPM
 ---
 
-The public RPM repository is also hosted by Cloudsmith.  Use its setup
-instructions only after the release record marks the matching Fedora or
-Enterprise Linux route ``LIVE``.  The canonical setup endpoint is:
+The public RPM repository is also hosted by Cloudsmith.  The publisher reads
+each exact package identity back before reporting success.
+Use its setup instructions only after the requested version appears for the
+matching Fedora or Enterprise Linux route.  The canonical setup endpoint is:
 
 .. code-block:: text
 
-   https://dl.cloudsmith.io/public/yurirocha15/mcp-cpp-sdk/cfg/setup/bash.rpm.sh
+   https://dl.cloudsmith.io/public/mcp-cpp-sdk/mcp-cpp-sdk/cfg/setup/bash.rpm.sh
+
+On AlmaLinux and Rocky Linux 9 or 10, enable CRB and EPEL before installing
+the development package; they provide the ``json-devel`` dependency used by
+the exported CMake target:
+
+.. code-block:: bash
+
+   sudo dnf install dnf-plugins-core
+   sudo dnf config-manager --set-enabled crb
+   sudo dnf install epel-release
+
+RHEL users must enable the corresponding CodeReady Builder repository through
+their subscription and then follow the official EPEL instructions for that
+major version.  Do not use the AlmaLinux/Rocky repository command blindly on
+RHEL.  Fedora does not need this Enterprise Linux prerequisite.
 
 Install the development package and, when required, the static add-on:
 
@@ -135,11 +167,14 @@ Uninstall with:
 Arch Linux and derivatives
 --------------------------
 
-The AUR package base is ``mcp-cpp-sdk`` and produces shared and static split
-packages.  After the AUR route is ``LIVE``, inspect the ``PKGBUILD`` and verify
-the source signature before building.  First import the exact public release
-key that is attached to the immutable GitHub Release, inspect its fingerprint,
-and compare it with ``validpgpkeys`` in the ``PKGBUILD``:
+The official AUR release validation baseline is x86_64.  The AUR package base
+is ``mcp-cpp-sdk`` and produces shared and static split
+packages.  The publisher reports success only after reading the exact remote
+package tree back.  After the package base shows the requested
+``pkgver``, inspect the ``PKGBUILD`` and verify the source signature before
+building.  First import the exact public release key that is attached to the
+immutable GitHub Release, inspect its fingerprint, and compare it with
+``validpgpkeys`` in the ``PKGBUILD``:
 
 .. code-block:: bash
 
@@ -156,13 +191,16 @@ and compare it with ``validpgpkeys`` in the ``PKGBUILD``:
    makepkg -si
 
 Remove installed split packages with ``pacman -Rns mcp-cpp-sdk`` and, if
-installed, ``mcp-cpp-sdk-static``.  Manjaro and other derivatives become
-supported only when their release-specific clean consumer test is recorded.
+installed, ``mcp-cpp-sdk-static``.  Manjaro and other Arch derivatives can
+build the AUR package when they remain compatible with the targeted Arch
+dependencies, but they are not independent release-build baselines.
 
 Homebrew
 --------
 
-After the Homebrew route is ``LIVE``:
+Homebrew publication is a provider-controlled handoff.  Install only after the
+requested formula version appears in the destination tap; an open formula pull
+request is not installable:
 
 .. code-block:: bash
 
@@ -176,15 +214,15 @@ build where a release has no verified bottle for the host.
 Chocolatey
 ----------
 
-After Chocolatey moderation completes and the release record says ``LIVE``,
-install the x64 developer SDK from an elevated shell:
+Install the x64 developer SDK from an elevated shell only after Chocolatey
+moderation completes and the exact version appears in the public Chocolatey
+Community Repository.  A pending submission is not installable:
 
 .. code-block:: powershell
 
    choco install mcp-cpp-sdk --version=0.2.0
 
-The package contains shared and static SDK variants for MSVC 2022 and depends
-on the ``vcredist140`` package for the Visual C++ runtime.  Remove it
+The package contains shared and static SDK variants for MSVC 2022.  Remove it
 with ``choco uninstall mcp-cpp-sdk``.  A new shell receives
 ``MCP_CPP_SDK_ROOT``; pass it to CMake when configuring a consumer:
 
@@ -193,6 +231,8 @@ with ``choco uninstall mcp-cpp-sdk``.  A new shell receives
    cmake -S . -B build -DCMAKE_PREFIX_PATH="$env:MCP_CPP_SDK_ROOT"
 
 The Chocolatey package does not redistribute third-party development SDKs.
+It declares Chocolatey's ``vcredist140`` package so the current supported
+Microsoft Visual C++ runtime is installed before the shared SDK is used.
 Provide x64 MSVC-compatible Boost 1.74 or newer, nlohmann-json 3.10.5 or newer,
 and OpenSSL 3.x, then include their prefixes alongside
 ``MCP_CPP_SDK_ROOT`` in ``CMAKE_PREFIX_PATH``.  Conan 2 or vcpkg may be
@@ -205,8 +245,9 @@ GitHub Release and source builds
 Each stable GitHub Release provides deterministic source archives, detached
 OpenPGP signatures, ``SHA256SUMS`` with its signature, SBOMs, provenance, and a
 signed release manifest.  Verify the checksum signature and source-archive
-signature before building.  Do not use GitHub's automatically generated source
-archives as release inputs.
+signature before building.  The publisher reports success only after reading
+the exact immutable release and assets back.  Do not use GitHub's
+automatically generated source archives as release inputs.
 
 For a source checkout with Conan 2 dependencies:
 
