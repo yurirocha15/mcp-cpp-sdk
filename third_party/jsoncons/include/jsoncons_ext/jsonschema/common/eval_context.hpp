@@ -10,7 +10,10 @@
 #include <cstddef>
 #include <string>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
+
+#include <mcp/detail/regex.hpp>
 
 #include <jsoncons/config/jsoncons_config.hpp>
 #include <jsoncons/utility/uri.hpp>
@@ -81,6 +84,25 @@ struct evaluation_limits
     {
         static thread_local std::size_t work = static_cast<std::size_t>(-1);
         return work;
+    }
+
+    // Pattern matching steps left for the validation running on this thread, as
+    // ::mcp::detail::Regex::search counts them. The caller sets it before each validation; the
+    // initial value does not limit anything.
+    static std::size_t& pattern_steps_left()
+    {
+        static thread_local std::size_t steps = static_cast<std::size_t>(-1);
+        return steps;
+    }
+
+    static bool search(const ::mcp::detail::Regex& regex, std::string_view input)
+    {
+        const auto matched = regex.search(input, pattern_steps_left());
+        if (!matched)
+        {
+            throw evaluation_limit_error("pattern matching takes too many steps");
+        }
+        return *matched;
     }
 
     static void enter(std::size_t depth)

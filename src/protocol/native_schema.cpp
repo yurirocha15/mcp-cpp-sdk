@@ -352,10 +352,13 @@ std::size_t code_points(std::string_view text) {
 }
 
 /// One evaluation of a value against a NativeSchema.
+/// Thrown when pattern matching needs more steps than the validation's budget holds.
+struct PatternBudgetExceeded {};
+
 class Evaluation {
    public:
-    Evaluation(std::size_t max_violations, ValidationResult& result)
-        : max_violations_(max_violations), result_(result) {}
+    Evaluation(std::size_t max_violations, std::size_t& pattern_steps, ValidationResult& result)
+        : max_violations_(max_violations), pattern_steps_(pattern_steps), result_(result) {}
 
     /// Checks @p value against @p node; false once enough violations are recorded.
     bool check(const Node& node, const nlohmann::json& value) {
@@ -452,9 +455,14 @@ class Evaluation {
                 return false;
             }
         }
-        if (node.pattern && !node.pattern->search(text) &&
-            !report("String does not match the pattern " + node.pattern->pattern())) {
-            return false;
+        if (node.pattern) {
+            const auto matched = node.pattern->search(text, pattern_steps_);
+            if (!matched) {
+                throw PatternBudgetExceeded();
+            }
+            if (!*matched && !report("String does not match the pattern " + node.pattern->pattern())) {
+                return false;
+            }
         }
         return true;
     }
@@ -554,6 +562,7 @@ class Evaluation {
     }
 
     std::size_t max_violations_;
+    std::size_t& pattern_steps_;
     ValidationResult& result_;
     std::string path_;
 };
@@ -571,8 +580,14 @@ std::optional<NativeSchema> NativeSchema::compile(const nlohmann::json& schema) 
 }
 
 void NativeSchema::validate(const nlohmann::json& instance, std::size_t max_violations,
-                            ValidationResult& result) const {
-    Evaluation(max_violations, result).check(*root_, instance);
+                            std::size_t pattern_steps, ValidationResult& result) const {
+    try {
+        Evaluation(max_violations, pattern_steps, result).check(*root_, instance);
+    } catch (const PatternBudgetExceeded&) {
+        result.valid = false;
+        result.violations.clear();
+        result.violations.push_back({"", "validation stopped: pattern matching takes too many steps"});
+    }
 }
 
 }  // namespace mcp::detail
