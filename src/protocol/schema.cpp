@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -63,8 +64,23 @@ constexpr std::size_t g_work_per_level = 256;
 
 struct ValueShape {
     bool too_deep = false;
-    bool non_finite = false;  ///< Holds a NaN or an infinity, which JSON cannot represent.
-    std::size_t levels = 0;   ///< Sum over the value's nodes of their depth plus one.
+    bool non_finite = false;     ///< Holds a NaN or an infinity, which JSON cannot represent.
+    std::size_t levels = 0;      ///< Sum over the value's nodes of their depth plus one.
+    std::size_t text_bytes = 0;  ///< Bytes of the strings and property names in the value.
+
+    /// The pattern matching steps (see mcp::detail::Regex::search) a validation of the value may
+    /// take under @p options. Typical patterns take a handful of steps per byte; one that runs many
+    /// threads at once over a long string, such as an unanchored ".{1,1000}x", takes thousands.
+    [[nodiscard]] std::size_t pattern_steps(const SchemaOptions& options) const {
+        const auto limit = std::numeric_limits<std::size_t>::max();
+        const auto per_byte = options.pattern_steps_per_text_byte;
+        if (per_byte != 0 && text_bytes > limit / per_byte) {
+            return limit;
+        }
+        const auto allowance = per_byte * text_bytes;
+        return allowance > limit - options.base_pattern_steps ? limit
+                                                              : options.base_pattern_steps + allowance;
+    }
 };
 
 /// Measures @p value and checks its nesting against @p depth_limit. Iterative, so it is safe on any
@@ -79,32 +95,49 @@ ValueShape measure(const nlohmann::json& value, std::size_t depth_limit) {
         if (!node->is_structured()) {
             shape.non_finite =
                 shape.non_finite || (node->is_number_float() && !std::isfinite(node->get<double>()));
+            if (node->is_string()) {
+                shape.text_bytes += node->get_ref<const std::string&>().size();
+            }
             continue;
         }
         if (depth + 1 > depth_limit) {
             shape.too_deep = true;
             return shape;
         }
-        for (const auto& child : *node) {
-            pending.emplace_back(&child, depth + 1);
+        if (node->is_object()) {
+            for (const auto& [key, child] : node->items()) {
+                shape.text_bytes += key.size();
+                pending.emplace_back(&child, depth + 1);
+            }
+        } else {
+            for (const auto& child : *node) {
+                pending.emplace_back(&child, depth + 1);
+            }
         }
     }
     return shape;
 }
 
-/// Sets the evaluation work budget for the validations this thread runs while it is alive (see
-/// the evaluation limits scripts/vendor_jsoncons.py adds to jsoncons).
+/// Sets the evaluation work and pattern matching budgets for the validations this thread runs
+/// while it is alive (see the evaluation limits scripts/vendor_jsoncons.py adds to jsoncons).
 class WorkBudget {
    public:
-    explicit WorkBudget(std::size_t levels) : saved_(jcs::evaluation_limits::work_left()) {
-        jcs::evaluation_limits::work_left() = g_base_work + g_work_per_level * levels;
+    WorkBudget(const ValueShape& shape, const SchemaOptions& options)
+        : saved_work_(jcs::evaluation_limits::work_left()),
+          saved_pattern_steps_(jcs::evaluation_limits::pattern_steps_left()) {
+        jcs::evaluation_limits::work_left() = g_base_work + g_work_per_level * shape.levels;
+        jcs::evaluation_limits::pattern_steps_left() = shape.pattern_steps(options);
     }
-    ~WorkBudget() { jcs::evaluation_limits::work_left() = saved_; }
+    ~WorkBudget() {
+        jcs::evaluation_limits::work_left() = saved_work_;
+        jcs::evaluation_limits::pattern_steps_left() = saved_pattern_steps_;
+    }
     WorkBudget(const WorkBudget&) = delete;
     WorkBudget& operator=(const WorkBudget&) = delete;
 
    private:
-    std::size_t saved_;
+    std::size_t saved_work_;
+    std::size_t saved_pattern_steps_;
 };
 
 /// Copies an nlohmann value into a jsoncons value. Recurses once per level, so callers check the
@@ -281,7 +314,7 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
     SchemaViolation first_problem;
     bool schema_invalid = false;
     try {
-        const WorkBudget budget(schema_shape.levels);
+        const WorkBudget budget(schema_shape, SchemaOptions{});
         metaschema(dialect).validate(converted, [&](const jcs::validation_message& message) {
             if (!schema_invalid) {
                 const auto& problem = innermost(message);
@@ -334,11 +367,13 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
 
     // A reference cycle that never descends into the value exceeds the evaluation limits whatever
     // the value is. Trying a few trivial values finds it now instead of on every validation.
+    ValueShape trivial;
+    trivial.levels = 1;
     for (const auto& probe :
          {jc::json::null(), jc::json(jc::json_object_arg), jc::json(jc::json_array_arg), jc::json(""),
           jc::json(0), jc::json(true)}) {
         try {
-            const WorkBudget budget(1);
+            const WorkBudget budget(trivial, SchemaOptions{});
             (void)compiled->is_valid(probe);
         } catch (const jcs::evaluation_limit_error& error) {
             throw SchemaError(
@@ -363,13 +398,14 @@ ValidationResult CompiledSchema::validate(const nlohmann::json& instance) const 
     }
 
     if (impl_->native) {
-        impl_->native->validate(instance, options.max_reported_violations, result);
+        impl_->native->validate(instance, options.max_reported_violations, shape.pattern_steps(options),
+                                result);
         return result;
     }
 
     const auto converted = to_jsoncons(instance);
     try {
-        const WorkBudget budget(shape.levels);
+        const WorkBudget budget(shape, options);
         impl_->compiled.validate(converted, [&](const jcs::validation_message& message) {
             result.valid = false;
             if (result.violations.size() < options.max_reported_violations) {

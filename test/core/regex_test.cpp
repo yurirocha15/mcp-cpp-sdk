@@ -3,6 +3,8 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <limits>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -232,6 +234,26 @@ TEST(Regex, LongInputOnTheDefaultStack) {
     const Regex regex("^(a|b)*$");
     EXPECT_TRUE(regex.search(std::string(200'000, 'a')));
     EXPECT_FALSE(regex.search(std::string(200'000, 'a') + "c"));
+}
+
+// The counted search takes the program's size plus, at each input position, one step and one per
+// thread; it gives up, leaving no steps, when the budget cannot pay for the search.
+TEST(Regex, CountedSearchStopsWhenTheBudgetRunsOut) {
+    const Regex unanchored(".{1,1000}x");
+    const std::string input(600, 'a');  // several hundred thousand steps for the unanchored pattern
+    std::size_t steps = 100'000;
+    EXPECT_EQ(unanchored.search(input, steps), std::nullopt);
+    EXPECT_EQ(steps, 0U);
+
+    const Regex anchored("^[a-z]+$");
+    steps = 100'000;
+    EXPECT_EQ(anchored.search(input, steps), std::optional<bool>(true));
+    EXPECT_GT(steps, 100'000U - 10'000U);
+    EXPECT_LT(steps, 100'000U - input.size());
+
+    steps = std::numeric_limits<std::size_t>::max();
+    EXPECT_EQ(unanchored.search(input + "x", steps), std::optional<bool>(true));
+    EXPECT_TRUE(unanchored.search(input + "x"));
 }
 
 // A quantified group that compiles to no instructions adds nothing however often it repeats, so

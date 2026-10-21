@@ -254,11 +254,17 @@ than 64 levels is invalid (``SchemaOptions::max_instance_depth``). The
 evaluation path through the schema is limited to 192 keywords and array
 indexes, which a schema recursing through ``anyOf`` and ``$ref`` at every level
 reaches at about 48 levels of the value, and the evaluation work per value is
-budgeted in proportion to its size and nesting. A schema that exceeds a limit
-even for a trivial value, such as ``{"$ref": "#"}``, is refused at
-registration. Schema documents may nest up to 64 levels; checking a 2020-12
-schema against its metaschema reaches the path limit when ``properties`` nest 27
-levels deep.
+budgeted in proportion to its size and nesting. Pattern matching runs in time
+linear in the text, but a pattern that keeps many alternatives open at once,
+such as an unanchored ``.{1,1000}x``, costs thousands of steps per character, so
+matching has its own budget: 16 million steps plus 64 for every byte of string
+and property name in the value (``SchemaOptions`` sets both for a
+``CompiledSchema``). Typical patterns take a handful of steps per
+byte. A value that exceeds a limit is reported invalid with ``validation
+stopped: ...``. A schema that exceeds a limit even for a trivial value, such as
+``{"$ref": "#"}``, is refused at registration. Schema documents may nest up to
+64 levels; checking a 2020-12 schema against its metaschema reaches the path
+limit when ``properties`` nest 27 levels deep.
 
 **Cost.** A 2020-12 schema that uses only ``type``, ``enum``, ``const``, the
 numeric bounds, ``minLength``, ``maxLength``, ``pattern``, ``items``,
