@@ -839,7 +839,7 @@ generate_comparison() {
             "$ELIGIBILITY_CONTRACT"
         printf "Supplemental adapter contract: %s (out-of-band evidence).\n" \
             "$SUPPLEMENTAL_CONTRACT"
-        printf "Results: %s\n\n" "$RESULTS_DIR"
+        printf "Results: %s\n\n" "${RESULTS_DIR#"$(dirname "$SCRIPT_DIR")/"}"
         printf "%-18s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
             "Server" "Protocol" "Operations" "Ops/s" "CV%" "p50(ms)" "p95(ms)" "p99(ms)" "ErrorRate"
         printf "%-18s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
