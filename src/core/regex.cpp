@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -746,6 +747,11 @@ Regex::Regex(std::string_view pattern) {
 const std::string& Regex::pattern() const noexcept { return program_->pattern; }
 
 bool Regex::search(std::string_view input) const {
+    auto unlimited = std::numeric_limits<std::size_t>::max();
+    return *search(input, unlimited);
+}
+
+std::optional<bool> Regex::search(std::string_view input, std::size_t& steps_left) const {
     const auto& instructions = program_->instructions;
     const auto& classes = program_->classes;
     const bool anchored = program_->anchored;
@@ -754,6 +760,18 @@ bool Regex::search(std::string_view input) const {
     ThreadList next(size);
     std::vector<std::uint32_t> stack;
     stack.reserve(size);
+    // Takes @p steps from the budget, or reports that the budget cannot pay for them.
+    const auto charge = [&steps_left](std::size_t steps) {
+        if (steps > steps_left) {
+            steps_left = 0;
+            return false;
+        }
+        steps_left -= steps;
+        return true;
+    };
+    if (!charge(size)) {
+        return std::nullopt;
+    }
 
     // Follows the zero-width instructions reachable from `start` at `where` and records every
     // instruction visited in `list`. Returns true once a match is reachable.
@@ -817,6 +835,9 @@ bool Regex::search(std::string_view input) const {
         return true;
     }
     while (current_char) {
+        if (!charge(current.size() + 1)) {
+            return std::nullopt;
+        }
         const char32_t c = *current_char;
         std::optional<char32_t> following;
         if (offset < input.size()) {

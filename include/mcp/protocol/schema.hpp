@@ -25,6 +25,12 @@ struct SchemaOptions {
     std::size_t max_instance_depth = 64;
     /// Most violations reported by one `validate()` call; validation stops after this many.
     std::size_t max_reported_violations = 8;
+    /// Pattern matching steps one `validate()` call may take, before the allowance for the value's
+    /// text below. A step takes a few nanoseconds.
+    std::size_t base_pattern_steps = 16'000'000;
+    /// Further pattern matching steps allowed for every byte of string and property name in the
+    /// value. Typical patterns take a handful of steps per byte.
+    std::size_t pattern_steps_per_text_byte = 64;
 };
 
 /**
@@ -89,9 +95,11 @@ struct CompiledSchemaImpl;
  *
  * Validation is bounded: the value's nesting (`SchemaOptions::max_instance_depth`), the length
  * of the evaluation path through the schema (192 keywords and array indexes), and the evaluation
- * work, which may grow with the size and nesting of the value but not exponentially. A value whose
- * validation exceeds a bound is reported as invalid. The evaluation path grows by several keywords
- * per level of the value when a recursive schema passes through `anyOf` and `$ref` at every
+ * work, which may grow with the size and nesting of the value but not exponentially. Pattern
+ * matching (`pattern`, `patternProperties`) has its own budget, by default 16 million matcher
+ * steps plus 64 for every byte of string and property name in the value (`SchemaOptions`). A
+ * value whose validation exceeds a bound is reported as invalid. The evaluation path grows by several
+ * keywords per level of the value when a recursive schema passes through `anyOf` and `$ref` at every
  * level; such a schema reaches the bound at about 48 levels. The same bounds apply when the schema
  * is checked against its metaschema, which a 2020-12 schema nesting `properties` 27 levels deep
  * exceeds. A schema that exceeds a bound even for a trivial value, such as `{"$ref": "#"}`, is

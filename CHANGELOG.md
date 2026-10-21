@@ -14,13 +14,15 @@ Versioning; a `0.x` version is a stable release unless its version has an
   and draft-04 may be named, and any other `$schema` is refused with
   `SchemaError`. The schema itself is checked against its dialect's
   metaschema. `SchemaOptions` bounds the nesting of a validated value
-  (64 levels by default) and the number of violations reported. JSON cannot
+  (64 levels by default), the number of violations reported and the pattern
+  matching steps of one validation. JSON cannot
   represent NaN or Infinity: a schema holding one is refused, and a value
   holding one is checked as the `null` it would be sent as.
   References resolve only within the document and to the supported
   metaschemas; any other `$ref` is refused with
   `SchemaError::Category::eUnresolvedRef`, and nothing is fetched. Evaluation
-  is bounded in path length and work: a validation that exceeds them reports
+  is bounded in path length, work and pattern matching steps (the latter in
+  proportion to the text in the value): a validation that exceeds them reports
   the value as invalid, and a schema that exceeds them for any value, such as
   `{"$ref": "#"}`, is refused when compiled.
 

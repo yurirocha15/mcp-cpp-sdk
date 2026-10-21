@@ -644,7 +644,7 @@ namespace jsonschema {
 
             eval_context<Json> this_context(context, this->keyword());
 
-            if (!regex_.search(instance.as_string_view()))
+            if (!evaluation_limits::search(regex_, instance.as_string_view()))
             {
                 std::string message("String '");
                 message.append(instance.as_cstring());
@@ -2815,7 +2815,7 @@ namespace jsonschema {
                 // check all matching "patternProperties"
                 for (auto& schema_pp : pattern_properties_)
                 {
-                    if (schema_pp.first.search(prop.key())) 
+                    if (evaluation_limits::search(schema_pp.first, prop.key())) 
                     {
                         allowed_properties.insert(std::string(prop.name()));
                         std::size_t errors = reporter.error_count();
@@ -2863,7 +2863,7 @@ namespace jsonschema {
                 // check all matching "patternProperties"
                 for (auto& schema_pp : pattern_properties_)
                 {
-                    if (schema_pp.first.search(prop.key())) 
+                    if (evaluation_limits::search(schema_pp.first, prop.key())) 
                     {
                         allowed_properties.insert(std::string(prop.name()));
                         result = schema_pp.second->walk(prop_context, prop.value() , prop_location, reporter, patch);

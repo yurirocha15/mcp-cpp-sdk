@@ -16,7 +16,9 @@ needs and applies five recorded transformations:
    path. Without them a reference cycle that never descends into the value
    (``{"$ref": "#"}``) recurses until the stack overflows, and branching
    applicators over recursive references take time exponential in the value's
-   depth.
+   depth. Pattern matching (``pattern``, ``patternProperties``) is charged to a
+   separate budget of ``mcp::detail::Regex`` steps: matching is linear in the
+   input, but its cost per input character grows with the pattern.
 3. Large doubles are handled without undefined behavior. The ``integer``
    type check and the size keywords such as ``maxLength`` converted a double
    to an integer type whatever its range; now ``1e308`` is an integer, as JSON
@@ -63,7 +65,7 @@ VERSION = "1.10.0"
 TARBALL_URL = f"https://github.com/danielaparker/jsoncons/archive/refs/tags/v{VERSION}.tar.gz"
 TARBALL_SHA256 = "c829350a2eece662beb378143e2ab1c1cbb07d703687bf168626665a8a7d8bc1"
 # Bump when the transformation below changes, so PROVENANCE records which one produced the tree.
-TRANSFORM_VERSION = 6
+TRANSFORM_VERSION = 7
 
 # Header directories, relative to the release's include/, that the extension needs.
 SUBSET = ("jsoncons", "jsoncons_ext/jsonschema", "jsoncons_ext/jsonpointer")
@@ -97,12 +99,12 @@ REGEX_REPLACEMENTS = (
     ),
     (
         "if (!std::regex_search(instance.as_cstring(), regex_))",
-        "if (!regex_.search(instance.as_string_view()))",
+        "if (!evaluation_limits::search(regex_, instance.as_string_view()))",
         1,
     ),
     (
         "if (std::regex_search(prop.key(), schema_pp.first))",
-        "if (schema_pp.first.search(prop.key()))",
+        "if (evaluation_limits::search(schema_pp.first, prop.key()))",
         2,
     ),
 )
@@ -133,6 +135,25 @@ struct evaluation_limits
     {
         static thread_local std::size_t work = static_cast<std::size_t>(-1);
         return work;
+    }
+
+    // Pattern matching steps left for the validation running on this thread, as
+    // ::mcp::detail::Regex::search counts them. The caller sets it before each validation; the
+    // initial value does not limit anything.
+    static std::size_t& pattern_steps_left()
+    {
+        static thread_local std::size_t steps = static_cast<std::size_t>(-1);
+        return steps;
+    }
+
+    static bool search(const ::mcp::detail::Regex& regex, std::string_view input)
+    {
+        const auto matched = regex.search(input, pattern_steps_left());
+        if (!matched)
+        {
+            throw evaluation_limit_error("pattern matching takes too many steps");
+        }
+        return *matched;
     }
 
     static void enter(std::size_t depth)
@@ -456,7 +477,10 @@ def add_evaluation_limits(text: str) -> str:
     anchor = "template <typename Json>\nclass eval_context\n{"
     if text.count(anchor) != 1 or text.count("#include <vector>\n") != 1:
         raise SystemExit(f"{EVAL_CONTEXT_PATH} changed upstream; review the evaluation limits patch")
-    text = text.replace("#include <vector>\n", "#include <stdexcept>\n#include <vector>\n")
+    text = text.replace(
+        "#include <vector>\n",
+        "#include <stdexcept>\n#include <string_view>\n#include <vector>\n\n#include <mcp/detail/regex.hpp>\n",
+    )
     text = text.replace(anchor, EVALUATION_LIMITS)
     text, count = EVAL_PATH_CONSTRUCTOR.subn(
         lambda match: match.group(1) + "{\n        evaluation_limits::enter(eval_path_.tokens().size());\n    }",
@@ -474,7 +498,8 @@ def provenance() -> str:
         f"sha256: {TARBALL_SHA256}\n"
         f"subset: {', '.join(SUBSET)}\n"
         f"transform: {TRANSFORM_VERSION} (scripts/vendor_jsoncons.py: std::regex replaced with "
-        "mcp::detail::Regex; evaluation depth and work limits added to eval_context; integer type "
+        "mcp::detail::Regex; evaluation depth, work and pattern matching limits added to eval_context; "
+        "integer type "
         "check, size keywords and multipleOf made safe for large doubles; uniqueItems compares only "
         "elements with equal hashes; subschemas under definitions registered in every dialect; "
         "additionalProperties violations reported at the member; "

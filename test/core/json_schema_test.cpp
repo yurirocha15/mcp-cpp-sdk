@@ -429,6 +429,42 @@ TEST(SchemaLimits, SchemaNestingWithinTheMetaschemaBoundCompiles) {
     EXPECT_EQ(compile_error(schema), SchemaError::Category::eInvalidSchema);
 }
 
+// Pattern matching is linear in the input, but a pattern that runs many threads at once, such as
+// an unanchored ".{1,1000}x", costs thousands of steps per character. A validation's matching is
+// budgeted in proportion to the text in the value; past the budget the value is reported invalid.
+// A small budget keeps the test fast in sanitizer builds.
+TEST(SchemaLimits, PatternMatchingIsBounded) {
+    mcp::SchemaOptions options;
+    options.base_pattern_steps = 100'000;
+    options.pattern_steps_per_text_byte = 64;
+    // Matching all of it would take about 10 million steps; the budget for it is 420,000.
+    const std::string long_text(5000, 'a');
+    for (const bool through_jsoncons : {false, true}) {
+        SCOPED_TRACE(through_jsoncons ? "jsoncons" : "native");
+        json costly = {{"type", "string"}, {"pattern", ".{1,1000}x"}};
+        json cheap = {{"type", "string"}, {"pattern", "^[a-z]+$"}};
+        if (through_jsoncons) {
+            costly["$defs"] = json::object();
+            cheap["$defs"] = json::object();
+        }
+        const auto result = CompiledSchema::compile(costly, options).validate(long_text);
+        ASSERT_FALSE(result.valid);
+        ASSERT_EQ(result.violations.size(), 1U);
+        EXPECT_EQ(result.violations[0].message,
+                  "validation stopped: pattern matching takes too many steps");
+
+        EXPECT_TRUE(CompiledSchema::compile(cheap, options).validate(long_text).valid);
+        EXPECT_TRUE(
+            CompiledSchema::compile(costly, options).validate(std::string(100, 'a') + "x").valid);
+    }
+    // Property names are matched by patternProperties, which only jsoncons evaluates.
+    const auto keys = CompiledSchema::compile({{"patternProperties", {{".{1,1000}x", true}}}}, options);
+    const auto result = keys.validate({{long_text, 1}});
+    ASSERT_FALSE(result.valid);
+    EXPECT_EQ(result.violations[0].message,
+              "validation stopped: pattern matching takes too many steps");
+}
+
 // uniqueItems must not compare every pair of elements: a request-sized array would then take time
 // quadratic in its length, outside the evaluation work budget.
 TEST(SchemaLimits, UniqueItemsOnALargeArrayTakesBoundedTime) {
