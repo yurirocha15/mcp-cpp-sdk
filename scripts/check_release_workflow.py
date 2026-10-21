@@ -41,7 +41,7 @@ MAIN_JOB_PERMISSIONS = {
     "repository-readiness": READ,
     "immutability-gate": READ,
     "existing-anchor-policy": READ,
-    "preflight-cloudsmith": {"contents": "read", "id-token": "write"},
+    "preflight-cloudsmith": READ,
     "preflight-aur": READ,
     "preflight-homebrew": READ,
     "preflight-chocolatey": READ,
@@ -51,7 +51,7 @@ MAIN_JOB_PERMISSIONS = {
     "attestation": {"contents": "read", "id-token": "write", "attestations": "write"},
     "github-release": {"contents": "write"},
     "github-anchor": READ,
-    "publication": {"contents": "read", "id-token": "write"},
+    "publication": READ,
     "release-summary": READ,
 }
 
@@ -79,7 +79,7 @@ CANDIDATE_JOB_PERMISSIONS = {
 CANDIDATE_ENVIRONMENTS = {"signing": "release-signing"}
 
 PUBLICATION_JOB_PERMISSIONS = {
-    "publish-cloudsmith": {"contents": "read", "id-token": "write"},
+    "publish-cloudsmith": READ,
     "aur": READ,
     "homebrew": READ,
     "chocolatey": READ,
@@ -96,6 +96,7 @@ ALLOWED_SECRETS = {
     "secrets.RELEASE_GPG_PASSPHRASE",
     "secrets.AUR_SSH_PRIVATE_KEY_B64",
     "secrets.AUR_SSH_KEY_PASSPHRASE",
+    "secrets.CLOUDSMITH_API_KEY",
     "secrets.HOMEBREW_APP_PRIVATE_KEY",
     "secrets.CHOCOLATEY_APP_PRIVATE_KEY",
     "secrets.CONAN_BROKER_APP_PRIVATE_KEY",

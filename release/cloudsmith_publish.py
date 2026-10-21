@@ -70,11 +70,11 @@ def _response_data(text: str) -> object:
     return value["data"]
 
 
-def _verify_service_identity(
+def _verify_account_identity(
     expected_username: str, *, run: Callable[[list[str]], str]
 ) -> None:
     if COORDINATE.fullmatch(expected_username) is None:
-        raise CloudsmithPublishError("expected Cloudsmith service identity is invalid")
+        raise CloudsmithPublishError("expected Cloudsmith account identity is invalid")
     identity = _response_data(run(["cloudsmith", "whoami", "-F", "json"]))
     if (
         not isinstance(identity, dict)
@@ -82,7 +82,7 @@ def _verify_service_identity(
         or identity.get("username") != expected_username
     ):
         raise CloudsmithPublishError(
-            "Cloudsmith OIDC service identity differs from configuration"
+            "Cloudsmith account identity differs from configuration"
         )
 
 
@@ -115,7 +115,7 @@ def preflight(
                 run=run,
                 download_file=download,
             )
-    _verify_service_identity(expected_username, run=run)
+    _verify_account_identity(expected_username, run=run)
 
     repositories = _listing(
         run(["cloudsmith", "list", "repos", coordinate, "-F", "json"])
@@ -406,7 +406,7 @@ def publish_routes(
 
         # This must be the first authenticated Cloudsmith command. All local signed
         # input validation and public-key verification happen before mutation access.
-        _verify_service_identity(expected_username, run=run)
+        _verify_account_identity(expected_username, run=run)
 
         candidates: list[tuple[NativeRoute, Path, str, str]] = []
         for route, path, digest in local_candidates:

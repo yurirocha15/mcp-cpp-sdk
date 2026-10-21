@@ -294,7 +294,7 @@ class CloudsmithPublisherTest(unittest.TestCase):
                         run=run,
                     )
 
-    def test_publish_rejects_wrong_oidc_identity_before_provider_reads(self):
+    def test_publish_rejects_wrong_account_identity_before_provider_reads(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             asset = "ubuntu-noble-amd64--libmcp-cpp-sdk-dev_0.2.0-1_amd64.deb"
@@ -308,7 +308,7 @@ class CloudsmithPublisherTest(unittest.TestCase):
                 return self.identity_response("unexpected-publisher")
 
             with self.assertRaisesRegex(
-                CloudsmithPublishError, "service identity differs"
+                CloudsmithPublishError, "account identity differs"
             ):
                 publish_routes(
                     root,
