@@ -38,6 +38,11 @@ ONE = "1" * 64
 TWO = "2" * 64
 
 
+# Every line pins one version and at least one hash. Dependabot adds the sdist hash next to
+# the wheel hash; both installs pass --only-binary=:all:, so pip can only use a wheel.
+HASH_LOCKED_REQUIREMENT = r"^[A-Za-z0-9_-]+==[^ ]+( --hash=sha256:[0-9a-f]{64})+$"
+
+
 class NativeBuilderLockTests(unittest.TestCase):
     def resolved_document(self) -> dict[str, object]:
         document = json.loads(LOCK.read_text(encoding="utf-8"))
@@ -88,7 +93,10 @@ class NativeBuilderLockTests(unittest.TestCase):
         self.assertEqual(len(requirements), 15)
         self.assertEqual(sum(line.startswith("conan==2.30.0 ") for line in requirements), 1)
         for line in requirements:
-            self.assertRegex(line, r"^[A-Za-z0-9_-]+==[^ ]+ --hash=sha256:[0-9a-f]{64}$")
+            self.assertRegex(line, HASH_LOCKED_REQUIREMENT)
+        dockerfile = (ROOT / "release/native-builders/conan.Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("--only-binary=:all:", dockerfile)
+        self.assertIn("--require-hashes", dockerfile)
 
     def test_lock_rejects_every_security_boundary_mutation(self) -> None:
         mutations = {
@@ -228,7 +236,9 @@ class WindowsConanLockTests(unittest.TestCase):
         self.assertEqual(len(requirements), 15)
         self.assertEqual(sum(line.startswith("conan==2.30.0 ") for line in requirements), 1)
         for line in requirements:
-            self.assertRegex(line, r"^[A-Za-z0-9_-]+==[^ ]+ --hash=sha256:[0-9a-f]{64}$")
+            self.assertRegex(line, HASH_LOCKED_REQUIREMENT)
+        installer = (ROOT / "scripts/release/install_windows_conan.ps1").read_text(encoding="utf-8")
+        self.assertIn("--only-binary=:all: --require-hashes", installer)
 
     def test_conan_dependency_lock_pins_every_recipe_revision(self) -> None:
         lock = json.loads((ROOT / "release/windows/conan.lock").read_text(encoding="utf-8"))
