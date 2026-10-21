@@ -6,8 +6,16 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-21
+
 ### Added
 
+- Shared and static library variants with installed CMake and pkg-config
+  metadata.
+- A manually dispatched, fail-closed release pipeline for GitHub Release,
+  ConanCenter contribution, APT/DEB, RPM, AUR, Homebrew, and Chocolatey.
+- Deterministic source assets, checksums, signatures, SBOMs, provenance, and
+  a signed release manifest anchored in an immutable GitHub Release.
 - Client error and request options: `McpError` (thrown for error responses,
   timeouts and closed connections, carrying the JSON-RPC code),
   `ClientOptions`, `RequestOptions` with a `send_request()` overload that
@@ -199,6 +207,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Changed
 
+- The canonical project version is now read from the root `VERSION` file.
+- The documented minimum toolchains and dependency versions are explicit.
 - Implementation moved out of oversized headers into compiled translation
   units (OAuth, client runtime, protocol tools, memory transport, HTTP
   types); protocol models and typed handler templates remain header-based.
@@ -514,19 +524,3 @@ Versioning; a `0.x` version is a stable release unless its version has an
   256 bytes, with line breaks and bidirectional controls replaced by spaces and
   ill-formed UTF-8 replaced by `?`, so it cannot forge or reorder log lines.
   The helper is `mcp::detail::sanitize_for_diagnostics()`.
-
-## [0.2.0] - TBD
-
-### Added
-
-- Shared and static library variants with installed CMake and pkg-config
-  metadata.
-- A manually dispatched, fail-closed release pipeline for GitHub Release,
-  ConanCenter contribution, APT/DEB, RPM, AUR, Homebrew, and Chocolatey.
-- Deterministic source assets, checksums, signatures, SBOMs, provenance, and
-  a signed release manifest anchored in an immutable GitHub Release.
-
-### Changed
-
-- The canonical project version is now read from the root `VERSION` file.
-- The documented minimum toolchains and dependency versions are explicit.
