@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -1158,6 +1159,69 @@ TEST_F(ServerCoreTest, DiscoverThenInitializeStillNegotiatesLegacyVersionsUnchan
     EXPECT_EQ(responses[1]["result"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
 
     EXPECT_TRUE(server.is_initialized());
+}
+
+TEST_F(ServerCoreTest, InitializeRequesting2026NegotiatesLegacyWhileDiscoverAdvertisesIt) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+
+    mcp::Server server({"test-server", "1.0"}, mcp::ServerCapabilities{});
+
+    std::vector<nlohmann::json> responses;
+    raw_transport->set_on_write([&responses, raw_transport](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            raw_transport->close();
+        }
+    });
+
+    nlohmann::json discover_req = {{"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}};
+    nlohmann::json init_req = make_initialize_request("i1");
+    init_req["params"]["protocolVersion"] = "2026-07-28";
+    raw_transport->enqueue_message(discover_req.dump());
+    raw_transport->enqueue_message(init_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    const auto advertised =
+        responses[0].at("result").at("supportedVersions").get<std::vector<std::string>>();
+    EXPECT_NE(std::find(advertised.begin(), advertised.end(), "2026-07-28"), advertised.end());
+    EXPECT_EQ(responses[1].at("result").at("protocolVersion"), "2025-11-25");
+}
+
+TEST_F(ServerCoreTest, InitializeResultPayloadIsUnchanged) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    mcp::Server server({"test-server", "1.0"}, std::move(caps));
+
+    std::string response;
+    raw_transport->set_on_write([&response, raw_transport](std::string_view msg) {
+        response = std::string(msg);
+        raw_transport->close();
+    });
+
+    nlohmann::json init_req = make_initialize_request("i1");
+    init_req["params"]["protocolVersion"] = "2025-06-18";
+    raw_transport->enqueue_message(init_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(
+        response,
+        R"({"id":"i1","jsonrpc":"2.0","result":{"capabilities":{"tools":{}},)"
+        R"("protocolVersion":"2025-06-18","serverInfo":{"name":"test-server","version":"1.0"}}})");
 }
 
 TEST_F(ServerCoreTest, DiscoverAcceptsMetaWithoutMutatingLifecycle) {

@@ -34,40 +34,67 @@ constexpr std::string_view g_PROTOCOL_VERSION_2025_06_18 = "2025-06-18";
 constexpr std::string_view g_PROTOCOL_VERSION_2025_11_25 = "2025-11-25";
 
 /**
- * @brief Protocol version 2026-07-28 (stateless protocol revision).
+ * @brief Protocol version 2026-07-28, the first revision served per request, without initialize.
  *
- * @details Deliberately absent from g_SUPPORTED_PROTOCOL_VERSIONS: legacy initialize
- * negotiation must only resolve to versions whose semantics this SDK fully serves. It is
- * listed only in g_DISCOVERABLE_PROTOCOL_VERSIONS.
+ * @details Listed in g_MODERN_PROTOCOL_VERSIONS and g_DISCOVERABLE_PROTOCOL_VERSIONS, not in
+ * g_SUPPORTED_PROTOCOL_VERSIONS. initialize never negotiates it.
  */
 constexpr std::string_view g_PROTOCOL_VERSION_2026_07_28 = "2026-07-28";
 
 /**
- * @brief The latest supported protocol version.
+ * @brief The newest version in g_SUPPORTED_PROTOCOL_VERSIONS.
+ *
+ * @details initialize negotiation does not read it; the newest version initialize negotiates is
+ * g_LATEST_LEGACY_PROTOCOL_VERSION.
  */
 constexpr std::string_view g_LATEST_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2025_11_25;
 
 /**
- * @brief List of all supported protocol versions.
+ * @brief Protocol versions this SDK lists as supported.
+ *
+ * @details initialize negotiation does not read this list; it uses g_LEGACY_PROTOCOL_VERSIONS.
+ * 2026-07-28 is not listed here, although g_DISCOVERABLE_PROTOCOL_VERSIONS names it.
  */
 constexpr std::array<std::string_view, 4> g_SUPPORTED_PROTOCOL_VERSIONS = {
     g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
     g_PROTOCOL_VERSION_2025_11_25};
 
 /**
+ * @brief The newest protocol version that starts a session with initialize.
+ */
+constexpr std::string_view g_LATEST_LEGACY_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2025_11_25;
+
+/**
+ * @brief Protocol versions that start a session with initialize (2025-11-25 and earlier).
+ *
+ * @details initialize negotiates only these versions, whatever the newest supported version is.
+ */
+constexpr std::array<std::string_view, 4> g_LEGACY_PROTOCOL_VERSIONS = {
+    g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
+    g_PROTOCOL_VERSION_2025_11_25};
+
+/**
+ * @brief Protocol versions whose requests carry their version in `_meta` and need no
+ * initialize (2026-07-28 and later).
+ */
+constexpr std::array<std::string_view, 1> g_MODERN_PROTOCOL_VERSIONS = {g_PROTOCOL_VERSION_2026_07_28};
+
+/**
  * @brief Protocol versions a server/discover response advertises.
  *
- * @details Deliberately distinct from g_SUPPORTED_PROTOCOL_VERSIONS, which alone governs
- * legacy initialize negotiation. Listing a version here makes no promise to the negotiation
+ * @details Deliberately distinct from g_LEGACY_PROTOCOL_VERSIONS, which alone governs
+ * initialize negotiation. Listing a version here makes no promise to the negotiation
  * path: a legacy peer requesting 2026-07-28 in initialize still negotiates
- * g_LATEST_PROTOCOL_VERSION.
+ * g_LATEST_LEGACY_PROTOCOL_VERSION.
  */
 constexpr std::array<std::string_view, 5> g_DISCOVERABLE_PROTOCOL_VERSIONS = {
     g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
     g_PROTOCOL_VERSION_2025_11_25, g_PROTOCOL_VERSION_2026_07_28};
 
 /**
- * @brief Check whether a protocol version is supported by this SDK.
+ * @brief Check whether a protocol version is listed in g_SUPPORTED_PROTOCOL_VERSIONS.
+ *
+ * @details initialize negotiation does not use it; see is_legacy_protocol_version().
  *
  * @param version The protocol version to check.
  * @return true if the version is present in g_SUPPORTED_PROTOCOL_VERSIONS.
@@ -78,18 +105,41 @@ constexpr std::array<std::string_view, 5> g_DISCOVERABLE_PROTOCOL_VERSIONS = {
 }
 
 /**
- * @brief Negotiate the protocol version to use for a session.
+ * @brief Check whether a protocol version starts a session with initialize.
  *
- * @details If the requested version is supported, it is selected. Otherwise,
- * the latest supported version is used as a fallback.
+ * @param version The protocol version to check.
+ * @return true if the version is present in g_LEGACY_PROTOCOL_VERSIONS.
+ */
+[[nodiscard]] constexpr bool is_legacy_protocol_version(std::string_view version) {
+    return std::find(g_LEGACY_PROTOCOL_VERSIONS.begin(), g_LEGACY_PROTOCOL_VERSIONS.end(), version) !=
+           g_LEGACY_PROTOCOL_VERSIONS.end();
+}
+
+/**
+ * @brief Check whether a protocol version is served per request, without initialize.
+ *
+ * @param version The protocol version to check.
+ * @return true if the version is present in g_MODERN_PROTOCOL_VERSIONS.
+ */
+[[nodiscard]] constexpr bool is_modern_protocol_version(std::string_view version) {
+    return std::find(g_MODERN_PROTOCOL_VERSIONS.begin(), g_MODERN_PROTOCOL_VERSIONS.end(), version) !=
+           g_MODERN_PROTOCOL_VERSIONS.end();
+}
+
+/**
+ * @brief Negotiate the protocol version of an initialize request.
+ *
+ * @details A requested version that starts a session with initialize is selected. Any other
+ * version, including one served per request such as 2026-07-28, falls back to
+ * g_LATEST_LEGACY_PROTOCOL_VERSION.
  *
  * @param requested_version The version requested by the peer.
  * @return The negotiated protocol version.
  */
 [[nodiscard]] constexpr std::string_view negotiate_protocol_version(
     std::string_view requested_version) {
-    return is_supported_protocol_version(requested_version) ? requested_version
-                                                            : g_LATEST_PROTOCOL_VERSION;
+    return is_legacy_protocol_version(requested_version) ? requested_version
+                                                         : g_LATEST_LEGACY_PROTOCOL_VERSION;
 }
 
 /**

@@ -381,7 +381,7 @@ struct HttpServerTransport::Impl {
             if (protocol_header_it == request.end()) {
                 return std::nullopt;
             }
-            if (is_supported_protocol_version(header_value(protocol_header_it))) {
+            if (is_legacy_protocol_version(header_value(protocol_header_it))) {
                 return std::nullopt;
             }
             return make_error_response(request, http::status::bad_request,
@@ -943,7 +943,7 @@ struct HttpServerTransport::Impl {
     std::string sentinel_id_prefix;
     std::uint64_t sentinel_id_counter{0};
     std::optional<std::string> session_id;
-    std::string negotiated_protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
+    std::string negotiated_protocol_version{std::string(g_LATEST_LEGACY_PROTOCOL_VERSION)};
     bool session_active{false};
     /// Set by a DELETE that ended a session, cleared by the next initialize result.
     bool session_ended_awaiting_next{false};
@@ -1113,7 +1113,7 @@ void HttpServerTransport::close() {
         impl->sessionless_request_ids.clear();
 
         impl->session_id.reset();
-        impl->negotiated_protocol_version = std::string(g_LATEST_PROTOCOL_VERSION);
+        impl->negotiated_protocol_version = std::string(g_LATEST_LEGACY_PROTOCOL_VERSION);
         impl->session_active = false;
     });
 

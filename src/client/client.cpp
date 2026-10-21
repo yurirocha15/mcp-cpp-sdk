@@ -143,7 +143,7 @@ struct Client::Impl {
             auto initialize_result =
                 std::make_shared<InitializeResult>(result_json.get<InitializeResult>());
             if (state->options.strict_protocol_validation &&
-                !is_supported_protocol_version(initialize_result->protocolVersion)) {
+                !is_legacy_protocol_version(initialize_result->protocolVersion)) {
                 request_close(state, "Server selected an unsupported protocol version");
                 // The version is whatever the remote server put in its `initialize` result, and
                 // this message reaches the application's log. Flatten and bound it, or a server
@@ -695,7 +695,7 @@ Task<InitializeResult> Client::connect(const Implementation& client_info,
 
     Impl::start_read_loop(state);
     InitializeRequest initialize_request;
-    initialize_request.protocolVersion = std::string(g_LATEST_PROTOCOL_VERSION);
+    initialize_request.protocolVersion = std::string(g_LATEST_LEGACY_PROTOCOL_VERSION);
     initialize_request.clientInfo = client_info;
     {
         std::lock_guard lock(state->handlers_mutex);

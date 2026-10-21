@@ -53,7 +53,7 @@ struct HttpClientTransport::Impl {
         mutable std::mutex metadata_mutex;
         std::string session_id;
         std::string last_event_id;
-        std::string protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
+        std::string protocol_version{std::string(g_LATEST_LEGACY_PROTOCOL_VERSION)};
         std::optional<std::string> initialize_request_key;
         bool operation_active{false};
         bool read_active{false};
@@ -259,7 +259,7 @@ struct HttpClientTransport::Impl {
             }
 
             const auto protocol_version = result.at("protocolVersion").get<std::string>();
-            if (is_supported_protocol_version(protocol_version)) {
+            if (is_legacy_protocol_version(protocol_version)) {
                 state->protocol_version = protocol_version;
             }
         } catch (const std::exception&) {
