@@ -28,9 +28,17 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `examples/features/schema_validation.cpp`, which shows each tool schema
   check on the server and the client and exits with a failure status if one
   does not hold.
+- `g_LEGACY_PROTOCOL_VERSIONS` and `g_LATEST_LEGACY_PROTOCOL_VERSION` for the
+  revisions that start a session with `initialize` (2025-11-25 and earlier),
+  `g_MODERN_PROTOCOL_VERSIONS` for those served per request (2026-07-28), and
+  `is_legacy_protocol_version()` and `is_modern_protocol_version()`.
+  `negotiate_protocol_version()` and every `initialize`-time version check
+  use the legacy list, so `initialize` never selects 2026-07-28.
 
 ### Changed
 
+- `initialize` negotiation uses `g_LEGACY_PROTOCOL_VERSIONS` instead of
+  `g_SUPPORTED_PROTOCOL_VERSIONS`, which keeps its value.
 - `tools/call` naming an unknown tool and `prompts/get` naming an unknown
   prompt are answered with `g_INVALID_PARAMS` (`-32602`), as the tools and
   prompts specifications list, instead of `g_METHOD_NOT_FOUND` (`-32601`).

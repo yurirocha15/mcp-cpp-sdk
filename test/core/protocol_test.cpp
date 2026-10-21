@@ -19,6 +19,8 @@
 #include <nlohmann/json.hpp>
 
 #include <string>
+#include <string_view>
+#include <vector>
 
 using json = nlohmann::json;
 
@@ -2400,6 +2402,37 @@ TEST(ProtocolTest, DiscoverableVersionsDoNotLeakIntoLegacyNegotiation) {
                   mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.end());
     }
     EXPECT_EQ(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.back(), mcp::g_PROTOCOL_VERSION_2026_07_28);
+}
+
+TEST(ProtocolVersions, LegacyAndModernListsPartitionTheDiscoverableVersions) {
+    const std::vector<std::string_view> legacy(mcp::g_LEGACY_PROTOCOL_VERSIONS.begin(),
+                                               mcp::g_LEGACY_PROTOCOL_VERSIONS.end());
+    EXPECT_EQ(legacy,
+              (std::vector<std::string_view>{"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}));
+    EXPECT_EQ(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION, "2025-11-25");
+    const std::vector<std::string_view> modern(mcp::g_MODERN_PROTOCOL_VERSIONS.begin(),
+                                               mcp::g_MODERN_PROTOCOL_VERSIONS.end());
+    EXPECT_EQ(modern, (std::vector<std::string_view>{"2026-07-28"}));
+
+    for (const auto version : mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS) {
+        EXPECT_NE(mcp::is_legacy_protocol_version(version), mcp::is_modern_protocol_version(version))
+            << version;
+    }
+    EXPECT_FALSE(mcp::is_legacy_protocol_version("2025-11-26"));
+    EXPECT_FALSE(mcp::is_modern_protocol_version("2025-11-26"));
+    EXPECT_FALSE(mcp::is_legacy_protocol_version(""));
+    EXPECT_FALSE(mcp::is_modern_protocol_version(""));
+}
+
+TEST(ProtocolVersions, InitializeNegotiatesOnlyLegacyVersions) {
+    for (const auto version : mcp::g_LEGACY_PROTOCOL_VERSIONS) {
+        EXPECT_EQ(mcp::negotiate_protocol_version(version), version);
+    }
+    for (const auto version : mcp::g_MODERN_PROTOCOL_VERSIONS) {
+        EXPECT_EQ(mcp::negotiate_protocol_version(version), "2025-11-25") << version;
+    }
+    EXPECT_EQ(mcp::negotiate_protocol_version("1900-01-01"), "2025-11-25");
+    EXPECT_EQ(mcp::negotiate_protocol_version(""), "2025-11-25");
 }
 
 // --- Explicit-null optional members ---

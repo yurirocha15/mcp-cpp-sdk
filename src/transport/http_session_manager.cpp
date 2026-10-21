@@ -67,7 +67,7 @@ struct SessionRuntime {
     std::shared_ptr<MemoryTransport> client_transport;
 
     mutable std::mutex protocol_mutex;
-    std::string negotiated_protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
+    std::string negotiated_protocol_version{std::string(g_LATEST_LEGACY_PROTOCOL_VERSION)};
 
     mutable std::mutex response_mutex;
     EventStore event_store;
@@ -609,7 +609,7 @@ struct StreamableHttpSessionManager::Impl {
     bool has_valid_protocol_header(const StringRequest& request) const {
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         return protocol_header_it == request.end() ||
-               is_supported_protocol_version(
+               is_legacy_protocol_version(
                    detail_session_mgr::protocol_header_value(protocol_header_it));
     }
 
@@ -791,7 +791,7 @@ struct StreamableHttpSessionManager::Impl {
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         const bool is_initialize = detail_session_mgr::is_initialize_request(request_json);
         if (is_initialize && protocol_header_it != request.end() &&
-            !is_supported_protocol_version(
+            !is_legacy_protocol_version(
                 detail_session_mgr::protocol_header_value(protocol_header_it))) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid MCP-Protocol-Version header");
@@ -839,7 +839,7 @@ struct StreamableHttpSessionManager::Impl {
             // the version the client and the session agreed on.
             const auto requested_protocol_version =
                 detail_session_mgr::initialize_protocol_version(request_json)
-                    .value_or(std::string(g_LATEST_PROTOCOL_VERSION));
+                    .value_or(std::string(g_LATEST_LEGACY_PROTOCOL_VERSION));
             session->set_protocol_version(
                 std::string(negotiate_protocol_version(requested_protocol_version)));
         }
