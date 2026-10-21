@@ -466,23 +466,32 @@ TEST(SchemaLimits, PatternMatchingIsBounded) {
 }
 
 // uniqueItems must not compare every pair of elements: a request-sized array would then take time
-// quadratic in its length, outside the evaluation work budget.
+// quadratic in its length, outside the evaluation work budget. The check is timed against
+// validating the same array through jsoncons without it, so the bound holds in slow builds too.
 TEST(SchemaLimits, UniqueItemsOnALargeArrayTakesBoundedTime) {
-    const auto schema = CompiledSchema::compile({{"uniqueItems", true}});
+    const auto unique = CompiledSchema::compile({{"uniqueItems", true}});
+    const auto baseline = CompiledSchema::compile({{"$defs", json::object()}, {"type", "array"}});
     json items = json::array();
     for (int i = 0; i < 100'000; ++i) {
         items.push_back(i);
     }
-    const auto start = std::chrono::steady_clock::now();
-    EXPECT_TRUE(schema.validate(items).valid);
-    EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
+    const auto time = [&items](const CompiledSchema& schema) {
+        const auto start = std::chrono::steady_clock::now();
+        EXPECT_TRUE(schema.validate(items).valid);
+        return std::chrono::steady_clock::now() - start;
+    };
+    const auto baseline_time = time(baseline);
+    const auto unique_time = time(unique);
+    EXPECT_LT(unique_time, 20 * baseline_time + std::chrono::milliseconds(500))
+        << "baseline " << std::chrono::duration_cast<std::chrono::milliseconds>(baseline_time).count()
+        << " ms";
 
     items.push_back(json::array({1, {{"a", 2}}}));
     items.push_back(json::array({1.0, {{"a", 2.0}}}));
-    EXPECT_FALSE(schema.validate(items).valid);
+    EXPECT_FALSE(unique.validate(items).valid);
     items.erase(items.size() - 1);
     items.push_back(-0.0);
-    EXPECT_FALSE(schema.validate(items).valid);
+    EXPECT_FALSE(unique.validate(items).valid);
 }
 
 // A 2020-12 schema that constrains only the value's type is evaluated natively, with the same
