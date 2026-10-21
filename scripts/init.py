@@ -391,9 +391,9 @@ Examples:
         """
     )
     parser.add_argument('--dev', action='store_true',
-                       help='Install development tools (clang-format, clang-tidy, pre-commit)')
+                       help='Install development tools (clang-format, clang-tidy, gcovr, pre-commit)')
     parser.add_argument('--docs', action='store_true',
-                       help='Install documentation tools (Sphinx, Breathe, Furo)')
+                       help='Install documentation tools (Doxygen, Sphinx, Breathe, Furo)')
     parser.add_argument('--all', action='store_true',
                        help='Install all dependencies (build + dev + docs)')
 
@@ -412,16 +412,8 @@ Examples:
         # Install CMake if missing
         install_cmake(os_type)
 
-        if os_type == 'linux':
-            install_system_package('doxygen', os_type, optional=True)
-        elif os_type == 'macos':
-            install_system_package('doxygen', os_type, optional=True)
-        elif os_type == 'windows':
-            install_system_package('doxygen.install', os_type, optional=True)
-
         # Install build tools via pipx
         install_pipx_tool('conan')
-        install_pipx_tool('gcovr')
         install_pipx_tool('ninja')
 
         # Set up Conan profile
@@ -438,6 +430,9 @@ Examples:
             elif os_type == 'windows':
                 install_system_package('llvm', os_type, optional=True)
 
+            # Coverage reports (build.py --coverage)
+            install_pipx_tool('gcovr')
+
             # Install pre-commit
             install_pipx_tool('pre-commit')
 
@@ -450,6 +445,12 @@ Examples:
         # === Documentation dependencies (optional) ===
         if args.docs or args.all:
             print("\n=== Installing documentation dependencies ===")
+
+            # API reference XML (build.py --docs)
+            if os_type == 'windows':
+                install_system_package('doxygen.install', os_type, optional=True)
+            else:
+                install_system_package('doxygen', os_type, optional=True)
 
             # Install Sphinx and extensions
             install_pip_package('sphinx')
