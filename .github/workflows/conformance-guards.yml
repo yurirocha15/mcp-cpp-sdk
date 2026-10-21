@@ -1,8 +1,8 @@
 name: Conformance guardrails
 
 on:
-  # Manual runs only. The automatic triggers below stay scoped to `main` on purpose; this
-  # lets a feature branch be checked on the full matrix without spending CI on every push.
+  # A manual run checks any branch. Pull requests are checked whatever branch they target,
+  # so a pull request stacked on another one gets the same checks; pushes only on main.
   workflow_dispatch:
   push:
     branches: [main]
@@ -11,7 +11,7 @@ on:
       - 'conformance/run.sh'
       - 'scripts/**'
   pull_request:
-    branches: [main]
+    branches: ['**']
     paths:
       - '.github/workflows/**'
       - 'conformance/run.sh'
