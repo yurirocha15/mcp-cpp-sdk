@@ -76,7 +76,7 @@ def run(*args, extra_env=None, **kwargs):
 
 # ctest prints a start line and a result line for every test. --quiet drops those two lines
 # for tests that pass and keeps failures, their output, skips and the summary.
-CTEST_PROGRESS = re.compile(r"\s+Start +\d+: .*|\d+/\d+ Test +#\d+: .* Passed +[0-9.]+ sec")
+CTEST_PROGRESS = re.compile(r"\s+Start +\d+: .*|\s*\d+/\d+ Test +#\d+: .* Passed +[0-9.]+ sec")
 
 
 def run_ctest(*args, quiet, extra_env=None):
