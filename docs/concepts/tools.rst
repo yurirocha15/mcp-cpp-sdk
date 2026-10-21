@@ -220,7 +220,10 @@ relative file name, is refused; the SDK never fetches a schema.
 **Patterns.** ``pattern`` and ``patternProperties`` use a linear-time matcher
 for the ECMA-262 subset JSON Schema recommends. Backreferences, lookaround and
 Unicode property escapes (``\p{...}``) are not supported, and a schema using
-them is refused as ``eInvalidSchema``.
+them is refused as ``eInvalidSchema``. So is a pattern that nests groups more
+than 64 levels deep, repeats more than 10,000 times in one ``{n,m}``, or compiles
+to more than 20,000 matcher instructions; a counted repetition compiles to one
+copy of its operand per repetition, so ``^.{1,2000}$`` is well within the limit.
 
 **Arguments.** Each ``tools/call`` checks the arguments against the input schema
 just before the handler would run, after any middleware. Arguments that do not

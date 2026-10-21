@@ -45,8 +45,9 @@ struct RegexProgram;
  */
 class MCP_API Regex {
    public:
-    /// Largest `n` or `m` accepted in a `{n,m}` quantifier.
-    static constexpr std::uint32_t max_repeat_count = 1000;
+    /// Largest `n` or `m` accepted in a `{n,m}` quantifier. The program size limit applies too:
+    /// a quantifier compiles to one copy of its operand per repetition.
+    static constexpr std::uint32_t max_repeat_count = 10000;
     /// Deepest group nesting accepted.
     static constexpr std::uint32_t max_nesting = 64;
     /// Largest compiled program, in instructions, accepted.
