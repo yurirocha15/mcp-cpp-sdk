@@ -28,7 +28,7 @@ The ``python scripts/init.py --dev`` target installs all development dependencie
 
 * Conan packages (Boost, nlohmann_json, GTest)
 * Git hooks for pre-commit checks
-* Development tools (clang-format, clang-tidy)
+* Development tools (clang-format, clang-tidy, gcovr for coverage reports)
 
 Code Style
 ----------

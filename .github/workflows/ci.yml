@@ -63,8 +63,12 @@ jobs:
       shell: pwsh
       run: ./scripts/release/test_deterministic_zip.ps1
 
-    - name: Cache Conan packages
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    # Pull requests restore caches and never save them. A pull request cannot read another
+    # pull request's caches, and their copies pushed main's entries out of the repository's
+    # 10 GB cache storage, so every pull request built without ccache.
+    - name: Restore Conan packages
+      id: conan-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           ~/.conan2/p
@@ -79,6 +83,7 @@ jobs:
       uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
       with:
         key: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-${{ matrix.linkage }}-ccache-${{ github.ref }}
+        save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         restore-keys: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-${{ matrix.linkage }}-ccache-
         max-size: 500M
 
@@ -92,7 +97,7 @@ jobs:
       env:
         MCP_REQUIRE_TWIN_LOOPBACK: ${{ runner.os == 'Linux' && '1' || '' }}
       run: >-
-        python scripts/build.py --examples --test
+        python scripts/build.py --examples --test --quiet
         --cppstd ${{ matrix.cppstd }} --linkage ${{ matrix.linkage }}
 
     # The README is the first code a new user copies, so compile it the way they
@@ -110,6 +115,21 @@ jobs:
     # the stream separately. run_examples.py builds into build/release.
     - name: Check stdio protocol streams
       run: python scripts/check_stdio_streams.py build/release
+
+    # Dependencies built from source leave their source and build trees under p/. Only the
+    # packages are needed to restore, so the trees are dropped before the cache is archived.
+    - name: Drop Conan build trees before saving the cache
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
+      run: conan cache clean "*" --source --build --download --temp
+
+    - name: Save Conan packages
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.conan2/p
+          C:/.c/p
+        key: ${{ steps.conan-cache.outputs.cache-primary-key }}
 
   sanitize:
     name: sanitize (${{ matrix.compiler }})
@@ -134,8 +154,9 @@ jobs:
       with:
         cmake-version: '3.25'
 
-    - name: Cache Conan packages
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    - name: Restore Conan packages
+      id: conan-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.conan2/p
         key: ubuntu-24.04-conan-sanitize-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
@@ -148,13 +169,25 @@ jobs:
       uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
       with:
         key: ubuntu-24.04-sanitize-${{ matrix.compiler }}-ccache-${{ github.ref }}
+        save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         restore-keys: ubuntu-24.04-sanitize-${{ matrix.compiler }}-ccache-
         max-size: 500M
 
     - name: Build and Test with Sanitizers
       env:
         MCP_REQUIRE_TWIN_LOOPBACK: '1'
-      run: python scripts/build.py --sanitize --compiler ${{ matrix.compiler }} --test
+      run: python scripts/build.py --sanitize --compiler ${{ matrix.compiler }} --test --quiet
+
+    - name: Drop Conan build trees before saving the cache
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
+      run: conan cache clean "*" --source --build --download --temp
+
+    - name: Save Conan packages
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.conan2/p
+        key: ${{ steps.conan-cache.outputs.cache-primary-key }}
 
   tsan:
     name: tsan (${{ matrix.compiler }})
@@ -179,8 +212,9 @@ jobs:
       with:
         cmake-version: '3.25'
 
-    - name: Cache Conan packages
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    - name: Restore Conan packages
+      id: conan-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.conan2/p
         key: ubuntu-24.04-conan-tsan-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
@@ -193,13 +227,25 @@ jobs:
       uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
       with:
         key: ubuntu-24.04-tsan-${{ matrix.compiler }}-ccache-${{ github.ref }}
+        save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         restore-keys: ubuntu-24.04-tsan-${{ matrix.compiler }}-ccache-
         max-size: 500M
 
     - name: Build and Test with ThreadSanitizer
       env:
         MCP_REQUIRE_TWIN_LOOPBACK: '1'
-      run: python scripts/build.py --tsan --compiler ${{ matrix.compiler }} --test
+      run: python scripts/build.py --tsan --compiler ${{ matrix.compiler }} --test --quiet
+
+    - name: Drop Conan build trees before saving the cache
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
+      run: conan cache clean "*" --source --build --download --temp
+
+    - name: Save Conan packages
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.conan2/p
+        key: ${{ steps.conan-cache.outputs.cache-primary-key }}
 
   msan:
     runs-on: ubuntu-24.04
@@ -220,8 +266,9 @@ jobs:
         cmake-version: '3.25'
 
     # The dependencies are rebuilt instrumented, so this cache shares nothing with the other jobs.
-    - name: Cache Conan packages
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    - name: Restore Conan packages
+      id: conan-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.conan2/p
         key: ubuntu-24.04-conan-msan-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
@@ -229,8 +276,9 @@ jobs:
 
     # Keyed on MSAN_LLVM_COMMIT in scripts/build.py. A cache from another commit is rebuilt by
     # build.py rather than used, so a key left behind costs time and nothing else.
-    - name: Cache instrumented libc++
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    - name: Restore instrumented libc++
+      id: libcxx-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: build/msan-libcxx
         key: ubuntu-24.04-msan-libcxx-3b5b5c1ec4a3
@@ -242,13 +290,32 @@ jobs:
       uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
       with:
         key: ubuntu-24.04-msan-ccache-${{ github.ref }}
+        save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         restore-keys: ubuntu-24.04-msan-ccache-
         max-size: 500M
 
     - name: Build and Test with MemorySanitizer
       env:
         MCP_REQUIRE_TWIN_LOOPBACK: '1'
-      run: python scripts/build.py --msan --test
+      run: python scripts/build.py --msan --test --quiet
+
+    - name: Drop Conan build trees before saving the cache
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
+      run: conan cache clean "*" --source --build --download --temp
+
+    - name: Save Conan packages
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.conan2/p
+        key: ${{ steps.conan-cache.outputs.cache-primary-key }}
+
+    - name: Save instrumented libc++
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.libcxx-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: build/msan-libcxx
+        key: ${{ steps.libcxx-cache.outputs.cache-primary-key }}
 
   release-safety:
     name: Release safety contracts
@@ -324,8 +391,9 @@ jobs:
       with:
         cmake-version: '3.25'
 
-    - name: Cache Conan packages
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    - name: Restore Conan packages
+      id: conan-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.conan2/p
         key: ubuntu-24.04-conan-package-${{ matrix.shared }}-${{ hashFiles('conanfile.py', 'test_package/**') }}
@@ -339,3 +407,14 @@ jobs:
         conan create . --test-folder=test_package --build=missing
         -s compiler.cppstd=20
         -o "mcp-cpp-sdk/*:shared=${{ matrix.shared }}"
+
+    - name: Drop Conan build trees before saving the cache
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
+      run: conan remove "mcp-cpp-sdk/*" --confirm && conan cache clean "*" --source --build --download --temp
+
+    - name: Save Conan packages
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.conan2/p
+        key: ${{ steps.conan-cache.outputs.cache-primary-key }}

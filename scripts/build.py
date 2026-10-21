@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -73,6 +74,28 @@ def run(*args, extra_env=None, **kwargs):
     subprocess.run(list(args), check=True, env=env, **kwargs)
 
 
+# ctest prints a start line and a result line for every test. --quiet drops those two lines
+# for tests that pass and keeps failures, their output, skips and the summary.
+CTEST_PROGRESS = re.compile(r"\s+Start +\d+: .*|\s*\d+/\d+ Test +#\d+: .* Passed +[0-9.]+ sec")
+
+
+def run_ctest(*args, quiet, extra_env=None):
+    if not quiet:
+        run(*args, extra_env=extra_env)
+        return
+    env = None
+    if extra_env:
+        env = os.environ.copy()
+        env.update(extra_env)
+    with subprocess.Popen(list(args), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, errors="replace", env=env) as process:
+        for line in process.stdout:
+            if not CTEST_PROGRESS.fullmatch(line.rstrip("\r\n")):
+                print(line, end="", flush=True)
+    if process.returncode:
+        raise subprocess.CalledProcessError(process.returncode, list(args))
+
+
 def ensure_conan_profile():
     result = subprocess.run(
         ["conan", "profile", "path", "default"],
@@ -85,10 +108,11 @@ def ensure_conan_profile():
         print("[+] Conan profile created")
 
 
-def conan_install(output_folder, jobs, cppstd, build_type="Release", extra_args=()):
+def conan_install(output_folder, jobs, cppstd, build_type="Release", extra_args=(), quiet=False):
     ensure_conan_profile()
     run(
         "conan", "install", ".",
+        *(["-vwarning"] if quiet else []),
         f"--output-folder={output_folder}",
         "--build=missing",
         "-s", f"compiler.cppstd={cppstd}",
@@ -334,6 +358,9 @@ def main():
     )
     parser.add_argument("--docs", action="store_true",
                         help="Build documentation")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Print only warnings and errors from Conan, and only failing "
+                             "or skipped tests and the summary from ctest")
     parser.add_argument("--clean", action="store_true",
                         help="Remove all build artifacts and exit")
     parser.add_argument("--jobs", type=int, default=cpu_half(), metavar="N",
@@ -415,7 +442,7 @@ def main():
         extra_cmake.append("-DENABLE_COVERAGE=ON")
 
     generators_dir = conan_install(
-        build_dir, args.jobs, args.cppstd, build_type, conan_args
+        build_dir, args.jobs, args.cppstd, build_type, conan_args, quiet=args.quiet
     )
     cmake_configure(
         build_dir,
@@ -443,8 +470,8 @@ def main():
             # This test compiles a consumer with the compiler's own standard library, which
             # cannot link against an SDK built on the instrumented libc++.
             ctest_args = ["-E", "^packaging-pkgconfig-static-consumer$"]
-        run(*aslr_prefix, "ctest", "--test-dir", build_dir, f"-j{test_jobs}", "--output-on-failure",
-            *ctest_args, extra_env=extra_env)
+        run_ctest(*aslr_prefix, "ctest", "--test-dir", build_dir, f"-j{test_jobs}",
+                  "--output-on-failure", *ctest_args, quiet=args.quiet, extra_env=extra_env)
 
         if args.coverage:
             run("gcovr", "-r", ".", "--html", "--html-details",
