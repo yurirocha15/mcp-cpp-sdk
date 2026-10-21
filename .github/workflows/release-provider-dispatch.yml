@@ -1,0 +1,124 @@
+name: Release provider dispatch
+
+on:
+  workflow_call:
+    inputs:
+      provider:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      source_tag:
+        required: true
+        type: string
+      source_commit_sha:
+        required: true
+        type: string
+      github_release_id:
+        required: true
+        type: string
+      release_manifest_sha256:
+        required: true
+        type: string
+    secrets:
+      HOMEBREW_APP_PRIVATE_KEY:
+        required: false
+      CHOCOLATEY_APP_PRIVATE_KEY:
+        required: false
+      CONAN_BROKER_APP_PRIVATE_KEY:
+        required: false
+    outputs:
+      downstream_html_url:
+        value: ${{ jobs.dispatch.outputs.downstream_html_url }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+    outputs:
+      downstream_html_url: ${{ steps.publish.outputs.downstream_html_url }}
+    env:
+      APP_OWNER: ${{ inputs.provider == 'homebrew' && vars.HOMEBREW_APP_OWNER || inputs.provider == 'chocolatey' && vars.CHOCOLATEY_APP_OWNER || vars.CONAN_BROKER_APP_OWNER }}
+      APP_REPOSITORY: ${{ inputs.provider == 'homebrew' && vars.HOMEBREW_APP_REPOSITORY || inputs.provider == 'chocolatey' && vars.CHOCOLATEY_APP_REPOSITORY || vars.CONAN_BROKER_APP_REPOSITORY }}
+      EXPECTED_REPOSITORY_ID: ${{ inputs.provider == 'homebrew' && vars.HOMEBREW_APP_REPOSITORY_ID || inputs.provider == 'chocolatey' && vars.CHOCOLATEY_APP_REPOSITORY_ID || vars.CONAN_BROKER_APP_REPOSITORY_ID }}
+      APP_CLIENT_ID: ${{ inputs.provider == 'homebrew' && vars.HOMEBREW_APP_CLIENT_ID || inputs.provider == 'chocolatey' && vars.CHOCOLATEY_APP_CLIENT_ID || vars.CONAN_BROKER_APP_CLIENT_ID }}
+      WORKFLOW: ${{ inputs.provider == 'homebrew' && vars.HOMEBREW_APP_WORKFLOW || inputs.provider == 'chocolatey' && vars.CHOCOLATEY_APP_WORKFLOW || vars.CONAN_BROKER_APP_WORKFLOW }}
+    steps:
+      - name: Validate fixed provider environment
+        env:
+          PROVIDER: ${{ inputs.provider }}
+          PROVIDER_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          case "${PROVIDER}:${PROVIDER_ENVIRONMENT}" in
+            homebrew:release-homebrew|chocolatey:release-chocolatey|conan2:release-control-dispatch) ;;
+            *) exit 2 ;;
+          esac
+      - name: Checkout protected current dispatcher tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download verified immutable release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets
+      - name: Verify fixed anchor handoff
+        env:
+          EXPECTED_TAG: ${{ inputs.source_tag }}
+          EXPECTED_MANIFEST: ${{ inputs.release_manifest_sha256 }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.github_publication verify-handoff
+          --anchor release-assets/ANCHOR.json --tag "${EXPECTED_TAG}"
+          --manifest-sha256 "${EXPECTED_MANIFEST}"
+      - name: Create least-privilege publisher App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ env.APP_CLIENT_ID }}
+          private-key: ${{ inputs.provider == 'homebrew' && secrets.HOMEBREW_APP_PRIVATE_KEY || inputs.provider == 'chocolatey' && secrets.CHOCOLATEY_APP_PRIVATE_KEY || secrets.CONAN_BROKER_APP_PRIVATE_KEY }}
+          owner: ${{ env.APP_OWNER }}
+          repositories: ${{ env.APP_REPOSITORY }}
+          permission-actions: write
+          permission-contents: read
+      - name: Dispatch fixed downstream publisher workflow
+        id: publish
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          CHANNEL: ${{ inputs.provider }}
+          TAG: ${{ inputs.source_tag }}
+          COMMIT: ${{ inputs.source_commit_sha }}
+          SOURCE_WORKFLOW_HEAD_SHA: ${{ github.sha }}
+          RELEASE_ID: ${{ inputs.github_release_id }}
+          MANIFEST_SHA256: ${{ inputs.release_manifest_sha256 }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.github_provider "${CHANNEL}"
+          --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
+          --expected-repository-id "${EXPECTED_REPOSITORY_ID}" --workflow "${WORKFLOW}"
+          --contract release-assets/release-publication-contract.json
+          --source-repository "${GITHUB_REPOSITORY}" --source-tag "${TAG}"
+          --source-commit-sha "${COMMIT}" --github-release-id "${RELEASE_ID}"
+          --source-workflow-head-sha "${SOURCE_WORKFLOW_HEAD_SHA}"
+          --source-workflow-run-id "${GITHUB_RUN_ID}"
+          --release-manifest-sha256 "${MANIFEST_SHA256}"
+          --github-output "${GITHUB_OUTPUT}"
+      - name: Record downstream run
+        env:
+          CHANNEL: ${{ inputs.provider }}
+          RUN_ID: ${{ steps.publish.outputs.downstream_run_id }}
+          RUN_URL: ${{ steps.publish.outputs.downstream_html_url }}
+        run: |
+          echo "### ${CHANNEL} downstream dispatch" >>"${GITHUB_STEP_SUMMARY}"
+          echo "Run [${RUN_ID}](${RUN_URL}) was accepted." >>"${GITHUB_STEP_SUMMARY}"

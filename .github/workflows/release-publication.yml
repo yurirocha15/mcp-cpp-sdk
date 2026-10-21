@@ -1,0 +1,275 @@
+name: Release publication channels
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      mode:
+        required: true
+        type: string
+      target_apt:
+        required: true
+        type: string
+      target_rpm:
+        required: true
+        type: string
+      target_aur:
+        required: true
+        type: string
+      target_homebrew:
+        required: true
+        type: string
+      target_chocolatey:
+        required: true
+        type: string
+      target_conan2:
+        required: true
+        type: string
+      cloudsmith_matrix:
+        required: true
+        type: string
+      source_commit_sha:
+        required: true
+        type: string
+      github_release_id:
+        required: true
+        type: string
+      manifest_sha256:
+        required: true
+        type: string
+    secrets:
+      AUR_SSH_PRIVATE_KEY_B64:
+        required: false
+      AUR_SSH_KEY_PASSPHRASE:
+        required: false
+      CLOUDSMITH_API_KEY:
+        required: false
+      HOMEBREW_APP_PRIVATE_KEY:
+        required: false
+      CHOCOLATEY_APP_PRIVATE_KEY:
+        required: false
+      CONAN_BROKER_APP_PRIVATE_KEY:
+        required: false
+    outputs:
+      cloudsmith_result:
+        value: ${{ jobs.publication-results.outputs.cloudsmith_result }}
+      aur_result:
+        value: ${{ jobs.publication-results.outputs.aur_result }}
+      homebrew_result:
+        value: ${{ jobs.publication-results.outputs.homebrew_result }}
+      chocolatey_result:
+        value: ${{ jobs.publication-results.outputs.chocolatey_result }}
+      conan_result:
+        value: ${{ jobs.publication-results.outputs.conan_result }}
+      homebrew_url:
+        value: ${{ jobs.publication-results.outputs.homebrew_url }}
+      chocolatey_url:
+        value: ${{ jobs.publication-results.outputs.chocolatey_url }}
+      conan_url:
+        value: ${{ jobs.publication-results.outputs.conan_url }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  publish-cloudsmith:
+    name: Publish ${{ matrix.format }} packages through Cloudsmith
+    if: ${{ inputs.mode == 'publish' && (inputs.target_apt == 'true' || inputs.target_rpm == 'true') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.cloudsmith_matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release-cloudsmith
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected current publisher tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download and verify immutable release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets
+      - name: Verify fixed anchor handoff
+        env:
+          EXPECTED_MANIFEST: ${{ inputs.manifest_sha256 }}
+          EXPECTED_TAG: ${{ inputs.tag }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.github_publication verify-handoff
+          --anchor release-assets/ANCHOR.json --tag "${EXPECTED_TAG}"
+          --manifest-sha256 "${EXPECTED_MANIFEST}"
+      - name: Bind Cloudsmith publication destination to the signed anchor
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.publication_contract
+          --contract release-assets/release-publication-contract.json --name cloudsmith
+          --namespace "${{ vars.CLOUDSMITH_NAMESPACE }}"
+          --repository "${{ vars.CLOUDSMITH_REPOSITORY }}"
+          --repository-gpg-fingerprint "${{ vars.CLOUDSMITH_REPOSITORY_GPG_FINGERPRINT }}"
+      - name: Authenticate and install pinned Cloudsmith CLI
+        uses: cloudsmith-io/cloudsmith-cli-action@159f1619275d5d3147f059c3cc110938ec221d16 # v2.0.3
+        with:
+          cli-version: "1.19.0"
+          api-key: ${{ secrets.CLOUDSMITH_API_KEY }}
+      - name: Verify the downloaded Cloudsmith CLI payload
+        run: bash scripts/release/verify_cloudsmith_cli.sh
+      - name: Push or identically skip exact routes
+        env:
+          CLOUDSMITH_NAMESPACE: ${{ vars.CLOUDSMITH_NAMESPACE }}
+          CLOUDSMITH_REPOSITORY: ${{ vars.CLOUDSMITH_REPOSITORY }}
+          CLOUDSMITH_REPOSITORY_GPG_FINGERPRINT: ${{ vars.CLOUDSMITH_REPOSITORY_GPG_FINGERPRINT }}
+          CLOUDSMITH_USERNAME: ${{ vars.CLOUDSMITH_USERNAME }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.cloudsmith_publish publish
+          --directory release-assets --routes release-assets/cloudsmith-routes.json
+          --format "${{ matrix.format }}" --namespace "${CLOUDSMITH_NAMESPACE}"
+          --repository "${CLOUDSMITH_REPOSITORY}"
+          --repository-gpg-fingerprint "${CLOUDSMITH_REPOSITORY_GPG_FINGERPRINT}"
+          --expected-username "${CLOUDSMITH_USERNAME}"
+
+  aur:
+    name: Publish the AUR source package
+    if: ${{ inputs.mode == 'publish' && inputs.target_aur == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release-aur
+    permissions:
+      contents: read
+    env:
+      AUR_PACKAGE_BASE: mcp-cpp-sdk
+      AUR_CLONE_URL: ssh://aur@aur.archlinux.org/mcp-cpp-sdk.git
+    steps:
+      - name: Checkout protected current publisher tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download and verify immutable release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets
+      - name: Verify fixed anchor handoff
+        env:
+          EXPECTED_MANIFEST: ${{ inputs.manifest_sha256 }}
+          EXPECTED_TAG: ${{ inputs.tag }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.github_publication verify-handoff
+          --anchor release-assets/ANCHOR.json --tag "${EXPECTED_TAG}"
+          --manifest-sha256 "${EXPECTED_MANIFEST}"
+      - name: Bind the AUR target to the signed anchor
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.publication_contract
+          --contract release-assets/release-publication-contract.json --name aur
+          --repository "${AUR_CLONE_URL}" --package-base "${AUR_PACKAGE_BASE}"
+          --architecture x86_64
+      - name: Publish exact reviewed AUR metadata
+        env:
+          AUR_SSH_PRIVATE_KEY_B64: ${{ secrets.AUR_SSH_PRIVATE_KEY_B64 }}
+          AUR_SSH_KEY_PASSPHRASE: ${{ secrets.AUR_SSH_KEY_PASSPHRASE }}
+          AUR_KNOWN_HOSTS: ${{ vars.AUR_KNOWN_HOSTS }}
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+        run: bash scripts/release/publish_aur.sh
+  homebrew:
+    name: Dispatch the Homebrew App publisher
+    if: ${{ inputs.mode == 'publish' && inputs.target_homebrew == 'true' }}
+    uses: ./.github/workflows/release-provider-dispatch.yml
+    with:
+      provider: homebrew
+      environment: release-homebrew
+      source_tag: ${{ inputs.tag }}
+      source_commit_sha: ${{ inputs.source_commit_sha }}
+      github_release_id: ${{ inputs.github_release_id }}
+      release_manifest_sha256: ${{ inputs.manifest_sha256 }}
+    permissions:
+      contents: read
+
+  chocolatey:
+    name: Dispatch the Chocolatey App publisher
+    if: ${{ inputs.mode == 'publish' && inputs.target_chocolatey == 'true' }}
+    uses: ./.github/workflows/release-provider-dispatch.yml
+    with:
+      provider: chocolatey
+      environment: release-chocolatey
+      source_tag: ${{ inputs.tag }}
+      source_commit_sha: ${{ inputs.source_commit_sha }}
+      github_release_id: ${{ inputs.github_release_id }}
+      release_manifest_sha256: ${{ inputs.manifest_sha256 }}
+    permissions:
+      contents: read
+
+  conan:
+    name: Dispatch the ConanCenter release-control App
+    if: ${{ inputs.mode == 'publish' && inputs.target_conan2 == 'true' }}
+    uses: ./.github/workflows/release-provider-dispatch.yml
+    with:
+      provider: conan2
+      environment: release-control-dispatch
+      source_tag: ${{ inputs.tag }}
+      source_commit_sha: ${{ inputs.source_commit_sha }}
+      github_release_id: ${{ inputs.github_release_id }}
+      release_manifest_sha256: ${{ inputs.manifest_sha256 }}
+    permissions:
+      contents: read
+
+  publication-results:
+    name: Capture exact publication results
+    if: ${{ always() }}
+    needs:
+      - publish-cloudsmith
+      - aur
+      - homebrew
+      - chocolatey
+      - conan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      cloudsmith_result: ${{ steps.results.outputs.cloudsmith_result }}
+      aur_result: ${{ steps.results.outputs.aur_result }}
+      homebrew_result: ${{ steps.results.outputs.homebrew_result }}
+      chocolatey_result: ${{ steps.results.outputs.chocolatey_result }}
+      conan_result: ${{ steps.results.outputs.conan_result }}
+      homebrew_url: ${{ steps.results.outputs.homebrew_url }}
+      chocolatey_url: ${{ steps.results.outputs.chocolatey_url }}
+      conan_url: ${{ steps.results.outputs.conan_url }}
+    steps:
+      - name: Export downstream results without masking failures
+        id: results
+        env:
+          CLOUDSMITH_RESULT: ${{ needs.publish-cloudsmith.result }}
+          AUR_RESULT: ${{ needs.aur.result }}
+          HOMEBREW_RESULT: ${{ needs.homebrew.result }}
+          CHOCOLATEY_RESULT: ${{ needs.chocolatey.result }}
+          CONAN_RESULT: ${{ needs.conan.result }}
+          HOMEBREW_URL: ${{ needs.homebrew.outputs.downstream_html_url }}
+          CHOCOLATEY_URL: ${{ needs.chocolatey.outputs.downstream_html_url }}
+          CONAN_URL: ${{ needs.conan.outputs.downstream_html_url }}
+        run: |
+          {
+            echo "cloudsmith_result=${CLOUDSMITH_RESULT}"
+            echo "aur_result=${AUR_RESULT}"
+            echo "homebrew_result=${HOMEBREW_RESULT}"
+            echo "chocolatey_result=${CHOCOLATEY_RESULT}"
+            echo "conan_result=${CONAN_RESULT}"
+            echo "homebrew_url=${HOMEBREW_URL}"
+            echo "chocolatey_url=${CHOCOLATEY_URL}"
+            echo "conan_url=${CONAN_URL}"
+          } >>"${GITHUB_OUTPUT}"
