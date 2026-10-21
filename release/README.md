@@ -10,10 +10,9 @@ python3 -m unittest discover -s test/release -p 'test_*.py' -v
 ```
 
 The command-line entry point is `python3 -m release.cli`. Its main operations
-validate canonical versions, broker dispatch requests, and release ledgers;
-build deterministic source archives, checksum manifests, and SPDX/CycloneDX
-SBOMs; construct the signed-manifest input; and render one strict package
-template at a time.
+validate canonical versions; build deterministic source archives, checksum
+manifests, and SPDX/CycloneDX SBOMs; construct the signed-manifest input; and
+render one strict package template at a time.
 
 Examples:
 
