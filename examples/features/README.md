@@ -258,6 +258,27 @@ done
 
 ---
 
+### 13. Schema Validation (`schema_validation.cpp`)
+
+**What it demonstrates:**
+- Registration refusing a tool whose schema cannot be used, with `SchemaError::category()` (a misspelled `type`, a remote `$ref`)
+- Arguments that break the input schema answered with an `isError` result listing the violations, without running the handler
+- A `structuredContent` that breaks the tool's `outputSchema` refused by the server with `g_INTERNAL_ERROR`
+- The client's own check of `structuredContent`, which throws `StructuredContentError`, against a server whose output check is turned off
+- `Server::tool_validation_stats()`
+
+**Key APIs:**
+- `mcp::SchemaError`
+- `Server::add_tool()` with an output schema
+- `ToolValidationOptions` / `Server::set_tool_validation()`
+- `ClientOptions::validate_tool_schemas` / `StructuredContentError`
+
+**Run:** `./build/release/example-feature-schema-validation`
+
+**Expected output:** one `[ok]` line per check and `All checks passed`; the example exits with a failure status if any check differs
+
+---
+
 ## Common Patterns
 
 ### Loopback Pattern (Non-Interactive Testing)

@@ -295,6 +295,11 @@ all of this and can be used directly:
    auto result = schema.validate({{"name", "x"}});
    // result.valid == false; result.violations[0].message names "id"
 
+``examples/features/schema_validation.cpp`` runs these checks end to end over an
+in-memory transport: refusals at registration, an argument violation, a
+structured result refused by the server, the same result refused by the client
+when the server's check is off, and the counters.
+
 See Also
 --------
 
