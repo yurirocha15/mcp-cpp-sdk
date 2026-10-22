@@ -862,6 +862,38 @@ enum class CacheScope : std::uint8_t {
 NLOHMANN_JSON_SERIALIZE_ENUM(CacheScope,
                              {{CacheScope::ePublic, "public"}, {CacheScope::ePrivate, "private"}})
 
+namespace detail {
+
+/// Reads the `ttlMs` and `cacheScope` caching hints of a result. A `cacheScope` this SDK does not
+/// recognise is left unset: the enum's JSON conversion would read it as "public", the scope that
+/// lets a cache share the result across callers.
+inline void read_cache_hints(const nlohmann::json& json_obj, std::optional<std::int64_t>& ttl_ms,
+                             std::optional<CacheScope>& cache_scope) {
+    if (has_json_value(json_obj, "ttlMs")) {
+        ttl_ms = json_obj.at("ttlMs").get<std::int64_t>();
+    }
+    if (const auto scope = json_obj.find("cacheScope"); scope != json_obj.end() && scope->is_string()) {
+        if (*scope == "public") {
+            cache_scope = CacheScope::ePublic;
+        } else if (*scope == "private") {
+            cache_scope = CacheScope::ePrivate;
+        }
+    }
+}
+
+/// Writes the `ttlMs` and `cacheScope` caching hints of a result, each only when it is set.
+inline void write_cache_hints(nlohmann::json& json_obj, const std::optional<std::int64_t>& ttl_ms,
+                              const std::optional<CacheScope>& cache_scope) {
+    if (ttl_ms) {
+        json_obj["ttlMs"] = *ttl_ms;
+    }
+    if (cache_scope) {
+        json_obj["cacheScope"] = *cache_scope;
+    }
+}
+
+}  // namespace detail
+
 /**
  * @brief Represents the result of a server/discover request.
  *
@@ -871,7 +903,7 @@ struct DiscoverResult {
     std::string resultType = "complete";         ///< Always "complete" for this result.
     std::vector<std::string> supportedVersions;  ///< Protocol versions the server supports.
     ServerCapabilities capabilities;             ///< The capabilities supported by the server.
-    ServerInfo serverInfo;                    ///< Server identity, carried under `_meta` on the wire.
+    std::optional<ServerInfo> serverInfo;     ///< Server identity, carried under `_meta` on the wire.
     std::optional<std::string> instructions;  ///< Optional instructions for the client.
     std::optional<std::int64_t> ttlMs;        ///< Optional caching TTL hint, in milliseconds.
     std::optional<CacheScope> cacheScope;     ///< Optional caching scope hint.
@@ -888,17 +920,14 @@ inline void to_json(nlohmann::json& json_obj, const DiscoverResult& res) {
         {"resultType", res.resultType},
         {"supportedVersions", res.supportedVersions},
         {"capabilities", res.capabilities},
-        {"_meta", {{"io.modelcontextprotocol/serverInfo", res.serverInfo}}},
     };
+    if (res.serverInfo) {
+        json_obj["_meta"] = {{"io.modelcontextprotocol/serverInfo", *res.serverInfo}};
+    }
     if (res.instructions) {
         json_obj["instructions"] = *res.instructions;
     }
-    if (res.ttlMs) {
-        json_obj["ttlMs"] = *res.ttlMs;
-    }
-    if (res.cacheScope) {
-        json_obj["cacheScope"] = *res.cacheScope;
-    }
+    detail::write_cache_hints(json_obj, res.ttlMs, res.cacheScope);
 }
 
 /**
@@ -912,18 +941,14 @@ inline void from_json(const nlohmann::json& json_obj, DiscoverResult& res) {
     json_obj.at("supportedVersions").get_to(res.supportedVersions);
     json_obj.at("capabilities").get_to(res.capabilities);
     if (json_obj.contains("_meta") &&
-        json_obj.at("_meta").contains("io.modelcontextprotocol/serverInfo")) {
-        json_obj.at("_meta").at("io.modelcontextprotocol/serverInfo").get_to(res.serverInfo);
+        detail::has_json_value(json_obj.at("_meta"), "io.modelcontextprotocol/serverInfo")) {
+        res.serverInfo =
+            json_obj.at("_meta").at("io.modelcontextprotocol/serverInfo").get<ServerInfo>();
     }
     if (detail::has_json_value(json_obj, "instructions")) {
         res.instructions = json_obj.at("instructions").get<std::string>();
     }
-    if (detail::has_json_value(json_obj, "ttlMs")) {
-        res.ttlMs = json_obj.at("ttlMs").get<std::int64_t>();
-    }
-    if (json_obj.contains("cacheScope")) {
-        res.cacheScope = json_obj.at("cacheScope").get<CacheScope>();
-    }
+    detail::read_cache_hints(json_obj, res.ttlMs, res.cacheScope);
 }
 
 }  // namespace mcp

@@ -1979,10 +1979,9 @@ TEST(ProtocolTest, DiscoverRequestPreservesMetaWithoutInterpretingIt) {
     EXPECT_EQ(round_tripped["_meta"], j["_meta"]);
 }
 
-// Server::handle_discover_wire always populates ttlMs/cacheScope (see server_core_test.cpp's
-// DiscoverCachingHintsPresentWithDefaultsOverriddenWhenConfigured), but the DiscoverResult TYPE
-// itself must still round-trip the optionals as absent, and distinguish an explicit ttlMs == 0
-// from ttlMs being absent entirely, for interop with other implementations' responses.
+// The server always sends ttlMs and cacheScope on a discover result, but the DiscoverResult type
+// must still round-trip them as absent, and tell an explicit ttlMs of 0 from an absent one, for
+// results from other implementations.
 TEST(ProtocolTest, DiscoverResultRoundTripsUnsetOptionalCachingHints) {
     mcp::DiscoverResult res;
     res.supportedVersions = {"2026-07-28"};
@@ -2035,6 +2034,57 @@ TEST(ProtocolTest, DiscoverResultCacheScopePublicRoundTrips) {
     auto round_tripped = j.get<mcp::DiscoverResult>();
     ASSERT_TRUE(round_tripped.cacheScope.has_value());
     EXPECT_EQ(*round_tripped.cacheScope, mcp::CacheScope::ePublic);
+}
+
+TEST(ProtocolTest, UnknownCacheScopeIsNotReadAsPublic) {
+    json discover = {{"resultType", "complete"},
+                     {"supportedVersions", {"2026-07-28"}},
+                     {"capabilities", json::object()},
+                     {"ttlMs", 10},
+                     {"cacheScope", "shared"}};
+    auto discover_result = discover.get<mcp::DiscoverResult>();
+    EXPECT_FALSE(discover_result.cacheScope.has_value());
+    EXPECT_FALSE(discover_result.serverInfo.has_value());
+    EXPECT_EQ(discover_result.ttlMs, 10);
+
+    auto tools = json{{"tools", json::array()}, {"cacheScope", "shared"}}.get<mcp::ListToolsResult>();
+    EXPECT_FALSE(tools.cacheScope.has_value());
+    auto read = json{{"contents", json::array()}, {"cacheScope", 7}}.get<mcp::ReadResourceResult>();
+    EXPECT_FALSE(read.cacheScope.has_value());
+}
+
+TEST(ProtocolTest, ListAndReadResultsRoundTripCacheHints) {
+    mcp::ListToolsResult tools;
+    tools.ttlMs = 1000;
+    tools.cacheScope = mcp::CacheScope::ePublic;
+    json tools_json = tools;
+    EXPECT_EQ(tools_json["ttlMs"], 1000);
+    EXPECT_EQ(tools_json["cacheScope"], "public");
+    EXPECT_EQ(json(tools_json.get<mcp::ListToolsResult>()), tools_json);
+
+    mcp::ListPromptsResult prompts;
+    prompts.ttlMs = 0;
+    prompts.cacheScope = mcp::CacheScope::ePrivate;
+    json prompts_json = prompts;
+    EXPECT_EQ(prompts_json["ttlMs"], 0);
+    EXPECT_EQ(json(prompts_json.get<mcp::ListPromptsResult>()), prompts_json);
+
+    mcp::ListResourcesResult resources;
+    resources.ttlMs = 5;
+    EXPECT_EQ(json(json(resources).get<mcp::ListResourcesResult>()), json(resources));
+    mcp::ListResourceTemplatesResult templates;
+    templates.cacheScope = mcp::CacheScope::ePublic;
+    EXPECT_EQ(json(json(templates).get<mcp::ListResourceTemplatesResult>()), json(templates));
+    mcp::ReadResourceResult read;
+    read.ttlMs = 7;
+    read.cacheScope = mcp::CacheScope::ePrivate;
+    json read_json = read;
+    EXPECT_EQ(read_json, (json{{"contents", json::array()}, {"ttlMs", 7}, {"cacheScope", "private"}}));
+    EXPECT_EQ(json(read_json.get<mcp::ReadResourceResult>()), read_json);
+
+    // Without hints, a result serializes as before.
+    EXPECT_EQ(json(mcp::ListToolsResult{}), (json{{"tools", json::array()}}));
+    EXPECT_EQ(json(mcp::ReadResourceResult{}), (json{{"contents", json::array()}}));
 }
 
 TEST(ProtocolTest, CancelledNotificationSerialization) {

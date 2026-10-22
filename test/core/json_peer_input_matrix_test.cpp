@@ -39,7 +39,7 @@
 // a member that tolerates being absent but throws when a peer sends it as an
 // explicit null. That is a recurring defect class, and
 // scripts/json_census_dispositions.json dispositions it "fix".
-// 0 of the 319 field entries below still carry it; there were 87 before the
+// 0 of the 317 field entries below still carry it; there were 87 before the
 // explicit-null decoding fixes. Those rows pin behaviour as it is so the
 // suite stays green. They do not endorse it. Fixing one makes the build check
 // report this file stale until it is regenerated with the fix. The check reads
@@ -513,12 +513,10 @@ TEST(JsonPeerInputMatrix, DiscoverResult) {
     const json baseline =
         json::parse(R"json({"resultType":"complete","supportedVersions":["x"],"capabilities":{}})json");
     static const FieldExpect fields[] = {
-        {"cacheScope", R"json("public")json", 0, false, false, false, false},
         {"capabilities", R"json({})json", 0, true, false, false, false},
         {"instructions", R"json("x")json", 0, false, false, true, false},
         {"resultType", R"json("complete")json", 0, true, true, true, false},
         {"supportedVersions", R"json(["x"])json", 0, true, true, true, false},
-        {"ttlMs", R"json(1)json", 0, false, false, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("DiscoverResult.") + f.key);
@@ -1711,9 +1709,9 @@ TEST(JsonPeerInputMatrix, UnsupportedProtocolVersionData) {
 // author thought to write down.
 TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
     constexpr int types = 118;
-    constexpr int fields = 319;
+    constexpr int fields = 317;
     constexpr int modes = 4;
-    constexpr int generated_cases = 1276;
+    constexpr int generated_cases = 1268;
     EXPECT_EQ(generated_cases, fields * modes);
     EXPECT_GT(types, 0);
 }

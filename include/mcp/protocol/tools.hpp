@@ -318,6 +318,8 @@ struct ListToolsResult {
     std::vector<Tool> tools;                ///< The list of tools in the current page.
     std::optional<std::string> nextCursor;  ///< Pagination cursor for the next page.
     std::optional<nlohmann::json> meta;     ///< Reserved for protocol use.
+    std::optional<std::int64_t> ttlMs;      ///< Caching TTL hint, in milliseconds (2026-07-28).
+    std::optional<CacheScope> cacheScope;   ///< Caching scope hint (2026-07-28).
 };
 inline void to_json(nlohmann::json& j, const ListToolsResult& r) {
     j = nlohmann::json{{"tools", r.tools}};
@@ -327,6 +329,7 @@ inline void to_json(nlohmann::json& j, const ListToolsResult& r) {
     if (r.meta) {
         j["_meta"] = *r.meta;
     }
+    detail::write_cache_hints(j, r.ttlMs, r.cacheScope);
 }
 inline void from_json(const nlohmann::json& j, ListToolsResult& r) {
     j.at("tools").get_to(r.tools);
@@ -336,6 +339,7 @@ inline void from_json(const nlohmann::json& j, ListToolsResult& r) {
     if (j.contains("_meta")) {
         r.meta = j.at("_meta");
     }
+    detail::read_cache_hints(j, r.ttlMs, r.cacheScope);
 }
 
 }  // namespace mcp

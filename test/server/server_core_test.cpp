@@ -1324,8 +1324,8 @@ TEST_F(ServerCoreTest, DiscoverCachingHintsPresentWithDefaultsOverriddenWhenConf
     io_ctx_.restart();
 
     mcp::Server configured_server({"configured-server", "1.0"}, mcp::ServerCapabilities{});
-    configured_server.set_discover_ttl_ms(3600000);
-    configured_server.set_discover_cache_scope(mcp::CacheScope::ePublic);
+    configured_server.set_cache_hints(mcp::CacheTarget::eDiscover,
+                                      mcp::CacheHint{3600000, mcp::CacheScope::ePublic});
 
     nlohmann::json configured_response;
     boost::asio::co_spawn(io_ctx_,
@@ -1347,7 +1347,8 @@ TEST_F(ServerCoreTest, DiscoverCachingHintsPresentWithDefaultsOverriddenWhenConf
     // Explicitly configuring CacheScope::ePrivate must also serialize correctly, distinct from
     // it merely being the unconfigured default asserted above.
     mcp::Server explicit_private_server({"explicit-private-server", "1.0"}, mcp::ServerCapabilities{});
-    explicit_private_server.set_discover_cache_scope(mcp::CacheScope::ePrivate);
+    explicit_private_server.set_cache_hints(mcp::CacheTarget::eDiscover,
+                                            mcp::CacheHint{60000, mcp::CacheScope::ePrivate});
 
     nlohmann::json explicit_private_response;
     boost::asio::co_spawn(io_ctx_,
@@ -1361,11 +1362,15 @@ TEST_F(ServerCoreTest, DiscoverCachingHintsPresentWithDefaultsOverriddenWhenConf
     ASSERT_TRUE(explicit_private_response.contains("result"));
     ASSERT_TRUE(explicit_private_response["result"].contains("cacheScope"));
     EXPECT_EQ(explicit_private_response["result"]["cacheScope"], "private");
+    EXPECT_EQ(explicit_private_response["result"]["ttlMs"], 60000);
 }
 
-TEST_F(ServerCoreTest, SetDiscoverTtlMsRejectsNegativeValues) {
+TEST_F(ServerCoreTest, SetCacheHintsRejectsNegativeTtl) {
     mcp::Server server({"negative-ttl-server", "1.0"}, mcp::ServerCapabilities{});
-    EXPECT_THROW(server.set_discover_ttl_ms(-1), std::invalid_argument);
+    EXPECT_THROW(server.set_cache_hints(mcp::CacheTarget::eDiscover, mcp::CacheHint{-1}),
+                 std::invalid_argument);
+    EXPECT_THROW(server.set_cache_hints(mcp::CacheTarget::eResourcesRead, mcp::CacheHint{-1}),
+                 std::invalid_argument);
 }
 
 TEST_F(ServerCoreTest, InstructionsAppearInBothInitializeAndDiscoverWhenSet) {

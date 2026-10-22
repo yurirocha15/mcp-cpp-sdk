@@ -1,5 +1,5 @@
 {
-    "case_count": 1276,
+    "case_count": 1268,
     "excluded": {
         "ClientCapabilities::TaskRequestsCapability": "no census row governs any of its fields",
         "CompleteParams": "no baseline document could be synthesised",
@@ -21,7 +21,7 @@
         "SamplingMessageContent": "std::variant; from_json accepts a block or a list of blocks",
         "ServerCapabilities::TaskRequestsCapability": "no census row governs any of its fields"
     },
-    "field_count": 319,
+    "field_count": 317,
     "gtest_count": 119,
     "mode_count": 4,
     "types": [

@@ -153,6 +153,33 @@ struct ToolValidationStats {
 };
 
 /**
+ * @brief A result whose caching hints Server::set_cache_hints() sets.
+ *
+ * @details Protocol revision 2026-07-28 requires `ttlMs` and `cacheScope` on each of these results.
+ */
+enum class CacheTarget {
+    eDiscover,               ///< server/discover.
+    eToolsList,              ///< tools/list.
+    ePromptsList,            ///< prompts/list.
+    eResourcesList,          ///< resources/list.
+    eResourceTemplatesList,  ///< resources/templates/list.
+    eResourcesRead,          ///< resources/read.
+};
+
+/**
+ * @brief The caching hints a server attaches to a cacheable result of a 2026-07-28 request.
+ *
+ * @details The defaults tell a client not to reuse the result (`ttlMs` 0) and, should it cache it
+ * anyway, not to share it across authorization contexts (`private`).
+ */
+struct CacheHint {
+    /// How long, in milliseconds, a client MAY consider the result fresh. 0 means do not reuse it.
+    std::int64_t ttlMs = 0;
+    /// Who may share a cached copy: only the same authorization context, or anyone.
+    CacheScope scope = CacheScope::ePrivate;
+};
+
+/**
  * @brief Which protocol revisions a Server serves (see Server::set_protocol_policy()).
  *
  * @details A request that carries its protocol version in `_meta` (2026-07-28 and later) is
@@ -450,25 +477,33 @@ class MCP_API Server {
     void set_instructions(std::string instructions);
 
     /**
-     * @brief Set the `ttlMs` caching hint returned by server/discover.
+     * @brief Set the `ttlMs` and `cacheScope` hints of one kind of result.
      *
-     * @details Defaults to `0` ("do not cache") until overridden. Read unsynchronized by
-     * request handlers; must be called before run().
+     * @details Applies to results of 2026-07-28 requests; a result of an earlier revision carries
+     * no hints. Until set, a target uses the CacheHint defaults. A handler's result that already
+     * carries `ttlMs` or `cacheScope` keeps its own value. Read unsynchronized by request
+     * handlers, so it must be called before the server serves its first request: before run()
+     * or the first dispatch_request_direct().
+     * With StreamableHttpSessionManager, configure the Server in the factory, before passing it
+     * to set_modern_server(), or through modern_server() before listen().
      *
-     * @param ttl_ms How long, in milliseconds, the client MAY consider the discover result fresh.
-     * @throws std::invalid_argument If `ttl_ms` is negative.
+     * @param target The result the hints apply to.
+     * @param hint The hints.
+     * @throws std::invalid_argument If `hint.ttlMs` is negative.
      */
-    void set_discover_ttl_ms(std::int64_t ttl_ms);
+    void set_cache_hints(CacheTarget target, CacheHint hint);
 
     /**
-     * @brief Set the `cacheScope` caching hint returned by server/discover.
+     * @brief Choose whether results of 2026-07-28 requests name this server.
      *
-     * @details Defaults to `CacheScope::ePrivate` until overridden. Read unsynchronized by
-     * request handlers; must be called before run().
-     *
-     * @param scope The intended cache scope of the discover result.
+     * @details When true (the default), every such result carries the server's name and version
+     * under `_meta` (`io.modelcontextprotocol/serverInfo`), as the revision recommends. Results of
+     * earlier revisions never do. Must be called before the server serves its first request:
+     * before run() or the first dispatch_request_direct().
+     * With StreamableHttpSessionManager, configure the Server in the factory, before passing it
+     * to set_modern_server(), or through modern_server() before listen().
      */
-    void set_discover_cache_scope(CacheScope scope);
+    void set_report_server_info(bool report);
 
     /**
      * @brief Choose which protocol revisions this server serves.
