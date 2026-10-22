@@ -1,5 +1,6 @@
 #include "../detail/diagnostic_text.hpp"
 #include "../detail/peer_json.hpp"
+#include "../detail/spawn_awaitable.hpp"
 
 #include <mcp/client/client.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
@@ -16,7 +17,9 @@
 #include <boost/system/system_error.hpp>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <exception>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -93,6 +96,246 @@ Task<CallToolResult> checked_call_result(Task<nlohmann::json> request,
         }
     }
     co_return result;
+}
+
+}  // namespace
+
+namespace detail {
+
+/// The client's side of one subscriptions/listen stream. Every change to it happens on the client
+/// strand; the mutex only lets the handle's accessors read it from any thread.
+struct SubscriptionState {
+    SubscriptionState(const boost::asio::strand<boost::asio::any_io_executor>& strand,
+                      std::size_t limit)
+        : wake(strand), queue_limit(limit) {}
+
+    /// Wakes whoever waits for the acknowledgment or the next notification.
+    boost::asio::steady_timer wake;
+    std::size_t queue_limit;
+    RequestId id;
+    SubscriptionFilter requested;
+    /// Sends notifications/cancelled for the listen request, when the connection is still open.
+    std::function<Task<void>()> send_cancel;
+    /// Takes the stream out of the client's table of open streams.
+    std::function<void()> forget;
+
+    mutable std::mutex mutex;
+    bool acknowledged_seen{false};
+    SubscriptionFilter acknowledged;
+    std::deque<SubscriptionEvent> queue;
+    std::optional<SubscriptionEnd> ended;
+    std::optional<Error> failure;
+    std::uint64_t dropped{0};
+
+    void signal() { wake.expires_at(std::chrono::steady_clock::now()); }
+
+    void acknowledge(SubscriptionFilter honored) {
+        {
+            std::lock_guard lock(mutex);
+            if (acknowledged_seen) {
+                return;
+            }
+            acknowledged = std::move(honored);
+            acknowledged_seen = true;
+        }
+        signal();
+    }
+
+    void push(SubscriptionEvent event) {
+        {
+            std::lock_guard lock(mutex);
+            if (ended) {
+                return;
+            }
+            if (queue.size() >= queue_limit) {
+                queue.pop_front();
+                ++dropped;
+            }
+            queue.push_back(std::move(event));
+        }
+        signal();
+    }
+
+    void finish(SubscriptionEnd how, std::optional<Error> error) {
+        {
+            std::lock_guard lock(mutex);
+            if (ended) {
+                return;
+            }
+            ended = how;
+            failure = std::move(error);
+        }
+        signal();
+    }
+
+    /// The state of the wait for the acknowledgment; holds no string, so it is safe to keep
+    /// across a suspension point.
+    enum class AckWait : std::uint8_t {
+        ePending,
+        eAcknowledged,
+        eEnded
+    };
+
+    AckWait ack_wait() const {
+        std::lock_guard lock(mutex);
+        if (acknowledged_seen) {
+            return AckWait::eAcknowledged;
+        }
+        return ended ? AckWait::eEnded : AckWait::ePending;
+    }
+
+    /// Runs on the strand: the next notification, or nothing once the stream has ended.
+    static Task<std::optional<SubscriptionEvent>> wait_next(std::shared_ptr<SubscriptionState> state) {
+        for (;;) {
+            {
+                std::lock_guard lock(state->mutex);
+                if (!state->queue.empty()) {
+                    std::optional<SubscriptionEvent> event(std::move(state->queue.front()));
+                    state->queue.pop_front();
+                    co_return event;
+                }
+                if (state->ended) {
+                    co_return std::nullopt;
+                }
+            }
+            // Ending the stream and queueing both run on this strand and signal after changing
+            // the state, so a change is either seen above or wakes the wait that starts here.
+            state->wake.expires_at(std::chrono::steady_clock::time_point::max());
+            try {
+                co_await state->wake.async_wait(boost::asio::use_awaitable);
+            } catch (const boost::system::system_error& error) {
+                if (error.code() != boost::asio::error::operation_aborted) {
+                    throw;
+                }
+            }
+        }
+    }
+
+    /// Runs on the strand: ends the stream locally, then tells the server.
+    static Task<void> cancel(std::shared_ptr<SubscriptionState> state) {
+        {
+            std::lock_guard lock(state->mutex);
+            if (state->ended) {
+                co_return;
+            }
+        }
+        state->finish(SubscriptionEnd::eCancelled, std::nullopt);
+        state->forget();
+        co_await state->send_cancel();
+    }
+};
+
+}  // namespace detail
+
+namespace {
+
+Task<std::optional<SubscriptionEvent>> no_event() { co_return std::nullopt; }
+
+Task<void> nothing_to_send() { co_return; }
+
+}  // namespace
+
+Subscription::Subscription() = default;
+
+Subscription::Subscription(std::shared_ptr<detail::SubscriptionState> state)
+    : state_(std::move(state)) {}
+
+RequestId Subscription::id() const { return state_ ? state_->id : RequestId{}; }
+
+SubscriptionFilter Subscription::requested() const {
+    return state_ ? state_->requested : SubscriptionFilter{};
+}
+
+SubscriptionFilter Subscription::acknowledged() const {
+    if (!state_) {
+        return {};
+    }
+    std::lock_guard lock(state_->mutex);
+    return state_->acknowledged;
+}
+
+SubscriptionFilter Subscription::unhonored() const {
+    const auto honored = acknowledged();
+    const auto asked = requested();
+    SubscriptionFilter missing;
+    missing.toolsListChanged = asked.toolsListChanged && !honored.toolsListChanged;
+    missing.promptsListChanged = asked.promptsListChanged && !honored.promptsListChanged;
+    missing.resourcesListChanged = asked.resourcesListChanged && !honored.resourcesListChanged;
+    for (const auto& uri : asked.resourceSubscriptions) {
+        if (std::find(honored.resourceSubscriptions.begin(), honored.resourceSubscriptions.end(),
+                      uri) == honored.resourceSubscriptions.end()) {
+            missing.resourceSubscriptions.push_back(uri);
+        }
+    }
+    return missing;
+}
+
+Task<std::optional<SubscriptionEvent>> Subscription::next() {
+    if (!state_) {
+        return no_event();
+    }
+    return detail::spawn_awaitable(state_->wake.get_executor(),
+                                   detail::SubscriptionState::wait_next(state_));
+}
+
+Task<void> Subscription::close() {
+    if (!state_) {
+        return nothing_to_send();
+    }
+    return detail::spawn_awaitable(state_->wake.get_executor(),
+                                   detail::SubscriptionState::cancel(state_));
+}
+
+std::optional<SubscriptionEnd> Subscription::end_reason() const {
+    if (!state_) {
+        return SubscriptionEnd::eCancelled;
+    }
+    std::lock_guard lock(state_->mutex);
+    return state_->ended;
+}
+
+std::optional<Error> Subscription::end_error() const {
+    if (!state_) {
+        return std::nullopt;
+    }
+    std::lock_guard lock(state_->mutex);
+    return state_->failure;
+}
+
+std::uint64_t Subscription::dropped_events() const {
+    if (!state_) {
+        return 0;
+    }
+    std::lock_guard lock(state_->mutex);
+    return state_->dropped;
+}
+
+namespace {
+
+/// The `notifications` object of an acknowledgment, read as leniently as the server's own
+/// output allows: a member of the wrong type counts as not honored.
+SubscriptionFilter honored_filter(const nlohmann::json& params) {
+    SubscriptionFilter honored;
+    const auto found = params.find("notifications");
+    if (found == params.end() || !found->is_object()) {
+        return honored;
+    }
+    const auto flag = [&found](const char* name) {
+        const auto member = found->find(name);
+        return member != found->end() && member->is_boolean() && member->get<bool>();
+    };
+    honored.toolsListChanged = flag("toolsListChanged");
+    honored.promptsListChanged = flag("promptsListChanged");
+    honored.resourcesListChanged = flag("resourcesListChanged");
+    if (const auto uris = found->find("resourceSubscriptions");
+        uris != found->end() && uris->is_array()) {
+        for (const auto& uri : *uris) {
+            if (uri.is_string()) {
+                honored.resourceSubscriptions.push_back(uri.get<std::string>());
+            }
+        }
+    }
+    return honored;
 }
 
 }  // namespace
@@ -300,6 +543,237 @@ struct Client::Impl {
             } else {
                 input_responses = nullptr;
             }
+        }
+    }
+
+    /// Opens a subscriptions/listen stream. The request is never answered while the stream is open,
+    /// so it bypasses the table of pending requests (and their deadline): the stream has its own
+    /// entry, and `timeout` limits only the wait for the acknowledgment.
+    static Task<Subscription> listen(std::shared_ptr<Impl> state, const SubscriptionFilter& filter,
+                                     const RequestOptions& request_options) {
+        const auto modern_version = state->modern_version();
+        if (!modern_version) {
+            throw McpError(g_METHOD_NOT_FOUND,
+                           "subscriptions/listen needs a session of protocol version 2026-07-28 or "
+                           "later");
+        }
+        const auto timeout = request_options.timeout.value_or(state->options.request_timeout);
+        if (timeout <= std::chrono::milliseconds::zero()) {
+            throw std::invalid_argument("Request timeout must be positive");
+        }
+
+        nlohmann::json params = nlohmann::json::object();
+        params["notifications"] = filter;
+        const auto wire_params =
+            state->with_request_meta(*modern_version, params, request_options.log_level);
+
+        const int64_t id = state->next_request_id.fetch_add(1, std::memory_order_relaxed);
+        JSONRPCRequest request;
+        request.id = RequestId{std::to_string(id)};
+        request.method = "subscriptions/listen";
+        request.params = wire_params;
+        auto wire = std::make_shared<const std::string>(nlohmann::json(std::move(request)).dump());
+
+        auto stream = std::make_shared<detail::SubscriptionState>(
+            state->strand, state->options.subscription_queue_limit);
+        stream->id = RequestId{std::to_string(id)};
+        stream->requested = filter;
+        std::weak_ptr<Impl> weak_state = state;
+        const auto key = std::make_shared<const std::string>(request_correlation_key(id));
+        stream->forget = [weak_state, key] {
+            if (auto active = weak_state.lock()) {
+                std::lock_guard lock(active->subscriptions_mutex);
+                active->subscriptions.erase(*key);
+            }
+        };
+        stream->send_cancel = [weak_state, id]() -> Task<void> {
+            auto active = weak_state.lock();
+            if (!active || active->closed.load(std::memory_order_acquire)) {
+                return nothing_to_send();
+            }
+            CancelledNotificationParams cancelled;
+            cancelled.requestId = RequestId{std::to_string(id)};
+            const std::optional<nlohmann::json> cancel_params = nlohmann::json(std::move(cancelled));
+            return notification(std::move(active), "notifications/cancelled", cancel_params);
+        };
+
+        auto strand = state->strand;
+        return detail::spawn_awaitable(
+            strand, listen_on_strand(std::move(state), std::move(stream), std::move(wire), timeout));
+    }
+
+    static Task<Subscription> listen_on_strand(std::shared_ptr<Impl> state,
+                                               std::shared_ptr<detail::SubscriptionState> stream,
+                                               std::shared_ptr<const std::string> wire,
+                                               std::chrono::milliseconds timeout) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        {
+            std::lock_guard lock(state->subscriptions_mutex);
+            state->subscriptions.emplace(stream->id.correlation_key(), stream);
+        }
+        // The stream is registered before the closed check, so a connection that ends from here on
+        // either shows as closed or finds the stream and ends it.
+        if (state->closed.load(std::memory_order_acquire)) {
+            stream->forget();
+            throw McpError(g_CONNECTION_CLOSED, "Client transport is closed");
+        }
+
+        try {
+            co_await state->writer.write_message(wire);
+        } catch (...) {
+            stream->forget();
+            if (state->closed.load(std::memory_order_acquire)) {
+                throw McpError(g_CONNECTION_CLOSED, "Client transport is closed");
+            }
+            throw;
+        }
+
+        for (;;) {
+            if (stream->ack_wait() != detail::SubscriptionState::AckWait::ePending ||
+                std::chrono::steady_clock::now() >= deadline) {
+                break;
+            }
+            stream->wake.expires_at(deadline);
+            try {
+                co_await stream->wake.async_wait(boost::asio::use_awaitable);
+            } catch (const boost::system::system_error& error) {
+                if (error.code() != boost::asio::error::operation_aborted) {
+                    stream->forget();
+                    throw;
+                }
+            }
+        }
+
+        const auto outcome = stream->ack_wait();
+        if (outcome == detail::SubscriptionState::AckWait::eAcknowledged) {
+            co_return Subscription(stream);
+        }
+        if (outcome == detail::SubscriptionState::AckWait::eEnded) {
+            std::optional<Error> failure;
+            {
+                std::lock_guard lock(stream->mutex);
+                failure = stream->failure;
+            }
+            if (failure) {
+                throw McpError(std::move(*failure));
+            }
+            throw McpError(g_INTERNAL_ERROR, "subscriptions/listen ended before it was acknowledged");
+        }
+
+        // No acknowledgment in time: end the stream here and tell the server, best effort.
+        stream->finish(SubscriptionEnd::eCancelled, std::nullopt);
+        stream->forget();
+        try {
+            co_await stream->send_cancel();
+        } catch (...) {
+            // The request timeout below is the failure to report.
+        }
+        throw McpError(g_REQUEST_TIMEOUT, "subscriptions/listen was not acknowledged in time");
+    }
+
+    /// Routes a notification that names a subscription to that subscription's queue. The
+    /// acknowledgment is consumed by the stream; every notification still reaches the handlers
+    /// registered with on_notification().
+    static void route_to_subscription(const std::shared_ptr<Impl>& state, const std::string& method,
+                                      const nlohmann::json& json_message) {
+        if (!detail::has_json_value(json_message, "params")) {
+            return;
+        }
+        const auto& params = json_message.at("params");
+        if (!params.is_object()) {
+            return;
+        }
+        const auto meta = params.find("_meta");
+        if (meta == params.end() || !meta->is_object()) {
+            return;
+        }
+        const auto named = meta->find(std::string(g_META_SUBSCRIPTION_ID));
+        if (named == meta->end() || (!named->is_string() && !named->is_number_integer())) {
+            return;
+        }
+        std::shared_ptr<detail::SubscriptionState> stream;
+        {
+            std::lock_guard lock(state->subscriptions_mutex);
+            const auto found = state->subscriptions.find(named->get<RequestId>().correlation_key());
+            if (found == state->subscriptions.end()) {
+                return;
+            }
+            stream = found->second;
+        }
+        if (method == "notifications/subscriptions/acknowledged") {
+            stream->acknowledge(honored_filter(params));
+            return;
+        }
+        stream->push(SubscriptionEvent{method, params});
+    }
+
+    /// The answer to a listen request ends its stream: the empty result is the server's graceful
+    /// close, an error is a refusal.
+    static void end_subscription_from_response(const std::shared_ptr<Impl>& state,
+                                               const std::string& id_key,
+                                               const nlohmann::json& json_message) {
+        std::shared_ptr<detail::SubscriptionState> stream;
+        {
+            std::lock_guard lock(state->subscriptions_mutex);
+            const auto found = state->subscriptions.find(id_key);
+            if (found == state->subscriptions.end()) {
+                return;
+            }
+            stream = found->second;
+            state->subscriptions.erase(found);
+        }
+        if (detail::has_json_value(json_message, "error")) {
+            try {
+                stream->finish(SubscriptionEnd::eFailed, json_message.at("error").get<Error>());
+            } catch (const std::exception& decode_error) {
+                stream->finish(SubscriptionEnd::eFailed,
+                               Error{g_INVALID_REQUEST,
+                                     "Malformed JSON-RPC error object: " +
+                                         detail::sanitize_for_diagnostics(decode_error.what()),
+                                     std::nullopt});
+            }
+            return;
+        }
+        stream->finish(SubscriptionEnd::eServerClosed, std::nullopt);
+    }
+
+    /// On a transport without per-request streams the server ends a subscription it closes with
+    /// notifications/cancelled naming the listen request, after the closing result. Returns whether
+    /// the notification named an open stream; that stream ends as closed by the server.
+    static bool end_subscription_from_cancel(const std::shared_ptr<Impl>& state,
+                                             const nlohmann::json& json_message) {
+        if (!detail::has_json_value(json_message, "params")) {
+            return false;
+        }
+        const auto& params = json_message.at("params");
+        const auto named = params.is_object() ? params.find("requestId") : params.end();
+        if (named == params.end() || (!named->is_string() && !named->is_number_integer())) {
+            return false;
+        }
+        std::shared_ptr<detail::SubscriptionState> stream;
+        {
+            std::lock_guard lock(state->subscriptions_mutex);
+            const auto found = state->subscriptions.find(named->get<RequestId>().correlation_key());
+            if (found == state->subscriptions.end()) {
+                return false;
+            }
+            stream = found->second;
+            state->subscriptions.erase(found);
+        }
+        stream->finish(SubscriptionEnd::eServerClosed, std::nullopt);
+        return true;
+    }
+
+    /// The connection ended: every open stream ends without the server's closing result.
+    static void end_subscriptions(const std::shared_ptr<Impl>& state, const Error& error) {
+        std::map<std::string, std::shared_ptr<detail::SubscriptionState>, std::less<>> open;
+        {
+            std::lock_guard lock(state->subscriptions_mutex);
+            open.swap(state->subscriptions);
+        }
+        for (auto& [key, stream] : open) {
+            static_cast<void>(key);
+            stream->finish(SubscriptionEnd::eDropped, error);
         }
     }
 
@@ -938,9 +1412,11 @@ struct Client::Impl {
         }
         const auto id_key = id.get<RequestId>().correlation_key();
 
-        std::lock_guard lock(state->pending_requests_mutex);
+        std::unique_lock lock(state->pending_requests_mutex);
         auto iter = state->pending_requests.find(id_key);
         if (iter == state->pending_requests.end()) {
+            lock.unlock();
+            end_subscription_from_response(state, id_key, json_message);
             return;
         }
         if (std::chrono::steady_clock::now() >= iter->second->deadline) {
@@ -978,6 +1454,10 @@ struct Client::Impl {
     static void dispatch_notification(const std::shared_ptr<Impl>& state,
                                       const nlohmann::json& json_message) {
         const auto method = json_message.at("method").get<std::string>();
+        if (method == "notifications/cancelled" && end_subscription_from_cancel(state, json_message)) {
+            return;
+        }
+        route_to_subscription(state, method, json_message);
         if (method == "notifications/cancelled") {
             if (detail::has_json_value(json_message, "params")) {
                 auto params = json_message.at("params").get<CancelledNotificationParams>();
@@ -1117,6 +1597,7 @@ struct Client::Impl {
     }
 
     static void fail_pending_requests(const std::shared_ptr<Impl>& state, const Error& error) {
+        end_subscriptions(state, error);
         std::lock_guard lock(state->pending_requests_mutex);
         for (auto& [id, pending_request] : state->pending_requests) {
             static_cast<void>(id);
@@ -1138,6 +1619,11 @@ struct Client::Impl {
     std::atomic<int64_t> next_request_id{1};
     std::atomic<bool> read_loop_started{false};
     std::atomic<bool> closed{false};
+
+    /// The open subscriptions/listen streams by request id; the answer to such a request ends the
+    /// stream, so these never sit in pending_requests.
+    mutable std::mutex subscriptions_mutex;
+    std::map<std::string, std::shared_ptr<detail::SubscriptionState>, std::less<>> subscriptions;
 
     mutable std::mutex handlers_mutex;
     std::map<std::string, NotificationCallback, std::less<>> notification_handlers;
@@ -1311,6 +1797,9 @@ Client::Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_
     if (options.probe_timeout <= std::chrono::milliseconds::zero()) {
         throw std::invalid_argument("Client probe timeout must be positive");
     }
+    if (options.subscription_queue_limit == 0) {
+        throw std::invalid_argument("Client subscription queue limit must be positive");
+    }
     impl_ = std::make_shared<Impl>(std::move(transport), executor, std::move(options));
 }
 
@@ -1358,6 +1847,18 @@ Task<nlohmann::json> Client::send_request(std::string_view method,
         throw McpError(g_INVALID_REQUEST, "Client must connect before sending requests");
     }
     return Impl::request(impl_, method, params, request_options);
+}
+
+Task<Subscription> Client::listen(const SubscriptionFilter& filter) {
+    return listen(filter, RequestOptions{});
+}
+
+Task<Subscription> Client::listen(const SubscriptionFilter& filter,
+                                  const RequestOptions& request_options) {
+    if (!impl_->read_loop_started.load(std::memory_order_acquire)) {
+        throw McpError(g_INVALID_REQUEST, "Client must connect before sending requests");
+    }
+    return Impl::listen(impl_, filter, request_options);
 }
 
 Task<void> Client::send_notification(std::string_view method,

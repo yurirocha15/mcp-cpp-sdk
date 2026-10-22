@@ -341,6 +341,7 @@ if(BUILD_TESTING)
       test/auth/auth_oauth_test.cpp
       test/auth/auth_token_endpoint_auth_test.cpp
       test/client/client_core_test.cpp
+      test/client/client_listen_test.cpp
       test/client/client_modern_test.cpp
       test/client/client_mrtr_test.cpp
       test/client/client_features_test.cpp

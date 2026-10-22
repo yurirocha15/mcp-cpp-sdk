@@ -16,6 +16,13 @@ Versioning; a `0.x` version is a stable release unless its version has an
   refreshes `tools/list` once before retrying a request refused with
   `HeaderMismatch`. Tools with invalid `x-mcp-header` annotations are left out
   of `tools/list`; `set_warning_handler()` reports them.
+- `Client::listen()` opens a `subscriptions/listen` stream on a 2026-07-28
+  session and returns a `Subscription`: the acknowledged filter (and what the
+  server left out), the notifications of that stream through `next()`,
+  `close()`, and whether the stream ended gracefully (the server's closing
+  result or its `notifications/cancelled`), by cancel, by error or by a
+  dropped connection. Streams on one connection are told apart by their
+  subscription id.
 - `CompiledSchema` (`mcp/protocol/schema.hpp`): compiles a JSON Schema and
   validates values against it, reporting violations with instance paths.
   A schema without `$schema` is read as 2020-12; 2019-09, draft-07, draft-06
