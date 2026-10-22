@@ -7,6 +7,7 @@
 
 #include <mcp/core/core.hpp>
 #include <mcp/protocol/protocol.hpp>
+#include <mcp/protocol/request_meta.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <atomic>
@@ -64,16 +65,29 @@ class Context {
      * @param log_level Pointer to the server's current log level (shared across all contexts).
      * @param message_sender Optional serialized notification sender. When omitted, Context writes
      *                       directly to the transport.
+     * @param request_meta The per-request protocol fields of a 2026-07-28 request, or null for a
+     *                     request of an earlier revision.
      */
     Context(ITransport& transport, RequestSender sender, std::shared_ptr<std::atomic<bool>> cancelled,
             std::optional<ProgressToken> progress_token, const std::atomic<LoggingLevel>* log_level,
-            MessageSender message_sender = {})
+            MessageSender message_sender = {},
+            std::shared_ptr<const RequestMetadata> request_meta = nullptr)
         : transport_(transport),
           sender_(std::move(sender)),
           cancelled_(std::move(cancelled)),
           progress_token_(std::move(progress_token)),
           log_level_(log_level),
-          message_sender_(std::move(message_sender)) {}
+          message_sender_(std::move(message_sender)),
+          request_meta_(std::move(request_meta)) {}
+
+    /**
+     * @brief The per-request protocol fields of this request.
+     *
+     * @return The protocol version, client capabilities, client info, log level and whole `_meta`
+     *         of a 2026-07-28 request, or null for a request of an earlier revision, which
+     *         negotiated these at initialize.
+     */
+    [[nodiscard]] const RequestMetadata* request_meta() const { return request_meta_.get(); }
 
     /**
      * @brief Sends an informational log message to the client.
@@ -91,6 +105,9 @@ class Context {
      * LoggingLevel ordering: Emergency(0) < Alert(1) < ... < Debug(7).
      * A message is sent only if its level <= current server log level.
      *
+     * A 2026-07-28 request has no session level: its threshold is the
+     * `io.modelcontextprotocol/logLevel` in its `_meta`, and without one nothing is sent.
+     *
      * @param level The severity level of the log message.
      * @param msg The log message to send.
      * @param logger Optional logger name.
@@ -98,7 +115,12 @@ class Context {
      */
     Task<void> log(LoggingLevel level, std::string_view msg,
                    const std::optional<std::string>& logger = std::nullopt) {
-        if (log_level_ != nullptr) {
+        if (request_meta_) {
+            if (!request_meta_->logLevel ||
+                static_cast<uint8_t>(level) > static_cast<uint8_t>(*request_meta_->logLevel)) {
+                co_return;
+            }
+        } else if (log_level_ != nullptr) {
             auto current = log_level_->load(std::memory_order_relaxed);
             if (static_cast<uint8_t>(level) > static_cast<uint8_t>(current)) {
                 co_return;
@@ -128,7 +150,8 @@ class Context {
     /**
      * @brief Check whether the current request has been cancelled.
      *
-     * @return true if a notifications/cancelled was received for this request's ID.
+     * @return true once the request has been cancelled: by notifications/cancelled for this
+     * request's ID, or through the cancellation flag given to Server::dispatch_request_direct().
      */
     [[nodiscard]] bool is_cancelled() const {
         if (cancelled_) {
@@ -185,7 +208,9 @@ class Context {
      *
      * @param request The sampling request parameters.
      * @return A task that resolves to the client's CreateMessageResult.
-     * @throws std::runtime_error If no request sender is available.
+     * @throws std::runtime_error If no request sender is available. Always throws for a
+     * 2026-07-28 request (request_meta() is not null): that revision has no server-to-client
+     * requests.
      */
     Task<CreateMessageResult> sample_llm(const CreateMessageRequestParams& request) {
         if (!sender_) {
@@ -206,7 +231,9 @@ class Context {
      *
      * @param params The elicitation request parameters (form or URL mode).
      * @return A task that resolves to the client's ElicitResult.
-     * @throws std::runtime_error If no request sender is available.
+     * @throws std::runtime_error If no request sender is available. Always throws for a
+     * 2026-07-28 request (request_meta() is not null): that revision has no server-to-client
+     * requests.
      */
     Task<ElicitResult> elicit(const ElicitRequestParams& params) {
         if (!sender_) {
@@ -225,7 +252,9 @@ class Context {
      * the response. The client provides its configured root URIs.
      *
      * @return A task that resolves to the client's ListRootsResult.
-     * @throws std::runtime_error If no request sender is available.
+     * @throws std::runtime_error If no request sender is available. Always throws for a
+     * 2026-07-28 request (request_meta() is not null): that revision has no server-to-client
+     * requests.
      */
     Task<ListRootsResult> request_roots() {
         if (!sender_) {
@@ -243,6 +272,7 @@ class Context {
     std::optional<ProgressToken> progress_token_;
     const std::atomic<LoggingLevel>* log_level_ = nullptr;
     MessageSender message_sender_;
+    std::shared_ptr<const RequestMetadata> request_meta_;
 };
 
 }  // namespace mcp

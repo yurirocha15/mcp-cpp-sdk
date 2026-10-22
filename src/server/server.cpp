@@ -1,7 +1,9 @@
 #include "../detail/diagnostic_text.hpp"
 #include "../detail/memory_transport_read.hpp"
 #include "../detail/middleware_rejection.hpp"
+#include "../detail/modern_methods.hpp"
 #include "../detail/peer_json.hpp"
+#include "../detail/request_meta.hpp"
 #include "../detail/spawn_awaitable.hpp"
 
 #include <mcp/detail/serialized_transport_writer.hpp>
@@ -625,6 +627,15 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         TypeErasedHandler handler;
     };
 
+    /// What a request's handler needs beyond its JSON: the per-request protocol fields of a
+    /// 2026-07-28 request, its cancellation flag, and whether the request came from the session,
+    /// whose transport then carries its notifications.
+    struct RequestScope {
+        std::shared_ptr<const RequestMetadata> meta;
+        std::shared_ptr<std::atomic<bool>> cancelled;
+        bool session_request{false};
+    };
+
     static constexpr LoggingLevel g_default_log_level = LoggingLevel::eDebug;
 
     /// Which HTTP session `session` is serving: its transport's count of ended sessions, or 0 for a
@@ -665,6 +676,13 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::atomic<std::uint64_t> argument_rejections{0};
     std::atomic<std::uint64_t> structured_content_rejections{0};
 
+    ServerProtocolPolicy protocol_policy;
+    // Set by the first request and by run(); the policy is read unsynchronized after that.
+    std::atomic_bool serving{false};
+    std::atomic<std::uint64_t> invalid_metadata_rejections{0};
+    std::atomic<std::uint64_t> unsupported_version_rejections{0};
+    std::atomic<std::uint64_t> legacy_shaped_rejections{0};
+
     std::vector<Resource> resources;
     std::map<std::string, TypeErasedHandler, std::less<>> resource_handlers;
 
@@ -694,7 +712,10 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Task<void> notify_resource_updated(const std::string& uri);
     Task<void> dispatch_on_strand(nlohmann::json json_msg);
     Task<void> dispatch_request(nlohmann::json json_msg);
-    Task<std::string> dispatch_request_wire(nlohmann::json json_msg, bool enforce_lifecycle);
+    Task<std::string> dispatch_request_wire(nlohmann::json json_msg, bool enforce_lifecycle,
+                                            std::shared_ptr<std::atomic<bool>> cancelled = nullptr);
+    Task<std::string> dispatch_modern_wire(const nlohmann::json& json_msg, std::string_view method,
+                                           RequestScope scope);
     void dispatch_notification(const nlohmann::json& json_msg);
     void dispatch_response(const nlohmann::json& json_msg);
 
@@ -702,23 +723,31 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Task<std::string> handle_shutdown_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_ping_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_discover_wire(const nlohmann::json& json_msg);
-    Task<std::string> handle_tools_call_wire(const nlohmann::json& json_msg);
+    Task<std::string> handle_tools_call_wire(const nlohmann::json& json_msg, const RequestScope& scope);
     Task<std::string> handle_tools_list_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_resources_list_wire(const nlohmann::json& json_msg);
-    Task<std::string> handle_resources_read_wire(const nlohmann::json& json_msg);
+    Task<std::string> handle_resources_read_wire(const nlohmann::json& json_msg,
+                                                 const RequestScope& scope);
     Task<std::string> handle_resource_templates_list_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_subscribe_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_unsubscribe_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_prompts_list_wire(const nlohmann::json& json_msg);
-    Task<std::string> handle_prompts_get_wire(const nlohmann::json& json_msg);
+    Task<std::string> handle_prompts_get_wire(const nlohmann::json& json_msg,
+                                              const RequestScope& scope);
     Task<std::string> handle_set_level_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_complete_wire(const nlohmann::json& json_msg);
 
     Task<nlohmann::json> invoke_tool_impl(CallToolParams params,
                                           std::shared_ptr<std::atomic<bool>> cancelled,
-                                          std::optional<ProgressToken> progress_token);
+                                          std::optional<ProgressToken> progress_token,
+                                          std::shared_ptr<const RequestMetadata> request_meta = nullptr,
+                                          bool session_request = true);
+    /// `session_request` says whether the request was read from the session. A 2026-07-28 request
+    /// that was not has no route to the client through the session's transport.
     Context make_context(std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
-                         std::optional<ProgressToken> progress_token = std::nullopt);
+                         std::optional<ProgressToken> progress_token = std::nullopt,
+                         std::shared_ptr<const RequestMetadata> request_meta = nullptr,
+                         bool session_request = true);
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
 
     Task<nlohmann::json> send_request(const std::string& method,
@@ -736,6 +765,18 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     // [gcc11-sso: wire-builders] DO NOT convert to Task<T>.
     static std::string make_result_wire(const RequestId& id, nlohmann::json result);
     static std::string make_error_wire(const RequestId& id, int code, std::string message);
+    static std::string make_error_wire(const RequestId& id, int code, std::string message,
+                                       nlohmann::json data);
+    /// The versions this server serves, oldest first: the legacy versions initialize may
+    /// negotiate, then the versions served per request.
+    [[nodiscard]] std::vector<std::string> supported_versions() const;
+    [[nodiscard]] bool serves_legacy_version(std::string_view version) const;
+    [[nodiscard]] std::string negotiate_legacy_version(std::string_view requested) const;
+    /// -32601 for an initialize sent to a server that serves no legacy version, naming the
+    /// versions it serves in the message and in `data.supported`.
+    [[nodiscard]] std::string initialize_not_served_wire(const RequestId& id) const;
+    [[nodiscard]] std::string unsupported_version_wire(const RequestId& id,
+                                                       std::string requested) const;
     std::optional<PaginationSlice> paginate(std::size_t total, const nlohmann::json& json_msg);
     [[nodiscard]] bool has_tool_output_schema(const std::string& name) const;
 };
@@ -841,6 +882,33 @@ void Server::set_discover_ttl_ms(std::int64_t ttl_ms) {
 }
 
 void Server::set_discover_cache_scope(CacheScope scope) { impl_->discover_cache_scope = scope; }
+
+void Server::set_protocol_policy(ServerProtocolPolicy policy) {
+    if (!policy.serve_modern && !policy.serve_legacy) {
+        throw std::invalid_argument("A protocol policy must serve at least one protocol era");
+    }
+    if (policy.legacy_versions) {
+        if (policy.serve_legacy && policy.legacy_versions->empty()) {
+            throw std::invalid_argument("A protocol policy serving legacy clients needs a version");
+        }
+        for (const auto& version : *policy.legacy_versions) {
+            if (!is_legacy_protocol_version(version)) {
+                throw std::invalid_argument("Not a protocol version negotiated by initialize: " +
+                                            detail::sanitize_for_diagnostics(version));
+            }
+        }
+    }
+    if (impl_->serving.load(std::memory_order_acquire)) {
+        throw std::logic_error("The protocol policy cannot change once the server serves requests");
+    }
+    impl_->protocol_policy = std::move(policy);
+}
+
+ProtocolRejectionStats Server::protocol_rejection_stats() const {
+    return {impl_->invalid_metadata_rejections.load(std::memory_order_relaxed),
+            impl_->unsupported_version_rejections.load(std::memory_order_relaxed),
+            impl_->legacy_shaped_rejections.load(std::memory_order_relaxed)};
+}
 
 void Server::on_subscribe(const SubscriptionHandler& handler) { impl_->subscribe_handler = handler; }
 
@@ -987,6 +1055,7 @@ Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransp
     if (!transport) {
         throw std::invalid_argument("Server transport must not be null");
     }
+    impl->serving.store(true, std::memory_order_release);
 
     auto session = std::make_shared<Session>();
     session->transport = std::move(transport);
@@ -1136,37 +1205,56 @@ Task<std::string> Server::dispatch_request_direct(nlohmann::json json_msg) {
     return impl_->dispatch_request_wire(std::move(json_msg), false);
 }
 
+Task<std::string> Server::dispatch_request_direct(nlohmann::json json_msg,
+                                                  RequestContext request_context) {
+    return impl_->dispatch_request_wire(std::move(json_msg), false,
+                                        std::move(request_context.cancelled));
+}
+
 Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
-                                   std::optional<ProgressToken> progress_token) {
+                                   std::optional<ProgressToken> progress_token,
+                                   std::shared_ptr<const RequestMetadata> request_meta,
+                                   bool session_request) {
     ITransport* transport = &null_transport();
     MessageSender message_sender;
     auto session = session_snapshot();
     std::uint64_t epoch = 0;
-    if (session && session->transport) {
+    if (session && session->transport && (session_request || !request_meta)) {
         transport = session->transport.get();
         epoch = Impl::session_epoch(*session);
         // A handler whose session the client has ended sends nothing more: the transport would
-        // hand its messages to the next client.
-        message_sender = [session, epoch](std::string_view message) {
-            if (Impl::session_epoch(*session) != epoch) {
+        // hand its messages to the next client. 2026-07-28 also sends nothing for a request once
+        // it is cancelled.
+        std::shared_ptr<std::atomic<bool>> modern_cancelled = request_meta ? cancelled : nullptr;
+        message_sender = [session, epoch, modern_cancelled](std::string_view message) {
+            if (Impl::session_epoch(*session) != epoch ||
+                (modern_cancelled && modern_cancelled->load(std::memory_order_relaxed))) {
                 return Impl::skip_write();
             }
             return session->writer->write_message(message);
         };
     }
 
-    return {*transport,
-            [impl = shared_from_this(), session, epoch](
-                std::string method, std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
-                if (session && Impl::session_epoch(*session) != epoch) {
-                    throw std::runtime_error("the client ended the session this request belongs to");
-                }
-                return impl->send_request(method, params);
-            },
-            std::move(cancelled),
-            std::move(progress_token),
-            &log_level,
-            std::move(message_sender)};
+    RequestSender request_sender;
+    if (request_meta) {
+        // A server never sends a request of its own to a 2026-07-28 client.
+        request_sender = [](std::string, std::optional<nlohmann::json>) -> Task<nlohmann::json> {
+            throw std::runtime_error(
+                "server-to-client requests are unavailable for a 2026-07-28 request");
+        };
+    } else {
+        request_sender = [impl = shared_from_this(), session, epoch](
+                             std::string method,
+                             std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
+            if (session && Impl::session_epoch(*session) != epoch) {
+                throw std::runtime_error("the client ended the session this request belongs to");
+            }
+            return impl->send_request(method, params);
+        };
+    }
+
+    return {*transport, std::move(request_sender), std::move(cancelled),   std::move(progress_token),
+            &log_level, std::move(message_sender), std::move(request_meta)};
 }
 
 // Invalid parameter decoding is reported as -32602. Exceptions raised after decoding are reported
@@ -1177,21 +1265,54 @@ Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg) {
         throw std::runtime_error("server dispatch requires an active session");
     }
     const auto epoch = Impl::session_epoch(*session);
-    auto wire = co_await dispatch_request_wire(std::move(json_msg), true);
+
+    // Every request read from the session can be cancelled by notifications/cancelled. A direct
+    // caller cancels through its own flag, so its ids never meet the session's.
+    auto cancelled = std::make_shared<std::atomic<bool>>(false);
+    std::string request_id_str;
+    bool modern = false;
+    if (validate_request_envelope(json_msg) == nullptr) {
+        request_id_str = json_msg.at("id").get<RequestId>().correlation_key();
+        session->in_flight[request_id_str] = cancelled;
+        modern = detail::is_modern_request(
+            json_msg, json_msg.at("method").get_ref<const nlohmann::json::string_t&>());
+    }
+    const auto forget = [&session, &request_id_str, &cancelled] {
+        // A later request reusing the id replaced the entry; that one is not ours to remove.
+        auto it = session->in_flight.find(request_id_str);
+        if (it != session->in_flight.end() && it->second == cancelled) {
+            session->in_flight.erase(it);
+        }
+    };
+
+    std::string wire;
+    try {
+        wire = co_await dispatch_request_wire(std::move(json_msg), true, cancelled);
+    } catch (...) {
+        forget();
+        throw;
+    }
+    forget();
     if (Impl::session_epoch(*session) != epoch) {
         // The client ended this request's session while it ran; the answer is for nobody now.
+        co_return;
+    }
+    if (modern && cancelled->load(std::memory_order_relaxed)) {
+        // 2026-07-28 sends nothing more for a cancelled request, not even its response.
         co_return;
     }
     co_await session->writer->write_message(wire);
 }
 
-Task<std::string> Server::Impl::dispatch_request_wire(nlohmann::json json_msg, bool enforce_lifecycle) {
+Task<std::string> Server::Impl::dispatch_request_wire(nlohmann::json json_msg, bool enforce_lifecycle,
+                                                      std::shared_ptr<std::atomic<bool>> cancelled) {
     {
         const char* validation_error = validate_request_envelope(json_msg);
         if (validation_error != nullptr) {
             co_return make_invalid_request_wire(json_msg, validation_error);
         }
     }
+    serving.store(true, std::memory_order_release);
 
     // [gcc11-sso: string_view] DO NOT change to std::string.
     std::string_view method = json_msg.at("method").get_ref<const nlohmann::json::string_t&>();
@@ -1201,6 +1322,25 @@ Task<std::string> Server::Impl::dispatch_request_wire(nlohmann::json json_msg, b
     int error_code = g_INTERNAL_ERROR;
 
     try {
+        // A request naming its protocol version in _meta is served on its own, without
+        // initialize, and leaves the lifecycle and log level of a session untouched.
+        if (detail::is_modern_request(json_msg, method)) {
+            // [gcc11-sso: named-aggregate-arg] DO NOT pass RequestScope{...} inside the co_await.
+            RequestScope scope{nullptr, std::move(cancelled), enforce_lifecycle};
+            co_return co_await dispatch_modern_wire(json_msg, method, std::move(scope));
+        }
+
+        if (!protocol_policy.serve_legacy) {
+            legacy_shaped_rejections.fetch_add(1, std::memory_order_relaxed);
+            if (method == "initialize") {
+                // initialize does not exist in the revisions this server serves; the error still
+                // names them, as an initialize error should.
+                co_return initialize_not_served_wire(json_msg.at("id").get<RequestId>());
+            }
+            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+                                      "Missing " + std::string(g_META_PROTOCOL_VERSION) + " in _meta");
+        }
+
         // A client that arrives after the previous one ended its session starts uninitialized.
         const auto session_state = !enforce_lifecycle ? LifecycleState::eReady
                                    : transport_started_new_session()
@@ -1220,7 +1360,11 @@ Task<std::string> Server::Impl::dispatch_request_wire(nlohmann::json json_msg, b
         }
 
         if (method == "server/discover") {
-            co_return co_await handle_discover_wire(json_msg);
+            // server/discover belongs to 2026-07-28 and requires its per-request fields.
+            legacy_shaped_rejections.fetch_add(1, std::memory_order_relaxed);
+            co_return make_error_wire(
+                json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+                "server/discover requires " + std::string(g_META_PROTOCOL_VERSION) + " in _meta");
         }
 
         if (session_state != LifecycleState::eReady) {
@@ -1232,13 +1376,17 @@ Task<std::string> Server::Impl::dispatch_request_wire(nlohmann::json json_msg, b
         if (method == "shutdown") {
             co_return co_await handle_shutdown_wire(json_msg);
         } else if (method == "tools/call") {
-            co_return co_await handle_tools_call_wire(json_msg);
+            // [gcc11-sso: named-aggregate-arg] DO NOT pass RequestScope{...} inside the co_await.
+            RequestScope scope{nullptr, std::move(cancelled), enforce_lifecycle};
+            co_return co_await handle_tools_call_wire(json_msg, std::move(scope));
         } else if (method == "tools/list") {
             co_return co_await handle_tools_list_wire(json_msg);
         } else if (method == "resources/list") {
             co_return co_await handle_resources_list_wire(json_msg);
         } else if (method == "resources/read") {
-            co_return co_await handle_resources_read_wire(json_msg);
+            // [gcc11-sso: named-aggregate-arg] DO NOT pass RequestScope{...} inside the co_await.
+            RequestScope scope{nullptr, std::move(cancelled), enforce_lifecycle};
+            co_return co_await handle_resources_read_wire(json_msg, std::move(scope));
         } else if (method == "resources/templates/list") {
             co_return co_await handle_resource_templates_list_wire(json_msg);
         } else if (method == "resources/subscribe") {
@@ -1248,7 +1396,9 @@ Task<std::string> Server::Impl::dispatch_request_wire(nlohmann::json json_msg, b
         } else if (method == "prompts/list") {
             co_return co_await handle_prompts_list_wire(json_msg);
         } else if (method == "prompts/get") {
-            co_return co_await handle_prompts_get_wire(json_msg);
+            // [gcc11-sso: named-aggregate-arg] DO NOT pass RequestScope{...} inside the co_await.
+            RequestScope scope{nullptr, std::move(cancelled), enforce_lifecycle};
+            co_return co_await handle_prompts_get_wire(json_msg, std::move(scope));
         } else if (method == "logging/setLevel") {
             co_return co_await handle_set_level_wire(json_msg);
         } else if (method == "completion/complete") {
@@ -1277,6 +1427,55 @@ Task<std::string> Server::Impl::dispatch_request_wire(nlohmann::json json_msg, b
                               "Request produced no response");
 }
 
+// Checks run in the order that gives the client the most to act on: a version the server does not
+// serve first (the other fields may differ in that version), then the method, then the fields.
+// Exceptions propagate to dispatch_request_wire, which maps them as for any request.
+Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_msg,
+                                                     std::string_view method, RequestScope scope) {
+    const auto* version = detail::requested_protocol_version(json_msg);
+    if (version == nullptr) {
+        invalid_metadata_rejections.fetch_add(1, std::memory_order_relaxed);
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+                                  "Invalid " + std::string(g_META_PROTOCOL_VERSION) + " in _meta");
+    }
+    if (!protocol_policy.serve_modern || !is_modern_protocol_version(*version)) {
+        unsupported_version_rejections.fetch_add(1, std::memory_order_relaxed);
+        co_return unsupported_version_wire(json_msg.at("id").get<RequestId>(), *version);
+    }
+    if (!detail::is_modern_method(method)) {
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_METHOD_NOT_FOUND,
+                                  "Method not found: " + std::string(method));
+    }
+    {
+        auto parsed = detail::parse_request_meta(json_msg);
+        if (!parsed.metadata) {
+            invalid_metadata_rejections.fetch_add(1, std::memory_order_relaxed);
+            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+                                      std::move(parsed.error));
+        }
+        scope.meta = std::move(parsed.metadata);
+    }
+
+    if (method == "server/discover") {
+        co_return co_await handle_discover_wire(json_msg);
+    } else if (method == "tools/call") {
+        co_return co_await handle_tools_call_wire(json_msg, scope);
+    } else if (method == "tools/list") {
+        co_return co_await handle_tools_list_wire(json_msg);
+    } else if (method == "resources/list") {
+        co_return co_await handle_resources_list_wire(json_msg);
+    } else if (method == "resources/read") {
+        co_return co_await handle_resources_read_wire(json_msg, scope);
+    } else if (method == "resources/templates/list") {
+        co_return co_await handle_resource_templates_list_wire(json_msg);
+    } else if (method == "prompts/list") {
+        co_return co_await handle_prompts_list_wire(json_msg);
+    } else if (method == "prompts/get") {
+        co_return co_await handle_prompts_get_wire(json_msg, scope);
+    }
+    co_return co_await handle_complete_wire(json_msg);
+}
+
 void Server::Impl::dispatch_notification(const nlohmann::json& json_msg) {
     if (!is_valid_notification_envelope(json_msg)) {
         return;
@@ -1291,8 +1490,10 @@ void Server::Impl::dispatch_notification(const nlohmann::json& json_msg) {
     }
 
     if (method == "notifications/cancelled") {
+        // A 2026-07-28 request needs no initialize, so cancellation does not wait for one either.
+        // Before initialize a legacy client has nothing in flight to cancel.
         auto session = session_snapshot();
-        if (lifecycle.load(std::memory_order_relaxed) != Impl::LifecycleState::eReady || !session) {
+        if (!session) {
             return;
         }
         if (!json_msg.contains("params")) {
@@ -1342,8 +1543,7 @@ Task<std::string> Server::Impl::handle_initialize_wire(const nlohmann::json& jso
     auto initialize_request = deserialize_request_params<InitializeRequest>(json_msg, "initialize");
 
     InitializeResult init_result;
-    init_result.protocolVersion =
-        std::string(negotiate_protocol_version(initialize_request.protocolVersion));
+    init_result.protocolVersion = negotiate_legacy_version(initialize_request.protocolVersion);
     init_result.capabilities = capabilities;
     init_result.serverInfo = server_info;
     init_result.instructions = instructions;
@@ -1373,16 +1573,14 @@ Task<std::string> Server::Impl::handle_ping_wire(const nlohmann::json& json_msg)
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object());
 }
 
-// Params carry only `_meta`, whose contents (protocolVersion, clientInfo, clientCapabilities)
-// are accepted but not yet interpreted. This request is a pre-gate method
-// like initialize/ping: reachable with no prior state and idempotent, so it neither reads
-// json_msg's params nor mutates lifecycle.
+// Reached only as a 2026-07-28 request whose `_meta` dispatch_modern_wire has already checked.
+// It needs no prior state and is idempotent: it reads nothing else from the request and never
+// changes a session's lifecycle.
 Task<std::string> Server::Impl::handle_discover_wire(const nlohmann::json& json_msg) {
     DiscoverResult discover_result;
     // resultType uses the DiscoverResult struct default ("complete"); a future revision introduces
     // a shared result-envelope helper for this field that other cacheable results will also use.
-    discover_result.supportedVersions.assign(g_DISCOVERABLE_PROTOCOL_VERSIONS.begin(),
-                                             g_DISCOVERABLE_PROTOCOL_VERSIONS.end());
+    discover_result.supportedVersions = supported_versions();
     discover_result.capabilities = capabilities;
     discover_result.serverInfo = server_info;
     discover_result.instructions = instructions;
@@ -1400,7 +1598,9 @@ Task<std::string> Server::Impl::handle_discover_wire(const nlohmann::json& json_
 
 Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
                                                     std::shared_ptr<std::atomic<bool>> cancelled,
-                                                    std::optional<ProgressToken> progress_token) {
+                                                    std::optional<ProgressToken> progress_token,
+                                                    std::shared_ptr<const RequestMetadata> request_meta,
+                                                    bool session_request) {
     auto iter = tool_handlers.find(params.name);
     if (iter == tool_handlers.end()) {
         // The name is chosen by whoever called: over JSON-RPC that is the client, and through the
@@ -1409,7 +1609,8 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
         throw std::runtime_error("Unknown tool: " + detail::sanitize_for_diagnostics(params.name));
     }
 
-    auto ctx = make_context(std::move(cancelled), std::move(progress_token));
+    auto ctx = make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
+                            session_request);
     nlohmann::json handler_result;
 
     // A tool that throws has failed at its own job, which the protocol reports inside the result as
@@ -1489,7 +1690,8 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
     co_return handler_result;
 }
 
-Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& json_msg) {
+Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& json_msg,
+                                                       const RequestScope& scope) {
     auto params = deserialize_request_params<CallToolParams>(json_msg, "tools/call");
     if (!tool_handlers.contains(params.name)) {
         // This, not the throw in invoke_tool_impl, is the site a remote client actually reaches:
@@ -1499,9 +1701,6 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
                                   "Unknown tool: " + detail::sanitize_for_diagnostics(params.name));
     }
-
-    // [gcc11-sso: int64-id] request_id_str from json_msg (heap-safe); used only in in_flight map.
-    auto request_id_str = json_msg.at("id").get<RequestId>().correlation_key();
 
     std::optional<ProgressToken> progress_token;
     try {
@@ -1517,25 +1716,11 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
         throw InvalidParamsError("Invalid tools/call params: " + std::string(error.what()));
     }
 
-    auto cancelled = std::make_shared<std::atomic<bool>>(false);
-    auto session = session_snapshot();
-    if (session) {
-        session->in_flight[request_id_str] = cancelled;
-    }
-
-    try {
-        nlohmann::json handler_result =
-            co_await invoke_tool_impl(std::move(params), cancelled, std::move(progress_token));
-        if (session) {
-            session->in_flight.erase(request_id_str);
-        }
-        co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
-    } catch (...) {
-        if (session) {
-            session->in_flight.erase(request_id_str);
-        }
-        throw;
-    }
+    auto cancelled = scope.cancelled ? scope.cancelled : std::make_shared<std::atomic<bool>>(false);
+    nlohmann::json handler_result =
+        co_await invoke_tool_impl(std::move(params), std::move(cancelled), std::move(progress_token),
+                                  scope.meta, scope.session_request);
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
 }
 
 Task<std::string> Server::Impl::handle_tools_list_wire(const nlohmann::json& json_msg) {
@@ -1577,14 +1762,15 @@ Task<std::string> Server::Impl::handle_resources_list_wire(const nlohmann::json&
                                nlohmann::json(std::move(list_result)));
 }
 
-Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json& json_msg) {
+Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json& json_msg,
+                                                           const RequestScope& scope) {
     auto params = deserialize_request_params<ReadResourceRequestParams>(json_msg, "resources/read");
     auto iter = resource_handlers.find(params.uri);
     if (iter != resource_handlers.end()) {
         auto handler = build_middleware_chain(iter->second);
 
         nlohmann::json params_json = params;
-        auto ctx = make_context();
+        auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request);
         nlohmann::json handler_result = co_await handler(ctx, params_json);
         co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
     }
@@ -1622,7 +1808,7 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
     auto handler = build_middleware_chain(match->handler);
 
     nlohmann::json params_json = params;
-    auto ctx = make_context();
+    auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request);
     nlohmann::json handler_result = co_await handler(ctx, params_json);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
 }
@@ -1688,7 +1874,8 @@ Task<std::string> Server::Impl::handle_prompts_list_wire(const nlohmann::json& j
                                nlohmann::json(std::move(list_result)));
 }
 
-Task<std::string> Server::Impl::handle_prompts_get_wire(const nlohmann::json& json_msg) {
+Task<std::string> Server::Impl::handle_prompts_get_wire(const nlohmann::json& json_msg,
+                                                        const RequestScope& scope) {
     auto params = deserialize_request_params<GetPromptRequestParams>(json_msg, "prompts/get");
     auto iter = prompt_handlers.find(params.name);
     if (iter == prompt_handlers.end()) {
@@ -1700,7 +1887,7 @@ Task<std::string> Server::Impl::handle_prompts_get_wire(const nlohmann::json& js
     auto handler = build_middleware_chain(iter->second);
 
     nlohmann::json params_json = std::move(params);
-    auto ctx = make_context();
+    auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request);
     nlohmann::json handler_result = co_await handler(ctx, params_json);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
 }
@@ -1743,6 +1930,78 @@ std::string Server::Impl::make_error_wire(const RequestId& id, int code, std::st
     response.id = id;
     response.error = std::move(error);
     return nlohmann::json(std::move(response)).dump();
+}
+
+std::string Server::Impl::make_error_wire(const RequestId& id, int code, std::string message,
+                                          nlohmann::json data) {
+    Error error;
+    error.code = code;
+    error.message = std::move(message);
+    error.data = std::move(data);
+    JSONRPCErrorResponse response;
+    response.id = id;
+    response.error = std::move(error);
+    return nlohmann::json(std::move(response)).dump();
+}
+
+std::vector<std::string> Server::Impl::supported_versions() const {
+    std::vector<std::string> versions;
+    if (protocol_policy.serve_legacy) {
+        for (const auto version : g_LEGACY_PROTOCOL_VERSIONS) {
+            if (serves_legacy_version(version)) {
+                versions.emplace_back(version);
+            }
+        }
+    }
+    if (protocol_policy.serve_modern) {
+        versions.insert(versions.end(), g_MODERN_PROTOCOL_VERSIONS.begin(),
+                        g_MODERN_PROTOCOL_VERSIONS.end());
+    }
+    return versions;
+}
+
+bool Server::Impl::serves_legacy_version(std::string_view version) const {
+    if (!is_legacy_protocol_version(version)) {
+        return false;
+    }
+    if (!protocol_policy.legacy_versions) {
+        return true;
+    }
+    const auto& allowed = *protocol_policy.legacy_versions;
+    return std::find(allowed.begin(), allowed.end(), version) != allowed.end();
+}
+
+std::string Server::Impl::negotiate_legacy_version(std::string_view requested) const {
+    if (serves_legacy_version(requested)) {
+        return std::string(requested);
+    }
+    // g_LEGACY_PROTOCOL_VERSIONS is oldest first, so the last one served is the newest.
+    for (auto version = g_LEGACY_PROTOCOL_VERSIONS.rbegin();
+         version != g_LEGACY_PROTOCOL_VERSIONS.rend(); ++version) {
+        if (serves_legacy_version(*version)) {
+            return std::string(*version);
+        }
+    }
+    return std::string(g_LATEST_LEGACY_PROTOCOL_VERSION);
+}
+
+std::string Server::Impl::initialize_not_served_wire(const RequestId& id) const {
+    auto supported = supported_versions();
+    std::string message = "Method not found: initialize; this server serves protocol versions";
+    for (const auto& version : supported) {
+        message += ' ';
+        message += version;
+    }
+    return make_error_wire(id, g_METHOD_NOT_FOUND, std::move(message),
+                           nlohmann::json{{"supported", std::move(supported)}});
+}
+
+std::string Server::Impl::unsupported_version_wire(const RequestId& id, std::string requested) const {
+    UnsupportedProtocolVersionData data;
+    data.supported = supported_versions();
+    data.requested = std::move(requested);
+    return make_error_wire(id, g_UNSUPPORTED_PROTOCOL_VERSION, "Unsupported protocol version",
+                           nlohmann::json(std::move(data)));
 }
 
 Task<void> Server::Impl::send_notification(const std::string& method,

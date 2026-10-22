@@ -358,6 +358,7 @@ if(BUILD_TESTING)
       test/server/server_handlers_test.cpp
       test/server/server_logging_test.cpp
       test/server/server_middleware_test.cpp
+      test/server/server_modern_era_test.cpp
       test/server/server_progress_test.cpp
       test/server/server_subscriptions_test.cpp
       test/transport/transport_test.cpp

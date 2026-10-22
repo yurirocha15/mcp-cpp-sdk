@@ -105,6 +105,25 @@ inline nlohmann::json make_initialize_request(std::string_view id) {
               {"capabilities", nlohmann::json::object()}}}};
 }
 
+/// The per-request `_meta` fields a 2026-07-28 request carries.
+inline nlohmann::json make_modern_meta(std::string_view protocol_version = "2026-07-28") {
+    return {{"io.modelcontextprotocol/protocolVersion", protocol_version},
+            {"io.modelcontextprotocol/clientCapabilities", nlohmann::json::object()},
+            {"io.modelcontextprotocol/clientInfo", {{"name", "test-client"}, {"version", "0.1"}}}};
+}
+
+/// A 2026-07-28 request: @p params with the per-request `_meta` fields added.
+inline nlohmann::json make_modern_request(const nlohmann::json& id, std::string_view method,
+                                          nlohmann::json params = nlohmann::json::object()) {
+    params["_meta"] = make_modern_meta();
+    return {{"jsonrpc", "2.0"}, {"id", id}, {"method", method}, {"params", std::move(params)}};
+}
+
+/// A server/discover request, which carries the per-request `_meta` fields it requires.
+inline nlohmann::json make_discover_request(const nlohmann::json& id) {
+    return make_modern_request(id, "server/discover");
+}
+
 inline nlohmann::json make_shutdown_request(std::string_view id) {
     return {{"jsonrpc", "2.0"}, {"id", id}, {"method", "shutdown"}};
 }

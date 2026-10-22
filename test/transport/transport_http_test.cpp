@@ -1,3 +1,5 @@
+#include "../test_utils.hpp"
+
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
@@ -1234,7 +1236,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverSucceedsAfterSessionEstablished) {
             http::request<http::string_body> discover_request{http::verb::post, "/mcp", 11};
             discover_request.set(http::field::host, "127.0.0.1");
             discover_request.set(http::field::content_type, "application/json");
-            discover_request.body() = R"({"jsonrpc":"2.0","method":"server/discover","id":2})";
+            discover_request.body() = make_discover_request(2).dump();
             discover_request.prepare_payload();
             co_await http::async_write(discover_stream, discover_request, asio::use_awaitable);
 
@@ -1445,7 +1447,7 @@ TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
             discover_request.set(http::field::host, "127.0.0.1");
             discover_request.set(http::field::content_type, "application/json");
             discover_request.set("MCP-Session-Id", established_session_id + "-tampered");
-            discover_request.body() = R"({"jsonrpc":"2.0","method":"server/discover","id":2})";
+            discover_request.body() = make_discover_request(2).dump();
             discover_request.prepare_payload();
             co_await http::async_write(discover_stream, discover_request, asio::use_awaitable);
 
@@ -1710,9 +1712,7 @@ TEST_F(HttpTransportTest, PendingSessionlessDiscoversAreBounded) {
         stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
         co_return response;
     };
-    const auto discover = [](int id) {
-        return nlohmann::json{{"jsonrpc", "2.0"}, {"id", id}, {"method", "server/discover"}}.dump();
-    };
+    const auto discover = [](int id) { return make_discover_request(id).dump(); };
 
     constexpr int pending_limit = 16;
     int pending_ended = 0;
@@ -1834,8 +1834,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverDoesNotEvictSessionReplayHistory) {
                 http::request<http::string_body> discover_request{http::verb::post, "/mcp", 11};
                 discover_request.set(http::field::host, "127.0.0.1");
                 discover_request.set(http::field::content_type, "application/json");
-                discover_request.body() = R"({"jsonrpc":"2.0","method":"server/discover","id":)" +
-                                          std::to_string(101 + i) + "}";
+                discover_request.body() = make_discover_request(101 + i).dump();
                 discover_request.prepare_payload();
                 co_await http::async_write(discover_stream, discover_request, asio::use_awaitable);
 
@@ -1941,7 +1940,7 @@ TEST_F(HttpTransportTest, DiscoverAcceptsDiscoverableOnlyProtocolVersionHeader) 
             // negotiated-version check would reject it for any non-pre-gate method.
             discover_request.set("MCP-Protocol-Version",
                                  std::string(mcp::g_PROTOCOL_VERSION_2026_07_28));
-            discover_request.body() = R"({"jsonrpc":"2.0","method":"server/discover","id":1})";
+            discover_request.body() = make_discover_request(1).dump();
             discover_request.prepare_payload();
             co_await http::async_write(stream, discover_request, asio::use_awaitable);
 
@@ -2044,7 +2043,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
             http::request<http::string_body> discover_request{http::verb::post, "/mcp", 11};
             discover_request.set(http::field::host, "127.0.0.1");
             discover_request.set(http::field::content_type, "application/json");
-            discover_request.body() = R"({"jsonrpc":"2.0","method":"server/discover","id":7})";
+            discover_request.body() = make_discover_request(7).dump();
             discover_request.prepare_payload();
             co_await http::async_write(*probe_stream, discover_request, asio::use_awaitable);
 

@@ -230,6 +230,40 @@ TEST_F(ServerStdioTest, RunStdioHandlesToolCall) {
     EXPECT_EQ(tool_response["result"]["structuredContent"]["greeting"], "Hello, World");
 }
 
+// A 2026-07-28 client sends its first request with no initialize before it.
+TEST_F(ServerStdioTest, RunStdioServesAModernRequestWithoutInitialize) {
+    BlockingStreambuf sbuf;
+    std::istream input(&sbuf);
+    CollectingStreambuf obuf;
+    std::ostream output(&obuf);
+
+    const nlohmann::json request = {
+        {"jsonrpc", "2.0"},
+        {"id", 1},
+        {"method", "tools/call"},
+        {"params",
+         {{"name", "greet"},
+          {"arguments", {{"name", "World"}}},
+          {"_meta",
+           {{"io.modelcontextprotocol/protocolVersion", "2026-07-28"},
+            {"io.modelcontextprotocol/clientCapabilities", nlohmann::json::object()}}}}}};
+    sbuf.feed(request.dump() + "\n");
+
+    std::thread server_thread([&] { server_->run_stdio(input, output); });
+
+    EXPECT_TRUE(obuf.wait_for_lines(1, g_response_budget)) << "no response line was written";
+
+    sbuf.close();
+    server_thread.join();
+
+    auto responses = parse_responses(obuf.str());
+    ASSERT_EQ(responses.size(), 1);
+    EXPECT_EQ(responses[0]["id"], 1);
+    ASSERT_TRUE(responses[0].contains("result")) << responses[0];
+    EXPECT_EQ(responses[0]["result"]["structuredContent"]["greeting"], "Hello, World");
+    EXPECT_FALSE(server_->is_initialized());
+}
+
 TEST_F(ServerStdioTest, RunStdioExitsCleanlyOnEmptyInput) {
     std::istringstream input("");
     std::ostringstream output;

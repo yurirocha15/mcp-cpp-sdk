@@ -39,7 +39,7 @@
 // a member that tolerates being absent but throws when a peer sends it as an
 // explicit null. That is a recurring defect class, and
 // scripts/json_census_dispositions.json dispositions it "fix".
-// 0 of the 317 field entries below still carry it; there were 87 before the
+// 0 of the 319 field entries below still carry it; there were 87 before the
 // explicit-null decoding fixes. Those rows pin behaviour as it is so the
 // suite stays green. They do not endorse it. Fixing one makes the build check
 // report this file stale until it is regenerated with the fix. The check reads
@@ -1694,14 +1694,26 @@ TEST(JsonPeerInputMatrix, UnsubscribeRequest) {
     }
 }
 
+TEST(JsonPeerInputMatrix, UnsupportedProtocolVersionData) {
+    const json baseline = json::parse(R"json({"supported":["x"],"requested":"x"})json");
+    static const FieldExpect fields[] = {
+        {"requested", R"json("x")json", 0, true, true, true, false},
+        {"supported", R"json(["x"])json", 0, true, true, true, false},
+    };
+    for (const auto& f : fields) {
+        SCOPED_TRACE(std::string("UnsupportedProtocolVersionData.") + f.key);
+        check_field<mcp::UnsupportedProtocolVersionData>(baseline, f);
+    }
+}
+
 // The matrix's own arithmetic.  `types x fields x modes` is what a generated
 // suite is worth; a hand-written suite of the same size is only worth what its
 // author thought to write down.
 TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
-    constexpr int types = 117;
-    constexpr int fields = 317;
+    constexpr int types = 118;
+    constexpr int fields = 319;
     constexpr int modes = 4;
-    constexpr int generated_cases = 1268;
+    constexpr int generated_cases = 1276;
     EXPECT_EQ(generated_cases, fields * modes);
     EXPECT_GT(types, 0);
 }
@@ -1824,6 +1836,7 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   ToolResultContent
 //   ToolUseContent
 //   UnsubscribeRequest
+//   UnsupportedProtocolVersionData
 // Types deliberately not in the matrix, and why:
 //   ClientCapabilities::TaskRequestsCapability: no census row governs any of its fields
 //   CompleteParams: no baseline document could be synthesised

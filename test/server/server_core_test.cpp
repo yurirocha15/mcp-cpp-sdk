@@ -1085,7 +1085,7 @@ TEST_F(ServerCoreTest, DiscoverWithoutInitializeReturnsFullPayload) {
         raw_transport->close();
     });
 
-    nlohmann::json discover_req = {{"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}};
+    nlohmann::json discover_req = make_discover_request("d1");
     raw_transport->enqueue_message(discover_req.dump());
 
     boost::asio::co_spawn(
@@ -1135,7 +1135,7 @@ TEST_F(ServerCoreTest, DiscoverThenInitializeStillNegotiatesLegacyVersionsUnchan
         }
     });
 
-    nlohmann::json discover_req = {{"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}};
+    nlohmann::json discover_req = make_discover_request("d1");
     nlohmann::json init_req = make_initialize_request("i1");
     // An unknown/unsupported protocol version must still negotiate to the latest legacy
     // version, byte-identical to pre-discover behavior.
@@ -1175,7 +1175,7 @@ TEST_F(ServerCoreTest, InitializeRequesting2026NegotiatesLegacyWhileDiscoverAdve
         }
     });
 
-    nlohmann::json discover_req = {{"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}};
+    nlohmann::json discover_req = make_discover_request("d1");
     nlohmann::json init_req = make_initialize_request("i1");
     init_req["params"]["protocolVersion"] = "2026-07-28";
     raw_transport->enqueue_message(discover_req.dump());
@@ -1257,57 +1257,47 @@ TEST_F(ServerCoreTest, DiscoverAcceptsMetaWithoutMutatingLifecycle) {
     EXPECT_FALSE(server.is_initialized());
 }
 
-TEST_F(ServerCoreTest, DiscoverAcceptsAbsentOrEmptyParamsButRejectsNonObjectParams) {
+TEST_F(ServerCoreTest, DiscoverWithoutPerRequestMetaIsInvalidParams) {
     mcp::Server server({"params-server", "1.0"}, mcp::ServerCapabilities{});
 
-    // params absent entirely.
-    nlohmann::json response_no_params;
-    boost::asio::co_spawn(io_ctx_,
-                          server.dispatch_request_direct(nlohmann::json{
-                              {"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}}),
-                          [&response_no_params](std::exception_ptr error, std::string wire) {
-                              EXPECT_EQ(error, nullptr);
-                              response_no_params = nlohmann::json::parse(wire);
-                          });
-    io_ctx_.run();
-    ASSERT_TRUE(response_no_params.contains("result"));
-    EXPECT_EQ(response_no_params["result"]["resultType"], "complete");
+    const auto dispatch = [this, &server](nlohmann::json request) {
+        nlohmann::json response;
+        boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(std::move(request)),
+                              [&response](std::exception_ptr error, std::string wire) {
+                                  EXPECT_EQ(error, nullptr);
+                                  response = nlohmann::json::parse(wire);
+                              });
+        io_ctx_.restart();
+        io_ctx_.run();
+        return response;
+    };
 
-    io_ctx_.restart();
-
-    // params present but an empty object.
-    nlohmann::json response_empty_params;
-    boost::asio::co_spawn(
-        io_ctx_,
-        server.dispatch_request_direct(nlohmann::json{{"jsonrpc", "2.0"},
-                                                      {"id", "d2"},
-                                                      {"method", "server/discover"},
-                                                      {"params", nlohmann::json::object()}}),
-        [&response_empty_params](std::exception_ptr error, std::string wire) {
-            EXPECT_EQ(error, nullptr);
-            response_empty_params = nlohmann::json::parse(wire);
-        });
-    io_ctx_.run();
-    ASSERT_TRUE(response_empty_params.contains("result"));
-    EXPECT_EQ(response_empty_params["result"]["resultType"], "complete");
-
-    io_ctx_.restart();
+    // server/discover is a 2026-07-28 request and requires the per-request fields: without
+    // params, with empty params, or with a _meta naming no protocol version, it is malformed.
+    auto no_params = dispatch({{"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}});
+    auto empty_params = dispatch({{"jsonrpc", "2.0"},
+                                  {"id", "d2"},
+                                  {"method", "server/discover"},
+                                  {"params", nlohmann::json::object()}});
+    auto meta_without_version = dispatch(
+        {{"jsonrpc", "2.0"},
+         {"id", "d3"},
+         {"method", "server/discover"},
+         {"params",
+          {{"_meta", {{"io.modelcontextprotocol/clientCapabilities", nlohmann::json::object()}}}}}});
+    for (const auto& response : {no_params, empty_params, meta_without_version}) {
+        ASSERT_TRUE(response.contains("error")) << response;
+        EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_PARAMS) << response;
+    }
 
     // params present but not an object: rejected pre-dispatch as an invalid request, the same
     // as for any other method (see validate_request_envelope).
-    nlohmann::json response_bad_params;
-    boost::asio::co_spawn(io_ctx_,
-                          server.dispatch_request_direct(nlohmann::json{{"jsonrpc", "2.0"},
-                                                                        {"id", "d3"},
-                                                                        {"method", "server/discover"},
-                                                                        {"params", "not-an-object"}}),
-                          [&response_bad_params](std::exception_ptr error, std::string wire) {
-                              EXPECT_EQ(error, nullptr);
-                              response_bad_params = nlohmann::json::parse(wire);
-                          });
-    io_ctx_.run();
-    ASSERT_TRUE(response_bad_params.contains("error"));
-    EXPECT_EQ(response_bad_params["error"]["code"], mcp::g_INVALID_REQUEST);
+    auto bad_params = dispatch(
+        {{"jsonrpc", "2.0"}, {"id", "d4"}, {"method", "server/discover"}, {"params", "not-an-object"}});
+    ASSERT_TRUE(bad_params.contains("error"));
+    EXPECT_EQ(bad_params["error"]["code"], mcp::g_INVALID_REQUEST);
+
+    EXPECT_EQ(server.protocol_rejection_stats().legacy_shaped, 3u);
 }
 
 // server/utilities/caching.md requires servers to include caching hints on every "complete"
@@ -1318,9 +1308,7 @@ TEST_F(ServerCoreTest, DiscoverCachingHintsPresentWithDefaultsOverriddenWhenConf
     mcp::Server default_server({"default-server", "1.0"}, mcp::ServerCapabilities{});
 
     nlohmann::json default_response;
-    boost::asio::co_spawn(io_ctx_,
-                          default_server.dispatch_request_direct(nlohmann::json{
-                              {"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}}),
+    boost::asio::co_spawn(io_ctx_, default_server.dispatch_request_direct(make_discover_request("d1")),
                           [&default_response](std::exception_ptr error, std::string wire) {
                               EXPECT_EQ(error, nullptr);
                               default_response = nlohmann::json::parse(wire);
@@ -1341,8 +1329,7 @@ TEST_F(ServerCoreTest, DiscoverCachingHintsPresentWithDefaultsOverriddenWhenConf
 
     nlohmann::json configured_response;
     boost::asio::co_spawn(io_ctx_,
-                          configured_server.dispatch_request_direct(nlohmann::json{
-                              {"jsonrpc", "2.0"}, {"id", "d2"}, {"method", "server/discover"}}),
+                          configured_server.dispatch_request_direct(make_discover_request("d2")),
                           [&configured_response](std::exception_ptr error, std::string wire) {
                               EXPECT_EQ(error, nullptr);
                               configured_response = nlohmann::json::parse(wire);
@@ -1364,8 +1351,7 @@ TEST_F(ServerCoreTest, DiscoverCachingHintsPresentWithDefaultsOverriddenWhenConf
 
     nlohmann::json explicit_private_response;
     boost::asio::co_spawn(io_ctx_,
-                          explicit_private_server.dispatch_request_direct(nlohmann::json{
-                              {"jsonrpc", "2.0"}, {"id", "d3"}, {"method", "server/discover"}}),
+                          explicit_private_server.dispatch_request_direct(make_discover_request("d3")),
                           [&explicit_private_response](std::exception_ptr error, std::string wire) {
                               EXPECT_EQ(error, nullptr);
                               explicit_private_response = nlohmann::json::parse(wire);
@@ -1387,9 +1373,7 @@ TEST_F(ServerCoreTest, InstructionsAppearInBothInitializeAndDiscoverWhenSet) {
     server.set_instructions("Use the tools wisely.");
 
     nlohmann::json discover_response;
-    boost::asio::co_spawn(io_ctx_,
-                          server.dispatch_request_direct(nlohmann::json{
-                              {"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}}),
+    boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(make_discover_request("d1")),
                           [&discover_response](std::exception_ptr error, std::string wire) {
                               EXPECT_EQ(error, nullptr);
                               discover_response = nlohmann::json::parse(wire);
@@ -1417,9 +1401,7 @@ TEST_F(ServerCoreTest, InstructionsOmittedFromBothInitializeAndDiscoverWhenUnset
     mcp::Server server({"uninstructed-server", "1.0"}, mcp::ServerCapabilities{});
 
     nlohmann::json discover_response;
-    boost::asio::co_spawn(io_ctx_,
-                          server.dispatch_request_direct(nlohmann::json{
-                              {"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}}),
+    boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(make_discover_request("d1")),
                           [&discover_response](std::exception_ptr error, std::string wire) {
                               EXPECT_EQ(error, nullptr);
                               discover_response = nlohmann::json::parse(wire);
@@ -1458,9 +1440,7 @@ TEST_F(ServerCoreTest, DiscoverCapabilitiesMatchInitializeCapabilitiesForNonTriv
     mcp::Server server({"capable-server", "1.0"}, caps);
 
     nlohmann::json discover_response;
-    boost::asio::co_spawn(io_ctx_,
-                          server.dispatch_request_direct(nlohmann::json{
-                              {"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}}),
+    boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(make_discover_request("d1")),
                           [&discover_response](std::exception_ptr error, std::string wire) {
                               EXPECT_EQ(error, nullptr);
                               discover_response = nlohmann::json::parse(wire);
@@ -1507,8 +1487,8 @@ TEST_F(ServerCoreTest, DiscoverWorksAgainAfterInitializeIdempotently) {
         }
     });
 
-    nlohmann::json discover_req_1 = {{"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}};
-    nlohmann::json discover_req_2 = {{"jsonrpc", "2.0"}, {"id", "d2"}, {"method", "server/discover"}};
+    nlohmann::json discover_req_1 = make_discover_request("d1");
+    nlohmann::json discover_req_2 = make_discover_request("d2");
     nlohmann::json ping_req = {{"jsonrpc", "2.0"}, {"id", "p1"}, {"method", "ping"}};
 
     raw_transport->enqueue_message(make_initialize_request("i1").dump());
