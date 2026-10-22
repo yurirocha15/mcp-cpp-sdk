@@ -118,6 +118,7 @@ class ForwardingTransport final : public mcp::ITransport {
         : inner_(std::move(inner)) {}
 
     mcp::Task<std::string> read_message() override { return inner_->read_message(); }
+    mcp::Task<mcp::IncomingMessage> read_incoming() override { return inner_->read_incoming(); }
     mcp::Task<void> write_message(std::string_view message) override {
         return inner_->write_message(message);
     }

@@ -648,6 +648,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::shared_ptr<const detail::ParamHeaderValues> param_headers;
         /// Where the notifications of a 2026-07-28 request go, when its transport streams them.
         MessageSender notifications;
+        /// Who sent the request, or null when the transport did not say.
+        std::shared_ptr<const std::string> principal;
     };
 
     static constexpr LoggingLevel g_default_log_level = LoggingLevel::eDebug;
@@ -724,13 +726,14 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Task<void> run_session(std::shared_ptr<Session> session);
     Task<void> dispatch(nlohmann::json json_msg);
     Task<void> notify_resource_updated(const std::string& uri);
-    Task<void> dispatch_on_strand(nlohmann::json json_msg);
-    Task<void> dispatch_request(nlohmann::json json_msg);
+    Task<void> dispatch_on_strand(nlohmann::json json_msg,
+                                  std::shared_ptr<const std::string> principal = nullptr);
+    Task<void> dispatch_request(nlohmann::json json_msg, std::shared_ptr<const std::string> principal);
     Task<std::string> dispatch_request_wire(
         nlohmann::json json_msg, bool enforce_lifecycle,
         std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
         std::shared_ptr<const detail::ParamHeaderValues> param_headers = nullptr,
-        MessageSender notifications = {});
+        MessageSender notifications = {}, std::shared_ptr<const std::string> principal = nullptr);
     Task<std::string> dispatch_modern_wire(const nlohmann::json& json_msg, std::string_view method,
                                            RequestScope scope);
     void dispatch_notification(const nlohmann::json& json_msg);
@@ -761,16 +764,17 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                           std::shared_ptr<std::atomic<bool>> cancelled,
                                           std::optional<ProgressToken> progress_token,
                                           std::shared_ptr<const RequestMetadata> request_meta = nullptr,
-                                          bool session_request = true,
-                                          MessageSender notifications = {});
+                                          bool session_request = true, MessageSender notifications = {},
+                                          std::shared_ptr<const std::string> principal = nullptr);
     /// `session_request` says whether the request was read from the session. A 2026-07-28 request
     /// that was not has no route to the client through the session's transport. @p notifications,
     /// when set, receives the notifications of a 2026-07-28 request in place of the session's
-    /// transport.
+    /// transport. @p principal is who sent the request, or null when unknown.
     Context make_context(std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
                          std::optional<ProgressToken> progress_token = std::nullopt,
                          std::shared_ptr<const RequestMetadata> request_meta = nullptr,
-                         bool session_request = true, MessageSender notifications = {});
+                         bool session_request = true, MessageSender notifications = {},
+                         std::shared_ptr<const std::string> principal = nullptr);
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
     /// Checks a tools/call's Mcp-Param-* headers against the tool it names, for a transport that
     /// validates them before the request reaches the server.
@@ -1176,6 +1180,7 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
     try {
         for (;;) {
             nlohmann::json json_msg;
+            std::shared_ptr<const std::string> principal;
             bool parse_failed = false;
             try {
                 if (session->memory_transport) {
@@ -1186,9 +1191,12 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
                     }
                     json_msg = std::move(*message);
                 } else {
-                    auto raw = co_await session->transport->read_message();
-                    json_msg = detail::parse_peer_json(raw);
+                    auto incoming = co_await session->transport->read_incoming();
+                    json_msg = detail::parse_peer_json(incoming.message);
                     parse_failed = json_msg.is_discarded();
+                    if (!incoming.principal.empty()) {
+                        principal = std::make_shared<const std::string>(std::move(incoming.principal));
+                    }
                 }
             } catch (const nlohmann::json::parse_error&) {
                 parse_failed = true;
@@ -1200,10 +1208,10 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
             session->active_dispatches.fetch_add(1, std::memory_order_relaxed);
             boost::asio::co_spawn(
                 *session->strand,
-                [impl = shared_from_this(), session,
-                 json_msg = std::move(json_msg)]() mutable -> Task<void> {
+                [impl = shared_from_this(), session, json_msg = std::move(json_msg),
+                 principal = std::move(principal)]() mutable -> Task<void> {
                     try {
-                        co_await impl->dispatch_on_strand(std::move(json_msg));
+                        co_await impl->dispatch_on_strand(std::move(json_msg), std::move(principal));
                     } catch (...) {
                         // A failed request must not terminate the detached dispatcher.
                     }
@@ -1263,7 +1271,8 @@ Task<void> Server::Impl::dispatch(nlohmann::json json_msg) {
     co_await dispatch_on_strand(std::move(json_msg));
 }
 
-Task<void> Server::Impl::dispatch_on_strand(nlohmann::json json_msg) {
+Task<void> Server::Impl::dispatch_on_strand(nlohmann::json json_msg,
+                                            std::shared_ptr<const std::string> principal) {
     if (is_valid_notification_envelope(json_msg)) {
         dispatch_notification(json_msg);
         co_return;
@@ -1283,7 +1292,7 @@ Task<void> Server::Impl::dispatch_on_strand(nlohmann::json json_msg) {
 
     // Anything that is neither a notification nor a response is request-shaped. Route invalid
     // values through request validation so the peer receives -32600 instead of a silent drop.
-    co_await dispatch_request(std::move(json_msg));
+    co_await dispatch_request(std::move(json_msg), std::move(principal));
 }
 
 Task<std::string> Server::dispatch_request_direct(nlohmann::json json_msg) {
@@ -1297,9 +1306,13 @@ Task<std::string> Server::dispatch_request_direct(nlohmann::json json_msg,
         param_headers = std::make_shared<const detail::ParamHeaderValues>(
             std::move(*request_context.param_headers));
     }
+    std::shared_ptr<const std::string> principal;
+    if (!request_context.principal.empty()) {
+        principal = std::make_shared<const std::string>(std::move(request_context.principal));
+    }
     return impl_->dispatch_request_wire(std::move(json_msg), false,
                                         std::move(request_context.cancelled), std::move(param_headers),
-                                        std::move(request_context.notifications));
+                                        std::move(request_context.notifications), std::move(principal));
 }
 
 detail::ParamHeaderCheck Server::Impl::make_param_header_check() {
@@ -1330,7 +1343,8 @@ detail::ParamHeaderCheck Server::Impl::make_param_header_check() {
 Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
                                    std::optional<ProgressToken> progress_token,
                                    std::shared_ptr<const RequestMetadata> request_meta,
-                                   bool session_request, MessageSender notifications) {
+                                   bool session_request, MessageSender notifications,
+                                   std::shared_ptr<const std::string> principal) {
     ITransport* transport = &null_transport();
     MessageSender message_sender;
     auto session = session_snapshot();
@@ -1377,13 +1391,14 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
         };
     }
 
-    return {*transport, std::move(request_sender), std::move(cancelled),   std::move(progress_token),
-            &log_level, std::move(message_sender), std::move(request_meta)};
+    return {*transport, std::move(request_sender), std::move(cancelled),    std::move(progress_token),
+            &log_level, std::move(message_sender), std::move(request_meta), std::move(principal)};
 }
 
 // Invalid parameter decoding is reported as -32602. Exceptions raised after decoding are reported
 // as -32603, except from a tool handler: those become a tool result carrying isError.
-Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg) {
+Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg,
+                                          std::shared_ptr<const std::string> principal) {
     auto session = session_snapshot();
     if (!session || !session->writer) {
         throw std::runtime_error("server dispatch requires an active session");
@@ -1411,7 +1426,8 @@ Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg) {
 
     std::string wire;
     try {
-        wire = co_await dispatch_request_wire(std::move(json_msg), true, cancelled);
+        wire = co_await dispatch_request_wire(std::move(json_msg), true, cancelled, nullptr, {},
+                                              std::move(principal));
     } catch (...) {
         forget();
         throw;
@@ -1431,7 +1447,8 @@ Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg) {
 
 Task<std::string> Server::Impl::dispatch_request_wire(
     nlohmann::json json_msg, bool enforce_lifecycle, std::shared_ptr<std::atomic<bool>> cancelled,
-    std::shared_ptr<const detail::ParamHeaderValues> param_headers, MessageSender notifications) {
+    std::shared_ptr<const detail::ParamHeaderValues> param_headers, MessageSender notifications,
+    std::shared_ptr<const std::string> principal) {
     {
         const char* validation_error = validate_request_envelope(json_msg);
         if (validation_error != nullptr) {
@@ -1452,8 +1469,12 @@ Task<std::string> Server::Impl::dispatch_request_wire(
         // initialize, and leaves the lifecycle and log level of a session untouched.
         if (detail::is_modern_request(json_msg, method)) {
             // [gcc11-sso: named-aggregate-arg] DO NOT pass RequestScope{...} inside the co_await.
-            RequestScope scope{nullptr, std::move(cancelled), enforce_lifecycle,
-                               std::move(param_headers), std::move(notifications)};
+            RequestScope scope{nullptr,
+                               std::move(cancelled),
+                               enforce_lifecycle,
+                               std::move(param_headers),
+                               std::move(notifications),
+                               std::move(principal)};
             co_return co_await dispatch_modern_wire(json_msg, method, std::move(scope));
         }
 
@@ -1468,7 +1489,8 @@ Task<std::string> Server::Impl::dispatch_request_wire(
                                       "Missing " + std::string(g_META_PROTOCOL_VERSION) + " in _meta");
         }
 
-        const RequestScope legacy_scope{nullptr, std::move(cancelled), enforce_lifecycle};
+        const RequestScope legacy_scope{nullptr, std::move(cancelled), enforce_lifecycle, nullptr,
+                                        {},      std::move(principal)};
 
         // A client that arrives after the previous one ended its session starts uninitialized.
         const auto session_state = !enforce_lifecycle ? LifecycleState::eReady
@@ -1714,7 +1736,8 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
                                                     std::shared_ptr<std::atomic<bool>> cancelled,
                                                     std::optional<ProgressToken> progress_token,
                                                     std::shared_ptr<const RequestMetadata> request_meta,
-                                                    bool session_request, MessageSender notifications) {
+                                                    bool session_request, MessageSender notifications,
+                                                    std::shared_ptr<const std::string> principal) {
     auto iter = tool_handlers.find(params.name);
     if (iter == tool_handlers.end()) {
         // The name is chosen by whoever called: over JSON-RPC that is the client, and through the
@@ -1724,7 +1747,7 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
     }
 
     auto ctx = make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
-                            session_request, std::move(notifications));
+                            session_request, std::move(notifications), std::move(principal));
     nlohmann::json handler_result;
 
     // A tool that throws has failed at its own job, which the protocol reports inside the result as
@@ -1841,9 +1864,9 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
     }
 
     auto cancelled = scope.cancelled ? scope.cancelled : std::make_shared<std::atomic<bool>>(false);
-    nlohmann::json handler_result =
-        co_await invoke_tool_impl(std::move(params), std::move(cancelled), std::move(progress_token),
-                                  scope.meta, scope.session_request, scope.notifications);
+    nlohmann::json handler_result = co_await invoke_tool_impl(
+        std::move(params), std::move(cancelled), std::move(progress_token), scope.meta,
+        scope.session_request, scope.notifications, scope.principal);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }
 
@@ -1898,7 +1921,7 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
 
         nlohmann::json params_json = params;
         auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                                scope.notifications);
+                                scope.notifications, scope.principal);
         nlohmann::json handler_result = co_await handler(ctx, params_json);
         co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result),
                                    CacheTarget::eResourcesRead);
@@ -1938,7 +1961,7 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
 
     nlohmann::json params_json = params;
     auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                            scope.notifications);
+                            scope.notifications, scope.principal);
     nlohmann::json handler_result = co_await handler(ctx, params_json);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result),
                                CacheTarget::eResourcesRead);
@@ -2022,7 +2045,7 @@ Task<std::string> Server::Impl::handle_prompts_get_wire(const nlohmann::json& js
 
     nlohmann::json params_json = std::move(params);
     auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                            scope.notifications);
+                            scope.notifications, scope.principal);
     nlohmann::json handler_result = co_await handler(ctx, params_json);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }

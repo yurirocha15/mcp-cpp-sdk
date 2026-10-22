@@ -2865,14 +2865,15 @@ TEST_F(HttpTransportTest, AnExemptPathTheMetadataRouteClaimsIsStillServed) {
 TEST_F(HttpTransportTest, AsyncBearerValidatorCanSuspendBeforeDeciding) {
     auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
     std::atomic<int> validator_calls{0};
-    server->set_async_bearer_token_validator([&validator_calls](std::string token) -> mcp::Task<bool> {
-        validator_calls.fetch_add(1, std::memory_order_relaxed);
-        // Suspend, the way a real introspection call would, before deciding.
-        asio::steady_timer timer(co_await asio::this_coro::executor);
-        timer.expires_after(std::chrono::milliseconds(1));
-        co_await timer.async_wait(asio::use_awaitable);
-        co_return token == "good";
-    });
+    server->set_async_bearer_token_validator(
+        [&validator_calls](std::string token) -> mcp::Task<mcp::TokenValidation> {
+            validator_calls.fetch_add(1, std::memory_order_relaxed);
+            // Suspend, the way a real introspection call would, before deciding.
+            asio::steady_timer timer(co_await asio::this_coro::executor);
+            timer.expires_after(std::chrono::milliseconds(1));
+            co_await timer.async_wait(asio::use_awaitable);
+            co_return token == "good";
+        });
     const auto port = server->port();
 
     asio::co_spawn(io_ctx_, server->listen(), asio::detached);
@@ -2902,7 +2903,7 @@ TEST_F(HttpTransportTest, AsyncBearerValidatorCanSuspendBeforeDeciding) {
 TEST_F(HttpTransportTest, ThrowingBearerValidatorIsAnsweredWithAServerError) {
     auto async_server =
         std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
-    async_server->set_async_bearer_token_validator([](std::string) -> mcp::Task<bool> {
+    async_server->set_async_bearer_token_validator([](std::string) -> mcp::Task<mcp::TokenValidation> {
         throw std::runtime_error("introspection endpoint unreachable");
         co_return false;
     });
@@ -2944,13 +2945,13 @@ TEST_F(HttpTransportTest, OnlyOneBearerValidatorMayBeInstalled) {
     mcp::HttpServerTransport sync_first(io_ctx_.get_executor(), "127.0.0.1", 0);
     sync_first.set_bearer_token_validator([](std::string_view) { return true; });
     EXPECT_THROW(sync_first.set_async_bearer_token_validator(
-                     [](std::string) -> mcp::Task<bool> { co_return true; }),
+                     [](std::string) -> mcp::Task<mcp::TokenValidation> { co_return true; }),
                  std::logic_error);
     sync_first.close();
 
     mcp::HttpServerTransport async_first(io_ctx_.get_executor(), "127.0.0.1", 0);
     async_first.set_async_bearer_token_validator(
-        [](std::string) -> mcp::Task<bool> { co_return true; });
+        [](std::string) -> mcp::Task<mcp::TokenValidation> { co_return true; });
     EXPECT_THROW(async_first.set_bearer_token_validator([](std::string_view) { return true; }),
                  std::logic_error);
     async_first.close();

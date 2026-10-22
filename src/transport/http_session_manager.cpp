@@ -4,6 +4,7 @@
 #include "../detail/memory_transport_read.hpp"
 #include "../detail/modern_methods.hpp"
 #include "../detail/peer_json.hpp"
+#include "../detail/principal.hpp"
 
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/secure_random.hpp>
@@ -643,6 +644,14 @@ struct StreamableHttpSessionManager::Impl {
                                                       protected_resource_metadata_body_);
     }
 
+    static std::string_view request_authorization(const StringRequest& request) {
+        const auto authorization_it = request.find(http::field::authorization);
+        if (authorization_it == request.end()) {
+            return {};
+        }
+        return detail::to_std_string_view(authorization_it->value());
+    }
+
     Task<Reply> handle_request(const StringRequest& request,
                                boost::asio::strand<boost::asio::any_io_executor> conn_strand,
                                std::unique_ptr<Server>& stateless_server) {
@@ -663,25 +672,23 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         const bool unauthenticated_path = is_unauthenticated_path(request);
+        // The principal the validator names, if it names one.
+        std::optional<std::string> principal_id;
         if (!unauthenticated_path && (bearer_token_validator_ || async_bearer_token_validator_)) {
-            const auto authorization_it = request.find(http::field::authorization);
-            const auto token =
-                authorization_it == request.end()
-                    ? std::string_view{}
-                    : http_bearer_token(detail::to_std_string_view(authorization_it->value()));
+            const auto token = http_bearer_token(request_authorization(request));
             // The synchronous path neither copies the token nor suspends; only an async validator
             // pays for either. A validator that throws has failed to decide, which is the server's
             // failure rather than the client's: answered 500, not with a challenge that would send
             // the client into re-authorization.
-            bool accepted = false;
+            std::optional<TokenValidation> validation;
             bool validator_failed = false;
             try {
                 if (token.empty()) {
-                    accepted = false;
+                    validation = TokenValidation(false);
                 } else if (async_bearer_token_validator_) {
-                    accepted = co_await async_bearer_token_validator_(std::string(token));
+                    validation = co_await async_bearer_token_validator_(std::string(token));
                 } else {
-                    accepted = bearer_token_validator_(token);
+                    validation = bearer_token_validator_(token);
                 }
             } catch (...) {
                 validator_failed = true;
@@ -690,12 +697,13 @@ struct StreamableHttpSessionManager::Impl {
                 co_return detail_session_mgr::make_error_response(
                     request, http::status::internal_server_error, "Bearer token validation failed");
             }
-            if (!accepted) {
+            if (!validation->accepted) {
                 auto response = detail_session_mgr::make_error_response(
                     request, http::status::unauthorized, "Invalid bearer token");
                 response.set(http::field::www_authenticate, www_authenticate_value_);
                 co_return response;
             }
+            principal_id = std::move(validation->principal_id);
         }
 
         if (custom_handler) {
@@ -715,7 +723,8 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         if (request.method() == http::verb::post) {
-            co_return co_await handle_post(request, conn_strand, stateless_server);
+            co_return co_await handle_post(request, conn_strand, stateless_server,
+                                           std::move(principal_id));
         }
 
         // A 2026-07-28 client has no session to read from or end, so GET and DELETE are not part
@@ -779,13 +788,18 @@ struct StreamableHttpSessionManager::Impl {
     /// GCC 11 an object that lives in a coroutine frame across a suspension can be corrupted -- see
     /// the SSO note in docs/contributing.rst. Taking the arguments by value moves them into this
     /// coroutine's own frame instead, leaving nothing of the request in the caller's.
-    static Task<std::string> dispatch_on_executor(Server* server, nlohmann::json request_json) {
-        co_return co_await server->dispatch_request_direct(std::move(request_json));
+    static Task<std::string> dispatch_on_executor(Server* server, nlohmann::json request_json,
+                                                  std::string principal) {
+        RequestContext request_context;
+        request_context.principal = std::move(principal);
+        co_return co_await server->dispatch_request_direct(std::move(request_json),
+                                                           std::move(request_context));
     }
 
     Task<StringResponse> handle_stateless_post(const StringRequest& request,
                                                nlohmann::json request_json,
-                                               std::unique_ptr<Server>& stateless_server) {
+                                               std::unique_ptr<Server>& stateless_server,
+                                               std::string principal) {
         if (closed.load(std::memory_order_acquire)) {
             co_return detail_session_mgr::make_error_response(
                 request, http::status::service_unavailable, "Transport closed");
@@ -807,7 +821,8 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         auto response_body = co_await boost::asio::co_spawn(
-            dispatch_executor, dispatch_on_executor(stateless_server.get(), std::move(request_json)),
+            dispatch_executor,
+            dispatch_on_executor(stateless_server.get(), std::move(request_json), std::move(principal)),
             boost::asio::use_awaitable);
         co_return detail_session_mgr::make_json_response(request, http::status::ok,
                                                          std::move(response_body));
@@ -822,7 +837,8 @@ struct StreamableHttpSessionManager::Impl {
     /// only because legacy clients are not served; the server refuses it.
     Task<Reply> handle_modern_post(const StringRequest& request, nlohmann::json request_json,
                                    bool check_headers,
-                                   boost::asio::strand<boost::asio::any_io_executor> conn_strand) {
+                                   boost::asio::strand<boost::asio::any_io_executor> conn_strand,
+                                   std::string principal) {
         if (closed.load(std::memory_order_acquire)) {
             co_return detail_session_mgr::make_error_response(
                 request, http::status::service_unavailable, "Transport closed");
@@ -863,6 +879,7 @@ struct StreamableHttpSessionManager::Impl {
 
         RequestContext request_context;
         request_context.cancelled = exchange->cancelled;
+        request_context.principal = std::move(principal);
         if (check_headers) {
             request_context.param_headers = detail::mcp_param_headers(request);
         }
@@ -1244,9 +1261,13 @@ struct StreamableHttpSessionManager::Impl {
         co_return response;
     }
 
+    /// @p principal_id is the principal the bearer token validator named, if it named one. Requests
+    /// served without a session are attributed to it, or else to a digest of their Authorization
+    /// header; a session's requests carry no principal.
     Task<Reply> handle_post(const StringRequest& request,
                             boost::asio::strand<boost::asio::any_io_executor> conn_strand,
-                            std::unique_ptr<Server>& stateless_server) {
+                            std::unique_ptr<Server>& stateless_server,
+                            std::optional<std::string> principal_id) {
         if (closed.load(std::memory_order_acquire)) {
             co_return detail_session_mgr::make_error_response(
                 request, http::status::service_unavailable, "Transport closed");
@@ -1261,10 +1282,14 @@ struct StreamableHttpSessionManager::Impl {
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         if (detail::is_modern_http_request(request_json,
                                            detail::http_header(request, "MCP-Protocol-Version"))) {
-            co_return co_await handle_modern_post(request, std::move(request_json), true, conn_strand);
+            co_return co_await handle_modern_post(
+                request, std::move(request_json), true, conn_strand,
+                detail::request_principal(principal_id, request_authorization(request)));
         }
         if (protocol_policy_ && !protocol_policy_->serve_legacy) {
-            co_return co_await handle_modern_post(request, std::move(request_json), false, conn_strand);
+            co_return co_await handle_modern_post(
+                request, std::move(request_json), false, conn_strand,
+                detail::request_principal(principal_id, request_authorization(request)));
         }
 
         const bool is_initialize = detail_session_mgr::is_initialize_request(request_json);
@@ -1281,8 +1306,9 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         if (stateless_json_mode_) {
-            co_return co_await handle_stateless_post(request, std::move(request_json),
-                                                     stateless_server);
+            co_return co_await handle_stateless_post(
+                request, std::move(request_json), stateless_server,
+                detail::request_principal(principal_id, request_authorization(request)));
         }
 
         // The Server answers a request whose id is neither a string nor an integer with a null id,

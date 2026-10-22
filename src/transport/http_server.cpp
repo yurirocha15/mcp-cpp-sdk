@@ -2,6 +2,7 @@
 #include "../detail/http_request_metadata.hpp"
 #include "../detail/modern_methods.hpp"
 #include "../detail/peer_json.hpp"
+#include "../detail/principal.hpp"
 
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_server.hpp>
@@ -49,7 +50,7 @@ struct HttpServerTransport::Impl {
             : timer(execution_strand) {}
 
         boost::asio::steady_timer timer;
-        std::queue<std::string> queue;
+        std::queue<IncomingMessage> queue;
         std::atomic<bool> closed{false};
         bool read_active{false};
     };
@@ -192,8 +193,9 @@ struct HttpServerTransport::Impl {
         return allowed_origins.contains(std::string(origin_value));
     }
 
-    void enqueue_incoming_message(std::string message_payload) const {
-        state->queue.push(std::move(message_payload));
+    /// Queues a message with the principal that sent it, so the server reads the two together.
+    void enqueue_incoming_message(std::string message_payload, std::string principal) const {
+        state->queue.push(IncomingMessage{std::move(message_payload), std::move(principal)});
         state->timer.cancel();
     }
 
@@ -467,53 +469,66 @@ struct HttpServerTransport::Impl {
                                    "Bearer token validation failed");
     }
 
-    static std::string_view request_bearer_token(const StringRequest& request) {
+    static std::string_view request_authorization(const StringRequest& request) {
         const auto authorization_it = request.find(http::field::authorization);
-        return authorization_it == request.end() ? std::string_view{}
-                                                 : http_bearer_token(header_value(authorization_it));
+        return authorization_it == request.end() ? std::string_view{} : header_value(authorization_it);
     }
 
+    /// What the bearer check decided: the response refusing the request, or the principal the
+    /// request is attributed to.
+    struct Authorization {
+        std::optional<StringResponse> refusal;
+        std::string principal;
+    };
+
     /// @brief Run the bearer check when it can be decided without suspending.
-    /// @details Returns nothing when an async validator is installed, because that decision
-    ///          belongs to check_authorization_async; keeping the two apart leaves the far more
-    ///          common synchronous path free of a coroutine frame and of copying the token.
-    std::optional<StringResponse> check_authorization(const StringRequest& request) const {
-        if (async_bearer_token_validator || !bearer_token_validator) {
-            return std::nullopt;
+    /// @details Without a validator, the request is attributed to a digest of its Authorization
+    ///          header. With an async one, the decision belongs to check_authorization_async and
+    ///          this returns no refusal and no principal; keeping the two apart leaves the far
+    ///          more common synchronous path free of a coroutine frame and of copying the token.
+    Authorization check_authorization(const StringRequest& request) const {
+        const auto authorization = request_authorization(request);
+        if (async_bearer_token_validator) {
+            return {};
+        }
+        if (!bearer_token_validator) {
+            return {std::nullopt, detail::request_principal(std::nullopt, authorization)};
         }
 
-        const auto token = request_bearer_token(request);
+        const auto token = http_bearer_token(authorization);
         if (token.empty()) {
-            return make_unauthorized_response(request);
+            return {make_unauthorized_response(request), {}};
         }
-        bool accepted = false;
+        std::optional<TokenValidation> validation;
         try {
-            accepted = bearer_token_validator(token);
+            validation = bearer_token_validator(token);
         } catch (...) {
-            return make_validator_failure_response(request);
+            return {make_validator_failure_response(request), {}};
         }
-        if (!accepted) {
-            return make_unauthorized_response(request);
+        if (!validation->accepted) {
+            return {make_unauthorized_response(request), {}};
         }
-        return std::nullopt;
+        return {std::nullopt, detail::request_principal(validation->principal_id, authorization)};
     }
 
     /// @brief Run the bearer check against an async validator. Only entered when one is installed.
-    Task<std::optional<StringResponse>> check_authorization_async(const StringRequest& request) const {
-        const auto token = request_bearer_token(request);
+    Task<Authorization> check_authorization_async(const StringRequest& request) const {
+        const auto authorization = request_authorization(request);
+        const auto token = http_bearer_token(authorization);
         if (token.empty()) {
-            co_return make_unauthorized_response(request);
+            co_return Authorization{make_unauthorized_response(request), {}};
         }
-        bool accepted = false;
+        std::optional<TokenValidation> validation;
         try {
-            accepted = co_await async_bearer_token_validator(std::string(token));
+            validation = co_await async_bearer_token_validator(std::string(token));
         } catch (...) {
-            co_return make_validator_failure_response(request);
+            co_return Authorization{make_validator_failure_response(request), {}};
         }
-        if (!accepted) {
-            co_return make_unauthorized_response(request);
+        if (!validation->accepted) {
+            co_return Authorization{make_unauthorized_response(request), {}};
         }
-        co_return std::nullopt;
+        co_return Authorization{std::nullopt,
+                                detail::request_principal(validation->principal_id, authorization)};
     }
 
     static StringResponse make_jsonrpc_error_response(const StringRequest& request,
@@ -567,7 +582,7 @@ struct HttpServerTransport::Impl {
     /// clients may use the same id, and its answer is plain JSON with the status the specification
     /// gives its error, kept out of the session's replay store.
     Task<StringResponse> handle_modern_post(const StringRequest& request,
-                                            const nlohmann::json& request_json) {
+                                            const nlohmann::json& request_json, std::string principal) {
         // 2026-07-28 defines no notification a client sends over HTTP, so one is accepted and
         // dropped.
         if (!request_json.contains("id")) {
@@ -626,7 +641,7 @@ struct HttpServerTransport::Impl {
         // Tracked so run_write keeps this response out of the session's replay store, and a DELETE
         // of the session leaves it waiting. Dropped again in consume_pending_response and close().
         sessionless_request_ids.insert(request_id_key);
-        enqueue_incoming_message(sentinel_json.dump());
+        enqueue_incoming_message(sentinel_json.dump(), std::move(principal));
 
         auto closed_response = co_await wait_for_response(request, request_id_key, *timer_signal);
         if (closed_response) {
@@ -648,13 +663,12 @@ struct HttpServerTransport::Impl {
         if (auto error = check_origin(request)) {
             co_return std::move(*error);
         }
-        if (auto error = check_authorization(request)) {
-            co_return std::move(*error);
+        auto authorization = check_authorization(request);
+        if (!authorization.refusal && async_bearer_token_validator) {
+            authorization = co_await check_authorization_async(request);
         }
-        if (async_bearer_token_validator) {
-            if (auto error = co_await check_authorization_async(request)) {
-                co_return std::move(*error);
-            }
+        if (authorization.refusal) {
+            co_return std::move(*authorization.refusal);
         }
 
         const auto request_json = detail::parse_peer_json(request.body());
@@ -664,7 +678,8 @@ struct HttpServerTransport::Impl {
         }
         if (detail::is_modern_http_request(request_json,
                                            detail::http_header(request, "MCP-Protocol-Version"))) {
-            co_return co_await handle_modern_post(request, request_json);
+            co_return co_await handle_modern_post(request, request_json,
+                                                  std::move(authorization.principal));
         }
         if (auto error = check_protocol_version(request, request_json)) {
             co_return std::move(*error);
@@ -679,7 +694,7 @@ struct HttpServerTransport::Impl {
         const bool has_request_id = request_json.contains("id");
         const bool has_method = request_json.contains("method");
         if (!has_request_id || !has_method) {
-            enqueue_incoming_message(request.body());
+            enqueue_incoming_message(request.body(), std::move(authorization.principal));
             co_return make_empty_json_response(request, http::status::accepted);
         }
         // The Server answers a request whose id is neither a string nor an integer with a null id,
@@ -695,7 +710,7 @@ struct HttpServerTransport::Impl {
             co_return make_error_response(request, http::status::bad_request,
                                           "Request id already pending");
         }
-        enqueue_incoming_message(request.body());
+        enqueue_incoming_message(request.body(), std::move(authorization.principal));
 
         auto closed_response = co_await wait_for_response(request, request_id_key, *timer_signal);
         if (closed_response) {
@@ -752,13 +767,12 @@ struct HttpServerTransport::Impl {
         if (auto error = check_origin(request)) {
             co_return std::move(*error);
         }
-        if (auto error = check_authorization(request)) {
-            co_return std::move(*error);
+        auto authorization = check_authorization(request);
+        if (!authorization.refusal && async_bearer_token_validator) {
+            authorization = co_await check_authorization_async(request);
         }
-        if (async_bearer_token_validator) {
-            if (auto error = co_await check_authorization_async(request)) {
-                co_return std::move(*error);
-            }
+        if (authorization.refusal) {
+            co_return std::move(*authorization.refusal);
         }
         if (auto refusal = refuse_sessionless_modern_stream(request)) {
             co_return std::move(*refusal);
@@ -782,13 +796,12 @@ struct HttpServerTransport::Impl {
         if (auto error = check_origin(request)) {
             co_return std::move(*error);
         }
-        if (auto error = check_authorization(request)) {
-            co_return std::move(*error);
+        auto authorization = check_authorization(request);
+        if (!authorization.refusal && async_bearer_token_validator) {
+            authorization = co_await check_authorization_async(request);
         }
-        if (async_bearer_token_validator) {
-            if (auto error = co_await check_authorization_async(request)) {
-                co_return std::move(*error);
-            }
+        if (authorization.refusal) {
+            co_return std::move(*authorization.refusal);
         }
         if (auto refusal = refuse_sessionless_modern_stream(request)) {
             co_return std::move(*refusal);
@@ -919,7 +932,7 @@ struct HttpServerTransport::Impl {
         (void)stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
     }
 
-    static Task<std::string> run_read(std::shared_ptr<Impl> impl) {
+    static Task<IncomingMessage> run_read(std::shared_ptr<Impl> impl) {
         auto& state = *impl->state;
         if (state.read_active) {
             throw std::logic_error("HttpServerTransport supports one pending read");
@@ -929,10 +942,10 @@ struct HttpServerTransport::Impl {
         try {
             for (;;) {
                 if (!state.queue.empty()) {
-                    auto message_payload = std::move(state.queue.front());
+                    auto incoming = std::move(state.queue.front());
                     state.queue.pop();
                     state.read_active = false;
-                    co_return message_payload;
+                    co_return incoming;
                 }
 
                 if (state.closed.load(std::memory_order_acquire)) {
@@ -1190,7 +1203,19 @@ void HttpServerTransport::set_unauthenticated_paths(std::vector<std::string> pat
     }
 }
 
-Task<std::string> HttpServerTransport::read_message() {
+namespace {
+
+Task<std::string> message_of(Task<IncomingMessage> incoming) {
+    auto message = co_await std::move(incoming);
+    co_return std::move(message.message);
+}
+
+}  // namespace
+
+// Not a coroutine: the read owns the implementation, so it may outlive this transport.
+Task<std::string> HttpServerTransport::read_message() { return message_of(read_incoming()); }
+
+Task<IncomingMessage> HttpServerTransport::read_incoming() {
     auto impl = impl_;
     return boost::asio::co_spawn(impl->strand, Impl::run_read(impl), boost::asio::use_awaitable);
 }

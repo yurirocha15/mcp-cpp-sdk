@@ -151,7 +151,8 @@ class MCP_API StreamableHttpSessionManager {
      *
      * A request whose token the validator refuses is answered 401 with the bearer challenge. A
      * validator that throws is answered 500, without a challenge, so a failing introspection
-     * endpoint does not send clients into re-authorization.
+     * endpoint does not send clients into re-authorization. A validator that accepts a token may
+     * name the principal it stands for (TokenValidation); handlers see it as Context::principal().
      *
      * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
@@ -168,7 +169,8 @@ class MCP_API StreamableHttpSessionManager {
      *
      * A request whose token the validator refuses is answered 401 with the bearer challenge. A
      * validator that throws is answered 500, without a challenge, so a failing introspection
-     * endpoint does not send clients into re-authorization.
+     * endpoint does not send clients into re-authorization. A validator that accepts a token may
+     * name the principal it stands for (TokenValidation); handlers see it as Context::principal().
      *
      * @throws std::logic_error If a synchronous validator is already installed, or if listen() has
      *         already been called or the manager is closed.
