@@ -646,6 +646,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         bool session_request{false};
         /// The `Mcp-Param-*` headers of the HTTP request, or null when it came another way.
         std::shared_ptr<const detail::ParamHeaderValues> param_headers;
+        /// Where the notifications of a 2026-07-28 request go, when its transport streams them.
+        MessageSender notifications;
     };
 
     static constexpr LoggingLevel g_default_log_level = LoggingLevel::eDebug;
@@ -727,7 +729,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Task<std::string> dispatch_request_wire(
         nlohmann::json json_msg, bool enforce_lifecycle,
         std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
-        std::shared_ptr<const detail::ParamHeaderValues> param_headers = nullptr);
+        std::shared_ptr<const detail::ParamHeaderValues> param_headers = nullptr,
+        MessageSender notifications = {});
     Task<std::string> dispatch_modern_wire(const nlohmann::json& json_msg, std::string_view method,
                                            RequestScope scope);
     void dispatch_notification(const nlohmann::json& json_msg);
@@ -758,13 +761,16 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                           std::shared_ptr<std::atomic<bool>> cancelled,
                                           std::optional<ProgressToken> progress_token,
                                           std::shared_ptr<const RequestMetadata> request_meta = nullptr,
-                                          bool session_request = true);
+                                          bool session_request = true,
+                                          MessageSender notifications = {});
     /// `session_request` says whether the request was read from the session. A 2026-07-28 request
-    /// that was not has no route to the client through the session's transport.
+    /// that was not has no route to the client through the session's transport. @p notifications,
+    /// when set, receives the notifications of a 2026-07-28 request in place of the session's
+    /// transport.
     Context make_context(std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
                          std::optional<ProgressToken> progress_token = std::nullopt,
                          std::shared_ptr<const RequestMetadata> request_meta = nullptr,
-                         bool session_request = true);
+                         bool session_request = true, MessageSender notifications = {});
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
     /// Checks a tools/call's Mcp-Param-* headers against the tool it names, for a transport that
     /// validates them before the request reaches the server.
@@ -1292,7 +1298,8 @@ Task<std::string> Server::dispatch_request_direct(nlohmann::json json_msg,
             std::move(*request_context.param_headers));
     }
     return impl_->dispatch_request_wire(std::move(json_msg), false,
-                                        std::move(request_context.cancelled), std::move(param_headers));
+                                        std::move(request_context.cancelled), std::move(param_headers),
+                                        std::move(request_context.notifications));
 }
 
 detail::ParamHeaderCheck Server::Impl::make_param_header_check() {
@@ -1323,7 +1330,7 @@ detail::ParamHeaderCheck Server::Impl::make_param_header_check() {
 Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
                                    std::optional<ProgressToken> progress_token,
                                    std::shared_ptr<const RequestMetadata> request_meta,
-                                   bool session_request) {
+                                   bool session_request, MessageSender notifications) {
     ITransport* transport = &null_transport();
     MessageSender message_sender;
     auto session = session_snapshot();
@@ -1332,8 +1339,11 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
     // that request's notifications: written to it, they would join the legacy session's stream.
     const bool notifications_have_a_route =
         !(request_meta && session && session->http_transport != nullptr);
-    if (session && session->transport && (session_request || !request_meta) &&
-        notifications_have_a_route) {
+    if (request_meta && notifications) {
+        // The request's own stream, supplied by the transport that carried it.
+        message_sender = std::move(notifications);
+    } else if (session && session->transport && (session_request || !request_meta) &&
+               notifications_have_a_route) {
         transport = session->transport.get();
         epoch = Impl::session_epoch(*session);
         // A handler whose session the client has ended sends nothing more: the transport would
@@ -1421,7 +1431,7 @@ Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg) {
 
 Task<std::string> Server::Impl::dispatch_request_wire(
     nlohmann::json json_msg, bool enforce_lifecycle, std::shared_ptr<std::atomic<bool>> cancelled,
-    std::shared_ptr<const detail::ParamHeaderValues> param_headers) {
+    std::shared_ptr<const detail::ParamHeaderValues> param_headers, MessageSender notifications) {
     {
         const char* validation_error = validate_request_envelope(json_msg);
         if (validation_error != nullptr) {
@@ -1443,7 +1453,7 @@ Task<std::string> Server::Impl::dispatch_request_wire(
         if (detail::is_modern_request(json_msg, method)) {
             // [gcc11-sso: named-aggregate-arg] DO NOT pass RequestScope{...} inside the co_await.
             RequestScope scope{nullptr, std::move(cancelled), enforce_lifecycle,
-                               std::move(param_headers)};
+                               std::move(param_headers), std::move(notifications)};
             co_return co_await dispatch_modern_wire(json_msg, method, std::move(scope));
         }
 
@@ -1704,7 +1714,7 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
                                                     std::shared_ptr<std::atomic<bool>> cancelled,
                                                     std::optional<ProgressToken> progress_token,
                                                     std::shared_ptr<const RequestMetadata> request_meta,
-                                                    bool session_request) {
+                                                    bool session_request, MessageSender notifications) {
     auto iter = tool_handlers.find(params.name);
     if (iter == tool_handlers.end()) {
         // The name is chosen by whoever called: over JSON-RPC that is the client, and through the
@@ -1714,7 +1724,7 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
     }
 
     auto ctx = make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
-                            session_request);
+                            session_request, std::move(notifications));
     nlohmann::json handler_result;
 
     // A tool that throws has failed at its own job, which the protocol reports inside the result as
@@ -1833,7 +1843,7 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
     auto cancelled = scope.cancelled ? scope.cancelled : std::make_shared<std::atomic<bool>>(false);
     nlohmann::json handler_result =
         co_await invoke_tool_impl(std::move(params), std::move(cancelled), std::move(progress_token),
-                                  scope.meta, scope.session_request);
+                                  scope.meta, scope.session_request, scope.notifications);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }
 
@@ -1887,7 +1897,8 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
         auto handler = build_middleware_chain(iter->second);
 
         nlohmann::json params_json = params;
-        auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request);
+        auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
+                                scope.notifications);
         nlohmann::json handler_result = co_await handler(ctx, params_json);
         co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result),
                                    CacheTarget::eResourcesRead);
@@ -1926,7 +1937,8 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
     auto handler = build_middleware_chain(match->handler);
 
     nlohmann::json params_json = params;
-    auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request);
+    auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
+                            scope.notifications);
     nlohmann::json handler_result = co_await handler(ctx, params_json);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result),
                                CacheTarget::eResourcesRead);
@@ -2009,7 +2021,8 @@ Task<std::string> Server::Impl::handle_prompts_get_wire(const nlohmann::json& js
     auto handler = build_middleware_chain(iter->second);
 
     nlohmann::json params_json = std::move(params);
-    auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request);
+    auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
+                            scope.notifications);
     nlohmann::json handler_result = co_await handler(ctx, params_json);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }

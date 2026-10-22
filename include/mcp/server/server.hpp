@@ -255,6 +255,10 @@ struct RequestContext {
     /// header the tool names has a valid value. Leave unset for a request that did not arrive
     /// over HTTP.
     std::optional<std::vector<std::pair<std::string, std::string>>> param_headers;
+    /// Receives, serialized and in order, each notification a handler sends while serving a
+    /// 2026-07-28 request (log messages, progress), so a transport can deliver them ahead of the
+    /// answer. When unset, they go to the transport of a running session, if any.
+    MessageSender notifications;
 };
 
 /**
