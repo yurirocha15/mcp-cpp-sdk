@@ -27,6 +27,9 @@ inline constexpr std::string_view g_META_LOG_LEVEL = "io.modelcontextprotocol/lo
 /// @brief `_meta` key carrying the server's name and version on a result.
 inline constexpr std::string_view g_META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
 
+/// @brief `_meta` key carrying the id of the subscriptions/listen request a message belongs to.
+inline constexpr std::string_view g_META_SUBSCRIPTION_ID = "io.modelcontextprotocol/subscriptionId";
+
 /**
  * @brief The per-request protocol fields of a 2026-07-28 request.
  *

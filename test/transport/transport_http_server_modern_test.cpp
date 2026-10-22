@@ -381,6 +381,19 @@ TEST_F(HttpServerModernTest, InitializeWithAModernHeaderIsMethodNotFound) {
     EXPECT_FALSE(server_->is_initialized());
 }
 
+// HttpServerTransport answers every request with plain JSON, so it has no stream for a
+// subscription to keep open.
+TEST_F(HttpServerModernTest, SubscriptionsListenIsMethodNotFound) {
+    Reply reply;
+    json params = json::object();
+    params["notifications"] = {{"toolsListChanged", true}};
+    const auto request = make_modern_request(5, "subscriptions/listen", std::move(params));
+    run([&]() -> mcp::Task<void> { reply = co_await post_modern(request); });
+    expect_error(reply, 404, mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(reply.parsed()["id"], 5);
+    EXPECT_EQ(server_->subscription_count(), 0u);
+}
+
 // A wrapper that hands over its HttpServerTransport is served as one: the Mcp-Param headers are
 // checked, and a 2026-07-28 request's notifications stay out of the legacy session's stream.
 TEST_F(HttpServerModernTest, WrapperHandingOverTheTransportIsServedAsIt) {

@@ -311,6 +311,12 @@ struct RequestContext {
     /// Who sent this call, as the transport that carried it authenticated the sender; handlers see
     /// it as Context::principal(). Empty when unknown.
     std::string principal;
+    /// Called by the server, while it serves a subscriptions/listen request, with a function to
+    /// call whenever `cancelled` is set (from any thread, after setting it), so a request that
+    /// waits for the client to go away is woken. A transport that streams notifications supplies
+    /// it so that closing the stream ends the subscription. When unset, `cancelled` is not
+    /// watched by anything but the request itself.
+    std::function<void(std::function<void()>)> watch_cancel;
 };
 
 /**
@@ -773,6 +779,9 @@ class MCP_API Server {
     /**
      * @brief Send a notifications/tools/list_changed notification to the client.
      *
+     * Also sent, tagged with its subscription id, to each open subscriptions/listen
+     * stream that asked for it; the same holds for the three notify methods below.
+     *
      * The Server object must outlive the returned task.
      */
     Task<void> notify_tools_list_changed();
@@ -799,6 +808,20 @@ class MCP_API Server {
      * The Server object must outlive the returned task.
      */
     Task<void> notify_resource_updated(const std::string& uri);
+
+    /**
+     * @brief Ends every open subscriptions/listen stream gracefully.
+     *
+     * Each stream's request is answered with its empty `resultType: "complete"` result carrying
+     * the stream's `io.modelcontextprotocol/subscriptionId`, which the transport that carried the
+     * request then delivers. Returns at once and may be called from any thread. Streams opened
+     * later are not affected. A stream that ends because its client cancelled it, or its
+     * transport closed, gets no response.
+     */
+    void close_subscriptions();
+
+    /// @brief The number of subscriptions/listen streams currently open on this server.
+    [[nodiscard]] std::size_t subscription_count() const;
 
     /// @brief Callback invoked when a client subscribes to or unsubscribes from a resource URI.
     using SubscriptionHandler = std::function<void(const std::string& uri)>;

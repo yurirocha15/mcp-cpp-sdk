@@ -362,6 +362,7 @@ if(BUILD_TESTING)
       test/server/server_middleware_test.cpp
       test/server/server_modern_era_test.cpp
       test/server/server_mrtr_test.cpp
+      test/server/server_listen_test.cpp
       test/server/server_param_headers_test.cpp
       test/server/server_progress_test.cpp
       test/server/server_subscriptions_test.cpp
@@ -376,6 +377,7 @@ if(BUILD_TESTING)
       test/transport/transport_http_principal_test.cpp
       test/transport/transport_http_mrtr_test.cpp
       test/transport/transport_http_stream_test.cpp
+      test/transport/transport_http_listen_test.cpp
       test/transport/transport_memory_test.cpp
       test/transport/socket_deadline_test.cpp
       test/e2e/e2e_integration_test.cpp

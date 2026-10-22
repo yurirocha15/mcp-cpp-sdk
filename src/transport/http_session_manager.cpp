@@ -106,6 +106,26 @@ struct ModernExchange : std::enable_shared_from_this<ModernExchange> {
         return true;
     }
 
+    /// Cancels the request and wakes a handler that waits for its cancellation.
+    void cancel() {
+        cancelled->store(true, std::memory_order_relaxed);
+        std::function<void()> hook;
+        {
+            std::lock_guard lock(mutex);
+            hook = on_cancel;
+        }
+        if (hook) {
+            hook();
+        }
+    }
+
+    /// Registers the function to call after the request is cancelled. The caller reads
+    /// `cancelled` once registered, since a cancellation before it did not call the function.
+    void set_on_cancel(std::function<void()> hook) {
+        std::lock_guard lock(mutex);
+        on_cancel = std::move(hook);
+    }
+
     void finish(std::string response_wire) {
         {
             std::lock_guard lock(mutex);
@@ -125,6 +145,7 @@ struct ModernExchange : std::enable_shared_from_this<ModernExchange> {
     std::mutex mutex;
     std::deque<std::string> notifications;  // guarded by mutex
     std::optional<std::string> response;    // guarded by mutex
+    std::function<void()> on_cancel;        // guarded by mutex
 };
 
 struct SessionRuntime {
@@ -587,7 +608,7 @@ struct StreamableHttpSessionManager::Impl {
             auto reply = co_await handle_request(request, conn_strand, stateless_server);
             if (closed.load(std::memory_order_acquire)) {
                 if (auto* exchange = std::get_if<1>(&reply)) {
-                    (*exchange)->cancelled->store(true, std::memory_order_relaxed);
+                    (*exchange)->cancel();
                 }
                 break;
             }
@@ -883,6 +904,11 @@ struct StreamableHttpSessionManager::Impl {
         if (check_headers) {
             request_context.param_headers = detail::mcp_param_headers(request);
         }
+        request_context.watch_cancel = [weak = std::weak_ptr(exchange)](std::function<void()> hook) {
+            if (auto target = weak.lock()) {
+                target->set_on_cancel(std::move(hook));
+            }
+        };
         if (streams) {
             request_context.notifications = [weak = std::weak_ptr(exchange),
                                              counters = stream_counters_](std::string_view message) {
@@ -1159,7 +1185,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         if (client_gone) {
-            exchange->cancelled->store(true, std::memory_order_relaxed);
+            exchange->cancel();
             stream_counters_->disconnect_cancels.fetch_add(1, std::memory_order_relaxed);
         }
         if (watch->armed) {
