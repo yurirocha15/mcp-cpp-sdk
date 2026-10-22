@@ -151,6 +151,17 @@ Versioning; a `0.x` version is a stable release unless its version has an
   dropped notifications. Bytes of a pipelined request that arrive while a
   request runs are kept for the next one. `RequestContext::notifications`
   receives a 2026-07-28 request's notifications on a direct dispatch.
+- `Context::principal()` says who sent a request. Over HTTP it is the
+  principal a bearer token validator names in its new `TokenValidation`
+  result, or else `h:` and the hex SHA-256 of the request's `Authorization`
+  header, or empty without one; the requests of a
+  `StreamableHttpSessionManager` session carry none, and stdio, WebSocket and
+  memory transports give none. `ITransport::read_incoming()` returns a
+  message with its sender (`IncomingMessage`); `HttpServerTransport` keeps
+  each queued message with its own sender, and `RequestContext::principal`
+  sets it for a direct dispatch. A transport that wraps another must forward
+  `read_incoming()` as well as `read_message()`, or its messages arrive
+  without a principal.
 
 ### Changed
 
@@ -171,6 +182,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   a 2026-07-28 protocol version in `_meta` instead of answering it with
   `g_INVALID_REQUEST`; `server/discover` is exempt from the initialization
   sequence only as such a request.
+- `BearerTokenValidator` returns a `TokenValidation` and
+  `AsyncBearerTokenValidator` a `Task<TokenValidation>`. A synchronous
+  validator returning `bool` still compiles; an asynchronous one returning
+  `Task<bool>` must change its return type (`co_return true;` still works).
 - `tools/call` naming an unknown tool and `prompts/get` naming an unknown
   prompt are answered with `g_INVALID_PARAMS` (`-32602`), as the tools and
   prompts specifications list, instead of `g_METHOD_NOT_FOUND` (`-32601`).

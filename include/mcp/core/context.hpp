@@ -67,18 +67,21 @@ class Context {
      *                       directly to the transport.
      * @param request_meta The per-request protocol fields of a 2026-07-28 request, or null for a
      *                     request of an earlier revision.
+     * @param principal Who sent the request, or null when unknown.
      */
     Context(ITransport& transport, RequestSender sender, std::shared_ptr<std::atomic<bool>> cancelled,
             std::optional<ProgressToken> progress_token, const std::atomic<LoggingLevel>* log_level,
             MessageSender message_sender = {},
-            std::shared_ptr<const RequestMetadata> request_meta = nullptr)
+            std::shared_ptr<const RequestMetadata> request_meta = nullptr,
+            std::shared_ptr<const std::string> principal = nullptr)
         : transport_(transport),
           sender_(std::move(sender)),
           cancelled_(std::move(cancelled)),
           progress_token_(std::move(progress_token)),
           log_level_(log_level),
           message_sender_(std::move(message_sender)),
-          request_meta_(std::move(request_meta)) {}
+          request_meta_(std::move(request_meta)),
+          principal_(std::move(principal)) {}
 
     /**
      * @brief The per-request protocol fields of this request.
@@ -88,6 +91,22 @@ class Context {
      *         negotiated these at initialize.
      */
     [[nodiscard]] const RequestMetadata* request_meta() const { return request_meta_.get(); }
+
+    /**
+     * @brief Who sent this request.
+     *
+     * @details Over HTTP with a bearer token validator, this is the principal the validator named
+     * in its TokenValidation; without one, `h:` followed by the hex SHA-256 of the request's
+     * Authorization header, which never reveals the token and changes when the token does. It is
+     * empty for a transport that does not authenticate its peer (stdio, WebSocket, memory), for a
+     * request without an Authorization header, and for the requests of a
+     * StreamableHttpSessionManager session, which are attributed to the session.
+     *
+     * @return The principal, or an empty view when it is unknown.
+     */
+    [[nodiscard]] std::string_view principal() const {
+        return principal_ ? std::string_view(*principal_) : std::string_view{};
+    }
 
     /**
      * @brief Sends an informational log message to the client.
@@ -275,6 +294,7 @@ class Context {
     const std::atomic<LoggingLevel>* log_level_ = nullptr;
     MessageSender message_sender_;
     std::shared_ptr<const RequestMetadata> request_meta_;
+    std::shared_ptr<const std::string> principal_;
 };
 
 }  // namespace mcp

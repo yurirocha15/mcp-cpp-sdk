@@ -246,7 +246,8 @@ class MCP_API HttpServerTransport final : public ITransport {
      *
      * A request whose token the validator refuses is answered 401 with the bearer challenge. A
      * validator that throws is answered 500, without a challenge, so a failing introspection
-     * endpoint does not send clients into re-authorization.
+     * endpoint does not send clients into re-authorization. A validator that accepts a token may
+     * name the principal it stands for (TokenValidation); handlers see it as Context::principal().
      *
      * @throws std::logic_error If listen() has already been called or the transport is closed.
      */
@@ -263,7 +264,8 @@ class MCP_API HttpServerTransport final : public ITransport {
      *
      * A request whose token the validator refuses is answered 401 with the bearer challenge. A
      * validator that throws is answered 500, without a challenge, so a failing introspection
-     * endpoint does not send clients into re-authorization.
+     * endpoint does not send clients into re-authorization. A validator that accepts a token may
+     * name the principal it stands for (TokenValidation); handlers see it as Context::principal().
      *
      * @throws std::logic_error If a synchronous validator is already installed, or if listen() has
      *         already been called or the transport is closed.
@@ -346,6 +348,17 @@ class MCP_API HttpServerTransport final : public ITransport {
      * @brief Read the next queued JSON-RPC message from HTTP POST bodies.
      */
     Task<std::string> read_message() override;
+
+    /**
+     * @brief Read the next queued JSON-RPC message with the principal of the request that carried
+     *        it.
+     *
+     * @details The principal is the id the bearer token validator returned in TokenValidation,
+     * or else `h:` followed by the hex SHA-256 of the request's Authorization header, or empty
+     * when the request had none. It is kept with each queued message, so the requests of
+     * several clients waiting together are each attributed to their own sender.
+     */
+    Task<IncomingMessage> read_incoming() override;
 
     /**
      * @brief Send a JSON-RPC response for the pending HTTP request.

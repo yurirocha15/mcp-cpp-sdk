@@ -259,6 +259,9 @@ struct RequestContext {
     /// 2026-07-28 request (log messages, progress), so a transport can deliver them ahead of the
     /// answer. When unset, they go to the transport of a running session, if any.
     MessageSender notifications;
+    /// Who sent this call, as the transport that carried it authenticated the sender; handlers see
+    /// it as Context::principal(). Empty when unknown.
+    std::string principal;
 };
 
 /**

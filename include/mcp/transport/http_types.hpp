@@ -6,6 +6,7 @@
 #include <boost/beast/http.hpp>
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -47,8 +48,30 @@ using StringRequest = boost::beast::http::request<boost::beast::http::string_bod
  */
 using StringResponse = boost::beast::http::response<boost::beast::http::string_body>;
 
+/**
+ * @brief What a bearer token validator decided about a token.
+ *
+ * A validator may return a plain `bool`, which converts to a TokenValidation without a principal.
+ */
+struct TokenValidation {
+    /// Whether the token is accepted. A refused token is answered `401` with the bearer challenge.
+    bool accepted = false;
+    /// Who the token stands for, such as the subject or client the token was issued to. The
+    /// requests the token carries are attributed to this principal (Context::principal()), so a
+    /// client that refreshes its token keeps its identity. Without one the SDK derives a
+    /// principal from the token itself, which changes when the token does.
+    std::optional<std::string> principal_id;
+
+    /// Accept or refuse without naming a principal.
+    // NOLINTNEXTLINE(google-explicit-constructor)
+    TokenValidation(bool is_accepted) : accepted(is_accepted) {}
+    /// Accept or refuse, naming the principal the token stands for.
+    TokenValidation(bool is_accepted, std::string principal)
+        : accepted(is_accepted), principal_id(std::move(principal)) {}
+};
+
 /// @brief Synchronous validator invoked at the HTTP boundary for a bearer token.
-using BearerTokenValidator = std::function<bool(std::string_view)>;
+using BearerTokenValidator = std::function<TokenValidation(std::string_view)>;
 
 /**
  * @brief Asynchronous validator invoked at the HTTP boundary for a bearer token.
@@ -59,7 +82,7 @@ using BearerTokenValidator = std::function<bool(std::string_view)>;
  * The token is passed by value: a view would point into the Beast request buffer, which is not
  * guaranteed to outlive a suspension.
  */
-using AsyncBearerTokenValidator = std::function<Task<bool>(std::string)>;
+using AsyncBearerTokenValidator = std::function<Task<TokenValidation>(std::string)>;
 
 /**
  * @brief Extract a bearer token from an HTTP Authorization header.

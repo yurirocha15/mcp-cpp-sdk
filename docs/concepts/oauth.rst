@@ -194,7 +194,7 @@ blocking the executor that is concurrently serving MCP traffic:
 .. code-block:: cpp
 
    manager.set_async_bearer_token_validator(
-       [](std::string token) -> mcp::Task<bool> {
+       [](std::string token) -> mcp::Task<mcp::TokenValidation> {
            co_return co_await introspect(std::move(token));
        });
 
@@ -210,13 +210,37 @@ a ``401`` would send the client into re-authorization for a token that may be
 perfectly valid.
 
 The two signatures are exported as :cpp:type:`mcp::BearerTokenValidator`
-(``bool(std::string_view)``) and :cpp:type:`mcp::AsyncBearerTokenValidator`
-(``Task<bool>(std::string)``), so a validator can be stored and passed around
+(``TokenValidation(std::string_view)``) and
+:cpp:type:`mcp::AsyncBearerTokenValidator`
+(``Task<TokenValidation>(std::string)``), so a validator can be stored and passed around
 rather than written inline at the call. Neither is ever handed the
 ``Authorization`` header itself: the transports strip the scheme first with
 :cpp:func:`mcp::http_bearer_token`, which returns the characters after
 ``Bearer`` and an empty view when the scheme is absent, and an empty token is
 rejected before any validator runs.
+
+A validator decides with a :cpp:struct:`mcp::TokenValidation`, which a
+``bool`` converts to. To say who a token stands for, return the principal
+with the decision, for example the token's subject:
+
+.. code-block:: cpp
+
+   manager.set_bearer_token_validator(
+       [](std::string_view token) -> mcp::TokenValidation {
+           const auto subject = lookup_subject(token);  // your own lookup
+           if (!subject) {
+               return false;
+           }
+           return {true, *subject};
+       });
+
+A handler reads it with ``Context::principal()``. Without one from the
+validator, the principal is ``h:`` followed by the hex SHA-256 of the
+request's ``Authorization`` header: it identifies the token without revealing
+it, and it changes when the client refreshes its token, which a principal
+from the validator does not. A request without an ``Authorization`` header
+has an empty principal, and so do the requests of a
+``StreamableHttpSessionManager`` session, which belong to the session.
 
 Health checks and other routes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

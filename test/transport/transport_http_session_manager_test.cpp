@@ -2076,13 +2076,14 @@ TEST_F(SessionManagerTest, AsyncBearerValidatorCanSuspendBeforeDeciding) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
     std::atomic<int> validator_calls{0};
-    manager.set_async_bearer_token_validator([&validator_calls](std::string token) -> mcp::Task<bool> {
-        validator_calls.fetch_add(1, std::memory_order_relaxed);
-        asio::steady_timer timer(co_await asio::this_coro::executor);
-        timer.expires_after(std::chrono::milliseconds(1));
-        co_await timer.async_wait(asio::use_awaitable);
-        co_return token == "valid-token";
-    });
+    manager.set_async_bearer_token_validator(
+        [&validator_calls](std::string token) -> mcp::Task<mcp::TokenValidation> {
+            validator_calls.fetch_add(1, std::memory_order_relaxed);
+            asio::steady_timer timer(co_await asio::this_coro::executor);
+            timer.expires_after(std::chrono::milliseconds(1));
+            co_await timer.async_wait(asio::use_awaitable);
+            co_return token == "valid-token";
+        });
 
     asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
 
@@ -2123,7 +2124,7 @@ TEST_F(SessionManagerTest, ThrowingBearerValidatorIsAnsweredWithAServerError) {
     const unsigned short sync_port = 19155;
     mcp::StreamableHttpSessionManager async_manager(io_ctx_.get_executor(), "127.0.0.1", async_port,
                                                     make_echo_server_factory());
-    async_manager.set_async_bearer_token_validator([](std::string) -> mcp::Task<bool> {
+    async_manager.set_async_bearer_token_validator([](std::string) -> mcp::Task<mcp::TokenValidation> {
         throw std::runtime_error("introspection endpoint unreachable");
         co_return false;
     });
@@ -2178,7 +2179,7 @@ TEST_F(SessionManagerTest, OnlyOneBearerValidatorMayBeInstalled) {
                                               make_echo_server_factory());
     manager.set_bearer_token_validator([](std::string_view) { return true; });
     EXPECT_THROW(manager.set_async_bearer_token_validator(
-                     [](std::string) -> mcp::Task<bool> { co_return true; }),
+                     [](std::string) -> mcp::Task<mcp::TokenValidation> { co_return true; }),
                  std::logic_error);
     manager.close();
 }
