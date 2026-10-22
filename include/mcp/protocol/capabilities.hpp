@@ -80,11 +80,11 @@ constexpr std::array<std::string_view, 4> g_LEGACY_PROTOCOL_VERSIONS = {
 constexpr std::array<std::string_view, 1> g_MODERN_PROTOCOL_VERSIONS = {g_PROTOCOL_VERSION_2026_07_28};
 
 /**
- * @brief Protocol versions a server/discover response advertises.
+ * @brief Every protocol version this SDK knows: the legacy versions, then the modern ones.
  *
- * @details Deliberately distinct from g_LEGACY_PROTOCOL_VERSIONS, which alone governs
- * initialize negotiation. Listing a version here makes no promise to the negotiation
- * path: a legacy peer requesting 2026-07-28 in initialize still negotiates
+ * @details A server serving every era advertises these in server/discover; a
+ * ServerProtocolPolicy narrows the list. Listing a version here makes no promise to initialize
+ * negotiation: a legacy peer requesting 2026-07-28 in initialize still negotiates
  * g_LATEST_LEGACY_PROTOCOL_VERSION.
  */
 constexpr std::array<std::string_view, 5> g_DISCOVERABLE_PROTOCOL_VERSIONS = {

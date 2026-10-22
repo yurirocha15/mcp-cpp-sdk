@@ -28,6 +28,35 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `examples/features/schema_validation.cpp`, which shows each tool schema
   check on the server and the client and exits with a failure status if one
   does not hold.
+- Requests of protocol revision 2026-07-28, which carry their protocol version,
+  client capabilities and optionally client info and log level in `_meta`, are
+  served without `initialize`, alongside a legacy session, by `Server::run()`
+  on stdio, WebSocket and in-memory transports and by
+  `Server::dispatch_request_direct()`. A version the server does not serve, including a legacy one, is
+  answered with `g_UNSUPPORTED_PROTOCOL_VERSION` whose `data` lists the served
+  versions (`UnsupportedProtocolVersionData`); a missing or malformed field
+  with `g_INVALID_PARAMS`; and a method 2026-07-28 does not have (`ping`,
+  `logging/setLevel`, `resources/subscribe`, `resources/unsubscribe`,
+  `shutdown`) with `g_METHOD_NOT_FOUND`. These requests never change a
+  session's lifecycle or log level: a handler logs only at the request's own
+  `io.modelcontextprotocol/logLevel`, and nothing without one, and cannot send
+  requests to the client. `notifications/cancelled` cancels any of them that
+  was read from the session, and the server then sends nothing more for it,
+  not even its response; a 2026-07-28 request given to
+  `Server::dispatch_request_direct()` never sends notifications through the
+  session's transport. `Context::request_meta()` gives handlers the
+  parsed fields (`RequestMetadata`, in `mcp/protocol/request_meta.hpp`, with the
+  `g_META_*` key names) and the whole `_meta`.
+- `ServerProtocolPolicy` and `Server::set_protocol_policy()` choose whether a
+  server serves 2026-07-28 requests, legacy clients, or both (the default),
+  and which legacy versions `initialize` may negotiate. A server serving only
+  2026-07-28 answers `initialize` with `g_METHOD_NOT_FOUND` naming the
+  versions it serves in the message and in `data.supported`. `Server::protocol_rejection_stats()` counts the
+  requests refused for their version or `_meta` fields, separately counting
+  refusals of requests without a protocol version in `_meta`.
+- `Server::dispatch_request_direct()` overload taking a `RequestContext`,
+  whose `cancelled` flag cancels the request. Direct calls are never cancelled
+  by `notifications/cancelled`, so calls that reuse an id stay independent.
 - `g_LEGACY_PROTOCOL_VERSIONS` and `g_LATEST_LEGACY_PROTOCOL_VERSION` for the
   revisions that start a session with `initialize` (2025-11-25 and earlier),
   `g_MODERN_PROTOCOL_VERSIONS` for those served per request (2026-07-28), and
@@ -41,8 +70,15 @@ Versioning; a `0.x` version is a stable release unless its version has an
   the SDK is the top-level CMake project. Added with FetchContent or
   `add_subdirectory`, the SDK no longer builds its tests and examples or needs
   GTest; setting an option still overrides the default.
+- `server/discover` is a 2026-07-28 request: without
+  `io.modelcontextprotocol/protocolVersion` in `_meta` it is answered with
+  `g_INVALID_PARAMS`.
 - `initialize` negotiation uses `g_LEGACY_PROTOCOL_VERSIONS` instead of
   `g_SUPPORTED_PROTOCOL_VERSIONS`, which keeps its value.
+- Before `notifications/initialized`, a session serves a request that carries
+  a 2026-07-28 protocol version in `_meta` instead of answering it with
+  `g_INVALID_REQUEST`; `server/discover` is exempt from the initialization
+  sequence only as such a request.
 - `tools/call` naming an unknown tool and `prompts/get` naming an unknown
   prompt are answered with `g_INVALID_PARAMS` (`-32602`), as the tools and
   prompts specifications list, instead of `g_METHOD_NOT_FOUND` (`-32601`).
@@ -70,6 +106,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `structuredContent` of a successful result against the tool's listed
   `outputSchema` and throws `StructuredContentError` when it does not conform.
   `ClientOptions::validate_tool_schemas = false` turns both off.
+- `notifications/cancelled` marks any request the session is still serving as
+  cancelled, so `Context::is_cancelled()` turns true in resource and prompt
+  handlers too, not only in tools. The response of a request of
+  2025-11-25 or earlier is still sent.
 
 ### Fixed
 

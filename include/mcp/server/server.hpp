@@ -26,6 +26,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace mcp {
 
@@ -149,6 +150,53 @@ struct ToolValidationStats {
     std::uint64_t argument_rejections = 0;  ///< Calls whose arguments did not conform.
     /// Calls whose result's `structuredContent` did not conform to the output schema.
     std::uint64_t structured_content_rejections = 0;
+};
+
+/**
+ * @brief Which protocol revisions a Server serves (see Server::set_protocol_policy()).
+ *
+ * @details A request that carries its protocol version in `_meta` (2026-07-28 and later) is
+ * served on its own, without initialize. A client of 2025-11-25 or earlier starts a session with
+ * initialize. By default a Server serves both, on the same transport.
+ */
+struct ServerProtocolPolicy {
+    /// Serve requests that carry their protocol version in `_meta`. When false, every such
+    /// request is answered with `g_UNSUPPORTED_PROTOCOL_VERSION`.
+    bool serve_modern = true;
+    /// Serve clients that start a session with initialize. When false, initialize is answered
+    /// with `g_METHOD_NOT_FOUND` naming the versions served in its message and in
+    /// `data.supported`, and any other request without a protocol version in `_meta` with
+    /// `g_INVALID_PARAMS`.
+    bool serve_legacy = true;
+    /// The versions initialize may negotiate, each one of g_LEGACY_PROTOCOL_VERSIONS. Unset
+    /// means all of them. An initialize asking for another version negotiates the newest one
+    /// listed.
+    std::optional<std::vector<std::string>> legacy_versions;
+};
+
+/**
+ * @brief Requests a Server refused for their protocol version or per-request protocol fields
+ * (see Server::protocol_rejection_stats()).
+ */
+struct ProtocolRejectionStats {
+    /// Requests whose required `_meta` fields were missing or malformed (`g_INVALID_PARAMS`).
+    std::uint64_t invalid_metadata = 0;
+    /// Requests naming a protocol version the server does not serve
+    /// (`g_UNSUPPORTED_PROTOCOL_VERSION`).
+    std::uint64_t unsupported_version = 0;
+    /// Refusals of requests that name no protocol version in `_meta`: server/discover without
+    /// one, and, when legacy clients are not served, initialize and every other such request. A
+    /// legacy client turned away shows up here and nowhere else.
+    std::uint64_t legacy_shaped = 0;
+};
+
+/**
+ * @brief Per-call state for Server::dispatch_request_direct().
+ */
+struct RequestContext {
+    /// Cancellation flag for this call: setting it cancels the request, and its handler sees it
+    /// through Context::is_cancelled(). When null, the call gets a flag of its own.
+    std::shared_ptr<std::atomic<bool>> cancelled;
 };
 
 /**
@@ -399,6 +447,24 @@ class MCP_API Server {
     void set_discover_cache_scope(CacheScope scope);
 
     /**
+     * @brief Choose which protocol revisions this server serves.
+     *
+     * @details Takes effect for every transport. Must be called before the server serves its
+     * first request.
+     *
+     * @param policy The revisions to serve.
+     * @throws std::invalid_argument If neither era is served, if legacy clients are served with
+     *         an empty `legacy_versions`, or if `legacy_versions` names a version that is not one
+     *         of g_LEGACY_PROTOCOL_VERSIONS.
+     * @throws std::logic_error If the server has already served a request or run() has started.
+     */
+    void set_protocol_policy(ServerProtocolPolicy policy);
+
+    /// Requests refused for their protocol version or per-request protocol fields since this
+    /// server was created.
+    [[nodiscard]] ProtocolRejectionStats protocol_rejection_stats() const;
+
+    /**
      * @brief Send a JSON-RPC request to the connected client and await its response.
      *
      * @param method JSON-RPC method name.
@@ -492,6 +558,8 @@ class MCP_API Server {
      * Used by stateless HTTP JSON mode to avoid creating a transport-backed
      * server session for request/response messages. The request envelope is
      * validated, but no stateful initialize/initialized handshake is required.
+     * A request that carries its protocol version in `_meta` is served as a 2026-07-28
+     * request: its version and per-request fields are checked.
      *
      * @details Request parameter decoding failures are returned as `g_INVALID_PARAMS` (-32602).
      * Exceptions thrown by middleware, or by resource, prompt and completion handlers, are
@@ -504,6 +572,22 @@ class MCP_API Server {
      * The Server object must outlive the returned task.
      */
     Task<std::string> dispatch_request_direct(nlohmann::json json_msg);
+
+    /**
+     * @brief Dispatch a parsed JSON-RPC request with per-call state and return its serialized
+     * response.
+     *
+     * @details As the one-argument overload. A `tools/call` is cancelled through
+     * `request_context.cancelled`, never through notifications/cancelled, so concurrent calls
+     * that reuse a request id stay independent.
+     *
+     * @param json_msg The parsed JSON-RPC request object.
+     * @param request_context Per-call state.
+     * @return A task that resolves to the serialized JSON-RPC response.
+     *
+     * The Server object must outlive the returned task.
+     */
+    Task<std::string> dispatch_request_direct(nlohmann::json json_msg, RequestContext request_context);
 
     /**
      * @brief Check whether the server has been initialized.
@@ -569,7 +653,8 @@ class MCP_API Server {
     /**
      * @brief Get the currently active server log level.
      *
-     * @return The log level used when filtering context log messages.
+     * @return The log level used when filtering context log messages of requests of 2025-11-25
+     * and earlier. A 2026-07-28 request is filtered by its own io.modelcontextprotocol/logLevel.
      */
     [[nodiscard]] LoggingLevel get_log_level() const;
 

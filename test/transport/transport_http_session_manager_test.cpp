@@ -1,3 +1,5 @@
+#include "../test_utils.hpp"
+
 #include "mcp/auth/oauth.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/transport/http_client.hpp"
@@ -1133,7 +1135,7 @@ TEST_F(SessionManagerTest, SessionlessDiscoverReturns200WithoutCreatingSession) 
     asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            json request = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "server/discover"}};
+            json request = make_discover_request(1);
             response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
                                             request.dump());  // no session_id
             session_count = manager.session_count();
@@ -1178,7 +1180,7 @@ TEST_F(SessionManagerTest, SessionlessDiscoversShareOneServer) {
         io_ctx_,
         [&]() -> mcp::Task<void> {
             for (int id = 1; id <= 3; ++id) {
-                json request = {{"jsonrpc", "2.0"}, {"id", id}, {"method", "server/discover"}};
+                json request = make_discover_request(id);
                 auto response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
                                                      "/mcp", request.dump());
                 statuses.push_back(response.status);
@@ -1214,7 +1216,7 @@ TEST_F(SessionManagerTest, SessionlessDiscoverStaysReachableAfterSessionEstablis
         [&]() -> mcp::Task<void> {
             init_response = co_await do_initialize(io_ctx_.get_executor(), port);
 
-            json request = {{"jsonrpc", "2.0"}, {"id", 2}, {"method", "server/discover"}};
+            json request = make_discover_request(2);
             discover_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
                                                      "/mcp", request.dump());  // no session id
             session_count_after = manager.session_count();
@@ -1256,7 +1258,7 @@ TEST_F(SessionManagerTest, SessionlessDiscoverAcceptsUnsupportedProtocolVersionH
     asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            json request = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "server/discover"}};
+            json request = make_discover_request(1);
             response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
                                             request.dump(), {}, "2026-07-28");
             manager.close();
@@ -1291,7 +1293,7 @@ TEST_F(SessionManagerTest,
     asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            json discover_request = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "server/discover"}};
+            json discover_request = make_discover_request(1);
             discover_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
                                                      "/mcp", discover_request.dump(), {}, "2026-07-28");
 
