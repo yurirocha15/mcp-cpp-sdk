@@ -133,6 +133,24 @@ Versioning; a `0.x` version is a stable release unless its version has an
   checks `Mcp-Param-*` headers and drops the notifications of 2026-07-28
   requests. It returns null by default. Adding it changes the layout of
   `ITransport`'s virtual table.
+- `StreamableHttpSessionManager` streams the answer to a 2026-07-28 request:
+  when a handler sends a notification (a log message at the request's own
+  `logLevel`, or progress) and the client accepts `text/event-stream` over
+  HTTP/1.1, the answer becomes a chunked SSE stream without event ids that
+  carries the notifications and then the response, with
+  `X-Accel-Buffering: no` and periodic keep-alive comments. Otherwise it is
+  plain JSON as before, except that a client that accepts SSE and half-closes
+  its connection gets a stream too, and the notifications are dropped. A
+  client that resets its connection while its request runs cancels the
+  request, before or after a half-close; after a half-close the stream is
+  probed with comments until a write fails, which cancels it too, and
+  closing the manager cancels it. Requests pipelined before a half-close are
+  all answered, and the connection then ends. `set_stream_options()` (`StreamOptions`) sets the keep-alive
+  and probe intervals and the queued-notification limit, and
+  `stream_stats()` (`StreamStats`) counts streams, cancellations, probes and
+  dropped notifications. Bytes of a pipelined request that arrive while a
+  request runs are kept for the next one. `RequestContext::notifications`
+  receives a 2026-07-28 request's notifications on a direct dispatch.
 
 ### Changed
 

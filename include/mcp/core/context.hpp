@@ -151,7 +151,9 @@ class Context {
      * @brief Check whether the current request has been cancelled.
      *
      * @return true once the request has been cancelled: by notifications/cancelled for this
-     * request's ID, or through the cancellation flag given to Server::dispatch_request_direct().
+     * request's ID, by the client disconnecting while a 2026-07-28 request runs on
+     * StreamableHttpSessionManager, or through the cancellation flag given to
+     * Server::dispatch_request_direct().
      */
     [[nodiscard]] bool is_cancelled() const {
         if (cancelled_) {

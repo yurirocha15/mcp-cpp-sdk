@@ -10,6 +10,7 @@
 #include <mcp/transport/http_session_manager.hpp>
 #include <mcp/transport/memory.hpp>
 
+#include <boost/asio/bind_executor.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/ip/address.hpp>
@@ -19,12 +20,14 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/write.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <deque>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -38,6 +41,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace mcp {
@@ -61,6 +65,65 @@ struct PendingResponse {
 struct PendingResult {
     std::optional<std::string> response_body;
     SseEventList stream_events;
+};
+
+/// The answer to a 2026-07-28 request while it is produced: the notifications its handler sends
+/// and, once the server has answered, the response. Filled from the dispatch executor and read on
+/// the connection's strand, which owns `signal`.
+struct ModernExchange : std::enable_shared_from_this<ModernExchange> {
+    ModernExchange(boost::asio::strand<boost::asio::any_io_executor> strand_arg,
+                   std::size_t max_queued_arg, bool streams_arg)
+        : strand(std::move(strand_arg)),
+          signal(strand),
+          max_queued(max_queued_arg),
+          streams(streams_arg) {
+        signal.expires_at(std::chrono::steady_clock::time_point::max());
+    }
+
+    /// Wakes the connection; posted because `signal` and `woken` belong to the strand.
+    void wake() {
+        boost::asio::post(strand, [self = shared_from_this()] { self->wake_on_strand(); });
+    }
+
+    /// The connection may be busy writing rather than waiting, when cancelling the timer does
+    /// nothing; `woken` keeps the wake for its next wait.
+    void wake_on_strand() {
+        woken = true;
+        signal.cancel();
+    }
+
+    /// Queues a notification for the stream, or returns false when the queue is full.
+    bool push_notification(std::string message) {
+        {
+            std::lock_guard lock(mutex);
+            if (notifications.size() >= max_queued) {
+                return false;
+            }
+            notifications.push_back(std::move(message));
+        }
+        wake();
+        return true;
+    }
+
+    void finish(std::string response_wire) {
+        {
+            std::lock_guard lock(mutex);
+            response = std::move(response_wire);
+        }
+        wake();
+    }
+
+    boost::asio::strand<boost::asio::any_io_executor> strand;
+    boost::asio::steady_timer signal;
+    bool woken{false};
+    const std::size_t max_queued;
+    /// Whether the answer may become an SSE stream: the client accepts one over HTTP/1.1.
+    const bool streams;
+    std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
+
+    std::mutex mutex;
+    std::deque<std::string> notifications;  // guarded by mutex
+    std::optional<std::string> response;    // guarded by mutex
 };
 
 struct SessionRuntime {
@@ -235,6 +298,18 @@ struct StreamableHttpSessionManager::Impl {
     std::shared_ptr<Server> modern_server_;
     std::optional<ServerProtocolPolicy> protocol_policy_;
     std::atomic<std::uint64_t> header_mismatch_rejections_{0};
+    StreamOptions stream_options_;
+    struct StreamCounters {
+        std::atomic<std::uint64_t> streams_opened{0};
+        std::atomic<std::uint64_t> disconnect_cancels{0};
+        std::atomic<std::uint64_t> half_close_probes{0};
+        std::atomic<std::uint64_t> dropped_notifications{0};
+    };
+    std::shared_ptr<StreamCounters> stream_counters_ = std::make_shared<StreamCounters>();
+
+    /// A request handled by handle_request: a complete response, or the answer to a 2026-07-28
+    /// request that serve_modern_exchange writes as it is produced.
+    using Reply = std::variant<StringResponse, std::shared_ptr<detail_session_mgr::ModernExchange>>;
 
     Impl(const boost::asio::any_io_executor& exec, std::string host_arg, unsigned short port_arg,
          StreamableHttpSessionManager::ServerFactory factory_arg, std::size_t capacity)
@@ -457,13 +532,33 @@ struct StreamableHttpSessionManager::Impl {
         auto& stream = *connection;
         beast::flat_buffer request_buffer;
         std::unique_ptr<Server> stateless_server;
+        // Set once a watch has read the client's end of the stream. That end is consumed: a later
+        // read on this connection would wait for an event that already happened.
+        bool client_finished_sending = false;
 
         for (;;) {
             http::request_parser<http::string_body> parser;
             parser.body_limit(max_request_body_bytes_);
             bool body_too_large = false;
             try {
-                co_await http::async_read(stream, request_buffer, parser, boost::asio::use_awaitable);
+                if (client_finished_sending) {
+                    // Only what the watch read ahead can still arrive: serve the requests it holds
+                    // whole, and end the connection at the first that is not.
+                    boost::system::error_code parse_error;
+                    // Without eager, put() stops after the header and a whole buffered body would
+                    // read as an incomplete request.
+                    parser.eager(true);
+                    request_buffer.consume(parser.put(request_buffer.data(), parse_error));
+                    if (parse_error == http::error::body_limit) {
+                        throw boost::system::system_error(parse_error);
+                    }
+                    if (parse_error || !parser.is_done()) {
+                        break;
+                    }
+                } else {
+                    co_await http::async_read(stream, request_buffer, parser,
+                                              boost::asio::use_awaitable);
+                }
             } catch (const boost::system::system_error& err) {
                 if (err.code() == boost::asio::error::eof ||
                     err.code() == boost::asio::error::connection_reset ||
@@ -488,10 +583,22 @@ struct StreamableHttpSessionManager::Impl {
                 break;
             }
 
-            auto response = co_await handle_request(request, conn_strand, stateless_server);
+            auto reply = co_await handle_request(request, conn_strand, stateless_server);
             if (closed.load(std::memory_order_acquire)) {
+                if (auto* exchange = std::get_if<1>(&reply)) {
+                    (*exchange)->cancelled->store(true, std::memory_order_relaxed);
+                }
                 break;
             }
+            if (auto* exchange = std::get_if<1>(&reply)) {
+                const bool keep_serving = co_await serve_modern_exchange(
+                    stream, request_buffer, request, *exchange, client_finished_sending);
+                if (!keep_serving) {
+                    break;
+                }
+                continue;
+            }
+            auto& response = std::get<0>(reply);
             const bool keep_connection_alive = response.keep_alive();
             co_await http::async_write(stream, response, boost::asio::use_awaitable);
 
@@ -536,9 +643,9 @@ struct StreamableHttpSessionManager::Impl {
                                                       protected_resource_metadata_body_);
     }
 
-    Task<StringResponse> handle_request(const StringRequest& request,
-                                        boost::asio::strand<boost::asio::any_io_executor> conn_strand,
-                                        std::unique_ptr<Server>& stateless_server) {
+    Task<Reply> handle_request(const StringRequest& request,
+                               boost::asio::strand<boost::asio::any_io_executor> conn_strand,
+                               std::unique_ptr<Server>& stateless_server) {
         if (closed.load(std::memory_order_acquire)) {
             co_return detail_session_mgr::make_error_response(
                 request, http::status::service_unavailable, "Transport closed");
@@ -676,12 +783,6 @@ struct StreamableHttpSessionManager::Impl {
         co_return co_await server->dispatch_request_direct(std::move(request_json));
     }
 
-    static Task<std::string> dispatch_on_executor(Server* server, nlohmann::json request_json,
-                                                  RequestContext request_context) {
-        co_return co_await server->dispatch_request_direct(std::move(request_json),
-                                                           std::move(request_context));
-    }
-
     Task<StringResponse> handle_stateless_post(const StringRequest& request,
                                                nlohmann::json request_json,
                                                std::unique_ptr<Server>& stateless_server) {
@@ -719,8 +820,9 @@ struct StreamableHttpSessionManager::Impl {
     ///
     /// @p check_headers is false for a request that names no 2026-07-28 version and reaches here
     /// only because legacy clients are not served; the server refuses it.
-    Task<StringResponse> handle_modern_post(const StringRequest& request, nlohmann::json request_json,
-                                            bool check_headers) {
+    Task<Reply> handle_modern_post(const StringRequest& request, nlohmann::json request_json,
+                                   bool check_headers,
+                                   boost::asio::strand<boost::asio::any_io_executor> conn_strand) {
         if (closed.load(std::memory_order_acquire)) {
             co_return detail_session_mgr::make_error_response(
                 request, http::status::service_unavailable, "Transport closed");
@@ -751,22 +853,306 @@ struct StreamableHttpSessionManager::Impl {
             }
         }
 
+        const auto accept_it = request.find(http::field::accept);
+        const bool streams = !json_only_mode_->load(std::memory_order_acquire) &&
+                             request.version() >= 11 && accept_it != request.end() &&
+                             detail::to_std_string_view(accept_it->value()).find("text/event-stream") !=
+                                 std::string_view::npos;
+        auto exchange = std::make_shared<detail_session_mgr::ModernExchange>(
+            conn_strand, stream_options_.max_queued_notifications, streams);
+
         RequestContext request_context;
+        request_context.cancelled = exchange->cancelled;
         if (check_headers) {
             request_context.param_headers = detail::mcp_param_headers(request);
         }
-        const auto dispatch_executor = tool_executor_ ? tool_executor_ : executor;
-        auto server = modern_server();
-        auto response_body = co_await boost::asio::co_spawn(
-            dispatch_executor,
-            dispatch_on_executor(server.get(), std::move(request_json), std::move(request_context)),
-            boost::asio::use_awaitable);
-        const auto error_code = detail::response_error_code(response_body);
-        if (error_code == g_HEADER_MISMATCH) {
-            header_mismatch_rejections_.fetch_add(1, std::memory_order_relaxed);
+        if (streams) {
+            request_context.notifications = [weak = std::weak_ptr(exchange),
+                                             counters = stream_counters_](std::string_view message) {
+                if (auto target = weak.lock();
+                    target && !target->push_notification(std::string(message))) {
+                    counters->dropped_notifications.fetch_add(1, std::memory_order_relaxed);
+                }
+                return notification_queued();
+            };
         }
-        const auto status = error_code ? detail::http_status_for_error(*error_code) : http::status::ok;
-        co_return detail_session_mgr::make_json_response(request, status, std::move(response_body));
+
+        // The server answers on the dispatch executor while the connection watches the client, so
+        // a client that goes away cancels the request.
+        const auto dispatch_executor = tool_executor_ ? tool_executor_ : executor;
+        auto request_id = request_json.at("id");
+        boost::asio::co_spawn(
+            dispatch_executor,
+            dispatch_modern(modern_server(), std::move(request_json), std::move(request_context)),
+            [exchange, request_id = std::move(request_id)](std::exception_ptr error, std::string wire) {
+                if (error) {
+                    wire = nlohmann::json{{"jsonrpc", "2.0"},
+                                          {"id", request_id},
+                                          {"error",
+                                           {{"code", g_INTERNAL_ERROR}, {"message", "Internal error"}}}}
+                               .dump();
+                }
+                exchange->finish(std::move(wire));
+            });
+        co_return exchange;
+    }
+
+    static Task<void> notification_queued() { co_return; }
+
+    /// Takes the server by value, so it outlives a connection that ends before the answer does.
+    static Task<std::string> dispatch_modern(std::shared_ptr<Server> server,
+                                             nlohmann::json request_json,
+                                             RequestContext request_context) {
+        co_return co_await server->dispatch_request_direct(std::move(request_json),
+                                                           std::move(request_context));
+    }
+
+    /// Bytes a watch reads ahead while a request runs; they belong to the client's next request.
+    static constexpr std::size_t g_watch_read_size = 4096;
+    /// Read-ahead held at once; past this the watch stops until the request is answered.
+    static constexpr std::size_t g_max_read_ahead = 64 * 1024;
+
+    static Task<bool> write_chunk(Connection& stream, const std::string& text) {
+        boost::system::error_code error;
+        co_await boost::asio::async_write(
+            stream, http::make_chunk(boost::asio::buffer(text)),
+            boost::asio::redirect_error(boost::asio::use_awaitable, error));
+        co_return !error;
+    }
+
+    static Task<bool> open_stream(Connection& stream, const StringRequest& request) {
+        http::response<http::empty_body> header{http::status::ok, request.version()};
+        header.set(http::field::server, "mcp-cpp-sdk");
+        header.set(http::field::content_type, "text/event-stream");
+        header.set(http::field::cache_control, "no-cache");
+        header.set("X-Accel-Buffering", "no");
+        header.keep_alive(request.keep_alive());
+        header.chunked(true);
+        http::response_serializer<http::empty_body> serializer{header};
+        boost::system::error_code error;
+        co_await http::async_write_header(
+            stream, serializer, boost::asio::redirect_error(boost::asio::use_awaitable, error));
+        co_return !error;
+    }
+
+    /// Waits for a wake for at most @p timeout; returns true when the time ran out.
+    static Task<bool> wait_for_signal(detail_session_mgr::ModernExchange& exchange,
+                                      std::optional<std::chrono::milliseconds> timeout) {
+        if (exchange.woken) {
+            exchange.woken = false;
+            co_return false;
+        }
+        if (timeout) {
+            exchange.signal.expires_after(*timeout);
+        } else {
+            exchange.signal.expires_at(std::chrono::steady_clock::time_point::max());
+        }
+        boost::system::error_code error;
+        co_await exchange.signal.async_wait(
+            boost::asio::redirect_error(boost::asio::use_awaitable, error));
+        exchange.woken = false;
+        co_return !error;
+    }
+
+    /// Writes the answer to a 2026-07-28 request as it is produced. Plain JSON, with the status the
+    /// specification gives its error, unless a notification arrives first and the client accepts
+    /// SSE: then an SSE stream carrying the notifications and finally the response. Meanwhile one
+    /// read on the connection watches the client. Bytes it reads are the client's next request and
+    /// stay in @p buffer; a reset, or a failed write, means the client has gone and cancels the
+    /// request. A half-close is not a disconnect, since the client may still be reading: the
+    /// stream is opened and probed until a write fails or the answer is complete.
+    ///
+    /// @return Whether the connection may carry another request.
+    Task<bool> serve_modern_exchange(Connection& stream, beast::flat_buffer& buffer,
+                                     const StringRequest& request,
+                                     std::shared_ptr<detail_session_mgr::ModernExchange> exchange,
+                                     bool& client_finished_sending) {
+        struct Watch {
+            bool armed{false};
+            bool completed{false};
+            boost::system::error_code error;
+        };
+        auto watch = std::make_shared<Watch>();
+        const auto arm_watch = [&stream, &buffer, &watch, &exchange] {
+            watch->armed = true;
+            watch->completed = false;
+            stream.async_read_some(
+                buffer.prepare(g_watch_read_size),
+                boost::asio::bind_executor(
+                    exchange->strand, [watch, exchange, &buffer](const boost::system::error_code& error,
+                                                                 std::size_t bytes) {
+                        if (!error) {
+                            buffer.commit(bytes);
+                        }
+                        watch->armed = false;
+                        watch->completed = true;
+                        watch->error = error;
+                        exchange->wake_on_strand();
+                    }));
+        };
+
+        // Once the client's end of the stream is read there is nothing more to read, but a reset
+        // or this side closing the socket still ends the wait, and so wakes the loop.
+        const auto arm_error_wait = [&stream, &watch, &exchange] {
+            watch->armed = true;
+            watch->completed = false;
+            stream.socket().async_wait(
+                boost::asio::ip::tcp::socket::wait_error,
+                boost::asio::bind_executor(
+                    exchange->strand, [watch, exchange](const boost::system::error_code& error) {
+                        watch->armed = false;
+                        watch->completed = true;
+                        watch->error = error ? error : boost::asio::error::connection_reset;
+                        exchange->wake_on_strand();
+                    }));
+        };
+
+        bool stream_open = false;
+        bool half_closed = client_finished_sending;
+        bool client_gone = false;
+        if (half_closed) {
+            arm_error_wait();
+        } else {
+            arm_watch();
+        }
+
+        for (;;) {
+            std::deque<std::string> notifications;
+            std::optional<std::string> response;
+            {
+                std::lock_guard lock(exchange->mutex);
+                notifications.swap(exchange->notifications);
+                response.swap(exchange->response);
+            }
+
+            if (closed.load(std::memory_order_acquire)) {
+                client_gone = true;
+                break;
+            }
+
+            if (!notifications.empty() && exchange->streams) {
+                if (!stream_open) {
+                    const bool opened = co_await open_stream(stream, request);
+                    if (!opened) {
+                        client_gone = true;
+                        break;
+                    }
+                    stream_open = true;
+                    stream_counters_->streams_opened.fetch_add(1, std::memory_order_relaxed);
+                }
+                std::string events;
+                for (const auto& notification : notifications) {
+                    events += "data: ";
+                    events += notification;
+                    events += "\n\n";
+                }
+                const bool written = co_await write_chunk(stream, events);
+                if (!written) {
+                    client_gone = true;
+                    break;
+                }
+            }
+
+            if (response) {
+                if (watch->armed) {
+                    boost::system::error_code ignored;
+                    (void)stream.socket().cancel(ignored);
+                    while (watch->armed) {
+                        co_await wait_for_signal(*exchange, std::nullopt);
+                    }
+                }
+                if (watch->completed && watch->error == boost::asio::error::eof) {
+                    half_closed = true;
+                    client_finished_sending = true;
+                }
+                const auto error_code = detail::response_error_code(*response);
+                if (error_code == g_HEADER_MISMATCH) {
+                    header_mismatch_rejections_.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (stream_open) {
+                    const bool written = co_await write_chunk(stream, "data: " + *response + "\n\n");
+                    boost::system::error_code error;
+                    if (written) {
+                        co_await boost::asio::async_write(
+                            stream, http::make_chunk_last(),
+                            boost::asio::redirect_error(boost::asio::use_awaitable, error));
+                    }
+                    co_return written && !error && request.keep_alive() &&
+                        (!half_closed || buffer.size() != 0);
+                }
+                const auto status =
+                    error_code ? detail::http_status_for_error(*error_code) : http::status::ok;
+                auto plain =
+                    detail_session_mgr::make_json_response(request, status, std::move(*response));
+                boost::system::error_code error;
+                co_await http::async_write(
+                    stream, plain, boost::asio::redirect_error(boost::asio::use_awaitable, error));
+                co_return !error && plain.keep_alive() && (!half_closed || buffer.size() != 0);
+            }
+
+            if (watch->completed) {
+                watch->completed = false;
+                if (!watch->error) {
+                    if (buffer.size() < g_max_read_ahead) {
+                        arm_watch();
+                    }
+                } else if (watch->error == boost::asio::error::eof) {
+                    half_closed = true;
+                    client_finished_sending = true;
+                    arm_error_wait();
+                } else {
+                    client_gone = true;
+                    break;
+                }
+            }
+
+            std::optional<std::chrono::milliseconds> timeout;
+            if (half_closed && exchange->streams) {
+                timeout = stream_options_.disconnect_probe_interval;
+            } else if (stream_open) {
+                timeout = stream_options_.keepalive_interval;
+            }
+            const bool signalled = co_await wait_for_signal(*exchange, timeout);
+            if (!signalled) {
+                continue;
+            }
+            if (half_closed && exchange->streams) {
+                if (!stream_open) {
+                    const bool opened = co_await open_stream(stream, request);
+                    if (!opened) {
+                        client_gone = true;
+                        break;
+                    }
+                    stream_open = true;
+                    stream_counters_->streams_opened.fetch_add(1, std::memory_order_relaxed);
+                }
+                stream_counters_->half_close_probes.fetch_add(1, std::memory_order_relaxed);
+                const bool probed = co_await write_chunk(stream, ": probe\n\n");
+                if (!probed) {
+                    client_gone = true;
+                    break;
+                }
+            } else if (stream_open) {
+                const bool kept_alive = co_await write_chunk(stream, ": keep-alive\n\n");
+                if (!kept_alive) {
+                    client_gone = true;
+                    break;
+                }
+            }
+        }
+
+        if (client_gone) {
+            exchange->cancelled->store(true, std::memory_order_relaxed);
+            stream_counters_->disconnect_cancels.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (watch->armed) {
+            boost::system::error_code ignored;
+            (void)stream.socket().cancel(ignored);
+            while (watch->armed) {
+                co_await wait_for_signal(*exchange, std::nullopt);
+            }
+        }
+        co_return false;
     }
 
     std::variant<std::shared_ptr<detail_session_mgr::SessionRuntime>, StringResponse>
@@ -858,9 +1244,9 @@ struct StreamableHttpSessionManager::Impl {
         co_return response;
     }
 
-    Task<StringResponse> handle_post(const StringRequest& request,
-                                     boost::asio::strand<boost::asio::any_io_executor> conn_strand,
-                                     std::unique_ptr<Server>& stateless_server) {
+    Task<Reply> handle_post(const StringRequest& request,
+                            boost::asio::strand<boost::asio::any_io_executor> conn_strand,
+                            std::unique_ptr<Server>& stateless_server) {
         if (closed.load(std::memory_order_acquire)) {
             co_return detail_session_mgr::make_error_response(
                 request, http::status::service_unavailable, "Transport closed");
@@ -875,10 +1261,10 @@ struct StreamableHttpSessionManager::Impl {
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         if (detail::is_modern_http_request(request_json,
                                            detail::http_header(request, "MCP-Protocol-Version"))) {
-            co_return co_await handle_modern_post(request, std::move(request_json), true);
+            co_return co_await handle_modern_post(request, std::move(request_json), true, conn_strand);
         }
         if (protocol_policy_ && !protocol_policy_->serve_legacy) {
-            co_return co_await handle_modern_post(request, std::move(request_json), false);
+            co_return co_await handle_modern_post(request, std::move(request_json), false, conn_strand);
         }
 
         const bool is_initialize = detail_session_mgr::is_initialize_request(request_json);
@@ -1317,6 +1703,26 @@ std::shared_ptr<Server> StreamableHttpSessionManager::modern_server() { return i
 
 std::uint64_t StreamableHttpSessionManager::header_mismatch_rejections() const {
     return impl_->header_mismatch_rejections_.load(std::memory_order_relaxed);
+}
+
+void StreamableHttpSessionManager::set_stream_options(StreamOptions options) {
+    if (options.keepalive_interval.count() <= 0 || options.disconnect_probe_interval.count() <= 0) {
+        throw std::invalid_argument("Stream intervals must be positive");
+    }
+    if (options.max_queued_notifications == 0) {
+        throw std::invalid_argument("Stream notification queue limit must be at least 1");
+    }
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    impl_->stream_options_ = options;
+}
+
+StreamStats StreamableHttpSessionManager::stream_stats() const {
+    const auto& counters = *impl_->stream_counters_;
+    return {counters.streams_opened.load(std::memory_order_relaxed),
+            counters.disconnect_cancels.load(std::memory_order_relaxed),
+            counters.half_close_probes.load(std::memory_order_relaxed),
+            counters.dropped_notifications.load(std::memory_order_relaxed)};
 }
 
 void StreamableHttpSessionManager::close() {
