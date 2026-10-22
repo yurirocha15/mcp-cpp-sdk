@@ -346,7 +346,7 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
 
     mcp::Client client(transport, io_ctx_.get_executor());
 
-    mcp::InitializeResult init_result;
+    mcp::ConnectResult init_result;
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
@@ -376,8 +376,8 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
     EXPECT_EQ(second["jsonrpc"], "2.0");
 
     EXPECT_EQ(init_result.protocolVersion, std::string(mcp::g_LATEST_PROTOCOL_VERSION));
-    EXPECT_EQ(init_result.serverInfo.name, "test-server");
-    EXPECT_EQ(init_result.serverInfo.version, "1.0");
+    EXPECT_EQ(init_result.serverInfo->name, "test-server");
+    EXPECT_EQ(init_result.serverInfo->version, "1.0");
 }
 
 TEST_F(ClientCoreTest, NullIdErrorDoesNotStopReadLoop) {
@@ -401,7 +401,7 @@ TEST_F(ClientCoreTest, NullIdErrorDoesNotStopReadLoop) {
     });
 
     mcp::Client client(transport, io_ctx_.get_executor());
-    mcp::InitializeResult result;
+    mcp::ConnectResult result;
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
@@ -412,7 +412,7 @@ TEST_F(ClientCoreTest, NullIdErrorDoesNotStopReadLoop) {
 
     io_ctx_.run();
 
-    EXPECT_EQ(result.serverInfo.name, "test-server");
+    EXPECT_EQ(result.serverInfo->name, "test-server");
 }
 
 TEST_F(ClientCoreTest, SendRequestErrorResponseThrows) {
@@ -656,7 +656,7 @@ TEST_F(ClientCoreTest, ConnectReturnsServerCapabilities) {
 
     mcp::Client client(transport, io_ctx_.get_executor());
 
-    mcp::InitializeResult init_result;
+    mcp::ConnectResult init_result;
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
@@ -671,7 +671,7 @@ TEST_F(ClientCoreTest, ConnectReturnsServerCapabilities) {
     io_ctx_.run();
 
     EXPECT_EQ(init_result.protocolVersion, std::string(mcp::g_LATEST_PROTOCOL_VERSION));
-    EXPECT_EQ(init_result.serverInfo.name, "test-server");
+    EXPECT_EQ(init_result.serverInfo->name, "test-server");
     ASSERT_TRUE(init_result.instructions.has_value());
     EXPECT_EQ(*init_result.instructions, "Welcome to the test server");
     ASSERT_TRUE(init_result.capabilities.tools.has_value());

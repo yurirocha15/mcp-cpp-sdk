@@ -186,6 +186,30 @@ Versioning; a `0.x` version is a stable release unless its version has an
   up throws from its question and its answer is discarded. A cancelled retry
   cancels the handler, and its notifications go to the request that carries it
   now, with that request's progress token.
+- The client detects the server's protocol era and speaks both.
+  `ClientOptions::protocol` takes `ClientProtocol::Auto()`, `Legacy()` (the
+  default for now) or `Version("...")`. `Auto()` sends `server/discover`
+  first: a `DiscoverResult` or a modern protocol error
+  (`g_UNSUPPORTED_PROTOCOL_VERSION`, `g_HEADER_MISMATCH`,
+  `g_MISSING_REQUIRED_CLIENT_CAPABILITY`) means a 2026-07-28 server, while any
+  other error (including `-32601` and `-32602`), a reply that is not JSON, or
+  no reply within `ClientOptions::probe_timeout` (3 s) means a legacy one and
+  the client sends `initialize`. A server that refuses `initialize` naming
+  modern versions after a timed-out probe is probed once more.
+  `ClientOptions::on_era_decision` reports each decision (`EraDecision`,
+  `EraReason`). In a modern session every request carries
+  `io.modelcontextprotocol/protocolVersion`, `clientCapabilities` (the
+  capabilities given to `connect()` plus what the registered handlers imply),
+  `clientInfo` and, when `RequestOptions::log_level` is set, `logLevel` in
+  `_meta`, merged with the caller's own `_meta` entries. In that session
+  `ping()` and the removed subscription and log-level methods fail locally,
+  `set_roots()` sends no list-changed notification, and a result whose
+  `resultType` is neither absent nor `"complete"` fails with `McpError`.
+  `Client::cancel()` ends the wait for the request at once (it fails with
+  `g_REQUEST_CANCELLED`) and a response that arrives anyway is dropped. A
+  request that times out is cancelled with `notifications/cancelled`. Over
+  HTTP, `Auto()` ends up legacy after one refused POST because
+  `HttpClientTransport` does not send modern requests yet.
 
 ### Changed
 
@@ -241,6 +265,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   cancelled, so `Context::is_cancelled()` turns true in resource and prompt
   handlers too, not only in tools. The response of a request of
   2025-11-25 or earlier is still sent.
+- `Client::connect()` resolves to `ConnectResult` instead of `InitializeResult`:
+  `era`, `protocolVersion`, `capabilities`, `serverInfo` (now optional, so write
+  `result.serverInfo->name`), `instructions` and `supportedVersions`. Branch on `era`
+  where the two protocol families differ.
 
 ### Removed
 

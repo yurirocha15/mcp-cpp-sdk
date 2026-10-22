@@ -84,7 +84,7 @@ int main() {
 
                     std::cout << "Client: connecting" << '\n';
                     auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "Connected to: " << init_result.serverInfo.name << '\n';
+                    std::cout << "Connected to: " << init_result.serverInfo->name << '\n';
 
                     auto tools = co_await client.list_tools();
                     std::cout << "Tools: " << tools.tools.size() << '\n';

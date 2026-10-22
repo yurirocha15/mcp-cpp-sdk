@@ -4,6 +4,7 @@
 #include <mcp/client/client.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -20,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -52,6 +54,23 @@ McpError::McpError(Error error)
 
 McpError::McpError(int code, std::string message, std::optional<nlohmann::json> data)
     : McpError(Error{code, std::move(message), std::move(data)}) {}
+
+ClientProtocol ClientProtocol::Auto() { return {Kind::eAuto, std::string()}; }
+
+ClientProtocol ClientProtocol::Legacy() {
+    return {Kind::eLegacy, std::string(g_LATEST_LEGACY_PROTOCOL_VERSION)};
+}
+
+ClientProtocol ClientProtocol::Version(std::string version) {
+    const bool known =
+        std::find(g_DISCOVERABLE_PROTOCOL_VERSIONS.begin(), g_DISCOVERABLE_PROTOCOL_VERSIONS.end(),
+                  version) != g_DISCOVERABLE_PROTOCOL_VERSIONS.end();
+    if (!known) {
+        throw std::invalid_argument("Unknown protocol version: " +
+                                    detail::sanitize_for_diagnostics(version));
+    }
+    return {Kind::eVersion, std::move(version)};
+}
 
 namespace {
 
@@ -93,6 +112,8 @@ struct Client::Impl {
         std::optional<Error> error;
         std::exception_ptr write_error;
         bool completed{false};
+        /// The era probe: a reply that cannot be decoded is an answer to it, see fail_probe().
+        bool probe{false};
     };
 
     Impl(std::shared_ptr<ITransport> client_transport, const boost::asio::any_io_executor& executor,
@@ -102,9 +123,25 @@ struct Client::Impl {
           options(std::move(client_options)),
           writer(transport, strand) {}
 
+    /// Sends a request of the session's era. A modern session adds the per-request `_meta` and checks
+    /// the result type of the answer; a legacy session sends @p params as given.
     static Task<nlohmann::json> request(std::shared_ptr<Impl> state, std::string_view method,
                                         const std::optional<nlohmann::json>& params,
                                         const RequestOptions& request_options) {
+        const auto modern_version = state->modern_version();
+        if (!modern_version) {
+            return request_wire(std::move(state), method, params, request_options, false);
+        }
+        reject_removed_method(*modern_version, method);
+        auto modern_params =
+            state->with_request_meta(*modern_version, params, request_options.log_level);
+        return checked_result(
+            request_wire(std::move(state), method, modern_params, request_options, false));
+    }
+
+    static Task<nlohmann::json> request_wire(std::shared_ptr<Impl> state, std::string_view method,
+                                             const std::optional<nlohmann::json>& params,
+                                             const RequestOptions& request_options, bool probe) {
         const auto timeout = request_options.timeout.value_or(state->options.request_timeout);
         if (timeout <= std::chrono::milliseconds::zero()) {
             throw std::invalid_argument("Request timeout must be positive");
@@ -119,9 +156,35 @@ struct Client::Impl {
         auto strand = state->strand;
         // Awaiting post(strand) would not rebind a caller-owned coroutine's continuation.
         // Spawn the complete pending-request lifecycle on the client strand instead.
-        return boost::asio::co_spawn(strand,
-                                     send_request_wire(std::move(state), std::move(wire), id, timeout),
-                                     boost::asio::use_awaitable);
+        return boost::asio::co_spawn(
+            strand, send_request_wire(std::move(state), std::move(wire), id, timeout, probe),
+            boost::asio::use_awaitable);
+    }
+
+    /// The methods 2026-07-28 removed. The server answers none of them, so the request is refused
+    /// here with the reason instead of costing a round trip for a method-not-found.
+    static void reject_removed_method(const std::string& version, std::string_view method) {
+        static constexpr std::array<std::string_view, 5> g_removed = {
+            "initialize", "ping", "logging/setLevel", "resources/subscribe", "resources/unsubscribe"};
+        if (std::find(g_removed.begin(), g_removed.end(), method) != g_removed.end()) {
+            throw McpError(g_METHOD_NOT_FOUND, "Method " + std::string(method) +
+                                                   " does not exist in protocol version " + version);
+        }
+    }
+
+    /// A request carrying `resultType` takes part in the 2026-07-28 result rules: absent means
+    /// "complete", and any other value is one this client cannot act on.
+    static Task<nlohmann::json> checked_result(Task<nlohmann::json> pending) {
+        auto result = co_await std::move(pending);
+        if (result.is_object()) {
+            const auto found = result.find("resultType");
+            if (found != result.end() && !(found->is_string() && *found == "complete")) {
+                std::string shown = found->is_string() ? found->get<std::string>() : found->dump();
+                throw McpError(g_INVALID_REQUEST, "Unsupported resultType in result: " +
+                                                      detail::sanitize_for_diagnostics(shown));
+            }
+        }
+        co_return result;
     }
 
     static Task<void> notification(std::shared_ptr<Impl> state, std::string_view method,
@@ -136,25 +199,378 @@ struct Client::Impl {
                                      boost::asio::use_awaitable);
     }
 
-    static Task<InitializeResult> finish_connect(std::shared_ptr<Impl> state,
-                                                 Task<nlohmann::json> initialize_request) {
-        try {
-            auto result_json = co_await std::move(initialize_request);
-            auto initialize_result =
-                std::make_shared<InitializeResult>(result_json.get<InitializeResult>());
-            if (state->options.strict_protocol_validation &&
-                !is_legacy_protocol_version(initialize_result->protocolVersion)) {
-                request_close(state, "Server selected an unsupported protocol version");
-                // The version is whatever the remote server put in its `initialize` result, and
-                // this message reaches the application's log. Flatten and bound it, or a server
-                // answering with CR/LF forges a log line the application did not write.
-                throw McpError(g_INVALID_REQUEST, "Server selected unsupported protocol version: " +
-                                                      detail::sanitize_for_diagnostics(
-                                                          initialize_result->protocolVersion));
-            }
+    /// What the probe learned. `discover` is set for eDiscover and `error` for the error kinds; a
+    /// probe the transport failed has neither.
+    struct ProbeOutcome {
+        enum class Kind : std::uint8_t {
+            eDiscover,     ///< A DiscoverResult: the server is modern.
+            eModernError,  ///< A modern protocol error: the server is modern, the request is not.
+            eOtherError,   ///< Any other error, a reply that is not JSON, or a failed write: legacy.
+            eTimeout,      ///< No reply in time: legacy.
+            eClosed,       ///< The connection ended: neither.
+        };
+        Kind kind{Kind::eOtherError};
+        std::optional<DiscoverResult> discover;
+        std::optional<Error> error;
+    };
 
-            co_await notification(state, "notifications/initialized", std::nullopt);
-            co_return std::move(*initialize_result);
+    /// The outcome of one initialize attempt; `error` is the server's refusal of it.
+    struct InitializeAttempt {
+        std::optional<ConnectResult> result;
+        std::optional<Error> error;
+    };
+
+    // The outcomes below travel as shared_ptr: they hold strings, and a coroutine frame must not
+    // keep a std::string across a suspension point (see the header note on GCC 11).
+    using ProbePtr = std::shared_ptr<ProbeOutcome>;
+    using AttemptPtr = std::shared_ptr<InitializeAttempt>;
+    using VersionPtr = std::shared_ptr<const std::string>;
+    using VersionsPtr = std::shared_ptr<const std::vector<std::string>>;
+
+    static bool is_modern_error_code(int code) {
+        return code == g_UNSUPPORTED_PROTOCOL_VERSION || code == g_HEADER_MISMATCH ||
+               code == g_MISSING_REQUIRED_CLIENT_CAPABILITY;
+    }
+
+    static ProbePtr classify_probe_error(const std::shared_ptr<Impl>& state, const Error& error) {
+        auto outcome = std::make_shared<ProbeOutcome>();
+        outcome->error = error;
+        if (state->closed.load(std::memory_order_acquire)) {
+            outcome->kind = ProbeOutcome::Kind::eClosed;
+        } else if (is_modern_error_code(error.code)) {
+            outcome->kind = ProbeOutcome::Kind::eModernError;
+        } else if (error.code == g_REQUEST_TIMEOUT) {
+            outcome->kind = ProbeOutcome::Kind::eTimeout;
+        }
+        return outcome;
+    }
+
+    static ProbePtr classify_probe_reply(const nlohmann::json& reply) {
+        auto outcome = std::make_shared<ProbeOutcome>();
+        try {
+            auto discover = reply;
+            if (discover.is_object() && !discover.contains("resultType")) {
+                discover["resultType"] = "complete";
+            }
+            auto parsed = discover.get<DiscoverResult>();
+            if (parsed.resultType == "complete") {
+                outcome->kind = ProbeOutcome::Kind::eDiscover;
+                outcome->discover = std::move(parsed);
+            }
+        } catch (const std::exception&) {
+            // Not a DiscoverResult: whatever answered is not a modern server.
+        }
+        return outcome;
+    }
+
+    /// Sends server/discover naming @p version and waits at most @p timeout for the answer.
+    static Task<ProbePtr> probe(std::shared_ptr<Impl> state, VersionPtr version,
+                                std::chrono::milliseconds timeout) {
+        ProbePtr outcome;
+        nlohmann::json reply;
+        bool answered = false;
+        try {
+            RequestOptions options;
+            options.timeout = timeout;
+            auto params = state->with_request_meta(*version, std::nullopt, std::nullopt);
+            auto pending = request_wire(state, "server/discover", params, options, true);
+            reply = co_await std::move(pending);
+            answered = true;
+        } catch (const McpError& error) {
+            outcome = classify_probe_error(state, error.error());
+        } catch (...) {
+            // The write failed: an HTTP server refusing the POST, or the connection going away.
+            outcome = std::make_shared<ProbeOutcome>();
+            if (state->closed.load(std::memory_order_acquire)) {
+                outcome->kind = ProbeOutcome::Kind::eClosed;
+            }
+        }
+        if (answered) {
+            outcome = classify_probe_reply(reply);
+        }
+        co_return outcome;
+    }
+
+    /// The versions a protocol error lists in `data.supported`, empty when it lists none.
+    static std::vector<std::string> advertised_versions(const Error& error) {
+        std::vector<std::string> versions;
+        if (error.data && error.data->is_object()) {
+            const auto found = error.data->find("supported");
+            if (found != error.data->end() && found->is_array()) {
+                for (const auto& version : *found) {
+                    if (version.is_string()) {
+                        versions.push_back(version.get<std::string>());
+                    }
+                }
+            }
+        }
+        return versions;
+    }
+
+    /// The newest version of @p ours (oldest first) that @p theirs also lists, or null.
+    template <std::size_t N>
+    static VersionPtr newest_mutual(const std::array<std::string_view, N>& ours,
+                                    const std::vector<std::string>& theirs) {
+        for (auto version = ours.rbegin(); version != ours.rend(); ++version) {
+            if (std::find(theirs.begin(), theirs.end(), *version) != theirs.end()) {
+                return std::make_shared<const std::string>(*version);
+            }
+        }
+        return nullptr;
+    }
+
+    static bool lists_modern_version(const Error& error) {
+        const auto versions = advertised_versions(error);
+        return std::any_of(versions.begin(), versions.end(), [](const std::string& version) {
+            return is_modern_protocol_version(version);
+        });
+    }
+
+    void report_era(ProtocolEra era, EraReason reason,
+                    std::chrono::steady_clock::time_point started) const {
+        if (!options.on_era_decision) {
+            return;
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started);
+        try {
+            options.on_era_decision(EraDecision{era, reason, elapsed});
+        } catch (...) {
+            // Documented: the hook observes; a failure of its own has no listener.
+        }
+    }
+
+    static std::optional<nlohmann::json> initialize_params(const std::shared_ptr<Impl>& state,
+                                                           const std::string& version) {
+        InitializeRequest initialize_request;
+        initialize_request.protocolVersion = version;
+        std::lock_guard lock(state->handlers_mutex);
+        initialize_request.clientInfo = state->client_info;
+        initialize_request.capabilities = state->client_capabilities;
+        return nlohmann::json(std::move(initialize_request));
+    }
+
+    /// Sends initialize naming @p version. The server's refusal is returned, not thrown, so that
+    /// the caller can tell a modern server that rejects initialize from a failure.
+    static Task<AttemptPtr> attempt_initialize(std::shared_ptr<Impl> state, VersionPtr version,
+                                               VersionsPtr advertised) {
+        auto attempt = std::make_shared<InitializeAttempt>();
+        nlohmann::json result_json;
+        bool answered = false;
+        try {
+            auto params = initialize_params(state, *version);
+            auto pending = request(state, "initialize", params, {});
+            result_json = co_await std::move(pending);
+            answered = true;
+        } catch (const McpError& error) {
+            if (state->closed.load(std::memory_order_acquire) || error.code() == g_REQUEST_TIMEOUT) {
+                throw;
+            }
+            attempt->error = error.error();
+        }
+        if (!answered) {
+            co_return attempt;
+        }
+
+        auto initialize_result =
+            std::make_shared<InitializeResult>(result_json.get<InitializeResult>());
+        if (state->options.strict_protocol_validation &&
+            !is_legacy_protocol_version(initialize_result->protocolVersion)) {
+            request_close(state, "Server selected an unsupported protocol version");
+            // The version is whatever the remote server put in its `initialize` result, and
+            // this message reaches the application's log. Flatten and bound it, or a server
+            // answering with CR/LF forges a log line the application did not write.
+            throw McpError(g_INVALID_REQUEST,
+                           "Server selected unsupported protocol version: " +
+                               detail::sanitize_for_diagnostics(initialize_result->protocolVersion));
+        }
+
+        co_await notification(state, "notifications/initialized", std::nullopt);
+
+        ConnectResult connected;
+        connected.era = ProtocolEra::eLegacy;
+        connected.protocolVersion = std::move(initialize_result->protocolVersion);
+        connected.capabilities = std::move(initialize_result->capabilities);
+        connected.serverInfo = std::move(initialize_result->serverInfo);
+        connected.instructions = std::move(initialize_result->instructions);
+        connected.supportedVersions = *advertised;
+        attempt->result = std::move(connected);
+        co_return attempt;
+    }
+
+    /// initialize for a caller that has nowhere else to go: a refusal is an error.
+    static Task<ConnectResult> initialize_session(std::shared_ptr<Impl> state, VersionPtr version,
+                                                  VersionsPtr advertised) {
+        auto attempt =
+            co_await attempt_initialize(std::move(state), std::move(version), std::move(advertised));
+        if (attempt->error) {
+            throw McpError(*attempt->error);
+        }
+        co_return std::move(*attempt->result);
+    }
+
+    static ConnectResult modern_result(const DiscoverResult& discover, const std::string& version) {
+        ConnectResult connected;
+        connected.era = ProtocolEra::eModern;
+        connected.protocolVersion = version;
+        connected.capabilities = discover.capabilities;
+        connected.serverInfo = discover.serverInfo;
+        connected.instructions = discover.instructions;
+        connected.supportedVersions = discover.supportedVersions;
+        return connected;
+    }
+
+    /// Settles on the era a DiscoverResult allows: modern when the server lists a modern version
+    /// this client speaks, else legacy when it lists a legacy one, else the connect fails.
+    static Task<ConnectResult> adopt_discover(std::shared_ptr<Impl> state, ProbePtr outcome,
+                                              EraReason reason,
+                                              std::chrono::steady_clock::time_point started) {
+        const auto modern =
+            newest_mutual(g_MODERN_PROTOCOL_VERSIONS, outcome->discover->supportedVersions);
+        if (modern) {
+            state->become_modern(*modern);
+            state->report_era(ProtocolEra::eModern, reason, started);
+            co_return modern_result(*outcome->discover, *modern);
+        }
+        const auto legacy =
+            newest_mutual(g_LEGACY_PROTOCOL_VERSIONS, outcome->discover->supportedVersions);
+        if (!legacy) {
+            throw McpError(g_UNSUPPORTED_PROTOCOL_VERSION,
+                           "The server shares no protocol version with this client",
+                           nlohmann::json{{"supported", outcome->discover->supportedVersions}});
+        }
+        state->report_era(ProtocolEra::eLegacy, reason, started);
+        co_return co_await initialize_session(
+            state, legacy,
+            std::make_shared<const std::vector<std::string>>(outcome->discover->supportedVersions));
+    }
+
+    /// Explains a probe that did not come back as a DiscoverResult to a caller that needs one.
+    [[noreturn]] static void throw_probe_failure(const ProbeOutcome& outcome,
+                                                 const std::string& version) {
+        if (outcome.kind == ProbeOutcome::Kind::eModernError) {
+            const auto advertised = advertised_versions(*outcome.error);
+            if (outcome.error->code != g_UNSUPPORTED_PROTOCOL_VERSION || advertised.empty()) {
+                throw McpError(*outcome.error);
+            }
+            std::string listed;
+            for (const auto& entry : advertised) {
+                listed += (listed.empty() ? "" : ", ") + detail::sanitize_for_diagnostics(entry);
+            }
+            throw McpError(g_UNSUPPORTED_PROTOCOL_VERSION,
+                           "The server does not support protocol version " + version +
+                               "; it supports " + listed +
+                               ". Use ClientProtocol::Auto() to connect with a version both sides "
+                               "speak",
+                           outcome.error->data);
+        }
+        if (outcome.kind == ProbeOutcome::Kind::eClosed) {
+            throw McpError(g_CONNECTION_CLOSED,
+                           "The server closed the connection while the client probed it with "
+                           "server/discover; a server that exits on an unknown request needs "
+                           "ClientProtocol::Legacy()");
+        }
+        const std::string reason = outcome.error
+                                       ? ": " + detail::sanitize_for_diagnostics(outcome.error->message)
+                                       : " without a usable reply";
+        throw McpError(outcome.error ? outcome.error->code : g_INVALID_REQUEST,
+                       "The server does not speak protocol version " + version +
+                           "; server/discover failed" + reason +
+                           ". Use ClientProtocol::Auto() or ClientProtocol::Legacy() for a server "
+                           "that predates it",
+                       outcome.error ? outcome.error->data : std::nullopt);
+    }
+
+    /// ClientProtocol::Version("2026-07-28"): discover once for ConnectResult; never initialize.
+    static Task<ConnectResult> connect_pinned_modern(std::shared_ptr<Impl> state,
+                                                     std::chrono::steady_clock::time_point started) {
+        auto version = std::make_shared<const std::string>(state->options.protocol.version());
+        auto outcome = co_await probe(state, version, state->options.request_timeout);
+        if (outcome->kind != ProbeOutcome::Kind::eDiscover) {
+            throw_probe_failure(*outcome, *version);
+        }
+        state->become_modern(*version);
+        state->report_era(ProtocolEra::eModern, EraReason::ePinned, started);
+        co_return modern_result(*outcome->discover, *version);
+    }
+
+    /// ClientProtocol::Auto().
+    static Task<ConnectResult> connect_auto(std::shared_ptr<Impl> state,
+                                            std::chrono::steady_clock::time_point started) {
+        const auto no_versions = std::make_shared<const std::vector<std::string>>();
+        const auto preferred = std::make_shared<const std::string>(g_MODERN_PROTOCOL_VERSIONS.back());
+        auto outcome = co_await probe(state, preferred, state->options.probe_timeout);
+        auto reason = EraReason::eDiscoverOk;
+
+        if (outcome->kind == ProbeOutcome::Kind::eModernError &&
+            outcome->error->code == g_UNSUPPORTED_PROTOCOL_VERSION) {
+            const auto advertised =
+                std::make_shared<const std::vector<std::string>>(advertised_versions(*outcome->error));
+            const auto modern = newest_mutual(g_MODERN_PROTOCOL_VERSIONS, *advertised);
+            const auto legacy = newest_mutual(g_LEGACY_PROTOCOL_VERSIONS, *advertised);
+            if (modern) {
+                // The server is modern and names a version this client speaks: ask again with it.
+                reason = EraReason::eModernErrorRetry;
+                outcome = co_await probe(state, modern, state->options.probe_timeout);
+            } else if (legacy) {
+                state->report_era(ProtocolEra::eLegacy, EraReason::eModernErrorRetry, started);
+                co_return co_await initialize_session(state, legacy, advertised);
+            } else {
+                throw McpError(g_UNSUPPORTED_PROTOCOL_VERSION,
+                               "The server shares no protocol version with this client",
+                               outcome->error->data);
+            }
+        }
+
+        if (outcome->kind == ProbeOutcome::Kind::eDiscover) {
+            co_return co_await adopt_discover(state, outcome, reason, started);
+        }
+        if (outcome->kind == ProbeOutcome::Kind::eModernError ||
+            outcome->kind == ProbeOutcome::Kind::eClosed) {
+            throw_probe_failure(*outcome, *preferred);
+        }
+
+        // Legacy: any other error, a reply that is not JSON, or silence.
+        state->report_era(ProtocolEra::eLegacy,
+                          outcome->kind == ProbeOutcome::Kind::eTimeout
+                              ? EraReason::eFallbackTimeout
+                              : EraReason::eFallbackNonModernError,
+                          started);
+        auto attempt = co_await attempt_initialize(
+            state, std::make_shared<const std::string>(g_LATEST_LEGACY_PROTOCOL_VERSION), no_versions);
+        if (attempt->result) {
+            co_return std::move(*attempt->result);
+        }
+
+        // A server that answered nothing in time can still be a modern one that was starting up. If
+        // it now refuses initialize naming modern versions, probe it again, once.
+        if (lists_modern_version(*attempt->error)) {
+            auto reprobe = co_await probe(state, preferred, state->options.probe_timeout);
+            if (reprobe->kind == ProbeOutcome::Kind::eDiscover) {
+                co_return co_await adopt_discover(state, reprobe,
+                                                  EraReason::eReprobeAfterInitializeRejected, started);
+            }
+        }
+        throw McpError(*attempt->error);
+    }
+
+    static Task<ConnectResult> connect_session(std::shared_ptr<Impl> state) {
+        const auto started = std::chrono::steady_clock::now();
+        const auto& protocol = state->options.protocol;
+        const bool pinned_legacy = protocol.kind() == ClientProtocol::Kind::eLegacy ||
+                                   (protocol.kind() == ClientProtocol::Kind::eVersion &&
+                                    is_legacy_protocol_version(protocol.version()));
+        try {
+            if (pinned_legacy) {
+                state->report_era(ProtocolEra::eLegacy, EraReason::ePinned, started);
+                co_return co_await initialize_session(
+                    state, std::make_shared<const std::string>(protocol.version()),
+                    std::make_shared<const std::vector<std::string>>());
+            }
+            if (protocol.kind() == ClientProtocol::Kind::eVersion) {
+                co_return co_await connect_pinned_modern(state, started);
+            }
+            co_return co_await connect_auto(state, started);
         } catch (...) {
             request_close(state, "Client initialization failed");
             throw;
@@ -186,7 +602,7 @@ struct Client::Impl {
 
     static Task<nlohmann::json> send_request_wire(std::shared_ptr<Impl> state,
                                                   std::shared_ptr<const std::string> wire, int64_t id,
-                                                  std::chrono::milliseconds timeout) {
+                                                  std::chrono::milliseconds timeout, bool probe) {
         if (state->closed.load(std::memory_order_acquire)) {
             throw McpError(g_CONNECTION_CLOSED, "Client transport is closed");
         }
@@ -204,6 +620,7 @@ struct Client::Impl {
                     throw McpError(g_INVALID_REQUEST, "Duplicate pending request id: " + id_key);
                 }
                 pending_request = iter->second.get();
+                pending_request->probe = probe;
             }
 
             boost::asio::co_spawn(state->strand,
@@ -226,6 +643,7 @@ struct Client::Impl {
         nlohmann::json result;
         std::optional<Error> error;
         std::exception_ptr write_error;
+        bool timed_out = false;
         {
             const auto id_key = request_correlation_key(id);
             std::lock_guard lock(state->pending_requests_mutex);
@@ -238,11 +656,28 @@ struct Client::Impl {
                 iter->second->error = Error{g_REQUEST_TIMEOUT, "Request timed out",
                                             nlohmann::json{{"id", std::to_string(id)}}};
                 iter->second->completed = true;
+                timed_out = true;
             }
             result = std::move(iter->second->result);
             error = std::move(iter->second->error);
             write_error = std::move(iter->second->write_error);
             state->pending_requests.erase(iter);
+        }
+
+        // A 2026-07-28 request the client stops waiting for is cancelled, so the server stops
+        // working on it and an HTTP transport closes its response stream. The era probe never gets
+        // here: the client is not modern until a probe has been answered.
+        if (timed_out && state->modern_version() && !state->closed.load(std::memory_order_acquire)) {
+            CancelledNotificationParams cancel_params;
+            cancel_params.requestId = RequestId{std::to_string(id)};
+            cancel_params.reason = "Request timed out";
+            JSONRPCNotification notification;
+            notification.method = "notifications/cancelled";
+            notification.params = nlohmann::json(std::move(cancel_params));
+            auto cancel_wire =
+                std::make_shared<const std::string>(nlohmann::json(std::move(notification)).dump());
+            boost::asio::co_spawn(state->strand, send_notification_wire(state, std::move(cancel_wire)),
+                                  [](const std::exception_ptr&) {});
         }
 
         if (error) {
@@ -341,11 +776,29 @@ struct Client::Impl {
                 dispatch_notification(state, json_message);
             }
         } catch (const std::exception& error) {
+            fail_probe(state);
             report_protocol_error(state, g_PARSE_ERROR,
                                   "Dropped an undecodable message from the peer: " +
                                       detail::sanitize_for_diagnostics(error.what()));
         } catch (...) {
+            fail_probe(state);
             report_protocol_error(state, g_PARSE_ERROR, "Dropped an undecodable message from the peer");
+        }
+    }
+
+    /// A line the client cannot decode while it waits for the era probe's answer is that answer: a
+    /// server that replies to server/discover with plain text is not a modern one, and waiting out
+    /// the probe timeout would only delay the fallback.
+    static void fail_probe(const std::shared_ptr<Impl>& state) {
+        std::lock_guard lock(state->pending_requests_mutex);
+        for (auto& [id, pending_request] : state->pending_requests) {
+            static_cast<void>(id);
+            if (pending_request->probe && !pending_request->completed) {
+                pending_request->error =
+                    Error{g_PARSE_ERROR, "Reply to server/discover is not JSON-RPC"};
+                pending_request->completed = true;
+                signal_pending_request(*pending_request);
+            }
         }
     }
 
@@ -575,6 +1028,74 @@ struct Client::Impl {
     std::map<std::string, RequestHandler, std::less<>> request_handlers;
     std::vector<Root> roots;
     ClientCapabilities client_capabilities;
+    Implementation client_info;
+
+    /// The version every request names once connect() settled on the modern era; empty while the
+    /// session is legacy or not yet connected. It is decided once and never changes.
+    mutable std::mutex era_mutex;
+    std::optional<std::string> modern_protocol_version;
+
+    void become_modern(const std::string& version) {
+        std::lock_guard lock(era_mutex);
+        modern_protocol_version = version;
+    }
+
+    std::optional<std::string> modern_version() const {
+        std::lock_guard lock(era_mutex);
+        return modern_protocol_version;
+    }
+
+    /// What this client tells a modern server it can do: the capabilities given to connect(), plus
+    /// what its registered handlers imply. Read afresh for every request, so a handler registered
+    /// after connect() counts from the next request on.
+    ClientCapabilities effective_capabilities() const {
+        std::lock_guard lock(handlers_mutex);
+        auto capabilities = client_capabilities;
+        if (request_handlers.contains("roots/list") && !capabilities.roots) {
+            capabilities.roots = ClientCapabilities::RootsCapability{};
+        }
+        if (request_handlers.contains("sampling/createMessage") && !capabilities.sampling) {
+            capabilities.sampling = ClientCapabilities::SamplingCapability{};
+        }
+        if (request_handlers.contains("elicitation/create") && !capabilities.elicitation) {
+            capabilities.elicitation =
+                ClientCapabilities::ElicitationCapability{nlohmann::json::object(), std::nullopt};
+        }
+        return capabilities;
+    }
+
+    /// @p params with the per-request `_meta` of a modern request merged in. The caller's own
+    /// `_meta` entries (progressToken, traceparent, ...) stay as they are; the four protocol keys
+    /// are the client's to set.
+    std::optional<nlohmann::json> with_request_meta(const std::string& version,
+                                                    const std::optional<nlohmann::json>& params,
+                                                    const std::optional<LoggingLevel>& level) const {
+        nlohmann::json merged = params ? *params : nlohmann::json::object();
+        if (merged.is_null()) {
+            merged = nlohmann::json::object();
+        }
+        if (!merged.is_object()) {
+            throw McpError(g_INVALID_PARAMS, "Request params must be an object");
+        }
+        nlohmann::json meta = nlohmann::json::object();
+        if (const auto found = merged.find("_meta"); found != merged.end() && !found->is_null()) {
+            if (!found->is_object()) {
+                throw McpError(g_INVALID_PARAMS, "Request _meta must be an object");
+            }
+            meta = *found;
+        }
+        meta[std::string(g_META_PROTOCOL_VERSION)] = version;
+        meta[std::string(g_META_CLIENT_CAPABILITIES)] = effective_capabilities();
+        {
+            std::lock_guard lock(handlers_mutex);
+            meta[std::string(g_META_CLIENT_INFO)] = client_info;
+        }
+        if (level) {
+            meta[std::string(g_META_LOG_LEVEL)] = *level;
+        }
+        merged["_meta"] = std::move(meta);
+        return merged;
+    }
 
     /// What the client knows of a listed tool's schemas. The serialized schemas let a later
     /// listing reuse the compiled output schema when nothing changed.
@@ -671,20 +1192,23 @@ Client::Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_
     if (options.request_timeout <= std::chrono::milliseconds::zero()) {
         throw std::invalid_argument("Client request timeout must be positive");
     }
+    if (options.probe_timeout <= std::chrono::milliseconds::zero()) {
+        throw std::invalid_argument("Client probe timeout must be positive");
+    }
     impl_ = std::make_shared<Impl>(std::move(transport), executor, std::move(options));
 }
 
 Client::~Client() { close(); }
 
-Task<InitializeResult> Client::connect(std::string_view name, std::string_view version) {
+Task<ConnectResult> Client::connect(std::string_view name, std::string_view version) {
     Implementation info;
     info.name = std::string(name);
     info.version = std::string(version);
     return connect(info, {});
 }
 
-Task<InitializeResult> Client::connect(const Implementation& client_info,
-                                       const ClientCapabilities& capabilities) {
+Task<ConnectResult> Client::connect(const Implementation& client_info,
+                                    const ClientCapabilities& capabilities) {
     auto state = impl_;
     if (state->closed.load(std::memory_order_acquire)) {
         throw McpError(g_CONNECTION_CLOSED, "Client is closed");
@@ -694,21 +1218,16 @@ Task<InitializeResult> Client::connect(const Implementation& client_info,
     }
 
     Impl::start_read_loop(state);
-    InitializeRequest initialize_request;
-    initialize_request.protocolVersion = std::string(g_LATEST_LEGACY_PROTOCOL_VERSION);
-    initialize_request.clientInfo = client_info;
     {
         std::lock_guard lock(state->handlers_mutex);
+        state->client_info = client_info;
         state->client_capabilities = capabilities;
         if (state->request_handlers.contains("roots/list") &&
             !state->client_capabilities.roots.has_value()) {
             state->client_capabilities.roots = ClientCapabilities::RootsCapability{};
         }
-        initialize_request.capabilities = state->client_capabilities;
     }
-    auto request_task =
-        Impl::request(state, "initialize", nlohmann::json(std::move(initialize_request)), {});
-    return Impl::finish_connect(std::move(state), std::move(request_task));
+    return Impl::connect_session(std::move(state));
 }
 
 Task<nlohmann::json> Client::send_request(std::string_view method,
@@ -797,6 +1316,19 @@ Task<void> Client::ping() {
 }
 
 Task<void> Client::cancel(const RequestId& request_id, const std::optional<std::string>& reason) {
+    // [gcc11-sso: not-a-coroutine]
+    if (impl_->modern_version()) {
+        // A 2026-07-28 server sends nothing more for a cancelled request, so the caller stops
+        // waiting now, and a response that arrives anyway finds no request and is dropped.
+        std::lock_guard lock(impl_->pending_requests_mutex);
+        const auto iter = impl_->pending_requests.find(request_id.correlation_key());
+        if (iter != impl_->pending_requests.end() && !iter->second->completed) {
+            iter->second->cancel_write_before_start->store(true, std::memory_order_release);
+            iter->second->error = Error{g_REQUEST_CANCELLED, "Request cancelled"};
+            iter->second->completed = true;
+            Impl::signal_pending_request(*iter->second);
+        }
+    }
     CancelledNotificationParams params;
     params.requestId = request_id;
     params.reason = reason;
@@ -866,7 +1398,8 @@ void Client::set_roots(const std::vector<Root>& roots, bool notify) {
                         state->client_capabilities.roots->listChanged.value_or(false);
     }
 
-    if (should_notify && !state->closed.load(std::memory_order_acquire)) {
+    // A modern session has no roots notification: the server learns the roots from each request.
+    if (should_notify && !state->modern_version() && !state->closed.load(std::memory_order_acquire)) {
         boost::asio::co_spawn(
             state->strand, Impl::notification(state, "notifications/roots/list_changed", std::nullopt),
             boost::asio::detached);

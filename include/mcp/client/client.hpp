@@ -19,6 +19,7 @@
 
 #include <boost/asio/any_io_executor.hpp>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -74,8 +75,131 @@ class MCP_API StructuredContentError : public McpError {
     using McpError::McpError;
 };
 
+/** @brief The protocol era a client session speaks. */
+enum class ProtocolEra : std::uint8_t {
+    eLegacy,  ///< 2025-11-25 and earlier: an initialize handshake starts a session.
+    eModern,  ///< 2026-07-28 and later: every request carries its protocol fields in `_meta`.
+};
+
+/**
+ * @brief Which protocol a Client speaks, chosen with one of the factory functions.
+ *
+ * @details One value instead of a mode plus a version, so a contradictory combination (a modern
+ * mode with a legacy version) cannot be written.
+ */
+class MCP_API ClientProtocol {
+   public:
+    /** @brief What the value selects. */
+    enum class Kind : std::uint8_t {
+        eAuto,     ///< Probe with server/discover, fall back to initialize.
+        eLegacy,   ///< initialize with the newest legacy version, no probe.
+        eVersion,  ///< Exactly the version named, no probe.
+    };
+
+    /** @brief Equivalent to Legacy(). */
+    ClientProtocol() = default;
+
+    /**
+     * @brief Detect the server's era: send server/discover first, fall back to initialize.
+     *
+     * @details The server is modern when it answers with a DiscoverResult or with a modern
+     * protocol error (g_UNSUPPORTED_PROTOCOL_VERSION, g_HEADER_MISMATCH,
+     * g_MISSING_REQUIRED_CLIENT_CAPABILITY); any other error, a reply that is not JSON, or no
+     * reply within ClientOptions::probe_timeout makes it legacy, and the client sends initialize.
+     * A server that exits when it receives the probe fails the connect with an error that
+     * names Legacy() as the remedy.
+     *
+     * Over HTTP the probe is a plain POST that HttpClientTransport does not send as a modern
+     * request; an HTTP server then answers with a status the transport reports as an error, and
+     * the client falls back to initialize. In practice Auto behaves as Legacy() over HTTP, at the
+     * cost of one extra POST.
+     */
+    [[nodiscard]] static ClientProtocol Auto();
+
+    /** @brief initialize with the newest legacy version (2025-11-25); sends no probe. */
+    [[nodiscard]] static ClientProtocol Legacy();
+
+    /**
+     * @brief Speak exactly one version.
+     *
+     * @details "2025-11-25", "2025-06-18", "2025-03-26" and "2024-11-05" start a legacy session
+     * with initialize naming that version. "2026-07-28" speaks the modern protocol; connect()
+     * then sends one server/discover to fill ConnectResult and never falls back to initialize.
+     *
+     * @throws std::invalid_argument For any other string.
+     */
+    [[nodiscard]] static ClientProtocol Version(std::string version);
+
+    /** @brief What this value selects. */
+    [[nodiscard]] Kind kind() const noexcept { return kind_; }
+
+    /** @brief The pinned version for Version(), the newest legacy version for Legacy(), else empty. */
+    [[nodiscard]] const std::string& version() const noexcept { return version_; }
+
+   private:
+    ClientProtocol(Kind kind, std::string version) : kind_(kind), version_(std::move(version)) {}
+
+    Kind kind_{Kind::eLegacy};
+    std::string version_{g_LATEST_LEGACY_PROTOCOL_VERSION};
+};
+
+/** @brief Why connect() settled on an era. */
+enum class EraReason : std::uint8_t {
+    ePinned,                  ///< ClientOptions::protocol named the era; nothing was probed.
+    eDiscoverOk,              ///< server/discover returned a DiscoverResult.
+    eModernErrorRetry,        ///< server/discover returned a modern protocol error.
+    eFallbackNonModernError,  ///< server/discover failed with an error that is not a modern one.
+    eFallbackTimeout,         ///< The server did not answer server/discover in time.
+    eReprobeAfterInitializeRejected,  ///< initialize was rejected naming modern versions; probed again.
+};
+
+/** @brief One era decision of connect(), as reported to ClientOptions::on_era_decision. */
+struct EraDecision {
+    ProtocolEra era;                    ///< The era the client goes on to speak.
+    EraReason reason;                   ///< What led to it.
+    std::chrono::milliseconds elapsed;  ///< Time from the start of connect() to the decision.
+};
+
+/** @brief What connect() learned about the server. */
+struct ConnectResult {
+    ProtocolEra era{
+        ProtocolEra::eLegacy};  ///< The era of this session; fixed for the client's lifetime.
+    /// The version in use: the one initialize negotiated (legacy) or the one every request names.
+    std::string protocolVersion;
+    ServerCapabilities capabilities;           ///< Capabilities the server declared.
+    std::optional<Implementation> serverInfo;  ///< The server's identity, when it sent one.
+    std::optional<std::string> instructions;   ///< The server's instructions, when it sent any.
+    /// Versions the server listed in server/discover or in a protocol error; empty when it was
+    /// never asked or did not say.
+    std::vector<std::string> supportedVersions;
+};
+
 /** @brief Client-wide runtime behavior. */
 struct ClientOptions {
+    /**
+     * @brief Which protocol to speak; Legacy() unless set.
+     *
+     * @details See ClientProtocol. Construction throws std::invalid_argument for a value that
+     * names a version the SDK does not know.
+     */
+    ClientProtocol protocol{ClientProtocol::Legacy()};
+    /**
+     * @brief How long ClientProtocol::Auto() waits for the answer to server/discover.
+     *
+     * @details The timer starts when the client starts probing, once the transport is ready.
+     * A legacy server that ignores the unknown request is the case it exists for. Must be
+     * positive. A modern server that needs longer to start than this is not misclassified for
+     * good: when it then rejects initialize naming modern versions, the client probes once more.
+     */
+    std::chrono::milliseconds probe_timeout{std::chrono::milliseconds(3000)};
+    /**
+     * @brief Invoked each time connect() decides an era.
+     *
+     * @details Runs on the connecting coroutine, so it must not block. It can run twice in one
+     * connect(): a probe that timed out decides legacy, and a later re-probe may decide modern.
+     * An exception thrown from it is discarded.
+     */
+    std::function<void(const EraDecision&)> on_era_decision;
     /**
      * @brief Default time limit for outgoing requests. Thirty seconds unless set.
      *
@@ -131,6 +255,14 @@ struct RequestOptions {
      * though the caller receives a timeout, as with any network request deadline.
      */
     std::optional<std::chrono::milliseconds> timeout;
+    /**
+     * @brief Minimum log level the server should emit for this request.
+     *
+     * @details Sent as `io.modelcontextprotocol/logLevel` in the request's `_meta` when the
+     * session is modern. A legacy session sets its level with logging/setLevel instead, and this
+     * member has no effect there.
+     */
+    std::optional<LoggingLevel> log_level;
 };
 
 /**
@@ -138,9 +270,10 @@ struct RequestOptions {
  *
  * @details Manages the JSON-RPC request/response lifecycle, including
  * an asynchronous read loop that dispatches incoming responses to their
- * corresponding pending requests. The client initiates the MCP handshake
- * via connect(), which sends an initialize request followed by an
- * initialized notification.
+ * corresponding pending requests. connect() settles on a protocol era
+ * (ClientOptions::protocol): a legacy session starts with an initialize request
+ * followed by an initialized notification, a modern one sends no handshake and
+ * carries its protocol fields in each request's `_meta`.
  *
  * Runtime I/O and request state are serialized on a boost::asio::strand.
  */
@@ -168,26 +301,37 @@ class MCP_API Client {
     Client& operator=(Client&&) = delete;
 
     /**
-     * @brief Perform the MCP initialization handshake with default capabilities.
+     * @brief Connect with default capabilities.
      * @param name Client implementation name.
      * @param version Client implementation version.
-     * @return A task that resolves to the server's InitializeResult.
+     * @return A task that resolves to what the server declared; see the overload below.
      */
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-    Task<InitializeResult> connect(std::string_view name, std::string_view version);
+    Task<ConnectResult> connect(std::string_view name, std::string_view version);
 
     /**
-     * @brief Perform the MCP initialization handshake.
+     * @brief Connect to the server and settle on a protocol era.
      *
-     * @details Starts the read loop, sends initialize, waits for the server
-     * response, and then sends notifications/initialized.
+     * @details Starts the read loop, then follows ClientOptions::protocol. A legacy session
+     * sends initialize and then notifications/initialized. A modern session sends
+     * server/discover once to learn the server's capabilities and sends nothing else; from then
+     * on every request carries `io.modelcontextprotocol/protocolVersion`, the capabilities
+     * (@p capabilities plus what the registered handlers imply, such as roots when a roots/list
+     * handler exists) and @p client_info in its `_meta`, merged with the `_meta` entries the
+     * caller supplied. The era is fixed for the client's lifetime.
+     *
+     * In a modern session ping() and the removed subscription and log-level methods fail
+     * locally, set_roots() sends no list-changed notification, and a result whose `resultType`
+     * is neither absent nor "complete" fails with McpError.
      *
      * @param client_info Information about this client implementation.
      * @param capabilities Capabilities supported by this client.
-     * @return A task that resolves to the server's InitializeResult.
+     * @return A task that resolves to what the server declared.
+     * @throws McpError If the server cannot be reached, closes the connection while it is probed
+     *         (pin ClientProtocol::Legacy() for such a server), or shares no protocol version.
      */
-    Task<InitializeResult> connect(const Implementation& client_info,
-                                   const ClientCapabilities& capabilities);
+    Task<ConnectResult> connect(const Implementation& client_info,
+                                const ClientCapabilities& capabilities);
 
     /**
      * @brief Send a JSON-RPC request and await its response.
@@ -319,6 +463,9 @@ class MCP_API Client {
     /**
      * @brief Send a ping request to the connected server.
      *
+     * @details Fails with McpError (g_METHOD_NOT_FOUND) without sending anything in a modern
+     * session: protocol revision 2026-07-28 has no ping.
+     *
      * @return A task that completes once the ping round-trip succeeds.
      */
     Task<void> ping();
@@ -387,7 +534,8 @@ class MCP_API Client {
      *
      * @details Stores the given roots and registers a request handler for
      * "roots/list" that returns them. If notify is true, sends a
-     * notifications/roots/list_changed notification to inform the server.
+     * notifications/roots/list_changed notification to inform the server. A modern session has
+     * no such notification, and nothing is sent.
      *
      * @param roots The list of roots to provide.
      * @param notify Whether to send a roots-changed notification.

@@ -100,7 +100,7 @@ void install_reverse_rpc_handlers(mcp::Client& client) {
     });
 }
 
-mcp::Task<mcp::InitializeResult> connect_conformance_client(mcp::Client& client) {
+mcp::Task<mcp::ConnectResult> connect_conformance_client(mcp::Client& client) {
     mcp::Implementation implementation;
     implementation.name = "mcp-cpp-sdk-conformance-client";
     implementation.version = "0.2.0";
@@ -417,7 +417,11 @@ int main(int argc, char** argv) {
             transport = std::make_shared<mcp::auth::OAuthClientTransport>(transport, manager);
         }
 
-        mcp::Client client(transport, executor);
+        // The 0.1.16 runner scripts an initialize-based server, so the protocol is pinned rather
+        // than left to the library default.
+        mcp::ClientOptions client_options;
+        client_options.protocol = mcp::ClientProtocol::Legacy();
+        mcp::Client client(transport, executor, client_options);
         install_reverse_rpc_handlers(client);
 
         auto completion =
