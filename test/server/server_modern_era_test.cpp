@@ -1,6 +1,7 @@
 #include "../test_utils.hpp"
 
 #include "../../src/detail/modern_methods.hpp"
+#include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/websocket.hpp"
 
@@ -990,6 +991,88 @@ TEST_F(ServerModernEraTest, LegacyResultsGainNoModernMembers) {
         }
     }
     EXPECT_EQ(written[1]["result"], (json{{"tools", written[1]["result"]["tools"]}}));
+}
+
+TEST_F(ServerModernEraTest, NeverEmitsErrorCodes32042And32002) {
+    auto server = make_server();
+    // A handler that proxies an older server can see its codes; they must not reach the client.
+    server->add_tool<json, json>("upstream", "Fails with an upstream error", json{{"type", "object"}},
+                                 [](mcp::Context& /*ctx*/, json /*args*/) -> mcp::Task<json> {
+                                     throw mcp::McpError(-32042, "URL elicitation required");
+                                 });
+    mcp::Resource resource;
+    resource.uri = "test://gone";
+    resource.name = "gone";
+    server->add_resource<json, json>(resource,
+                                     [](mcp::Context& /*ctx*/, json /*params*/) -> mcp::Task<json> {
+                                         throw mcp::McpError(-32002, "Resource not found");
+                                     });
+    mcp::Prompt prompt;
+    prompt.name = "closed";
+    server->add_prompt<json, json>(prompt,
+                                   [](mcp::Context& /*ctx*/, json /*params*/) -> mcp::Task<json> {
+                                       throw mcp::McpError(mcp::g_CONNECTION_CLOSED, "Closed");
+                                   });
+
+    auto no_capabilities = make_modern_meta();
+    no_capabilities.erase("io.modelcontextprotocol/clientCapabilities");
+    auto bad_level = make_modern_meta();
+    bad_level["io.modelcontextprotocol/logLevel"] = "loud";
+    auto stale_state =
+        make_modern_request("stale", "tools/call", {{"name", "whoami"}, {"arguments", json::object()}});
+    stale_state["params"]["requestState"] = "never-issued";
+    const std::vector<json> requests = {
+        call_tool("unknown-tool", "missing"),
+        make_modern_request("unknown-resource", "resources/read", {{"uri", "test://missing"}}),
+        make_modern_request("unknown-prompt", "prompts/get", {{"name", "missing"}}),
+        make_modern_request("unknown-method", "no/such/method"),
+        make_modern_request("removed-method", "resources/subscribe", {{"uri", "test://doc"}}),
+        make_modern_request("no-tool-name", "tools/call", json::object()),
+        make_modern_request("no-uri", "resources/read", json::object()),
+        modern_with_meta("no-capabilities", "tools/list", no_capabilities),
+        modern_with_meta("bad-level", "tools/list", bad_level),
+        modern_with_meta("unserved-version", "tools/list", make_modern_meta("1900-01-01")),
+        modern_with_meta("legacy-version", "tools/list", make_modern_meta("2025-11-25")),
+        call_tool("missing-capability", "sample"),
+        stale_state,
+        call_tool("upstream-tool", "upstream"),
+        make_modern_request("upstream-resource", "resources/read", {{"uri", "test://gone"}}),
+        make_modern_request("upstream-prompt", "prompts/get", {{"name", "closed"}}),
+    };
+
+    const std::set<int> allowed = {mcp::g_INVALID_REQUEST,
+                                   mcp::g_METHOD_NOT_FOUND,
+                                   mcp::g_INVALID_PARAMS,
+                                   mcp::g_INTERNAL_ERROR,
+                                   mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY,
+                                   mcp::g_UNSUPPORTED_PROTOCOL_VERSION};
+    std::set<int> seen;
+    auto check = [&](const json& response) {
+        if (response.contains("result")) {
+            // A failing tool may answer with an error result instead.
+            EXPECT_TRUE(response["result"].value("isError", false)) << response;
+            return;
+        }
+        ASSERT_TRUE(response.contains("error")) << response;
+        const int code = response["error"]["code"].get<int>();
+        EXPECT_NE(code, -32002) << response;
+        EXPECT_NE(code, -32042) << response;
+        EXPECT_TRUE(allowed.count(code) == 1) << response;
+        seen.insert(code);
+    };
+    for (const auto& request : requests) {
+        check(dispatch(*server, request));
+    }
+    // Without a transport that streams notifications, a listen request has nowhere to go.
+    check(dispatch(*server, make_modern_request("listen", "subscriptions/listen",
+                                                {{"notifications", json::object()}})));
+    auto written = run_session(*server, requests, requests.size());
+    ASSERT_EQ(written.size(), requests.size());
+    for (const auto& response : written) {
+        check(response);
+    }
+    // Every error the modern dispatcher can send was reached.
+    EXPECT_EQ(seen, allowed);
 }
 
 }  // namespace
