@@ -583,9 +583,12 @@ class MCP_API Server {
      * after that throws std::runtime_error.
      *
      * The session enforces the initialization sequence. When @p transport is an
-     * HttpServerTransport, a session the client ends with HTTP DELETE is over and
-     * the next client must initialize again; a transport that wraps an
-     * HttpServerTransport is not recognized as one.
+     * HttpServerTransport, or wraps one and returns it from
+     * ITransport::http_server_transport(), a session the client ends with HTTP DELETE
+     * is over and the next client must initialize again, the `Mcp-Param-*` headers of
+     * 2026-07-28 tools/call requests are checked, and notifications of 2026-07-28
+     * requests are dropped. A wrapper that does not return it is served like any other
+     * transport.
      *
      * @param transport The transport to use for message exchange. Ownership is shared.
      * @param executor  The executor to use for async operations.

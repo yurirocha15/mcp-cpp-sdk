@@ -7,6 +7,8 @@
 
 namespace mcp {
 
+class HttpServerTransport;
+
 /**
  * @brief Abstract transport interface for MCP message exchange.
  *
@@ -58,6 +60,20 @@ class ITransport {
      * read/write operations fail fast.
      */
     virtual void close() = 0;
+
+    /**
+     * @brief The HttpServerTransport whose messages this transport carries, if any.
+     *
+     * @details Server::run() serves an HttpServerTransport specially: an HTTP DELETE ends the
+     * session, the `Mcp-Param-*` headers of 2026-07-28 tools/call requests are checked against
+     * their arguments, and the notifications of 2026-07-28 requests are not sent. A transport that
+     * wraps an HttpServerTransport overrides this to return the wrapped one, so it is served the
+     * same way.
+     *
+     * @return This transport when it is an HttpServerTransport, the wrapped one for a wrapper, and
+     *         null otherwise (the default).
+     */
+    virtual HttpServerTransport* http_server_transport() noexcept { return nullptr; }
 };
 
 }  // namespace mcp

@@ -369,6 +369,7 @@ if(BUILD_TESTING)
       test/transport/transport_http_resumability_test.cpp
       test/transport/transport_http_session_manager_test.cpp
       test/transport/transport_http_modern_test.cpp
+      test/transport/transport_http_server_modern_test.cpp
       test/transport/transport_memory_test.cpp
       test/transport/socket_deadline_test.cpp
       test/e2e/e2e_integration_test.cpp

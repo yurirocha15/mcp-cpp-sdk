@@ -125,6 +125,17 @@ inline std::optional<std::string> modern_header_mismatch(const StringRequest& re
     return std::nullopt;
 }
 
+/// Why a request an HTTP transport classed as 2026-07-28 cannot be served as one, or nullopt when
+/// its `_meta` names a protocol version. A request whose MCP-Protocol-Version header names
+/// 2026-07-28 but whose body does not is answered as invalid params; it is never served as a
+/// legacy request, which would need a session.
+inline std::optional<std::string> missing_modern_version(const nlohmann::json& body) {
+    if (requested_protocol_version(body) != nullptr) {
+        return std::nullopt;
+    }
+    return "Missing or invalid " + std::string(g_META_PROTOCOL_VERSION) + " in _meta";
+}
+
 /// The HTTP status a JSON-RPC error answers a 2026-07-28 request with: 400 for invalid params and
 /// the errors the specification reserves (header mismatch, missing client capability, unsupported
 /// version), 404 for an unknown method, and 200 with the JSON-RPC body for anything else.
