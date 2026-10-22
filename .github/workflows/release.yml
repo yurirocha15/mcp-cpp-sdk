@@ -6,14 +6,15 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Exact annotated release tag, for example v0.2.0"
+        description: "Exact annotated release tag, for example v0.2.0 (dry-run: the tag need not exist)"
         required: true
         type: string
       operation:
-        description: "Publish builds GitHub + complete stable bundle; checkboxes only gate external publishing"
+        description: "dry-run validates main without the tag; publish builds GitHub + complete stable bundle; checkboxes only gate external publishing"
         required: true
         type: choice
         options:
+          - dry-run
           - validate-selected
           - validate-all
           - publish-selected
@@ -72,6 +73,7 @@ jobs:
       contents: read
     outputs:
       mode: ${{ steps.contract.outputs.mode }}
+      dry_run: ${{ steps.contract.outputs.dry_run }}
       version: ${{ steps.contract.outputs.version }}
       release_kind: ${{ steps.contract.outputs.release_kind }}
       cloudsmith_matrix: ${{ steps.contract.outputs.cloudsmith_matrix }}
@@ -174,6 +176,7 @@ jobs:
           DISPATCH_VERSION: ${{ needs.contract.outputs.version }}
           DISPATCH_HEAD_SHA: ${{ github.sha }}
           ANCHOR_EXISTS: ${{ steps.anchor.outputs.anchor_exists }}
+          DRY_RUN: ${{ needs.contract.outputs.dry_run }}
           PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
           TAG_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_TAG_SUBKEY_FINGERPRINT }}
           ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
@@ -182,6 +185,7 @@ jobs:
           --tag "${DISPATCH_TAG}" --version "${DISPATCH_VERSION}"
           --dispatch-head-sha "${DISPATCH_HEAD_SHA}"
           --anchor-exists "${ANCHOR_EXISTS}"
+          --dry-run "${DRY_RUN}"
           --primary-fingerprint "${PRIMARY_FINGERPRINT}"
           --tag-fingerprint "${TAG_SUBKEY_FINGERPRINT}"
           --artifact-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}"
@@ -226,12 +230,14 @@ jobs:
           TAG: ${{ inputs.tag }}
           TAG_OBJECT_SHA: ${{ needs.repository-readiness.outputs.tag_object_sha }}
           COMMIT: ${{ needs.repository-readiness.outputs.commit }}
+          DRY_RUN: ${{ needs.contract.outputs.dry_run }}
         run: |
           [[ "${RULESET_ID}" =~ ^[1-9][0-9]*$ ]]
           python3 -I -S scripts/run_release_tool.py release.github_publication verify-state \
             --ruleset-id "${RULESET_ID}" \
             --ruleset-updated-at "${RULESET_UPDATED_AT}" --repository "${REPOSITORY}" \
-            --tag "${TAG}" --tag-object-sha "${TAG_OBJECT_SHA}" --commit "${COMMIT}"
+            --tag "${TAG}" --tag-object-sha "${TAG_OBJECT_SHA}" --commit "${COMMIT}" \
+            --dry-run "${DRY_RUN}"
 
   existing-anchor-policy:
     name: Load signed policy for an existing immutable anchor

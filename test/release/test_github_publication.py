@@ -139,6 +139,35 @@ class GithubPublicationPolicyTest(unittest.TestCase):
         )
         self.assertEqual(gh_json.call_count, 4)
 
+    @mock.patch("release.github_publication._gh_json")
+    def test_dry_run_policy_skips_only_the_tag_reads(self, gh_json):
+        gh_json.side_effect = [
+            {"enabled": True, "enforced_by_owner": False},
+            self.ruleset(),
+        ]
+        verify_live_repository_policy(
+            repository="example/mcp-cpp-sdk",
+            ruleset_id=42,
+            ruleset_updated_at="2026-07-19T10:00:00Z",
+            tag="v0.2.0",
+            tag_object_sha="",
+            commit=COMMIT,
+            dry_run=True,
+        )
+        self.assertEqual(gh_json.call_count, 2)
+        gh_json.reset_mock()
+        gh_json.side_effect = [{"enabled": False, "enforced_by_owner": False}]
+        with self.assertRaises(PublicationPolicyError):
+            verify_live_repository_policy(
+                repository="example/mcp-cpp-sdk",
+                ruleset_id=42,
+                ruleset_updated_at="2026-07-19T10:00:00Z",
+                tag="v0.2.0",
+                tag_object_sha="",
+                commit=COMMIT,
+                dry_run=True,
+            )
+
     def test_rejects_ruleset_weakening_mutations(self):
         mutations = []
         for path, value in (
@@ -163,14 +192,24 @@ class GithubPublicationPolicyTest(unittest.TestCase):
                     candidate, ruleset_id=42, repository="example/mcp-cpp-sdk",
                     expected_updated_at="2026-07-19T10:00:00Z",
                 )
-        missing_bypass = self.ruleset()
-        del missing_bypass["bypass_actors"]
+
+    def test_read_only_ruleset_view_relies_on_the_pinned_update_time(self):
+        # GitHub omits bypass_actors unless the caller can write the ruleset.
+        read_only = self.ruleset()
+        del read_only["bypass_actors"]
+        read_only.update(name="release tags", node_id="RRS_1", created_at="2026-07-19T09:00:00Z")
+        verify_tag_ruleset(
+            read_only,
+            ruleset_id=42,
+            repository="example/mcp-cpp-sdk",
+            expected_updated_at="2026-07-19T10:00:00Z",
+        )
         with self.assertRaises(PublicationPolicyError):
             verify_tag_ruleset(
-                missing_bypass,
+                read_only,
                 ruleset_id=42,
                 repository="example/mcp-cpp-sdk",
-                expected_updated_at="2026-07-19T10:00:00Z",
+                expected_updated_at="2026-07-19T09:59:00Z",
             )
 
     def test_rejects_moved_or_lightweight_tag(self):

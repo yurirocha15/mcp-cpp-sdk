@@ -48,6 +48,18 @@ class ReleaseDispatchContractTest(unittest.TestCase):
             '[{"format":"apt"},{"format":"rpm"}]',
         )
 
+    def test_dry_run_validates_every_channel_and_never_publishes(self) -> None:
+        contract = self.validate(operation="dry-run")
+        outputs = contract.workflow_outputs()
+        self.assertEqual(outputs["mode"], "validate")
+        self.assertEqual(outputs["dry_run"], "true")
+        self.assertTrue(all(outputs[f"target_{channel}"] == "true" for channel in (
+            "conan2", "apt", "rpm", "aur", "homebrew", "chocolatey"
+        )))
+        self.assertEqual(self.validate().workflow_outputs()["dry_run"], "false")
+        with self.assertRaises(ContractError):
+            self.validate(operation="dry-run", apt="true")
+
     def test_accepts_github_only_release_candidate(self) -> None:
         contract = self.validate(
             tag="v0.2.0-rc.1",

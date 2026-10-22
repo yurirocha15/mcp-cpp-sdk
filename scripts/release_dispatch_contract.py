@@ -18,11 +18,14 @@ EXTERNAL_CHANNELS = (
     "homebrew",
     "chocolatey",
 )
+# operation -> (mode, every channel, dry run). A dry run validates main HEAD under the
+# requested version without the tag and never publishes.
 OPERATIONS = {
-    "validate-selected": ("validate", False),
-    "validate-all": ("validate", True),
-    "publish-selected": ("publish", False),
-    "publish-all": ("publish", True),
+    "dry-run": ("validate", True, True),
+    "validate-selected": ("validate", False, False),
+    "validate-all": ("validate", True, False),
+    "publish-selected": ("publish", False, False),
+    "publish-all": ("publish", True, False),
 }
 NUMERIC_IDENTIFIER = r"(?:0|[1-9][0-9]*)"
 STABLE_TAG = re.compile(
@@ -44,6 +47,7 @@ class DispatchContract:
     version: str
     release_kind: str
     channels: tuple[str, ...]
+    dry_run: bool = False
 
     def workflow_outputs(self) -> dict[str, str]:
         cloudsmith_formats = [
@@ -53,6 +57,7 @@ class DispatchContract:
         ]
         outputs = {
             "mode": self.mode,
+            "dry_run": "true" if self.dry_run else "false",
             "version": self.version,
             "release_kind": self.release_kind,
             "cloudsmith_matrix": json.dumps(
@@ -150,7 +155,7 @@ def validate_dispatch(
         if actual != expected:
             raise ContractError(f"unexpected {label}")
     try:
-        mode, select_all = OPERATIONS[operation]
+        mode, select_all, dry_run = OPERATIONS[operation]
     except KeyError as error:
         raise ContractError("operation is not an allowed release action") from error
 
@@ -173,6 +178,7 @@ def validate_dispatch(
         version,
         release_kind,
         channels,
+        dry_run,
     )
 
 
