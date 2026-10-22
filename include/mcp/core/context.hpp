@@ -11,9 +11,11 @@
 #include <mcp/transport/transport.hpp>
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -256,6 +258,9 @@ class Context {
      * Supports both form mode (ElicitRequestFormParams) and URL mode (ElicitRequestURLParams)
      * via the ElicitRequestParams variant.
      *
+     * Before 2026-07-28 a URL-mode request needs an `elicitationId`, and one is generated when
+     * the request leaves it unset; a 2026-07-28 question carries none.
+     *
      * @param params The elicitation request parameters (form or URL mode).
      * @return A task that resolves to the client's ElicitResult.
      * @throws std::runtime_error If no request sender is available.
@@ -274,6 +279,10 @@ class Context {
         }
 
         nlohmann::json json_params = params;
+        if (json_params.value("mode", "") == "url" && !json_params.contains("elicitationId")) {
+            // Before 2026-07-28 the field is required on the wire.
+            json_params["elicitationId"] = generate_elicitation_id();
+        }
         auto result_json = co_await sender_("elicitation/create", std::move(json_params));
         co_return result_json.get<ElicitResult>();
     }
@@ -305,6 +314,13 @@ class Context {
     }
 
    private:
+    /// A fresh, process-unique identifier for a legacy URL-mode elicitation.
+    static std::string generate_elicitation_id() {
+        static std::atomic<std::uint64_t> counter{0};
+        static const std::uint64_t seed = std::random_device{}();
+        return "elicit-" + std::to_string(seed) + "-" + std::to_string(counter.fetch_add(1));
+    }
+
     ITransport& transport_;
     RequestSender sender_;
     std::shared_ptr<std::atomic<bool>> cancelled_;

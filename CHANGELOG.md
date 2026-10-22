@@ -206,6 +206,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   a 2026-07-28 protocol version in `_meta` instead of answering it with
   `g_INVALID_REQUEST`; `server/discover` is exempt from the initialization
   sequence only as such a request.
+- `ElicitRequestURLParams::elicitationId` is now a `std::optional<std::string>`.
+  `Context::elicit()` generates one for a URL-mode request that leaves it unset,
+  so the wire output for earlier protocol revisions is unchanged; a request
+  serialized without it omits the field, as 2026-07-28 requires.
 - `BearerTokenValidator` returns a `TokenValidation` and
   `AsyncBearerTokenValidator` a `Task<TokenValidation>`. A synchronous
   validator returning `bool` still compiles; an asynchronous one returning
