@@ -1614,7 +1614,7 @@ TEST_F(SessionManagerTest, CloseCancelsIdleKeepAliveAndCannotCreatePostCloseSess
             http::request<http::string_body> initialize_request{http::verb::post, "/mcp", 11};
             initialize_request.set(http::field::host, "127.0.0.1");
             initialize_request.set(http::field::content_type, "application/json");
-            initialize_request.set("MCP-Protocol-Version", mcp::g_LATEST_PROTOCOL_VERSION);
+            initialize_request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
             initialize_request.keep_alive(true);
             initialize_request.body() =
                 R"({"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"post-close","version":"1.0"},"capabilities":{}},"id":1})";
@@ -1875,7 +1875,8 @@ TEST_F(SessionManagerTest, UnauthenticatedPathsBypassTheBearerCheck) {
     manager.set_unauthenticated_paths({"/health"});
     manager.set_custom_request_handler(
         [](const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
-            if (mcp::http_request_path(request.target()) != "/health") {
+            const auto target = request.target();
+            if (mcp::http_request_path({target.data(), target.size()}) != "/health") {
                 return std::nullopt;
             }
             mcp::StringResponse response{http::status::ok, request.version()};

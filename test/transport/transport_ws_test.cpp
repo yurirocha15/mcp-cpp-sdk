@@ -7,9 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
-#include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/bind_executor.hpp>
-#include <boost/asio/cancellation_signal.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -28,6 +26,7 @@
 #include <boost/beast/http/field.hpp>
 #include <boost/beast/websocket/stream.hpp>
 #include <boost/system/system_error.hpp>
+#include <boost/version.hpp>
 #include <chrono>
 #include <exception>
 #include <functional>
@@ -38,6 +37,11 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#if BOOST_VERSION >= 107700
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/cancellation_signal.hpp>
+#endif
 
 namespace {
 
@@ -56,8 +60,7 @@ struct WriteCompletionGroup {
             error = operation_error;
         }
         if (--remaining == 0) {
-            boost::system::error_code ignored;
-            signal.cancel(ignored);
+            signal.cancel();
         }
     }
 
@@ -88,8 +91,7 @@ struct ReadCompletion {
         error = operation_error;
         result = std::move(operation_result);
         done = true;
-        boost::system::error_code ignored;
-        signal.cancel(ignored);
+        signal.cancel();
     }
 
     mcp::Task<void> wait() {
@@ -117,8 +119,7 @@ struct VoidCompletion {
     void complete(std::exception_ptr operation_error) {
         error = operation_error;
         done = true;
-        boost::system::error_code ignored;
-        signal.cancel(ignored);
+        signal.cancel();
     }
 
     mcp::Task<void> wait() {
@@ -548,6 +549,8 @@ TEST_F(WebSocketTransportTest, PendingServerReadOwnsStateAfterTransportDestructi
     EXPECT_TRUE(read_failed);
 }
 
+// Per-operation cancellation slots exist from Boost 1.77.
+#if BOOST_VERSION >= 107700
 TEST_F(WebSocketTransportTest, CanceledQueuedWriteDoesNotBlockSubsequentWrites) {
     constexpr std::size_t payload_size = 16 * 1024 * 1024;
     tcp::acceptor acceptor(io_ctx_, tcp::endpoint(tcp::v4(), 0));
@@ -593,8 +596,7 @@ TEST_F(WebSocketTransportTest, CanceledQueuedWriteDoesNotBlockSubsequentWrites) 
                 std::shared_ptr<mcp::WebSocketClientTransport> transport;
 
                 ~StopOnExit() {
-                    boost::system::error_code ignored;
-                    watchdog->cancel(ignored);
+                    watchdog->cancel();
                     transport->close();
                 }
             } stop_on_exit{watchdog, transport};
@@ -634,6 +636,7 @@ TEST_F(WebSocketTransportTest, CanceledQueuedWriteDoesNotBlockSubsequentWrites) 
     EXPECT_NO_THROW(server.get());
     EXPECT_TRUE(canceled_write_failed);
 }
+#endif  // BOOST_VERSION >= 107700
 
 // A peer that accepts the connection and then never answers the upgrade request must not hold a
 // pending call forever: the connect timeout ends it.

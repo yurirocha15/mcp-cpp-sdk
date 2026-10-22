@@ -77,6 +77,13 @@ For an explicit variant:
 Replace the last target with ``mcp::sdk_static`` for static linkage.  Do not
 select a variant by guessing a physical library filename.
 
+The packages also install pkg-config files: ``mcp-cpp-sdk`` (the default),
+``mcp-cpp-sdk-shared`` and ``mcp-cpp-sdk-static``.  ``pkg-config --libs
+mcp-cpp-sdk-static`` links the static SDK against the system's shared OpenSSL.
+``--static`` adds OpenSSL's own static dependencies, which on Fedora, Enterprise
+Linux, Debian 13 and Ubuntu 26.04 include libraries (zlib, zstd) that the
+OpenSSL development package does not install.
+
 Conan 2
 -------
 

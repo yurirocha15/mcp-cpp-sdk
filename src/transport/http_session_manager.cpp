@@ -1,3 +1,4 @@
+#include "../detail/beast_string.hpp"
 #include "../detail/jsonrpc_envelope.hpp"
 #include "../detail/memory_transport_read.hpp"
 #include "../detail/peer_json.hpp"
@@ -491,7 +492,7 @@ struct StreamableHttpSessionManager::Impl {
         if (unauthenticated_paths_.empty()) {
             return false;
         }
-        const auto path = http_request_path(std::string_view(request.target()));
+        const auto path = http_request_path(detail::to_std_string_view(request.target()));
         return unauthenticated_paths_.contains(std::string(path));
     }
 
@@ -501,7 +502,7 @@ struct StreamableHttpSessionManager::Impl {
         if (!protected_resource_metadata_.has_value() || request.method() != http::verb::get) {
             return std::nullopt;
         }
-        if (http_request_path(std::string_view(request.target())) !=
+        if (http_request_path(detail::to_std_string_view(request.target())) !=
             protected_resource_metadata_path_) {
             return std::nullopt;
         }
@@ -531,9 +532,10 @@ struct StreamableHttpSessionManager::Impl {
         const bool unauthenticated_path = is_unauthenticated_path(request);
         if (!unauthenticated_path && (bearer_token_validator_ || async_bearer_token_validator_)) {
             const auto authorization_it = request.find(http::field::authorization);
-            const auto token = authorization_it == request.end()
-                                   ? std::string_view{}
-                                   : http_bearer_token(std::string_view(authorization_it->value()));
+            const auto token =
+                authorization_it == request.end()
+                    ? std::string_view{}
+                    : http_bearer_token(detail::to_std_string_view(authorization_it->value()));
             // The synchronous path neither copies the token nor suspends; only an async validator
             // pays for either. A validator that throws has failed to decide, which is the server's
             // failure rather than the client's: answered 500, not with a challenge that would send
@@ -756,7 +758,8 @@ struct StreamableHttpSessionManager::Impl {
         const auto accept_it = request.find(http::field::accept);
         const bool client_accepts_sse =
             accept_it != request.end() &&
-            std::string_view(accept_it->value()).find("text/event-stream") != std::string_view::npos;
+            detail::to_std_string_view(accept_it->value()).find("text/event-stream") !=
+                std::string_view::npos;
 
         if (!json_only_mode_->load(std::memory_order_acquire) && client_accepts_sse &&
             !result.stream_events.empty()) {

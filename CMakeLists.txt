@@ -145,6 +145,13 @@ if(MCP_CPP_SDK_BUILD_SHARED)
     set_property(
       TARGET mcp-cpp-sdk-shared PROPERTY RUNTIME_OUTPUT_NAME
                                          "mcp-cpp-sdk-${MCP_CPP_SDK_SOVERSION}")
+  elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    # Keeps Beast's error categories shared with the caller; see the header.
+    set(MCP_CPP_SDK_BEAST_VISIBILITY_HEADER
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/detail/beast_error_visibility.hpp")
+    target_compile_options(
+      mcp-cpp-sdk-shared
+      PRIVATE "SHELL:-include ${MCP_CPP_SDK_BEAST_VISIBILITY_HEADER}")
   endif()
   add_library(mcp::sdk_shared ALIAS mcp-cpp-sdk-shared)
   list(APPEND MCP_CPP_SDK_INSTALL_TARGETS mcp-cpp-sdk-shared)

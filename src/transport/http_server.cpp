@@ -1,3 +1,4 @@
+#include "../detail/beast_string.hpp"
 #include "../detail/peer_json.hpp"
 
 #include <mcp/detail/secure_random.hpp>
@@ -183,7 +184,7 @@ struct HttpServerTransport::Impl {
         if (unauthenticated_paths.empty()) {
             return false;
         }
-        const auto path = http_request_path(std::string_view(request.target()));
+        const auto path = http_request_path(detail::to_std_string_view(request.target()));
         return unauthenticated_paths.contains(std::string(path));
     }
 
@@ -409,7 +410,8 @@ struct HttpServerTransport::Impl {
 
     std::optional<StringResponse> check_origin(const StringRequest& request) const {
         const auto origin_header_it = request.find(http::field::origin);
-        if (origin_header_it != request.end() && !is_origin_allowed(origin_header_it->value())) {
+        if (origin_header_it != request.end() &&
+            !is_origin_allowed(detail::to_std_string_view(origin_header_it->value()))) {
             return make_error_response(request, http::status::forbidden, "Origin not allowed");
         }
         return std::nullopt;
@@ -421,7 +423,8 @@ struct HttpServerTransport::Impl {
         if (!protected_resource_metadata.has_value() || request.method() != http::verb::get) {
             return std::nullopt;
         }
-        if (http_request_path(std::string_view(request.target())) != protected_resource_metadata_path) {
+        if (http_request_path(detail::to_std_string_view(request.target())) !=
+            protected_resource_metadata_path) {
             return std::nullopt;
         }
         if (auto error = check_origin(request)) {
@@ -607,7 +610,8 @@ struct HttpServerTransport::Impl {
                                               "Transport closed while waiting response");
             }
 
-            if (co_await is_response_ready(request_id_key)) {
+            const bool ready = co_await is_response_ready(request_id_key);
+            if (ready) {
                 break;
             }
 
@@ -632,7 +636,8 @@ struct HttpServerTransport::Impl {
         const auto accept_it = request.find(http::field::accept);
         const bool client_accepts_sse =
             accept_it != request.end() &&
-            std::string_view(accept_it->value()).find("text/event-stream") != std::string_view::npos;
+            detail::to_std_string_view(accept_it->value()).find("text/event-stream") !=
+                std::string_view::npos;
 
         if (!json_only_.load(std::memory_order_acquire) && client_accepts_sse &&
             pending_result.event_id.has_value()) {

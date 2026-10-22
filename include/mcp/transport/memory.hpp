@@ -1,5 +1,6 @@
 #pragma once
 
+#include <boost/asio/any_io_executor.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/transport/transport.hpp>
 
@@ -9,10 +10,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-
-namespace boost::asio {
-class any_io_executor;
-}
 
 namespace mcp {
 

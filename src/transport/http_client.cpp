@@ -329,8 +329,7 @@ struct HttpClientTransport::Impl {
 
     static void complete_operation(const std::shared_ptr<SharedState>& shared_state) {
         shared_state->operation_active = false;
-        boost::system::error_code ignored;
-        shared_state->operation_timer.cancel(ignored);
+        shared_state->operation_timer.cancel();
     }
 
     static Task<std::string> run_read(std::shared_ptr<Impl> impl) {

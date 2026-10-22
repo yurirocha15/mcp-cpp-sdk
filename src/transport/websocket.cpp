@@ -57,10 +57,7 @@ struct OperationWaiter {
         signal.expires_at(kNever);
     }
 
-    void wake() noexcept {
-        boost::system::error_code ignored;
-        signal.cancel(ignored);
-    }
+    void wake() noexcept { signal.cancel(); }
 
     asio::steady_timer signal;
     bool granted{false};

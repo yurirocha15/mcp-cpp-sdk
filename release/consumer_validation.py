@@ -50,12 +50,8 @@ def write_consumer_project(
         shutil.rmtree(directory)
     directory.mkdir(parents=True)
     cmake, source = consumer_sources(version)
-    (directory / "CMakeLists.txt").write_text(
-        cmake, encoding="utf-8", newline="\n"
-    )
-    (directory / "main.cpp").write_text(
-        source, encoding="utf-8", newline="\n"
-    )
+    (directory / "CMakeLists.txt").write_bytes(cmake.encode("utf-8"))
+    (directory / "main.cpp").write_bytes(source.encode("utf-8"))
 
 
 def _needed_libraries(path: Path) -> tuple[str, ...]:

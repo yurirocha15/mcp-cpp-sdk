@@ -3,6 +3,7 @@
 #include "../detail/middleware_rejection.hpp"
 #include "../detail/peer_json.hpp"
 #include "../detail/socket_deadline.hpp"
+#include "../detail/spawn_awaitable.hpp"
 #include "oauth_internal.hpp"
 
 #include <mcp/transport/http_client.hpp>
@@ -14,6 +15,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <boost/asio/async_result.hpp>
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/dispatch.hpp>
@@ -604,6 +606,11 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             throw;
         }
         try {
+            // The header is read on its own first. Boost 1.75 and older drop a response's
+            // Content-Length body_limit error when the body arrives in the same read as the
+            // header, and then read the whole body.
+            co_await http::async_read_header(*exchange->stream, exchange->buffer, *exchange->parser,
+                                             net::use_awaitable);
             co_await http::async_read(*exchange->stream, exchange->buffer, *exchange->parser,
                                       net::use_awaitable);
         } catch (const boost::system::system_error& error) {
@@ -771,7 +778,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         std::exception_ptr failure;
         try {
             result = std::make_shared<Result>(
-                co_await net::co_spawn(strand, std::move(exchange), net::use_awaitable));
+                co_await mcp::detail::spawn_awaitable(strand, std::move(exchange)));
         } catch (...) {
             failure = std::current_exception();
         }
@@ -1423,7 +1430,10 @@ Task<nlohmann::json> invoke_auth_middleware(std::shared_ptr<MiddlewareInvocation
     if (invocation->token.empty()) {
         throw mcp::detail::MiddlewareRejection("Unauthorized: missing Bearer token");
     }
-    if (!co_await invocation->validator(invocation->token)) {
+    // Awaited into a local, never in the condition: see "GCC 12 co_await in a condition" in
+    // docs/contributing.rst.
+    const bool valid = co_await invocation->validator(invocation->token);
+    if (!valid) {
         throw mcp::detail::MiddlewareRejection("Unauthorized: invalid Bearer token");
     }
     co_return co_await invocation->next(*invocation->context, invocation->params);
@@ -2076,6 +2086,27 @@ struct OAuthAuthorizationManager::Impl {
         });
     }
 
+#if BOOST_VERSION < 107700
+    /// Before Boost 1.77, dispatch() cannot complete a use_awaitable bound to another executor, so
+    /// await_in_flight() and await_refresh() start the wait on flight_strand here, with the awaiting
+    /// coroutine's own handler: the wait is initiated on the strand and the coroutine still resumes
+    /// on its own executor. A wait released by expire_flight() ends with operation_aborted, which
+    /// use_awaitable throws; the flight's fields say how it ended.
+    static Task<void> wait_on_flight_strand(net::strand<net::any_io_executor> flight_strand,
+                                            std::shared_ptr<Flight> flight) {
+        try {
+            co_await net::async_initiate<const net::use_awaitable_t<>, void(boost::system::error_code)>(
+                [&flight_strand, &flight](auto handler) {
+                    net::dispatch(flight_strand, [flight, handler = std::move(handler)]() mutable {
+                        flight->timer.async_wait(std::move(handler));
+                    });
+                },
+                net::use_awaitable);
+        } catch (const boost::system::system_error&) {
+        }
+    }
+#endif
+
     /// Waiters share the leader's outcome instead of opening a second authorization flow, so a
     /// burst of concurrent requests that all hit the same challenge authorizes exactly once.
     static Task<bool> await_in_flight(std::shared_ptr<Impl> owner, std::shared_ptr<Flight> flight) {
@@ -2086,9 +2117,13 @@ struct OAuthAuthorizationManager::Impl {
         // bind_executor() rather than a bare post(flight_strand, use_awaitable): a bare post leaves
         // the resumption on this coroutine's own executor and only happens to land inside the strand
         // when the two share one io_context.
+#if BOOST_VERSION >= 107700
         co_await net::dispatch(net::bind_executor(owner->flight_strand, net::use_awaitable));
         boost::system::error_code ignored;
         co_await flight->timer.async_wait(net::redirect_error(net::use_awaitable, ignored));
+#else
+        co_await wait_on_flight_strand(owner->flight_strand, flight);
+#endif
 
         // The dispatch above moves this coroutine onto flight_strand, but only until the next
         // suspension: an awaitable's executor is fixed when it is spawned, and the wait's completion
@@ -2268,9 +2303,13 @@ struct OAuthAuthorizationManager::Impl {
     /// or cancel(), it reports that no token was renewed.
     static Task<bool> await_refresh(std::shared_ptr<Impl> owner, std::shared_ptr<Flight> flight) {
         // Initiated on flight_strand and resumed on the caller's executor, as in await_in_flight().
+#if BOOST_VERSION >= 107700
         co_await net::dispatch(net::bind_executor(owner->flight_strand, net::use_awaitable));
         boost::system::error_code ignored;
         co_await flight->timer.async_wait(net::redirect_error(net::use_awaitable, ignored));
+#else
+        co_await wait_on_flight_strand(owner->flight_strand, flight);
+#endif
 
         std::exception_ptr failure;
         bool succeeded = false;
@@ -2821,7 +2860,11 @@ struct OAuthClientTransport::Impl {
     static Task<std::string> run_read(std::shared_ptr<ReadOperation> operation) {
         operation->raw = co_await operation->owner->inner->read_message();
         operation->retry_wire = take_retry_wire(operation->owner, operation->raw);
-        if (operation->retry_wire && co_await operation->owner->authenticator->try_refresh_token()) {
+        bool refreshed = false;
+        if (operation->retry_wire) {
+            refreshed = co_await operation->owner->authenticator->try_refresh_token();
+        }
+        if (refreshed) {
             co_await write(operation->owner, operation->retry_wire);
             operation->raw = co_await operation->owner->inner->read_message();
             (void)take_retry_wire(operation->owner, operation->raw);

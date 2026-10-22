@@ -1752,7 +1752,11 @@ constexpr std::chrono::milliseconds g_teardown_budget{10000};
 // this runs on every build. The threadsafe style re-executes the test binary for the child rather
 // than forking a process that already has threads.
 TEST(ServerTeardownDeathTest, TeardownWatchdogAbortsOnOverrun) {
+#ifdef GTEST_FLAG_SET
     GTEST_FLAG_SET(death_test_style, "threadsafe");
+#else  // GoogleTest before 1.12
+    ::testing::GTEST_FLAG(death_test_style) = "threadsafe";
+#endif
     EXPECT_DEATH(
         run_with_teardown_watchdog(std::chrono::milliseconds(200),
                                    [] { std::this_thread::sleep_for(std::chrono::seconds(30)); }),

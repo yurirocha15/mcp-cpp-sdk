@@ -2,6 +2,7 @@
 #include "../detail/memory_transport_read.hpp"
 #include "../detail/middleware_rejection.hpp"
 #include "../detail/peer_json.hpp"
+#include "../detail/spawn_awaitable.hpp"
 
 #include <mcp/detail/serialized_transport_writer.hpp>
 #include <mcp/server/server.hpp>
@@ -797,9 +798,8 @@ Task<nlohmann::json> Server::Impl::await_reverse_response(std::shared_ptr<Sessio
     auto strand = *session->strand;
     // A caller's awaitable keeps its original executor across an awaited post. Launch the
     // complete correlation lifecycle on the session strand so map and timer state stay confined.
-    return boost::asio::co_spawn(
-        strand, await_reverse_response_on_strand(std::move(session), std::move(wire), id),
-        boost::asio::use_awaitable);
+    return mcp::detail::spawn_awaitable(
+        strand, await_reverse_response_on_strand(std::move(session), std::move(wire), id));
 }
 
 Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
@@ -900,8 +900,7 @@ Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransp
     session->drain_timer->expires_at(std::chrono::steady_clock::time_point::max());
     auto strand = *session->strand;
     // The read loop and teardown both own session state, so run both on the session strand.
-    co_await boost::asio::co_spawn(strand, impl->run_session(std::move(session)),
-                                   boost::asio::use_awaitable);
+    co_await mcp::detail::spawn_awaitable(strand, impl->run_session(std::move(session)));
 }
 
 Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
@@ -1000,8 +999,7 @@ Task<void> Server::Impl::dispatch(nlohmann::json json_msg) {
     auto session = session_snapshot();
     if (session && session->strand) {
         auto strand = *session->strand;
-        co_await boost::asio::co_spawn(strand, dispatch_on_strand(std::move(json_msg)),
-                                       boost::asio::use_awaitable);
+        co_await mcp::detail::spawn_awaitable(strand, dispatch_on_strand(std::move(json_msg)));
         co_return;
     }
 
@@ -1665,9 +1663,8 @@ Task<void> Server::Impl::notify_resource_updated(const std::string& uri) {
 
     auto owned_uri = std::make_shared<const std::string>(uri);
     auto strand = *session->strand;
-    co_await boost::asio::co_spawn(
-        strand, notify_resource_updated_on_strand(std::move(session), std::move(owned_uri)),
-        boost::asio::use_awaitable);
+    co_await mcp::detail::spawn_awaitable(
+        strand, notify_resource_updated_on_strand(std::move(session), std::move(owned_uri)));
 }
 
 Task<void> Server::Impl::notify_resource_updated_on_strand(std::shared_ptr<Session> session,

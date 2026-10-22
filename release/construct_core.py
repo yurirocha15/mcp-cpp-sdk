@@ -120,10 +120,8 @@ def construct_core(
         "source_sha256": source_sha256,
     }
     write_atomic(output / "core-metadata.json", canonical_json_bytes(metadata))
-    (output / "RELEASE_NOTES.md").write_text(
-        f"mcp-cpp-sdk {version}\n\nSee CHANGELOG.md in the signed source archive.\n",
-        encoding="utf-8",
-        newline="\n",
+    (output / "RELEASE_NOTES.md").write_bytes(
+        f"mcp-cpp-sdk {version}\n\nSee CHANGELOG.md in the signed source archive.\n".encode("utf-8")
     )
     if release_kind == "rc":
         return
@@ -148,16 +146,14 @@ def construct_core(
             "ARTIFACT_SUBKEY_FINGERPRINT": artifact_fingerprint,
         },
     )
-    (output / "aur-SRCINFO").write_text(
+    (output / "aur-SRCINFO").write_bytes(
         _aur_srcinfo(
             version=version,
             repository=repository,
             source_url=source_url,
             source_sha256=source_sha256,
             fingerprint=primary_fingerprint,
-        ),
-        encoding="utf-8",
-        newline="\n",
+        ).encode("utf-8")
     )
     render_file(
         root / "packaging/homebrew/mcp-cpp-sdk.rb.in",

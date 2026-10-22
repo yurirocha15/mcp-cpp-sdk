@@ -22,7 +22,8 @@ if ($ExpectedVersion -notmatch '^2\.[0-9]+\.[0-9]+$') {
 if (-not (Test-Path -LiteralPath $Requirements -PathType Leaf)) {
     throw 'The reviewed Conan requirements lock is missing'
 }
-$requirementsText = [System.IO.File]::ReadAllText($Requirements)
+# A Windows checkout can convert the lock to CRLF; the line patterns below expect LF.
+$requirementsText = [System.IO.File]::ReadAllText($Requirements).Replace("`r`n", "`n")
 $expectedLine = "(?m)^conan==$([regex]::Escape($ExpectedVersion)) --hash=sha256:[0-9a-f]{64}$"
 if ([regex]::Matches($requirementsText, $expectedLine).Count -ne 1 -or
     $requirementsText -match '(?m)^\s*(?:--|https?://|git\+)') {

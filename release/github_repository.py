@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import json
 import re
 import subprocess
-from typing import Callable, Mapping, Protocol, Sequence
+from typing import Callable, Mapping, Optional, Protocol, Sequence
 from urllib.parse import quote
 
 from .model import ValidationError
@@ -27,7 +27,7 @@ class ApiRequest(Protocol):
     ) -> object | None: ...
 
 
-CommandRunner = Callable[[Sequence[str], bytes | None], bytes]
+CommandRunner = Callable[[Sequence[str], Optional[bytes]], bytes]
 
 
 def _run_command(arguments: Sequence[str], stdin: bytes | None) -> bytes:
