@@ -655,6 +655,10 @@ if(BUILD_EXAMPLES)
                  examples/features/error_handling.cpp)
   target_link_libraries(example-feature-error-handling PRIVATE mcp-cpp-sdk)
 
+  add_executable(example-feature-schema-validation
+                 examples/features/schema_validation.cpp)
+  target_link_libraries(example-feature-schema-validation PRIVATE mcp-cpp-sdk)
+
   add_executable(example-feature-transport-memory
                  examples/features/transport_memory.cpp)
   target_link_libraries(example-feature-transport-memory PRIVATE mcp-cpp-sdk)

@@ -25,6 +25,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   proportion to the text in the value): a validation that exceeds them reports
   the value as invalid, and a schema that exceeds them for any value, such as
   `{"$ref": "#"}`, is refused when compiled.
+- `examples/features/schema_validation.cpp`, which shows each tool schema
+  check on the server and the client and exits with a failure status if one
+  does not hold.
 
 ### Changed
 
