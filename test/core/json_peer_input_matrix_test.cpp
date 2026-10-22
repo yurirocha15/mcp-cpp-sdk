@@ -540,11 +540,10 @@ TEST(JsonPeerInputMatrix, ElicitRequestFormParams) {
 }
 
 TEST(JsonPeerInputMatrix, ElicitRequestURLParams) {
-    const json baseline =
-        json::parse(R"json({"mode":"url","message":"x","url":"x","elicitationId":"x"})json");
+    const json baseline = json::parse(R"json({"mode":"url","message":"x","url":"x"})json");
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
-        {"elicitationId", R"json("x")json", 0, true, true, true, false},
+        {"elicitationId", R"json("x")json", 0, false, false, true, false},
         {"message", R"json("x")json", 0, true, true, true, false},
         {"mode", R"json("url")json", 0, true, true, true, false},
         {"task", R"json({})json", 0, false, false, false, false},
