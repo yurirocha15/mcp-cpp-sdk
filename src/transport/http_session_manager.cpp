@@ -1828,6 +1828,16 @@ void StreamableHttpSessionManager::close() {
             session->client_transport->close();
         }
     }
+
+    // No retry can reach the modern server through this endpoint any more.
+    std::shared_ptr<Server> modern_server;
+    {
+        std::lock_guard lock(impl->modern_server_mutex_);
+        modern_server = impl->modern_server_;
+    }
+    if (modern_server) {
+        modern_server->abandon_waiting_handlers();
+    }
 }
 
 Task<void> StreamableHttpSessionManager::listen() {

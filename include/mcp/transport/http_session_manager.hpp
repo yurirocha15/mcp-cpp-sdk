@@ -342,6 +342,9 @@ class MCP_API StreamableHttpSessionManager {
 
     /**
      * @brief Close the manager and all sessions.
+     *
+     * @details The handlers of 2026-07-28 requests that wait for a retry on the modern server are
+     * given up (Server::abandon_waiting_handlers()).
      */
     void close();
 
