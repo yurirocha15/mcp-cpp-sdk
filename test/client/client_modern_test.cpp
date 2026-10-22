@@ -1595,9 +1595,9 @@ TEST(E2eEra, StdioClientAgainstDualEraServerBothEras) {
     }
 }
 
-// Auto over HTTP: HttpClientTransport does not send the probe as a modern request, so the server
-// refuses it and the client carries on with initialize. The session is a legacy one.
-TEST(E2eEra, AutoOverHttpEndsUpLegacy) {
+// Auto over HTTP: the probe is a modern request with its headers, and a server that serves both eras
+// answers it, so the session is a modern one.
+TEST(E2eEra, AutoOverHttpIsModern) {
     constexpr unsigned short port = 20500;
     boost::asio::io_context io;
     boost::asio::steady_timer guard(io);
@@ -1623,10 +1623,10 @@ TEST(E2eEra, AutoOverHttpEndsUpLegacy) {
     });
 
     EXPECT_EQ(outcome->error, "");
-    EXPECT_EQ(outcome->connected.era, mcp::ProtocolEra::eLegacy);
-    EXPECT_EQ(outcome->whoami.at("modern"), false);
+    EXPECT_EQ(outcome->connected.era, mcp::ProtocolEra::eModern);
+    EXPECT_EQ(outcome->whoami.at("modern"), true);
     ASSERT_EQ(decisions.size(), 1u);
-    EXPECT_EQ(decisions[0].reason, mcp::EraReason::eFallbackNonModernError);
+    EXPECT_EQ(decisions[0].reason, mcp::EraReason::eDiscoverOk);
 }
 
 // A client left at its default speaks the legacy protocol over HTTP exactly as before.

@@ -109,10 +109,9 @@ class MCP_API ClientProtocol {
      * A server that exits when it receives the probe fails the connect with an error that
      * names Legacy() as the remedy.
      *
-     * Over HTTP the probe is a plain POST that HttpClientTransport does not send as a modern
-     * request; an HTTP server then answers with a status the transport reports as an error, and
-     * the client falls back to initialize. In practice Auto behaves as Legacy() over HTTP, at the
-     * cost of one extra POST.
+     * Over HTTP the probe is a 2026-07-28 POST. A legacy server answers it with an error status
+     * (400 without a modern protocol error in the body, 404 or 405), and the client falls back to
+     * initialize.
      */
     [[nodiscard]] static ClientProtocol Auto();
 

@@ -374,6 +374,7 @@ if(BUILD_TESTING)
       test/transport/transport_http_session_manager_test.cpp
       test/transport/transport_http_modern_test.cpp
       test/transport/transport_http_server_modern_test.cpp
+      test/transport/transport_http_client_modern_test.cpp
       test/transport/transport_http_principal_test.cpp
       test/transport/transport_http_mrtr_test.cpp
       test/transport/transport_http_stream_test.cpp

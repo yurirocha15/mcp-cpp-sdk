@@ -8,6 +8,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Added
 
+- `HttpClientTransport` sends requests that name a protocol version in
+  `_meta` (2026-07-28) as sessionless POSTs with the `MCP-Protocol-Version`,
+  `Mcp-Method`, `Mcp-Name` and `Mcp-Param-*` headers (Base64 encoded when the
+  value is not plain header text), reads event-stream answers as they
+  arrive, ends a response stream when its request is cancelled, and
+  refreshes `tools/list` once before retrying a request refused with
+  `HeaderMismatch`. Tools with invalid `x-mcp-header` annotations are left out
+  of `tools/list`; `set_warning_handler()` reports them.
 - `CompiledSchema` (`mcp/protocol/schema.hpp`): compiles a JSON Schema and
   validates values against it, reporting violations with instance paths.
   A schema without `$schema` is read as 2020-12; 2019-09, draft-07, draft-06
@@ -234,9 +242,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `resultType` is neither absent nor `"complete"` fails with `McpError`.
   `Client::cancel()` ends the wait for the request at once (it fails with
   `g_REQUEST_CANCELLED`) and a response that arrives anyway is dropped. A
-  request that times out is cancelled with `notifications/cancelled`. Over
-  HTTP, `Auto()` ends up legacy after one refused POST because
-  `HttpClientTransport` does not send modern requests yet.
+  request that times out is cancelled with `notifications/cancelled`.
 
 ### Changed
 
@@ -318,6 +324,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - With Boost older than 1.82, an error the shared library threw with a Beast
   error code, such as a WebSocket connect timeout, did not compare equal to the
   same `boost::beast` enumerator in the caller.
+- `HttpClientTransport` names the version the client asks for in the
+  `MCP-Protocol-Version` header of the initialize request, instead of always
+  the newest.
 
 ## [0.2.0] - 2026-10-21
 
