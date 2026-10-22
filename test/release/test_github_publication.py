@@ -50,10 +50,44 @@ class GithubPublicationPolicyTest(unittest.TestCase):
         }
 
     def ref(self):
-        return {"ref": "refs/tags/v0.2.0", "object": {"type": "tag", "sha": TAG_OBJECT}}
+        return {
+            "ref": "refs/tags/v0.2.0",
+            "object": {
+                "sha": TAG_OBJECT,
+                "type": "tag",
+                "url": f"https://api.github.com/repos/example/mcp-cpp-sdk/git/tags/{TAG_OBJECT}",
+            },
+        }
 
     def tag_object(self):
-        return {"sha": TAG_OBJECT, "tag": "v0.2.0", "object": {"type": "commit", "sha": COMMIT}}
+        return {
+            "sha": TAG_OBJECT,
+            "tag": "v0.2.0",
+            "object": {
+                "sha": COMMIT,
+                "type": "commit",
+                "url": f"https://api.github.com/repos/example/mcp-cpp-sdk/git/commits/{COMMIT}",
+            },
+        }
+
+    def graphql_release(self, **changes):
+        return {
+            "databaseId": 99,
+            "isDraft": False,
+            "isPrerelease": False,
+            "tagName": "v0.2.0",
+            **changes,
+        }
+
+    def rest_release(self, **changes):
+        return {
+            "id": 99,
+            "tag_name": "v0.2.0",
+            "draft": False,
+            "prerelease": False,
+            "immutable": True,
+            **changes,
+        }
 
     def test_accepts_exact_non_bypassable_tag_boundary(self):
         verify_tag_ruleset(
@@ -175,49 +209,58 @@ class GithubPublicationPolicyTest(unittest.TestCase):
                 tag="v0.2.0",
             )
         )
-        immutable = {
-            "databaseId": 99,
-            "isDraft": False,
-            "isImmutable": True,
-            "isPrerelease": False,
-            "tagName": "v0.2.0",
-        }
         self.assertTrue(
             classify_existing_release(
-                self.existing_release_response(immutable),
+                self.existing_release_response(self.graphql_release()),
                 repository="example/mcp-cpp-sdk",
                 repository_id=101740085,
                 tag="v0.2.0",
+                rest_release=self.rest_release(),
             )
         )
 
     def test_existing_release_probe_fails_closed_for_draft_or_mutable_release(self):
-        base = {
-            "databaseId": 99,
-            "isDraft": False,
-            "isImmutable": True,
-            "isPrerelease": False,
-            "tagName": "v0.2.0",
-        }
         for field, value in (
             ("isDraft", True),
-            ("isImmutable", False),
             ("isPrerelease", True),
             ("tagName", "v0.2.1"),
         ):
-            candidate = dict(base)
-            candidate[field] = value
-            with self.subTest(field=field), self.assertRaises(PublicationPolicyError):
+            with self.subTest(graphql=field), self.assertRaises(PublicationPolicyError):
                 classify_existing_release(
-                    self.existing_release_response(candidate),
+                    self.existing_release_response(self.graphql_release(**{field: value})),
                     repository="example/mcp-cpp-sdk",
                     repository_id=101740085,
                     tag="v0.2.0",
+                    rest_release=self.rest_release(),
                 )
-        draft = dict(base, isDraft=True)
+        for field, value in (
+            ("id", 100),
+            ("tag_name", "v0.2.1"),
+            ("draft", True),
+            ("prerelease", True),
+            ("immutable", False),
+            ("immutable", None),
+        ):
+            with self.subTest(rest=field, value=value), self.assertRaises(
+                PublicationPolicyError
+            ):
+                classify_existing_release(
+                    self.existing_release_response(self.graphql_release()),
+                    repository="example/mcp-cpp-sdk",
+                    repository_id=101740085,
+                    tag="v0.2.0",
+                    rest_release=self.rest_release(**{field: value}),
+                )
+        with self.assertRaises(PublicationPolicyError):
+            classify_existing_release(
+                self.existing_release_response(self.graphql_release()),
+                repository="example/mcp-cpp-sdk",
+                repository_id=101740085,
+                tag="v0.2.0",
+            )
         with self.assertRaisesRegex(PublicationPolicyError, "BLOCKED_MANUAL_ACTION"):
             classify_existing_release(
-                self.existing_release_response(draft),
+                self.existing_release_response(self.graphql_release(isDraft=True)),
                 repository="example/mcp-cpp-sdk",
                 repository_id=101740085,
                 tag="v0.2.0",
@@ -238,6 +281,30 @@ class GithubPublicationPolicyTest(unittest.TestCase):
         arguments = run.call_args.args[0]
         self.assertEqual(arguments[:3], ["gh", "api", "graphql"])
         self.assertIn("release(tagName:$tag)", arguments[4])
+        self.assertNotIn("isImmutable", arguments[4])
+        run.reset_mock()
+        run.return_value = None
+        run.side_effect = [
+            mock.Mock(
+                returncode=0,
+                stdout=json.dumps(self.existing_release_response(self.graphql_release())),
+                stderr="",
+            ),
+            mock.Mock(returncode=0, stdout=json.dumps(self.rest_release()), stderr=""),
+        ]
+        self.assertTrue(
+            probe_existing_release(
+                repository="example/mcp-cpp-sdk", repository_id=101740085, tag="v0.2.0"
+            )
+        )
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "gh", "api", "-H", "X-GitHub-Api-Version: 2026-03-10",
+                "repos/example/mcp-cpp-sdk/releases/99",
+            ],
+        )
+        run.side_effect = None
         run.return_value = mock.Mock(returncode=1, stdout="", stderr="secret-free error")
         with self.assertRaises(PublicationPolicyError):
             probe_existing_release(
@@ -288,13 +355,6 @@ class GithubPublicationPolicyTest(unittest.TestCase):
 
     @mock.patch("release.github_publication.subprocess.run")
     def test_create_release_fails_closed_before_write_when_anchor_exists(self, run):
-        immutable = {
-            "databaseId": 99,
-            "isDraft": False,
-            "isImmutable": True,
-            "isPrerelease": False,
-            "tagName": "v0.2.0",
-        }
         with tempfile.TemporaryDirectory() as directory:
             bundle = Path(directory)
             (bundle / "RELEASE_NOTES.md").write_text("notes\n", encoding="utf-8")
@@ -304,9 +364,10 @@ class GithubPublicationPolicyTest(unittest.TestCase):
                 mock.Mock(returncode=0, stdout=json.dumps(self.tag_object())),
                 mock.Mock(
                     returncode=0,
-                    stdout=json.dumps(self.existing_release_response(immutable)),
+                    stdout=json.dumps(self.existing_release_response(self.graphql_release())),
                     stderr="",
                 ),
+                mock.Mock(returncode=0, stdout=json.dumps(self.rest_release()), stderr=""),
             ]
             with self.assertRaisesRegex(PublicationPolicyError, "already exists"):
                 create_release(
@@ -318,7 +379,7 @@ class GithubPublicationPolicyTest(unittest.TestCase):
                     tag_object_sha=TAG_OBJECT,
                     commit=COMMIT,
                 )
-            self.assertEqual(run.call_count, 3)
+            self.assertEqual(run.call_count, 4)
 
     def test_create_release_rejects_kind_mismatch_and_unsafe_bundle(self):
         with tempfile.TemporaryDirectory() as directory:

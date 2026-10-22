@@ -20,18 +20,21 @@ TAG = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-r
 ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}")
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _GH_RESPONSE_LIMIT = 65536
+_API_VERSION = "X-GitHub-Api-Version: 2026-03-10"
 
 
 class PublicationPolicyError(ValueError):
     """Raised when GitHub state does not prove a safe publication boundary."""
 
 
+# GraphQL's Release type has no immutability field, so an existing release is read again
+# over REST by its ID for that.
 _EXISTING_RELEASE_QUERY = """
 query($owner:String!,$name:String!,$tag:String!){
   repository(owner:$owner,name:$name){
     databaseId
     nameWithOwner
-    release(tagName:$tag){databaseId isDraft isImmutable isPrerelease tagName}
+    release(tagName:$tag){databaseId isDraft isPrerelease tagName}
   }
 }
 """.strip()
@@ -107,13 +110,15 @@ def verify_tag_objects(
     if TAG.fullmatch(tag) is None:
         raise PublicationPolicyError("release tag is not canonical")
     ref = _mapping(ref_value, "tag ref")
+    ref_target = _mapping(ref.get("object"), "tag ref target")
     tag_object = _mapping(tag_value, "annotated tag object")
     target = _mapping(tag_object.get("object"), "annotated tag target")
     if (
         SHA1.fullmatch(tag_object_sha) is None
         or SHA1.fullmatch(commit_sha) is None
         or ref.get("ref") != f"refs/tags/{tag}"
-        or ref.get("object") != {"sha": tag_object_sha, "type": "tag"}
+        or ref_target.get("sha") != tag_object_sha
+        or ref_target.get("type") != "tag"
         or tag_object.get("sha") != tag_object_sha
         or tag_object.get("tag") != tag
         or target.get("type") != "commit"
@@ -159,9 +164,17 @@ def verify_release_identity(
 
 
 def classify_existing_release(
-    value: object, *, repository: str, repository_id: int, tag: str
+    value: object,
+    *,
+    repository: str,
+    repository_id: int,
+    tag: str,
+    rest_release: object = None,
 ) -> bool:
-    """Return whether an exact immutable anchor exists, rejecting draft residue."""
+    """Return whether an exact immutable anchor exists, rejecting draft residue.
+
+    ``rest_release`` is the REST view of the release that ``value`` names, if it names one.
+    """
 
     if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
         raise PublicationPolicyError("repository name is not canonical")
@@ -182,11 +195,11 @@ def classify_existing_release(
     if release is None:
         return False
     release = _mapping(release, "GraphQL release")
-    expected_keys = {"databaseId", "isDraft", "isImmutable", "isPrerelease", "tagName"}
+    expected_keys = {"databaseId", "isDraft", "isPrerelease", "tagName"}
     if set(release) != expected_keys:
         raise PublicationPolicyError("existing GraphQL release shape is not exact")
     database_id = release["databaseId"]
-    flags = (release["isDraft"], release["isImmutable"], release["isPrerelease"])
+    flags = (release["isDraft"], release["isPrerelease"])
     if type(database_id) is not int or database_id < 1 or any(type(flag) is not bool for flag in flags):
         raise PublicationPolicyError("existing GraphQL release fields are malformed")
     if release["tagName"] != tag:
@@ -198,13 +211,37 @@ def classify_existing_release(
         raise PublicationPolicyError(
             f"BLOCKED_MANUAL_ACTION: draft GitHub release {database_id} exists for {tag}"
         )
-    if release["isImmutable"] is not True:
+    rest = _mapping(rest_release, "existing REST release")
+    if (
+        rest.get("id") != database_id
+        or rest.get("tag_name") != tag
+        or rest.get("draft") is not False
+        or rest.get("prerelease") is not expected_prerelease
+    ):
+        raise PublicationPolicyError("existing REST release differs from the GraphQL release")
+    if rest.get("immutable") is not True:
         raise PublicationPolicyError("existing GitHub release is published but not immutable")
     return True
 
 
+def _published_release_id(value: object) -> int | None:
+    """Return the ID of the published release a GraphQL response names, without judging it."""
+
+    release: object = value
+    for key in ("data", "repository", "release"):
+        if not isinstance(release, Mapping):
+            return None
+        release = release.get(key)
+    if not isinstance(release, Mapping) or release.get("isDraft") is not False:
+        return None
+    database_id = release.get("databaseId")
+    if type(database_id) is not int or database_id < 1:
+        return None
+    return database_id
+
+
 def probe_existing_release(*, repository: str, repository_id: int, tag: str) -> bool:
-    """Read one fixed GraphQL release projection through the authenticated GitHub CLI."""
+    """Read one fixed GraphQL release projection, and the REST release it names."""
 
     if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
         raise PublicationPolicyError("repository name is not canonical")
@@ -216,8 +253,19 @@ def probe_existing_release(*, repository: str, repository_id: int, tag: str) -> 
         ],
         label="release-state",
     )
+    release_id = _published_release_id(payload)
+    rest_release = None
+    if release_id is not None:
+        rest_release = _gh_json(
+            ["api", "-H", _API_VERSION, f"repos/{repository}/releases/{release_id}"],
+            label="release-rest",
+        )
     return classify_existing_release(
-        payload, repository=repository, repository_id=repository_id, tag=tag
+        payload,
+        repository=repository,
+        repository_id=repository_id,
+        tag=tag,
+        rest_release=rest_release,
     )
 
 
@@ -281,16 +329,15 @@ def verify_live_repository_policy(
 
     if type(ruleset_id) is not int or ruleset_id < 1:
         raise PublicationPolicyError("release-tag ruleset ID is malformed")
-    api_version = "X-GitHub-Api-Version: 2026-03-10"
     verify_immutable_releases(
         _gh_json(
-            ["api", "-H", api_version, f"repos/{repository}/immutable-releases"],
+            ["api", "-H", _API_VERSION, f"repos/{repository}/immutable-releases"],
             label="immutable-releases",
         )
     )
     verify_tag_ruleset(
         _gh_json(
-            ["api", "-H", api_version, f"repos/{repository}/rulesets/{ruleset_id}"],
+            ["api", "-H", _API_VERSION, f"repos/{repository}/rulesets/{ruleset_id}"],
             label="tag-ruleset",
         ),
         ruleset_id=ruleset_id,

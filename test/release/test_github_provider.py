@@ -303,14 +303,34 @@ class ProviderIdentityTests(unittest.TestCase):
         self.assertEqual(receipt.run_id, str(run_id))
         self.assertEqual(receipt.html_url, response["html_url"])
 
-    def test_dispatch_rejects_extra_or_mismatched_current_response(self) -> None:
+    def test_dispatch_rejects_missing_or_mismatched_current_response(self) -> None:
         base = {
             "workflow_run_id": 123,
             "run_url": f"https://api.github.com/repos/{self.target.full_name}/actions/runs/123",
             "html_url": f"https://github.com/{self.target.full_name}/actions/runs/123",
         }
+        receipt = dispatch_workflow(
+            publisher_api(self.target, dispatch_response={**base, "added_later": "value"}),
+            target=self.target,
+            workflow="publish.yml",
+            control_tag=CONTROL_TAG,
+            control_sha=CONTROL_SHA,
+            inputs={"provider_control_sha": CONTROL_SHA},
+        )
+        self.assertEqual(receipt.run_id, "123")
+        for field in base:
+            response = dict(base)
+            del response[field]
+            with self.subTest(missing=field), self.assertRaises(GitHubProviderError):
+                dispatch_workflow(
+                    publisher_api(self.target, dispatch_response=response),
+                    target=self.target,
+                    workflow="publish.yml",
+                    control_tag=CONTROL_TAG,
+                    control_sha=CONTROL_SHA,
+                    inputs={"provider_control_sha": CONTROL_SHA},
+                )
         for field, replacement in (
-            ("unexpected", "value"),
             ("workflow_run_id", 0),
             ("run_url", "https://attacker.invalid/run"),
             ("html_url", "https://attacker.invalid/run"),
