@@ -212,8 +212,8 @@ def dispatch_workflow(
         {"ref": control_tag, "inputs": dict(inputs)},
     )
     value = mapping(response, "workflow dispatch response")
-    if set(value) != {"workflow_run_id", "run_url", "html_url"}:
-        raise GitHubProviderError("workflow dispatch response schema is not exact")
+    if not {"workflow_run_id", "run_url", "html_url"} <= set(value):
+        raise GitHubProviderError("workflow dispatch response lacks the run details")
     run_id = value.get("workflow_run_id")
     if type(run_id) is not int or run_id < 1:
         raise GitHubProviderError("workflow dispatch run ID is not positive")
