@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace mcp::detail {
 
@@ -17,6 +19,17 @@ inline constexpr std::array<std::string_view, 9> g_MODERN_METHODS = {
 inline bool is_modern_method(std::string_view method) {
     return std::find(g_MODERN_METHODS.begin(), g_MODERN_METHODS.end(), method) !=
            g_MODERN_METHODS.end();
+}
+
+/// The message of the g_METHOD_NOT_FOUND that answers an initialize no legacy version can serve,
+/// naming the versions that are served.
+inline std::string initialize_not_served_message(const std::vector<std::string>& served) {
+    std::string message = "Method not found: initialize; this server serves protocol versions";
+    for (const auto& version : served) {
+        message += ' ';
+        message += version;
+    }
+    return message;
 }
 
 }  // namespace mcp::detail

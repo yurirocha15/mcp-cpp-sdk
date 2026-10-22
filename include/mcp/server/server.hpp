@@ -172,7 +172,31 @@ struct ServerProtocolPolicy {
     /// means all of them. An initialize asking for another version negotiates the newest one
     /// listed.
     std::optional<std::vector<std::string>> legacy_versions;
+
+    /**
+     * @brief Check that the policy can be applied.
+     *
+     * @throws std::invalid_argument If neither era is served, if legacy clients are served with
+     *         an empty `legacy_versions`, or if `legacy_versions` names a version that is not one
+     *         of g_LEGACY_PROTOCOL_VERSIONS.
+     */
+    void validate() const;
 };
+
+/**
+ * @brief The version initialize negotiates under @p policy.
+ *
+ * @return @p requested when the policy lets initialize negotiate it, otherwise the newest legacy
+ *         version the policy allows.
+ */
+MCP_API std::string negotiate_protocol_version(std::string_view requested,
+                                               const ServerProtocolPolicy& policy);
+
+/**
+ * @brief The protocol versions served under @p policy, oldest first: the legacy versions
+ * initialize may negotiate, then the versions served per request.
+ */
+MCP_API std::vector<std::string> served_protocol_versions(const ServerProtocolPolicy& policy);
 
 /**
  * @brief Requests a Server refused for their protocol version or per-request protocol fields
@@ -453,9 +477,7 @@ class MCP_API Server {
      * first request.
      *
      * @param policy The revisions to serve.
-     * @throws std::invalid_argument If neither era is served, if legacy clients are served with
-     *         an empty `legacy_versions`, or if `legacy_versions` names a version that is not one
-     *         of g_LEGACY_PROTOCOL_VERSIONS.
+     * @throws std::invalid_argument If ServerProtocolPolicy::validate() refuses the policy.
      * @throws std::logic_error If the server has already served a request or run() has started.
      */
     void set_protocol_policy(ServerProtocolPolicy policy);

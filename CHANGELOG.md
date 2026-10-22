@@ -47,13 +47,36 @@ Versioning; a `0.x` version is a stable release unless its version has an
   session's transport. `Context::request_meta()` gives handlers the
   parsed fields (`RequestMetadata`, in `mcp/protocol/request_meta.hpp`, with the
   `g_META_*` key names) and the whole `_meta`.
+- `StreamableHttpSessionManager` serves 2026-07-28 requests on the same
+  endpoint as legacy sessions. Such a request needs no session: `Mcp-Session-Id`
+  and `Last-Event-ID` are ignored and never sent back, and one Server answers
+  all of them (`modern_server()`, built from the factory on first use, or
+  `set_modern_server()`). Its `MCP-Protocol-Version`, `Mcp-Method` and, for
+  `tools/call`, `prompts/get` and `resources/read`, `Mcp-Name` headers must be
+  present and match the body (an `Mcp-Name` in the `=?base64?...?=` form is
+  decoded first); otherwise it is answered `400` with `g_HEADER_MISMATCH`,
+  counted by `header_mismatch_rejections()`. Errors use the statuses the
+  specification gives them: `400` for invalid params, unsupported version,
+  header mismatch and missing client capability, `404` for an unknown method.
+  `GET` and `DELETE` with a version header that `initialize` does not
+  negotiate and no session are answered `405`. `initialize` with a 2026-07-28
+  header is answered `404` with `g_METHOD_NOT_FOUND`, naming the versions
+  served in the message and in `data.supported`. `server/discover` is always
+  served this way. `set_protocol_policy()` applies a `ServerProtocolPolicy` to
+  every Server the manager builds; without legacy clients, `initialize`
+  creates no session and every `GET` and `DELETE` is answered `405`.
 - `ServerProtocolPolicy` and `Server::set_protocol_policy()` choose whether a
   server serves 2026-07-28 requests, legacy clients, or both (the default),
   and which legacy versions `initialize` may negotiate. A server serving only
   2026-07-28 answers `initialize` with `g_METHOD_NOT_FOUND` naming the
-  versions it serves in the message and in `data.supported`. `Server::protocol_rejection_stats()` counts the
-  requests refused for their version or `_meta` fields, separately counting
-  refusals of requests without a protocol version in `_meta`.
+  versions it serves in the message and in `data.supported`.
+  `Server::protocol_rejection_stats()` counts the requests refused for their
+  version or `_meta` fields, separately counting refusals of requests
+  without a protocol version in `_meta`.
+  `ServerProtocolPolicy::validate()` checks a policy, and
+  `negotiate_protocol_version(requested, policy)` gives the version
+  `initialize` negotiates under it, and `served_protocol_versions(policy)`
+  the versions it serves.
 - `Server::dispatch_request_direct()` overload taking a `RequestContext`,
   whose `cancelled` flag cancels the request. Direct calls are never cancelled
   by `notifications/cancelled`, so calls that reuse an id stay independent.

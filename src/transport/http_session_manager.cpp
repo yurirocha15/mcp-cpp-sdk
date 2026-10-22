@@ -1,6 +1,8 @@
 #include "../detail/beast_string.hpp"
+#include "../detail/http_request_metadata.hpp"
 #include "../detail/jsonrpc_envelope.hpp"
 #include "../detail/memory_transport_read.hpp"
+#include "../detail/modern_methods.hpp"
 #include "../detail/peer_json.hpp"
 
 #include <mcp/core/constants.hpp>
@@ -102,12 +104,6 @@ inline bool is_initialize_request(const nlohmann::json& request_json) {
            request_json.at("method").get<std::string>() == "initialize";
 }
 
-inline bool is_discover_request(const nlohmann::json& request_json) {
-    return request_json.is_object() && request_json.contains("method") &&
-           request_json.at("method").is_string() &&
-           request_json.at("method").get<std::string>() == "server/discover";
-}
-
 inline std::optional<std::string> initialize_protocol_version(const nlohmann::json& request_json) {
     if (!request_json.is_object() || !request_json.contains("params") ||
         !request_json.at("params").is_object()) {
@@ -150,6 +146,16 @@ inline StringResponse make_jsonrpc_error_response(const StringRequest& request,
     nlohmann::json error_body = {{"jsonrpc", "2.0"},
                                  {"error", {{"code", error_code}, {"message", error_message}}},
                                  {"id", nullptr}};
+    return make_json_response(request, status_code, error_body.dump());
+}
+
+/// A JSON-RPC error answering the request @p id.
+inline StringResponse make_jsonrpc_error_response(const StringRequest& request,
+                                                  http::status status_code, int error_code,
+                                                  std::string_view error_message,
+                                                  const nlohmann::json& id) {
+    nlohmann::json error_body = {
+        {"jsonrpc", "2.0"}, {"error", {{"code", error_code}, {"message", error_message}}}, {"id", id}};
     return make_json_response(request, status_code, error_body.dump());
 }
 
@@ -222,10 +228,13 @@ struct StreamableHttpSessionManager::Impl {
     std::unordered_set<std::shared_ptr<Connection>> active_connections_;
     mutable std::shared_mutex sessions_mutex_;
     SessionMap sessions;
-    // Answers sessionless server/discover requests. Built once on the first one, so a peer that
-    // needs no session or credential cannot make the factory run per request.
-    std::mutex discover_server_mutex_;
-    std::shared_ptr<Server> discover_server_;
+    // Answers every 2026-07-28 request, which belongs to no session. Built from the factory on the
+    // first one unless set_modern_server() supplied it, so a peer that needs no session cannot make
+    // the factory run per request.
+    std::mutex modern_server_mutex_;
+    std::shared_ptr<Server> modern_server_;
+    std::optional<ServerProtocolPolicy> protocol_policy_;
+    std::atomic<std::uint64_t> header_mismatch_rejections_{0};
 
     Impl(const boost::asio::any_io_executor& exec, std::string host_arg, unsigned short port_arg,
          StreamableHttpSessionManager::ServerFactory factory_arg, std::size_t capacity)
@@ -324,6 +333,23 @@ struct StreamableHttpSessionManager::Impl {
 
     // Session lifecycle
 
+    /// A Server from the factory, with the protocol policy applied when one is set.
+    std::unique_ptr<Server> build_server(const boost::asio::any_io_executor& server_executor) const {
+        auto server = factory(server_executor);
+        if (server && protocol_policy_) {
+            server->set_protocol_policy(*protocol_policy_);
+        }
+        return server;
+    }
+
+    std::shared_ptr<Server> modern_server() {
+        std::lock_guard lock(modern_server_mutex_);
+        if (!modern_server_) {
+            modern_server_ = build_server(tool_executor_ ? tool_executor_ : executor);
+        }
+        return modern_server_;
+    }
+
     std::shared_ptr<detail_session_mgr::SessionRuntime> create_session(
         boost::asio::strand<boost::asio::any_io_executor> conn_strand) {
         if (closed.load(std::memory_order_acquire)) {
@@ -336,7 +362,7 @@ struct StreamableHttpSessionManager::Impl {
         auto server_mem = std::make_shared<MemoryTransport>(conn_strand);
         client_mem->set_peer(server_mem);
         server_mem->set_peer(client_mem);
-        auto server = factory(executor);
+        auto server = build_server(executor);
 
         auto runtime =
             std::make_shared<detail_session_mgr::SessionRuntime>(session_id, event_store_capacity);
@@ -585,6 +611,19 @@ struct StreamableHttpSessionManager::Impl {
             co_return co_await handle_post(request, conn_strand, stateless_server);
         }
 
+        // A 2026-07-28 client has no session to read from or end, so GET and DELETE are not part
+        // of its protocol. A request naming a session is a legacy client's, unless no legacy
+        // client is served, and then no session can exist.
+        const bool serves_legacy = !protocol_policy_ || protocol_policy_->serve_legacy;
+        if (const auto version = detail::http_header(request, "MCP-Protocol-Version");
+            !serves_legacy || (version && !is_legacy_protocol_version(*version) &&
+                               request.find("Mcp-Session-Id") == request.end())) {
+            auto response = detail_session_mgr::make_error_response(
+                request, http::status::method_not_allowed, "Method not allowed");
+            response.set(http::field::allow, "POST");
+            co_return response;
+        }
+
         if (stateless_json_mode_) {
             auto response = detail_session_mgr::make_error_response(
                 request, http::status::method_not_allowed, "Method not allowed");
@@ -604,6 +643,21 @@ struct StreamableHttpSessionManager::Impl {
             request, http::status::method_not_allowed, "Method not allowed");
         response.set(http::field::allow, "GET, POST, DELETE");
         co_return response;
+    }
+
+    StringResponse initialize_not_served_response(const StringRequest& request,
+                                                  const nlohmann::json& request_json) const {
+        auto served = served_protocol_versions(protocol_policy_.value_or(ServerProtocolPolicy{}));
+        const auto id = request_json.value("id", nlohmann::json(nullptr));
+        nlohmann::json error_body = {
+            {"jsonrpc", "2.0"},
+            {"error",
+             {{"code", g_METHOD_NOT_FOUND},
+              {"message", detail::initialize_not_served_message(served)},
+              {"data", {{"supported", std::move(served)}}}}},
+            {"id", id.is_string() || id.is_number_integer() ? id : nlohmann::json(nullptr)}};
+        return detail_session_mgr::make_json_response(request, http::status::not_found,
+                                                      error_body.dump());
     }
 
     bool has_valid_protocol_header(const StringRequest& request) const {
@@ -631,12 +685,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         const bool is_initialize = detail_session_mgr::is_initialize_request(request_json);
-        const bool is_discover = detail_session_mgr::is_discover_request(request_json);
-        // server/discover advertises protocol versions (see g_DISCOVERABLE_PROTOCOL_VERSIONS)
-        // outside g_SUPPORTED_PROTOCOL_VERSIONS, which alone backs has_valid_protocol_header;
-        // exempt it from that check exactly like initialize is exempted, rather than widening
-        // the check itself for every method.
-        if (!is_initialize && !is_discover && !has_valid_protocol_header(request)) {
+        if (!is_initialize && !has_valid_protocol_header(request)) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid MCP-Protocol-Version header");
         }
@@ -647,7 +696,7 @@ struct StreamableHttpSessionManager::Impl {
 
         const auto dispatch_executor = tool_executor_ ? tool_executor_ : executor;
         if (!stateless_server) {
-            stateless_server = factory(dispatch_executor);
+            stateless_server = build_server(dispatch_executor);
         }
 
         auto response_body = co_await boost::asio::co_spawn(
@@ -657,32 +706,47 @@ struct StreamableHttpSessionManager::Impl {
                                                          std::move(response_body));
     }
 
-    /// server/discover is a pre-gate method: it MUST be reachable with zero prior state, so a
-    /// sessionless discover request in stateful mode is dispatched directly against a
-    /// throwaway Server instance instead of going through resolve_session_for_post — no
-    /// session is created, registered, or otherwise touched, and no Mcp-Session-Id is issued.
-    Task<StringResponse> handle_sessionless_discover(const StringRequest& request,
-                                                     nlohmann::json request_json) {
+    /// Serves a 2026-07-28 request, which carries everything it needs and belongs to no session:
+    /// its mirrored headers are checked, it is dispatched to the shared modern server, and its
+    /// JSON-RPC errors are answered with the HTTP status the specification gives them. No session is
+    /// created or looked up, and Mcp-Session-Id is neither read nor sent.
+    ///
+    /// @p check_headers is false for a request that names no 2026-07-28 version and reaches here
+    /// only because legacy clients are not served; the server refuses it.
+    Task<StringResponse> handle_modern_post(const StringRequest& request, nlohmann::json request_json,
+                                            bool check_headers) {
         if (closed.load(std::memory_order_acquire)) {
             co_return detail_session_mgr::make_error_response(
                 request, http::status::service_unavailable, "Transport closed");
         }
 
-        const auto dispatch_executor = tool_executor_ ? tool_executor_ : executor;
-        std::shared_ptr<Server> discover_server;
-        {
-            std::lock_guard lock(discover_server_mutex_);
-            if (!discover_server_) {
-                discover_server_ = factory(dispatch_executor);
-            }
-            discover_server = discover_server_;
+        // 2026-07-28 defines no notification a client sends over HTTP, so one is accepted and
+        // dropped.
+        if (!request_json.contains("id")) {
+            co_return detail_session_mgr::make_empty_json_response(request, http::status::accepted);
+        }
+        if (!request_json.at("id").is_string() && !request_json.at("id").is_number_integer()) {
+            co_return detail_session_mgr::make_jsonrpc_error_response(
+                request, http::status::bad_request, g_INVALID_REQUEST,
+                "JSON-RPC request id must be a string or an integer");
         }
 
+        if (check_headers) {
+            if (auto mismatch = detail::modern_header_mismatch(request, request_json)) {
+                header_mismatch_rejections_.fetch_add(1, std::memory_order_relaxed);
+                co_return detail_session_mgr::make_jsonrpc_error_response(
+                    request, http::status::bad_request, g_HEADER_MISMATCH,
+                    "Header mismatch: " + *mismatch, request_json.at("id"));
+            }
+        }
+
+        const auto dispatch_executor = tool_executor_ ? tool_executor_ : executor;
+        auto server = modern_server();
         auto response_body = co_await boost::asio::co_spawn(
-            dispatch_executor, dispatch_on_executor(discover_server.get(), std::move(request_json)),
+            dispatch_executor, dispatch_on_executor(server.get(), std::move(request_json)),
             boost::asio::use_awaitable);
-        co_return detail_session_mgr::make_json_response(request, http::status::ok,
-                                                         std::move(response_body));
+        const auto status = detail::http_status_for_response(response_body);
+        co_return detail_session_mgr::make_json_response(request, status, std::move(response_body));
     }
 
     std::variant<std::shared_ptr<detail_session_mgr::SessionRuntime>, StringResponse>
@@ -789,12 +853,25 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
+        if (detail::is_modern_http_request(request_json,
+                                           detail::http_header(request, "MCP-Protocol-Version"))) {
+            co_return co_await handle_modern_post(request, std::move(request_json), true);
+        }
+        if (protocol_policy_ && !protocol_policy_->serve_legacy) {
+            co_return co_await handle_modern_post(request, std::move(request_json), false);
+        }
+
         const bool is_initialize = detail_session_mgr::is_initialize_request(request_json);
-        if (is_initialize && protocol_header_it != request.end() &&
-            !is_legacy_protocol_version(
-                detail_session_mgr::protocol_header_value(protocol_header_it))) {
-            co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
-                                                              "Invalid MCP-Protocol-Version header");
+        if (is_initialize && protocol_header_it != request.end()) {
+            const auto version = detail_session_mgr::protocol_header_value(protocol_header_it);
+            if (is_modern_protocol_version(version)) {
+                // initialize does not exist in 2026-07-28; the error names the versions served.
+                co_return initialize_not_served_response(request, request_json);
+            }
+            if (!is_legacy_protocol_version(version)) {
+                co_return detail_session_mgr::make_error_response(
+                    request, http::status::bad_request, "Invalid MCP-Protocol-Version header");
+            }
         }
 
         if (stateless_json_mode_) {
@@ -809,11 +886,6 @@ struct StreamableHttpSessionManager::Impl {
             co_return detail_session_mgr::make_jsonrpc_error_response(
                 request, http::status::bad_request, g_INVALID_REQUEST,
                 "JSON-RPC request id must be a string or an integer");
-        }
-
-        if (detail_session_mgr::is_discover_request(request_json) &&
-            request.find("Mcp-Session-Id") == request.end()) {
-            co_return co_await handle_sessionless_discover(request, std::move(request_json));
         }
 
         auto session_var = resolve_session_for_post(request, request_json, conn_strand);
@@ -841,7 +913,9 @@ struct StreamableHttpSessionManager::Impl {
                 detail_session_mgr::initialize_protocol_version(request_json)
                     .value_or(std::string(g_LATEST_LEGACY_PROTOCOL_VERSION));
             session->set_protocol_version(
-                std::string(negotiate_protocol_version(requested_protocol_version)));
+                protocol_policy_
+                    ? negotiate_protocol_version(requested_protocol_version, *protocol_policy_)
+                    : std::string(negotiate_protocol_version(requested_protocol_version)));
         }
 
         if (!request_json.contains("id") || !request_json.contains("method")) {
@@ -1200,6 +1274,29 @@ void StreamableHttpSessionManager::set_tool_executor(const boost::asio::any_io_e
     std::lock_guard lock(impl_->configuration_mutex_);
     impl_->ensure_configurable();
     impl_->tool_executor_ = exec;
+}
+
+void StreamableHttpSessionManager::set_protocol_policy(ServerProtocolPolicy policy) {
+    policy.validate();
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    impl_->protocol_policy_ = std::move(policy);
+}
+
+void StreamableHttpSessionManager::set_modern_server(std::shared_ptr<Server> server) {
+    if (!server) {
+        throw std::invalid_argument("The modern server must not be null");
+    }
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    std::lock_guard server_lock(impl_->modern_server_mutex_);
+    impl_->modern_server_ = std::move(server);
+}
+
+std::shared_ptr<Server> StreamableHttpSessionManager::modern_server() { return impl_->modern_server(); }
+
+std::uint64_t StreamableHttpSessionManager::header_mismatch_rejections() const {
+    return impl_->header_mismatch_rejections_.load(std::memory_order_relaxed);
 }
 
 void StreamableHttpSessionManager::close() {
