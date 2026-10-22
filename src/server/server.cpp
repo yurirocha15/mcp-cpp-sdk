@@ -2,6 +2,7 @@
 #include "../detail/memory_transport_read.hpp"
 #include "../detail/middleware_rejection.hpp"
 #include "../detail/modern_methods.hpp"
+#include "../detail/param_headers.hpp"
 #include "../detail/peer_json.hpp"
 #include "../detail/request_meta.hpp"
 #include "../detail/spawn_awaitable.hpp"
@@ -57,6 +58,8 @@ namespace {
 struct CompiledToolSchemas {
     CompiledSchema input;
     std::optional<CompiledSchema> output;
+    /// The arguments the input schema mirrors into `Mcp-Param-*` headers.
+    std::vector<detail::ParamHeader> param_headers;
 };
 
 /// Throws when the `structuredContent` of @p result does not conform to @p schema; the dispatcher
@@ -109,7 +112,8 @@ std::optional<nlohmann::json> argument_rejection(const CompiledSchema& schema,
 
 /// Compiles @p tool's schemas, refusing the tool when either is not a JSON Schema the SDK can use.
 /// Tool arguments are always objects, so the input schema must also declare `"type": "object"`,
-/// as the 2025-11-25 and 2026-07-28 schemas require.
+/// as the 2025-11-25 and 2026-07-28 schemas require, and its `x-mcp-header` annotations must meet
+/// the constraints 2026-07-28 sets on them.
 CompiledToolSchemas compile_tool_schemas(const Tool& tool) {
     const auto refuse = [&tool](SchemaError::Category category, std::string_view field,
                                 std::string_view problem) {
@@ -133,11 +137,17 @@ CompiledToolSchemas compile_tool_schemas(const Tool& tool) {
         throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema",
                      R"(must declare "type": "object")");
     }
+    std::vector<detail::ParamHeader> param_headers;
+    try {
+        param_headers = detail::collect_param_headers(tool.inputSchema);
+    } catch (const std::invalid_argument& error) {
+        throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema", error.what());
+    }
     std::optional<CompiledSchema> output;
     if (tool.outputSchema) {
         output = compile(*tool.outputSchema, "outputSchema");
     }
-    return {std::move(input), std::move(output)};
+    return {std::move(input), std::move(output), std::move(param_headers)};
 }
 
 /// One state of a URI template's matching automaton.
@@ -634,6 +644,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::shared_ptr<const RequestMetadata> meta;
         std::shared_ptr<std::atomic<bool>> cancelled;
         bool session_request{false};
+        /// The `Mcp-Param-*` headers of the HTTP request, or null when it came another way.
+        std::shared_ptr<const detail::ParamHeaderValues> param_headers;
     };
 
     static constexpr LoggingLevel g_default_log_level = LoggingLevel::eDebug;
@@ -712,8 +724,10 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Task<void> notify_resource_updated(const std::string& uri);
     Task<void> dispatch_on_strand(nlohmann::json json_msg);
     Task<void> dispatch_request(nlohmann::json json_msg);
-    Task<std::string> dispatch_request_wire(nlohmann::json json_msg, bool enforce_lifecycle,
-                                            std::shared_ptr<std::atomic<bool>> cancelled = nullptr);
+    Task<std::string> dispatch_request_wire(
+        nlohmann::json json_msg, bool enforce_lifecycle,
+        std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
+        std::shared_ptr<const detail::ParamHeaderValues> param_headers = nullptr);
     Task<std::string> dispatch_modern_wire(const nlohmann::json& json_msg, std::string_view method,
                                            RequestScope scope);
     void dispatch_notification(const nlohmann::json& json_msg);
@@ -1264,8 +1278,13 @@ Task<std::string> Server::dispatch_request_direct(nlohmann::json json_msg) {
 
 Task<std::string> Server::dispatch_request_direct(nlohmann::json json_msg,
                                                   RequestContext request_context) {
+    std::shared_ptr<const detail::ParamHeaderValues> param_headers;
+    if (request_context.param_headers) {
+        param_headers = std::make_shared<const detail::ParamHeaderValues>(
+            std::move(*request_context.param_headers));
+    }
     return impl_->dispatch_request_wire(std::move(json_msg), false,
-                                        std::move(request_context.cancelled));
+                                        std::move(request_context.cancelled), std::move(param_headers));
 }
 
 Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
@@ -1361,8 +1380,9 @@ Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg) {
     co_await session->writer->write_message(wire);
 }
 
-Task<std::string> Server::Impl::dispatch_request_wire(nlohmann::json json_msg, bool enforce_lifecycle,
-                                                      std::shared_ptr<std::atomic<bool>> cancelled) {
+Task<std::string> Server::Impl::dispatch_request_wire(
+    nlohmann::json json_msg, bool enforce_lifecycle, std::shared_ptr<std::atomic<bool>> cancelled,
+    std::shared_ptr<const detail::ParamHeaderValues> param_headers) {
     {
         const char* validation_error = validate_request_envelope(json_msg);
         if (validation_error != nullptr) {
@@ -1383,7 +1403,8 @@ Task<std::string> Server::Impl::dispatch_request_wire(nlohmann::json json_msg, b
         // initialize, and leaves the lifecycle and log level of a session untouched.
         if (detail::is_modern_request(json_msg, method)) {
             // [gcc11-sso: named-aggregate-arg] DO NOT pass RequestScope{...} inside the co_await.
-            RequestScope scope{nullptr, std::move(cancelled), enforce_lifecycle};
+            RequestScope scope{nullptr, std::move(cancelled), enforce_lifecycle,
+                               std::move(param_headers)};
             co_return co_await dispatch_modern_wire(json_msg, method, std::move(scope));
         }
 
@@ -1737,13 +1758,23 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
 Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& json_msg,
                                                        const RequestScope& scope) {
     auto params = deserialize_request_params<CallToolParams>(json_msg, "tools/call");
-    if (!tool_handlers.contains(params.name)) {
+    const auto tool = tool_handlers.find(params.name);
+    if (tool == tool_handlers.end()) {
         // This, not the throw in invoke_tool_impl, is the site a remote client actually reaches:
         // the RPC path refuses before dispatch. The tools spec lists an unknown tool as -32602
         // (Invalid params). The name is entirely the client's, so flatten and bound it before it
         // reaches the operator's log.
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
                                   "Unknown tool: " + detail::sanitize_for_diagnostics(params.name));
+    }
+    // An HTTP request mirrors the arguments the tool's x-mcp-header annotations name into
+    // Mcp-Param-* headers, and those must match the body it is executed from.
+    if (scope.meta != nullptr && scope.param_headers != nullptr) {
+        if (auto mismatch = detail::param_header_mismatch(tool->second.schemas.param_headers,
+                                                          params.arguments, *scope.param_headers)) {
+            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_HEADER_MISMATCH,
+                                      "Header mismatch: " + *mismatch);
+        }
     }
 
     std::optional<ProgressToken> progress_token;

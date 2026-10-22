@@ -248,6 +248,13 @@ struct RequestContext {
     /// Cancellation flag for this call: setting it cancels the request, and its handler sees it
     /// through Context::is_cancelled(). When null, the call gets a flag of its own.
     std::shared_ptr<std::atomic<bool>> cancelled;
+    /// The `Mcp-Param-{Name}` headers of the HTTP request that carried this call, as
+    /// {Name, value} pairs with the value as received. When set, a 2026-07-28 tools/call is
+    /// answered with `g_HEADER_MISMATCH` unless each argument its tool mirrors into a header
+    /// (`x-mcp-header`) that is present and not null has exactly one matching header, and every
+    /// header the tool names has a valid value. Leave unset for a request that did not arrive
+    /// over HTTP.
+    std::optional<std::vector<std::pair<std::string, std::string>>> param_headers;
 };
 
 /**
@@ -286,7 +293,11 @@ class MCP_API Server {
      * @param input_schema JSON schema for the tool's input parameters.
      * @param handler      Handler invoked on tools/call requests.
      * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
-     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     *         CompiledSchema), the input schema does not declare `"type": "object"`, or an
+     *         `x-mcp-header` annotation breaks the rules of the 2026-07-28 tools specification
+     *         (not a string, empty or not an HTTP token, repeated ignoring case, on a property
+     *         that is not a string, integer or boolean, or on a property not reached through
+     *         `properties` alone).
      * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
@@ -311,7 +322,11 @@ class MCP_API Server {
      * a structuredContent field alongside content.
      *
      * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
-     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     *         CompiledSchema), the input schema does not declare `"type": "object"`, or an
+     *         `x-mcp-header` annotation breaks the rules of the 2026-07-28 tools specification
+     *         (not a string, empty or not an HTTP token, repeated ignoring case, on a property
+     *         that is not a string, integer or boolean, or on a property not reached through
+     *         `properties` alone).
      * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
@@ -342,7 +357,11 @@ class MCP_API Server {
      * @param input_schema JSON schema for the tool's input parameters.
      * @param handler      Synchronous handler: takes JSON params, returns JSON result.
      * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
-     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     *         CompiledSchema), the input schema does not declare `"type": "object"`, or an
+     *         `x-mcp-header` annotation breaks the rules of the 2026-07-28 tools specification
+     *         (not a string, empty or not an HTTP token, repeated ignoring case, on a property
+     *         that is not a string, integer or boolean, or on a property not reached through
+     *         `properties` alone).
      * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     void add_tool(const std::string& name, const std::string& description,
@@ -359,7 +378,11 @@ class MCP_API Server {
      * @param tool Tool metadata.
      * @param handler Asynchronous raw handler receiving tool arguments.
      * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
-     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     *         CompiledSchema), the input schema does not declare `"type": "object"`, or an
+     *         `x-mcp-header` annotation breaks the rules of the 2026-07-28 tools specification
+     *         (not a string, empty or not an HTTP token, repeated ignoring case, on a property
+     *         that is not a string, integer or boolean, or on a property not reached through
+     *         `properties` alone).
      * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     void add_raw_tool(const Tool& tool, TypeErasedHandler handler);
@@ -370,7 +393,11 @@ class MCP_API Server {
      * @param tool Tool metadata.
      * @param handler Synchronous raw handler receiving tool arguments.
      * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
-     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     *         CompiledSchema), the input schema does not declare `"type": "object"`, or an
+     *         `x-mcp-header` annotation breaks the rules of the 2026-07-28 tools specification
+     *         (not a string, empty or not an HTTP token, repeated ignoring case, on a property
+     *         that is not a string, integer or boolean, or on a property not reached through
+     *         `properties` alone).
      * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     void add_raw_tool(const Tool& tool, std::function<nlohmann::json(const nlohmann::json&)> handler);

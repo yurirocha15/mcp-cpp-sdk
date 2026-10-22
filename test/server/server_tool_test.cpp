@@ -532,7 +532,7 @@ TEST(ServerToolSchema, AcceptsAnyKeywordOf2020_12) {
         "$defs": {"id": {"type": "string", "pattern": "^[a-z]+-[0-9]+$"}},
         "properties": {
             "id": {"$ref": "#/$defs/id"},
-            "mode": {"enum": ["a", "b"], "x-mcp-header": "Mode"},
+            "mode": {"type": "string", "enum": ["a", "b"], "x-mcp-header": "Mode"},
             "pair": {"type": "array", "prefixItems": [{"type": "string"}, {"type": "integer"}]},
             "choice": {"oneOf": [{"type": "string"}, {"type": "integer", "minimum": 0}]}
         },

@@ -291,7 +291,8 @@ class MCP_API StreamableHttpSessionManager {
     [[nodiscard]] std::shared_ptr<Server> modern_server();
 
     /// 2026-07-28 requests refused with `g_HEADER_MISMATCH` because their MCP-Protocol-Version,
-    /// Mcp-Method or Mcp-Name header was missing, malformed or did not match the body.
+    /// Mcp-Method, Mcp-Name or Mcp-Param-* header was missing, malformed or did not match the
+    /// body.
     [[nodiscard]] std::uint64_t header_mismatch_rejections() const;
 
     /**

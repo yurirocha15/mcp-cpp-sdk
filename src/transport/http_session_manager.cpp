@@ -676,6 +676,12 @@ struct StreamableHttpSessionManager::Impl {
         co_return co_await server->dispatch_request_direct(std::move(request_json));
     }
 
+    static Task<std::string> dispatch_on_executor(Server* server, nlohmann::json request_json,
+                                                  RequestContext request_context) {
+        co_return co_await server->dispatch_request_direct(std::move(request_json),
+                                                           std::move(request_context));
+    }
+
     Task<StringResponse> handle_stateless_post(const StringRequest& request,
                                                nlohmann::json request_json,
                                                std::unique_ptr<Server>& stateless_server) {
@@ -740,12 +746,21 @@ struct StreamableHttpSessionManager::Impl {
             }
         }
 
+        RequestContext request_context;
+        if (check_headers) {
+            request_context.param_headers = detail::mcp_param_headers(request);
+        }
         const auto dispatch_executor = tool_executor_ ? tool_executor_ : executor;
         auto server = modern_server();
         auto response_body = co_await boost::asio::co_spawn(
-            dispatch_executor, dispatch_on_executor(server.get(), std::move(request_json)),
+            dispatch_executor,
+            dispatch_on_executor(server.get(), std::move(request_json), std::move(request_context)),
             boost::asio::use_awaitable);
-        const auto status = detail::http_status_for_response(response_body);
+        const auto error_code = detail::response_error_code(response_body);
+        if (error_code == g_HEADER_MISMATCH) {
+            header_mismatch_rejections_.fetch_add(1, std::memory_order_relaxed);
+        }
+        const auto status = error_code ? detail::http_status_for_error(*error_code) : http::status::ok;
         co_return detail_session_mgr::make_json_response(request, status, std::move(response_body));
     }
 
