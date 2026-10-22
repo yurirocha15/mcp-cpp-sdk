@@ -285,7 +285,8 @@ class MCP_API StreamableHttpSessionManager {
      *
      * @return The server given to set_modern_server(), or the one built from the factory, which
      *         this call builds if no request has yet. Notifications for 2026-07-28 clients are sent
-     *         through it.
+     *         through it. Called before listen(), it lets the server be configured before the first
+     *         request.
      */
     [[nodiscard]] std::shared_ptr<Server> modern_server();
 

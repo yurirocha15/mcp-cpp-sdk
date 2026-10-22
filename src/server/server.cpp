@@ -652,8 +652,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Implementation server_info;
     ServerCapabilities capabilities;
     std::optional<std::string> instructions;
-    std::optional<std::int64_t> discover_ttl_ms;
-    std::optional<CacheScope> discover_cache_scope;
+    std::array<CacheHint, 6> cache_hints{};
+    bool report_server_info{true};
     std::atomic<LifecycleState> lifecycle{LifecycleState::eUninitialized};
     // The transport's terminated_session_count() when the current session was initialized.
     std::atomic<std::uint64_t> terminated_sessions_at_initialize{0};
@@ -722,20 +722,23 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Task<std::string> handle_initialize_wire(const nlohmann::json& json_msg, bool update_lifecycle);
     Task<std::string> handle_shutdown_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_ping_wire(const nlohmann::json& json_msg);
-    Task<std::string> handle_discover_wire(const nlohmann::json& json_msg);
+    Task<std::string> handle_discover_wire(const nlohmann::json& json_msg, const RequestScope& scope);
     Task<std::string> handle_tools_call_wire(const nlohmann::json& json_msg, const RequestScope& scope);
-    Task<std::string> handle_tools_list_wire(const nlohmann::json& json_msg);
-    Task<std::string> handle_resources_list_wire(const nlohmann::json& json_msg);
+    Task<std::string> handle_tools_list_wire(const nlohmann::json& json_msg, const RequestScope& scope);
+    Task<std::string> handle_resources_list_wire(const nlohmann::json& json_msg,
+                                                 const RequestScope& scope);
     Task<std::string> handle_resources_read_wire(const nlohmann::json& json_msg,
                                                  const RequestScope& scope);
-    Task<std::string> handle_resource_templates_list_wire(const nlohmann::json& json_msg);
+    Task<std::string> handle_resource_templates_list_wire(const nlohmann::json& json_msg,
+                                                          const RequestScope& scope);
     Task<std::string> handle_subscribe_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_unsubscribe_wire(const nlohmann::json& json_msg);
-    Task<std::string> handle_prompts_list_wire(const nlohmann::json& json_msg);
+    Task<std::string> handle_prompts_list_wire(const nlohmann::json& json_msg,
+                                               const RequestScope& scope);
     Task<std::string> handle_prompts_get_wire(const nlohmann::json& json_msg,
                                               const RequestScope& scope);
     Task<std::string> handle_set_level_wire(const nlohmann::json& json_msg);
-    Task<std::string> handle_complete_wire(const nlohmann::json& json_msg);
+    Task<std::string> handle_complete_wire(const nlohmann::json& json_msg, const RequestScope& scope);
 
     Task<nlohmann::json> invoke_tool_impl(CallToolParams params,
                                           std::shared_ptr<std::atomic<bool>> cancelled,
@@ -764,6 +767,12 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
 
     // [gcc11-sso: wire-builders] DO NOT convert to Task<T>.
     static std::string make_result_wire(const RequestId& id, nlohmann::json result);
+    /// The response to a request: for a 2026-07-28 request, @p result with the members that
+    /// revision adds to every result (resultType, and the server's identity when reported) and,
+    /// for a cacheable one, the hints of @p target. Members the result already has are kept.
+    /// A result of an earlier revision is sent as it is.
+    std::string make_result_wire(const RequestId& id, const RequestScope& scope, nlohmann::json result,
+                                 std::optional<CacheTarget> target = std::nullopt) const;
     static std::string make_error_wire(const RequestId& id, int code, std::string message);
     static std::string make_error_wire(const RequestId& id, int code, std::string message,
                                        nlohmann::json data);
@@ -873,14 +882,14 @@ void Server::set_instructions(std::string instructions) {
     impl_->instructions = std::move(instructions);
 }
 
-void Server::set_discover_ttl_ms(std::int64_t ttl_ms) {
-    if (ttl_ms < 0) {
-        throw std::invalid_argument("Discover ttlMs must be >= 0");
+void Server::set_cache_hints(CacheTarget target, CacheHint hint) {
+    if (hint.ttlMs < 0) {
+        throw std::invalid_argument("Cache hint ttlMs must be >= 0");
     }
-    impl_->discover_ttl_ms = ttl_ms;
+    impl_->cache_hints.at(static_cast<std::size_t>(target)) = hint;
 }
 
-void Server::set_discover_cache_scope(CacheScope scope) { impl_->discover_cache_scope = scope; }
+void Server::set_report_server_info(bool report) { impl_->report_server_info = report; }
 
 void ServerProtocolPolicy::validate() const {
     if (!serve_modern && !serve_legacy) {
@@ -1389,6 +1398,8 @@ Task<std::string> Server::Impl::dispatch_request_wire(nlohmann::json json_msg, b
                                       "Missing " + std::string(g_META_PROTOCOL_VERSION) + " in _meta");
         }
 
+        const RequestScope legacy_scope{nullptr, std::move(cancelled), enforce_lifecycle};
+
         // A client that arrives after the previous one ended its session starts uninitialized.
         const auto session_state = !enforce_lifecycle ? LifecycleState::eReady
                                    : transport_started_new_session()
@@ -1424,33 +1435,27 @@ Task<std::string> Server::Impl::dispatch_request_wire(nlohmann::json json_msg, b
         if (method == "shutdown") {
             co_return co_await handle_shutdown_wire(json_msg);
         } else if (method == "tools/call") {
-            // [gcc11-sso: named-aggregate-arg] DO NOT pass RequestScope{...} inside the co_await.
-            RequestScope scope{nullptr, std::move(cancelled), enforce_lifecycle};
-            co_return co_await handle_tools_call_wire(json_msg, std::move(scope));
+            co_return co_await handle_tools_call_wire(json_msg, legacy_scope);
         } else if (method == "tools/list") {
-            co_return co_await handle_tools_list_wire(json_msg);
+            co_return co_await handle_tools_list_wire(json_msg, legacy_scope);
         } else if (method == "resources/list") {
-            co_return co_await handle_resources_list_wire(json_msg);
+            co_return co_await handle_resources_list_wire(json_msg, legacy_scope);
         } else if (method == "resources/read") {
-            // [gcc11-sso: named-aggregate-arg] DO NOT pass RequestScope{...} inside the co_await.
-            RequestScope scope{nullptr, std::move(cancelled), enforce_lifecycle};
-            co_return co_await handle_resources_read_wire(json_msg, std::move(scope));
+            co_return co_await handle_resources_read_wire(json_msg, legacy_scope);
         } else if (method == "resources/templates/list") {
-            co_return co_await handle_resource_templates_list_wire(json_msg);
+            co_return co_await handle_resource_templates_list_wire(json_msg, legacy_scope);
         } else if (method == "resources/subscribe") {
             co_return co_await handle_subscribe_wire(json_msg);
         } else if (method == "resources/unsubscribe") {
             co_return co_await handle_unsubscribe_wire(json_msg);
         } else if (method == "prompts/list") {
-            co_return co_await handle_prompts_list_wire(json_msg);
+            co_return co_await handle_prompts_list_wire(json_msg, legacy_scope);
         } else if (method == "prompts/get") {
-            // [gcc11-sso: named-aggregate-arg] DO NOT pass RequestScope{...} inside the co_await.
-            RequestScope scope{nullptr, std::move(cancelled), enforce_lifecycle};
-            co_return co_await handle_prompts_get_wire(json_msg, std::move(scope));
+            co_return co_await handle_prompts_get_wire(json_msg, legacy_scope);
         } else if (method == "logging/setLevel") {
             co_return co_await handle_set_level_wire(json_msg);
         } else if (method == "completion/complete") {
-            co_return co_await handle_complete_wire(json_msg);
+            co_return co_await handle_complete_wire(json_msg, legacy_scope);
         } else {
             co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_METHOD_NOT_FOUND,
                                       "Method not found: " + std::string(method));
@@ -1505,23 +1510,23 @@ Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_
     }
 
     if (method == "server/discover") {
-        co_return co_await handle_discover_wire(json_msg);
+        co_return co_await handle_discover_wire(json_msg, scope);
     } else if (method == "tools/call") {
         co_return co_await handle_tools_call_wire(json_msg, scope);
     } else if (method == "tools/list") {
-        co_return co_await handle_tools_list_wire(json_msg);
+        co_return co_await handle_tools_list_wire(json_msg, scope);
     } else if (method == "resources/list") {
-        co_return co_await handle_resources_list_wire(json_msg);
+        co_return co_await handle_resources_list_wire(json_msg, scope);
     } else if (method == "resources/read") {
         co_return co_await handle_resources_read_wire(json_msg, scope);
     } else if (method == "resources/templates/list") {
-        co_return co_await handle_resource_templates_list_wire(json_msg);
+        co_return co_await handle_resource_templates_list_wire(json_msg, scope);
     } else if (method == "prompts/list") {
-        co_return co_await handle_prompts_list_wire(json_msg);
+        co_return co_await handle_prompts_list_wire(json_msg, scope);
     } else if (method == "prompts/get") {
         co_return co_await handle_prompts_get_wire(json_msg, scope);
     }
-    co_return co_await handle_complete_wire(json_msg);
+    co_return co_await handle_complete_wire(json_msg, scope);
 }
 
 void Server::Impl::dispatch_notification(const nlohmann::json& json_msg) {
@@ -1625,24 +1630,14 @@ Task<std::string> Server::Impl::handle_ping_wire(const nlohmann::json& json_msg)
 // Reached only as a 2026-07-28 request whose `_meta` dispatch_modern_wire has already checked.
 // It needs no prior state and is idempotent: it reads nothing else from the request and never
 // changes a session's lifecycle.
-Task<std::string> Server::Impl::handle_discover_wire(const nlohmann::json& json_msg) {
+Task<std::string> Server::Impl::handle_discover_wire(const nlohmann::json& json_msg,
+                                                     const RequestScope& scope) {
     DiscoverResult discover_result;
-    // resultType uses the DiscoverResult struct default ("complete"); a future revision introduces
-    // a shared result-envelope helper for this field that other cacheable results will also use.
     discover_result.supportedVersions = supported_versions();
     discover_result.capabilities = capabilities;
-    discover_result.serverInfo = server_info;
     discover_result.instructions = instructions;
-    // server/utilities/caching.md: servers MUST include caching hints on "complete" results,
-    // server/discover listed first, and MUST provide a ttlMs >= 0. ttlMs defaults to 0 ("do not
-    // cache" / immediately stale per the spec's freshness rule); an absent ttlMs "should only
-    // occur in older server versions", which this SDK is not, so it is always emitted. The spec
-    // does not state a default cacheScope, so this SDK defaults to the conservative choice,
-    // "private" (do not assume the result is safe to share across authorization contexts),
-    // until a caller explicitly opts into "public" via set_discover_cache_scope.
-    discover_result.ttlMs = discover_ttl_ms.value_or(0);
-    discover_result.cacheScope = discover_cache_scope.value_or(CacheScope::ePrivate);
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json(discover_result));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope,
+                               nlohmann::json(discover_result), CacheTarget::eDiscover);
 }
 
 Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
@@ -1769,10 +1764,11 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
     nlohmann::json handler_result =
         co_await invoke_tool_impl(std::move(params), std::move(cancelled), std::move(progress_token),
                                   scope.meta, scope.session_request);
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }
 
-Task<std::string> Server::Impl::handle_tools_list_wire(const nlohmann::json& json_msg) {
+Task<std::string> Server::Impl::handle_tools_list_wire(const nlohmann::json& json_msg,
+                                                       const RequestScope& scope) {
     auto page = paginate(tools.size(), json_msg);
     if (!page) {
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
@@ -1791,10 +1787,12 @@ Task<std::string> Server::Impl::handle_tools_list_wire(const nlohmann::json& jso
         list_result["nextCursor"] = std::move(*next_cursor);
     }
 
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(list_result));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(list_result),
+                               CacheTarget::eToolsList);
 }
 
-Task<std::string> Server::Impl::handle_resources_list_wire(const nlohmann::json& json_msg) {
+Task<std::string> Server::Impl::handle_resources_list_wire(const nlohmann::json& json_msg,
+                                                           const RequestScope& scope) {
     auto page = paginate(resources.size(), json_msg);
     if (!page) {
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
@@ -1807,8 +1805,8 @@ Task<std::string> Server::Impl::handle_resources_list_wire(const nlohmann::json&
                                  resources.begin() + static_cast<std::ptrdiff_t>(end));
     list_result.nextCursor = std::move(next_cursor);
 
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(),
-                               nlohmann::json(std::move(list_result)));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope,
+                               nlohmann::json(std::move(list_result)), CacheTarget::eResourcesList);
 }
 
 Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json& json_msg,
@@ -1821,7 +1819,8 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
         nlohmann::json params_json = params;
         auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request);
         nlohmann::json handler_result = co_await handler(ctx, params_json);
-        co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
+        co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result),
+                                   CacheTarget::eResourcesRead);
     }
 
     // Exact resources are found by lookup and so may be any length; only template matching is
@@ -1859,10 +1858,12 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
     nlohmann::json params_json = params;
     auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request);
     nlohmann::json handler_result = co_await handler(ctx, params_json);
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result),
+                               CacheTarget::eResourcesRead);
 }
 
-Task<std::string> Server::Impl::handle_resource_templates_list_wire(const nlohmann::json& json_msg) {
+Task<std::string> Server::Impl::handle_resource_templates_list_wire(const nlohmann::json& json_msg,
+                                                                    const RequestScope& scope) {
     auto page = paginate(resource_templates.size(), json_msg);
     if (!page) {
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
@@ -1877,8 +1878,9 @@ Task<std::string> Server::Impl::handle_resource_templates_list_wire(const nlohma
     }
     list_result.nextCursor = std::move(next_cursor);
 
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(),
-                               nlohmann::json(std::move(list_result)));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope,
+                               nlohmann::json(std::move(list_result)),
+                               CacheTarget::eResourceTemplatesList);
 }
 
 Task<std::string> Server::Impl::handle_subscribe_wire(const nlohmann::json& json_msg) {
@@ -1906,7 +1908,8 @@ Task<std::string> Server::Impl::handle_unsubscribe_wire(const nlohmann::json& js
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object());
 }
 
-Task<std::string> Server::Impl::handle_prompts_list_wire(const nlohmann::json& json_msg) {
+Task<std::string> Server::Impl::handle_prompts_list_wire(const nlohmann::json& json_msg,
+                                                         const RequestScope& scope) {
     auto page = paginate(prompts.size(), json_msg);
     if (!page) {
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
@@ -1919,8 +1922,8 @@ Task<std::string> Server::Impl::handle_prompts_list_wire(const nlohmann::json& j
                                prompts.begin() + static_cast<std::ptrdiff_t>(end));
     list_result.nextCursor = std::move(next_cursor);
 
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(),
-                               nlohmann::json(std::move(list_result)));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope,
+                               nlohmann::json(std::move(list_result)), CacheTarget::ePromptsList);
 }
 
 Task<std::string> Server::Impl::handle_prompts_get_wire(const nlohmann::json& json_msg,
@@ -1938,7 +1941,7 @@ Task<std::string> Server::Impl::handle_prompts_get_wire(const nlohmann::json& js
     nlohmann::json params_json = std::move(params);
     auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request);
     nlohmann::json handler_result = co_await handler(ctx, params_json);
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }
 
 Task<std::string> Server::Impl::handle_set_level_wire(const nlohmann::json& json_msg) {
@@ -1947,7 +1950,8 @@ Task<std::string> Server::Impl::handle_set_level_wire(const nlohmann::json& json
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object());
 }
 
-Task<std::string> Server::Impl::handle_complete_wire(const nlohmann::json& json_msg) {
+Task<std::string> Server::Impl::handle_complete_wire(const nlohmann::json& json_msg,
+                                                     const RequestScope& scope) {
     auto params = deserialize_request_params<CompleteParams>(json_msg, "completion/complete");
 
     if (!completion_handler) {
@@ -1957,7 +1961,7 @@ Task<std::string> Server::Impl::handle_complete_wire(const nlohmann::json& json_
 
     auto complete_result = co_await completion_handler(params);
 
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(),
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope,
                                nlohmann::json(std::move(complete_result)));
 }
 
@@ -1969,6 +1973,30 @@ std::string Server::Impl::make_result_wire(const RequestId& id, nlohmann::json r
     response["jsonrpc"] = "2.0";
     response["result"] = std::move(result);
     return response.dump();
+}
+
+std::string Server::Impl::make_result_wire(const RequestId& id, const RequestScope& scope,
+                                           nlohmann::json result,
+                                           std::optional<CacheTarget> target) const {
+    if (scope.meta == nullptr || !result.is_object()) {
+        return make_result_wire(id, std::move(result));
+    }
+    result.emplace("resultType", "complete");
+    if (report_server_info) {
+        auto& meta = result["_meta"];
+        if (meta.is_null()) {
+            meta = nlohmann::json::object();
+        }
+        if (meta.is_object()) {
+            meta.emplace(g_META_SERVER_INFO, server_info);
+        }
+    }
+    if (target) {
+        const auto& hint = cache_hints.at(static_cast<std::size_t>(*target));
+        result.emplace("ttlMs", hint.ttlMs);
+        result.emplace("cacheScope", hint.scope);
+    }
+    return make_result_wire(id, std::move(result));
 }
 
 std::string Server::Impl::make_error_wire(const RequestId& id, int code, std::string message) {

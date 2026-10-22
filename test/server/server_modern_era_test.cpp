@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -820,6 +821,175 @@ TEST_F(ServerModernEraTest, ConcurrentModernRequestsOnAThreadPool) {
         EXPECT_TRUE(response.contains("result")) << response;
     }
     pool.join();
+}
+
+TEST_F(ServerModernEraTest, EveryModernResultIsCompleteAndNamesTheServer) {
+    auto server = make_server();
+    std::vector<json> requests = {
+        make_discover_request(1),
+        make_modern_request(2, "tools/list"),
+        call_tool(3, "whoami"),
+        make_modern_request(4, "resources/list"),
+        make_modern_request(5, "resources/read", {{"uri", "test://doc"}}),
+        make_modern_request(6, "resources/templates/list"),
+        make_modern_request(7, "prompts/list"),
+        make_modern_request(8, "prompts/get", {{"name", "greet"}}),
+        make_modern_request(9, "completion/complete",
+                            {{"ref", {{"type", "ref/prompt"}, {"name", "greet"}}},
+                             {"argument", {{"name", "a"}, {"value", "d"}}}}),
+    };
+    for (const auto& request : requests) {
+        auto response = dispatch(*server, request);
+        ASSERT_TRUE(response.contains("result")) << response;
+        const auto& result = response["result"];
+        EXPECT_EQ(result.value("resultType", ""), "complete") << request["method"];
+        EXPECT_EQ(result["_meta"]["io.modelcontextprotocol/serverInfo"],
+                  (json{{"name", "modern-server"}, {"version", "1.0"}}))
+            << request["method"];
+    }
+}
+
+TEST_F(ServerModernEraTest, CacheableResultsCarryTheDefaultHints) {
+    auto server = make_server();
+    const std::set<std::string> cacheable = {"server/discover",          "tools/list",
+                                             "resources/list",           "resources/read",
+                                             "resources/templates/list", "prompts/list"};
+    std::vector<json> requests = {
+        make_discover_request(1),
+        make_modern_request(2, "tools/list"),
+        call_tool(3, "whoami"),
+        make_modern_request(4, "resources/list"),
+        make_modern_request(5, "resources/read", {{"uri", "test://doc"}}),
+        make_modern_request(6, "resources/templates/list"),
+        make_modern_request(7, "prompts/list"),
+        make_modern_request(8, "prompts/get", {{"name", "greet"}}),
+    };
+    for (const auto& request : requests) {
+        auto response = dispatch(*server, request);
+        ASSERT_TRUE(response.contains("result")) << response;
+        const auto& result = response["result"];
+        const auto method = request["method"].get<std::string>();
+        if (cacheable.contains(method)) {
+            EXPECT_EQ(result.value("ttlMs", -1), 0) << method;
+            EXPECT_EQ(result.value("cacheScope", ""), "private") << method;
+        } else {
+            EXPECT_FALSE(result.contains("ttlMs")) << method;
+            EXPECT_FALSE(result.contains("cacheScope")) << method;
+        }
+    }
+}
+
+TEST_F(ServerModernEraTest, CacheHintsApplyPerTarget) {
+    auto server = make_server();
+    server->set_cache_hints(mcp::CacheTarget::eDiscover, {1, mcp::CacheScope::ePublic});
+    server->set_cache_hints(mcp::CacheTarget::eToolsList, {2, mcp::CacheScope::ePublic});
+    server->set_cache_hints(mcp::CacheTarget::ePromptsList, {3, mcp::CacheScope::ePrivate});
+    server->set_cache_hints(mcp::CacheTarget::eResourcesList, {4, mcp::CacheScope::ePublic});
+    server->set_cache_hints(mcp::CacheTarget::eResourceTemplatesList, {5, mcp::CacheScope::ePrivate});
+    server->set_cache_hints(mcp::CacheTarget::eResourcesRead, {6, mcp::CacheScope::ePublic});
+
+    const std::vector<std::tuple<json, int, std::string>> expected = {
+        {make_discover_request(1), 1, "public"},
+        {make_modern_request(2, "tools/list"), 2, "public"},
+        {make_modern_request(3, "prompts/list"), 3, "private"},
+        {make_modern_request(4, "resources/list"), 4, "public"},
+        {make_modern_request(5, "resources/templates/list"), 5, "private"},
+        {make_modern_request(6, "resources/read", {{"uri", "test://doc"}}), 6, "public"},
+    };
+    for (const auto& [request, ttl, scope] : expected) {
+        auto response = dispatch(*server, request);
+        ASSERT_TRUE(response.contains("result")) << response;
+        EXPECT_EQ(response["result"]["ttlMs"], ttl) << request["method"];
+        EXPECT_EQ(response["result"]["cacheScope"], scope) << request["method"];
+    }
+}
+
+// "Servers MUST apply the same cacheScope to all response pages for a given list request."
+TEST_F(ServerModernEraTest, EveryPageOfAListCarriesTheSameHints) {
+    auto server = make_server();
+    server->set_page_size(1);
+    server->set_cache_hints(mcp::CacheTarget::eToolsList, {7, mcp::CacheScope::ePrivate});
+    json params = json::object();
+    int pages = 0;
+    for (bool more = true; more;) {
+        ASSERT_LT(pages, 10);
+        auto response = dispatch(*server, make_modern_request(++pages, "tools/list", params));
+        ASSERT_TRUE(response.contains("result")) << response;
+        EXPECT_EQ(response["result"]["ttlMs"], 7) << response;
+        EXPECT_EQ(response["result"]["cacheScope"], "private") << response;
+        more = response["result"].contains("nextCursor");
+        if (more) {
+            params["cursor"] = response["result"]["nextCursor"];
+        }
+    }
+    EXPECT_GT(pages, 1);
+}
+
+TEST_F(ServerModernEraTest, HandlerSuppliedResultMembersAreKept) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    mcp::Server server({"modern-server", "1.0"}, caps);
+    server.set_cache_hints(mcp::CacheTarget::eResourcesRead, {60000, mcp::CacheScope::ePublic});
+    mcp::Resource resource;
+    resource.uri = "test://own";
+    resource.name = "own";
+    server.add_resource<json, json>(resource, [](mcp::Context&, json) -> mcp::Task<json> {
+        co_return json{{"contents", json::array({{{"uri", "test://own"}, {"text", "x"}}})},
+                       {"ttlMs", 5},
+                       {"cacheScope", "private"},
+                       {"_meta", {{"example.com/trace", "abc"}}}};
+    });
+
+    auto response = dispatch(server, make_modern_request(1, "resources/read", {{"uri", "test://own"}}));
+    ASSERT_TRUE(response.contains("result")) << response;
+    const auto& result = response["result"];
+    EXPECT_EQ(result["ttlMs"], 5);
+    EXPECT_EQ(result["cacheScope"], "private");
+    EXPECT_EQ(result["_meta"]["example.com/trace"], "abc");
+    EXPECT_EQ(result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "modern-server");
+    EXPECT_EQ(result["resultType"], "complete");
+}
+
+TEST_F(ServerModernEraTest, ServerInfoCanBeLeftOut) {
+    auto server = make_server();
+    server->set_report_server_info(false);
+    for (const auto& request :
+         {make_discover_request(1), make_modern_request(2, "tools/list"), call_tool(3, "whoami")}) {
+        auto response = dispatch(*server, request);
+        ASSERT_TRUE(response.contains("result")) << response;
+        EXPECT_FALSE(response["result"].contains("_meta")) << response;
+        EXPECT_EQ(response["result"]["resultType"], "complete");
+    }
+}
+
+TEST_F(ServerModernEraTest, LegacyResultsGainNoModernMembers) {
+    auto server = make_server();
+    server->set_cache_hints(mcp::CacheTarget::eToolsList, {60000, mcp::CacheScope::ePublic});
+    server->set_cache_hints(mcp::CacheTarget::eResourcesRead, {60000, mcp::CacheScope::ePublic});
+    auto legacy = [](const char* id, const char* method, json params = json::object()) {
+        return json{{"jsonrpc", "2.0"}, {"id", id}, {"method", method}, {"params", std::move(params)}};
+    };
+    auto written = run_session(
+        *server,
+        {make_initialize_request("i"), make_initialized_notification(), legacy("t", "tools/list"),
+         legacy_call_tool("c", "whoami"), legacy("r", "resources/read", {{"uri", "test://doc"}}),
+         legacy("l", "resources/list"), legacy("tl", "resources/templates/list"),
+         legacy("p", "prompts/list"), legacy("g", "prompts/get", {{"name", "greet"}}),
+         legacy("x", "completion/complete",
+                {{"ref", {{"type", "ref/prompt"}, {"name", "greet"}}},
+                 {"argument", {{"name", "a"}, {"value", "d"}}}})},
+        9);
+
+    ASSERT_EQ(written.size(), 9u);
+    EXPECT_FALSE(written[0]["result"].contains("resultType")) << written[0];
+    for (std::size_t index = 1; index < written.size(); ++index) {
+        const auto& response = written[index];
+        ASSERT_TRUE(response.contains("result")) << response;
+        for (const auto* member : {"resultType", "ttlMs", "cacheScope", "_meta"}) {
+            EXPECT_FALSE(response["result"].contains(member)) << member << " in " << response;
+        }
+    }
+    EXPECT_EQ(written[1]["result"], (json{{"tools", written[1]["result"]["tools"]}}));
 }
 
 }  // namespace

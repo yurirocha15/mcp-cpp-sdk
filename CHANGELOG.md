@@ -70,9 +70,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   and which legacy versions `initialize` may negotiate. A server serving only
   2026-07-28 answers `initialize` with `g_METHOD_NOT_FOUND` naming the
   versions it serves in the message and in `data.supported`.
-  `Server::protocol_rejection_stats()` counts the requests refused for their
-  version or `_meta` fields, separately counting refusals of requests
-  without a protocol version in `_meta`.
+  `Server::protocol_rejection_stats()` (`ProtocolRejectionStats`) counts the
+  requests refused for their version or `_meta` fields, separately counting
+  refusals of requests without a protocol version in `_meta`.
   `ServerProtocolPolicy::validate()` checks a policy, and
   `negotiate_protocol_version(requested, policy)` gives the version
   `initialize` negotiates under it, and `served_protocol_versions(policy)`
@@ -86,6 +86,18 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `is_legacy_protocol_version()` and `is_modern_protocol_version()`.
   `negotiate_protocol_version()` and every `initialize`-time version check
   use the legacy list, so `initialize` never selects 2026-07-28.
+- Results of 2026-07-28 requests carry `resultType: "complete"` and the
+  server's name and version under `_meta`
+  (`io.modelcontextprotocol/serverInfo`; `Server::set_report_server_info(false)`
+  leaves it out). Results of `server/discover`, `tools/list`, `prompts/list`,
+  `resources/list`, `resources/templates/list` and `resources/read` also carry
+  the `ttlMs` and `cacheScope` hints that `Server::set_cache_hints()` sets per
+  `CacheTarget` as a `CacheHint` (by default `0` and `private`). A member a handler's result
+  already has is kept. Results of legacy requests are unchanged.
+  `ListToolsResult`, `ListPromptsResult`, `ListResourcesResult`,
+  `ListResourceTemplatesResult` and `ReadResourceResult` gain optional `ttlMs`
+  and `cacheScope`, and `DiscoverResult::serverInfo` is optional. A
+  `cacheScope` value other than `public` or `private` is read as unset.
 
 ### Changed
 
@@ -129,6 +141,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   cancelled, so `Context::is_cancelled()` turns true in resource and prompt
   handlers too, not only in tools. The response of a request of
   2025-11-25 or earlier is still sent.
+
+### Removed
+
+- `Server::set_discover_ttl_ms()` and `set_discover_cache_scope()`, replaced
+  by `Server::set_cache_hints()`.
 
 ### Fixed
 
