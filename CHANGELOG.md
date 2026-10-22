@@ -186,6 +186,33 @@ Versioning; a `0.x` version is a stable release unless its version has an
   up throws from its question and its answer is discarded. A cancelled retry
   cancels the handler, and its notifications go to the request that carries it
   now, with that request's progress token.
+- `subscriptions/listen` (2026-07-28). A request names the notifications it
+  opts in to (`toolsListChanged`, `promptsListChanged`,
+  `resourcesListChanged`, `resourceSubscriptions`). The server answers with
+  `notifications/subscriptions/acknowledged` first, listing the subset it
+  honors: a list-changed type only when the matching capability sets
+  `listChanged`, and resource URIs only when `resources.subscribe` is set.
+  `notify_tools_list_changed()`, `notify_prompts_list_changed()`,
+  `notify_resources_list_changed()` and `notify_resource_updated()` then also
+  send to every open subscription that asked for the type, with the request id
+  in `_meta` as `io.modelcontextprotocol/subscriptionId`
+  (`g_META_SUBSCRIPTION_ID`). A session that serves only 2026-07-28 requests
+  no longer receives the plain list-changed notifications while a subscription
+  is open on it. The request stays open until the client sends
+  `notifications/cancelled` (stdio, WebSocket, memory), closes the stream
+  (`StreamableHttpSessionManager`) or its transport closes, none of which is
+  answered, or until `Server::close_subscriptions()` ends every subscription
+  with an empty `resultType: "complete"` result, followed on stdio, WebSocket
+  and in-memory transports by `notifications/cancelled` naming the listen
+  request. On `StreamableHttpSessionManager` the subscription runs on the
+  shared modern server, built from the factory or given to
+  `set_modern_server()`; a client that does not accept `text/event-stream` is
+  answered with `g_INVALID_REQUEST`. `HttpServerTransport` and a direct
+  dispatch without `RequestContext::notifications` answer it with
+  `g_METHOD_NOT_FOUND` and `g_INVALID_REQUEST` respectively.
+  `Server::subscription_count()` counts the open subscriptions, and
+  `RequestContext::watch_cancel` lets a transport wake a request when it sets
+  `cancelled`.
 - The client detects the server's protocol era and speaks both.
   `ClientOptions::protocol` takes `ClientProtocol::Auto()`, `Legacy()` (the
   default for now) or `Version("...")`. `Auto()` sends `server/discover`

@@ -463,11 +463,12 @@ TEST_F(ServerModernEraTest, ServerToClientRequestsNeedTheClientsCapability) {
 }
 
 TEST_F(ServerModernEraTest, ModernMethodListMatchesTheSchemasClientRequests) {
-    // ClientRequest in the 2026-07-28 schema, less subscriptions/listen.
+    // ClientRequest in the 2026-07-28 schema.
     const std::set<std::string_view> expected = {
-        "server/discover", "resources/list", "resources/templates/list",
-        "resources/read",  "prompts/list",   "prompts/get",
-        "tools/list",      "tools/call",     "completion/complete"};
+        "server/discover",     "resources/list", "resources/templates/list",
+        "resources/read",      "prompts/list",   "prompts/get",
+        "tools/list",          "tools/call",     "completion/complete",
+        "subscriptions/listen"};
     const std::set<std::string_view> served(mcp::detail::g_MODERN_METHODS.begin(),
                                             mcp::detail::g_MODERN_METHODS.end());
     EXPECT_EQ(served, expected);

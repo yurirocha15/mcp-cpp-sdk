@@ -479,6 +479,13 @@ nlohmann::json normalize_structured_tool_result(nlohmann::json result) {
     return nlohmann::json(make_tool_text_result(result.dump()));
 }
 
+/// The `_meta` of a message that belongs to the subscriptions/listen request with id @p listen_id.
+nlohmann::json subscription_meta(const nlohmann::json& listen_id) {
+    nlohmann::json meta = nlohmann::json::object();
+    meta[std::string(g_META_SUBSCRIPTION_ID)] = listen_id;
+    return meta;
+}
+
 class InvalidParamsError final : public std::invalid_argument {
    public:
     using std::invalid_argument::invalid_argument;
@@ -602,6 +609,8 @@ struct Server::Session {
     std::shared_ptr<boost::asio::steady_timer> drain_timer;
     std::atomic_size_t active_dispatches{0};
     std::atomic_bool stopping{false};
+    /// Open subscriptions/listen streams of this session.
+    std::atomic_size_t modern_listeners{0};
 };
 
 class NullTransport : public ITransport {
@@ -651,11 +660,81 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::shared_ptr<const detail::ParamHeaderValues> param_headers;
         /// Where the notifications of a 2026-07-28 request go, when its transport streams them.
         MessageSender notifications;
+        /// Lets the transport wake a request that waits for its cancellation.
+        std::function<void(std::function<void()>)> watch_cancel;
         /// Who sent the request, or null when the transport did not say.
         std::shared_ptr<const std::string> principal;
         /// The handler's state when it serves a 2026-07-28 tools/call, prompts/get or
         /// resources/read, which may ask the client for input.
         std::shared_ptr<detail::MrtrEntry> mrtr;
+    };
+
+    /// Why a subscriptions/listen stream ended.
+    enum class ListenEnd : std::uint8_t {
+        eOpen,
+        /// The client cancelled it or its transport went away: nothing more is sent.
+        eCancelled,
+        /// The server closed it: the request is answered with its empty result.
+        eClosed,
+    };
+
+    /// One open subscriptions/listen request: the notification types it opted in to and where its
+    /// notifications go. Its timer and strand serve only to wake the request that waits for the end.
+    struct Listener : std::enable_shared_from_this<Listener> {
+        explicit Listener(boost::asio::strand<boost::asio::any_io_executor> strand_arg)
+            : strand(std::move(strand_arg)), timer(strand) {
+            timer.expires_at(std::chrono::steady_clock::time_point::max());
+        }
+
+        /// Ends the stream for @p reason unless it already ended, and wakes the request.
+        void end(ListenEnd reason) {
+            auto expected = ListenEnd::eOpen;
+            if (state.compare_exchange_strong(expected, reason, std::memory_order_acq_rel)) {
+                boost::asio::post(strand, [self = shared_from_this()] { self->timer.cancel(); });
+            }
+        }
+
+        [[nodiscard]] bool open() const {
+            return state.load(std::memory_order_acquire) == ListenEnd::eOpen;
+        }
+
+        /// The listen request's id as sent, which the stream's messages name.
+        nlohmann::json id;
+        std::string key;
+        /// The session whose transport carries the stream, or null when the request came another
+        /// way.
+        std::shared_ptr<Session> session;
+        bool tools_list_changed{false};
+        bool prompts_list_changed{false};
+        bool resources_list_changed{false};
+        std::set<std::string> resource_uris;
+        MessageSender sink;
+        boost::asio::strand<boost::asio::any_io_executor> strand;
+        boost::asio::steady_timer timer;
+        /// Hands @p message to the sink unless the acknowledgment is still on its way: nothing goes
+        /// out before it, so the message waits in `pending` and the request sends it afterwards.
+        /// Returns whether the caller is to send it.
+        bool deliver_or_defer(const std::shared_ptr<const std::string>& message) {
+            std::lock_guard lock(gate);
+            if (acknowledged) {
+                return true;
+            }
+            pending.push_back(message);
+            return false;
+        }
+
+        std::mutex gate;
+        bool acknowledged{false};                                 // guarded by gate
+        std::vector<std::shared_ptr<const std::string>> pending;  // guarded by gate
+        std::atomic<ListenEnd> state{ListenEnd::eOpen};
+    };
+
+    /// The change a notification announces, which decides the streams that receive it.
+    enum class ListenTopic : std::uint8_t {
+        eToolsListChanged,
+        ePromptsListChanged,
+        eResourcesListChanged,
+        eResourceUpdated,
     };
 
     /// A handler waiting for the client's retry, filed under the requestState it was given.
@@ -734,6 +813,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     SubscriptionHandler subscribe_handler;
     SubscriptionHandler unsubscribe_handler;
 
+    mutable std::mutex listeners_mutex;
+    std::vector<std::shared_ptr<Listener>> listeners;  // guarded by listeners_mutex
+
     // The request path lives here rather than on Server so that work still in flight when a
     // Server is destroyed has something valid to run against. Holders keep the implementation
     // alive; Server is only the handle the application owns.
@@ -741,7 +823,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// Whether the session's transport has ended a session since the current one was initialized.
     [[nodiscard]] bool transport_started_new_session() const;
     void reset_session(const std::shared_ptr<Session>& session);
-    static void abandon_session_work(const std::shared_ptr<Session>& session);
+    void abandon_session_work(const std::shared_ptr<Session>& session);
 
     static Task<void> run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransport> transport,
                           boost::asio::any_io_executor executor);
@@ -755,7 +837,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         nlohmann::json json_msg, bool enforce_lifecycle,
         std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
         std::shared_ptr<const detail::ParamHeaderValues> param_headers = nullptr,
-        MessageSender notifications = {}, std::shared_ptr<const std::string> principal = nullptr);
+        MessageSender notifications = {}, std::function<void(std::function<void()>)> watch_cancel = {},
+        std::shared_ptr<const std::string> principal = nullptr);
     Task<std::string> dispatch_modern_wire(const nlohmann::json& json_msg, std::string_view method,
                                            RequestScope scope);
     /// Serves a 2026-07-28 tools/call, prompts/get or resources/read, whose handler may ask the
@@ -801,6 +884,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                                  const RequestScope& scope);
     Task<std::string> handle_resource_templates_list_wire(const nlohmann::json& json_msg,
                                                           const RequestScope& scope);
+    Task<std::string> handle_listen_wire(const nlohmann::json& json_msg, const RequestScope& scope);
     Task<std::string> handle_subscribe_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_unsubscribe_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_prompts_list_wire(const nlohmann::json& json_msg,
@@ -843,6 +927,18 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, std::int64_t id);
     Task<void> send_notification(const std::string& method,
                                  const std::optional<nlohmann::json>& params);
+    /// Sends the notification for @p topic on every open subscriptions/listen stream that opted in
+    /// to it; @p uri names the resource of a resources/updated.
+    Task<void> notify_listeners(ListenTopic topic, std::shared_ptr<const std::string> uri);
+    /// Ends the streams of @p reason's kind: all of them, or those of @p session, or the one of
+    /// @p session whose request id is @p key.
+    void end_listeners(ListenEnd reason, const std::shared_ptr<Session>& session = nullptr,
+                       const std::string* key = nullptr);
+    void remove_listener(const std::shared_ptr<Listener>& listener);
+    /// Whether the session gets the plain list-changed notifications of 2025-11-25 and earlier. A
+    /// session that only serves 2026-07-28 requests gets what its streams opted in to instead.
+    [[nodiscard]] bool legacy_broadcast_wanted() const;
+    static Task<void> wait_for_listener_end(std::shared_ptr<Listener> listener);
     Task<void> notify_resource_updated_on_strand(std::shared_ptr<Session> session,
                                                  std::shared_ptr<const std::string> uri);
 
@@ -879,6 +975,7 @@ Server::Server(const Implementation& server_info, const ServerCapabilities& capa
 Server::~Server() {
     if (impl_) {
         impl_->server_gone.store(true, std::memory_order_release);
+        impl_->end_listeners(Impl::ListenEnd::eCancelled);
         // Nothing can resume these handlers now; they unwind.
         impl_->abandon_all_parked();
     }
@@ -1371,7 +1468,8 @@ Task<std::string> Server::dispatch_request_direct(nlohmann::json json_msg,
     }
     return impl_->dispatch_request_wire(std::move(json_msg), false,
                                         std::move(request_context.cancelled), std::move(param_headers),
-                                        std::move(request_context.notifications), std::move(principal));
+                                        std::move(request_context.notifications),
+                                        std::move(request_context.watch_cancel), std::move(principal));
 }
 
 detail::ParamHeaderCheck Server::Impl::make_param_header_check() {
@@ -1519,7 +1617,7 @@ Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg,
 
     std::string wire;
     try {
-        wire = co_await dispatch_request_wire(std::move(json_msg), true, cancelled, nullptr, {},
+        wire = co_await dispatch_request_wire(std::move(json_msg), true, cancelled, nullptr, {}, {},
                                               std::move(principal));
     } catch (...) {
         forget();
@@ -1535,12 +1633,17 @@ Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg,
         // 2026-07-28 sends nothing more for a cancelled request, not even its response.
         co_return;
     }
+    if (wire.empty()) {
+        // The handler wrote its answer itself (a subscription the server closed).
+        co_return;
+    }
     co_await session->writer->write_message(wire);
 }
 
 Task<std::string> Server::Impl::dispatch_request_wire(
     nlohmann::json json_msg, bool enforce_lifecycle, std::shared_ptr<std::atomic<bool>> cancelled,
     std::shared_ptr<const detail::ParamHeaderValues> param_headers, MessageSender notifications,
+    std::function<void(std::function<void()>)> watch_cancel,
     std::shared_ptr<const std::string> principal) {
     {
         const char* validation_error = validate_request_envelope(json_msg);
@@ -1567,6 +1670,7 @@ Task<std::string> Server::Impl::dispatch_request_wire(
                                enforce_lifecycle,
                                std::move(param_headers),
                                std::move(notifications),
+                               std::move(watch_cancel),
                                std::move(principal)};
             co_return co_await dispatch_modern_wire(json_msg, method, std::move(scope));
         }
@@ -1582,7 +1686,7 @@ Task<std::string> Server::Impl::dispatch_request_wire(
                                       "Missing " + std::string(g_META_PROTOCOL_VERSION) + " in _meta");
         }
 
-        const RequestScope legacy_scope{nullptr, std::move(cancelled), enforce_lifecycle, nullptr,
+        const RequestScope legacy_scope{nullptr, std::move(cancelled), enforce_lifecycle, nullptr, {},
                                         {},      std::move(principal)};
 
         // A client that arrives after the previous one ended its session starts uninitialized.
@@ -1707,6 +1811,8 @@ Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_
         co_return co_await handle_resource_templates_list_wire(json_msg, scope);
     } else if (method == "prompts/list") {
         co_return co_await handle_prompts_list_wire(json_msg, scope);
+    } else if (method == "subscriptions/listen") {
+        co_return co_await handle_listen_wire(json_msg, scope);
     }
     co_return co_await handle_complete_wire(json_msg, scope);
 }
@@ -2030,6 +2136,7 @@ void Server::Impl::dispatch_notification(const nlohmann::json& json_msg) {
         if (it != session->in_flight.end()) {
             it->second->store(true, std::memory_order_relaxed);
         }
+        end_listeners(ListenEnd::eCancelled, session, &id_str);
     }
 }
 
@@ -2364,6 +2471,291 @@ Task<std::string> Server::Impl::handle_resource_templates_list_wire(const nlohma
                                CacheTarget::eResourceTemplatesList);
 }
 
+// Reached only as a 2026-07-28 request whose `_meta` dispatch_modern_wire has already checked. The
+// request stays open: its notifications go to the sink of the transport that carried it, and it is
+// answered only when the server closes the stream. A client ends it by cancelling the request.
+Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_msg,
+                                                   const RequestScope& scope) {
+    auto session = session_snapshot();
+    MessageSender sink;
+    std::shared_ptr<Session> owner;
+    if (scope.session_request && session) {
+        if (session->http_transport != nullptr) {
+            // HttpServerTransport answers every request with plain JSON, so it has no stream to
+            // keep open.
+            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_METHOD_NOT_FOUND,
+                                      "Method not found: subscriptions/listen");
+        }
+        owner = session;
+        sink = [session](std::string_view message) { return session->writer->write_message(message); };
+    } else if (scope.notifications) {
+        sink = scope.notifications;
+    } else {
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_REQUEST,
+                                  "subscriptions/listen needs a transport that streams notifications");
+    }
+
+    const auto notifications = json_msg.at("params").find("notifications");
+    if (notifications == json_msg.at("params").end() || !notifications->is_object()) {
+        throw InvalidParamsError(
+            "Invalid subscriptions/listen params: notifications must be an object");
+    }
+    const auto flag = [&notifications](const char* name) {
+        const auto it = notifications->find(name);
+        if (it == notifications->end()) {
+            return false;
+        }
+        if (!it->is_boolean()) {
+            throw InvalidParamsError("Invalid subscriptions/listen params: notifications." +
+                                     std::string(name) + " must be a boolean");
+        }
+        return it->get<bool>();
+    };
+
+    auto executor = co_await boost::asio::this_coro::executor;
+    auto listener = std::make_shared<Listener>(boost::asio::make_strand(executor));
+    listener->id = json_msg.at("id");
+    listener->key = json_msg.at("id").get<RequestId>().correlation_key();
+    listener->session = owner;
+    listener->sink = std::move(sink);
+
+    // Only the types this server advertises it emits are honored; the acknowledgment reports them.
+    nlohmann::json honored = nlohmann::json::object();
+    const bool tools_requested = flag("toolsListChanged");
+    const bool prompts_requested = flag("promptsListChanged");
+    const bool resources_requested = flag("resourcesListChanged");
+    listener->tools_list_changed =
+        tools_requested && capabilities.tools && capabilities.tools->listChanged.value_or(false);
+    listener->prompts_list_changed =
+        prompts_requested && capabilities.prompts && capabilities.prompts->listChanged.value_or(false);
+    listener->resources_list_changed = resources_requested && capabilities.resources &&
+                                       capabilities.resources->listChanged.value_or(false);
+    if (listener->tools_list_changed) {
+        honored["toolsListChanged"] = true;
+    }
+    if (listener->prompts_list_changed) {
+        honored["promptsListChanged"] = true;
+    }
+    if (listener->resources_list_changed) {
+        honored["resourcesListChanged"] = true;
+    }
+    if (const auto uris = notifications->find("resourceSubscriptions"); uris != notifications->end()) {
+        if (!uris->is_array() ||
+            !std::all_of(uris->begin(), uris->end(),
+                         [](const nlohmann::json& uri) { return uri.is_string(); })) {
+            throw InvalidParamsError(
+                "Invalid subscriptions/listen params: notifications.resourceSubscriptions must be "
+                "an array of strings");
+        }
+        if (!uris->empty() && capabilities.resources &&
+            capabilities.resources->subscribe.value_or(false)) {
+            honored["resourceSubscriptions"] = *uris;
+            for (const auto& uri : *uris) {
+                listener->resource_uris.insert(uri.get<std::string>());
+            }
+        }
+    }
+
+    // [gcc11-sso: scope-before-await] The strings that outlive a suspension are owned by shared state.
+    std::shared_ptr<const std::string> acknowledgment;
+    {
+        nlohmann::json params = nlohmann::json::object();
+        params["_meta"] = subscription_meta(listener->id);
+        params["notifications"] = std::move(honored);
+        nlohmann::json message = nlohmann::json::object();
+        message["jsonrpc"] = "2.0";
+        message["method"] = "notifications/subscriptions/acknowledged";
+        message["params"] = std::move(params);
+        acknowledgment = std::make_shared<const std::string>(message.dump());
+    }
+
+    {
+        std::lock_guard lock(listeners_mutex);
+        listeners.push_back(listener);
+    }
+    if (owner) {
+        owner->modern_listeners.fetch_add(1, std::memory_order_relaxed);
+    }
+    struct Removal {
+        std::shared_ptr<Impl> impl;
+        std::shared_ptr<Listener> listener;
+        ~Removal() { impl->remove_listener(listener); }
+    };
+    const Removal removal{shared_from_this(), listener};
+
+    // A transport that sets the cancellation flag wakes the wait through this; the flag is read
+    // after registering, so a cancellation that came first is not missed.
+    if (scope.watch_cancel) {
+        scope.watch_cancel([listener] { listener->end(ListenEnd::eCancelled); });
+    }
+    if (scope.cancelled && scope.cancelled->load(std::memory_order_relaxed)) {
+        listener->end(ListenEnd::eCancelled);
+    }
+
+    co_await listener->sink(*acknowledgment);
+    // What changed while the acknowledgment was being written follows it, in order; the stream
+    // takes messages directly only once nothing is left waiting.
+    for (bool drained = false; !drained;) {
+        std::vector<std::shared_ptr<const std::string>> batch;
+        {
+            std::lock_guard lock(listener->gate);
+            batch.swap(listener->pending);
+            drained = batch.empty();
+            listener->acknowledged = drained;
+        }
+        for (const auto& message : batch) {
+            co_await listener->sink(*message);
+        }
+    }
+
+    co_await boost::asio::co_spawn(listener->strand, wait_for_listener_end(listener),
+                                   boost::asio::use_awaitable);
+
+    // The stream is closed, or the client has gone and nobody reads the answer.
+    nlohmann::json result = nlohmann::json::object();
+    result["_meta"] = subscription_meta(listener->id);
+    auto closing = std::make_shared<const std::string>(
+        make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(result), std::nullopt));
+    if (!owner || listener->state.load(std::memory_order_acquire) != ListenEnd::eClosed) {
+        co_return *closing;
+    }
+    // The server ended the stream on a transport it shares with the rest of the session, where
+    // there is no stream to close: after the closing result it sends notifications/cancelled for
+    // the listen request, the one cancellation a server sends. Both go out here, in that order,
+    // so the session writes nothing more for the request.
+    std::shared_ptr<const std::string> cancellation;
+    {
+        nlohmann::json params = nlohmann::json::object();
+        params["requestId"] = listener->id;
+        params["reason"] = "The server closed the subscription";
+        params["_meta"] = subscription_meta(listener->id);
+        nlohmann::json message = nlohmann::json::object();
+        message["jsonrpc"] = "2.0";
+        message["method"] = "notifications/cancelled";
+        message["params"] = std::move(params);
+        cancellation = std::make_shared<const std::string>(message.dump());
+    }
+    co_await listener->sink(*closing);
+    co_await listener->sink(*cancellation);
+    co_return std::string{};
+}
+
+Task<void> Server::Impl::wait_for_listener_end(std::shared_ptr<Listener> listener) {
+    // Runs on the listener's strand, like the posted cancel that wakes it: ending the stream sets
+    // the state first, so a wake is either seen here or cancels the wait that starts below.
+    while (listener->open()) {
+        listener->timer.expires_at(std::chrono::steady_clock::time_point::max());
+        try {
+            co_await listener->timer.async_wait(boost::asio::use_awaitable);
+        } catch (const boost::system::system_error& error) {
+            if (error.code() != boost::asio::error::operation_aborted) {
+                throw;
+            }
+        }
+    }
+}
+
+void Server::Impl::remove_listener(const std::shared_ptr<Listener>& listener) {
+    {
+        std::lock_guard lock(listeners_mutex);
+        std::erase(listeners, listener);
+    }
+    if (listener->session) {
+        listener->session->modern_listeners.fetch_sub(1, std::memory_order_relaxed);
+    }
+}
+
+void Server::Impl::end_listeners(ListenEnd reason, const std::shared_ptr<Session>& session,
+                                 const std::string* key) {
+    std::vector<std::shared_ptr<Listener>> ending;
+    {
+        std::lock_guard lock(listeners_mutex);
+        for (const auto& listener : listeners) {
+            if ((session == nullptr || listener->session == session) &&
+                (key == nullptr || listener->key == *key)) {
+                ending.push_back(listener);
+            }
+        }
+    }
+    for (const auto& listener : ending) {
+        listener->end(reason);
+    }
+}
+
+bool Server::Impl::legacy_broadcast_wanted() const {
+    auto current = session_snapshot();
+    return !current || current->modern_listeners.load(std::memory_order_relaxed) == 0 ||
+           lifecycle.load(std::memory_order_relaxed) != LifecycleState::eUninitialized;
+}
+
+Task<void> Server::Impl::notify_listeners(ListenTopic topic, std::shared_ptr<const std::string> uri) {
+    std::vector<std::shared_ptr<Listener>> targets;
+    {
+        std::lock_guard lock(listeners_mutex);
+        for (const auto& listener : listeners) {
+            bool wanted = false;
+            switch (topic) {
+                case ListenTopic::eToolsListChanged:
+                    wanted = listener->tools_list_changed;
+                    break;
+                case ListenTopic::ePromptsListChanged:
+                    wanted = listener->prompts_list_changed;
+                    break;
+                case ListenTopic::eResourcesListChanged:
+                    wanted = listener->resources_list_changed;
+                    break;
+                case ListenTopic::eResourceUpdated:
+                    wanted = listener->resource_uris.contains(*uri);
+                    break;
+            }
+            if (wanted && listener->open()) {
+                targets.push_back(listener);
+            }
+        }
+    }
+
+    std::string_view method;
+    switch (topic) {
+        case ListenTopic::eToolsListChanged:
+            method = "notifications/tools/list_changed";
+            break;
+        case ListenTopic::ePromptsListChanged:
+            method = "notifications/prompts/list_changed";
+            break;
+        case ListenTopic::eResourcesListChanged:
+            method = "notifications/resources/list_changed";
+            break;
+        case ListenTopic::eResourceUpdated:
+            method = "notifications/resources/updated";
+            break;
+    }
+
+    for (const auto& listener : targets) {
+        // [gcc11-sso: scope-before-await]
+        std::shared_ptr<const std::string> wire;
+        {
+            nlohmann::json params = nlohmann::json::object();
+            if (uri && topic == ListenTopic::eResourceUpdated) {
+                params["uri"] = *uri;
+            }
+            params["_meta"] = subscription_meta(listener->id);
+            nlohmann::json message = nlohmann::json::object();
+            message["jsonrpc"] = "2.0";
+            message["method"] = std::string(method);
+            message["params"] = std::move(params);
+            wire = std::make_shared<const std::string>(message.dump());
+        }
+        if (!listener->deliver_or_defer(wire)) {
+            continue;
+        }
+        try {
+            co_await listener->sink(*wire);
+        } catch (const std::exception&) {
+            // A stream whose transport cannot take the message ends through that transport.
+        }
+    }
+}
+
 Task<std::string> Server::Impl::handle_subscribe_wire(const nlohmann::json& json_msg) {
     auto params = deserialize_request_params<ResourceSubscribeParams>(json_msg, "resources/subscribe");
     auto session = session_snapshot();
@@ -2548,19 +2940,37 @@ Task<void> Server::Impl::send_notification(const std::string& method,
 // of the full expression, which includes the await, but a plain `return` destroys it before the
 // coroutine body ever runs and leaves the reference dangling. Both forms compile.
 Task<void> Server::notify_tools_list_changed() {
-    co_await impl_->send_notification("notifications/tools/list_changed", std::nullopt);
+    co_await impl_->notify_listeners(Impl::ListenTopic::eToolsListChanged, nullptr);
+    if (impl_->legacy_broadcast_wanted()) {
+        co_await impl_->send_notification("notifications/tools/list_changed", std::nullopt);
+    }
 }
 
 Task<void> Server::notify_resources_list_changed() {
-    co_await impl_->send_notification("notifications/resources/list_changed", std::nullopt);
+    co_await impl_->notify_listeners(Impl::ListenTopic::eResourcesListChanged, nullptr);
+    if (impl_->legacy_broadcast_wanted()) {
+        co_await impl_->send_notification("notifications/resources/list_changed", std::nullopt);
+    }
 }
 
 Task<void> Server::notify_prompts_list_changed() {
-    co_await impl_->send_notification("notifications/prompts/list_changed", std::nullopt);
+    co_await impl_->notify_listeners(Impl::ListenTopic::ePromptsListChanged, nullptr);
+    if (impl_->legacy_broadcast_wanted()) {
+        co_await impl_->send_notification("notifications/prompts/list_changed", std::nullopt);
+    }
 }
 
 Task<void> Server::notify_resource_updated(const std::string& uri) {
+    co_await impl_->notify_listeners(Impl::ListenTopic::eResourceUpdated,
+                                     std::make_shared<const std::string>(uri));
     co_await impl_->notify_resource_updated(uri);
+}
+
+void Server::close_subscriptions() { impl_->end_listeners(Impl::ListenEnd::eClosed); }
+
+std::size_t Server::subscription_count() const {
+    std::lock_guard lock(impl_->listeners_mutex);
+    return impl_->listeners.size();
 }
 
 Task<void> Server::Impl::notify_resource_updated(const std::string& uri) {
@@ -2681,6 +3091,7 @@ void Server::Impl::abandon_session_work(const std::shared_ptr<Session>& session)
         static_cast<void>(id);
         cancelled->store(true, std::memory_order_relaxed);
     }
+    end_listeners(ListenEnd::eCancelled, session);
     for (auto& [id, pending] : session->pending_requests) {
         static_cast<void>(id);
         if (!pending.completed) {
@@ -2706,7 +3117,9 @@ void Server::Impl::reset_session(const std::shared_ptr<Session>& session) {
         // Guarded for the same reason as the close below: queueing the hand-off allocates, and an
         // exception escaping ~Server would terminate the process.
         try {
-            boost::asio::post(*session->strand, [session] { Impl::abandon_session_work(session); });
+            boost::asio::post(*session->strand, [impl = shared_from_this(), session] {
+                impl->abandon_session_work(session);
+            });
         } catch (const std::exception&) {
         }
     }
