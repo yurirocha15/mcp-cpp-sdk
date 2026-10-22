@@ -1,4 +1,5 @@
 #include <mcp/transport/stdio.hpp>
+#include "../detail/spawn_awaitable.hpp"
 
 #if defined(_WIN32)
 #include <fcntl.h>
@@ -202,10 +203,7 @@ struct StdioTransport::Impl {
             read_signal.expires_at(std::chrono::steady_clock::time_point::max());
         }
 
-        void wake_reader() noexcept {
-            boost::system::error_code ignored;
-            read_signal.cancel(ignored);
-        }
+        void wake_reader() noexcept { read_signal.cancel(); }
 
         std::ostream& output;
         boost::asio::strand<boost::asio::any_io_executor> strand;
@@ -377,15 +375,14 @@ StdioTransport::~StdioTransport() = default;
 
 Task<std::string> StdioTransport::read_message() {
     auto state = impl_->ensure_reader_started();
-    return boost::asio::co_spawn(state->strand, Impl::read_on_strand(state),
-                                 boost::asio::use_awaitable);
+    return mcp::detail::spawn_awaitable(state->strand, Impl::read_on_strand(state));
 }
 
 Task<void> StdioTransport::write_message(std::string_view message) {
     auto state = impl_->state;
     auto owned_message = std::string(message);
-    return boost::asio::co_spawn(state->strand, Impl::write_on_strand(state, std::move(owned_message)),
-                                 boost::asio::use_awaitable);
+    return mcp::detail::spawn_awaitable(state->strand,
+                                        Impl::write_on_strand(state, std::move(owned_message)));
 }
 
 void StdioTransport::close() {

@@ -6,6 +6,23 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [Unreleased]
 
+### Fixed
+
+- The SDK builds with Boost 1.74 and 1.75 (Ubuntu 22.04, Debian 12, RHEL 9),
+  the documented minimum, and with Boost 1.87 and later, which removed the
+  Asio timer overloads it called.
+- With Boost 1.75 and older, an OAuth metadata response larger than
+  `max_response_bytes` was read in full instead of being refused.
+- Built with GCC 12 (Debian 12), the auth middleware hung and
+  `OAuthClientTransport` reads crashed: GCC 12.2 miscompiles a `co_await`
+  inside an `if` condition, and the SDK no longer writes one.
+- With Boost 1.77 to 1.84, cancelling the coroutine awaiting an SDK
+  operation, such as an OAuth HTTP request, could end the process: Asio's
+  `co_spawn()` threw from its own completion.
+- With Boost older than 1.82, an error the shared library threw with a Beast
+  error code, such as a WebSocket connect timeout, did not compare equal to the
+  same `boost::beast` enumerator in the caller.
+
 ## [0.2.0] - 2026-10-21
 
 ### Added

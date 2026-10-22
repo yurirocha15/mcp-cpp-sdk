@@ -61,7 +61,7 @@ http::response<http::string_body> send_json_rpc(beast::tcp_stream& stream,
     http::request<http::string_body> req{http::verb::post, "/mcp", 11};
     req.set(http::field::host, "127.0.0.1");
     req.set(http::field::content_type, "application/json");
-    req.set("MCP-Protocol-Version", mcp::g_LATEST_PROTOCOL_VERSION);
+    req.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
     if (!session_id.empty()) {
         req.set("MCP-Session-Id", session_id);
     }

@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 from typing import Iterable, Sequence
 
 from .consumer_validation import validate_elf_dependencies, write_consumer_project
@@ -21,13 +22,17 @@ _MAINTAINER = "mcp-cpp-sdk maintainers <releases@users.noreply.github.com>"
 
 
 def _run(arguments: Sequence[str], *, cwd: Path | None = None) -> str:
-    return subprocess.run(
+    completed = subprocess.run(
         list(arguments),
         cwd=cwd,
-        check=True,
+        check=False,
         text=True,
         stdout=subprocess.PIPE,
-    ).stdout
+    )
+    if completed.returncode:
+        sys.stderr.write(completed.stdout[-60000:])
+        raise subprocess.CalledProcessError(completed.returncode, list(arguments))
+    return completed.stdout
 
 
 def privileged_command(*arguments: str) -> list[str]:
@@ -109,10 +114,8 @@ def _collect_identity(kind: str, target: str, output: Path) -> None:
 
 
 def _write_routes(path: Path, routes: Iterable[dict[str, str]]) -> None:
-    path.write_text(
-        json.dumps(list(routes), sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-        newline="\n",
+    path.write_bytes(
+        (json.dumps(list(routes), sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     )
 
 

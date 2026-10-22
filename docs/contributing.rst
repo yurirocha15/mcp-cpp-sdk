@@ -200,6 +200,22 @@ The ThreadSanitizer and MemorySanitizer builds run under ``setarch -R`` where
 it is available, because neither can start on kernels with a high ASLR
 entropy.
 
+Distribution Builds
+^^^^^^^^^^^^^^^^^^^
+
+The builds above use Conan's Boost. CI also builds and tests the SDK with each
+target distribution's own compiler, Boost and Python, inside the locked release
+builder images (``release/native-builders/lock.json``), from Boost 1.74 on
+Ubuntu 22.04 and Debian 12 up. It needs Docker:
+
+.. code-block:: bash
+
+   # One image; ids are listed in the lock
+   python scripts/distro_build.py ubuntu-jammy-amd64
+
+   # Cap the container on a workstation
+   python scripts/distro_build.py el-9-x86_64 --jobs 4 --docker-arg=--memory=12g
+
 Pull Request Process
 --------------------
 
@@ -467,6 +483,23 @@ const reference still crashes. Avoiding the construct at the call site is the on
 **Detection**: ``scripts/check_readme_snippets.py`` compiles the README's complete
 examples with the toolchain that built the SDK, and CI runs it on every matrix entry
 except Windows: GCC on Linux and Clang on macOS.
+
+GCC 12 co_await in a Condition
+------------------------------
+
+**Never co_await inside an** ``if`` **condition.** GCC 12.2, the compiler of
+Debian 12, miscompiles a coroutine whose ``if`` condition contains a ``co_await``:
+the coroutine crashes or never completes, at ``-O0`` and ``-O2`` alike, even when
+it ends with a ``throw`` before reaching that condition. GCC 11.4 and 13.3
+compile the same code correctly.
+
+.. code-block:: cpp
+
+   // DO NOT: if (!co_await validator(token)) { ... }
+   const bool valid = co_await validator(token);
+   if (!valid) { ... }
+
+**Detection**: the ``debian-bookworm-amd64`` distribution build in CI.
 
 Feature Requests
 ----------------

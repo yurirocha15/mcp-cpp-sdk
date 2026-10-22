@@ -46,63 +46,107 @@ if(DEFINED ENV{PKG_CONFIG_PATH} AND NOT "$ENV{PKG_CONFIG_PATH}" STREQUAL "")
   string(APPEND _pc_path ":$ENV{PKG_CONFIG_PATH}")
 endif()
 
-execute_process(
-  COMMAND "${CMAKE_COMMAND}" -E env "PKG_CONFIG_PATH=${_pc_path}"
-          "${PKG_CONFIG_EXECUTABLE}" --cflags --libs --static mcp-cpp-sdk-static
-  RESULT_VARIABLE pkg_config_result
-  OUTPUT_VARIABLE pkg_config_flags
-  ERROR_VARIABLE pkg_config_error OUTPUT_STRIP_TRAILING_WHITESPACE)
-if(NOT pkg_config_result EQUAL 0)
-  message(FATAL_ERROR "pkg-config failed: ${pkg_config_error}")
-endif()
-
-foreach(expected_flag IN ITEMS "-lmcp-cpp-sdk-static" "-lcrypto")
-  string(FIND "${pkg_config_flags}" "${expected_flag}" flag_position)
-  if(flag_position EQUAL -1)
-    message(
-      FATAL_ERROR
-        "pkg-config --static output lacks ${expected_flag}: ${pkg_config_flags}"
-    )
+# Runs pkg-config with the test's search path and the given arguments; sets
+# `out_flags` to its output.
+function(_mcp_pkg_config out_flags)
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env "PKG_CONFIG_PATH=${_pc_path}"
+            "${PKG_CONFIG_EXECUTABLE}" ${ARGN}
+    RESULT_VARIABLE pkg_config_result
+    OUTPUT_VARIABLE pkg_config_flags
+    ERROR_VARIABLE pkg_config_error OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if(NOT pkg_config_result EQUAL 0)
+    message(FATAL_ERROR "pkg-config ${ARGN} failed: ${pkg_config_error}")
   endif()
-endforeach()
-if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
-  foreach(expected_flag IN ITEMS "-ldl" "-pthread")
-    string(FIND "${pkg_config_flags}" "${expected_flag}" flag_position)
+  set(${out_flags}
+      "${pkg_config_flags}"
+      PARENT_SCOPE)
+endfunction()
+
+# Fails unless `flags` contains every flag given after it.
+function(_mcp_require_flags label flags)
+  foreach(expected_flag IN LISTS ARGN)
+    string(FIND "${flags}" "${expected_flag}" flag_position)
     if(flag_position EQUAL -1)
-      message(
-        FATAL_ERROR
-          "Linux static link output lacks ${expected_flag}: ${pkg_config_flags}"
-      )
+      message(FATAL_ERROR "${label} output lacks ${expected_flag}: ${flags}")
     endif()
   endforeach()
-endif()
+endfunction()
 
-separate_arguments(_pkg_config_arguments UNIX_COMMAND "${pkg_config_flags}")
 if(DEFINED MCP_CPP_SDK_TEST_LINK_OPTIONS)
   string(REPLACE "|" ";" _test_link_options "${MCP_CPP_SDK_TEST_LINK_OPTIONS}")
 endif()
-set(_compile_arguments "-std=c++20")
-foreach(include_dir IN LISTS _boost_include_dirs)
-  list(APPEND _compile_arguments "-I${include_dir}")
-endforeach()
-list(APPEND _compile_arguments "${MCP_CPP_SDK_TEST_SOURCE}")
-list(APPEND _compile_arguments ${_pkg_config_arguments} "-o"
-     "${_test_executable}")
-list(APPEND _compile_arguments ${_test_link_options})
 
-execute_process(
-  COMMAND "${MCP_CPP_SDK_CXX_COMPILER}" ${_compile_arguments}
-  RESULT_VARIABLE compile_result
-  OUTPUT_VARIABLE compile_output
-  ERROR_VARIABLE compile_error)
-if(NOT compile_result EQUAL 0)
-  string(CONCAT _compile_failure "pkg-config static consumer failed to link:\n"
-                "${compile_output}\n${compile_error}\n"
-                "flags: ${pkg_config_flags}")
-  message(FATAL_ERROR "${_compile_failure}")
+# Builds `source` with `flags` into `executable`; sets `out_result` to the
+# compiler's exit code and `out_log` to its output.
+function(_mcp_link source flags executable out_result out_log)
+  separate_arguments(pkg_config_arguments UNIX_COMMAND "${flags}")
+  set(compile_arguments "-std=c++20")
+  foreach(include_dir IN LISTS _boost_include_dirs)
+    list(APPEND compile_arguments "-I${include_dir}")
+  endforeach()
+  list(
+    APPEND
+    compile_arguments
+    "${source}"
+    ${pkg_config_arguments}
+    "-o"
+    "${executable}"
+    ${_test_link_options})
+  execute_process(
+    COMMAND "${MCP_CPP_SDK_CXX_COMPILER}" ${compile_arguments}
+    RESULT_VARIABLE compile_result
+    OUTPUT_VARIABLE compile_output
+    ERROR_VARIABLE compile_error)
+  set(${out_result}
+      "${compile_result}"
+      PARENT_SCOPE)
+  set(${out_log}
+      "${compile_output}\n${compile_error}"
+      PARENT_SCOPE)
+endfunction()
+
+# Builds the consumer source with `flags` and runs it; fails on either error.
+function(_mcp_link_and_run label flags executable)
+  _mcp_link("${MCP_CPP_SDK_TEST_SOURCE}" "${flags}" "${executable}"
+            compile_result compile_log)
+  if(NOT compile_result EQUAL 0)
+    message(FATAL_ERROR "${label} consumer failed to link:\n${compile_log}\n"
+                        "flags: ${flags}")
+  endif()
+  execute_process(COMMAND "${executable}" RESULT_VARIABLE run_result)
+  if(NOT run_result EQUAL 0)
+    message(FATAL_ERROR "${label} consumer exited ${run_result}")
+  endif()
+endfunction()
+
+# The static library linked against the system's shared dependencies: the usual
+# way to use it, and what needs nothing beyond the -dev packages.
+_mcp_pkg_config(_plain_flags --cflags --libs mcp-cpp-sdk-static)
+_mcp_require_flags("pkg-config" "${_plain_flags}" "-lmcp-cpp-sdk-static"
+                   "-lcrypto")
+_mcp_link_and_run("pkg-config" "${_plain_flags}" "${_test_executable}")
+
+# --static also asks for OpenSSL's own static dependencies. Several
+# distributions list libraries in libcrypto.pc (zlib, zstd) that their OpenSSL
+# development package does not install, so --static is checked only where
+# OpenSSL's own static flags link.
+_mcp_pkg_config(_crypto_static_flags --libs --static libcrypto)
+set(_probe_source "${_test_root}/probe.cpp")
+file(WRITE "${_probe_source}" "int main() { return 0; }\n")
+_mcp_link("${_probe_source}" "${_crypto_static_flags}" "${_test_root}/probe"
+          probe_result probe_log)
+if(NOT probe_result EQUAL 0)
+  message(STATUS "OpenSSL's static dependencies do not link here "
+                 "(${_crypto_static_flags}); --static was not checked")
+  return()
 endif()
 
-execute_process(COMMAND "${_test_executable}" RESULT_VARIABLE run_result)
-if(NOT run_result EQUAL 0)
-  message(FATAL_ERROR "pkg-config static consumer exited ${run_result}")
+_mcp_pkg_config(_static_flags --cflags --libs --static mcp-cpp-sdk-static)
+_mcp_require_flags("pkg-config --static" "${_static_flags}"
+                   "-lmcp-cpp-sdk-static" "-lcrypto")
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+  _mcp_require_flags("Linux static link" "${_static_flags}" "-ldl" "-pthread")
 endif()
+_mcp_link_and_run("pkg-config --static" "${_static_flags}"
+                  "${_test_root}/consumer-static")

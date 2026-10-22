@@ -165,19 +165,15 @@ def materialize_candidate(
     _empty_directory(adapted)
     production_all = production / "all"
     production_all.mkdir()
-    (production / "config.yml").write_text(
-        f'versions:\n  "{version}":\n    folder: all\n',
-        encoding="utf-8",
-        newline="\n",
+    (production / "config.yml").write_bytes(
+        f'versions:\n  "{version}":\n    folder: all\n'.encode("utf-8")
     )
     production_conandata = (
         f'sources:\n  "{version}":\n'
         f'    url: "{source_url}"\n'
         f'    sha256: "{source_sha256}"\n'
     )
-    (production_all / "conandata.yml").write_text(
-        production_conandata, encoding="utf-8", newline="\n"
-    )
+    (production_all / "conandata.yml").write_bytes(production_conandata.encode("utf-8"))
     for destination, source in _STATIC_ASSETS.items():
         _copy_regular(assets / source, production_all / destination)
 
@@ -189,9 +185,7 @@ def materialize_candidate(
         or adapted_conandata.replace(local_url, source_url, 1) != production_conandata
     ):
         raise ValidationError("Conan source adaptation changed more than one URL field")
-    (adapted / "all/conandata.yml").write_text(
-        adapted_conandata, encoding="utf-8", newline="\n"
-    )
+    (adapted / "all/conandata.yml").write_bytes(adapted_conandata.encode("utf-8"))
     production_digest = _tree_sha256(production)
     if _tree_sha256(adapted) == production_digest:
         raise ValidationError("Conan adapted recipe unexpectedly equals the production recipe")

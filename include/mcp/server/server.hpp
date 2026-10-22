@@ -7,6 +7,7 @@
 //   [wire-builders]        make_result_wire/make_error_wire are synchronous helpers;
 //                          do NOT convert them to Task<T> coroutines.
 
+#include <boost/asio/any_io_executor.hpp>
 #include <mcp/core/concepts.hpp>
 #include <mcp/core/context.hpp>
 #include <mcp/core/core.hpp>
@@ -25,10 +26,6 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
-
-namespace boost::asio {
-class any_io_executor;
-}
 
 namespace mcp {
 

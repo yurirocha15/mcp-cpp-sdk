@@ -1,4 +1,5 @@
 #include "../detail/memory_transport_read.hpp"
+#include "../detail/spawn_awaitable.hpp"
 
 #include <mcp/transport/memory.hpp>
 
@@ -35,10 +36,7 @@ struct MemoryTransportState {
             signal.expires_at(std::chrono::steady_clock::time_point::max());
         }
 
-        void wake() {
-            boost::system::error_code ignored;
-            signal.cancel(ignored);
-        }
+        void wake() { signal.cancel(); }
 
         boost::asio::steady_timer signal;
         std::optional<Message> message;
@@ -163,8 +161,7 @@ struct MemoryTransportState {
             throw std::runtime_error("peer transport not set");
         }
 
-        co_await boost::asio::co_spawn(peer->strand, deliver(state, peer, std::move(message)),
-                                       boost::asio::use_awaitable);
+        co_await mcp::detail::spawn_awaitable(peer->strand, deliver(state, peer, std::move(message)));
     }
 
     boost::asio::strand<boost::asio::any_io_executor> strand;
@@ -214,15 +211,13 @@ Task<std::optional<nlohmann::json>> read_json_until_closed(
 Task<std::optional<std::string>> detail::MemoryTransportAccess::read_message_until_closed(
     MemoryTransport& transport) {
     auto state = transport.state_;
-    return boost::asio::co_spawn(state->strand, mcp::read_message_until_closed(state),
-                                 boost::asio::use_awaitable);
+    return mcp::detail::spawn_awaitable(state->strand, mcp::read_message_until_closed(state));
 }
 
 Task<std::optional<nlohmann::json>> detail::MemoryTransportAccess::read_json_until_closed(
     MemoryTransport& transport) {
     auto state = transport.state_;
-    return boost::asio::co_spawn(state->strand, mcp::read_json_until_closed(state),
-                                 boost::asio::use_awaitable);
+    return mcp::detail::spawn_awaitable(state->strand, mcp::read_json_until_closed(state));
 }
 
 MemoryTransport::MemoryTransport(const boost::asio::any_io_executor& executor)
@@ -232,12 +227,12 @@ MemoryTransport::~MemoryTransport() = default;
 
 Task<std::string> MemoryTransport::read_message() {
     auto state = state_;
-    return boost::asio::co_spawn(state->strand, mcp::read_message(state), boost::asio::use_awaitable);
+    return mcp::detail::spawn_awaitable(state->strand, mcp::read_message(state));
 }
 
 Task<nlohmann::json> MemoryTransport::read_json() {
     auto state = state_;
-    return boost::asio::co_spawn(state->strand, mcp::read_json(state), boost::asio::use_awaitable);
+    return mcp::detail::spawn_awaitable(state->strand, mcp::read_json(state));
 }
 
 // A write reads only the closed flag and the peer pointer before it hands the message to the

@@ -49,8 +49,7 @@ struct SerializedTransportWriterState {
         operation->error = std::move(error);
         operation->completed = true;
 
-        boost::system::error_code ignored;
-        operation->completion.expires_at(std::chrono::steady_clock::time_point::min(), ignored);
+        operation->completion.expires_at(std::chrono::steady_clock::time_point::min());
     }
 
     static Task<void> drain(std::shared_ptr<SerializedTransportWriterState> state) {

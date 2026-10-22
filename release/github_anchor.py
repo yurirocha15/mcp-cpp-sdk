@@ -50,10 +50,8 @@ def _write_anchor(
         "commit": commit,
         "manifest_sha256": manifest_sha256,
     }
-    (directory / "ANCHOR.json").write_text(
-        json.dumps(anchor, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-        newline="\n",
+    (directory / "ANCHOR.json").write_bytes(
+        (json.dumps(anchor, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     )
 
 

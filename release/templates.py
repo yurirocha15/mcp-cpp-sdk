@@ -97,5 +97,5 @@ def render_file(template_path: Path, output_path: Path, values: Mapping[str, str
         )
     rendered = render_template(template_path.read_text(encoding="utf-8"), render_values)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(rendered, encoding="utf-8", newline="\n")
+    output_path.write_bytes(rendered.encode("utf-8"))
     output_path.chmod(0o755 if rendered.startswith("#!") else 0o644)

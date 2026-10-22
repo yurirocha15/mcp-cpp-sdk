@@ -5,6 +5,10 @@
 // signatures across the transport interface hierarchy.  Because template
 // aliases cannot be forward-declared, the full Boost type must be visible at
 // every call site that uses `Task<T>`.
+//
+// <utility> comes first: Boost 1.74's awaitable.hpp uses std::exchange without including it.
+#include <utility>
+
 #include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
 #include <cstdint>
