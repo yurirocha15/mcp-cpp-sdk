@@ -97,7 +97,7 @@ int main() {
                     Client client(transport, io_ctx.get_executor());
 
                     auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "[Client] Connected to: " << init_result.serverInfo.name << '\n';
+                    std::cout << "[Client] Connected to: " << init_result.serverInfo->name << '\n';
 
                     // ========== PAGINATION LOOP ==========
                     std::cout << "\n[Client] Starting pagination through tools\n";

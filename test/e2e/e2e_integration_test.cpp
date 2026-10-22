@@ -58,7 +58,7 @@ TEST_F(E2EIntegrationTest, InitializeAndPingSession) {
 
             // Initialize client
             auto init_res = co_await client_->connect(client_info_, client_caps_);
-            EXPECT_EQ(init_res.serverInfo.name, "test-server");
+            EXPECT_EQ(init_res.serverInfo->name, "test-server");
 
             // Ping the server
             co_await client_->ping();

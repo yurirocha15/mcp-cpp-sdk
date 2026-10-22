@@ -76,7 +76,7 @@ When writing scripted tests, consider the following:
     boost::asio::co_spawn(io_ctx, [&]() -> mcp::Task<void> {
         // 1. Connect and verify version handshake
         auto init_res = co_await client->connect(client_info, client_caps);
-        EXPECT_EQ(init_res.serverInfo.version, "1.0");
+        EXPECT_EQ(init_res.serverInfo->version, "1.0");
 
         // 2. Call a tool and verify the content.
         // Build the arguments into a named variable: an initializer list inside

@@ -143,7 +143,7 @@ int main() {
                     // Connect to server
                     std::cout << "Client: Connecting to server\n";
                     auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "Client: Connected to " << init_result.serverInfo.name << "\n";
+                    std::cout << "Client: Connected to " << init_result.serverInfo->name << "\n";
 
                     // Test 1: Complete language argument with "C"
                     std::cout << "\n--- Test 1: Language completions for 'C' ---\n";

@@ -44,7 +44,7 @@ TEST_F(E2EFeaturesTest, MemoryTransportPair) {
 
             mcp::Client client(client_transport, io_ctx_.get_executor());
             auto init_res = co_await client.connect("test-client", "1.0");
-            EXPECT_EQ(init_res.serverInfo.name, "test-server");
+            EXPECT_EQ(init_res.serverInfo->name, "test-server");
 
             auto result = co_await client.call_tool("test_tool", nlohmann::json::object());
             EXPECT_GT(result.content.size(), 0);
@@ -87,7 +87,7 @@ TEST_F(E2EFeaturesTest, ConnectAndDisconnect) {
 
             mcp::Client client(client_transport, io_ctx_.get_executor());
             auto init_res = co_await client.connect("test-client", "1.0");
-            EXPECT_EQ(init_res.serverInfo.name, "test-server");
+            EXPECT_EQ(init_res.serverInfo->name, "test-server");
 
             co_await client.send_request("shutdown", std::nullopt);
             client.close();
