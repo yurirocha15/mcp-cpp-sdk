@@ -1,5 +1,7 @@
 #pragma once
 
+#include "header_value.hpp"
+#include "param_headers.hpp"
 #include "peer_json.hpp"
 #include "request_meta.hpp"
 
@@ -15,6 +17,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace mcp::detail {
 
@@ -49,75 +53,6 @@ inline bool is_modern_http_request(const nlohmann::json& body,
     return protocol_header.has_value() && !is_legacy_protocol_version(*protocol_header);
 }
 
-/// RFC 9110 field-value characters: visible ASCII, space and horizontal tab.
-inline bool is_valid_header_value(std::string_view value) {
-    for (const char raw : value) {
-        const auto byte = static_cast<unsigned char>(raw);
-        if (byte != '\t' && (byte < 0x20 || byte > 0x7E)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-/// Decodes standard padded Base64, or returns nullopt when @p text is not that.
-inline std::optional<std::string> decode_base64(std::string_view text) {
-    if (text.size() % 4 != 0) {
-        return std::nullopt;
-    }
-    std::string decoded;
-    decoded.reserve(text.size() / 4 * 3);
-    std::uint32_t accumulator = 0;
-    int bits = 0;
-    std::size_t padding = 0;
-    for (std::size_t index = 0; index < text.size(); ++index) {
-        const char symbol = text[index];
-        int value = -1;
-        if (symbol >= 'A' && symbol <= 'Z') {
-            value = symbol - 'A';
-        } else if (symbol >= 'a' && symbol <= 'z') {
-            value = symbol - 'a' + 26;
-        } else if (symbol >= '0' && symbol <= '9') {
-            value = symbol - '0' + 52;
-        } else if (symbol == '+') {
-            value = 62;
-        } else if (symbol == '/') {
-            value = 63;
-        } else if (symbol == '=' && index + 2 >= text.size()) {
-            ++padding;
-            continue;
-        } else {
-            return std::nullopt;
-        }
-        if (padding != 0) {
-            return std::nullopt;  // data after padding
-        }
-        accumulator = (accumulator << 6U) | static_cast<std::uint32_t>(value);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            decoded.push_back(static_cast<char>((accumulator >> static_cast<unsigned>(bits)) & 0xFFU));
-        }
-    }
-    return decoded;
-}
-
-/// The value a client meant by an Mcp-Name or Mcp-Param header: the header text itself, or the
-/// UTF-8 text of a `=?base64?...?=` sentinel. Nullopt when the value has characters a header may not
-/// carry or its sentinel does not hold Base64.
-inline std::optional<std::string> decode_header_value(std::string_view value) {
-    if (!is_valid_header_value(value)) {
-        return std::nullopt;
-    }
-    constexpr std::string_view prefix = "=?base64?";
-    constexpr std::string_view suffix = "?=";
-    if (value.size() >= prefix.size() + suffix.size() && value.substr(0, prefix.size()) == prefix &&
-        value.substr(value.size() - suffix.size()) == suffix) {
-        return decode_base64(value.substr(prefix.size(), value.size() - prefix.size() - suffix.size()));
-    }
-    return std::string(value);
-}
-
 /// The body value an Mcp-Name header mirrors, or null for a method that has none.
 inline const nlohmann::json* mirrored_name(const nlohmann::json& body, std::string_view method) {
     const char* member = nullptr;
@@ -143,6 +78,13 @@ inline const nlohmann::json* mirrored_name(const nlohmann::json& body, std::stri
 inline std::optional<std::string> modern_header_mismatch(const StringRequest& request,
                                                          const nlohmann::json& body) {
     const auto& method = body.at("method").get_ref<const std::string&>();
+
+    // Two copies of a mirrored header let an intermediary act on one and the server on the other.
+    for (const std::string_view name : {"MCP-Protocol-Version", "Mcp-Method", "Mcp-Name"}) {
+        if (request.count(boost::beast::string_view(name.data(), name.size())) > 1) {
+            return "Duplicate " + std::string(name) + " header";
+        }
+    }
 
     const auto protocol_header = http_header(request, "MCP-Protocol-Version");
     if (!protocol_header) {
@@ -200,21 +142,38 @@ inline boost::beast::http::status http_status_for_error(int code) {
     }
 }
 
-/// The HTTP status of a serialized JSON-RPC response to a 2026-07-28 request.
-inline boost::beast::http::status http_status_for_response(const std::string& response) {
+/// The error code of a serialized JSON-RPC response, or nullopt for a result.
+inline std::optional<int> response_error_code(const std::string& response) {
     const auto parsed = parse_peer_json(response);
     if (!parsed.is_object()) {
-        return boost::beast::http::status::ok;
+        return std::nullopt;
     }
     const auto error = parsed.find("error");
     if (error == parsed.end() || !error->is_object()) {
-        return boost::beast::http::status::ok;
+        return std::nullopt;
     }
     const auto code = error->find("code");
     if (code == error->end() || !code->is_number_integer()) {
-        return boost::beast::http::status::ok;
+        return std::nullopt;
     }
-    return http_status_for_error(code->get<int>());
+    return code->get<int>();
+}
+
+/// The `Mcp-Param-{Name}` headers of @p request as {Name, value} pairs, in the order received.
+/// The prefix is matched ignoring case, and every instance of a repeated header is kept.
+inline std::vector<std::pair<std::string, std::string>> mcp_param_headers(
+    const StringRequest& request) {
+    constexpr std::string_view prefix = "mcp-param-";
+    std::vector<std::pair<std::string, std::string>> headers;
+    for (const auto& field : request) {
+        const std::string_view name(field.name_string().data(), field.name_string().size());
+        if (name.size() > prefix.size() &&
+            equals_ignoring_case(name.substr(0, prefix.size()), prefix)) {
+            headers.emplace_back(std::string(name.substr(prefix.size())),
+                                 std::string(field.value().data(), field.value().size()));
+        }
+    }
+    return headers;
 }
 
 }  // namespace mcp::detail

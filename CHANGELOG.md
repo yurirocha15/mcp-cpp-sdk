@@ -98,6 +98,21 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `ListResourceTemplatesResult` and `ReadResourceResult` gain optional `ttlMs`
   and `cacheScope`, and `DiscoverResult::serverInfo` is optional. A
   `cacheScope` value other than `public` or `private` is read as unset.
+- `x-mcp-header` tool parameters (2026-07-28). `add_tool()` and
+  `add_raw_tool()` refuse, with `SchemaError`, a tool whose input schema has an
+  `x-mcp-header` annotation that is not a string, empty, not an HTTP token,
+  repeated ignoring case, on a property without a `string`, `integer` or
+  `boolean` type, or on a property not reached from the root through
+  `properties` alone. `StreamableHttpSessionManager` passes a 2026-07-28 request's
+  `Mcp-Param-*` headers to the server (`RequestContext::param_headers` for a
+  direct dispatch), and a `tools/call` is answered `400` with
+  `g_HEADER_MISMATCH` unless each annotated argument that is present and not
+  null has exactly one header matching it once decoded: integers compare
+  numerically and must lie within ±(2^53 − 1). A header the tool names with
+  characters a header may not carry, or with a malformed Base64 sentinel, is
+  refused the same way even when its argument is absent. A 2026-07-28 request that
+  repeats its `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` header is
+  also answered `g_HEADER_MISMATCH`.
 
 ### Changed
 

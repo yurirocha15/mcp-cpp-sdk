@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -52,7 +53,7 @@ mcp::Task<Reply> send(asio::any_io_executor executor, unsigned short port, http:
     request.set(http::field::content_type, "application/json");
     request.set(http::field::accept, "application/json, text/event-stream");
     for (const auto& [name, value] : headers) {
-        request.set(name, value);
+        request.insert(name, value);
     }
     request.body() = std::move(body);
     request.prepare_payload();
@@ -114,6 +115,17 @@ std::unique_ptr<mcp::Server> make_server(const std::string& name) {
     server->add_tool<json, json>(
         "héllo wörld", "A name outside the header-safe characters", json{{"type", "object"}},
         [](json /*args*/) -> mcp::Task<json> { co_return json{{"ok", true}}; });
+    const json routed_schema = {
+        {"type", "object"},
+        {"properties",
+         {{"region", {{"type", "string"}, {"x-mcp-header", "Region"}}},
+          {"count", {{"type", "integer"}, {"x-mcp-header", "Count"}}},
+          {"flag", {{"type", "boolean"}, {"x-mcp-header", "Flag"}}},
+          {"scope",
+           {{"type", "object"},
+            {"properties", {{"tenant", {{"type", "string"}, {"x-mcp-header", "Tenant"}}}}}}}}}};
+    server->add_tool<json, json>("route", "Mirrors arguments into headers", routed_schema,
+                                 [](json args) -> mcp::Task<json> { co_return args; });
     mcp::Resource resource;
     resource.uri = "test://doc";
     resource.name = "doc";
@@ -564,6 +576,140 @@ TEST_F(HttpModernTest, OriginAndBearerChecksStillComeFirst) {
     EXPECT_EQ(bad_origin.status, 403u);
     EXPECT_EQ(no_token.status, 401u);
     EXPECT_EQ(good.status, 200u) << good.body;
+}
+
+json route_call(const json& id, json arguments) {
+    return make_modern_request(id, "tools/call",
+                               {{"name", "route"}, {"arguments", std::move(arguments)}});
+}
+
+TEST_F(HttpModernTest, McpParamHeadersThatMatchAreServed) {
+    const unsigned short port = 20424;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port, factory());
+    std::vector<Reply> replies;
+    run(manager, [&]() -> mcp::Task<void> {
+        const auto all = route_call(
+            1,
+            {{"region", "us-west1"}, {"count", 42}, {"flag", false}, {"scope", {{"tenant", "acme"}}}});
+        auto headers = modern_headers(all);
+        headers.insert(headers.end(), {{"Mcp-Param-Region", "us-west1"},
+                                       {"mcp-param-count", "42"},
+                                       {"MCP-PARAM-FLAG", "false"},
+                                       {"Mcp-Param-Tenant", "acme"}});
+        replies.push_back(co_await post(port, all, headers));
+
+        // Integers compare numerically.
+        const auto numeric = route_call(2, {{"count", 42}});
+        replies.push_back(
+            co_await post(port, numeric, with(modern_headers(numeric), "Mcp-Param-Count", "42.0")));
+
+        // Absent and null arguments expect no header.
+        const auto absent = route_call(3, json::object());
+        replies.push_back(co_await post_modern(port, absent));
+        const auto null = route_call(4, {{"region", nullptr}, {"scope", {{"tenant", nullptr}}}});
+        replies.push_back(co_await post_modern(port, null));
+
+        // Base64-encoded values are decoded first.
+        const auto unicode = route_call(5, {{"region", "Hello, 世界"}});
+        replies.push_back(co_await post(
+            port, unicode,
+            with(modern_headers(unicode), "Mcp-Param-Region", "=?base64?SGVsbG8sIOS4lueVjA==?=")));
+        const auto padded = route_call(6, {{"region", " padded "}});
+        replies.push_back(co_await post(
+            port, padded, with(modern_headers(padded), "Mcp-Param-Region", "=?base64?IHBhZGRlZCA=?=")));
+        const auto lookalike = route_call(7, {{"region", "=?base64?literal?="}});
+        replies.push_back(co_await post(port, lookalike,
+                                        with(modern_headers(lookalike), "Mcp-Param-Region",
+                                             "=?base64?PT9iYXNlNjQ/bGl0ZXJhbD89?=")));
+
+        // A tool without annotations ignores Mcp-Param headers.
+        const auto echo = call_tool(8, "echo");
+        replies.push_back(
+            co_await post(port, echo, with(modern_headers(echo), "Mcp-Param-Region", "x")));
+    });
+
+    ASSERT_EQ(replies.size(), 8u);
+    for (const auto& reply : replies) {
+        EXPECT_EQ(reply.status, 200u) << reply.body;
+        EXPECT_TRUE(reply.parsed().contains("result")) << reply.body;
+    }
+    EXPECT_EQ(manager.header_mismatch_rejections(), 0u);
+}
+
+TEST_F(HttpModernTest, McpParamHeadersThatDoNotMatchAreHeaderMismatch) {
+    const unsigned short port = 20425;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port, factory());
+    std::vector<std::pair<std::string, Reply>> replies;
+    run(manager, [&]() -> mcp::Task<void> {
+        const auto region = route_call(1, {{"region", "us-west1"}});
+        replies.emplace_back(
+            "different value",
+            co_await post(port, region, with(modern_headers(region), "Mcp-Param-Region", "eu")));
+        replies.emplace_back("missing header", co_await post_modern(port, region));
+        replies.emplace_back(
+            "repeated header",
+            co_await post(port, region,
+                          with(with(modern_headers(region), "Mcp-Param-Region", "us-west1"),
+                               "mcp-param-region", "eu")));
+        replies.emplace_back(
+            "non-ASCII byte",
+            co_await post(port, region, with(modern_headers(region), "Mcp-Param-Region", "us-wést1")));
+        const auto lookalike = route_call(2, {{"region", "=?base64?literal?="}});
+        replies.emplace_back(
+            "unencoded sentinel lookalike",
+            co_await post(port, lookalike,
+                          with(modern_headers(lookalike), "Mcp-Param-Region", "=?base64?literal?=")));
+        const auto count = route_call(3, {{"count", 42}});
+        replies.emplace_back(
+            "different integer",
+            co_await post(port, count, with(modern_headers(count), "Mcp-Param-Count", "43")));
+        const auto nested = route_call(4, {{"scope", {{"tenant", "acme"}}}});
+        replies.emplace_back("missing nested header", co_await post_modern(port, nested));
+        const auto flag = route_call(5, {{"flag", true}});
+        replies.emplace_back(
+            "boolean case",
+            co_await post(port, flag, with(modern_headers(flag), "Mcp-Param-Flag", "TRUE")));
+    });
+
+    ASSERT_EQ(replies.size(), 8u);
+    for (const auto& [why, reply] : replies) {
+        SCOPED_TRACE(why);
+        expect_error(reply, 400, mcp::g_HEADER_MISMATCH);
+        EXPECT_NE(reply.parsed()["error"]["message"].get<std::string>().find("Mcp-Param-"),
+                  std::string::npos)
+            << reply.body;
+    }
+    EXPECT_EQ(manager.header_mismatch_rejections(), 8u);
+}
+
+TEST_F(HttpModernTest, UnknownToolWithMcpParamHeadersIsInvalidParams) {
+    const auto body = call_tool(1, "missing");
+    expect_error(exchange_one(20426, body, with(modern_headers(body), "Mcp-Param-Region", "x")), 400,
+                 mcp::g_INVALID_PARAMS);
+}
+
+TEST_F(HttpModernTest, RepeatedStandardHeadersAreHeaderMismatch) {
+    const unsigned short port = 20427;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port, factory());
+    std::vector<Reply> replies;
+    run(manager, [&]() -> mcp::Task<void> {
+        const auto body = call_tool(1, "echo");
+        for (const auto* name : {"MCP-Protocol-Version", "Mcp-Method", "Mcp-Name"}) {
+            auto headers = modern_headers(body);
+            const auto original = std::find_if(headers.begin(), headers.end(), [&](const auto& header) {
+                return header.first == name;
+            });
+            headers.emplace_back(name, original->second);
+            replies.push_back(co_await post(port, body, headers));
+        }
+    });
+    ASSERT_EQ(replies.size(), 3u);
+    for (const auto& reply : replies) {
+        expect_error(reply, 400, mcp::g_HEADER_MISMATCH);
+        EXPECT_NE(reply.parsed()["error"]["message"].get<std::string>().find("Duplicate"),
+                  std::string::npos)
+            << reply.body;
+    }
 }
 
 }  // namespace
