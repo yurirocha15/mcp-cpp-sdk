@@ -1,7 +1,6 @@
 #!/usr/bin/make -f
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
-export DEB_CXXFLAGS_MAINT_APPEND = -fvisibility=hidden -fvisibility-inlines-hidden
 
 %:
 	dh $@ --buildsystem=cmake+ninja

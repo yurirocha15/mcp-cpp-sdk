@@ -2,13 +2,13 @@
 """
 Build and test the SDK inside a locked release builder image.
 
-Each image is one target distribution with its own compiler, Boost and Python, so this checks
-the SDK against what a distribution package build sees. The CMake options are the package
-builds' (see packaging/debian/rules.in). The release tooling's tests run with the image's
-Python as well, since the package builds run that tooling there.
+Each image is one target distribution with its own compiler, Boost and Python. The CMake
+options are the package builds' (see packaging/debian/rules.in), but not the packaging's own
+compiler flags: scripts/package_build.py builds the packages themselves. The release tooling's
+tests run with the image's Python as well, since the package builds run that tooling there.
 
   python3 scripts/distro_build.py ubuntu-jammy-amd64
-  python3 scripts/distro_build.py --matrix    # CI matrix: one x86_64 image per distribution
+  python3 scripts/distro_build.py --matrix    # one x86_64 image per distribution, as JSON
 """
 import argparse
 import json

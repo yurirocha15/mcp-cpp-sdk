@@ -64,7 +64,8 @@ def validate_installed_prefix(prefix: Path, *, workspace: Path, version: SemVer)
             str(build),
             "-G",
             "Ninja",
-            f"-DCMAKE_PREFIX_PATH={prefix}",
+            # CMake resolves a relative prefix against the source directory, not the cwd.
+            f"-DCMAKE_PREFIX_PATH={prefix.resolve()}",
         ]
     )
     _run(["cmake", "--build", str(build)])
@@ -171,7 +172,8 @@ def build_apt(args: argparse.Namespace) -> None:
         if any(not field or "\n" in field for field in fields):
             raise ValidationError("Debian package metadata is incomplete")
         asset = args.output / f"{args.route_id}--{package.name}"
-        package.replace(asset)
+        # /output is a bind mount on another filesystem, so the package is copied, not renamed.
+        shutil.copyfile(package, asset)
         binary_assets.append(asset)
         routes.append(
             {
@@ -197,8 +199,9 @@ def build_apt(args: argparse.Namespace) -> None:
     )
     _run(
         privileged_command(
+            # No --no-download: apt 2.4 and 2.6 then refuse local .deb files ("Pathname to install
+            # is not absolute"). The builder container has no network, so nothing is downloaded.
             "apt-get",
-            "--no-download",
             "--no-install-recommends",
             "install",
             "-y",
@@ -291,7 +294,9 @@ def build_rpm(args: argparse.Namespace) -> None:
     binary_assets: list[Path] = []
     for package in packages:
         fields = _run(
-            ["rpm", "-qp", "--qf", "%{NAME}\n%{VERSION}-%{RELEASE}\n%{ARCH}\n", str(package)]
+            # A source package's ARCH is the build host's; it is the one without a SOURCERPM.
+            ["rpm", "-qp", "--qf", "%{NAME}\n%{VERSION}-%{RELEASE}\n%|SOURCERPM?{%{ARCH}}:{src}|\n",
+             str(package)]
         ).splitlines()
         if len(fields) != 3 or any(not field for field in fields):
             raise ValidationError("RPM package metadata is incomplete")
