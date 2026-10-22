@@ -771,7 +771,6 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// negotiate, then the versions served per request.
     [[nodiscard]] std::vector<std::string> supported_versions() const;
     [[nodiscard]] bool serves_legacy_version(std::string_view version) const;
-    [[nodiscard]] std::string negotiate_legacy_version(std::string_view requested) const;
     /// -32601 for an initialize sent to a server that serves no legacy version, naming the
     /// versions it serves in the message and in `data.supported`.
     [[nodiscard]] std::string initialize_not_served_wire(const RequestId& id) const;
@@ -883,21 +882,70 @@ void Server::set_discover_ttl_ms(std::int64_t ttl_ms) {
 
 void Server::set_discover_cache_scope(CacheScope scope) { impl_->discover_cache_scope = scope; }
 
-void Server::set_protocol_policy(ServerProtocolPolicy policy) {
-    if (!policy.serve_modern && !policy.serve_legacy) {
+void ServerProtocolPolicy::validate() const {
+    if (!serve_modern && !serve_legacy) {
         throw std::invalid_argument("A protocol policy must serve at least one protocol era");
     }
-    if (policy.legacy_versions) {
-        if (policy.serve_legacy && policy.legacy_versions->empty()) {
+    if (legacy_versions) {
+        if (serve_legacy && legacy_versions->empty()) {
             throw std::invalid_argument("A protocol policy serving legacy clients needs a version");
         }
-        for (const auto& version : *policy.legacy_versions) {
+        for (const auto& version : *legacy_versions) {
             if (!is_legacy_protocol_version(version)) {
                 throw std::invalid_argument("Not a protocol version negotiated by initialize: " +
                                             detail::sanitize_for_diagnostics(version));
             }
         }
     }
+}
+
+namespace {
+
+bool policy_allows_legacy_version(const ServerProtocolPolicy& policy, std::string_view version) {
+    if (!is_legacy_protocol_version(version)) {
+        return false;
+    }
+    if (!policy.legacy_versions) {
+        return true;
+    }
+    const auto& allowed = *policy.legacy_versions;
+    return std::find(allowed.begin(), allowed.end(), version) != allowed.end();
+}
+
+}  // namespace
+
+std::string negotiate_protocol_version(std::string_view requested, const ServerProtocolPolicy& policy) {
+    if (policy_allows_legacy_version(policy, requested)) {
+        return std::string(requested);
+    }
+    // g_LEGACY_PROTOCOL_VERSIONS is oldest first, so the last one allowed is the newest.
+    for (auto version = g_LEGACY_PROTOCOL_VERSIONS.rbegin();
+         version != g_LEGACY_PROTOCOL_VERSIONS.rend(); ++version) {
+        if (policy_allows_legacy_version(policy, *version)) {
+            return std::string(*version);
+        }
+    }
+    return std::string(g_LATEST_LEGACY_PROTOCOL_VERSION);
+}
+
+std::vector<std::string> served_protocol_versions(const ServerProtocolPolicy& policy) {
+    std::vector<std::string> versions;
+    if (policy.serve_legacy) {
+        for (const auto version : g_LEGACY_PROTOCOL_VERSIONS) {
+            if (policy_allows_legacy_version(policy, version)) {
+                versions.emplace_back(version);
+            }
+        }
+    }
+    if (policy.serve_modern) {
+        versions.insert(versions.end(), g_MODERN_PROTOCOL_VERSIONS.begin(),
+                        g_MODERN_PROTOCOL_VERSIONS.end());
+    }
+    return versions;
+}
+
+void Server::set_protocol_policy(ServerProtocolPolicy policy) {
+    policy.validate();
     if (impl_->serving.load(std::memory_order_acquire)) {
         throw std::logic_error("The protocol policy cannot change once the server serves requests");
     }
@@ -1543,7 +1591,8 @@ Task<std::string> Server::Impl::handle_initialize_wire(const nlohmann::json& jso
     auto initialize_request = deserialize_request_params<InitializeRequest>(json_msg, "initialize");
 
     InitializeResult init_result;
-    init_result.protocolVersion = negotiate_legacy_version(initialize_request.protocolVersion);
+    init_result.protocolVersion =
+        negotiate_protocol_version(initialize_request.protocolVersion, protocol_policy);
     init_result.capabilities = capabilities;
     init_result.serverInfo = server_info;
     init_result.instructions = instructions;
@@ -1945,53 +1994,16 @@ std::string Server::Impl::make_error_wire(const RequestId& id, int code, std::st
 }
 
 std::vector<std::string> Server::Impl::supported_versions() const {
-    std::vector<std::string> versions;
-    if (protocol_policy.serve_legacy) {
-        for (const auto version : g_LEGACY_PROTOCOL_VERSIONS) {
-            if (serves_legacy_version(version)) {
-                versions.emplace_back(version);
-            }
-        }
-    }
-    if (protocol_policy.serve_modern) {
-        versions.insert(versions.end(), g_MODERN_PROTOCOL_VERSIONS.begin(),
-                        g_MODERN_PROTOCOL_VERSIONS.end());
-    }
-    return versions;
+    return served_protocol_versions(protocol_policy);
 }
 
 bool Server::Impl::serves_legacy_version(std::string_view version) const {
-    if (!is_legacy_protocol_version(version)) {
-        return false;
-    }
-    if (!protocol_policy.legacy_versions) {
-        return true;
-    }
-    const auto& allowed = *protocol_policy.legacy_versions;
-    return std::find(allowed.begin(), allowed.end(), version) != allowed.end();
-}
-
-std::string Server::Impl::negotiate_legacy_version(std::string_view requested) const {
-    if (serves_legacy_version(requested)) {
-        return std::string(requested);
-    }
-    // g_LEGACY_PROTOCOL_VERSIONS is oldest first, so the last one served is the newest.
-    for (auto version = g_LEGACY_PROTOCOL_VERSIONS.rbegin();
-         version != g_LEGACY_PROTOCOL_VERSIONS.rend(); ++version) {
-        if (serves_legacy_version(*version)) {
-            return std::string(*version);
-        }
-    }
-    return std::string(g_LATEST_LEGACY_PROTOCOL_VERSION);
+    return policy_allows_legacy_version(protocol_policy, version);
 }
 
 std::string Server::Impl::initialize_not_served_wire(const RequestId& id) const {
     auto supported = supported_versions();
-    std::string message = "Method not found: initialize; this server serves protocol versions";
-    for (const auto& version : supported) {
-        message += ' ';
-        message += version;
-    }
+    auto message = detail::initialize_not_served_message(supported);
     return make_error_wire(id, g_METHOD_NOT_FOUND, std::move(message),
                            nlohmann::json{{"supported", std::move(supported)}});
 }

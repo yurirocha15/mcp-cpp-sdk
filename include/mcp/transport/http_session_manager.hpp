@@ -11,6 +11,7 @@
 #include <mcp/transport/http_types.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -252,6 +253,45 @@ class MCP_API StreamableHttpSessionManager {
      * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
     void set_tool_executor(const boost::asio::any_io_executor& exec);
+
+    /**
+     * @brief Choose which protocol revisions the endpoint serves.
+     *
+     * @details Applied to every Server the manager builds from its factory: each session's, the
+     * stateless one and the shared modern server (unless set_modern_server() supplied it). When
+     * legacy clients are not served, no session is created: initialize is answered `404` with
+     * `g_METHOD_NOT_FOUND` naming the versions served, and GET and DELETE `405`.
+     *
+     * @throws std::invalid_argument If ServerProtocolPolicy::validate() refuses the policy.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_protocol_policy(ServerProtocolPolicy policy);
+
+    /**
+     * @brief Serve every 2026-07-28 request with @p server.
+     *
+     * @details A 2026-07-28 request belongs to no session, so one Server answers all of them on
+     * this endpoint, alongside the per-session Servers of legacy clients. Without this call it is
+     * built from the factory on the first such request. Its tools, resources and prompts are what
+     * every 2026-07-28 client sees, so they must not depend on the connection.
+     *
+     * @throws std::invalid_argument If @p server is null.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_modern_server(std::shared_ptr<Server> server);
+
+    /**
+     * @brief The Server that answers 2026-07-28 requests.
+     *
+     * @return The server given to set_modern_server(), or the one built from the factory, which
+     *         this call builds if no request has yet. Notifications for 2026-07-28 clients are sent
+     *         through it.
+     */
+    [[nodiscard]] std::shared_ptr<Server> modern_server();
+
+    /// 2026-07-28 requests refused with `g_HEADER_MISMATCH` because their MCP-Protocol-Version,
+    /// Mcp-Method or Mcp-Name header was missing, malformed or did not match the body.
+    [[nodiscard]] std::uint64_t header_mismatch_rejections() const;
 
     /**
      * @brief Close the manager and all sessions.

@@ -115,6 +115,65 @@ mcp::Task<RawResponse> raw_request(
     co_return result;
 }
 
+/// POST @p body with @p headers, one per pair, and return the response.
+mcp::Task<RawResponse> raw_post(const asio::any_io_executor& executor, unsigned short port,
+                                const std::string& body,
+                                const std::vector<std::pair<std::string, std::string>>& headers) {
+    beast::tcp_stream stream(executor);
+    auto resolver = asio::ip::tcp::resolver(executor);
+    auto endpoints =
+        co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
+    co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+
+    http::request<http::string_body> request{http::verb::post, "/mcp", 11};
+    request.set(http::field::host, "127.0.0.1");
+    request.set(http::field::content_type, "application/json");
+    request.set(http::field::accept, "application/json, text/event-stream");
+    for (const auto& [name, value] : headers) {
+        request.set(name, value);
+    }
+    request.body() = body;
+    request.prepare_payload();
+    co_await http::async_write(stream, request, asio::use_awaitable);
+
+    beast::flat_buffer response_buffer;
+    http::response<http::string_body> response;
+    co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
+
+    RawResponse result;
+    result.status = response.result_int();
+    result.body = response.body();
+    result.content_type = std::string(response[http::field::content_type]);
+    result.allow = std::string(response[http::field::allow]);
+    if (auto session_it = response.find("Mcp-Session-Id"); session_it != response.end()) {
+        result.session_id = std::string(session_it->value());
+    }
+    beast::error_code shutdown_error;
+    stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
+    co_return result;
+}
+
+/// The headers a 2026-07-28 client sends with @p body: MCP-Protocol-Version from its _meta,
+/// Mcp-Method, and Mcp-Name for the methods that mirror a name.
+std::vector<std::pair<std::string, std::string>> modern_headers(const json& body) {
+    std::vector<std::pair<std::string, std::string>> headers;
+    headers.emplace_back("MCP-Protocol-Version",
+                         body["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"]);
+    const auto method = body["method"].get<std::string>();
+    headers.emplace_back("Mcp-Method", method);
+    if (method == "tools/call" || method == "prompts/get") {
+        headers.emplace_back("Mcp-Name", body["params"]["name"].get<std::string>());
+    } else if (method == "resources/read") {
+        headers.emplace_back("Mcp-Name", body["params"]["uri"].get<std::string>());
+    }
+    return headers;
+}
+
+mcp::Task<RawResponse> modern_post(const asio::any_io_executor& executor, unsigned short port,
+                                   const json& body) {
+    co_return co_await raw_post(executor, port, body.dump(), modern_headers(body));
+}
+
 std::vector<std::pair<std::string, json>> parse_sse_events(const std::string& body) {
     std::vector<std::pair<std::string, json>> events;
     std::istringstream stream(body);
@@ -1135,9 +1194,7 @@ TEST_F(SessionManagerTest, SessionlessDiscoverReturns200WithoutCreatingSession) 
     asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            json request = make_discover_request(1);
-            response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                            request.dump());  // no session_id
+            response = co_await modern_post(io_ctx_.get_executor(), port, make_discover_request(1));
             session_count = manager.session_count();
             manager.close();
         },
@@ -1180,9 +1237,8 @@ TEST_F(SessionManagerTest, SessionlessDiscoversShareOneServer) {
         io_ctx_,
         [&]() -> mcp::Task<void> {
             for (int id = 1; id <= 3; ++id) {
-                json request = make_discover_request(id);
-                auto response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
-                                                     "/mcp", request.dump());
+                auto response =
+                    co_await modern_post(io_ctx_.get_executor(), port, make_discover_request(id));
                 statuses.push_back(response.status);
             }
             manager.close();
@@ -1216,9 +1272,8 @@ TEST_F(SessionManagerTest, SessionlessDiscoverStaysReachableAfterSessionEstablis
         [&]() -> mcp::Task<void> {
             init_response = co_await do_initialize(io_ctx_.get_executor(), port);
 
-            json request = make_discover_request(2);
-            discover_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
-                                                     "/mcp", request.dump());  // no session id
+            discover_response =
+                co_await modern_post(io_ctx_.get_executor(), port, make_discover_request(2));
             session_count_after = manager.session_count();
             manager.close();
         },
@@ -1240,14 +1295,11 @@ TEST_F(SessionManagerTest, SessionlessDiscoverStaysReachableAfterSessionEstablis
 }
 
 // ---------------------------------------------------------------------------
-// server/discover is exempted from the MCP-Protocol-Version header check that rejects any
-// version outside g_SUPPORTED_PROTOCOL_VERSIONS, so a modern client probing with its own
-// 2026-07-28 header is not rejected pre-dispatch — unlike every other method (pinned by
-// BadProtocolVersionReturns400 for initialize, and StatelessBadProtocolVersionReturns400 /
-// the discover-vs-tools-list test below for the general case).
+// server/discover is a 2026-07-28 request: it is served with its own MCP-Protocol-Version
+// header, which the legacy check reserved for initialize-negotiated versions would refuse.
 // ---------------------------------------------------------------------------
 
-TEST_F(SessionManagerTest, SessionlessDiscoverAcceptsUnsupportedProtocolVersionHeader) {
+TEST_F(SessionManagerTest, SessionlessDiscoverIsServedWithA2026ProtocolVersionHeader) {
     const unsigned short port = 19119;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
@@ -1258,9 +1310,7 @@ TEST_F(SessionManagerTest, SessionlessDiscoverAcceptsUnsupportedProtocolVersionH
     asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            json request = make_discover_request(1);
-            response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                            request.dump(), {}, "2026-07-28");
+            response = co_await modern_post(io_ctx_.get_executor(), port, make_discover_request(1));
             manager.close();
         },
         asio::detached);
@@ -1274,13 +1324,11 @@ TEST_F(SessionManagerTest, SessionlessDiscoverAcceptsUnsupportedProtocolVersionH
 }
 
 // ---------------------------------------------------------------------------
-// Stateless mode: server/discover with a 2026-07-28 header is accepted, while tools/list
-// (non-discover) with the same header still gets the legacy 400 — pinning that the header
-// exemption is scoped to server/discover and not widened to other methods.
+// Stateless mode: server/discover is served as a 2026-07-28 request, while a tools/list that
+// sends the 2026-07-28 header without the rest of that protocol (Mcp-Method, _meta) is refused.
 // ---------------------------------------------------------------------------
 
-TEST_F(SessionManagerTest,
-       StatelessDiscoverAcceptsUnsupportedProtocolVersionHeaderToolsListStillRejected) {
+TEST_F(SessionManagerTest, StatelessDiscoverServedAndIncompleteModernToolsListRefused) {
     const unsigned short port = 19120;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
@@ -1293,9 +1341,8 @@ TEST_F(SessionManagerTest,
     asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            json discover_request = make_discover_request(1);
-            discover_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
-                                                     "/mcp", discover_request.dump(), {}, "2026-07-28");
+            discover_response =
+                co_await modern_post(io_ctx_.get_executor(), port, make_discover_request(1));
 
             json tools_list_request = {
                 {"jsonrpc", "2.0"}, {"method", "tools/list"}, {"params", json::object()}, {"id", 2}};
@@ -1314,6 +1361,7 @@ TEST_F(SessionManagerTest,
     EXPECT_EQ(discover_body["result"]["resultType"], "complete");
 
     EXPECT_EQ(tools_list_response.status, 400);
+    EXPECT_EQ(json::parse(tools_list_response.body)["error"]["code"], mcp::g_HEADER_MISMATCH);
 }
 
 // ---------------------------------------------------------------------------
