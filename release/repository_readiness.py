@@ -1,4 +1,8 @@
-"""Validate a tagged checkout and emit the immutable release build matrices."""
+"""Validate a tagged checkout and emit the immutable release build matrices.
+
+A dry run validates the workflow-dispatch main HEAD under the requested version without
+requiring the tag, so the whole release can be rehearsed before the tag is signed.
+"""
 
 from __future__ import annotations
 
@@ -131,15 +135,22 @@ def validate_repository(args: argparse.Namespace) -> dict[str, str]:
     version = SemVer.parse(args.version)
     if args.tag != version.tag:
         raise ValidationError("tag does not match the requested version")
-    object_type = _git("cat-file", "-t", f"refs/tags/{args.tag}", check=False)
-    if object_type.returncode or object_type.stdout.strip() != "tag":
-        raise ValidationError("release requires an existing annotated tag")
-    tag_object_sha = _git("rev-parse", f"refs/tags/{args.tag}").stdout.strip()
-    if _SHA_RE.fullmatch(tag_object_sha) is None:
-        raise ValidationError("annotated tag object identity is malformed")
-    commit = _git("rev-list", "-n", "1", f"refs/tags/{args.tag}").stdout.strip()
-    if _SHA_RE.fullmatch(commit) is None:
-        raise ValidationError("tag did not resolve to one commit")
+    dry_run = args.dry_run == "true"
+    if dry_run:
+        if args.anchor_exists != "false":
+            raise ValidationError("a dry run requires that no release exists for the tag")
+        commit = args.dispatch_head_sha
+        tag_object_sha = ""
+    else:
+        object_type = _git("cat-file", "-t", f"refs/tags/{args.tag}", check=False)
+        if object_type.returncode or object_type.stdout.strip() != "tag":
+            raise ValidationError("release requires an existing annotated tag")
+        tag_object_sha = _git("rev-parse", f"refs/tags/{args.tag}").stdout.strip()
+        if _SHA_RE.fullmatch(tag_object_sha) is None:
+            raise ValidationError("annotated tag object identity is malformed")
+        commit = _git("rev-list", "-n", "1", f"refs/tags/{args.tag}").stdout.strip()
+        if _SHA_RE.fullmatch(commit) is None:
+            raise ValidationError("tag did not resolve to one commit")
     validate_tag_position(
         commit=commit,
         dispatch_head_sha=args.dispatch_head_sha,
@@ -169,7 +180,11 @@ def validate_repository(args: argparse.Namespace) -> dict[str, str]:
         accepted_signers = (active,)
     else:
         accepted_signers = registry.signers
-    selected_signer = _verify_tag_signature(tag=args.tag, signers=accepted_signers)
+    selected_signer = (
+        accepted_signers[0]
+        if dry_run
+        else _verify_tag_signature(tag=args.tag, signers=accepted_signers)
+    )
     epoch = _git("show", "-s", "--format=%ct", commit).stdout.strip()
     if re.fullmatch(r"[1-9][0-9]*", epoch) is None:
         raise ValidationError("tag commit timestamp is invalid")
@@ -213,6 +228,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", required=True)
     parser.add_argument("--dispatch-head-sha", required=True)
     parser.add_argument("--anchor-exists", choices=("true", "false"), required=True)
+    parser.add_argument("--dry-run", choices=("true", "false"), required=True)
     parser.add_argument("--primary-fingerprint", required=True)
     parser.add_argument("--tag-fingerprint", required=True)
     parser.add_argument("--artifact-fingerprint", required=True)

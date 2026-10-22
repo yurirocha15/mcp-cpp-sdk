@@ -64,7 +64,13 @@ def _instant(value: object, label: str) -> datetime:
 def verify_tag_ruleset(
     value: object, *, ruleset_id: int, repository: str, expected_updated_at: str
 ) -> None:
-    """Require one active, non-bypassable ruleset protecting every release tag."""
+    """Require one active, non-bypassable ruleset protecting every release tag.
+
+    GitHub returns ``bypass_actors`` only to callers that can write the ruleset, and the
+    release reads it with a read-only token. An absent list is accepted because the pinned
+    update time changes with any edit, including a new bypass actor, and is recorded only
+    after the ruleset was reviewed with write access. A returned list must be empty.
+    """
 
     ruleset = _mapping(value, "tag ruleset")
     rules = ruleset.get("rules")
@@ -76,7 +82,7 @@ def verify_tag_ruleset(
         or ruleset.get("source_type") != "Repository"
         or ruleset.get("source") != repository
         or _instant(ruleset.get("updated_at"), "ruleset update time") != expected_instant
-        or ruleset.get("bypass_actors") != []
+        or ruleset.get("bypass_actors", []) != []
         or ruleset.get("conditions")
         != {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}}
         or not isinstance(rules, list)
@@ -324,8 +330,9 @@ def verify_live_repository_policy(
     tag: str,
     tag_object_sha: str,
     commit: str,
+    dry_run: bool = False,
 ) -> None:
-    """Read and verify the complete live repository release policy."""
+    """Read and verify the live repository release policy, and the tag unless dry-running."""
 
     if type(ruleset_id) is not int or ruleset_id < 1:
         raise PublicationPolicyError("release-tag ruleset ID is malformed")
@@ -344,6 +351,8 @@ def verify_live_repository_policy(
         repository=repository,
         expected_updated_at=ruleset_updated_at,
     )
+    if dry_run:
+        return
     verify_live_github_tag(
         repository=repository,
         tag=tag,
@@ -469,6 +478,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     state.add_argument("--tag", required=True)
     state.add_argument("--tag-object-sha", required=True)
     state.add_argument("--commit", required=True)
+    state.add_argument("--dry-run", choices=("true", "false"), required=True)
 
     handoff = commands.add_parser("verify-handoff")
     handoff.add_argument("--anchor", type=Path, required=True)
@@ -499,6 +509,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 tag=args.tag,
                 tag_object_sha=args.tag_object_sha,
                 commit=args.commit,
+                dry_run=args.dry_run == "true",
             )
         elif args.command == "verify-handoff":
             verify_anchor_handoff(
