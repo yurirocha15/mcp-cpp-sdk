@@ -766,6 +766,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                          std::shared_ptr<const RequestMetadata> request_meta = nullptr,
                          bool session_request = true);
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
+    /// Checks a tools/call's Mcp-Param-* headers against the tool it names, for a transport that
+    /// validates them before the request reaches the server.
+    detail::ParamHeaderCheck make_param_header_check();
 
     Task<nlohmann::json> send_request(const std::string& method,
                                       const std::optional<nlohmann::json>& params);
@@ -1133,8 +1136,13 @@ Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransp
     session->memory_transport = dynamic_cast<MemoryTransport*>(session->transport.get());
     // HttpServerTransport is the one transport that can end a session (on HTTP DELETE) and start a
     // new one while run() keeps reading from it, so its count of ended sessions tells a new client
-    // apart from the one that initialized. Other transports never end a session this way.
-    session->http_transport = dynamic_cast<const HttpServerTransport*>(session->transport.get());
+    // apart from the one that initialized. Other transports never end a session this way. A
+    // transport wrapping one hands it over through http_server_transport().
+    if (auto* http_transport = session->transport->http_server_transport()) {
+        session->http_transport = http_transport;
+        detail::bind_server(*http_transport,
+                            {impl->make_param_header_check(), impl->supported_versions()});
+    }
     session->strand = std::make_unique<boost::asio::strand<boost::asio::any_io_executor>>(
         boost::asio::make_strand(executor));
     session->writer =
@@ -1287,6 +1295,31 @@ Task<std::string> Server::dispatch_request_direct(nlohmann::json json_msg,
                                         std::move(request_context.cancelled), std::move(param_headers));
 }
 
+detail::ParamHeaderCheck Server::Impl::make_param_header_check() {
+    return [weak = weak_from_this()](
+               const nlohmann::json& request,
+               const detail::ParamHeaderValues& headers) -> std::optional<std::string> {
+        auto impl = weak.lock();
+        const auto params = request.find("params");
+        if (!impl || params == request.end() || !params->is_object()) {
+            return std::nullopt;
+        }
+        const auto name = params->find("name");
+        if (name == params->end() || !name->is_string()) {
+            return std::nullopt;
+        }
+        // An unknown tool is the server's to answer, as invalid params.
+        const auto tool = impl->tool_handlers.find(name->get_ref<const std::string&>());
+        if (tool == impl->tool_handlers.end()) {
+            return std::nullopt;
+        }
+        const auto arguments = params->find("arguments");
+        return detail::param_header_mismatch(
+            tool->second.schemas.param_headers,
+            arguments == params->end() ? nlohmann::json::object() : *arguments, headers);
+    };
+}
+
 Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
                                    std::optional<ProgressToken> progress_token,
                                    std::shared_ptr<const RequestMetadata> request_meta,
@@ -1295,7 +1328,12 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
     MessageSender message_sender;
     auto session = session_snapshot();
     std::uint64_t epoch = 0;
-    if (session && session->transport && (session_request || !request_meta)) {
+    // HttpServerTransport answers a 2026-07-28 request with plain JSON, so it has nowhere to send
+    // that request's notifications: written to it, they would join the legacy session's stream.
+    const bool notifications_have_a_route =
+        !(request_meta && session && session->http_transport != nullptr);
+    if (session && session->transport && (session_request || !request_meta) &&
+        notifications_have_a_route) {
         transport = session->transport.get();
         epoch = Impl::session_epoch(*session);
         // A handler whose session the client has ended sends nothing more: the transport would
@@ -1369,7 +1407,8 @@ Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg) {
         throw;
     }
     forget();
-    if (Impl::session_epoch(*session) != epoch) {
+    // A 2026-07-28 request belongs to no session, so a session ending does not orphan it.
+    if (!modern && Impl::session_epoch(*session) != epoch) {
         // The client ended this request's session while it ran; the answer is for nobody now.
         co_return;
     }

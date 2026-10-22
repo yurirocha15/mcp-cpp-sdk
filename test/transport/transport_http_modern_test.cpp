@@ -712,4 +712,13 @@ TEST_F(HttpModernTest, RepeatedStandardHeadersAreHeaderMismatch) {
     }
 }
 
+TEST_F(HttpModernTest, ModernHeaderWithoutMetaIsInvalidParams) {
+    const json body = {
+        {"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/list"}, {"params", json::object()}};
+    const Headers headers = {{"MCP-Protocol-Version", "2026-07-28"}, {"Mcp-Method", "tools/list"}};
+    const auto reply = exchange_one(20428, body, headers);
+    expect_error(reply, 400, mcp::g_INVALID_PARAMS);
+    EXPECT_FALSE(reply.parsed().contains("result")) << reply.body;
+}
+
 }  // namespace

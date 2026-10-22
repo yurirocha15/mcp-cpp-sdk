@@ -113,6 +113,26 @@ Versioning; a `0.x` version is a stable release unless its version has an
   refused the same way even when its argument is absent. A 2026-07-28 request that
   repeats its `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` header is
   also answered `g_HEADER_MISMATCH`.
+- `HttpServerTransport` serves 2026-07-28 requests alongside its legacy
+  session, with the same header checks, error statuses and `405` for a
+  sessionless `GET` or `DELETE` as `StreamableHttpSessionManager`, counted by
+  its own `header_mismatch_rejections()`. Each is carried under a
+  transport-private id, so clients may reuse ids, and is answered with plain
+  JSON that never carries `Mcp-Session-Id` and never enters the replay store;
+  notifications a handler sends while serving one are dropped. Ending the
+  legacy session does not end them. At most 256 may wait at once; more are
+  answered `503`. On both HTTP transports, a request whose
+  `MCP-Protocol-Version` header names a version that `initialize` does not
+  negotiate (2026-07-28 or any other) but whose `_meta` names no version is
+  answered `400` with `g_INVALID_PARAMS`, and an `initialize` with a
+  2026-07-28 header is answered `404` with `g_METHOD_NOT_FOUND` naming the
+  versions the server serves.
+- `ITransport::http_server_transport()`, which a transport wrapping an
+  `HttpServerTransport` overrides to return it, so that `Server::run()` serves
+  the wrapper as an `HttpServerTransport`: it ends sessions on `DELETE`,
+  checks `Mcp-Param-*` headers and drops the notifications of 2026-07-28
+  requests. It returns null by default. Adding it changes the layout of
+  `ITransport`'s virtual table.
 
 ### Changed
 
@@ -123,6 +143,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `server/discover` is a 2026-07-28 request: without
   `io.modelcontextprotocol/protocolVersion` in `_meta` it is answered with
   `g_INVALID_PARAMS`.
+- `StreamableHttpSessionManager` answers `server/discover` from
+  `modern_server()`, like every 2026-07-28 request, instead of from a separate
+  server, and `HttpServerTransport` counts a waiting discover against the 256
+  waiting 2026-07-28 requests instead of a limit of 16 for discovers.
 - `initialize` negotiation uses `g_LEGACY_PROTOCOL_VERSIONS` instead of
   `g_SUPPORTED_PROTOCOL_VERSIONS`, which keeps its value.
 - Before `notifications/initialized`, a session serves a request that carries

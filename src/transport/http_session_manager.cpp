@@ -744,6 +744,11 @@ struct StreamableHttpSessionManager::Impl {
                     request, http::status::bad_request, g_HEADER_MISMATCH,
                     "Header mismatch: " + *mismatch, request_json.at("id"));
             }
+            if (auto refusal = detail::missing_modern_version(request_json)) {
+                co_return detail_session_mgr::make_jsonrpc_error_response(
+                    request, http::status::bad_request, g_INVALID_PARAMS, std::move(*refusal),
+                    request_json.at("id"));
+            }
         }
 
         RequestContext request_context;

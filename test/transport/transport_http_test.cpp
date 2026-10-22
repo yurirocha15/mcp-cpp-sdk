@@ -46,6 +46,12 @@ namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
 
+/// Sets the headers a 2026-07-28 client sends with a request for @p method.
+void set_modern_headers(http::request<http::string_body>& request, std::string_view method) {
+    request.set("MCP-Protocol-Version", std::string(mcp::g_PROTOCOL_VERSION_2026_07_28));
+    request.set("Mcp-Method", std::string(method));
+}
+
 }  // namespace
 
 class HttpTransportTest : public ::testing::Test {
@@ -1236,6 +1242,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverSucceedsAfterSessionEstablished) {
             http::request<http::string_body> discover_request{http::verb::post, "/mcp", 11};
             discover_request.set(http::field::host, "127.0.0.1");
             discover_request.set(http::field::content_type, "application/json");
+            set_modern_headers(discover_request, "server/discover");
             discover_request.body() = make_discover_request(2).dump();
             discover_request.prepare_payload();
             co_await http::async_write(discover_stream, discover_request, asio::use_awaitable);
@@ -1378,7 +1385,7 @@ TEST_F(HttpTransportTest, SessionlessNonDiscoverRequestRejectedAfterSessionEstab
     EXPECT_NE(tools_list_body.find("Session active"), std::string::npos) << "body: " << tools_list_body;
 }
 
-TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
+TEST_F(HttpTransportTest, ModernRequestIgnoresAWrongSessionHeader) {
     mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18203);
 
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
@@ -1401,13 +1408,19 @@ TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
             co_await server_transport.write_message(initialize_response.dump());
 
-            co_await server_transport.read_message();
+            const auto discover_request = co_await server_transport.read_message();
             discover_reached_server = true;
+            nlohmann::json discover_response = {
+                {"jsonrpc", "2.0"},
+                {"result", {{"supportedVersions", nlohmann::json::array({"2026-07-28"})}}},
+                {"id", nlohmann::json::parse(discover_request).at("id")}};
+            co_await server_transport.write_message(discover_response.dump());
         },
         [](std::exception_ptr) {});
 
     auto discover_status = http::status::unknown;
     std::string discover_body;
+    bool discover_session_header = true;
     asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
@@ -1437,15 +1450,15 @@ TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
             beast::error_code init_shutdown_error;
             init_stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, init_shutdown_error);
 
-            // The exemption is conditional on the session header being ABSENT. A discover
-            // request that presents a header, and presents the wrong one, must keep going
-            // through validate_post_session and be rejected exactly as before.
+            // A 2026-07-28 request belongs to no session, so a session header it carries, even a
+            // wrong one, is neither checked nor answered.
             beast::tcp_stream discover_stream(io_ctx_.get_executor());
             co_await discover_stream.async_connect(*endpoints.begin(), asio::use_awaitable);
 
             http::request<http::string_body> discover_request{http::verb::post, "/mcp", 11};
             discover_request.set(http::field::host, "127.0.0.1");
             discover_request.set(http::field::content_type, "application/json");
+            set_modern_headers(discover_request, "server/discover");
             discover_request.set("MCP-Session-Id", established_session_id + "-tampered");
             discover_request.body() = make_discover_request(2).dump();
             discover_request.prepare_payload();
@@ -1457,6 +1470,8 @@ TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
                                       asio::use_awaitable);
             discover_status = discover_response.result();
             discover_body = discover_response.body();
+            discover_session_header =
+                discover_response.find("MCP-Session-Id") != discover_response.end();
 
             beast::error_code discover_shutdown_error;
             discover_stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both,
@@ -1478,13 +1493,13 @@ TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
     io_ctx_.run();
 
     EXPECT_FALSE(timed_out);
-    EXPECT_FALSE(discover_reached_server);
-    EXPECT_EQ(discover_status, http::status::bad_request) << "body: " << discover_body;
-    EXPECT_NE(discover_body.find("Invalid MCP-Session-Id header"), std::string::npos)
-        << "body: " << discover_body;
+    EXPECT_TRUE(discover_reached_server);
+    EXPECT_EQ(discover_status, http::status::ok) << "body: " << discover_body;
+    EXPECT_EQ(nlohmann::json::parse(discover_body).at("id"), 2) << "body: " << discover_body;
+    EXPECT_FALSE(discover_session_header);
 }
 
-TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsStillRejected) {
+TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsAcceptedAndDropped) {
     mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18204);
 
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
@@ -1541,9 +1556,9 @@ TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsStillRejected) {
             beast::error_code init_shutdown_error;
             init_stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, init_shutdown_error);
 
-            // A sessionless server/discover with no "id" is a notification, not a request. It
-            // must NOT take the exemption, because doing so would push its body onto the
-            // unbounded incoming queue and answer 202 without the session gate ever running.
+            // A sessionless server/discover with no "id" is a notification, which 2026-07-28 does
+            // not define for a client to send over HTTP. It is accepted and dropped, never queued
+            // for the server.
             beast::tcp_stream notification_stream(io_ctx_.get_executor());
             co_await notification_stream.async_connect(*endpoints.begin(), asio::use_awaitable);
 
@@ -1582,22 +1597,20 @@ TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsStillRejected) {
 
     EXPECT_FALSE(timed_out);
     EXPECT_FALSE(notification_reached_server);
-    EXPECT_EQ(notification_status, http::status::bad_request) << "body: " << notification_body;
-    EXPECT_NE(notification_body.find("Session active"), std::string::npos)
-        << "body: " << notification_body;
+    EXPECT_EQ(notification_status, http::status::accepted) << "body: " << notification_body;
+    EXPECT_TRUE(notification_body.empty()) << "body: " << notification_body;
 }
 
-// The sessionless discover exemption replaces the caller's id with a sentinel before the server
-// sees the request, so the server's own id validation never runs on it. An id JSON-RPC does not
-// allow therefore must not take the exemption: it goes through the session gate like any other
-// request.
-TEST_F(HttpTransportTest, SessionlessDiscoverWithAnInvalidIdIsStillRejected) {
+// A sessionless request's id is replaced with a sentinel before the server sees the request, so
+// the server's own id validation never runs on it. The transport refuses an id JSON-RPC does not
+// allow itself.
+TEST_F(HttpTransportTest, SessionlessDiscoverWithAnInvalidIdIsRejected) {
     mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 0);
     const auto port = std::to_string(server_transport.port());
 
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
 
-    // If the request took the exemption it would wait for a response nobody writes.
+    // A request that reached the server would wait for a response nobody writes.
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
     deadline->expires_after(std::chrono::seconds(10));
     bool timed_out = false;
@@ -1673,18 +1686,20 @@ TEST_F(HttpTransportTest, SessionlessDiscoverWithAnInvalidIdIsStillRejected) {
     EXPECT_FALSE(timed_out);
     EXPECT_FALSE(discover_reached_server);
     EXPECT_EQ(discover_status, http::status::bad_request) << "body: " << discover_body;
-    EXPECT_NE(discover_body.find("Session active"), std::string::npos) << "body: " << discover_body;
+    const auto body = nlohmann::json::parse(discover_body);
+    EXPECT_EQ(body["error"]["code"], mcp::g_INVALID_REQUEST) << "body: " << discover_body;
+    EXPECT_TRUE(body["id"].is_null()) << "body: " << discover_body;
 }
 
-// Sessionless discovers wait in the same incoming queue as the session's own requests, so only a
+// Sessionless requests wait in the same incoming queue as the session's own requests, so only a
 // bounded number of them may be pending at once; the rest are refused with 503.
-TEST_F(HttpTransportTest, PendingSessionlessDiscoversAreBounded) {
+TEST_F(HttpTransportTest, PendingSessionlessRequestsAreBounded) {
     mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 0);
     const auto port = std::to_string(server_transport.port());
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
 
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
-    deadline->expires_after(std::chrono::seconds(10));
+    deadline->expires_after(std::chrono::seconds(60));
     bool timed_out = false;
     deadline->async_wait([&timed_out, &server_transport](const boost::system::error_code& error) {
         if (error) {
@@ -1702,6 +1717,7 @@ TEST_F(HttpTransportTest, PendingSessionlessDiscoversAreBounded) {
         http::request<http::string_body> request{http::verb::post, "/mcp", 11};
         request.set(http::field::host, "127.0.0.1");
         request.set(http::field::content_type, "application/json");
+        set_modern_headers(request, "server/discover");
         request.body() = std::move(body);
         request.prepare_payload();
         co_await http::async_write(stream, request, asio::use_awaitable);
@@ -1714,7 +1730,7 @@ TEST_F(HttpTransportTest, PendingSessionlessDiscoversAreBounded) {
     };
     const auto discover = [](int id) { return make_discover_request(id).dump(); };
 
-    constexpr int pending_limit = 16;
+    constexpr int pending_limit = 256;
     int pending_ended = 0;
     for (int id = 1; id <= pending_limit; ++id) {
         asio::co_spawn(
@@ -1734,7 +1750,7 @@ TEST_F(HttpTransportTest, PendingSessionlessDiscoversAreBounded) {
     asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            // Nothing answers the queued discovers; reading them shows each one is pending.
+            // Nothing answers the queued requests; reading them shows each one is pending.
             for (int read = 0; read < pending_limit; ++read) {
                 (void)co_await server_transport.read_message();
             }
@@ -1749,6 +1765,7 @@ TEST_F(HttpTransportTest, PendingSessionlessDiscoversAreBounded) {
 
     EXPECT_FALSE(timed_out);
     EXPECT_EQ(refused_status, http::status::service_unavailable);
+    EXPECT_EQ(server_transport.header_mismatch_rejections(), 0u);
     EXPECT_EQ(pending_ended, pending_limit);
 }
 
@@ -1834,6 +1851,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverDoesNotEvictSessionReplayHistory) {
                 http::request<http::string_body> discover_request{http::verb::post, "/mcp", 11};
                 discover_request.set(http::field::host, "127.0.0.1");
                 discover_request.set(http::field::content_type, "application/json");
+                set_modern_headers(discover_request, "server/discover");
                 discover_request.body() = make_discover_request(101 + i).dump();
                 discover_request.prepare_payload();
                 co_await http::async_write(discover_stream, discover_request, asio::use_awaitable);
@@ -1936,10 +1954,9 @@ TEST_F(HttpTransportTest, DiscoverAcceptsDiscoverableOnlyProtocolVersionHeader) 
             http::request<http::string_body> discover_request{http::verb::post, "/mcp", 11};
             discover_request.set(http::field::host, "127.0.0.1");
             discover_request.set(http::field::content_type, "application/json");
-            // 2026-07-28 is discoverable but not in g_SUPPORTED_PROTOCOL_VERSIONS, so the
-            // negotiated-version check would reject it for any non-pre-gate method.
-            discover_request.set("MCP-Protocol-Version",
-                                 std::string(mcp::g_PROTOCOL_VERSION_2026_07_28));
+            // initialize never negotiates 2026-07-28, so the negotiated-version check would refuse
+            // this header; a 2026-07-28 request is not subject to that check.
+            set_modern_headers(discover_request, "server/discover");
             discover_request.body() = make_discover_request(1).dump();
             discover_request.prepare_payload();
             co_await http::async_write(stream, discover_request, asio::use_awaitable);
@@ -2043,6 +2060,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
             http::request<http::string_body> discover_request{http::verb::post, "/mcp", 11};
             discover_request.set(http::field::host, "127.0.0.1");
             discover_request.set(http::field::content_type, "application/json");
+            set_modern_headers(discover_request, "server/discover");
             discover_request.body() = make_discover_request(7).dump();
             discover_request.prepare_payload();
             co_await http::async_write(*probe_stream, discover_request, asio::use_awaitable);
