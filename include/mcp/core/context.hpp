@@ -229,9 +229,15 @@ class Context {
      *
      * @param request The sampling request parameters.
      * @return A task that resolves to the client's CreateMessageResult.
-     * @throws std::runtime_error If no request sender is available. Always throws for a
-     * 2026-07-28 request (request_meta() is not null): that revision has no server-to-client
-     * requests.
+     * @throws std::runtime_error If no request sender is available.
+     *
+     * For a 2026-07-28 tools/call, prompts/get or resources/read, the question goes back to the
+     * client in the request's `input_required` result, and the call returns once the client
+     * retries the request with the answer; see Server::set_mrtr_options(). If the client did not
+     * declare the capability the question needs, the request is answered with
+     * `g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does when the client never
+     * retries in time; the handler's own answer then goes nowhere. Any other 2026-07-28 request
+     * cannot ask the client anything, and the call throws std::runtime_error.
      */
     Task<CreateMessageResult> sample_llm(const CreateMessageRequestParams& request) {
         if (!sender_) {
@@ -252,9 +258,15 @@ class Context {
      *
      * @param params The elicitation request parameters (form or URL mode).
      * @return A task that resolves to the client's ElicitResult.
-     * @throws std::runtime_error If no request sender is available. Always throws for a
-     * 2026-07-28 request (request_meta() is not null): that revision has no server-to-client
-     * requests.
+     * @throws std::runtime_error If no request sender is available.
+     *
+     * For a 2026-07-28 tools/call, prompts/get or resources/read, the question goes back to the
+     * client in the request's `input_required` result, and the call returns once the client
+     * retries the request with the answer; see Server::set_mrtr_options(). If the client did not
+     * declare the capability the question needs, the request is answered with
+     * `g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does when the client never
+     * retries in time; the handler's own answer then goes nowhere. Any other 2026-07-28 request
+     * cannot ask the client anything, and the call throws std::runtime_error.
      */
     Task<ElicitResult> elicit(const ElicitRequestParams& params) {
         if (!sender_) {
@@ -273,9 +285,15 @@ class Context {
      * the response. The client provides its configured root URIs.
      *
      * @return A task that resolves to the client's ListRootsResult.
-     * @throws std::runtime_error If no request sender is available. Always throws for a
-     * 2026-07-28 request (request_meta() is not null): that revision has no server-to-client
-     * requests.
+     * @throws std::runtime_error If no request sender is available.
+     *
+     * For a 2026-07-28 tools/call, prompts/get or resources/read, the question goes back to the
+     * client in the request's `input_required` result, and the call returns once the client
+     * retries the request with the answer; see Server::set_mrtr_options(). If the client did not
+     * declare the capability the question needs, the request is answered with
+     * `g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does when the client never
+     * retries in time; the handler's own answer then goes nowhere. Any other 2026-07-28 request
+     * cannot ask the client anything, and the call throws std::runtime_error.
      */
     Task<ListRootsResult> request_roots() {
         if (!sender_) {

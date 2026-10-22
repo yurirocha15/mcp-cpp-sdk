@@ -6,7 +6,9 @@
 #include "../detail/peer_json.hpp"
 #include "../detail/request_meta.hpp"
 #include "../detail/spawn_awaitable.hpp"
+#include "mrtr.hpp"
 
+#include <mcp/detail/secure_random.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
 #include <mcp/protocol/schema.hpp>
 #include <mcp/server/server.hpp>
@@ -48,6 +50,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -650,6 +653,19 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         MessageSender notifications;
         /// Who sent the request, or null when the transport did not say.
         std::shared_ptr<const std::string> principal;
+        /// The handler's state when it serves a 2026-07-28 tools/call, prompts/get or
+        /// resources/read, which may ask the client for input.
+        std::shared_ptr<detail::MrtrEntry> mrtr;
+    };
+
+    /// A handler waiting for the client's retry, filed under the requestState it was given.
+    struct ParkedRequest {
+        std::shared_ptr<detail::MrtrEntry> entry;
+        std::string principal;
+        std::string method;
+        std::string digest;
+        std::uint64_t sequence{0};
+        std::shared_ptr<boost::asio::steady_timer> expiry;
     };
 
     static constexpr LoggingLevel g_default_log_level = LoggingLevel::eDebug;
@@ -699,6 +715,12 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::atomic<std::uint64_t> unsupported_version_rejections{0};
     std::atomic<std::uint64_t> legacy_shaped_rejections{0};
 
+    mutable std::mutex mrtr_mutex;
+    MrtrOptions mrtr_options;
+    std::unordered_map<std::string, ParkedRequest> parked_requests;
+    std::uint64_t next_park_sequence{0};
+    std::shared_ptr<detail::MrtrCounters> mrtr_counters = std::make_shared<detail::MrtrCounters>();
+
     std::vector<Resource> resources;
     std::map<std::string, TypeErasedHandler, std::less<>> resource_handlers;
 
@@ -736,6 +758,34 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         MessageSender notifications = {}, std::shared_ptr<const std::string> principal = nullptr);
     Task<std::string> dispatch_modern_wire(const nlohmann::json& json_msg, std::string_view method,
                                            RequestScope scope);
+    /// Serves a 2026-07-28 tools/call, prompts/get or resources/read, whose handler may ask the
+    /// client for input: the request is then answered input_required, and a retry carrying its
+    /// requestState resumes the handler.
+    Task<std::string> dispatch_mrtr(const nlohmann::json& json_msg, std::string_view method,
+                                    RequestScope scope);
+    Task<std::string> serve_mrtr_method(const nlohmann::json& json_msg, RequestScope scope);
+    static Task<void> run_mrtr_handler(std::shared_ptr<Impl> impl,
+                                       std::shared_ptr<detail::MrtrEntry> entry,
+                                       nlohmann::json json_msg, RequestScope scope);
+    /// Files @p entry under a new requestState, giving up older handlers past the limits.
+    std::string park(const std::shared_ptr<detail::MrtrEntry>& entry,
+                     const std::shared_ptr<const std::string>& principal, std::string_view method,
+                     std::string digest);
+    /// Takes the handler filed under @p token for a retry, or returns null when the retry may not
+    /// resume it.
+    std::shared_ptr<detail::MrtrEntry> take_parked(const std::string& token,
+                                                   const std::shared_ptr<const std::string>& principal,
+                                                   std::string_view method, const std::string& digest);
+    void evict_parked(const std::string& token, MrtrEvictionReason reason);
+    void finish_eviction(ParkedRequest victim, MrtrEvictionReason reason, const MrtrOptions& options);
+    void abandon_all_parked();
+    /// Where the notifications of a request go, given how it arrived. Sets @p transport and
+    /// @p epoch to the session's transport and session when that is the route.
+    MessageSender notification_route(std::shared_ptr<std::atomic<bool>> cancelled,
+                                     const std::shared_ptr<const RequestMetadata>& request_meta,
+                                     bool session_request, MessageSender notifications,
+                                     const std::shared_ptr<Session>& session, ITransport** transport,
+                                     std::uint64_t* epoch);
     void dispatch_notification(const nlohmann::json& json_msg);
     void dispatch_response(const nlohmann::json& json_msg);
 
@@ -765,16 +815,20 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                           std::optional<ProgressToken> progress_token,
                                           std::shared_ptr<const RequestMetadata> request_meta = nullptr,
                                           bool session_request = true, MessageSender notifications = {},
-                                          std::shared_ptr<const std::string> principal = nullptr);
+                                          std::shared_ptr<const std::string> principal = nullptr,
+                                          std::shared_ptr<detail::MrtrEntry> mrtr = nullptr);
     /// `session_request` says whether the request was read from the session. A 2026-07-28 request
     /// that was not has no route to the client through the session's transport. @p notifications,
     /// when set, receives the notifications of a 2026-07-28 request in place of the session's
-    /// transport. @p principal is who sent the request, or null when unknown.
+    /// transport. @p principal is who sent the request, or null when unknown. @p mrtr, when set,
+    /// routes the handler's questions to the client and its notifications through the request
+    /// that currently carries it.
     Context make_context(std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
                          std::optional<ProgressToken> progress_token = std::nullopt,
                          std::shared_ptr<const RequestMetadata> request_meta = nullptr,
                          bool session_request = true, MessageSender notifications = {},
-                         std::shared_ptr<const std::string> principal = nullptr);
+                         std::shared_ptr<const std::string> principal = nullptr,
+                         std::shared_ptr<detail::MrtrEntry> mrtr = nullptr);
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
     /// Checks a tools/call's Mcp-Param-* headers against the tool it names, for a transport that
     /// validates them before the request reaches the server.
@@ -825,6 +879,8 @@ Server::Server(const Implementation& server_info, const ServerCapabilities& capa
 Server::~Server() {
     if (impl_) {
         impl_->server_gone.store(true, std::memory_order_release);
+        // Nothing can resume these handlers now; they unwind.
+        impl_->abandon_all_parked();
     }
     reset_session();
 }
@@ -1235,6 +1291,9 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
     try {
         session->stopping.store(true, std::memory_order_release);
         abandon_session_work(session);
+        // A retry can only arrive over the transport that is closing, so the handlers waiting
+        // for one are given up.
+        abandon_all_parked();
         session->transport->close();
 
         while (session->active_dispatches.load(std::memory_order_acquire) != 0) {
@@ -1344,37 +1403,34 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
                                    std::optional<ProgressToken> progress_token,
                                    std::shared_ptr<const RequestMetadata> request_meta,
                                    bool session_request, MessageSender notifications,
-                                   std::shared_ptr<const std::string> principal) {
+                                   std::shared_ptr<const std::string> principal,
+                                   std::shared_ptr<detail::MrtrEntry> mrtr) {
     ITransport* transport = &null_transport();
-    MessageSender message_sender;
     auto session = session_snapshot();
     std::uint64_t epoch = 0;
-    // HttpServerTransport answers a 2026-07-28 request with plain JSON, so it has nowhere to send
-    // that request's notifications: written to it, they would join the legacy session's stream.
-    const bool notifications_have_a_route =
-        !(request_meta && session && session->http_transport != nullptr);
-    if (request_meta && notifications) {
-        // The request's own stream, supplied by the transport that carried it.
-        message_sender = std::move(notifications);
-    } else if (session && session->transport && (session_request || !request_meta) &&
-               notifications_have_a_route) {
-        transport = session->transport.get();
-        epoch = Impl::session_epoch(*session);
-        // A handler whose session the client has ended sends nothing more: the transport would
-        // hand its messages to the next client. 2026-07-28 also sends nothing for a request once
-        // it is cancelled.
-        std::shared_ptr<std::atomic<bool>> modern_cancelled = request_meta ? cancelled : nullptr;
-        message_sender = [session, epoch, modern_cancelled](std::string_view message) {
-            if (Impl::session_epoch(*session) != epoch ||
-                (modern_cancelled && modern_cancelled->load(std::memory_order_relaxed))) {
-                return Impl::skip_write();
-            }
-            return session->writer->write_message(message);
+    MessageSender message_sender;
+    if (mrtr) {
+        // The handler may outlive the request that started it; its notifications go to whichever
+        // request carries it now, with that request's progress token.
+        message_sender = [mrtr](std::string_view message) {
+            return detail::mrtr_notify(mrtr, std::make_shared<const std::string>(message));
         };
+        if (!progress_token) {
+            progress_token = ProgressToken{std::string("input-required")};
+        }
+    } else {
+        message_sender = notification_route(cancelled, request_meta, session_request,
+                                            std::move(notifications), session, &transport, &epoch);
     }
 
     RequestSender request_sender;
-    if (request_meta) {
+    if (mrtr) {
+        request_sender = [mrtr](std::string method,
+                                std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
+            return detail::mrtr_request_input(mrtr, nlohmann::json(std::move(method)),
+                                              std::move(params));
+        };
+    } else if (request_meta) {
         // A server never sends a request of its own to a 2026-07-28 client.
         request_sender = [](std::string, std::optional<nlohmann::json>) -> Task<nlohmann::json> {
             throw std::runtime_error(
@@ -1393,6 +1449,43 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
 
     return {*transport, std::move(request_sender), std::move(cancelled),    std::move(progress_token),
             &log_level, std::move(message_sender), std::move(request_meta), std::move(principal)};
+}
+
+MessageSender Server::Impl::notification_route(
+    std::shared_ptr<std::atomic<bool>> cancelled,
+    const std::shared_ptr<const RequestMetadata>& request_meta, bool session_request,
+    MessageSender notifications, const std::shared_ptr<Session>& session, ITransport** transport,
+    std::uint64_t* epoch) {
+    // HttpServerTransport answers a 2026-07-28 request with plain JSON, so it has nowhere to send
+    // that request's notifications: written to it, they would join the legacy session's stream.
+    const bool notifications_have_a_route =
+        !(request_meta && session && session->http_transport != nullptr);
+    if (request_meta && notifications) {
+        // The request's own stream, supplied by the transport that carried it.
+        return notifications;
+    }
+    if (!session || !session->transport || !(session_request || !request_meta) ||
+        !notifications_have_a_route) {
+        return {};
+    }
+    const auto session_epoch_now = Impl::session_epoch(*session);
+    if (transport != nullptr) {
+        *transport = session->transport.get();
+    }
+    if (epoch != nullptr) {
+        *epoch = session_epoch_now;
+    }
+    // A handler whose session the client has ended sends nothing more: the transport would hand
+    // its messages to the next client. 2026-07-28 also sends nothing for a request once it is
+    // cancelled.
+    std::shared_ptr<std::atomic<bool>> modern_cancelled = request_meta ? std::move(cancelled) : nullptr;
+    return [session, session_epoch_now, modern_cancelled](std::string_view message) {
+        if (Impl::session_epoch(*session) != session_epoch_now ||
+            (modern_cancelled && modern_cancelled->load(std::memory_order_relaxed))) {
+            return Impl::skip_write();
+        }
+        return session->writer->write_message(message);
+    };
 }
 
 // Invalid parameter decoding is reported as -32602. Exceptions raised after decoding are reported
@@ -1601,24 +1694,305 @@ Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_
         scope.meta = std::move(parsed.metadata);
     }
 
+    if (method == "tools/call" || method == "resources/read" || method == "prompts/get") {
+        co_return co_await dispatch_mrtr(json_msg, method, std::move(scope));
+    }
     if (method == "server/discover") {
         co_return co_await handle_discover_wire(json_msg, scope);
-    } else if (method == "tools/call") {
-        co_return co_await handle_tools_call_wire(json_msg, scope);
     } else if (method == "tools/list") {
         co_return co_await handle_tools_list_wire(json_msg, scope);
     } else if (method == "resources/list") {
         co_return co_await handle_resources_list_wire(json_msg, scope);
-    } else if (method == "resources/read") {
-        co_return co_await handle_resources_read_wire(json_msg, scope);
     } else if (method == "resources/templates/list") {
         co_return co_await handle_resource_templates_list_wire(json_msg, scope);
     } else if (method == "prompts/list") {
         co_return co_await handle_prompts_list_wire(json_msg, scope);
-    } else if (method == "prompts/get") {
-        co_return co_await handle_prompts_get_wire(json_msg, scope);
     }
     co_return co_await handle_complete_wire(json_msg, scope);
+}
+
+Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, std::string_view method,
+                                              RequestScope scope) {
+    const auto& params = json_msg.at("params");
+    const auto state = params.find("requestState");
+    const auto responses = params.find("inputResponses");
+    if ((state != params.end() && !state->is_string()) ||
+        (responses != params.end() && !responses->is_object())) {
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+                                  "requestState must be a string and inputResponses an object");
+    }
+    std::optional<nlohmann::json> progress_token;
+    nlohmann::json client_capabilities = nlohmann::json::object();
+    {
+        const auto& meta = scope.meta->meta;
+        if (const auto token = meta.find("progressToken"); token != meta.end()) {
+            progress_token = *token;
+        }
+        const auto declared = meta.find(std::string(g_META_CLIENT_CAPABILITIES));
+        if (declared != meta.end() && declared->is_object()) {
+            client_capabilities = *declared;
+        }
+    }
+    const auto request_cancelled = scope.cancelled;
+    auto route = notification_route(request_cancelled, scope.meta, scope.session_request,
+                                    scope.notifications, session_snapshot(), nullptr, nullptr);
+
+    const bool retry = state != params.end();
+    std::shared_ptr<detail::MrtrEntry> entry;
+    if (retry) {
+        entry = take_parked(state->get_ref<const std::string&>(), scope.principal, method,
+                            detail::mrtr_params_digest(params));
+        if (!entry) {
+            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+                                      "Unknown or expired requestState");
+        }
+        // [gcc11-sso: named-aggregate-arg] DO NOT build the responses inside the co_await.
+        nlohmann::json input_responses =
+            responses != params.end() ? *responses : nlohmann::json::object();
+        co_await detail::mrtr_resume(entry, std::move(input_responses), std::move(route),
+                                     std::move(progress_token), std::move(client_capabilities));
+    } else {
+        auto executor = co_await boost::asio::this_coro::executor;
+        auto cancelled =
+            request_cancelled ? request_cancelled : std::make_shared<std::atomic<bool>>(false);
+        entry = std::make_shared<detail::MrtrEntry>(executor, cancelled, mrtr_counters);
+        entry->sink = std::move(route);
+        entry->progress_token = std::move(progress_token);
+        entry->client_capabilities = std::move(client_capabilities);
+        RequestScope handler_scope = scope;
+        handler_scope.cancelled = std::move(cancelled);
+        handler_scope.mrtr = entry;
+        // The handler runs apart from this request, which ends when the handler parks.
+        boost::asio::co_spawn(
+            entry->strand,
+            run_mrtr_handler(shared_from_this(), entry, json_msg, std::move(handler_scope)),
+            boost::asio::detached);
+    }
+
+    auto outcome = co_await detail::mrtr_await(entry, request_cancelled, retry);
+    if (outcome.event == detail::MrtrEntry::Event::eCompleted) {
+        if (!retry) {
+            co_return std::move(outcome.wire);
+        }
+        // The handler answered with the id of the request that started it.
+        auto answer = nlohmann::json::parse(outcome.wire);
+        answer["id"] = json_msg.at("id");
+        co_return answer.dump();
+    }
+    if (outcome.event == detail::MrtrEntry::Event::eMissingCapability) {
+        detail::mrtr_abandon(entry);
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  g_MISSING_REQUIRED_CLIENT_CAPABILITY,
+                                  "The request needs a capability the client did not declare",
+                                  {{"requiredCapabilities", std::move(outcome.missing_capabilities)}});
+    }
+    if (request_cancelled && request_cancelled->load(std::memory_order_relaxed)) {
+        // Nothing is sent for a cancelled request, and nothing will retry it.
+        detail::mrtr_abandon(entry);
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+                                  "Request cancelled");
+    }
+    const auto token = park(entry, scope.principal, method, detail::mrtr_params_digest(params));
+    nlohmann::json result = {{"resultType", "input_required"},
+                             {"inputRequests", std::move(outcome.requests)},
+                             {"requestState", token}};
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(result));
+}
+
+Task<std::string> Server::Impl::serve_mrtr_method(const nlohmann::json& json_msg, RequestScope scope) {
+    const auto& method = json_msg.at("method").get_ref<const std::string&>();
+    if (method == "tools/call") {
+        co_return co_await handle_tools_call_wire(json_msg, scope);
+    }
+    if (method == "resources/read") {
+        co_return co_await handle_resources_read_wire(json_msg, scope);
+    }
+    co_return co_await handle_prompts_get_wire(json_msg, scope);
+}
+
+Task<void> Server::Impl::run_mrtr_handler(std::shared_ptr<Impl> impl,
+                                          std::shared_ptr<detail::MrtrEntry> entry,
+                                          nlohmann::json json_msg, RequestScope scope) {
+    // [gcc11-sso: string-in-frame] The answer is held as json until no suspension is left.
+    nlohmann::json answer;
+    int error_code = g_INTERNAL_ERROR;
+    nlohmann::json error_payload;
+    try {
+        answer = co_await impl->serve_mrtr_method(json_msg, std::move(scope));
+    } catch (const InvalidParamsError& error) {
+        error_code = g_INVALID_PARAMS;
+        error_payload = error.what();
+    } catch (const std::exception& error) {
+        error_payload = detail::sanitize_for_diagnostics(error.what());
+    }
+    if (!error_payload.is_null()) {
+        detail::mrtr_complete(entry, make_error_wire(json_msg.at("id").get<RequestId>(), error_code,
+                                                     error_payload.get<std::string>()));
+        co_return;
+    }
+    detail::mrtr_complete(entry, answer.get<std::string>());
+}
+
+std::string Server::Impl::park(const std::shared_ptr<detail::MrtrEntry>& entry,
+                               const std::shared_ptr<const std::string>& principal,
+                               std::string_view method, std::string digest) {
+    auto token = detail::generate_secure_session_id();
+    std::vector<ParkedRequest> evicted;
+    MrtrOptions options;
+    auto expiry = std::make_shared<boost::asio::steady_timer>(entry->strand);
+    {
+        std::lock_guard lock(mrtr_mutex);
+        options = mrtr_options;
+        const std::string who = principal ? *principal : std::string{};
+        // Gives up the longest-waiting handler that @p matches selects, if any.
+        const auto evict_oldest = [this, &evicted](const auto& matches) {
+            auto victim = parked_requests.end();
+            std::size_t matching = 0;
+            for (auto it = parked_requests.begin(); it != parked_requests.end(); ++it) {
+                if (!matches(it->second)) {
+                    continue;
+                }
+                ++matching;
+                if (victim == parked_requests.end() || it->second.sequence < victim->second.sequence) {
+                    victim = it;
+                }
+            }
+            if (victim != parked_requests.end()) {
+                evicted.push_back(std::move(victim->second));
+                parked_requests.erase(victim);
+            }
+            return matching;
+        };
+        const auto per_principal = std::max<std::size_t>(options.max_parked_per_principal, 1);
+        const auto same_principal = [&who](const ParkedRequest& parked) {
+            return parked.principal == who;
+        };
+        std::size_t waiting = 0;
+        for (const auto& [key, parked] : parked_requests) {
+            waiting += same_principal(parked) ? 1 : 0;
+        }
+        for (; waiting >= per_principal; --waiting) {
+            evict_oldest(same_principal);
+        }
+        while (parked_requests.size() >= std::max<std::size_t>(options.max_parked, 1)) {
+            evict_oldest([](const ParkedRequest&) { return true; });
+        }
+        parked_requests.emplace(token, ParkedRequest{entry, who, std::string(method), std::move(digest),
+                                                     ++next_park_sequence, expiry});
+    }
+    for (auto& victim : evicted) {
+        finish_eviction(std::move(victim), MrtrEvictionReason::eCapacity, options);
+    }
+    expiry->expires_after(options.ttl);
+    expiry->async_wait(
+        [weak = weak_from_this(), token, expiry](const boost::system::error_code& error) {
+            if (error) {
+                return;
+            }
+            if (auto impl = weak.lock()) {
+                impl->evict_parked(token, MrtrEvictionReason::eExpired);
+            }
+        });
+    return token;
+}
+
+std::shared_ptr<detail::MrtrEntry> Server::Impl::take_parked(
+    const std::string& token, const std::shared_ptr<const std::string>& principal,
+    std::string_view method, const std::string& digest) {
+    std::shared_ptr<boost::asio::steady_timer> expiry;
+    std::shared_ptr<detail::MrtrEntry> entry;
+    {
+        std::lock_guard lock(mrtr_mutex);
+        const auto found = parked_requests.find(token);
+        if (found == parked_requests.end()) {
+            mrtr_counters->resume_unknown.fetch_add(1, std::memory_order_relaxed);
+            return nullptr;
+        }
+        // A mismatch leaves the handler waiting for the retry it was parked for.
+        if (found->second.principal != (principal ? *principal : std::string{})) {
+            mrtr_counters->resume_principal_mismatch.fetch_add(1, std::memory_order_relaxed);
+            return nullptr;
+        }
+        if (found->second.method != method || found->second.digest != digest) {
+            mrtr_counters->resume_params_mismatch.fetch_add(1, std::memory_order_relaxed);
+            return nullptr;
+        }
+        entry = std::move(found->second.entry);
+        expiry = std::move(found->second.expiry);
+        parked_requests.erase(found);
+    }
+    mrtr_counters->resume_hit.fetch_add(1, std::memory_order_relaxed);
+    boost::asio::post(entry->strand, [expiry] { expiry->cancel(); });
+    return entry;
+}
+
+void Server::Impl::evict_parked(const std::string& token, MrtrEvictionReason reason) {
+    ParkedRequest victim;
+    MrtrOptions options;
+    {
+        std::lock_guard lock(mrtr_mutex);
+        const auto found = parked_requests.find(token);
+        if (found == parked_requests.end()) {
+            return;
+        }
+        victim = std::move(found->second);
+        parked_requests.erase(found);
+        options = mrtr_options;
+    }
+    finish_eviction(std::move(victim), reason, options);
+}
+
+void Server::Impl::finish_eviction(ParkedRequest victim, MrtrEvictionReason reason,
+                                   const MrtrOptions& options) {
+    auto& counter = reason == MrtrEvictionReason::eExpired ? mrtr_counters->evicted_ttl
+                                                           : mrtr_counters->evicted_cap;
+    counter.fetch_add(1, std::memory_order_relaxed);
+    detail::mrtr_abandon(victim.entry);
+    boost::asio::post(victim.entry->strand, [expiry = victim.expiry] { expiry->cancel(); });
+    if (options.on_eviction) {
+        try {
+            options.on_eviction(reason);
+        } catch (...) {
+            // An observer's failure must not keep the handler waiting.
+        }
+    }
+}
+
+void Server::Impl::abandon_all_parked() {
+    std::unordered_map<std::string, ParkedRequest> abandoned;
+    {
+        std::lock_guard lock(mrtr_mutex);
+        abandoned.swap(parked_requests);
+    }
+    for (auto& [token, parked] : abandoned) {
+        detail::mrtr_abandon(parked.entry);
+        boost::asio::post(parked.entry->strand, [expiry = parked.expiry] { expiry->cancel(); });
+    }
+}
+
+void Server::abandon_waiting_handlers() { impl_->abandon_all_parked(); }
+
+void Server::set_mrtr_options(MrtrOptions options) {
+    std::lock_guard lock(impl_->mrtr_mutex);
+    impl_->mrtr_options = std::move(options);
+}
+
+MrtrStats Server::mrtr_stats() const {
+    MrtrStats stats;
+    {
+        std::lock_guard lock(impl_->mrtr_mutex);
+        stats.parked = impl_->parked_requests.size();
+    }
+    const auto& counters = *impl_->mrtr_counters;
+    stats.evicted_ttl = counters.evicted_ttl.load(std::memory_order_relaxed);
+    stats.evicted_cap = counters.evicted_cap.load(std::memory_order_relaxed);
+    stats.abandoned_completed = counters.abandoned_completed.load(std::memory_order_relaxed);
+    stats.resume_hit = counters.resume_hit.load(std::memory_order_relaxed);
+    stats.resume_unknown = counters.resume_unknown.load(std::memory_order_relaxed);
+    stats.resume_principal_mismatch =
+        counters.resume_principal_mismatch.load(std::memory_order_relaxed);
+    stats.resume_params_mismatch = counters.resume_params_mismatch.load(std::memory_order_relaxed);
+    return stats;
 }
 
 void Server::Impl::dispatch_notification(const nlohmann::json& json_msg) {
@@ -1737,7 +2111,8 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
                                                     std::optional<ProgressToken> progress_token,
                                                     std::shared_ptr<const RequestMetadata> request_meta,
                                                     bool session_request, MessageSender notifications,
-                                                    std::shared_ptr<const std::string> principal) {
+                                                    std::shared_ptr<const std::string> principal,
+                                                    std::shared_ptr<detail::MrtrEntry> mrtr) {
     auto iter = tool_handlers.find(params.name);
     if (iter == tool_handlers.end()) {
         // The name is chosen by whoever called: over JSON-RPC that is the client, and through the
@@ -1746,8 +2121,9 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
         throw std::runtime_error("Unknown tool: " + detail::sanitize_for_diagnostics(params.name));
     }
 
-    auto ctx = make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
-                            session_request, std::move(notifications), std::move(principal));
+    auto ctx =
+        make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
+                     session_request, std::move(notifications), std::move(principal), std::move(mrtr));
     nlohmann::json handler_result;
 
     // A tool that throws has failed at its own job, which the protocol reports inside the result as
@@ -1866,7 +2242,7 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
     auto cancelled = scope.cancelled ? scope.cancelled : std::make_shared<std::atomic<bool>>(false);
     nlohmann::json handler_result = co_await invoke_tool_impl(
         std::move(params), std::move(cancelled), std::move(progress_token), scope.meta,
-        scope.session_request, scope.notifications, scope.principal);
+        scope.session_request, scope.notifications, scope.principal, scope.mrtr);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }
 
@@ -1921,7 +2297,7 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
 
         nlohmann::json params_json = params;
         auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                                scope.notifications, scope.principal);
+                                scope.notifications, scope.principal, scope.mrtr);
         nlohmann::json handler_result = co_await handler(ctx, params_json);
         co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result),
                                    CacheTarget::eResourcesRead);
@@ -1961,7 +2337,7 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
 
     nlohmann::json params_json = params;
     auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                            scope.notifications, scope.principal);
+                            scope.notifications, scope.principal, scope.mrtr);
     nlohmann::json handler_result = co_await handler(ctx, params_json);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result),
                                CacheTarget::eResourcesRead);
@@ -2045,7 +2421,7 @@ Task<std::string> Server::Impl::handle_prompts_get_wire(const nlohmann::json& js
 
     nlohmann::json params_json = std::move(params);
     auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                            scope.notifications, scope.principal);
+                            scope.notifications, scope.principal, scope.mrtr);
     nlohmann::json handler_result = co_await handler(ctx, params_json);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }

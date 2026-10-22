@@ -451,15 +451,14 @@ TEST_F(ServerModernEraTest, LoggingFollowsTheRequestsOwnLevel) {
     EXPECT_EQ(with_level[1]["id"], 2) << with_level[1];
 }
 
-TEST_F(ServerModernEraTest, ServerToClientRequestsAreUnavailable) {
+// A 2026-07-28 server sends no requests of its own; a handler's question needs the client to have
+// declared the capability it uses, here sampling.
+TEST_F(ServerModernEraTest, ServerToClientRequestsNeedTheClientsCapability) {
     auto server = make_server();
     auto response = dispatch(*server, call_tool(1, "sample"));
 
-    ASSERT_TRUE(response.contains("result")) << response;
-    EXPECT_TRUE(response["result"]["isError"].get<bool>());
-    EXPECT_NE(response["result"]["content"][0]["text"].get<std::string>().find(
-                  "unavailable for a 2026-07-28 request"),
-              std::string::npos)
+    expect_error(response, mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY);
+    EXPECT_EQ(response["error"]["data"]["requiredCapabilities"], (json{{"sampling", json::object()}}))
         << response;
 }
 

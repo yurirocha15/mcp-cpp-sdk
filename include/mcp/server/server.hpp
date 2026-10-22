@@ -16,6 +16,7 @@
 #include <mcp/transport/transport.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -239,6 +240,54 @@ struct ProtocolRejectionStats {
     /// one, and, when legacy clients are not served, initialize and every other such request. A
     /// legacy client turned away shows up here and nowhere else.
     std::uint64_t legacy_shaped = 0;
+};
+
+/// Why a request waiting for client input was given up (see MrtrOptions::on_eviction).
+enum class MrtrEvictionReason : std::uint8_t {
+    eExpired,   ///< The client did not retry within MrtrOptions::ttl.
+    eCapacity,  ///< Room was needed for a newer request (MrtrOptions::max_parked and
+                ///< max_parked_per_principal).
+};
+
+/**
+ * @brief Limits on the 2026-07-28 requests that wait for client input (see
+ *        Server::set_mrtr_options()).
+ *
+ * @details A tools/call, prompts/get or resources/read of protocol revision 2026-07-28 whose handler
+ * asks the client something (Context::elicit(), sample_llm(), request_roots()) is answered with an
+ * `input_required` result, and the handler waits until the client retries the request with the
+ * answers. Each waiting handler holds its coroutine frame; these limits bound them.
+ */
+struct MrtrOptions {
+    /// How long a handler waits for the client's retry before it is given up.
+    std::chrono::milliseconds ttl{std::chrono::minutes(5)};
+    /// Handlers that may wait at once; past this the one that has waited longest is given up.
+    std::size_t max_parked{1024};
+    /// Handlers that may wait at once for one principal (Context::principal()); past this that
+    /// principal's longest-waiting handler is given up.
+    std::size_t max_parked_per_principal{64};
+    /// Called, on no particular thread, each time a waiting handler is given up.
+    std::function<void(MrtrEvictionReason)> on_eviction;
+};
+
+/**
+ * @brief Counters of the 2026-07-28 requests that wait for client input (see Server::mrtr_stats()).
+ */
+struct MrtrStats {
+    std::uint64_t parked = 0;       ///< Handlers waiting for a retry now.
+    std::uint64_t evicted_ttl = 0;  ///< Handlers given up because the retry did not come in time.
+    std::uint64_t evicted_cap = 0;  ///< Handlers given up to make room for newer ones.
+    /// Handlers that went on after being given up and finished; their answers went nowhere.
+    std::uint64_t abandoned_completed = 0;
+    std::uint64_t resume_hit = 0;  ///< Retries that resumed their handler.
+    /// Retries refused because their requestState names no waiting handler (unknown, expired or
+    /// already used).
+    std::uint64_t resume_unknown = 0;
+    /// Retries refused because another principal sent the request that parked the handler.
+    std::uint64_t resume_principal_mismatch = 0;
+    /// Retries refused because they are not the request that parked the handler: another method,
+    /// or other parameters.
+    std::uint64_t resume_params_mismatch = 0;
 };
 
 /**
@@ -554,6 +603,30 @@ class MCP_API Server {
     /// Requests refused for their protocol version or per-request protocol fields since this
     /// server was created.
     [[nodiscard]] ProtocolRejectionStats protocol_rejection_stats() const;
+
+    /**
+     * @brief Set the limits on 2026-07-28 requests that wait for client input.
+     *
+     * @details The waiting handlers live in this server, so a client's retry must reach the same
+     * server instance (and process) as the request it retries; one that does not is answered as
+     * for an unknown requestState. When run() ends, its transport can bring no more retries, and
+     * the waiting handlers are given up. Takes effect for requests parked afterwards.
+     *
+     * @param options The limits.
+     */
+    void set_mrtr_options(MrtrOptions options);
+
+    /// Counters of the 2026-07-28 requests that wait, or waited, for client input.
+    [[nodiscard]] MrtrStats mrtr_stats() const;
+
+    /**
+     * @brief Give up every handler waiting for the retry of a 2026-07-28 request.
+     *
+     * @details Each throws from its question, so its frame unwinds, and its answer is discarded.
+     * For when no retry can arrive any more: run() does this when it ends, and
+     * StreamableHttpSessionManager::close() for its modern server.
+     */
+    void abandon_waiting_handlers();
 
     /**
      * @brief Send a JSON-RPC request to the connected client and await its response.

@@ -162,6 +162,30 @@ Versioning; a `0.x` version is a stable release unless its version has an
   sets it for a direct dispatch. A transport that wraps another must forward
   `read_incoming()` as well as `read_message()`, or its messages arrive
   without a principal.
+- Multi round-trip requests (2026-07-28): when the handler of a 2026-07-28
+  `tools/call`, `prompts/get` or `resources/read` calls `Context::elicit()`,
+  `sample_llm()` or `request_roots()`, the request is answered with an
+  `input_required` result carrying the questions under server-assigned keys
+  and an opaque `requestState`, and the handler waits. A retry with a new id,
+  the same method and parameters, the `requestState` and the answers in
+  `inputResponses` resumes it, and its result answers the retry; answers the
+  retry leaves out are asked for again. Questions the handler asks before the
+  request is answered share its round. The `requestState` is a random token,
+  usable once, bound to the principal, method and parameters of the request;
+  any mismatch, expiry or reuse gets the same `g_INVALID_PARAMS` error,
+  "Unknown or expired requestState". A question needing a capability the
+  client did not declare in the request is answered with
+  `g_MISSING_REQUIRED_CLIENT_CAPABILITY` and `data.requiredCapabilities`.
+  Waiting handlers live in the server instance, so a retry must reach the same
+  instance, and they are given up when the `Server::run()` that served their
+  request ends, when `StreamableHttpSessionManager::close()` closes the
+  endpoint of its modern server, or on `Server::abandon_waiting_handlers()`.
+  `Server::set_mrtr_options()` (`MrtrOptions`: time to wait, at most 1024
+  waiting handlers and 64 per principal by default, an eviction callback) and
+  `Server::mrtr_stats()` (`MrtrStats`) bound and count them. A handler given
+  up throws from its question and its answer is discarded. A cancelled retry
+  cancels the handler, and its notifications go to the request that carries it
+  now, with that request's progress token.
 
 ### Changed
 
