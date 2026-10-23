@@ -475,3 +475,81 @@ jobs:
       env:
         ROUTE_ID: ${{ matrix.id }}
       run: python3 -I scripts/package_build.py build "$ROUTE_ID" --core core --output out
+
+  windows-package:
+    # Builds, tests and packages the Windows release payload and validates the ConanCenter recipe
+    # on Windows, with the scripts and the Visual Studio, Python, Conan and Chocolatey pins the
+    # release workflow uses.
+    name: Windows package
+    needs: package-core
+    runs-on: windows-2022
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      with:
+        persist-credentials: false
+
+    - name: Set up the release Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: ${{ vars.WINDOWS_RELEASE_PYTHON_VERSION }}
+        check-latest: false
+
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+      with:
+        arch: x64
+
+    - name: Install the release Conan client
+      env:
+        WINDOWS_RELEASE_CONAN_VERSION: ${{ vars.WINDOWS_RELEASE_CONAN_VERSION }}
+      run: >-
+        & ./scripts/release/install_windows_conan.ps1
+        -PythonPath (Get-Command python.exe -CommandType Application).Source
+        -ExpectedVersion $env:WINDOWS_RELEASE_CONAN_VERSION
+        -Requirements release/windows/conan-requirements.txt
+        -GitHubPath $env:GITHUB_PATH
+
+    - name: Build, test and package the Windows payload
+      env:
+        WINDOWS_RELEASE_CMAKE_VERSION: ${{ vars.WINDOWS_RELEASE_CMAKE_VERSION }}
+        WINDOWS_RELEASE_CONAN_VERSION: ${{ vars.WINDOWS_RELEASE_CONAN_VERSION }}
+        WINDOWS_RELEASE_CHOCO_VERSION: ${{ vars.WINDOWS_RELEASE_CHOCO_VERSION }}
+        WINDOWS_RELEASE_PYTHON_VERSION: ${{ vars.WINDOWS_RELEASE_PYTHON_VERSION }}
+        WINDOWS_RELEASE_VCTOOLS_VERSION: ${{ vars.WINDOWS_RELEASE_VCTOOLS_VERSION }}
+        WINDOWS_RELEASE_MSC_VER: ${{ vars.WINDOWS_RELEASE_MSC_VER }}
+      run: |
+        $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+        & ./scripts/release/build_windows.ps1 `
+          -Version $version -Tag "v$version" -Repository $env:GITHUB_REPOSITORY `
+          -ExpectedCMakeVersion $env:WINDOWS_RELEASE_CMAKE_VERSION `
+          -ExpectedConanVersion $env:WINDOWS_RELEASE_CONAN_VERSION `
+          -ExpectedChocolateyVersion $env:WINDOWS_RELEASE_CHOCO_VERSION `
+          -ExpectedPythonVersion $env:WINDOWS_RELEASE_PYTHON_VERSION `
+          -ExpectedVCToolsVersion $env:WINDOWS_RELEASE_VCTOOLS_VERSION `
+          -ExpectedMscVer ([int]$env:WINDOWS_RELEASE_MSC_VER)
+
+    - name: Download the release core
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: package-core
+        path: core
+
+    - name: Validate the ConanCenter recipe with both linkages
+      env:
+        WINDOWS_RELEASE_CONAN_VERSION: ${{ vars.WINDOWS_RELEASE_CONAN_VERSION }}
+        WINDOWS_RELEASE_VCTOOLS_VERSION: ${{ vars.WINDOWS_RELEASE_VCTOOLS_VERSION }}
+        WINDOWS_RELEASE_MSC_VER: ${{ vars.WINDOWS_RELEASE_MSC_VER }}
+      run: |
+        & ./scripts/release/validate_conan_candidate.ps1 `
+          -Version (Get-Content -LiteralPath VERSION -Raw).Trim() `
+          -CandidateDirectory core `
+          -WorkDirectory "$env:RUNNER_TEMP/mcp-cpp-sdk-conan-candidate" `
+          -Evidence "$env:RUNNER_TEMP/conan-validation-windows.json" `
+          -ExpectedConanVersion $env:WINDOWS_RELEASE_CONAN_VERSION `
+          -ExpectedVCToolsVersion $env:WINDOWS_RELEASE_VCTOOLS_VERSION `
+          -ExpectedMscVer ([int]$env:WINDOWS_RELEASE_MSC_VER)
