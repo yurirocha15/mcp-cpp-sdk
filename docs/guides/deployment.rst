@@ -11,6 +11,8 @@ When moving from development to production, you must decide how your server will
 - **Stdio**: Best for local integration with desktop applications (like Claude Desktop or IDEs).
 - **HTTP/SSE**: Recommended for remote deployments, multi-client support, or web-based integrations.
 
+A server built with the SDK serves protocol revision 2026-07-28 and the older revisions on the same transport by default. See `Serving Both Protocol Eras`_ for what that means over HTTP.
+
 Key considerations for deployment include:
 
 - Choosing the right transport for your use case.
@@ -53,6 +55,112 @@ If you need to integrate the MCP server into an existing Boost.Asio application 
                          boost::asio::detached);
 
    io_ctx.run();
+
+Serving Both Protocol Eras
+--------------------------
+
+A 2026-07-28 request is a complete message: it carries its protocol version and
+client capabilities in ``_meta`` and belongs to no session. A request of an
+older revision belongs to a session that ``initialize`` created. The HTTP
+transports serve both on one endpoint, and tell them apart by what the request
+carries.
+
+``StreamableHttpSessionManager``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The manager builds a ``Server`` with its factory for each session of an older
+revision, as before. All 2026-07-28 requests are answered by one shared
+``Server``: the one passed to ``set_modern_server()``, or else one built from
+the factory the first time it is needed. ``modern_server()`` returns it, and
+builds it if no request has yet. Because every 2026-07-28 client sees the same
+tools, resources and prompts, they must not depend on the connection.
+
+Configure that server before ``listen()``, for example its cache hints:
+
+.. code-block:: cpp
+
+   mcp::StreamableHttpSessionManager manager(io_ctx.get_executor(), "127.0.0.1", 8080,
+                                             factory);
+
+   manager.modern_server()->set_cache_hints(
+       mcp::CacheTarget::eToolsList,
+       mcp::CacheHint{.ttlMs = 60'000, .scope = mcp::CacheScope::ePublic});
+
+   boost::asio::co_spawn(io_ctx, manager.listen(), boost::asio::detached);
+
+A 2026-07-28 request ignores ``Mcp-Session-Id`` and ``Last-Event-ID``, and its
+response never carries ``Mcp-Session-Id``. The answer is plain JSON. If a
+handler sends a notification while it runs (a log message at the request's own
+log level, or progress) and the client accepts ``text/event-stream``, the answer
+is a chunked event stream that carries the notifications and then the response.
+It has no event ids and carries periodic keep-alive comments;
+``set_stream_options()`` sets the intervals and ``stream_stats()`` counts what
+the streams did. A client that disconnects while its request runs cancels the
+request.
+
+``set_protocol_policy()`` takes a ``ServerProtocolPolicy`` and applies it to
+every ``Server`` the manager builds. With ``serve_legacy = false`` no session is
+ever created: ``initialize`` is answered ``404`` with ``g_METHOD_NOT_FOUND``,
+naming the versions served, and every ``GET`` and ``DELETE`` is answered
+``405``.
+
+``HttpServerTransport``
+~~~~~~~~~~~~~~~~~~~~~~~
+
+``HttpServerTransport`` serves 2026-07-28 requests next to its one legacy
+session, with the same header checks and error statuses. Each request is
+answered with plain JSON. Notifications a handler sends while it serves one are
+dropped, because there is no stream; use ``StreamableHttpSessionManager`` when
+handlers log or report progress, or when clients use ``subscriptions/listen``.
+At most 256 such requests may wait at once, and more are answered ``503``.
+``Server::run_http()`` uses ``HttpServerTransport``.
+
+Request headers
+~~~~~~~~~~~~~~~
+
+A 2026-07-28 request over HTTP repeats some of its content in headers, so that
+a gateway can route or limit it without reading the body. The server requires
+them and checks them against the body:
+
+* ``MCP-Protocol-Version`` and ``Mcp-Method`` on every request.
+* ``Mcp-Name`` on ``tools/call``, ``prompts/get`` and ``resources/read``. A value
+  in the ``=?base64?...?=`` form is decoded first.
+* ``Mcp-Param-{Name}`` on a ``tools/call`` whose tool marks input properties with
+  ``x-mcp-header``. See `x-mcp-header parameters`_.
+
+A request that lacks one, repeats one, or sends a value that does not match the
+body is answered ``400`` with ``g_HEADER_MISMATCH``.
+``header_mismatch_rejections()`` counts those on the manager and on
+``HttpServerTransport``. ``HttpClientTransport`` sends the headers itself.
+
+The status of an error follows the specification: ``400`` for invalid params,
+an unsupported protocol version, a header mismatch and a missing client
+capability, and ``404`` for an unknown method. See :doc:`error-handling`.
+
+x-mcp-header parameters
+~~~~~~~~~~~~~~~~~~~~~~~
+
+A tool can ask for some of its arguments to be mirrored into headers by
+annotating the property in its input schema:
+
+.. code-block:: cpp
+
+   nlohmann::json schema = {
+       {"type", "object"},
+       {"properties",
+        {{"region", {{"type", "string"}, {"x-mcp-header", "Region"}}},
+         {"query", {{"type", "string"}}}}},
+       {"required", {"region", "query"}}};
+
+A 2026-07-28 ``tools/call`` of this tool over HTTP must then carry a
+``Mcp-Param-Region`` header equal to the ``region`` argument, after decoding.
+Integers are compared as numbers. ``add_tool()`` refuses with ``SchemaError`` an
+annotation that is not a non-empty HTTP token string, repeats a name (ignoring
+case), sits on a property that is not a ``string``, ``integer`` or ``boolean``,
+or sits on a property not reached from the root through ``properties`` alone.
+``HttpClientTransport`` fills the headers in. It leaves a tool with an invalid
+annotation out of ``tools/list`` and reports it through
+``set_warning_handler()``.
 
 Graceful Shutdown
 -----------------
@@ -164,7 +272,12 @@ As your MCP application grows, you might need to scale horizontally by running m
 Sticky Sessions
 ~~~~~~~~~~~~~~~
 
-Since MCP is stateful over the course of a session (initialization, followed by multiple requests), ensure your load balancer uses **sticky sessions** (session affinity). If a client's request is routed to a different instance that hasn't seen the ``initialize`` request, the server will reject the request.
+A session of 2025-11-25 or earlier is stateful (initialization, followed by multiple requests), so ensure your load balancer uses **sticky sessions** (session affinity) for such clients. If a client's request is routed to a different instance that hasn't seen the ``initialize`` request, the server will reject the request.
+
+A 2026-07-28 request needs no session, and any instance that serves the same tools, resources and prompts can answer it. Two cases still need the request to reach a particular instance:
+
+- A request whose handler asks the client a question (``Context::elicit()``, ``sample_llm()``, ``request_roots()``) waits in the ``Server`` instance. The client's retry, which carries the ``requestState``, must reach that instance; a retry that does not is answered as for an unknown ``requestState``.
+- A ``subscriptions/listen`` stream is one long-lived request, and the notifications it carries come from the instance that holds it.
 
 Health Checks
 ~~~~~~~~~~~~~
