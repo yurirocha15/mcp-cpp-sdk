@@ -5764,7 +5764,7 @@ mcp::Task<RawChallenge> fetch_unauthenticated_challenge(const asio::any_io_execu
     const auto body = json{{"jsonrpc", "2.0"},
                            {"method", "initialize"},
                            {"params",
-                            {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                            {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                              {"clientInfo", {{"name", "auth-pairing-test"}, {"version", "1"}}},
                              {"capabilities", json::object()}}},
                            {"id", 1}}
@@ -5779,7 +5779,7 @@ mcp::Task<RawChallenge> fetch_unauthenticated_challenge(const asio::any_io_execu
     request.set(http::field::host, "127.0.0.1:" + std::to_string(port));
     request.set(http::field::content_type, "application/json");
     request.set(http::field::accept, "application/json, text/event-stream");
-    request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
     request.body() = body;
     request.prepare_payload();
     co_await http::async_write(stream, request, asio::use_awaitable);

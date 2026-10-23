@@ -19,7 +19,7 @@ namespace {
 
 // Returns just the result object (not a full JSON-RPC response) for use with make_result_response.
 nlohmann::json make_initialize_result() {
-    return {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+    return {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
             {"capabilities", nlohmann::json::object()},
             {"serverInfo", {{"name", "test-server"}, {"version", "1.0"}}}};
 }
@@ -47,7 +47,7 @@ class ClientFeaturesTest : public ::testing::Test {
             }
         });
 
-        return {mcp::Client(transport, io_ctx_.get_executor()), raw};
+        return {mcp::Client(transport, io_ctx_.get_executor(), legacy_client_options()), raw};
     }
 };
 
@@ -544,6 +544,7 @@ class ClientToolSchemaTest : public ::testing::Test {
 
     /// Connects a client with @p options, runs @p body with it and closes the transport.
     void run(mcp::ClientOptions options, std::function<mcp::Task<void>(mcp::Client&)> body) {
+        options.protocol = mcp::ClientProtocol::Legacy();  // the scripted peer answers initialize
         mcp::Client client(transport_, io_ctx_.get_executor(), std::move(options));
         boost::asio::co_spawn(
             io_ctx_,

@@ -1,5 +1,8 @@
 #include "../detail/beast_string.hpp"
+#include "../detail/http_request_metadata.hpp"
+#include "../detail/modern_methods.hpp"
 #include "../detail/peer_json.hpp"
+#include "../detail/principal.hpp"
 
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_server.hpp>
@@ -36,8 +39,9 @@ namespace beast = boost::beast;
 namespace http = boost::beast::http;
 
 struct HttpServerTransport::Impl {
-    /// How many sessionless server/discover requests may wait for the server at once.
-    static constexpr std::size_t g_max_pending_sessionless_discovers = 16;
+    /// How many sessionless requests (those of revision 2026-07-28) may wait for the server at
+    /// once. They share the incoming queue with the session's own requests.
+    static constexpr std::size_t g_max_pending_sessionless_requests = 256;
 
     using Connection = beast::tcp_stream;
 
@@ -46,7 +50,7 @@ struct HttpServerTransport::Impl {
             : timer(execution_strand) {}
 
         boost::asio::steady_timer timer;
-        std::queue<std::string> queue;
+        std::queue<IncomingMessage> queue;
         std::atomic<bool> closed{false};
         bool read_active{false};
     };
@@ -128,12 +132,6 @@ struct HttpServerTransport::Impl {
                request_json.at("method").get<std::string>() == "initialize";
     }
 
-    static bool is_discover_request(const nlohmann::json& request_json) {
-        return request_json.is_object() && request_json.contains("method") &&
-               request_json.at("method").is_string() &&
-               request_json.at("method").get<std::string>() == "server/discover";
-    }
-
     static std::string_view header_value(const StringRequest::const_iterator& header_it) {
         return {header_it->value().data(), header_it->value().size()};
     }
@@ -195,8 +193,9 @@ struct HttpServerTransport::Impl {
         return allowed_origins.contains(std::string(origin_value));
     }
 
-    void enqueue_incoming_message(std::string message_payload) const {
-        state->queue.push(std::move(message_payload));
+    /// Queues a message with the principal that sent it, so the server reads the two together.
+    void enqueue_incoming_message(std::string message_payload, std::string principal) const {
+        state->queue.push(IncomingMessage{std::move(message_payload), std::move(principal)});
         state->timer.cancel();
     }
 
@@ -365,12 +364,38 @@ struct HttpServerTransport::Impl {
             // longer sends once it sees the session has ended.
             event_store.clear();
             for (auto& [request_id_key, pending] : pending_responses) {
+                if (sessionless_request_ids.contains(request_id_key)) {
+                    continue;  // a 2026-07-28 request belongs to no session
+                }
                 pending.session_ended = true;
                 pending.response_ready = true;
                 pending.ready_timer->cancel();
             }
         }
         co_return;
+    }
+
+    // 2026-07-28 has no initialize; the error names the versions served, as an initialize error
+    // should.
+    StringResponse initialize_not_served_response(const StringRequest& request,
+                                                  const nlohmann::json& request_json) const {
+        std::vector<std::string> served;
+        {
+            std::lock_guard lock(configuration_mutex);
+            served = served_versions;
+        }
+        auto id = request_json.value("id", nlohmann::json(nullptr));
+        if (!id.is_string() && !id.is_number_integer()) {
+            id = nullptr;
+        }
+        auto message = detail::initialize_not_served_message(served);
+        nlohmann::json error_body = {{"jsonrpc", "2.0"},
+                                     {"error",
+                                      {{"code", g_METHOD_NOT_FOUND},
+                                       {"message", std::move(message)},
+                                       {"data", {{"supported", std::move(served)}}}}},
+                                     {"id", std::move(id)}};
+        return make_json_response(request, http::status::not_found, error_body.dump());
     }
 
     std::optional<StringResponse> check_protocol_version(const StringRequest& request,
@@ -381,19 +406,15 @@ struct HttpServerTransport::Impl {
             if (protocol_header_it == request.end()) {
                 return std::nullopt;
             }
-            if (is_supported_protocol_version(header_value(protocol_header_it))) {
+            const auto version = header_value(protocol_header_it);
+            if (is_legacy_protocol_version(version)) {
                 return std::nullopt;
+            }
+            if (is_modern_protocol_version(version)) {
+                return initialize_not_served_response(request, request_json);
             }
             return make_error_response(request, http::status::bad_request,
                                        "Invalid MCP-Protocol-Version header");
-        }
-
-        if (is_discover_request(request_json)) {
-            // server/discover advertises protocol versions (see g_DISCOVERABLE_PROTOCOL_VERSIONS)
-            // outside g_SUPPORTED_PROTOCOL_VERSIONS, and is reachable with zero prior session
-            // state, so it is exempted from header validation here exactly like initialize is
-            // exempted from the negotiated-version check below.
-            return std::nullopt;
         }
 
         if (protocol_header_it == request.end() ||
@@ -448,161 +469,90 @@ struct HttpServerTransport::Impl {
                                    "Bearer token validation failed");
     }
 
-    static std::string_view request_bearer_token(const StringRequest& request) {
+    static std::string_view request_authorization(const StringRequest& request) {
         const auto authorization_it = request.find(http::field::authorization);
-        return authorization_it == request.end() ? std::string_view{}
-                                                 : http_bearer_token(header_value(authorization_it));
+        return authorization_it == request.end() ? std::string_view{} : header_value(authorization_it);
     }
 
+    /// What the bearer check decided: the response refusing the request, or the principal the
+    /// request is attributed to.
+    struct Authorization {
+        std::optional<StringResponse> refusal;
+        std::string principal;
+    };
+
     /// @brief Run the bearer check when it can be decided without suspending.
-    /// @details Returns nothing when an async validator is installed, because that decision
-    ///          belongs to check_authorization_async; keeping the two apart leaves the far more
-    ///          common synchronous path free of a coroutine frame and of copying the token.
-    std::optional<StringResponse> check_authorization(const StringRequest& request) const {
-        if (async_bearer_token_validator || !bearer_token_validator) {
-            return std::nullopt;
+    /// @details Without a validator, the request is attributed to a digest of its Authorization
+    ///          header. With an async one, the decision belongs to check_authorization_async and
+    ///          this returns no refusal and no principal; keeping the two apart leaves the far
+    ///          more common synchronous path free of a coroutine frame and of copying the token.
+    Authorization check_authorization(const StringRequest& request) const {
+        const auto authorization = request_authorization(request);
+        if (async_bearer_token_validator) {
+            return {};
+        }
+        if (!bearer_token_validator) {
+            return {std::nullopt, detail::request_principal(std::nullopt, authorization)};
         }
 
-        const auto token = request_bearer_token(request);
+        const auto token = http_bearer_token(authorization);
         if (token.empty()) {
-            return make_unauthorized_response(request);
+            return {make_unauthorized_response(request), {}};
         }
-        bool accepted = false;
+        std::optional<TokenValidation> validation;
         try {
-            accepted = bearer_token_validator(token);
+            validation = bearer_token_validator(token);
         } catch (...) {
-            return make_validator_failure_response(request);
+            return {make_validator_failure_response(request), {}};
         }
-        if (!accepted) {
-            return make_unauthorized_response(request);
+        if (!validation->accepted) {
+            return {make_unauthorized_response(request), {}};
         }
-        return std::nullopt;
+        return {std::nullopt, detail::request_principal(validation->principal_id, authorization)};
     }
 
     /// @brief Run the bearer check against an async validator. Only entered when one is installed.
-    Task<std::optional<StringResponse>> check_authorization_async(const StringRequest& request) const {
-        const auto token = request_bearer_token(request);
+    Task<Authorization> check_authorization_async(const StringRequest& request) const {
+        const auto authorization = request_authorization(request);
+        const auto token = http_bearer_token(authorization);
         if (token.empty()) {
-            co_return make_unauthorized_response(request);
+            co_return Authorization{make_unauthorized_response(request), {}};
         }
-        bool accepted = false;
+        std::optional<TokenValidation> validation;
         try {
-            accepted = co_await async_bearer_token_validator(std::string(token));
+            validation = co_await async_bearer_token_validator(std::string(token));
         } catch (...) {
-            co_return make_validator_failure_response(request);
+            co_return Authorization{make_validator_failure_response(request), {}};
         }
-        if (!accepted) {
-            co_return make_unauthorized_response(request);
+        if (!validation->accepted) {
+            co_return Authorization{make_unauthorized_response(request), {}};
         }
-        co_return std::nullopt;
+        co_return Authorization{std::nullopt,
+                                detail::request_principal(validation->principal_id, authorization)};
     }
 
-    Task<StringResponse> handle_post(const StringRequest& request) {
-        // Origin and bearer checks come first: they need only the headers, so a request that fails
-        // them never makes the server build a JSON document from its body.
-        if (auto error = check_origin(request)) {
-            co_return std::move(*error);
-        }
-        if (auto error = check_authorization(request)) {
-            co_return std::move(*error);
-        }
-        if (async_bearer_token_validator) {
-            if (auto error = co_await check_authorization_async(request)) {
-                co_return std::move(*error);
-            }
-        }
+    static StringResponse make_jsonrpc_error_response(const StringRequest& request,
+                                                      http::status status_code, int code,
+                                                      std::string message,
+                                                      nlohmann::json id = nullptr) {
+        return make_json_response(
+            request, status_code,
+            nlohmann::json{{"jsonrpc", "2.0"},
+                           {"id", std::move(id)},
+                           {"error", {{"code", code}, {"message", std::move(message)}}}}
+                .dump());
+    }
 
-        const auto request_json = detail::parse_peer_json(request.body());
-        if (request_json.is_discarded() || !request_json.is_object()) {
-            co_return make_error_response(request, http::status::bad_request,
-                                          "Invalid JSON-RPC payload");
-        }
-        if (auto error = check_protocol_version(request, request_json)) {
-            co_return std::move(*error);
-        }
+    static StringResponse make_invalid_id_response(const StringRequest& request) {
+        return make_jsonrpc_error_response(request, http::status::bad_request, g_INVALID_REQUEST,
+                                           "JSON-RPC request id must be a string or an integer");
+    }
 
-        // server/discover is a pre-gate method: it MUST stay reachable with zero prior session state,
-        // so a discover request with no MCP-Session-Id header skips the POST session gate. Any other
-        // method, and discover with a session header, still goes through validate_post_session, and
-        // this path neither creates nor mutates session state.
-        //
-        // The "id" requirement keeps a sessionless *notification* named server/discover from skipping
-        // the gate and pushing its body onto the unbounded incoming queue below. The id must also be a
-        // string or an integer: this path replaces it with a sentinel, so the server's own id check
-        // never runs on it.
-        const bool has_valid_id =
-            request_json.contains("id") &&
-            (request_json.at("id").is_string() || request_json.at("id").is_number_integer());
-        const bool is_sessionless_discover = is_discover_request(request_json) && has_valid_id &&
-                                             request.find("MCP-Session-Id") == request.end();
-        if (!is_sessionless_discover) {
-            const auto session_check = co_await validate_post_session(request);
-            if (!session_check.ok) {
-                co_return make_error_response(request, http::status::bad_request,
-                                              session_check.error_message);
-            }
-        }
-
-        const bool has_request_id = request_json.contains("id");
-        const bool has_method = request_json.contains("method");
-        if (!has_request_id || !has_method) {
-            enqueue_incoming_message(request.body());
-            co_return make_empty_json_response(request, http::status::accepted);
-        }
-        // The Server answers a request whose id is neither a string nor an integer with a null id,
-        // since it has none it may echo, so that answer could never be matched to this request.
-        if (!request_json.at("id").is_string() && !request_json.at("id").is_number_integer()) {
-            co_return make_json_response(
-                request, http::status::bad_request,
-                nlohmann::json{{"jsonrpc", "2.0"},
-                               {"id", nullptr},
-                               {"error",
-                                {{"code", g_INVALID_REQUEST},
-                                 {"message", "JSON-RPC request id must be a string or an integer"}}}}
-                    .dump());
-        }
-
-        // A sessionless discover carries an id chosen by an unauthenticated party, so it is
-        // registered under a transport-private sentinel id and the caller's own id is restored in
-        // run_write. The raw id would share a key space with the established session: a prober could
-        // claim an id the session then needs ("Request id already pending"), and could steer
-        // replay-store exclusion through sessionless_request_ids. Session-gated requests keep the
-        // exact bytes the peer sent.
-        std::string request_id_key;
-        std::optional<nlohmann::json> client_request_id;
-        std::string sentinel_body;
-        if (is_sessionless_discover) {
-            client_request_id = request_json.at("id");
-            auto sentinel_json = request_json;
-            sentinel_json["id"] = next_sentinel_request_id();
-            request_id_key = sentinel_json.at("id").dump();
-            sentinel_body = sentinel_json.dump();
-        } else {
-            request_id_key = request_json.at("id").dump();
-        }
-
-        // Sessionless discovers wait in the established session's incoming queue, so a stranger
-        // could otherwise delay the session's own requests by sending many at once.
-        if (is_sessionless_discover &&
-            sessionless_request_ids.size() >= g_max_pending_sessionless_discovers) {
-            co_return make_error_response(request, http::status::service_unavailable,
-                                          "Too many pending discover requests");
-        }
-
-        const auto timer_signal = co_await register_pending_request(request_id_key, client_request_id);
-        if (!timer_signal.has_value()) {
-            co_return make_error_response(request, http::status::bad_request,
-                                          "Request id already pending");
-        }
-        if (is_sessionless_discover) {
-            // Tracked so run_write can keep this response out of the shared replay store. The
-            // entry is dropped again in consume_pending_response and in close().
-            sessionless_request_ids.insert(request_id_key);
-            enqueue_incoming_message(std::move(sentinel_body));
-        } else {
-            enqueue_incoming_message(request.body());
-        }
-
+    /// Waits until the server has answered @p request_id_key, or returns the response to send
+    /// instead when the transport closes first.
+    Task<std::optional<StringResponse>> wait_for_response(
+        const StringRequest& request, const std::string& request_id_key,
+        const std::shared_ptr<boost::asio::steady_timer>& timer_signal) {
         for (;;) {
             if (state->closed.load(std::memory_order_acquire)) {
                 co_await consume_pending_response(request_id_key);
@@ -616,7 +566,7 @@ struct HttpServerTransport::Impl {
             }
 
             try {
-                co_await (*timer_signal)->async_wait(boost::asio::use_awaitable);
+                co_await timer_signal->async_wait(boost::asio::use_awaitable);
             } catch (const boost::system::system_error& err) {
                 if (err.code() != boost::asio::error::operation_aborted) {
                     throw;
@@ -624,6 +574,148 @@ struct HttpServerTransport::Impl {
             }
         }
 
+        co_return std::nullopt;
+    }
+
+    /// Serves a request of protocol revision 2026-07-28. It needs no session: Mcp-Session-Id is
+    /// neither read nor sent, the request is carried under a transport-private sentinel id so two
+    /// clients may use the same id, and its answer is plain JSON with the status the specification
+    /// gives its error, kept out of the session's replay store.
+    Task<StringResponse> handle_modern_post(const StringRequest& request,
+                                            const nlohmann::json& request_json, std::string principal) {
+        // 2026-07-28 defines no notification a client sends over HTTP, so one is accepted and
+        // dropped.
+        if (!request_json.contains("id")) {
+            co_return make_empty_json_response(request, http::status::accepted);
+        }
+        if (!request_json.at("id").is_string() && !request_json.at("id").is_number_integer()) {
+            co_return make_invalid_id_response(request);
+        }
+        if (auto mismatch = detail::modern_header_mismatch(request, request_json)) {
+            header_mismatch_rejections.fetch_add(1, std::memory_order_relaxed);
+            co_return make_jsonrpc_error_response(request, http::status::bad_request, g_HEADER_MISMATCH,
+                                                  "Header mismatch: " + *mismatch,
+                                                  request_json.at("id"));
+        }
+        if (auto refusal = detail::missing_modern_version(request_json)) {
+            co_return make_jsonrpc_error_response(request, http::status::bad_request, g_INVALID_PARAMS,
+                                                  std::move(*refusal), request_json.at("id"));
+        }
+        if (request_json.at("method") == "tools/call") {
+            detail::ParamHeaderCheck check;
+            {
+                std::lock_guard lock(configuration_mutex);
+                check = param_header_check;
+            }
+            if (check) {
+                if (auto mismatch = check(request_json, detail::mcp_param_headers(request))) {
+                    header_mismatch_rejections.fetch_add(1, std::memory_order_relaxed);
+                    co_return make_jsonrpc_error_response(
+                        request, http::status::bad_request, g_HEADER_MISMATCH,
+                        "Header mismatch: " + *mismatch, request_json.at("id"));
+                }
+            }
+        }
+
+        // Sessionless requests wait in the session's incoming queue, so a stranger could otherwise
+        // delay the session's own requests by sending many at once.
+        if (sessionless_request_ids.size() >= g_max_pending_sessionless_requests) {
+            co_return make_error_response(request, http::status::service_unavailable,
+                                          "Too many pending requests");
+        }
+
+        // The caller chose the id without any session credential, so it is replaced by a
+        // transport-private sentinel and restored in run_write. Kept raw, it would share a key
+        // space with the session: a stranger could claim an id the session then needs, and two
+        // sessionless clients could not both use id 1.
+        auto sentinel_json = request_json;
+        sentinel_json["id"] = next_sentinel_request_id();
+        const auto request_id_key = sentinel_json.at("id").dump();
+        std::optional<nlohmann::json> client_request_id(std::in_place, request_json.at("id"));
+        const auto timer_signal =
+            co_await register_pending_request(request_id_key, std::move(client_request_id));
+        if (!timer_signal.has_value()) {
+            co_return make_error_response(request, http::status::internal_server_error,
+                                          "Request id already pending");
+        }
+        // Tracked so run_write keeps this response out of the session's replay store, and a DELETE
+        // of the session leaves it waiting. Dropped again in consume_pending_response and close().
+        sessionless_request_ids.insert(request_id_key);
+        enqueue_incoming_message(sentinel_json.dump(), std::move(principal));
+
+        auto closed_response = co_await wait_for_response(request, request_id_key, *timer_signal);
+        if (closed_response) {
+            co_return std::move(*closed_response);
+        }
+        auto pending_result = co_await consume_pending_response(request_id_key);
+        if (!pending_result.response_body.has_value()) {
+            co_return make_error_response(request, http::status::internal_server_error,
+                                          "Missing response body for request");
+        }
+        const auto code = detail::response_error_code(*pending_result.response_body);
+        const auto status = code ? detail::http_status_for_error(*code) : http::status::ok;
+        co_return make_json_response(request, status, std::move(*pending_result.response_body));
+    }
+
+    Task<StringResponse> handle_post(const StringRequest& request) {
+        // Origin and bearer checks come first: they need only the headers, so a request that fails
+        // them never makes the server build a JSON document from its body.
+        if (auto error = check_origin(request)) {
+            co_return std::move(*error);
+        }
+        auto authorization = check_authorization(request);
+        if (!authorization.refusal && async_bearer_token_validator) {
+            authorization = co_await check_authorization_async(request);
+        }
+        if (authorization.refusal) {
+            co_return std::move(*authorization.refusal);
+        }
+
+        const auto request_json = detail::parse_peer_json(request.body());
+        if (request_json.is_discarded() || !request_json.is_object()) {
+            co_return make_error_response(request, http::status::bad_request,
+                                          "Invalid JSON-RPC payload");
+        }
+        if (detail::is_modern_http_request(request_json,
+                                           detail::http_header(request, "MCP-Protocol-Version"))) {
+            co_return co_await handle_modern_post(request, request_json,
+                                                  std::move(authorization.principal));
+        }
+        if (auto error = check_protocol_version(request, request_json)) {
+            co_return std::move(*error);
+        }
+
+        const auto session_check = co_await validate_post_session(request);
+        if (!session_check.ok) {
+            co_return make_error_response(request, http::status::bad_request,
+                                          session_check.error_message);
+        }
+
+        const bool has_request_id = request_json.contains("id");
+        const bool has_method = request_json.contains("method");
+        if (!has_request_id || !has_method) {
+            enqueue_incoming_message(request.body(), std::move(authorization.principal));
+            co_return make_empty_json_response(request, http::status::accepted);
+        }
+        // The Server answers a request whose id is neither a string nor an integer with a null id,
+        // since it has none it may echo, so that answer could never be matched to this request.
+        if (!request_json.at("id").is_string() && !request_json.at("id").is_number_integer()) {
+            co_return make_invalid_id_response(request);
+        }
+
+        // Session-gated requests keep the exact bytes the peer sent.
+        const auto request_id_key = request_json.at("id").dump();
+        const auto timer_signal = co_await register_pending_request(request_id_key);
+        if (!timer_signal.has_value()) {
+            co_return make_error_response(request, http::status::bad_request,
+                                          "Request id already pending");
+        }
+        enqueue_incoming_message(request.body(), std::move(authorization.principal));
+
+        auto closed_response = co_await wait_for_response(request, request_id_key, *timer_signal);
+        if (closed_response) {
+            co_return std::move(*closed_response);
+        }
         const auto pending_result = co_await consume_pending_response(request_id_key);
         if (pending_result.session_ended) {
             co_return make_error_response(request, http::status::not_found, "Session terminated");
@@ -656,17 +748,34 @@ struct HttpServerTransport::Impl {
         co_return response;
     }
 
+    /// A GET or DELETE naming 2026-07-28 without a session asks for something that revision does
+    /// not have: it opens no stream this way and has no session to end.
+    static std::optional<StringResponse> refuse_sessionless_modern_stream(
+        const StringRequest& request) {
+        const auto protocol_header = detail::http_header(request, "MCP-Protocol-Version");
+        if (!protocol_header || is_legacy_protocol_version(*protocol_header) ||
+            request.find("MCP-Session-Id") != request.end()) {
+            return std::nullopt;
+        }
+        auto response =
+            make_error_response(request, http::status::method_not_allowed, "Method not allowed");
+        response.set(http::field::allow, "POST");
+        return response;
+    }
+
     Task<StringResponse> handle_delete(const StringRequest& request) {
         if (auto error = check_origin(request)) {
             co_return std::move(*error);
         }
-        if (auto error = check_authorization(request)) {
-            co_return std::move(*error);
+        auto authorization = check_authorization(request);
+        if (!authorization.refusal && async_bearer_token_validator) {
+            authorization = co_await check_authorization_async(request);
         }
-        if (async_bearer_token_validator) {
-            if (auto error = co_await check_authorization_async(request)) {
-                co_return std::move(*error);
-            }
+        if (authorization.refusal) {
+            co_return std::move(*authorization.refusal);
+        }
+        if (auto refusal = refuse_sessionless_modern_stream(request)) {
+            co_return std::move(*refusal);
         }
         const nlohmann::json request_json = {"method", "delete"};
         if (auto error = check_protocol_version(request, request_json)) {
@@ -687,13 +796,15 @@ struct HttpServerTransport::Impl {
         if (auto error = check_origin(request)) {
             co_return std::move(*error);
         }
-        if (auto error = check_authorization(request)) {
-            co_return std::move(*error);
+        auto authorization = check_authorization(request);
+        if (!authorization.refusal && async_bearer_token_validator) {
+            authorization = co_await check_authorization_async(request);
         }
-        if (async_bearer_token_validator) {
-            if (auto error = co_await check_authorization_async(request)) {
-                co_return std::move(*error);
-            }
+        if (authorization.refusal) {
+            co_return std::move(*authorization.refusal);
+        }
+        if (auto refusal = refuse_sessionless_modern_stream(request)) {
+            co_return std::move(*refusal);
         }
         const nlohmann::json request_json = {"method", "get"};
         if (auto error = check_protocol_version(request, request_json)) {
@@ -821,7 +932,7 @@ struct HttpServerTransport::Impl {
         (void)stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
     }
 
-    static Task<std::string> run_read(std::shared_ptr<Impl> impl) {
+    static Task<IncomingMessage> run_read(std::shared_ptr<Impl> impl) {
         auto& state = *impl->state;
         if (state.read_active) {
             throw std::logic_error("HttpServerTransport supports one pending read");
@@ -831,10 +942,10 @@ struct HttpServerTransport::Impl {
         try {
             for (;;) {
                 if (!state.queue.empty()) {
-                    auto message_payload = std::move(state.queue.front());
+                    auto incoming = std::move(state.queue.front());
                     state.queue.pop();
                     state.read_active = false;
-                    co_return message_payload;
+                    co_return incoming;
                 }
 
                 if (state.closed.load(std::memory_order_acquire)) {
@@ -937,13 +1048,21 @@ struct HttpServerTransport::Impl {
 
     mutable std::mutex configuration_mutex;
     bool listening_started{false};
+    /// Guarded by configuration_mutex: Server::run() installs it while the transport may be
+    /// listening already.
+    detail::ParamHeaderCheck param_header_check;
+    /// The versions named when initialize arrives with a 2026-07-28 header; every version until
+    /// Server::run() says which it serves.
+    std::vector<std::string> served_versions{g_SUPPORTED_PROTOCOL_VERSIONS.begin(),
+                                             g_SUPPORTED_PROTOCOL_VERSIONS.end()};
+    std::atomic<std::uint64_t> header_mismatch_rejections{0};
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
     std::unordered_set<std::string> sessionless_request_ids;
     std::string sentinel_id_prefix;
     std::uint64_t sentinel_id_counter{0};
     std::optional<std::string> session_id;
-    std::string negotiated_protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
+    std::string negotiated_protocol_version{std::string(g_LATEST_LEGACY_PROTOCOL_VERSION)};
     bool session_active{false};
     /// Set by a DELETE that ended a session, cleared by the next initialize result.
     bool session_ended_awaiting_next{false};
@@ -989,6 +1108,10 @@ unsigned short HttpServerTransport::port() const {
         throw std::runtime_error("Failed to query HTTP acceptor endpoint: " + ec.message());
     }
     return endpoint.port();
+}
+
+std::uint64_t HttpServerTransport::header_mismatch_rejections() const {
+    return impl_->header_mismatch_rejections.load(std::memory_order_relaxed);
 }
 
 void HttpServerTransport::set_json_only(bool json_only) {
@@ -1080,7 +1203,19 @@ void HttpServerTransport::set_unauthenticated_paths(std::vector<std::string> pat
     }
 }
 
-Task<std::string> HttpServerTransport::read_message() {
+namespace {
+
+Task<std::string> message_of(Task<IncomingMessage> incoming) {
+    auto message = co_await std::move(incoming);
+    co_return std::move(message.message);
+}
+
+}  // namespace
+
+// Not a coroutine: the read owns the implementation, so it may outlive this transport.
+Task<std::string> HttpServerTransport::read_message() { return message_of(read_incoming()); }
+
+Task<IncomingMessage> HttpServerTransport::read_incoming() {
     auto impl = impl_;
     return boost::asio::co_spawn(impl->strand, Impl::run_read(impl), boost::asio::use_awaitable);
 }
@@ -1113,7 +1248,7 @@ void HttpServerTransport::close() {
         impl->sessionless_request_ids.clear();
 
         impl->session_id.reset();
-        impl->negotiated_protocol_version = std::string(g_LATEST_PROTOCOL_VERSION);
+        impl->negotiated_protocol_version = std::string(g_LATEST_LEGACY_PROTOCOL_VERSION);
         impl->session_active = false;
     });
 
@@ -1175,6 +1310,12 @@ namespace detail {
 
 std::uint64_t terminated_session_count(const HttpServerTransport& transport) noexcept {
     return transport.impl_->terminated_sessions.load(std::memory_order_acquire);
+}
+
+void bind_server(HttpServerTransport& transport, HttpServerBinding binding) {
+    std::lock_guard lock(transport.impl_->configuration_mutex);
+    transport.impl_->param_header_check = std::move(binding.param_header_check);
+    transport.impl_->served_versions = std::move(binding.served_versions);
 }
 
 }  // namespace detail

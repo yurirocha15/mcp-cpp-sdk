@@ -92,6 +92,16 @@ class MCP_API HttpClientTransport final : public ITransport {
     void set_bearer_token_provider(std::function<std::string()> provider);
 
     /**
+     * @brief Configure a receiver for warnings about what the server sent.
+     *
+     * A tool whose `x-mcp-header` annotations break the rules of the Streamable HTTP specification
+     * is left out of the result of tools/list when the client speaks protocol revision 2026-07-28;
+     * the handler is told which tool and why. It runs on the transport's executor and must not
+     * block.
+     */
+    void set_warning_handler(std::function<void(const std::string&)> handler);
+
+    /**
      * @brief Dequeue the next MCP message received from the server.
      *
      * @throws std::runtime_error If the transport is closed.

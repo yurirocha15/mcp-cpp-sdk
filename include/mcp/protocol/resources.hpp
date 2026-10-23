@@ -149,9 +149,19 @@ inline void from_json(const nlohmann::json& json_obj, ResourceTemplate& tmpl) {
  */
 struct ReadResourceResult {
     std::vector<ResourceContents> contents;  ///< The contents of the resource.
+    std::optional<std::int64_t> ttlMs;       ///< Caching TTL hint, in milliseconds (2026-07-28).
+    std::optional<CacheScope> cacheScope;    ///< Caching scope hint (2026-07-28).
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ReadResourceResult, contents)
+inline void to_json(nlohmann::json& j, const ReadResourceResult& r) {
+    j = nlohmann::json{{"contents", r.contents}};
+    detail::write_cache_hints(j, r.ttlMs, r.cacheScope);
+}
+
+inline void from_json(const nlohmann::json& j, ReadResourceResult& r) {
+    j.at("contents").get_to(r.contents);
+    detail::read_cache_hints(j, r.ttlMs, r.cacheScope);
+}
 
 /**
  * @brief Parameters for listing available resources.
@@ -198,6 +208,8 @@ struct ListResourcesResult {
     std::vector<Resource> resources;        ///< The list of resources in the current page.
     std::optional<std::string> nextCursor;  ///< Pagination cursor for the next page.
     std::optional<nlohmann::json> meta;     ///< Reserved for protocol use.
+    std::optional<std::int64_t> ttlMs;      ///< Caching TTL hint, in milliseconds (2026-07-28).
+    std::optional<CacheScope> cacheScope;   ///< Caching scope hint (2026-07-28).
 };
 inline void to_json(nlohmann::json& j, const ListResourcesResult& r) {
     j = nlohmann::json{{"resources", r.resources}};
@@ -207,6 +219,7 @@ inline void to_json(nlohmann::json& j, const ListResourcesResult& r) {
     if (r.meta) {
         j["_meta"] = *r.meta;
     }
+    detail::write_cache_hints(j, r.ttlMs, r.cacheScope);
 }
 inline void from_json(const nlohmann::json& j, ListResourcesResult& r) {
     j.at("resources").get_to(r.resources);
@@ -216,6 +229,7 @@ inline void from_json(const nlohmann::json& j, ListResourcesResult& r) {
     if (j.contains("_meta")) {
         r.meta = j.at("_meta");
     }
+    detail::read_cache_hints(j, r.ttlMs, r.cacheScope);
 }
 
 /**
@@ -263,6 +277,8 @@ struct ListResourceTemplatesResult {
     std::vector<ResourceTemplate> resourceTemplates;  ///< The list of resource templates in the page.
     std::optional<std::string> nextCursor;            ///< Pagination cursor for the next page.
     std::optional<nlohmann::json> meta;               ///< Reserved for protocol use.
+    std::optional<std::int64_t> ttlMs;     ///< Caching TTL hint, in milliseconds (2026-07-28).
+    std::optional<CacheScope> cacheScope;  ///< Caching scope hint (2026-07-28).
 };
 inline void to_json(nlohmann::json& j, const ListResourceTemplatesResult& r) {
     j = nlohmann::json{{"resourceTemplates", r.resourceTemplates}};
@@ -272,6 +288,7 @@ inline void to_json(nlohmann::json& j, const ListResourceTemplatesResult& r) {
     if (r.meta) {
         j["_meta"] = *r.meta;
     }
+    detail::write_cache_hints(j, r.ttlMs, r.cacheScope);
 }
 inline void from_json(const nlohmann::json& j, ListResourceTemplatesResult& r) {
     j.at("resourceTemplates").get_to(r.resourceTemplates);
@@ -281,6 +298,7 @@ inline void from_json(const nlohmann::json& j, ListResourceTemplatesResult& r) {
     if (j.contains("_meta")) {
         r.meta = j.at("_meta");
     }
+    detail::read_cache_hints(j, r.ttlMs, r.cacheScope);
 }
 
 /**

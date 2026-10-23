@@ -100,10 +100,13 @@ int main() {
                     co_await delay_timer.async_wait(asio::use_awaitable);
 
                     std::cout << "[Client] Connecting\n";
-                    Client client(transport, io_ctx.get_executor());
+                    // resources/subscribe belongs to the revisions that start with initialize.
+                    ClientOptions options;
+                    options.protocol = ClientProtocol::Legacy();
+                    Client client(transport, io_ctx.get_executor(), options);
 
                     auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "[Client] Connected to: " << init_result.serverInfo.name << '\n';
+                    std::cout << "[Client] Connected to: " << init_result.serverInfo->name << '\n';
 
                     // ========== REGISTER NOTIFICATION HANDLERS ==========
                     std::cout << "[Client] Registering notification handlers\n";

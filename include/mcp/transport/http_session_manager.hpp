@@ -10,7 +10,9 @@
 #include <boost/beast/http.hpp>
 #include <mcp/transport/http_types.hpp>
 
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -18,6 +20,29 @@
 #include <vector>
 
 namespace mcp {
+
+/**
+ * @brief How StreamableHttpSessionManager streams the answer to a 2026-07-28 request.
+ */
+struct StreamOptions {
+    /// How often an open stream carries an SSE comment, so idle intermediaries keep it open.
+    std::chrono::milliseconds keepalive_interval{15000};
+    /// After a client half-closes its connection, how often the server writes an SSE comment to
+    /// learn whether the client is still there. A write that fails cancels the request.
+    std::chrono::milliseconds disconnect_probe_interval{1000};
+    /// Notifications a request may have waiting to be written; more are dropped and counted.
+    std::size_t max_queued_notifications{4096};
+};
+
+/**
+ * @brief Counts of what StreamableHttpSessionManager's 2026-07-28 streams have done.
+ */
+struct StreamStats {
+    std::uint64_t streams_opened{0};         ///< Answers sent as an SSE stream.
+    std::uint64_t disconnect_cancels{0};     ///< Requests cancelled because the client went away.
+    std::uint64_t half_close_probes{0};      ///< Probe comments written after a half-close.
+    std::uint64_t dropped_notifications{0};  ///< Notifications over max_queued_notifications.
+};
 
 /**
  * @brief Multi-session HTTP endpoint for MCP Streamable HTTP.
@@ -30,6 +55,14 @@ namespace mcp {
  * This matches the behavior of Python's StreamableHTTPSessionManager and
  * Go's StreamableHTTPServer: session creation on initialize, 404 on unknown
  * sessions, DELETE for session teardown.
+ *
+ * A request of protocol revision 2026-07-28 needs no session. Its answer is plain JSON unless a
+ * handler sends a notification (a log message, progress) while serving it and the client accepts
+ * `text/event-stream`: then the answer becomes an SSE stream carrying those notifications and
+ * finally the response. A client that accepts `text/event-stream` and half-closes its connection
+ * while the request runs gets an SSE stream as well, carrying comments that probe whether the
+ * client is still there, and then the response. A client that disconnects while its request runs
+ * cancels it, and so does a reset after a half-close.
  *
  * This class is NOT an ITransport. It owns the HTTP listener and manages
  * the full lifecycle of per-session Server instances.
@@ -118,7 +151,8 @@ class MCP_API StreamableHttpSessionManager {
      *
      * A request whose token the validator refuses is answered 401 with the bearer challenge. A
      * validator that throws is answered 500, without a challenge, so a failing introspection
-     * endpoint does not send clients into re-authorization.
+     * endpoint does not send clients into re-authorization. A validator that accepts a token may
+     * name the principal it stands for (TokenValidation); handlers see it as Context::principal().
      *
      * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
@@ -135,7 +169,8 @@ class MCP_API StreamableHttpSessionManager {
      *
      * A request whose token the validator refuses is answered 401 with the bearer challenge. A
      * validator that throws is answered 500, without a challenge, so a failing introspection
-     * endpoint does not send clients into re-authorization.
+     * endpoint does not send clients into re-authorization. A validator that accepts a token may
+     * name the principal it stands for (TokenValidation); handlers see it as Context::principal().
      *
      * @throws std::logic_error If a synchronous validator is already installed, or if listen() has
      *         already been called or the manager is closed.
@@ -254,7 +289,61 @@ class MCP_API StreamableHttpSessionManager {
     void set_tool_executor(const boost::asio::any_io_executor& exec);
 
     /**
+     * @brief Choose which protocol revisions the endpoint serves.
+     *
+     * @details Applied to every Server the manager builds from its factory: each session's, the
+     * stateless one and the shared modern server (unless set_modern_server() supplied it). When
+     * legacy clients are not served, no session is created: initialize is answered `404` with
+     * `g_METHOD_NOT_FOUND` naming the versions served, and GET and DELETE `405`.
+     *
+     * @throws std::invalid_argument If ServerProtocolPolicy::validate() refuses the policy.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_protocol_policy(ServerProtocolPolicy policy);
+
+    /**
+     * @brief Serve every 2026-07-28 request with @p server.
+     *
+     * @details A 2026-07-28 request belongs to no session, so one Server answers all of them on
+     * this endpoint, alongside the per-session Servers of legacy clients. Without this call it is
+     * built from the factory on the first such request. Its tools, resources and prompts are what
+     * every 2026-07-28 client sees, so they must not depend on the connection.
+     *
+     * @throws std::invalid_argument If @p server is null.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_modern_server(std::shared_ptr<Server> server);
+
+    /**
+     * @brief The Server that answers 2026-07-28 requests.
+     *
+     * @return The server given to set_modern_server(), or the one built from the factory, which
+     *         this call builds if no request has yet. Called before listen(), it lets the server
+     *         be configured before the first request.
+     */
+    [[nodiscard]] std::shared_ptr<Server> modern_server();
+
+    /// 2026-07-28 requests refused with `g_HEADER_MISMATCH` because their MCP-Protocol-Version,
+    /// Mcp-Method, Mcp-Name or Mcp-Param-* header was missing, malformed or did not match the
+    /// body.
+    [[nodiscard]] std::uint64_t header_mismatch_rejections() const;
+
+    /**
+     * @brief Set how the answers to 2026-07-28 requests are streamed.
+     *
+     * @throws std::invalid_argument If an interval is not positive or the queue limit is 0.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_stream_options(StreamOptions options);
+
+    /// What the 2026-07-28 streams have done so far.
+    [[nodiscard]] StreamStats stream_stats() const;
+
+    /**
      * @brief Close the manager and all sessions.
+     *
+     * @details The handlers of 2026-07-28 requests that wait for a retry on the modern server are
+     * given up (Server::abandon_waiting_handlers()).
      */
     void close();
 

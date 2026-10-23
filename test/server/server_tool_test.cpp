@@ -385,8 +385,10 @@ TEST_F(ServerToolTest, ResultHelpersProduceProtocolValidShapes) {
     nlohmann::json structured = mcp::make_tool_structured_result({{"answer", 42}}, "forty-two");
     EXPECT_EQ(structured["structuredContent"]["answer"], 42);
     EXPECT_EQ(structured["content"][0]["text"], "forty-two");
-    EXPECT_THROW(static_cast<void>(mcp::make_tool_structured_result(nlohmann::json::array())),
-                 std::invalid_argument);
+    // Any JSON value is a valid structuredContent from 2026-07-28 on; the server decides per
+    // request which of them it may send.
+    nlohmann::json array = mcp::make_tool_structured_result(nlohmann::json::array({1, 2}));
+    EXPECT_EQ(array["structuredContent"], nlohmann::json::array({1, 2}));
 }
 
 TEST_F(ServerToolTest, RawToolAcceptsCompleteCallToolResult) {
@@ -532,7 +534,7 @@ TEST(ServerToolSchema, AcceptsAnyKeywordOf2020_12) {
         "$defs": {"id": {"type": "string", "pattern": "^[a-z]+-[0-9]+$"}},
         "properties": {
             "id": {"$ref": "#/$defs/id"},
-            "mode": {"enum": ["a", "b"], "x-mcp-header": "Mode"},
+            "mode": {"type": "string", "enum": ["a", "b"], "x-mcp-header": "Mode"},
             "pair": {"type": "array", "prefixItems": [{"type": "string"}, {"type": "integer"}]},
             "choice": {"oneOf": [{"type": "string"}, {"type": "integer", "minimum": 0}]}
         },
@@ -845,5 +847,139 @@ TEST_F(ServerToolOutputTest, NonFiniteNumberIsRefused) {
         ASSERT_TRUE(responses[1].contains("error")) << responses[1].dump();
         EXPECT_EQ(responses[1].at("error").at("code"), mcp::g_INTERNAL_ERROR);
         EXPECT_EQ(setup.server.tool_validation_stats().structured_content_rejections, 1U);
+    }
+}
+
+class ToolsStructured : public ServerToolTest {
+   protected:
+    /// Registers a raw tool "emit" that returns @p result as its CallToolResult.
+    static void add_emit_tool(ServerSetup& setup, nlohmann::json output_schema, nlohmann::json result) {
+        mcp::Tool tool;
+        tool.name = "emit";
+        tool.inputSchema = {{"type", "object"}};
+        if (!output_schema.is_null()) {
+            tool.outputSchema = std::move(output_schema);
+        }
+        setup.server.add_raw_tool(
+            tool,
+            [result = std::move(result)](const nlohmann::json&) -> nlohmann::json { return result; });
+    }
+
+    /// Registers "emit" so it returns make_tool_structured_result(@p structured).
+    static void add_helper_tool(ServerSetup& setup, nlohmann::json output_schema,
+                                const nlohmann::json& structured) {
+        add_emit_tool(setup, std::move(output_schema), mcp::make_tool_structured_result(structured));
+    }
+
+    /// Sends one 2026-07-28 tools/call for "emit" and returns the single response.
+    nlohmann::json call_modern(ServerSetup& setup) {
+        std::vector<nlohmann::json> responses;
+        setup.raw_transport->set_on_write([&responses, &setup](std::string_view message) {
+            responses.push_back(nlohmann::json::parse(message));
+            setup.raw_transport->close();
+        });
+        setup.raw_transport->enqueue_message(
+            make_modern_request("2", "tools/call",
+                                {{"name", "emit"}, {"arguments", nlohmann::json::object()}})
+                .dump());
+        boost::asio::co_spawn(
+            io_ctx_,
+            [&]() -> mcp::Task<void> {
+                co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+            },
+            boost::asio::detached);
+        io_ctx_.run();
+        EXPECT_EQ(responses.size(), 1u);
+        return responses.empty() ? nlohmann::json() : responses[0];
+    }
+};
+
+TEST_F(ToolsStructured, AnyJsonValueModern) {
+    const std::vector<nlohmann::json> values = {
+        nlohmann::json::array({1, 2, 3}),
+        nlohmann::json::parse(R"([{"id":"1"},{"id":"2"}])"),
+        nlohmann::json(42),
+        nlohmann::json("text"),
+        nlohmann::json(true),
+        nlohmann::json(nullptr),
+        nlohmann::json::object({{"answer", 42}}),
+    };
+    for (const auto& value : values) {
+        SCOPED_TRACE(value.dump());
+        io_ctx_.restart();
+        ServerSetup setup(io_ctx_, tool_capabilities());
+        add_helper_tool(setup, nlohmann::json(), value);
+        auto response = call_modern(setup);
+        ASSERT_TRUE(response.contains("result")) << response;
+        ASSERT_TRUE(response["result"].contains("structuredContent")) << response;
+        EXPECT_EQ(response["result"]["structuredContent"], value);
+        EXPECT_EQ(response["result"]["content"][0]["text"], value.dump());
+    }
+}
+
+// Before 2026-07-28 structuredContent is an object. A raw result that holds anything else is
+// refused exactly as it always was.
+TEST_F(ToolsStructured, LegacyNonObjectStillErrors) {
+    for (const auto& value : {nlohmann::json::array({1, 2}), nlohmann::json(5), nlohmann::json("s")}) {
+        SCOPED_TRACE(value.dump());
+        io_ctx_.restart();
+        ServerSetup setup(io_ctx_, tool_capabilities());
+        add_emit_tool(setup, nlohmann::json(),
+                      {{"content", nlohmann::json::array()}, {"structuredContent", value}});
+        auto responses = call_tool(setup, "emit");
+        ASSERT_EQ(responses.size(), 2u);
+        ASSERT_TRUE(responses[1].contains("error")) << responses[1];
+        EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INTERNAL_ERROR);
+        EXPECT_EQ(responses[1]["error"]["message"],
+                  "CallToolResult structuredContent must be a JSON object")
+            << responses[1];
+    }
+}
+
+TEST_F(ToolsStructured, ObjectByteIdentical) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    add_helper_tool(setup, nlohmann::json(), {{"answer", 42}, {"unit", "m"}});
+    auto responses = call_tool(setup, "emit");
+    ASSERT_EQ(responses.size(), 2u);
+    EXPECT_EQ(responses[1]["result"].dump(),
+              R"({"content":[{"text":"{\"answer\":42,\"unit\":\"m\"}","type":"text"}],)"
+              R"("structuredContent":{"answer":42,"unit":"m"}})");
+}
+
+TEST_F(ToolsStructured, OutputSchemaArrayAndScalarValidated) {
+    struct Row {
+        nlohmann::json schema;
+        nlohmann::json good;
+        nlohmann::json bad;
+    };
+    const std::vector<Row> rows = {
+        {nlohmann::json::parse(R"({"type":"array","items":{"type":"integer"}})"),
+         nlohmann::json::array({1, 2}), nlohmann::json::array({1, "x"})},
+        {nlohmann::json::parse(R"({"type":"integer","minimum":0})"), nlohmann::json(3),
+         nlohmann::json(-1)},
+        {nlohmann::json::parse(R"({"type":"string"})"), nlohmann::json("ok"), nlohmann::json(5)},
+    };
+    for (const auto& row : rows) {
+        SCOPED_TRACE(row.schema.dump());
+        {
+            io_ctx_.restart();
+            ServerSetup setup(io_ctx_, tool_capabilities());
+            add_helper_tool(setup, row.schema, row.good);
+            auto response = call_modern(setup);
+            ASSERT_TRUE(response.contains("result")) << response;
+            EXPECT_EQ(response["result"]["structuredContent"], row.good);
+            EXPECT_EQ(setup.server.tool_validation_stats().structured_content_rejections, 0U);
+        }
+        {
+            io_ctx_.restart();
+            ServerSetup setup(io_ctx_, tool_capabilities());
+            add_helper_tool(setup, row.schema, row.bad);
+            auto response = call_modern(setup);
+            ASSERT_TRUE(response.contains("error")) << response;
+            EXPECT_EQ(response["error"]["code"], mcp::g_INTERNAL_ERROR);
+            EXPECT_NE(response["error"]["message"].get<std::string>().find("outputSchema"),
+                      std::string::npos);
+            EXPECT_EQ(setup.server.tool_validation_stats().structured_content_rejections, 1U);
+        }
     }
 }

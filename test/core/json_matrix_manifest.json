@@ -22,7 +22,7 @@
         "ServerCapabilities::TaskRequestsCapability": "no census row governs any of its fields"
     },
     "field_count": 317,
-    "gtest_count": 118,
+    "gtest_count": 119,
     "mode_count": 4,
     "types": [
         "Annotations",
@@ -141,6 +141,7 @@
         "ToolListChangedNotification",
         "ToolResultContent",
         "ToolUseContent",
-        "UnsubscribeRequest"
+        "UnsubscribeRequest",
+        "UnsupportedProtocolVersionData"
     ]
 }

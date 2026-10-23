@@ -111,7 +111,11 @@ int main() {
                     co_await delay_timer.async_wait(asio::use_awaitable);
 
                     std::cout << "Client: Creating client\n";
-                    mcp::Client client(client_transport, io_ctx.get_executor());
+                    // This flow cancels by request id and still reads the tool's answer, which only
+                    // the revisions that start with initialize send for a cancelled request.
+                    mcp::ClientOptions options;
+                    options.protocol = mcp::ClientProtocol::Legacy();
+                    mcp::Client client(client_transport, io_ctx.get_executor(), options);
 
                     Implementation client_info;
                     client_info.name = "progress-client";
@@ -119,7 +123,7 @@ int main() {
 
                     std::cout << "Client: Connecting to server\n";
                     auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "Client: Connected to " << init_result.serverInfo.name << "\n";
+                    std::cout << "Client: Connected to " << init_result.serverInfo->name << "\n";
 
                     bool progress_received = false;
                     bool cancel_sent = false;

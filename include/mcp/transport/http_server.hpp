@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -24,6 +25,23 @@ namespace detail {
 /// Number of sessions `transport` has ended in response to an HTTP DELETE. The Server compares it
 /// across `initialize` requests to recognise the start of a new session on the same transport.
 std::uint64_t terminated_session_count(const HttpServerTransport& transport) noexcept;
+
+/// Checks the `Mcp-Param-{Name}` headers ({Name, value} pairs) of a 2026-07-28 tools/call against
+/// the arguments of the request, returning why they do not match or nullopt when they do.
+using ParamHeaderCheck = std::function<std::optional<std::string>(
+    const nlohmann::json& request, const std::vector<std::pair<std::string, std::string>>& headers)>;
+
+/// What Server::run() tells the HttpServerTransport it serves about itself.
+struct HttpServerBinding {
+    /// Knows which arguments each tool mirrors into headers.
+    ParamHeaderCheck param_header_check;
+    /// The protocol versions the server serves, named in the error that answers an initialize
+    /// sent with a 2026-07-28 version header.
+    std::vector<std::string> served_versions;
+};
+
+/// Installed by Server::run().
+void bind_server(HttpServerTransport& transport, HttpServerBinding binding);
 }  // namespace detail
 
 /**
@@ -146,6 +164,12 @@ class EventStore {
  * Accepts HTTP connections, processes inbound JSON-RPC messages, and routes
  * outbound responses back to their matching HTTP requests. Supports SSE
  * replay via an in-memory event store.
+ *
+ * Alongside its one legacy session, it serves requests of protocol revision 2026-07-28, which
+ * need no session: their mirrored headers are checked, they are answered with plain JSON and the
+ * status the specification gives their errors, and they never read or receive `Mcp-Session-Id`.
+ * Notifications a handler sends while serving one are dropped; use StreamableHttpSessionManager
+ * to stream them.
  */
 class MCP_API HttpServerTransport final : public ITransport {
    public:
@@ -222,7 +246,8 @@ class MCP_API HttpServerTransport final : public ITransport {
      *
      * A request whose token the validator refuses is answered 401 with the bearer challenge. A
      * validator that throws is answered 500, without a challenge, so a failing introspection
-     * endpoint does not send clients into re-authorization.
+     * endpoint does not send clients into re-authorization. A validator that accepts a token may
+     * name the principal it stands for (TokenValidation); handlers see it as Context::principal().
      *
      * @throws std::logic_error If listen() has already been called or the transport is closed.
      */
@@ -239,7 +264,8 @@ class MCP_API HttpServerTransport final : public ITransport {
      *
      * A request whose token the validator refuses is answered 401 with the bearer challenge. A
      * validator that throws is answered 500, without a challenge, so a failing introspection
-     * endpoint does not send clients into re-authorization.
+     * endpoint does not send clients into re-authorization. A validator that accepts a token may
+     * name the principal it stands for (TokenValidation); handlers see it as Context::principal().
      *
      * @throws std::logic_error If a synchronous validator is already installed, or if listen() has
      *         already been called or the transport is closed.
@@ -313,10 +339,26 @@ class MCP_API HttpServerTransport final : public ITransport {
      */
     void set_unauthenticated_paths(std::vector<std::string> paths);
 
+    /// 2026-07-28 requests refused with `g_HEADER_MISMATCH` because their MCP-Protocol-Version,
+    /// Mcp-Method, Mcp-Name or Mcp-Param-* header was missing, malformed, repeated or did not
+    /// match the body.
+    [[nodiscard]] std::uint64_t header_mismatch_rejections() const;
+
     /**
      * @brief Read the next queued JSON-RPC message from HTTP POST bodies.
      */
     Task<std::string> read_message() override;
+
+    /**
+     * @brief Read the next queued JSON-RPC message with the principal of the request that carried
+     *        it.
+     *
+     * @details The principal is the id the bearer token validator returned in TokenValidation,
+     * or else `h:` followed by the hex SHA-256 of the request's Authorization header, or empty
+     * when the request had none. It is kept with each queued message, so the requests of
+     * several clients waiting together are each attributed to their own sender.
+     */
+    Task<IncomingMessage> read_incoming() override;
 
     /**
      * @brief Send a JSON-RPC response for the pending HTTP request.
@@ -337,9 +379,15 @@ class MCP_API HttpServerTransport final : public ITransport {
      */
     Task<void> listen();
 
+    /**
+     * @brief This transport, which Server::run() serves as an HttpServerTransport.
+     */
+    HttpServerTransport* http_server_transport() noexcept override { return this; }
+
    private:
     friend std::uint64_t detail::terminated_session_count(
         const HttpServerTransport& transport) noexcept;
+    friend void detail::bind_server(HttpServerTransport& transport, detail::HttpServerBinding binding);
 
     struct Impl;
     static Task<void> listen_impl(std::shared_ptr<Impl> impl);

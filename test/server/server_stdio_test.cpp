@@ -22,7 +22,7 @@ nlohmann::json make_initialize_request(std::string_view id) {
             {"id", id},
             {"method", "initialize"},
             {"params",
-             {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+             {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
               {"clientInfo", {{"name", "test-client"}, {"version", "0.1"}}},
               {"capabilities", nlohmann::json::object()}}}};
 }
@@ -228,6 +228,106 @@ TEST_F(ServerStdioTest, RunStdioHandlesToolCall) {
     EXPECT_EQ(tool_response["id"], "2");
     ASSERT_TRUE(tool_response.contains("result"));
     EXPECT_EQ(tool_response["result"]["structuredContent"]["greeting"], "Hello, World");
+}
+
+// A 2026-07-28 client sends its first request with no initialize before it.
+TEST_F(ServerStdioTest, RunStdioServesAModernRequestWithoutInitialize) {
+    BlockingStreambuf sbuf;
+    std::istream input(&sbuf);
+    CollectingStreambuf obuf;
+    std::ostream output(&obuf);
+
+    const nlohmann::json request = {
+        {"jsonrpc", "2.0"},
+        {"id", 1},
+        {"method", "tools/call"},
+        {"params",
+         {{"name", "greet"},
+          {"arguments", {{"name", "World"}}},
+          {"_meta",
+           {{"io.modelcontextprotocol/protocolVersion", "2026-07-28"},
+            {"io.modelcontextprotocol/clientCapabilities", nlohmann::json::object()}}}}}};
+    sbuf.feed(request.dump() + "\n");
+
+    std::thread server_thread([&] { server_->run_stdio(input, output); });
+
+    EXPECT_TRUE(obuf.wait_for_lines(1, g_response_budget)) << "no response line was written";
+
+    sbuf.close();
+    server_thread.join();
+
+    auto responses = parse_responses(obuf.str());
+    ASSERT_EQ(responses.size(), 1);
+    EXPECT_EQ(responses[0]["id"], 1);
+    ASSERT_TRUE(responses[0].contains("result")) << responses[0];
+    EXPECT_EQ(responses[0]["result"]["structuredContent"]["greeting"], "Hello, World");
+    EXPECT_FALSE(server_->is_initialized());
+}
+
+// An open subscriptions/listen is a request without an answer; it must not hold up the requests
+// read after it, and notifications/cancelled ends it without a response.
+TEST_F(ServerStdioTest, ListenDoesNotBlockSecondRequestOnStdio) {
+    BlockingStreambuf sbuf;
+    std::istream input(&sbuf);
+    CollectingStreambuf obuf;
+    std::ostream output(&obuf);
+
+    const nlohmann::json meta = {
+        {"io.modelcontextprotocol/protocolVersion", "2026-07-28"},
+        {"io.modelcontextprotocol/clientCapabilities", nlohmann::json::object()}};
+    const nlohmann::json listen = {
+        {"jsonrpc", "2.0"},
+        {"id", 1},
+        {"method", "subscriptions/listen"},
+        {"params", {{"_meta", meta}, {"notifications", {{"toolsListChanged", true}}}}}};
+    const nlohmann::json call = {
+        {"jsonrpc", "2.0"},
+        {"id", 2},
+        {"method", "tools/call"},
+        {"params", {{"name", "greet"}, {"arguments", {{"name", "World"}}}, {"_meta", meta}}}};
+    const nlohmann::json list = {
+        {"jsonrpc", "2.0"}, {"id", 3}, {"method", "tools/list"}, {"params", {{"_meta", meta}}}};
+    const nlohmann::json cancel = {
+        {"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 1}}}};
+
+    sbuf.feed(listen.dump() + "\n");
+    sbuf.feed(call.dump() + "\n");
+
+    std::thread server_thread([&] { server_->run_stdio(input, output); });
+
+    // The acknowledgment and the second request's answer both arrive while the listen is open.
+    EXPECT_TRUE(obuf.wait_for_lines(2, g_response_budget)) << "the listen blocked the next request";
+    EXPECT_EQ(server_->subscription_count(), 1u);
+
+    sbuf.feed(cancel.dump() + "\n");
+    sbuf.feed(list.dump() + "\n");
+    EXPECT_TRUE(obuf.wait_for_lines(3, g_response_budget)) << "no answer after the cancel";
+
+    sbuf.close();
+    server_thread.join();
+
+    const auto messages = parse_responses(obuf.str());
+    ASSERT_EQ(messages.size(), 3u);
+    bool acknowledged = false;
+    bool called = false;
+    bool listed = false;
+    for (const auto& message : messages) {
+        if (message.contains("method")) {
+            EXPECT_EQ(message["method"], "notifications/subscriptions/acknowledged");
+            EXPECT_EQ(message["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"], 1);
+            acknowledged = true;
+        } else if (message["id"] == 2) {
+            EXPECT_TRUE(message.contains("result")) << message;
+            called = true;
+        } else {
+            EXPECT_EQ(message["id"], 3) << "nothing is sent for the cancelled listen: " << message;
+            listed = true;
+        }
+    }
+    EXPECT_TRUE(acknowledged);
+    EXPECT_TRUE(called);
+    EXPECT_TRUE(listed);
+    EXPECT_EQ(server_->subscription_count(), 0u);
 }
 
 TEST_F(ServerStdioTest, RunStdioExitsCleanlyOnEmptyInput) {
