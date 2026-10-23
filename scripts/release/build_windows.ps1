@@ -429,7 +429,8 @@ int main() { std::cout << _MSC_VER << " " << sizeof(void*) << "\n"; }
 
     $compilerVersion = if ($mscVer -ge 1940) { '194' } else { '193' }
     $profilePath = Join-Path $repoRoot 'release/windows/conan-msvc-release.profile'
-    $profileText = [System.IO.File]::ReadAllText($profilePath)
+    # A Windows checkout can convert the profile to CRLF; the line pattern below expects LF.
+    $profileText = [System.IO.File]::ReadAllText($profilePath).Replace("`r`n", "`n")
     if ($profileText -notmatch "(?m)^compiler\.version=$([regex]::Escape($compilerVersion))$") {
         throw 'The reviewed Conan lock profile does not match the active MSVC series'
     }
