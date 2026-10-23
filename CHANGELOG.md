@@ -243,6 +243,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `Client::cancel()` ends the wait for the request at once (it fails with
   `g_REQUEST_CANCELLED`) and a response that arrives anyway is dropped. A
   request that times out is cancelled with `notifications/cancelled`.
+- The client resumes `input_required` results (2026-07-28): when a modern
+  `tools/call`, `prompts/get` or `resources/read` is answered with one, it
+  runs the elicitation, sampling or roots handler registered for each entry
+  of `inputRequests` and sends the request again with a new id, the answers
+  in `inputResponses` and the server's `requestState` unchanged, until a
+  complete result arrives. `RequestOptions::max_input_rounds` (default 8)
+  limits the retries; the call's timeout covers all rounds, and a question
+  with no handler fails the call naming the method.
 
 ### Changed
 

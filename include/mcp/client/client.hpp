@@ -262,6 +262,15 @@ struct RequestOptions {
      * member has no effect there.
      */
     std::optional<LoggingLevel> log_level;
+    /**
+     * @brief Most retries one modern tools/call, prompts/get or resources/read may make.
+     *
+     * @details When the server answers such a request with an `input_required` result, the client
+     * runs its registered elicitation, sampling and roots handlers for the questions and sends the
+     * request again with the answers. Each retry counts against this limit; a server that still asks
+     * after the last one fails the call with an McpError. Legacy sessions ignore it.
+     */
+    int max_input_rounds = 8;
 };
 
 /**

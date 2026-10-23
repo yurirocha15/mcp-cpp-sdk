@@ -133,6 +133,11 @@ struct Client::Impl {
             return request_wire(std::move(state), method, params, request_options, false);
         }
         reject_removed_method(*modern_version, method);
+        if (supports_input_required(method)) {
+            return resume_input_required(std::move(state), std::make_shared<const std::string>(method),
+                                         params, request_options,
+                                         std::make_shared<const std::string>(*modern_version));
+        }
         auto modern_params =
             state->with_request_meta(*modern_version, params, request_options.log_level);
         return checked_result(
@@ -176,6 +181,11 @@ struct Client::Impl {
     /// "complete", and any other value is one this client cannot act on.
     static Task<nlohmann::json> checked_result(Task<nlohmann::json> pending) {
         auto result = co_await std::move(pending);
+        check_complete(result);
+        co_return result;
+    }
+
+    static void check_complete(const nlohmann::json& result) {
         if (result.is_object()) {
             const auto found = result.find("resultType");
             if (found != result.end() && !(found->is_string() && *found == "complete")) {
@@ -184,7 +194,113 @@ struct Client::Impl {
                                                       detail::sanitize_for_diagnostics(shown));
             }
         }
-        co_return result;
+    }
+
+    /// The requests whose answer may be an input_required result.
+    static bool supports_input_required(std::string_view method) {
+        return method == "tools/call" || method == "prompts/get" || method == "resources/read";
+    }
+
+    /// Answers one input_required result: runs the registered handler of each entry in
+    /// `inputRequests` and returns the `inputResponses` for the retry, keyed as the server asked.
+    static Task<nlohmann::json> answer_input_requests(std::shared_ptr<Impl> state,
+                                                      std::shared_ptr<const nlohmann::json> requests) {
+        nlohmann::json responses = nlohmann::json::object();
+        for (const auto& entry : requests->items()) {
+            const auto& request = entry.value();
+            if (!request.is_object() || !request.contains("method") || !request["method"].is_string()) {
+                throw McpError(g_INVALID_REQUEST, "input_required entry " +
+                                                      detail::sanitize_for_diagnostics(entry.key()) +
+                                                      " is not a request");
+            }
+            const auto method =
+                std::make_shared<const std::string>(request["method"].get<std::string>());
+            RequestHandler handler;
+            {
+                std::lock_guard lock(state->handlers_mutex);
+                const auto found = state->request_handlers.find(*method);
+                if (found != state->request_handlers.end()) {
+                    handler = found->second;
+                }
+            }
+            const bool answerable = *method == "elicitation/create" ||
+                                    *method == "sampling/createMessage" || *method == "roots/list";
+            if (!answerable || !handler) {
+                throw McpError(g_INVALID_REQUEST,
+                               "The server asked for " + detail::sanitize_for_diagnostics(*method) +
+                                   " in an input_required result, but " +
+                                   (answerable ? "no handler is registered for it"
+                                               : "that is not a request a client answers"));
+            }
+            const nlohmann::json handler_params =
+                request.contains("params") ? request["params"] : nlohmann::json::object();
+            auto answer = co_await handler(handler_params);
+            responses[entry.key()] = std::move(answer);
+        }
+        co_return responses;
+    }
+
+    /// Sends a request that may be answered with an input_required result and resumes it: each
+    /// round answers the server's questions with the registered handlers, then sends the original
+    /// request again as a new request carrying `inputResponses` and the server's `requestState`
+    /// untouched. The timeout of the call bounds all rounds together.
+    static Task<nlohmann::json> resume_input_required(std::shared_ptr<Impl> state,
+                                                      std::shared_ptr<const std::string> method,
+                                                      std::optional<nlohmann::json> params,
+                                                      RequestOptions request_options,
+                                                      std::shared_ptr<const std::string> version) {
+        const auto timeout = request_options.timeout.value_or(state->options.request_timeout);
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        std::shared_ptr<const nlohmann::json> input_responses;
+        std::shared_ptr<const nlohmann::json> request_state;
+        for (int round = 0;; ++round) {
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+            if (remaining <= std::chrono::milliseconds::zero()) {
+                throw McpError(g_REQUEST_TIMEOUT, "Request timed out");
+            }
+            request_options.timeout = remaining;
+            auto round_params = state->with_request_meta(*version, params, request_options.log_level);
+            if (input_responses) {
+                (*round_params)["inputResponses"] = *input_responses;
+            }
+            if (request_state) {
+                (*round_params)["requestState"] = *request_state;
+            }
+            auto reply = co_await request_wire(state, *method, round_params, request_options, false);
+            const auto type = reply.is_object() ? reply.find("resultType") : reply.end();
+            if (!reply.is_object() || type == reply.end() || !type->is_string() ||
+                *type != "input_required") {
+                check_complete(reply);
+                co_return reply;
+            }
+            if (round >= request_options.max_input_rounds) {
+                throw McpError(g_INVALID_REQUEST, "The server still asked for input after " +
+                                                      std::to_string(request_options.max_input_rounds) +
+                                                      " rounds (RequestOptions::max_input_rounds)");
+            }
+            const auto requests = reply.find("inputRequests");
+            const auto reply_state = reply.find("requestState");
+            const bool has_requests = requests != reply.end();
+            const bool has_state = reply_state != reply.end();
+            if ((has_requests && !requests->is_object()) || (has_state && !reply_state->is_string())) {
+                throw McpError(g_INVALID_REQUEST,
+                               "input_required result: inputRequests must be an object and "
+                               "requestState a string");
+            }
+            if (!has_requests && !has_state) {
+                throw McpError(g_INVALID_REQUEST,
+                               "input_required result has neither inputRequests nor requestState");
+            }
+            request_state = has_state ? std::make_shared<const nlohmann::json>(*reply_state) : nullptr;
+            if (has_requests) {
+                auto questions = std::make_shared<const nlohmann::json>(*requests);
+                auto answers = co_await answer_input_requests(state, std::move(questions));
+                input_responses = std::make_shared<const nlohmann::json>(std::move(answers));
+            } else {
+                input_responses = nullptr;
+            }
+        }
     }
 
     static Task<void> notification(std::shared_ptr<Impl> state, std::string_view method,
