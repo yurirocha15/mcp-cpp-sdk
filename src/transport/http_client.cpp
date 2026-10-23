@@ -421,12 +421,51 @@ struct HttpClientTransport::Impl {
         }
     }
 
-    void process_response(const StringResponse& response) {
+    /// The JSON-RPC error a 400 or 404 answer carries for a request @p sent outside any session,
+    /// with the request's id filled in when the server left it out, or nullopt when the answer is
+    /// anything else. Such a request is an initialize, so the error explains why there is no
+    /// session.
+    static std::optional<std::string> sessionless_error_body(const StringResponse& response,
+                                                             const std::string& sent) {
+        const auto status = response.result();
+        const auto content_type = response.find(http::field::content_type);
+        if ((status != http::status::bad_request && status != http::status::not_found) ||
+            content_type == response.end() ||
+            !starts_with(std::string(content_type->value()), "application/json")) {
+            return std::nullopt;
+        }
+        auto parsed = detail::parse_peer_json(response.body());
+        const auto request = detail::parse_peer_json(sent);
+        if (!parsed.is_object() || !request.is_object() || !request.contains("id")) {
+            return std::nullopt;
+        }
+        const auto error = parsed.find("error");
+        if (error == parsed.end() || !error->is_object() || !error->contains("code") ||
+            !error->at("code").is_number_integer()) {
+            return std::nullopt;
+        }
+        if (!parsed.contains("id") || parsed.at("id").is_null()) {
+            parsed["id"] = request.at("id");
+        }
+        if (parsed.at("id") != request.at("id")) {
+            return std::nullopt;
+        }
+        parsed["jsonrpc"] = "2.0";
+        return parsed.dump();
+    }
+
+    void process_response(const StringResponse& response, const std::string& sent, bool in_session) {
         if (response.result() == http::status::accepted) {
             return;
         }
 
         if (response.result_int() >= constants::g_http_bad_request) {
+            if (!in_session) {
+                if (auto error_body = sessionless_error_body(response, sent)) {
+                    enqueue_message(std::move(*error_body));
+                    return;
+                }
+            }
             std::string challenge;
             const auto challenge_it = response.find(http::field::www_authenticate);
             if (challenge_it != response.end()) {
@@ -605,7 +644,7 @@ struct HttpClientTransport::Impl {
             }
 
             impl->capture_session_id(response);
-            impl->process_response(response);
+            impl->process_response(response, request.body(), request.count("MCP-Session-Id") != 0);
             if (initialize_operation) {
                 state.initialize_request_key.reset();
             }
