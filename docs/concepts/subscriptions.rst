@@ -114,9 +114,9 @@ Servers can track when clients subscribe to or unsubscribe from resources. This 
 
 You can register subscription handlers using ``on_subscribe()`` and ``on_unsubscribe()``:
 
-.. literalinclude:: ../../examples/features/notifications_subscriptions.cpp
+.. literalinclude:: ../../examples/features/legacy_protocols.cpp
    :language: cpp
-   :lines: 64-73
+   :lines: 164-165
    :linenos:
    :caption: Registering subscription callbacks on the server.
 
@@ -127,7 +127,7 @@ When a resource's content is updated, the server should notify all active subscr
 
 .. literalinclude:: ../../examples/features/notifications_subscriptions.cpp
    :language: cpp
-   :lines: 148-150
+   :lines: 165-166
    :linenos:
    :caption: Notifying subscribers of a resource update.
 
@@ -146,25 +146,24 @@ Example of triggering list notifications:
 
 .. literalinclude:: ../../examples/features/notifications_subscriptions.cpp
    :language: cpp
-   :lines: 156-176
+   :lines: 167-173
    :linenos:
    :caption: Triggering list change notifications for tools, resources, and prompts.
 
 Client-side Notification Handling
 ---------------------------------
 
-Clients must explicitly register handlers to process incoming notifications. This is done using the ``on_notification()`` method, which maps a notification method name to a callback function.
+In a 2026-07-28 session the notifications of a ``subscriptions/listen`` stream
+arrive through ``Subscription::next()``, as shown in `Listening for
+Notifications`_. Other notifications, and every notification in a session of an
+older revision, go to handlers registered with ``on_notification()``, which maps
+a notification method name to a callback function.
 
-.. literalinclude:: ../../examples/features/notifications_subscriptions.cpp
+.. literalinclude:: ../../examples/features/legacy_protocols.cpp
    :language: cpp
-   :lines: 111-135
+   :lines: 173-180
    :linenos:
-   :caption: Registering client-side notification handlers.
-
-Example Walkthrough
--------------------
-
-The following example demonstrates a complete flow where a client subscribes to a counter resource, and the server periodically notifies the client of updates.
+   :caption: Registering client-side notification handlers in a 2025-11-25 session.
 
 Architecture of Notifications
 -----------------------------
@@ -186,14 +185,24 @@ While the `mcp-cpp-sdk` handles the underlying message routing, the server appli
 Example Walkthrough
 -------------------
 
-The following example demonstrates a complete flow where a client subscribes to a counter resource, and the server periodically notifies the client of updates.
+``examples/features/notifications_subscriptions.cpp`` demonstrates a complete
+flow in a 2026-07-28 session:
 
-1. **Server Setup**: The server enables the resource subscription capability.
-2. **Registration**: The server registers a resource and subscription handlers.
-3. **Subscription**: The client sends a ``resources/subscribe`` request.
-4. **Notification**: The server calls ``notify_resource_updated()`` when the counter increments.
-5. **Handling**: The client's registered callback processes the update.
-6. **Unsubscription**: The client eventually unsubscribes to stop receiving updates.
+1. **Server Setup**: The server declares the tools and resources capabilities
+   with ``listChanged``, and ``subscribe`` for resources. It declares no prompts
+   capability.
+2. **Registration**: The server registers a counter resource.
+3. **Listening**: The client opens a stream with ``listen()`` for the tools,
+   prompts and resources list changes and the counter's URI. The
+   acknowledgement leaves the prompt notifications out.
+4. **Notification**: The server calls ``notify_resource_updated()``,
+   ``notify_tools_list_changed()`` and ``notify_resources_list_changed()``.
+5. **Handling**: The client reads each notification with ``next()``.
+6. **Ending**: The client ends the stream with ``close()``, then opens a second
+   one that the server ends with ``close_subscriptions()``.
+
+The ``resources/subscribe`` flow of the older revisions is in
+``examples/features/legacy_protocols.cpp``.
 
 Advanced Notification Patterns
 ------------------------------
