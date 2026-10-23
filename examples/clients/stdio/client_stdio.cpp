@@ -48,9 +48,19 @@ int main() {  // NOLINT(readability-function-cognitive-complexity)
                 ClientCapabilities caps;
                 caps.sampling = ClientCapabilities::SamplingCapability{};
 
-                auto init_result = co_await client.connect(client_info, caps);
-                std::cerr << "Connected to: " << init_result.serverInfo->name << " "
-                          << init_result.serverInfo->version << "\n";
+                {
+                    auto init_result = co_await client.connect(client_info, caps);
+                    // serverInfo is optional: a server may leave it out. The default Auto() speaks
+                    // 2026-07-28 with a server that serves it and falls back to initialize otherwise;
+                    // era and protocolVersion say which one happened.
+                    if (init_result.serverInfo) {
+                        std::cerr << "Connected to: " << init_result.serverInfo->name << " "
+                                  << init_result.serverInfo->version << "\n";
+                    }
+                    std::cerr << "Protocol version: " << init_result.protocolVersion << " ("
+                              << (init_result.era == ProtocolEra::eModern ? "modern" : "legacy")
+                              << " session)\n";
+                }
 
                 // list_tools
                 auto tools = co_await client.list_tools();

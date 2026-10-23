@@ -13,6 +13,7 @@ A modern C++20 implementation of the Model Context Protocol (MCP), enabling seam
 - **Shared or Static**: The same public API is available through explicit CMake targets for either linkage model.
 - **Typed Protocol Models**: Strongly typed models for the supported MCP surface, with `nlohmann/json` interoperability.
 - **Flexible Transports**: Native support for Stdio, WebSocket, and Streamable HTTP.
+- **Protocol Revisions**: A `Server` serves revision `2026-07-28` alongside `2025-11-25` and earlier on the same transport. A `Client` detects which one the server speaks when it connects.
 - **Measured Interoperability**: Official client and server conformance suites run in CI against a pinned `2025-11-25` regression baseline, with unsupported scenarios kept visible. A green baseline means no drift, not that an SDK tier has been achieved.
 
 ### How this implementation differs
@@ -90,7 +91,8 @@ int main() {
     mcp::Client client(transport, io.get_executor());
 
     boost::asio::co_spawn(io, [&]() -> mcp::Task<void> {
-        co_await client.connect("my-client", "1.0.0");
+        mcp::ConnectResult connected = co_await client.connect("my-client", "1.0.0");
+        std::cerr << "Connected using protocol " << connected.protocolVersion << '\n';
         nlohmann::json arguments{{"name", "World"}};
         auto result = co_await client.call_tool("hello", arguments);
         std::cerr << nlohmann::json(result).dump(2) << '\n';
@@ -101,8 +103,16 @@ int main() {
 }
 ```
 
-Note the named `arguments` variable. See [Compiler
-Notes](#compiler-notes) for why it is not built inline.
+`Client` defaults to `mcp::ClientProtocol::Auto()`: it sends `server/discover`
+first and falls back to `initialize` when the server does not answer as a
+2026-07-28 server. `connect()` returns a `mcp::ConnectResult` holding the
+session's `era`, the `protocolVersion` in use, the server's `capabilities`, and,
+when the server sent them, `serverInfo`, `instructions` and `supportedVersions`.
+To skip detection, set `ClientOptions::protocol` to
+`mcp::ClientProtocol::Legacy()` or `mcp::ClientProtocol::Version("2026-07-28")`.
+
+Note the named `arguments` variable. See [Compiler Notes](#compiler-notes) for
+why it is not built inline.
 
 ## Usage Highlights
 
@@ -165,10 +175,26 @@ This is a compiler defect rather than an SDK one, and no change to the SDK's
 signatures avoids it: taking the argument by value instead of by reference
 still crashes.
 
+### GCC 11: temporaries inside a `co_await`
+
+GCC releases before 13 can destroy a temporary created inside a `co_await`
+expression twice
+([GCC bug 101367](https://gcc.gnu.org/bugzilla/show_bug.cgi?id=101367)). With
+GCC 11 a braced aggregate argument such as `mcp::Implementation{...}` crashes
+the program. Build such a value as a named variable before the `co_await`:
+
+```cpp
+// Crashes with GCC 11
+co_await client.connect(mcp::Implementation{"my-client", "1.0.0"}, capabilities);
+
+// Works
+mcp::Implementation client_info{"my-client", "1.0.0"};
+co_await client.connect(client_info, capabilities);
+```
+
 The contributing guide's [Known
 Issues](https://yurirocha15.github.io/mcp-cpp-sdk/contributing.html#known-issues)
-section carries the full case list, alongside the separate GCC 11 coroutine bug
-this codebase also works around.
+section carries the full case list for both compiler defects.
 
 ## Documentation
 

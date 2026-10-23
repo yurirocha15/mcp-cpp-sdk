@@ -42,20 +42,18 @@ method, which blocks the main thread until the connection is closed.
 
    #include <mcp/mcp.hpp>
 
-   int main() {
-       // Define server information and capabilities
-       mcp::Implementation info{"my-server", "1.0.0"};
-       mcp::ServerCapabilities caps;
-       caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+   // Define server information and capabilities
+   mcp::Implementation info{"my-server", "1.0.0"};
+   mcp::ServerCapabilities caps;
+   caps.tools = mcp::ServerCapabilities::ToolsCapability{};
 
-       mcp::Server server(info, caps);
+   mcp::Server server(info, caps);
 
-       // Add your tools, resources, and prompts here
-       server.add_tool("echo", "Echoes input", schema, [](auto args) { ... });
+   // Add your tools, resources, and prompts here with add_tool(), add_resource()
+   // and add_prompt().
 
-       // Run the server on stdin/stdout
-       server.run_stdio();
-   }
+   // Run the server on stdin/stdout
+   server.run_stdio();
 
 Client Side
 ~~~~~~~~~~~
@@ -87,6 +85,14 @@ polling streams are not yet implemented.
 After initialization, ``HttpClientTransport`` carries the server-selected
 protocol version on subsequent session requests and best-effort DELETE
 teardown, including when the initialize response arrived in an SSE event.
+
+A request of protocol revision 2026-07-28 needs no session. ``HttpClientTransport``
+sends it as a POST of its own, with the ``MCP-Protocol-Version``, ``Mcp-Method``
+and ``Mcp-Name`` headers (and ``Mcp-Param-*`` headers for tools that ask for
+them), and no ``Mcp-Session-Id``. ``StreamableHttpSessionManager`` and
+``HttpServerTransport`` serve such requests on the same endpoint as legacy
+sessions. See :doc:`/guides/deployment` for the headers and the error statuses,
+and :doc:`protocol` for the protocol itself.
 
 The built-in HTTP transports are plaintext. Bind local development servers to
 loopback. For remote deployments, place them behind a TLS-terminating proxy or
@@ -188,6 +194,10 @@ transports, your server and client code remain identical to production.
    :language: cpp
    :lines: 43-66
    :dedent: 8
+
+A default ``Client`` and a default ``Server`` speak protocol revision 2026-07-28
+over this transport. Set ``ClientOptions::protocol`` to test an older revision;
+see :doc:`/guides/older-protocols`.
 
 For more information on writing effective tests, see the :doc:`/guides/testing` guide.
 
