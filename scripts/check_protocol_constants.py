@@ -39,6 +39,10 @@ ALLOWED_USES: dict[tuple[str, str], int] = {
     ("include/mcp/protocol/capabilities.hpp", "g_LATEST_PROTOCOL_VERSION"): 1,
     ("include/mcp/protocol/capabilities.hpp", "g_SUPPORTED_PROTOCOL_VERSIONS"): 4,
     ("include/mcp/protocol/capabilities.hpp", "is_supported_protocol_version"): 1,
+    # Every version the SDK knows is a valid pin.
+    ("src/client/client.cpp", "is_supported_protocol_version"): 1,
+    # The versions named before Server::run() says which it serves: all of them.
+    ("src/transport/http_server.cpp", "g_SUPPORTED_PROTOCOL_VERSIONS"): 2,
 }
 
 RETIRED_CODES = ("-32002", "-32042")

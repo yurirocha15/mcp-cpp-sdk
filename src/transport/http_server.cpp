@@ -1053,8 +1053,8 @@ struct HttpServerTransport::Impl {
     detail::ParamHeaderCheck param_header_check;
     /// The versions named when initialize arrives with a 2026-07-28 header; every version until
     /// Server::run() says which it serves.
-    std::vector<std::string> served_versions{g_DISCOVERABLE_PROTOCOL_VERSIONS.begin(),
-                                             g_DISCOVERABLE_PROTOCOL_VERSIONS.end()};
+    std::vector<std::string> served_versions{g_SUPPORTED_PROTOCOL_VERSIONS.begin(),
+                                             g_SUPPORTED_PROTOCOL_VERSIONS.end()};
     std::atomic<std::uint64_t> header_mismatch_rejections{0};
 
     std::unordered_map<std::string, PendingResponse> pending_responses;

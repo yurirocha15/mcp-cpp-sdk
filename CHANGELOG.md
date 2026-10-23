@@ -9,9 +9,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 ### Added
 
 - Protocol revision 2026-07-28 is served alongside 2025-11-25 and earlier, as
-  the entries below describe. `g_LATEST_PROTOCOL_VERSION` still names
-  2025-11-25, and `Client` still speaks only the legacy revisions unless
-  `ClientOptions::protocol` says otherwise.
+  the entries below describe, and is the newest revision the SDK supports.
 - Requests of protocol revision 2026-07-28, which carry their protocol
   version, client capabilities and optionally client info and log level in
   `_meta`, are served without `initialize`, alongside a legacy session, by
@@ -202,9 +200,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `RequestContext::watch_cancel` lets a transport wake a request when it sets
   `cancelled`.
 - The client detects the server's protocol era and speaks both.
-  `ClientOptions::protocol` takes `ClientProtocol::Auto()`, `Legacy()` (the
-  default for now) or `Version("...")`. `Auto()` sends `server/discover`
-  first: a `DiscoverResult` or a modern protocol error
+  `ClientOptions::protocol` takes `ClientProtocol::Auto()` (the default),
+  `Legacy()` or `Version("...")`. `Auto()` sends `server/discover` first: a
+  `DiscoverResult` or a modern protocol error
   (`g_UNSUPPORTED_PROTOCOL_VERSION`, `g_HEADER_MISMATCH`,
   `g_MISSING_REQUIRED_CLIENT_CAPABILITY`) means a 2026-07-28 server, while any
   other error (including `-32601` and `-32602`), a reply that is not JSON, or
@@ -280,7 +278,15 @@ Versioning; a `0.x` version is a stable release unless its version has an
   server, and `HttpServerTransport` counts a waiting discover against the 256
   waiting 2026-07-28 requests instead of a limit of 16 for discovers.
 - `initialize` negotiation uses `g_LEGACY_PROTOCOL_VERSIONS` instead of
-  `g_SUPPORTED_PROTOCOL_VERSIONS`, which keeps its value.
+  `g_SUPPORTED_PROTOCOL_VERSIONS`.
+- `g_LATEST_PROTOCOL_VERSION` names 2026-07-28, and
+  `g_SUPPORTED_PROTOCOL_VERSIONS`, now a `std::array` of five, lists it after
+  the four legacy revisions, so `is_supported_protocol_version()` is true for
+  every revision the SDK serves in either era. Code that used them for the
+  versions `initialize` negotiates should use
+  `g_LATEST_LEGACY_PROTOCOL_VERSION`, `g_LEGACY_PROTOCOL_VERSIONS` and
+  `is_legacy_protocol_version()`; `negotiate_protocol_version()` still selects
+  only those.
 - Before `notifications/initialized`, a session serves a request that carries
   a 2026-07-28 protocol version in `_meta` instead of answering it with
   `g_INVALID_REQUEST`; `server/discover` is exempt from the initialization
@@ -289,6 +295,13 @@ Versioning; a `0.x` version is a stable release unless its version has an
   cancelled, so `Context::is_cancelled()` turns true in resource and prompt
   handlers too, not only in tools. The response of a request of 2025-11-25 or
   earlier is still sent.
+- `Client::connect()` sends `server/discover` before `initialize` by default
+  (`ClientProtocol::Auto()`, also what a default-constructed `ClientProtocol`
+  selects) and speaks 2026-07-28 with a server that serves it. A legacy server
+  costs one extra round trip, or `ClientOptions::probe_timeout` if it ignores
+  the request; one that closes the connection on it fails the connect.
+  `ClientOptions::protocol = ClientProtocol::Legacy()` keeps sending only
+  `initialize`.
 - `Client::connect()` resolves to `ConnectResult` instead of
   `InitializeResult`: `era`, `protocolVersion`, `capabilities`, `serverInfo`
   (now optional, so write `result.serverInfo->name`), `instructions` and
@@ -341,6 +354,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 - `Server::set_discover_ttl_ms()` and `set_discover_cache_scope()`, replaced
   by `Server::set_cache_hints()`.
+- `g_DISCOVERABLE_PROTOCOL_VERSIONS`; `g_SUPPORTED_PROTOCOL_VERSIONS` lists
+  the same versions.
 
 ### Fixed
 

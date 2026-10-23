@@ -36,8 +36,8 @@ constexpr std::string_view g_PROTOCOL_VERSION_2025_11_25 = "2025-11-25";
 /**
  * @brief Protocol version 2026-07-28, the first revision served per request, without initialize.
  *
- * @details Listed in g_MODERN_PROTOCOL_VERSIONS and g_DISCOVERABLE_PROTOCOL_VERSIONS, not in
- * g_SUPPORTED_PROTOCOL_VERSIONS. initialize never negotiates it.
+ * @details Listed in g_MODERN_PROTOCOL_VERSIONS and g_SUPPORTED_PROTOCOL_VERSIONS, not in
+ * g_LEGACY_PROTOCOL_VERSIONS. initialize never negotiates it.
  */
 constexpr std::string_view g_PROTOCOL_VERSION_2026_07_28 = "2026-07-28";
 
@@ -47,17 +47,7 @@ constexpr std::string_view g_PROTOCOL_VERSION_2026_07_28 = "2026-07-28";
  * @details initialize negotiation does not read it; the newest version initialize negotiates is
  * g_LATEST_LEGACY_PROTOCOL_VERSION.
  */
-constexpr std::string_view g_LATEST_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2025_11_25;
-
-/**
- * @brief Protocol versions this SDK lists as supported.
- *
- * @details initialize negotiation does not read this list; it uses g_LEGACY_PROTOCOL_VERSIONS.
- * 2026-07-28 is not listed here, although g_DISCOVERABLE_PROTOCOL_VERSIONS names it.
- */
-constexpr std::array<std::string_view, 4> g_SUPPORTED_PROTOCOL_VERSIONS = {
-    g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
-    g_PROTOCOL_VERSION_2025_11_25};
+constexpr std::string_view g_LATEST_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2026_07_28;
 
 /**
  * @brief The newest protocol version that starts a session with initialize.
@@ -80,19 +70,20 @@ constexpr std::array<std::string_view, 4> g_LEGACY_PROTOCOL_VERSIONS = {
 constexpr std::array<std::string_view, 1> g_MODERN_PROTOCOL_VERSIONS = {g_PROTOCOL_VERSION_2026_07_28};
 
 /**
- * @brief Every protocol version this SDK knows: the legacy versions, then the modern ones.
+ * @brief Every protocol version this SDK supports: the legacy versions, then the modern ones.
  *
  * @details A server serving every era advertises these in server/discover; a
- * ServerProtocolPolicy narrows the list. Listing a version here makes no promise to initialize
- * negotiation: a legacy peer requesting 2026-07-28 in initialize still negotiates
+ * ServerProtocolPolicy narrows the list. initialize negotiation does not read this list; it uses
+ * g_LEGACY_PROTOCOL_VERSIONS, so a legacy peer requesting 2026-07-28 in initialize negotiates
  * g_LATEST_LEGACY_PROTOCOL_VERSION.
  */
-constexpr std::array<std::string_view, 5> g_DISCOVERABLE_PROTOCOL_VERSIONS = {
+constexpr std::array<std::string_view, 5> g_SUPPORTED_PROTOCOL_VERSIONS = {
     g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
     g_PROTOCOL_VERSION_2025_11_25, g_PROTOCOL_VERSION_2026_07_28};
 
 /**
- * @brief Check whether a protocol version is listed in g_SUPPORTED_PROTOCOL_VERSIONS.
+ * @brief Check whether a protocol version is listed in g_SUPPORTED_PROTOCOL_VERSIONS, in either
+ * era.
  *
  * @details initialize negotiation does not use it; see is_legacy_protocol_version().
  *
