@@ -43,7 +43,7 @@ For more complex resources, you can use the structured protocol types:
 
 .. literalinclude:: ../../examples/servers/stdio/server_stdio.cpp
    :language: cpp
-   :lines: 120-136
+   :lines: 126-142
    :linenos:
    :caption: Example of a structured static resource registration.
 

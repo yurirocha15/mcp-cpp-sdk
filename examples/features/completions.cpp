@@ -30,6 +30,7 @@ int main() {
         using namespace mcp;
 
         asio::io_context io_ctx;
+        bool client_ok = false;
 
         // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
@@ -142,8 +143,14 @@ int main() {
 
                     // Connect to server
                     std::cout << "Client: Connecting to server\n";
-                    auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "Client: Connected to " << init_result.serverInfo->name << "\n";
+                    {
+                        auto init_result = co_await client.connect(client_info, ClientCapabilities{});
+                        // serverInfo is optional: a server may leave it out.
+                        if (init_result.serverInfo) {
+                            std::cout << "Client: Connected to " << init_result.serverInfo->name
+                                      << "\n";
+                        }
+                    }
 
                     // Test 1: Complete language argument with "C"
                     std::cout << "\n--- Test 1: Language completions for 'C' ---\n";
@@ -199,6 +206,7 @@ int main() {
                     std::cout << "\nClient: All completion tests completed successfully\n";
                     std::cout << "Client: Closing connection\n";
                     client.close();
+                    client_ok = true;
 
                 } catch (const std::exception& e) {
                     std::cerr << "Client error: " << e.what() << "\n";
@@ -221,6 +229,10 @@ int main() {
 
         io_ctx.run();
 
+        if (!client_ok) {
+            std::cerr << "Example failed\n";
+            return EXIT_FAILURE;
+        }
         std::cout << "Example completed successfully\n";
         return EXIT_SUCCESS;
 
