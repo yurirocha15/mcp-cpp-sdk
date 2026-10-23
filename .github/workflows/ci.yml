@@ -107,6 +107,14 @@ jobs:
       if: runner.os != 'Windows'
       run: python scripts/check_readme_snippets.py
 
+    # The reStructuredText guides carry complete programs too. Same compiler and
+    # flags as the README check; code-blocks without a main are reported as skipped.
+    - name: Compile documentation snippets
+      if: runner.os != 'Windows'
+      run: |
+        PYTHONPATH=scripts python3 -m unittest -v scripts.test_check_doc_snippets
+        python scripts/check_doc_snippets.py
+
     - name: Run Examples
       run: python scripts/run_examples.py
 
