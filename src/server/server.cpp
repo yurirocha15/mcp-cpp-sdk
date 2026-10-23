@@ -426,11 +426,13 @@ UriTemplatePattern compile_uri_template(std::string_view uri_template) {
     return UriTemplatePattern{std::move(pattern), std::move(states)};
 }
 
-void validate_call_tool_result(const nlohmann::json& result) {
+// Before 2026-07-28 structuredContent is an object; a 2026-07-28 response may hold any JSON value.
+void validate_call_tool_result(const nlohmann::json& result, bool modern) {
     if (!result.is_object() || !result.contains("content")) {
         throw std::invalid_argument("Raw tool result must be a CallToolResult object with content");
     }
-    if (result.contains("structuredContent") && !result.at("structuredContent").is_object()) {
+    if (!modern && result.contains("structuredContent") &&
+        !result.at("structuredContent").is_object()) {
         throw std::invalid_argument("CallToolResult structuredContent must be a JSON object");
     }
     if (result.contains("_meta") && !result.at("_meta").is_object()) {
@@ -443,7 +445,7 @@ void validate_call_tool_result(const nlohmann::json& result) {
 // Whether a handler's value is already a serialized CallToolResult: an object made only of
 // CallToolResult members that decodes as one. A bare {"content": []} is left out, because an empty
 // list says nothing about which of the two the handler meant.
-bool is_serialized_call_tool_result(const nlohmann::json& result) {
+bool is_serialized_call_tool_result(const nlohmann::json& result, bool modern) {
     if (!result.is_object() || !result.contains("content") || !result.at("content").is_array()) {
         return false;
     }
@@ -457,18 +459,18 @@ bool is_serialized_call_tool_result(const nlohmann::json& result) {
         return false;
     }
     try {
-        validate_call_tool_result(result);
+        validate_call_tool_result(result, modern);
     } catch (const std::exception&) {
         return false;
     }
     return true;
 }
 
-nlohmann::json normalize_structured_tool_result(nlohmann::json result) {
+nlohmann::json normalize_structured_tool_result(nlohmann::json result, bool modern) {
     if (result.is_object()) {
         // A handler that built a CallToolResult is already speaking the protocol; wrapping it again
         // would bury its content blocks inside a text block.
-        if (is_serialized_call_tool_result(result)) {
+        if (is_serialized_call_tool_result(result, modern)) {
             return result;
         }
         return nlohmann::json(make_tool_structured_result(std::move(result)));
@@ -2231,6 +2233,7 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
     auto ctx =
         make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
                      session_request, std::move(notifications), std::move(principal), std::move(mrtr));
+    const bool modern = ctx.request_meta() != nullptr;
     nlohmann::json handler_result;
 
     // A tool that throws has failed at its own job, which the protocol reports inside the result as
@@ -2286,9 +2289,9 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
     }
 
     if (iter->second.result_mode == detail::ToolResultMode::eValidated) {
-        validate_call_tool_result(handler_result);
+        validate_call_tool_result(handler_result, modern);
     } else {
-        handler_result = normalize_structured_tool_result(std::move(handler_result));
+        handler_result = normalize_structured_tool_result(std::move(handler_result), modern);
     }
 
     const bool is_error_result = handler_result.value("isError", false);
