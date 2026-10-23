@@ -25,6 +25,10 @@ command -v python3 >/dev/null
 export HOMEBREW_NO_ANALYTICS=1
 export HOMEBREW_NO_AUTO_UPDATE=1
 export HOMEBREW_NO_INSTALL_CLEANUP=1
+# brew tap-new commits the new tap; give that commit an identity instead of relying on the
+# runner's Git configuration.
+export HOMEBREW_GIT_NAME='mcp-cpp-sdk release validation'
+export HOMEBREW_GIT_EMAIL='releases@users.noreply.github.com'
 
 brew tap-new "${tap}"
 tap_root="$(brew --repository "${tap}")"

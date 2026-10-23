@@ -158,7 +158,7 @@ def construct_core(
     render_file(
         root / "packaging/homebrew/mcp-cpp-sdk.rb.in",
         output / "homebrew-mcp-cpp-sdk.rb",
-        {"VERSION": str(version), "SOURCE_URL": source_url, "SOURCE_SHA256": source_sha256},
+        {"SOURCE_URL": source_url, "SOURCE_SHA256": source_sha256},
     )
     render_file(
         root / "packaging/conan-center/config-entry.json.in",
