@@ -1355,3 +1355,99 @@ TEST(HttpClientPinned, ServerRestrictedPolicyNegotiatesUpAndHeadersFollow) {
             << outcome.requests[index].body;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Errors a legacy client gets with an HTTP error status
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// A legacy client connecting to a raw server that answers initialize with @p status and @p body.
+std::string legacy_connect_error(unsigned int status, std::function<json(const json&)> body) {
+    asio::io_context io;
+    RawServer raw(io,
+                  [&](const Recorded& request) { return json_reply(body(request.parsed()), status); });
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::Legacy();
+    mcp::Client client(make_transport(io, raw.url()), io.get_executor(), options);
+    std::string error;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        try {
+            co_await client.connect("legacy", "1.0");
+        } catch (const std::exception& failure) {
+            error = failure.what();
+        }
+        client.close();
+    });
+    return error;
+}
+
+}  // namespace
+
+// A server may refuse initialize with an HTTP error status and a JSON-RPC error body; the caller
+// gets that error, not just the status.
+TEST(HttpClientLegacy, InitializeRefusedWithAnErrorStatusReportsTheJsonRpcError) {
+    for (const unsigned int status : {400u, 404u}) {
+        SCOPED_TRACE(status);
+        const auto error = legacy_connect_error(status, [](const json& request) {
+            return rpc_error(request, -32601,
+                             "Method not found: initialize; this server serves protocol versions "
+                             "2026-07-28");
+        });
+        EXPECT_NE(error.find("-32601"), std::string::npos) << error;
+        EXPECT_NE(error.find("2026-07-28"), std::string::npos) << error;
+    }
+}
+
+// The body of such an error may leave the id out or null; it still answers the initialize.
+TEST(HttpClientLegacy, InitializeErrorWithoutAnIdStillReachesTheCaller) {
+    const auto error = legacy_connect_error(400, [](const json&) {
+        return json{{"jsonrpc", "2.0"},
+                    {"id", nullptr},
+                    {"error", {{"code", -32600}, {"message", "Bad Request: unsupported version"}}}};
+    });
+    EXPECT_NE(error.find("unsupported version"), std::string::npos) << error;
+}
+
+// A body that is not a JSON-RPC error leaves the plain HTTP status error.
+TEST(HttpClientLegacy, InitializeRefusedWithoutAJsonRpcErrorReportsTheStatus) {
+    const auto error = legacy_connect_error(400, [](const json&) { return json{{"detail", "no"}}; });
+    EXPECT_NE(error.find("status 400"), std::string::npos) << error;
+}
+
+// Inside a session an error status keeps its HTTP meaning: a 404 there says the session is gone.
+TEST(HttpClientLegacy, ErrorStatusInsideASessionStaysAnHttpStatusError) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        const auto message = request.parsed();
+        const auto method = message.value("method", "");
+        if (method == "initialize") {
+            auto reply = json_reply(rpc_result(message, legacy_initialize_result()));
+            reply.headers.emplace_back("Mcp-Session-Id", "session-1");
+            return reply;
+        }
+        if (method == "tools/list") {
+            return json_reply(rpc_error(message, -32600, "Session not found"), 404);
+        }
+        Reply accepted;
+        accepted.status = 202;
+        return accepted;
+    });
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::Legacy();
+    mcp::Client client(make_transport(io, raw.url()), io.get_executor(), options);
+    std::optional<unsigned int> status;
+    std::string other;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        try {
+            co_await client.connect("legacy", "1.0");
+            co_await client.list_tools();
+        } catch (const mcp::HttpStatusError& failure) {
+            status = failure.status();
+        } catch (const std::exception& failure) {
+            other = failure.what();
+        }
+        client.close();
+    });
+    EXPECT_EQ(status, 404u) << other;
+}

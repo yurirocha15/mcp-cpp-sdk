@@ -348,6 +348,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `HttpClientTransport` names the version the client asks for in the
   `MCP-Protocol-Version` header of the initialize request, instead of always
   the newest.
+- `HttpClientTransport` reports the JSON-RPC error a server sends with a
+  400 or 404 status to an initialize request, such as one from a server that
+  serves only 2026-07-28 naming the versions it serves, instead of only the
+  HTTP status.
 
 ## [0.2.0] - 2026-10-21
 
