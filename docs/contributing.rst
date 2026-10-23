@@ -203,15 +203,24 @@ entropy.
 Distribution Builds
 ^^^^^^^^^^^^^^^^^^^
 
-The builds above use Conan's Boost. CI also builds and tests the SDK with each
-target distribution's own compiler, Boost and Python, inside the locked release
-builder images (``release/native-builders/lock.json``), from Boost 1.74 on
-Ubuntu 22.04 and Debian 12 up. It needs Docker:
+The builds above use Conan's Boost. CI also builds the native ``.deb`` and
+``.rpm`` packages for every x86_64 release route exactly as a release does:
+inside the locked release builder images (``release/native-builders/lock.json``),
+with each distribution's compiler, Boost, Python and packaging flags, from
+Boost 1.74 on Ubuntu 22.04 and Debian 12 up. Each build runs the test suite,
+then builds and runs a consumer against the extracted packages and another
+against the installed ones. It needs Docker:
 
 .. code-block:: bash
 
-   # One image; ids are listed in the lock
-   python scripts/distro_build.py ubuntu-jammy-amd64
+   python scripts/package_build.py core --output build/package-core
+   python scripts/package_build.py build debian-bookworm-amd64 \
+     --core build/package-core --output build/package-out
+
+For a faster loop over the C++ build alone, ``scripts/distro_build.py`` runs
+CMake, CTest and the release tooling's tests in one image:
+
+.. code-block:: bash
 
    # Cap the container on a workstation
    python scripts/distro_build.py el-9-x86_64 --jobs 4 --docker-arg=--memory=12g

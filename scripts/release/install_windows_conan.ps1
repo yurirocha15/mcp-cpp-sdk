@@ -45,7 +45,8 @@ $venvScripts = Join-Path $venv 'Scripts'
 if ($LASTEXITCODE -ne 0) {
     throw 'Failed to install the hash-locked Conan client graph'
 }
-$version = (& $venvPython -I -m conan --version 2>&1 | Out-String).Trim()
+# Conan has no `python -m conan` entry point; its console script is the client.
+$version = (& (Join-Path $venvScripts 'conan.exe') --version 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $version -cne "Conan version $ExpectedVersion") {
     throw 'The installed Conan client does not match the reviewed version'
 }
