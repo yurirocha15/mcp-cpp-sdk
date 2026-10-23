@@ -24,7 +24,7 @@ TEST_F(E2EFeaturesTest, MemoryTransportPair) {
         mcp::create_memory_transport_pair(io_ctx_.get_executor());
 
     mcp::Server server({"test-server", "1.0"}, {});
-    server.add_tool("test_tool", "A test tool", {}, [](const nlohmann::json&) {
+    server.add_tool("test_tool", "A test tool", {{"type", "object"}}, [](const nlohmann::json&) {
         return nlohmann::json{
             {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "ok"}}})}};
     });
@@ -67,7 +67,7 @@ TEST_F(E2EFeaturesTest, ConnectAndDisconnect) {
         mcp::create_memory_transport_pair(io_ctx_.get_executor());
 
     mcp::Server server({"test-server", "1.0"}, {});
-    server.add_tool("dummy", "Dummy tool", {}, [](const nlohmann::json&) {
+    server.add_tool("dummy", "Dummy tool", {{"type", "object"}}, [](const nlohmann::json&) {
         return nlohmann::json{
             {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "ok"}}})}};
     });
@@ -107,11 +107,11 @@ TEST_F(E2EFeaturesTest, ListTools) {
         mcp::create_memory_transport_pair(io_ctx_.get_executor());
 
     mcp::Server server({"test-server", "1.0"}, {});
-    server.add_tool("tool1", "First tool", {}, [](const nlohmann::json&) {
+    server.add_tool("tool1", "First tool", {{"type", "object"}}, [](const nlohmann::json&) {
         return nlohmann::json{
             {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "ok"}}})}};
     });
-    server.add_tool("tool2", "Second tool", {}, [](const nlohmann::json&) {
+    server.add_tool("tool2", "Second tool", {{"type", "object"}}, [](const nlohmann::json&) {
         return nlohmann::json{
             {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "ok"}}})}};
     });
@@ -156,7 +156,7 @@ TEST_F(E2EFeaturesTest, Pagination) {
     server.set_page_size(3);
 
     for (int i = 0; i < 10; ++i) {
-        server.add_tool("tool_" + std::to_string(i), "Tool " + std::to_string(i), {},
+        server.add_tool("tool_" + std::to_string(i), "Tool " + std::to_string(i), {{"type", "object"}},
                         [](const nlohmann::json&) {
                             return nlohmann::json{{"content", nlohmann::json::array({nlohmann::json{
                                                                   {"type", "text"}, {"text", "ok"}}})}};
@@ -200,7 +200,7 @@ TEST_F(E2EFeaturesTest, Ping) {
         mcp::create_memory_transport_pair(io_ctx_.get_executor());
 
     mcp::Server server({"test-server", "1.0"}, {});
-    server.add_tool("test_tool", "A test tool", {}, [](const nlohmann::json&) {
+    server.add_tool("test_tool", "A test tool", {{"type", "object"}}, [](const nlohmann::json&) {
         return nlohmann::json{
             {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "ok"}}})}};
     });
@@ -241,14 +241,15 @@ TEST_F(E2EFeaturesTest, MultipleTools) {
         mcp::create_memory_transport_pair(io_ctx_.get_executor());
 
     mcp::Server server({"test-server", "1.0"}, {});
-    server.add_tool("add", "Add two numbers", {}, [](const nlohmann::json&) {
+    server.add_tool("add", "Add two numbers", {{"type", "object"}}, [](const nlohmann::json&) {
         return nlohmann::json{
             {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "3"}}})}};
     });
-    server.add_tool("multiply", "Multiply two numbers", {}, [](const nlohmann::json&) {
-        return nlohmann::json{
-            {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "6"}}})}};
-    });
+    server.add_tool(
+        "multiply", "Multiply two numbers", {{"type", "object"}}, [](const nlohmann::json&) {
+            return nlohmann::json{
+                {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "6"}}})}};
+        });
 
     boost::asio::co_spawn(
         io_ctx_,
@@ -290,7 +291,7 @@ TEST_F(E2EFeaturesTest, SequentialCalls) {
         mcp::create_memory_transport_pair(io_ctx_.get_executor());
 
     mcp::Server server({"test-server", "1.0"}, {});
-    server.add_tool("echo", "Echo tool", {}, [](const nlohmann::json&) {
+    server.add_tool("echo", "Echo tool", {{"type", "object"}}, [](const nlohmann::json&) {
         return nlohmann::json{
             {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "echo"}}})}};
     });

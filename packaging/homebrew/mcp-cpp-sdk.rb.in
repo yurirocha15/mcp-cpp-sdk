@@ -4,7 +4,7 @@ class McpCppSdk < Formula
   url "@SOURCE_URL@"
   sha256 "@SOURCE_SHA256@"
   version "@VERSION@"
-  license "Apache-2.0"
+  license all_of: ["Apache-2.0", "BSL-1.0"]
 
   depends_on "boost"
   depends_on "cmake" => :build

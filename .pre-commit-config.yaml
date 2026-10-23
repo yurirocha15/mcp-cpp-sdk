@@ -1,3 +1,6 @@
+# Generated vendored code and upstream test data keep their upstream bytes.
+exclude: ^(third_party|test/data/json-schema)/
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
