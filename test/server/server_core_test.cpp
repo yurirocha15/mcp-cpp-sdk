@@ -150,7 +150,7 @@ TEST_F(ServerCoreTest, InitializeReturnsServerCapabilities) {
     EXPECT_EQ(response["jsonrpc"], "2.0");
 
     auto result = response["result"];
-    EXPECT_EQ(result["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(result["protocolVersion"], std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
     EXPECT_EQ(result["serverInfo"]["name"], "test-server");
     EXPECT_EQ(result["serverInfo"]["version"], "1.0");
     ASSERT_TRUE(result["capabilities"].contains("tools"));
@@ -1156,7 +1156,8 @@ TEST_F(ServerCoreTest, DiscoverThenInitializeStillNegotiatesLegacyVersionsUnchan
 
     ASSERT_TRUE(responses[1].contains("result"));
     EXPECT_EQ(responses[1]["result"]["protocolVersion"], "2025-11-25");
-    EXPECT_EQ(responses[1]["result"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(responses[1]["result"]["protocolVersion"],
+              std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
 
     EXPECT_TRUE(server.is_initialized());
 }

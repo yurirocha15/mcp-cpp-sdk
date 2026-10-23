@@ -246,7 +246,7 @@ TEST_F(HttpTransportTest, FullMcpHandshake) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", request_json.at("id")}};
@@ -266,7 +266,7 @@ TEST_F(HttpTransportTest, FullMcpHandshake) {
                 {"jsonrpc", "2.0"},
                 {"method", "initialize"},
                 {"params",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", 1}};
@@ -285,7 +285,7 @@ TEST_F(HttpTransportTest, FullMcpHandshake) {
     EXPECT_TRUE(response_json.contains("result"));
     EXPECT_TRUE(response_json.at("result").contains("protocolVersion"));
     EXPECT_EQ(response_json.at("result").at("protocolVersion"),
-              std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+              std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
 }
 
 TEST_F(HttpTransportTest, SessionIdPropagation) {
@@ -304,7 +304,7 @@ TEST_F(HttpTransportTest, SessionIdPropagation) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", init_json.at("id")}};
@@ -333,7 +333,7 @@ TEST_F(HttpTransportTest, SessionIdPropagation) {
                 {"jsonrpc", "2.0"},
                 {"method", "initialize"},
                 {"params",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", 1}};
@@ -460,7 +460,7 @@ class SessionPeer final {
                     if (initialize) {
                         response.set("MCP-Session-Id", "session-1");
                         reply["result"] = {
-                            {"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                            {"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                             {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                             {"capabilities", nlohmann::json::object()}};
                     }
@@ -498,7 +498,7 @@ std::string initialize_request_text() {
         {"jsonrpc", "2.0"},
         {"method", "initialize"},
         {"params",
-         {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+         {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
           {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
           {"capabilities", nlohmann::json::object()}}},
         {"id", 1}};
@@ -622,7 +622,7 @@ TEST_F(HttpTransportTest, NotificationReturns202) {
                 http::request<http::string_body> request{http::verb::post, "/mcp", 11};
                 request.set(http::field::host, "127.0.0.1");
                 request.set(http::field::content_type, "application/json");
-                request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+                request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
                 // Notification: has method but no id
                 request.body() = R"({"jsonrpc":"2.0","method":"notifications/initialized"})";
                 request.prepare_payload();
@@ -826,7 +826,7 @@ TEST_F(HttpTransportTest, ClientCloseCancelsInFlightPostAfterSessionInitializati
             const nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", initialize_request.at("id")}};
@@ -859,7 +859,7 @@ TEST_F(HttpTransportTest, ClientCloseCancelsInFlightPostAfterSessionInitializati
                 {"jsonrpc", "2.0"},
                 {"method", "initialize"},
                 {"params",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", 1}};
@@ -1185,7 +1185,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverSucceedsAfterSessionEstablished) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                 {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", nlohmann::json::object()}}},
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
@@ -1221,7 +1221,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverSucceedsAfterSessionEstablished) {
             init_request.set(http::field::content_type, "application/json");
             init_request.body() =
                 R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION) +
                 R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})";
             init_request.prepare_payload();
             co_await http::async_write(init_stream, init_request, asio::use_awaitable);
@@ -1303,7 +1303,7 @@ TEST_F(HttpTransportTest, SessionlessNonDiscoverRequestRejectedAfterSessionEstab
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                 {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", nlohmann::json::object()}}},
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
@@ -1331,7 +1331,7 @@ TEST_F(HttpTransportTest, SessionlessNonDiscoverRequestRejectedAfterSessionEstab
             init_request.set(http::field::content_type, "application/json");
             init_request.body() =
                 R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION) +
                 R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})";
             init_request.prepare_payload();
             co_await http::async_write(init_stream, init_request, asio::use_awaitable);
@@ -1402,7 +1402,7 @@ TEST_F(HttpTransportTest, ModernRequestIgnoresAWrongSessionHeader) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                 {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", nlohmann::json::object()}}},
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
@@ -1436,7 +1436,7 @@ TEST_F(HttpTransportTest, ModernRequestIgnoresAWrongSessionHeader) {
             init_request.set(http::field::content_type, "application/json");
             init_request.body() =
                 R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION) +
                 R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})";
             init_request.prepare_payload();
             co_await http::async_write(init_stream, init_request, asio::use_awaitable);
@@ -1516,7 +1516,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsAcceptedAndDropped) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                 {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", nlohmann::json::object()}}},
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
@@ -1544,7 +1544,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsAcceptedAndDropped) {
             init_request.set(http::field::content_type, "application/json");
             init_request.body() =
                 R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION) +
                 R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})";
             init_request.prepare_payload();
             co_await http::async_write(init_stream, init_request, asio::use_awaitable);
@@ -1630,7 +1630,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverWithAnInvalidIdIsRejected) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                 {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", nlohmann::json::object()}}},
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
@@ -1669,7 +1669,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverWithAnInvalidIdIsRejected) {
 
             (void)co_await post(
                 R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION) +
                 R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})");
 
             const auto response =
@@ -1794,7 +1794,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverDoesNotEvictSessionReplayHistory) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                 {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", nlohmann::json::object()}}},
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
@@ -1830,7 +1830,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverDoesNotEvictSessionReplayHistory) {
             init_request.set(http::field::content_type, "application/json");
             init_request.body() =
                 R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION) +
                 R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})";
             init_request.prepare_payload();
             co_await http::async_write(init_stream, init_request, asio::use_awaitable);
@@ -1876,7 +1876,8 @@ TEST_F(HttpTransportTest, SessionlessDiscoverDoesNotEvictSessionReplayHistory) {
             http::request<http::empty_body> resume_request{http::verb::get, "/mcp", 11};
             resume_request.set(http::field::host, "127.0.0.1");
             resume_request.set(http::field::accept, "text/event-stream");
-            resume_request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+            resume_request.set("MCP-Protocol-Version",
+                               std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
             resume_request.set("MCP-Session-Id", established_session_id);
             resume_request.set("Last-Event-ID", "1");
             co_await http::async_write(resume_stream, resume_request, asio::use_awaitable);
@@ -2017,7 +2018,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                 {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", nlohmann::json::object()}}},
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
@@ -2092,7 +2093,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
             init_request.set(http::field::content_type, "application/json");
             init_request.body() =
                 R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION) +
                 R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})";
             init_request.prepare_payload();
             co_await http::async_write(session_stream, init_request, asio::use_awaitable);
@@ -2237,7 +2238,7 @@ TEST_F(HttpTransportTest, ServerAcceptsANewSessionAfterTheClientDeletesTheOldOne
         {"id", 1},
         {"method", "initialize"},
         {"params",
-         {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+         {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
           {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
           {"capabilities", nlohmann::json::object()}}}};
     const std::string initialized = R"({"jsonrpc":"2.0","method":"notifications/initialized"})";
@@ -3543,7 +3544,7 @@ std::string session_initialize_body() {
         {"id", 1},
         {"method", "initialize"},
         {"params",
-         {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+         {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
           {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
           {"capabilities", nlohmann::json::object()}}}};
     return initialize.dump();
@@ -3964,7 +3965,7 @@ mcp::Task<void> serve_one_request_per_connection(asio::ip::tcp::acceptor& accept
             if (message.contains("id")) {
                 nlohmann::json result = nlohmann::json::object();
                 if (message.value("method", "") == "initialize") {
-                    result = {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                    result = {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                               {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                               {"capabilities", nlohmann::json::object()}};
                 }

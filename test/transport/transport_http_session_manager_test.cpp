@@ -58,7 +58,7 @@ struct RawResponse {
 mcp::Task<RawResponse> raw_request(
     const asio::any_io_executor& executor, unsigned short port, http::verb method,
     const std::string& target, const std::string& body = {}, const std::string& session_id = {},
-    std::optional<std::string> protocol_version = std::string(mcp::g_LATEST_PROTOCOL_VERSION),
+    std::optional<std::string> protocol_version = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION),
     std::optional<std::string> origin = std::nullopt,
     std::optional<std::string> bearer_token = std::nullopt, std::string accept = "application/json") {
     beast::tcp_stream stream(executor);
@@ -237,8 +237,9 @@ mcp::StreamableHttpSessionManager::ServerFactory make_notifying_server_factory()
 /// Send an initialize request and return the raw response (contains session ID).
 mcp::Task<RawResponse> do_initialize(
     const asio::any_io_executor& executor, unsigned short port, int id = 1,
-    std::string protocol_version = std::string(mcp::g_LATEST_PROTOCOL_VERSION),
-    std::optional<std::string> header_protocol_version = std::string(mcp::g_LATEST_PROTOCOL_VERSION)) {
+    std::string protocol_version = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION),
+    std::optional<std::string> header_protocol_version =
+        std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)) {
     json init_request = {{"jsonrpc", "2.0"},
                          {"method", "initialize"},
                          {"params",
@@ -251,9 +252,10 @@ mcp::Task<RawResponse> do_initialize(
                                    std::move(header_protocol_version));
 }
 
-mcp::Task<RawResponse> send_initialized(
-    const asio::any_io_executor& executor, unsigned short port, const std::string& session_id,
-    std::optional<std::string> header_protocol_version = std::string(mcp::g_LATEST_PROTOCOL_VERSION)) {
+mcp::Task<RawResponse> send_initialized(const asio::any_io_executor& executor, unsigned short port,
+                                        const std::string& session_id,
+                                        std::optional<std::string> header_protocol_version =
+                                            std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)) {
     json notification = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
 
     co_return co_await raw_request(executor, port, http::verb::post, "/mcp", notification.dump(),
@@ -296,7 +298,7 @@ TEST_F(SessionManagerTest, SsePostReturnsNotificationsThenFinalResponseInOrder) 
                             {"id", 2}};
             tool_response = co_await raw_request(
                 io_ctx_.get_executor(), port, http::verb::post, "/mcp", request.dump(), init.session_id,
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), std::nullopt, std::nullopt,
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), std::nullopt, std::nullopt,
                 "application/json, text/event-stream");
             manager.close();
         },
@@ -345,7 +347,7 @@ TEST_F(SessionManagerTest, JsonOnlyPostSkipsNotificationsAndReturnsFinalResponse
                             {"id", 2}};
             tool_response = co_await raw_request(
                 io_ctx_.get_executor(), port, http::verb::post, "/mcp", request.dump(), init.session_id,
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), std::nullopt, std::nullopt,
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), std::nullopt, std::nullopt,
                 "application/json, text/event-stream");
             manager.close();
         },
@@ -377,17 +379,17 @@ TEST_F(SessionManagerTest, OriginHeadersAreDeniedUntilExplicitlyAllowed) {
                 json{{"jsonrpc", "2.0"},
                      {"method", "initialize"},
                      {"params",
-                      {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                      {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                        {"clientInfo", {{"name", "test"}, {"version", "1"}}},
                        {"capabilities", json::object()}}},
                      {"id", 1}}
                     .dump();
             denied_response = co_await raw_request(
                 io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), "https://untrusted.example");
             allowed_response = co_await raw_request(
                 io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://trusted.example");
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), "https://trusted.example");
             manager.close();
         },
         asio::detached);
@@ -406,7 +408,7 @@ std::string make_initialize_body() {
     return json{{"jsonrpc", "2.0"},
                 {"method", "initialize"},
                 {"params",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                 {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                   {"clientInfo", {{"name", "test"}, {"version", "1"}}},
                   {"capabilities", json::object()}}},
                 {"id", 1}}
@@ -437,7 +439,7 @@ TEST_F(SessionManagerTest, AllowedOriginComparisonIsExactRatherThanCanonicalizin
             for (const auto& origin : spellings) {
                 const auto response = co_await raw_request(
                     io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
-                    std::string(mcp::g_LATEST_PROTOCOL_VERSION), origin);
+                    std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), origin);
                 statuses.push_back(response.status);
             }
             manager.close();
@@ -469,7 +471,7 @@ TEST_F(SessionManagerTest, AllowAllOriginsAdmitsAnOriginThatWasNeverListed) {
         [&]() -> mcp::Task<void> {
             response = co_await raw_request(
                 io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), "https://untrusted.example");
             manager.close();
         },
         asio::detached);
@@ -498,10 +500,10 @@ TEST_F(SessionManagerTest, NamingAllowedOriginsRevokesAnEarlierAllowAll) {
         [&]() -> mcp::Task<void> {
             denied_response = co_await raw_request(
                 io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), "https://untrusted.example");
             allowed_response = co_await raw_request(
                 io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://trusted.example");
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), "https://trusted.example");
             manager.close();
         },
         asio::detached);
@@ -539,14 +541,14 @@ TEST_F(SessionManagerTest, TheOriginCheckPrecedesTheBearerCheckAndTheMetadataRou
         [&]() -> mcp::Task<void> {
             untokened_response = co_await raw_request(
                 io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
-            metadata_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get,
-                                                     "/.well-known/oauth-protected-resource/mcp", {},
-                                                     {}, std::string(mcp::g_LATEST_PROTOCOL_VERSION),
-                                                     "https://untrusted.example");
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), "https://untrusted.example");
+            metadata_response = co_await raw_request(
+                io_ctx_.get_executor(), port, http::verb::get,
+                "/.well-known/oauth-protected-resource/mcp", {}, {},
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), "https://untrusted.example");
             exempt_response = co_await raw_request(
                 io_ctx_.get_executor(), port, http::verb::get, "/health", {}, {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), "https://untrusted.example");
             manager.close();
         },
         asio::detached);
@@ -581,7 +583,7 @@ TEST_F(SessionManagerTest, BearerTokensAreValidatedAtHttpBoundary) {
                 json{{"jsonrpc", "2.0"},
                      {"method", "initialize"},
                      {"params",
-                      {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                      {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                        {"clientInfo", {{"name", "test"}, {"version", "1"}}},
                        {"capabilities", json::object()}}},
                      {"id", 1}}
@@ -590,10 +592,10 @@ TEST_F(SessionManagerTest, BearerTokensAreValidatedAtHttpBoundary) {
                 co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body);
             invalid_response = co_await raw_request(
                 io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), std::nullopt, "invalid-token");
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), std::nullopt, "invalid-token");
             valid_response = co_await raw_request(
                 io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), std::nullopt, "valid-token");
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), std::nullopt, "valid-token");
             manager.close();
         },
         asio::detached);
@@ -672,7 +674,7 @@ TEST_F(SessionManagerTest, InitializeCreatesSession) {
 
     auto body = json::parse(init_response.body);
     EXPECT_TRUE(body.contains("result"));
-    EXPECT_EQ(body["result"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(body["result"]["protocolVersion"], std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
 }
 
 TEST_F(SessionManagerTest, InitializeNegotiatesOlderSupportedProtocolVersion) {
@@ -771,9 +773,9 @@ TEST_F(SessionManagerTest, ProtocolVersionStateIsSafeAcrossConnectionStrands) {
                                 io_ctx_.get_executor(), port, http::verb::post, "/mcp",
                                 reinitialize.dump(), session_id, "2025-06-18");
                         } else {
-                            const auto version = index % 4 == 1
-                                                     ? std::string("2025-06-18")
-                                                     : std::string(mcp::g_LATEST_PROTOCOL_VERSION);
+                            const auto version =
+                                index % 4 == 1 ? std::string("2025-06-18")
+                                               : std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
                             responses[index] =
                                 co_await raw_request(io_ctx_.get_executor(), port, http::verb::get,
                                                      "/mcp", {}, session_id, version);
@@ -1481,7 +1483,7 @@ TEST_F(SessionManagerTest, StatelessInitializeDoesNotCreateSessionHeader) {
 
     auto body = json::parse(init_response.body);
     EXPECT_TRUE(body.contains("result"));
-    EXPECT_EQ(body["result"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(body["result"]["protocolVersion"], std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
 }
 
 TEST_F(SessionManagerTest, StatelessToolsCallAndToolsListWorkWithoutSession) {
@@ -1664,7 +1666,8 @@ TEST_F(SessionManagerTest, CloseCancelsIdleKeepAliveAndCannotCreatePostCloseSess
             http::request<http::string_body> initialize_request{http::verb::post, "/mcp", 11};
             initialize_request.set(http::field::host, "127.0.0.1");
             initialize_request.set(http::field::content_type, "application/json");
-            initialize_request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+            initialize_request.set("MCP-Protocol-Version",
+                                   std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
             initialize_request.keep_alive(true);
             initialize_request.body() =
                 R"({"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"post-close","version":"1.0"},"capabilities":{}},"id":1})";
@@ -2096,17 +2099,17 @@ TEST_F(SessionManagerTest, AsyncBearerValidatorCanSuspendBeforeDeciding) {
                 json{{"jsonrpc", "2.0"},
                      {"method", "initialize"},
                      {"params",
-                      {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                      {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                        {"clientInfo", {{"name", "test"}, {"version", "1"}}},
                        {"capabilities", json::object()}}},
                      {"id", 1}}
                     .dump();
-            denied = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                          init_body, {}, std::string(mcp::g_LATEST_PROTOCOL_VERSION),
-                                          std::nullopt, "wrong-token");
-            accepted = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                            init_body, {}, std::string(mcp::g_LATEST_PROTOCOL_VERSION),
-                                            std::nullopt, "valid-token");
+            denied = co_await raw_request(
+                io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), std::nullopt, "wrong-token");
+            accepted = co_await raw_request(
+                io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), std::nullopt, "valid-token");
             manager.close();
         },
         asio::detached);
@@ -2145,7 +2148,7 @@ TEST_F(SessionManagerTest, ThrowingBearerValidatorIsAnsweredWithAServerError) {
                 json{{"jsonrpc", "2.0"},
                      {"method", "initialize"},
                      {"params",
-                      {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                      {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                        {"clientInfo", {{"name", "test"}, {"version", "1"}}},
                        {"capabilities", json::object()}}},
                      {"id", 1}}
@@ -2155,7 +2158,7 @@ TEST_F(SessionManagerTest, ThrowingBearerValidatorIsAnsweredWithAServerError) {
                 try {
                     const auto response = co_await raw_request(
                         io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
-                        std::string(mcp::g_LATEST_PROTOCOL_VERSION), std::nullopt, "token");
+                        std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION), std::nullopt, "token");
                     *status = response.status;
                 } catch (const std::exception&) {
                     // The connection was dropped without a response; status stays 0.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 
 #include <boost/asio/co_spawn.hpp>
@@ -19,6 +20,15 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+/// Options for a client that speaks only the protocol revisions that start with initialize, for
+/// tests that script such a peer or use what only those revisions have (ping, shutdown, roots in
+/// initialize), whatever the default protocol is.
+inline mcp::ClientOptions legacy_client_options() {
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::Legacy();
+    return options;
+}
 
 // ---------------------------------------------------------------------------
 // ScriptedTransport — mock ITransport that queues scripted messages and

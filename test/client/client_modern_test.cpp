@@ -1464,7 +1464,7 @@ TEST(E2eEra, LegacyClientOfModernOnlyServerGetsTheServedVersions) {
     mcp::ServerProtocolPolicy modern_only;
     modern_only.serve_legacy = false;
     server->set_protocol_policy(modern_only);
-    mcp::Client client(client_transport, io.get_executor());
+    mcp::Client client(client_transport, io.get_executor(), legacy_client_options());
     auto outcome = std::make_shared<EraOutcome>();
 
     boost::asio::co_spawn(

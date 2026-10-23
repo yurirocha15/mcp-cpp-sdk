@@ -26,26 +26,26 @@ using json = nlohmann::json;
 
 TEST(ProtocolTest, InitializeRequestSerialization) {
     mcp::InitializeRequest req;
-    req.protocolVersion = std::string(mcp::g_LATEST_PROTOCOL_VERSION);
+    req.protocolVersion = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
     req.clientInfo = {"test-client", "1.0.0"};
     req.capabilities = mcp::ClientCapabilities{};
 
     json json_obj = req;
 
-    EXPECT_EQ(json_obj["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(json_obj["protocolVersion"], std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
     EXPECT_EQ(json_obj["clientInfo"]["name"], "test-client");
     EXPECT_EQ(json_obj["clientInfo"]["version"], "1.0.0");
     EXPECT_TRUE(json_obj["capabilities"].is_object());
 }
 
 TEST(ProtocolTest, InitializeResultDeserialization) {
-    json json_obj = {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+    json json_obj = {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                      {"capabilities", {}},
                      {"serverInfo", {{"name", "test-server"}, {"version", "0.1.0"}}}};
 
     mcp::InitializeResult res = json_obj.get<mcp::InitializeResult>();
 
-    EXPECT_EQ(res.protocolVersion, std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(res.protocolVersion, std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
     EXPECT_EQ(res.serverInfo.name, "test-server");
     EXPECT_FALSE(res.instructions.has_value());
 }
@@ -1811,7 +1811,7 @@ TEST(ProtocolTest, ServerCapabilitiesPartialSerialization) {
 
 TEST(ProtocolTest, InitializeRequestWithClientCapabilities) {
     mcp::InitializeRequest req;
-    req.protocolVersion = std::string(mcp::g_LATEST_PROTOCOL_VERSION);
+    req.protocolVersion = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
     req.clientInfo = {"my-client", "3.0.0"};
     req.clientInfo.description = "An advanced MCP client";
     req.capabilities.roots = mcp::ClientCapabilities::RootsCapability{.listChanged = true};
@@ -1841,7 +1841,7 @@ TEST(ProtocolTest, InitializeRequestWithClientCapabilities) {
 
 TEST(ProtocolTest, InitializeResultWithServerCapabilities) {
     mcp::InitializeResult res;
-    res.protocolVersion = std::string(mcp::g_LATEST_PROTOCOL_VERSION);
+    res.protocolVersion = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
     res.serverInfo = {"my-server", "1.0.0"};
     res.serverInfo.description = "A powerful MCP server";
     res.capabilities.tools = mcp::ServerCapabilities::ToolsCapability{.listChanged = true};
