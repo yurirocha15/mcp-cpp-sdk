@@ -19,6 +19,8 @@ int main() {
                             return {{"message", "Hello, " + args.at("name").get<std::string>() + "!"}};
                         });
 
+        // Serves clients of every revision the SDK supports, both 2026-07-28 requests and
+        // sessions that start with initialize.
         server.run_stdio();
     } catch (const std::exception& e) {
         std::cerr << "Exception: " << e.what() << "\n";
