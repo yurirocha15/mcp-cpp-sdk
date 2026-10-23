@@ -195,6 +195,9 @@ notifications. ``resources/subscribe`` does not exist in this model. See
 Older sessions
 --------------
 
+See :doc:`/guides/older-protocols` to pin an older revision or to limit what a
+server serves.
+
 A client of 2025-11-25 or earlier starts a session with ``initialize``. The same
 ``Server`` serves it, by default, next to 2026-07-28 requests. A session of an
 older revision keeps ``ping``, ``logging/setLevel``, ``resources/subscribe`` and

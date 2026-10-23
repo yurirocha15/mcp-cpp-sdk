@@ -3,7 +3,7 @@ Guides
 
 Practical guides for common tasks when working with the `mcp-cpp-sdk`. These guides
 provide step-by-step instructions and best practices for testing, error handling,
-and deployment.
+deployment, and older protocol revisions.
 
 .. toctree::
    :maxdepth: 2
@@ -12,3 +12,4 @@ and deployment.
    error-handling
    oauth-security
    deployment
+   older-protocols
