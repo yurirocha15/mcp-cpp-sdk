@@ -7,6 +7,8 @@
 /// - Client-side pagination: fetching first page, then using cursor for subsequent pages
 /// - Loopback pattern with MemoryTransport for in-process communication
 /// - Handling nextCursor in list results
+/// - Server::set_cache_hints(): the ttlMs and cacheScope hints each page carries in a
+///   2026-07-28 session
 
 #include <mcp/client/client.hpp>
 #include <mcp/server/server.hpp>
@@ -45,6 +47,10 @@ int main() {
         // Set page size to 3 to demonstrate pagination
         server.set_page_size(3);
         std::cout << "[Server] Page size set to 3\n";
+
+        // A tools/list result of a 2026-07-28 request tells the client how long it may reuse the
+        // page. Without this call the hint is ttlMs 0 and cacheScope private.
+        server.set_cache_hints(CacheTarget::eToolsList, CacheHint{30000, CacheScope::ePublic});
 
         // Register 12 tools to demonstrate pagination
         nlohmann::json tool_schema = {{"type", "object"},
@@ -96,8 +102,14 @@ int main() {
                     std::cout << "[Client] Connecting\n";
                     Client client(transport, io_ctx.get_executor());
 
-                    auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "[Client] Connected to: " << init_result.serverInfo->name << '\n';
+                    {
+                        auto init_result = co_await client.connect(client_info, ClientCapabilities{});
+                        // serverInfo is optional: a server may leave it out.
+                        if (init_result.serverInfo) {
+                            std::cout << "[Client] Connected to: " << init_result.serverInfo->name
+                                      << '\n';
+                        }
+                    }
 
                     // ========== PAGINATION LOOP ==========
                     std::cout << "\n[Client] Starting pagination through tools\n";
@@ -117,6 +129,13 @@ int main() {
                         auto list_result = co_await client.list_tools(cursor);
 
                         std::cout << "[Client] Received " << list_result.tools.size() << " tools\n";
+                        if (list_result.ttlMs && list_result.cacheScope) {
+                            std::cout << "[Client] Cache hints: ttlMs " << *list_result.ttlMs
+                                      << ", cacheScope "
+                                      << (*list_result.cacheScope == CacheScope::ePublic ? "public"
+                                                                                         : "private")
+                                      << "\n";
+                        }
 
                         // Display tools on this page
                         for (const auto& tool : list_result.tools) {
