@@ -73,7 +73,7 @@ particular:
 * ``resources/subscribe`` and ``resources/unsubscribe`` work, and the server's
   ``on_subscribe()`` and ``on_unsubscribe()`` callbacks run for them. The
   ``Client`` has no helper for them: send the request with ``send_request()``,
-  as ``examples/features/notifications_subscriptions.cpp`` does.
+  as ``examples/features/legacy_protocols.cpp`` does.
 * ``Client::listen()`` is not available and throws ``McpError`` with
   ``g_METHOD_NOT_FOUND``.
 * Server requests to the client (elicitation, sampling, roots) are real
