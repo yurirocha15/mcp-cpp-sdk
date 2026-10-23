@@ -104,9 +104,9 @@ documents.
 The server can track these subscriptions and perform actions (like starting a
 polling loop or opening a file watch) when a client expresses interest.
 
-.. literalinclude:: ../../examples/features/notifications_subscriptions.cpp
+.. literalinclude:: ../../examples/features/legacy_protocols.cpp
    :language: cpp
-   :lines: 64-73
+   :lines: 164-165
    :linenos:
    :caption: Handling resource subscriptions and unsubscriptions.
 
@@ -133,7 +133,7 @@ again; delivery and refresh timing still depend on the connection and client.
 
 .. literalinclude:: ../../examples/features/notifications_subscriptions.cpp
    :language: cpp
-   :lines: 148-150
+   :lines: 165-166
    :linenos:
    :caption: Triggering a resource update notification.
 

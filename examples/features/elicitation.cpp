@@ -7,6 +7,15 @@
 /// - A client that registers on_elicitation() handler to respond
 /// - The client returning ElicitResult with action=accept and form values
 /// - The server using the elicited values to complete the tool execution
+/// - ConnectResult::era, and how the same ctx.elicit() call runs in each era
+///
+/// In a 2026-07-28 session the server cannot send a request to the client while it serves
+/// another. When the tool calls ctx.elicit(), the server answers the tools/call with an
+/// input_required result that holds the question; the client runs its on_elicitation() handler and
+/// sends the tools/call again with the answer, and the tool then resumes. The tool and the handler
+/// are written the same way in both eras; with a client pinned to ClientProtocol::Legacy() the
+/// server sends an elicitation/create request instead. Server::mrtr_stats() counts the retries
+/// that resumed a waiting tool.
 
 #include <mcp/client/client.hpp>
 #include <mcp/server/server.hpp>
@@ -21,6 +30,7 @@
 #include <exception>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 namespace asio = boost::asio;
@@ -30,6 +40,7 @@ int main() {
         using namespace mcp;
 
         asio::io_context io_ctx;
+        bool succeeded = false;
 
         // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
@@ -127,8 +138,17 @@ int main() {
                     client_info.version = "1.0.0";
 
                     std::cout << "Client: Connecting to server\n";
-                    auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "Client: Connected to " << init_result.serverInfo->name << "\n";
+                    bool modern_session = false;
+                    {
+                        auto init_result = co_await client.connect(client_info, ClientCapabilities{});
+                        std::cout << "Client: Connected, era: "
+                                  << (init_result.era == ProtocolEra::eModern ? "modern" : "legacy")
+                                  << ", protocol version: " << init_result.protocolVersion << "\n";
+                        if (init_result.serverInfo) {
+                            std::cout << "Client: Server is " << init_result.serverInfo->name << "\n";
+                        }
+                        modern_session = init_result.era == ProtocolEra::eModern;
+                    }
 
                     bool elicitation_received = false;
 
@@ -162,30 +182,34 @@ int main() {
 
                     std::cout << "Client: Calling request_user_info tool\n";
                     nlohmann::json call_args = {{"task", "collect_feedback"}};
-                    try {
-                        auto result = co_await client.call_tool("request_user_info", call_args);
-                        std::cout << "Client: Tool completed with " << result.content.size()
-                                  << " content blocks\n";
-                        for (size_t i = 0; i < result.content.size(); ++i) {
-                            if (auto* text = std::get_if<mcp::TextContent>(&result.content[i])) {
-                                std::cout << "Client: Content block " << i << ": " << text->text
-                                          << "\n";
-                            }
+                    auto result = co_await client.call_tool("request_user_info", call_args);
+                    std::cout << "Client: Tool completed with " << result.content.size()
+                              << " content blocks\n";
+                    for (size_t i = 0; i < result.content.size(); ++i) {
+                        if (auto* text = std::get_if<mcp::TextContent>(&result.content[i])) {
+                            std::cout << "Client: Content block " << i << ": " << text->text << "\n";
                         }
-                    } catch (const std::exception& e) {
-                        std::cout << "Client: Tool call error: " << e.what() << "\n";
                     }
 
-                    if (elicitation_received) {
-                        std::cout << "Client: Successfully handled elicitation request\n";
+                    if (!elicitation_received) {
+                        throw std::runtime_error("the elicitation handler was not called");
+                    }
+                    std::cout << "Client: Successfully handled elicitation request\n";
+
+                    // In a modern session the answer came with a retry of the tools/call.
+                    const auto retries = server.mrtr_stats().resume_hit;
+                    std::cout << "Server: Retries that resumed the tool: " << retries << "\n";
+                    if (modern_session && retries != 1) {
+                        throw std::runtime_error("expected the tool to resume once");
                     }
 
                     std::cout << "Client: Closing connection\n";
                     client.close();
-
+                    succeeded = true;
                 } catch (const std::exception& e) {
                     std::cerr << "Client error: " << e.what() << "\n";
                 }
+                io_ctx.stop();
             },
             asio::detached);
 
@@ -201,6 +225,10 @@ int main() {
 
         io_ctx.run();
 
+        if (!succeeded) {
+            std::cerr << "Example failed\n";
+            return EXIT_FAILURE;
+        }
         std::cout << "Example completed successfully\n";
         return EXIT_SUCCESS;
 

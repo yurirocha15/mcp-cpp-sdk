@@ -51,20 +51,22 @@ done
 ### 2. Notifications & Subscriptions (`notifications_subscriptions.cpp`)
 
 **What it demonstrates:**
-- `server.notify_tools_list_changed()` - notify clients of tool changes
-- `server.notify_resources_list_changed()` - notify of resource changes
-- `server.on_subscribe()` / `on_unsubscribe()` - subscription callbacks
-- Client-side notification handling
+- `client.listen()` opening a `subscriptions/listen` stream (protocol revision 2026-07-28) for the notifications the client wants
+- `Subscription::acknowledged()` / `unhonored()` - the subset the server agrees to send
+- `server.notify_tools_list_changed()`, `notify_resources_list_changed()` and `notify_resource_updated()` - sent to every open stream that asked for the type
+- `Subscription::next()` reading the notifications, `close()` ending a stream from the client, and `Server::close_subscriptions()` ending streams from the server
+- The `resources/subscribe` flow of the older revisions is in `legacy_protocols.cpp`
 
 **Key APIs:**
+- `Client::listen()` / `SubscriptionFilter` / `Subscription`
 - `Server::notify_tools_list_changed()`
 - `Server::notify_resources_list_changed()`
-- `Server::on_subscribe()` / `Server::on_unsubscribe()`
-- `Client::on_notification()`
+- `Server::notify_resource_updated()`
+- `Server::close_subscriptions()`
 
 **Run:** `./build/release/example-feature-notifications-subscriptions`
 
-**Expected output:** Resource registration, subscription callbacks, list change notifications
+**Expected output:** the requested, acknowledged and left-out filters, the three notifications in order, and how each of the two streams ended; the example exits with a failure status if a check differs
 
 ---
 
@@ -124,14 +126,17 @@ done
 - `ctx.elicit()` for server-initiated information requests
 - `client.on_elicitation()` for handling elicitation requests
 - Form-based elicitation patterns
+- In a 2026-07-28 session the question reaches the client in an `input_required` result and the answer comes back with a retry of the `tools/call`; the tool and the handler are written the same way in both eras
+- `ConnectResult::era` and `Server::mrtr_stats()`
 
 **Key APIs:**
 - `Context::elicit()`
 - `Client::on_elicitation()`
+- `ConnectResult`
 
 **Run:** `./build/release/example-feature-elicitation`
 
-**Expected output:** Elicitation request sent from server, client responds with user info
+**Expected output:** the session era, the elicitation request, the client's form data, and one retry that resumed the tool
 
 ---
 
