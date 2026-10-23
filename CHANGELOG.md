@@ -282,6 +282,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `Context::elicit()` generates one for a URL-mode request that leaves it unset,
   so the wire output for earlier protocol revisions is unchanged; a request
   serialized without it omits the field, as 2026-07-28 requires.
+- `make_tool_structured_result()` accepts any JSON value as `structuredContent`.
+  The server sends a value that is not an object only in response to a
+  2026-07-28 request, and checks it against the tool's `outputSchema` like any
+  other. For a request of an earlier protocol revision, a tool whose result
+  carries non-object `structuredContent` is answered with the internal error
+  that a raw result got before, including when the helper built it.
 - `BearerTokenValidator` returns a `TokenValidation` and
   `AsyncBearerTokenValidator` a `Task<TokenValidation>`. A synchronous
   validator returning `bool` still compiles; an asynchronous one returning
