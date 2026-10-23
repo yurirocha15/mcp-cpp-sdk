@@ -60,7 +60,8 @@ foreach ($path in @($archive, $profile, $lockfile)) {
     }
 }
 $profileCompilerVersion = if ($ExpectedMscVer -ge 1940) { '194' } else { '193' }
-$profileText = [System.IO.File]::ReadAllText($profile)
+# A Windows checkout can convert the profile to CRLF; the line pattern below expects LF.
+$profileText = [System.IO.File]::ReadAllText($profile).Replace("`r`n", "`n")
 if ($profileText -notmatch "(?m)^compiler\.version=$profileCompilerVersion$") {
     throw 'The reviewed ConanCenter profile conflicts with the expected MSVC series'
 }
