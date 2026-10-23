@@ -418,7 +418,7 @@ TEST(ClientListen, LegacySessionIsRefused) {
                     .dump());
         }
     });
-    mcp::Client client(transport, io.get_executor());
+    mcp::Client client(transport, io.get_executor(), legacy_client_options());
 
     int code = 0;
     boost::asio::co_spawn(

@@ -165,7 +165,7 @@ TEST_F(RootsTest, ClientSetRootsServesRootsList) {
     auto client_transport_ptr = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* client_transport = client_transport_ptr.get();
 
-    mcp::Client client(client_transport_ptr, io_ctx_.get_executor());
+    mcp::Client client(client_transport_ptr, io_ctx_.get_executor(), legacy_client_options());
 
     mcp::Root root1;
     root1.uri = "file:///workspace/src";
@@ -191,7 +191,7 @@ TEST_F(RootsTest, ClientSetRootsServesRootsList) {
             EXPECT_FALSE(json_msg["params"]["capabilities"]["roots"].contains("listChanged"));
 
             mcp::InitializeResult init_result;
-            init_result.protocolVersion = std::string(mcp::g_LATEST_PROTOCOL_VERSION);
+            init_result.protocolVersion = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
             init_result.serverInfo.name = "test-server";
             init_result.serverInfo.version = "1.0";
 
@@ -248,7 +248,7 @@ TEST_F(RootsTest, ClientSetRootsWithNotifySendsNotification) {
     auto client_transport_ptr = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* client_transport = client_transport_ptr.get();
 
-    mcp::Client client(client_transport_ptr, io_ctx_.get_executor());
+    mcp::Client client(client_transport_ptr, io_ctx_.get_executor(), legacy_client_options());
 
     int write_count = 0;
     std::vector<std::string> written_messages;
@@ -262,7 +262,7 @@ TEST_F(RootsTest, ClientSetRootsWithNotifySendsNotification) {
                 auto request_id = json_msg["id"].get<std::string>();
 
                 mcp::InitializeResult init_result;
-                init_result.protocolVersion = std::string(mcp::g_LATEST_PROTOCOL_VERSION);
+                init_result.protocolVersion = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
                 init_result.serverInfo.name = "test-server";
                 init_result.serverInfo.version = "1.0";
 

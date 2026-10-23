@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include "../test_utils.hpp"
+
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
@@ -42,7 +44,7 @@ TEST_F(E2EFeaturesTest, MemoryTransportPair) {
                 },
                 boost::asio::detached);
 
-            mcp::Client client(client_transport, io_ctx_.get_executor());
+            mcp::Client client(client_transport, io_ctx_.get_executor(), legacy_client_options());
             auto init_res = co_await client.connect("test-client", "1.0");
             EXPECT_EQ(init_res.serverInfo->name, "test-server");
 
@@ -85,7 +87,7 @@ TEST_F(E2EFeaturesTest, ConnectAndDisconnect) {
                 },
                 boost::asio::detached);
 
-            mcp::Client client(client_transport, io_ctx_.get_executor());
+            mcp::Client client(client_transport, io_ctx_.get_executor(), legacy_client_options());
             auto init_res = co_await client.connect("test-client", "1.0");
             EXPECT_EQ(init_res.serverInfo->name, "test-server");
 
@@ -129,7 +131,7 @@ TEST_F(E2EFeaturesTest, ListTools) {
                 },
                 boost::asio::detached);
 
-            mcp::Client client(client_transport, io_ctx_.get_executor());
+            mcp::Client client(client_transport, io_ctx_.get_executor(), legacy_client_options());
             co_await client.connect("test-client", "1.0");
 
             auto result = co_await client.list_tools();
@@ -176,7 +178,7 @@ TEST_F(E2EFeaturesTest, Pagination) {
                 },
                 boost::asio::detached);
 
-            mcp::Client client(client_transport, io_ctx_.get_executor());
+            mcp::Client client(client_transport, io_ctx_.get_executor(), legacy_client_options());
             co_await client.connect("test-client", "1.0");
 
             auto result = co_await client.list_tools();
@@ -218,7 +220,7 @@ TEST_F(E2EFeaturesTest, Ping) {
                 },
                 boost::asio::detached);
 
-            mcp::Client client(client_transport, io_ctx_.get_executor());
+            mcp::Client client(client_transport, io_ctx_.get_executor(), legacy_client_options());
             co_await client.connect("test-client", "1.0");
 
             co_await client.ping();
@@ -264,7 +266,7 @@ TEST_F(E2EFeaturesTest, MultipleTools) {
                 },
                 boost::asio::detached);
 
-            mcp::Client client(client_transport, io_ctx_.get_executor());
+            mcp::Client client(client_transport, io_ctx_.get_executor(), legacy_client_options());
             co_await client.connect("test-client", "1.0");
 
             auto add_result = co_await client.call_tool("add", nlohmann::json::object());
@@ -309,7 +311,7 @@ TEST_F(E2EFeaturesTest, SequentialCalls) {
                 },
                 boost::asio::detached);
 
-            mcp::Client client(client_transport, io_ctx_.get_executor());
+            mcp::Client client(client_transport, io_ctx_.get_executor(), legacy_client_options());
             co_await client.connect("test-client", "1.0");
 
             auto r1 = co_await client.call_tool("echo", nlohmann::json::object());
