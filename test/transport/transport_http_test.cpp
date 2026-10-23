@@ -2377,7 +2377,10 @@ TEST(BearerChallengeTest, BackslashAndQuoteAreEscaped) {
     mcp::BearerChallengeConfig challenge;
     challenge.realm = R"(a"b\c)";
 
-    EXPECT_EQ(mcp::format_www_authenticate(challenge), R"(Bearer realm="a\"b\\c")");
+    // Named outside the assertion: MSVC 19.44's traditional preprocessor lexes a raw string in a
+    // macro argument as an ordinary one, so a \" inside it starts a string that never ends.
+    constexpr std::string_view expected = R"(Bearer realm="a\"b\\c")";
+    EXPECT_EQ(mcp::format_www_authenticate(challenge), expected);
 }
 
 TEST(BearerChallengeTest, UnquotableValueIsRejected) {

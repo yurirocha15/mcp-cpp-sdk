@@ -52,7 +52,10 @@ TEST(JsonRpcEnvelopeTest, SkipsNestedValuesAndStringsThatContainDelimiters) {
 TEST(JsonRpcEnvelopeTest, KeepsAnEscapedStringIdVerbatim) {
     const auto scan = scan_jsonrpc_envelope(R"({"id":"a\"b","result":{}})");
     ASSERT_TRUE(scan.has_value());
-    EXPECT_EQ(scan->id, R"("a\"b")");
+    // Named outside the assertion: MSVC 19.44's traditional preprocessor lexes a raw string in a
+    // macro argument as an ordinary one, so a \" inside it starts a string that never ends.
+    constexpr std::string_view expected_id = R"("a\"b")";
+    EXPECT_EQ(scan->id, expected_id);
 }
 
 TEST(JsonRpcEnvelopeTest, AcceptsWhitespaceBetweenTokens) {

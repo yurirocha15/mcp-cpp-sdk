@@ -23,6 +23,8 @@ jobs:
           - {os: ubuntu-24.04, cppstd: '20', linkage: both}
           - {os: ubuntu-22.04, cppstd: '20', linkage: both}
           - {os: windows-latest, cppstd: '20', linkage: both}
+          # The Windows release is built with Visual Studio 2022 (release/windows/).
+          - {os: windows-2022, cppstd: '20', linkage: both}
           - {os: macos-latest, cppstd: '20', linkage: both}
           - {os: ubuntu-24.04, cppstd: '20', linkage: static}
           - {os: ubuntu-24.04, cppstd: '23', linkage: both}

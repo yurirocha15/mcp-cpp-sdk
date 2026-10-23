@@ -19,6 +19,7 @@
 #include <nlohmann/json.hpp>
 
 #include <string>
+#include <string_view>
 
 using json = nlohmann::json;
 
@@ -2667,7 +2668,10 @@ TEST(PeerJsonTest, CountsNestingOutsideStringsOnly) {
     // Brackets inside strings are text, including after an escaped quote, and an escaped backslash
     // does not escape the quote that follows it.
     EXPECT_FALSE(exceeds_json_depth(R"({"a":"[[[[{{{{"})", 1));
-    EXPECT_FALSE(exceeds_json_depth(R"({"a":"\"[[[["})", 1));
+    // Named outside the assertion: MSVC 19.44's traditional preprocessor lexes a raw string in a
+    // macro argument as an ordinary one, so a \" inside it starts a string that never ends.
+    constexpr std::string_view escaped_quote = R"({"a":"\"[[[["})";
+    EXPECT_FALSE(exceeds_json_depth(escaped_quote, 1));
     EXPECT_TRUE(exceeds_json_depth(R"({"a":"\\","b":[[1]]})", 2));
 }
 
