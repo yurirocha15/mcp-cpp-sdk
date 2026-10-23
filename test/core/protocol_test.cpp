@@ -55,6 +55,7 @@ TEST(ProtocolTest, SupportedProtocolVersions) {
     bool has_2025_03_26 = false;
     bool has_2025_06_18 = false;
     bool has_2025_11_25 = false;
+    bool has_2026_07_28 = false;
 
     for (const auto& version : mcp::g_SUPPORTED_PROTOCOL_VERSIONS) {
         if (version == "2024-11-05") {
@@ -69,12 +70,16 @@ TEST(ProtocolTest, SupportedProtocolVersions) {
         if (version == "2025-11-25") {
             has_2025_11_25 = true;
         }
+        if (version == "2026-07-28") {
+            has_2026_07_28 = true;
+        }
     }
 
     EXPECT_TRUE(has_2024_11_05) << "Protocol version 2024-11-05 not found in supported versions";
     EXPECT_TRUE(has_2025_03_26) << "Protocol version 2025-03-26 not found in supported versions";
     EXPECT_TRUE(has_2025_06_18) << "Protocol version 2025-06-18 not found in supported versions";
     EXPECT_TRUE(has_2025_11_25) << "Protocol version 2025-11-25 not found in supported versions";
+    EXPECT_TRUE(has_2026_07_28) << "Protocol version 2026-07-28 not found in supported versions";
 }
 
 TEST(ProtocolTest, ParseInitializeRequest_2024_11_05) {
@@ -1598,8 +1603,9 @@ TEST(ProtocolTest, ImplementationDescriptionField) {
 }
 
 TEST(ProtocolTest, LatestProtocolVersion) {
-    EXPECT_EQ(std::string(mcp::g_LATEST_PROTOCOL_VERSION), "2025-11-25");
+    EXPECT_EQ(std::string(mcp::g_LATEST_PROTOCOL_VERSION), "2026-07-28");
     EXPECT_EQ(mcp::g_PROTOCOL_VERSION_2025_11_25, "2025-11-25");
+    EXPECT_EQ(mcp::g_PROTOCOL_VERSION_2026_07_28, "2026-07-28");
 }
 
 TEST(ProtocolTest, ClientCapabilitiesEmptySerialization) {
@@ -2437,24 +2443,25 @@ TEST(ProtocolTest, RejectsMismatchedContentDiscriminator) {
     EXPECT_THROW((void)unknown_content.get<mcp::ContentBlock>(), std::invalid_argument);
 }
 
-TEST(ProtocolTest, DiscoverableVersionsDoNotLeakIntoLegacyNegotiation) {
-    // 2026-07-28 is discoverable but not negotiable: a legacy initialize requesting it must
-    // fall back to the latest fully-served version, not be echoed back.
-    EXPECT_FALSE(mcp::is_supported_protocol_version(mcp::g_PROTOCOL_VERSION_2026_07_28));
+TEST(ProtocolTest, SupportedVersionsDoNotLeakIntoLegacyNegotiation) {
+    // 2026-07-28 is supported but not negotiable: a legacy initialize requesting it must fall
+    // back to the newest legacy version, not be echoed back.
+    EXPECT_TRUE(mcp::is_supported_protocol_version(mcp::g_PROTOCOL_VERSION_2026_07_28));
     EXPECT_EQ(mcp::negotiate_protocol_version(mcp::g_PROTOCOL_VERSION_2026_07_28),
+              mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
+    EXPECT_NE(mcp::negotiate_protocol_version(mcp::g_LATEST_PROTOCOL_VERSION),
               mcp::g_LATEST_PROTOCOL_VERSION);
 
-    ASSERT_EQ(mcp::g_SUPPORTED_PROTOCOL_VERSIONS.size(), 4u);
-    ASSERT_EQ(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.size(), 5u);
-    for (const auto version : mcp::g_SUPPORTED_PROTOCOL_VERSIONS) {
-        EXPECT_NE(std::find(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.begin(),
-                            mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.end(), version),
-                  mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.end());
+    ASSERT_EQ(mcp::g_SUPPORTED_PROTOCOL_VERSIONS.size(), 5u);
+    for (const auto version : mcp::g_LEGACY_PROTOCOL_VERSIONS) {
+        EXPECT_TRUE(mcp::is_supported_protocol_version(version)) << version;
     }
-    EXPECT_EQ(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.back(), mcp::g_PROTOCOL_VERSION_2026_07_28);
+    EXPECT_EQ(mcp::g_SUPPORTED_PROTOCOL_VERSIONS.back(), mcp::g_LATEST_PROTOCOL_VERSION);
+    EXPECT_FALSE(mcp::is_supported_protocol_version("2025-11-26"));
+    EXPECT_FALSE(mcp::is_supported_protocol_version(""));
 }
 
-TEST(ProtocolVersions, LegacyAndModernListsPartitionTheDiscoverableVersions) {
+TEST(ProtocolVersions, LegacyAndModernListsPartitionTheSupportedVersions) {
     const std::vector<std::string_view> legacy(mcp::g_LEGACY_PROTOCOL_VERSIONS.begin(),
                                                mcp::g_LEGACY_PROTOCOL_VERSIONS.end());
     EXPECT_EQ(legacy,
@@ -2464,7 +2471,7 @@ TEST(ProtocolVersions, LegacyAndModernListsPartitionTheDiscoverableVersions) {
                                                mcp::g_MODERN_PROTOCOL_VERSIONS.end());
     EXPECT_EQ(modern, (std::vector<std::string_view>{"2026-07-28"}));
 
-    for (const auto version : mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS) {
+    for (const auto version : mcp::g_SUPPORTED_PROTOCOL_VERSIONS) {
         EXPECT_NE(mcp::is_legacy_protocol_version(version), mcp::is_modern_protocol_version(version))
             << version;
     }

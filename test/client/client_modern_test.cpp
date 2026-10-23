@@ -869,7 +869,20 @@ TEST(ClientEra, EraDecisionCallbackReportsReason) {
         EXPECT_EQ(harness.decisions[0].reason, mcp::EraReason::eDiscoverOk);
     }
     {
-        Harness harness;  // the default is the newest legacy version, no probe
+        Harness harness;  // the default probes first
+        harness.peer.reply = [](const json& request) {
+            return legacy_peer_rejecting_discover(request, mcp::g_METHOD_NOT_FOUND);
+        };
+        harness.run([&]() -> mcp::Task<void> { co_await harness.client->connect("c", "1"); });
+        ASSERT_EQ(harness.decisions.size(), 1u);
+        EXPECT_EQ(harness.decisions[0].era, mcp::ProtocolEra::eLegacy);
+        EXPECT_EQ(harness.decisions[0].reason, mcp::EraReason::eFallbackNonModernError);
+        EXPECT_EQ(harness.peer.count("server/discover"), 1u);
+    }
+    {
+        mcp::ClientOptions options;
+        options.protocol = mcp::ClientProtocol::Legacy();
+        Harness harness(options);
         harness.peer.reply = [](const json& request) {
             return legacy_peer_rejecting_discover(request, mcp::g_METHOD_NOT_FOUND);
         };
@@ -1262,7 +1275,8 @@ TEST(ClientPinned, InvalidPinThrows) {
     }
     EXPECT_EQ(mcp::ClientProtocol::Legacy().version(), "2025-11-25");
     EXPECT_EQ(mcp::ClientProtocol::Auto().kind(), mcp::ClientProtocol::Kind::eAuto);
-    EXPECT_EQ(mcp::ClientOptions{}.protocol.kind(), mcp::ClientProtocol::Kind::eLegacy);
+    EXPECT_EQ(mcp::ClientOptions{}.protocol.kind(), mcp::ClientProtocol::Kind::eAuto);
+    EXPECT_EQ(mcp::ClientProtocol{}.kind(), mcp::ClientProtocol::Kind::eAuto);
 }
 
 TEST(ClientPinned, ProbeTimeoutMustBePositive) {
@@ -1561,8 +1575,8 @@ TEST(E2eEra, AutoOverHttpIsModern) {
     EXPECT_EQ(decisions[0].reason, mcp::EraReason::eDiscoverOk);
 }
 
-// A client left at its default speaks the legacy protocol over HTTP exactly as before.
-TEST(E2eEra, DefaultClientOverHttpIsLegacy) {
+// A client left at its default speaks the modern protocol to a server that serves it over HTTP.
+TEST(E2eEra, DefaultClientOverHttpIsModern) {
     constexpr unsigned short port = 20501;
     boost::asio::io_context io;
     boost::asio::steady_timer guard(io);
@@ -1583,6 +1597,36 @@ TEST(E2eEra, DefaultClientOverHttpIsLegacy) {
     });
 
     EXPECT_EQ(outcome->error, "");
+    EXPECT_EQ(outcome->connected.era, mcp::ProtocolEra::eModern);
+    EXPECT_EQ(outcome->whoami.at("modern"), true);
+}
+
+// A client pinned to the legacy protocol speaks it over HTTP exactly as before, even to a server
+// that serves both eras.
+TEST(E2eEra, LegacyClientOverHttpIsLegacy) {
+    constexpr unsigned short port = 20502;
+    boost::asio::io_context io;
+    boost::asio::steady_timer guard(io);
+    bool fired = false;
+    mcp::StreamableHttpSessionManager manager(
+        io.get_executor(), "127.0.0.1", port,
+        [](const boost::asio::any_io_executor&) { return make_dual_era_server(); });
+    auto transport = std::make_shared<mcp::HttpClientTransport>(
+        io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::Legacy();
+    mcp::Client client(transport, io.get_executor(), options);
+    auto outcome = std::make_shared<EraOutcome>();
+
+    boost::asio::co_spawn(io, manager.listen(), boost::asio::detached);
+    run_guarded(io, guard, fired, [&]() -> mcp::Task<void> {
+        co_await connect_and_ask(client, outcome);
+        client.close();
+        manager.close();
+    });
+
+    EXPECT_EQ(outcome->error, "");
     EXPECT_EQ(outcome->connected.era, mcp::ProtocolEra::eLegacy);
+    EXPECT_EQ(outcome->connected.protocolVersion, "2025-11-25");
     EXPECT_EQ(outcome->whoami.at("modern"), false);
 }

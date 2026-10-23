@@ -96,7 +96,7 @@ class MCP_API ClientProtocol {
         eVersion,  ///< Exactly the version named, no probe.
     };
 
-    /** @brief Equivalent to Legacy(). */
+    /** @brief Equivalent to Auto(). */
     ClientProtocol() = default;
 
     /**
@@ -138,8 +138,8 @@ class MCP_API ClientProtocol {
    private:
     ClientProtocol(Kind kind, std::string version) : kind_(kind), version_(std::move(version)) {}
 
-    Kind kind_{Kind::eLegacy};
-    std::string version_{g_LATEST_LEGACY_PROTOCOL_VERSION};
+    Kind kind_{Kind::eAuto};
+    std::string version_;
 };
 
 /** @brief Why connect() settled on an era. */
@@ -176,12 +176,12 @@ struct ConnectResult {
 /** @brief Client-wide runtime behavior. */
 struct ClientOptions {
     /**
-     * @brief Which protocol to speak; Legacy() unless set.
+     * @brief Which protocol to speak; Auto() unless set.
      *
      * @details See ClientProtocol. Construction throws std::invalid_argument for a value that
      * names a version the SDK does not know.
      */
-    ClientProtocol protocol{ClientProtocol::Legacy()};
+    ClientProtocol protocol{ClientProtocol::Auto()};
     /**
      * @brief How long ClientProtocol::Auto() waits for the answer to server/discover.
      *

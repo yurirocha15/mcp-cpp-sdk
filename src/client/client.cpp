@@ -65,10 +65,7 @@ ClientProtocol ClientProtocol::Legacy() {
 }
 
 ClientProtocol ClientProtocol::Version(std::string version) {
-    const bool known =
-        std::find(g_DISCOVERABLE_PROTOCOL_VERSIONS.begin(), g_DISCOVERABLE_PROTOCOL_VERSIONS.end(),
-                  version) != g_DISCOVERABLE_PROTOCOL_VERSIONS.end();
-    if (!known) {
+    if (!is_supported_protocol_version(version)) {
         throw std::invalid_argument("Unknown protocol version: " +
                                     detail::sanitize_for_diagnostics(version));
     }
