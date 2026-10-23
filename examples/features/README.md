@@ -279,6 +279,46 @@ done
 
 ---
 
+### 14. Modern Client (`modern_client.cpp`)
+
+**What it demonstrates:**
+- `Client::connect()` with the default `ClientProtocol::Auto()`, which speaks protocol revision 2026-07-28 with a server that serves it
+- `ClientOptions::on_era_decision` reporting why the client chose that era
+- `ConnectResult`: `era`, `protocolVersion`, optional `serverInfo`, `instructions`, `supportedVersions`
+- `RequestOptions::log_level`: a handler's log messages reach the client only for a request that sets it
+- `Server::set_cache_hints()` and the `ttlMs` / `cacheScope` hints on a `tools/list` result
+
+**Key APIs:**
+- `ConnectResult`
+- `RequestOptions::log_level`
+- `Server::set_cache_hints()` / `CacheTarget` / `CacheHint`
+
+**Run:** `./build/release/example-feature-modern-client`
+
+**Expected output:** the era decision, the connect result, one log message for the call that sets a log level and none for the call that does not, and the cache hints; the example exits with a failure status if a check differs
+
+---
+
+### 15. Legacy Protocols (`legacy_protocols.cpp`)
+
+**What it demonstrates:**
+- This example is about the older protocol revisions (2025-11-25 and earlier), which start a session with `initialize`
+- `ClientProtocol::Version()` pinning each of the four older revisions, and `ClientProtocol::Legacy()`
+- `ping()` and `resources/subscribe`, which exist only in those revisions, with `Server::on_subscribe()` / `on_unsubscribe()`
+- `ServerProtocolPolicy` and `Server::set_protocol_policy()`: legacy-only and 2026-07-28-only servers
+- The same calls failing locally in a 2026-07-28 session
+
+**Key APIs:**
+- `ClientProtocol::Version()` / `ClientProtocol::Legacy()`
+- `ServerProtocolPolicy` / `Server::set_protocol_policy()`
+- `Client::ping()`
+
+**Run:** `./build/release/example-feature-legacy-protocols`
+
+**Expected output:** one `[ok]` line per check; the example exits with a failure status if a check differs
+
+---
+
 ## Common Patterns
 
 ### Loopback Pattern (Non-Interactive Testing)
