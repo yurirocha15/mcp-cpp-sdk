@@ -117,7 +117,9 @@ Resource Change Notifications
 
 When a resource's content changes, call ``notify_resource_updated`` on the
 ``Server`` instance for the relevant session. The method sends only when that
-session subscribed to the exact URI. In a multi-session deployment, the
+session subscribed to the exact URI, with ``resources/subscribe`` in a session
+of an older revision or in the filter of a ``subscriptions/listen`` stream in a
+2026-07-28 session (see :doc:`subscriptions`). In a multi-session deployment, the
 application is responsible for invoking the notification on each relevant
 per-session server instance.
 
