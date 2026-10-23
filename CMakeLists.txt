@@ -414,6 +414,7 @@ if(BUILD_TESTING)
       test/transport/transport_memory_test.cpp
       test/transport/socket_deadline_test.cpp
       test/e2e/e2e_integration_test.cpp
+      test/e2e/e2e_matrix_test.cpp
       test/e2e/e2e_features_test.cpp
       test/server/runtime_test.cpp
       test/server/server_stdio_test.cpp
