@@ -82,7 +82,7 @@ Server
 
 **Key responsibilities**:
 
-* Protocol compliance (MCP handshake, request handling)
+* Protocol compliance (2026-07-28 requests served one by one, and the ``initialize`` handshake of older revisions, on the same transport)
 * Handler type erasure and invocation
 * ``ensure_async_handler`` — automatically normalizes handler signatures (sync/async, with/without ``Context``) into unified async form; called internally by ``add_tool``, ``add_resource``, etc.
 * Error handling: tool-handler exceptions become ``CallToolResult`` values with
@@ -94,7 +94,7 @@ Client
 
 ``mcp::Client`` is the core client implementation:
 
-* Connects to MCP servers and performs initialization handshake
+* Connects to MCP servers and settles on a protocol era: it probes with ``server/discover`` or performs the ``initialize`` handshake
 * Sends requests and matches responses via request ID
 * Manages pending requests with timeout support
 * Handles server notifications
@@ -107,7 +107,9 @@ Client
 * Reverse RPC: ``dispatch_incoming_request`` handles server-to-client JSON-RPC requests, enabling servers to request client capabilities (elicitation, sampling, roots)
 * Timeout management for requests
 * Connection lifecycle (``connect()`` and ``close()``; the read loop is managed
-  internally)
+  internally). ``connect()`` resolves to a ``ConnectResult`` that names the era
+* Resuming ``input_required`` results and opening ``subscriptions/listen``
+  streams with ``listen()``
 * Error propagation from server responses
 
 Transport Abstraction
@@ -133,8 +135,9 @@ Built-in implementations:
 
 For multi-session HTTP deployments, ``StreamableHttpSessionManager`` owns the
 listener and creates per-session ``Server`` instances backed by in-memory
-transports. The canonical session header name used in the docs is
-``MCP-Session-Id``.
+transports for clients of older revisions. The canonical session header name
+used in the docs is ``MCP-Session-Id``. It serves 2026-07-28 requests on the
+same endpoint without a session, from one shared ``Server``.
 
 Custom transports can be added by implementing the ``ITransport`` interface.
 
@@ -178,8 +181,8 @@ Protocol Types
 
 The protocol headers expose MCP message types in the ``mcp`` namespace:
 
-* Request types: ``InitializeRequest``, ``ListToolsRequest``, ``CallToolRequest``, etc.
-* Response types: ``InitializeResult``, ``ListToolsResult``, ``CallToolResult``, etc.
+* Request types: ``InitializeRequest`` (older revisions), ``ListToolsRequest``, ``CallToolRequest``, etc.
+* Response types: ``DiscoverResult``, ``InitializeResult`` (older revisions), ``ListToolsResult``, ``CallToolResult``, etc.
 * Notification types: ``InitializedNotification``, ``ProgressNotification``, etc.
 * Capability structs: ``ServerCapabilities``, ``ClientCapabilities``
 * ``RequestId`` — a named wrapper for JSON-RPC request identifiers (string or integer), replacing raw ``std::variant`` usage
@@ -188,6 +191,25 @@ All types support JSON serialization via nlohmann_json. Protocol types are
 organized into focused sub-headers (``capabilities.hpp``, ``content.hpp``,
 ``tools.hpp``, ``roots.hpp``, ``sampling.hpp``, ``elicitation.hpp``, etc.)
 included via the ``mcp/protocol/protocol.hpp`` umbrella.
+
+Protocol Eras
+^^^^^^^^^^^^^
+
+The SDK separates two protocol families, called eras in the API
+(``ProtocolEra``):
+
+* **Modern** (2026-07-28): no handshake. Each request carries its protocol
+  version and client capabilities in ``_meta``, and a client learns about a
+  server with ``server/discover``. The server holds no per-connection protocol
+  state.
+* **Legacy** (2025-11-25 and earlier): a session starts with ``initialize`` and
+  ``notifications/initialized``, and the negotiated version and capabilities
+  belong to the session.
+
+A ``Server`` serves both by default, on every transport; ``ServerProtocolPolicy``
+narrows that. A ``Client`` picks one when it connects, according to
+``ClientOptions::protocol``. The default, ``ClientProtocol::Auto()``, probes with
+``server/discover`` and falls back to ``initialize``. See :doc:`concepts/protocol`.
 
 Data Flow
 ---------
@@ -208,6 +230,12 @@ The typical data flow for a tool call:
 12. **Client Transport** reads JSON response
 13. **Client** matches response to pending request by ID
 14. **Client** deserializes and returns result to caller
+
+The flow above is the same in both eras. In a 2026-07-28 session step 1 also
+puts the protocol version and client capabilities in the request's ``_meta``,
+and no ``initialize`` request precedes it. If the handler asks the client a
+question in step 8, the server answers with an ``input_required`` result and
+the client sends the request again with the answer.
 
 This flow demonstrates the clean separation between protocol layer, transport
 layer, and application logic.

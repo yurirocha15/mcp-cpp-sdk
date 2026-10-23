@@ -6,15 +6,106 @@ Notifications and subscriptions enable real-time communication between MCP serve
 Subscriptions Overview
 ----------------------
 
-In MCP, subscriptions are specifically tied to resources. A client can "subscribe" to a resource URI to indicate interest in receiving updates whenever that resource changes.
+A client can ask a server to push two kinds of notification: that a list of
+tools, prompts or resources changed, and that a resource it is interested in
+changed.
 
 Key benefits include:
 - Reduced latency for data updates.
 - Lower overhead compared to polling.
 - Real-time synchronization for telemetry, logs, or shared state.
 
+How a client asks depends on the protocol revision of the session:
+
+- In a 2026-07-28 session the client opens a ``subscriptions/listen`` stream
+  with ``Client::listen()``. See `Listening for Notifications`_.
+- In a session of 2025-11-25 or earlier the client sends
+  ``resources/subscribe`` for each resource URI. See `Resource Subscriptions`_.
+
+The server side is the same in both: the server calls ``notify_resource_updated()``
+and the ``notify_*_list_changed()`` methods, and the SDK sends each
+notification to the clients that asked for it.
+
+Listening for Notifications
+---------------------------
+
+Protocol revision 2026-07-28 has no ``resources/subscribe``. A client sends one
+``subscriptions/listen`` request that names every notification it opts in to,
+and the server keeps that request open and sends the notifications on it.
+
+``Client::listen()`` takes a ``SubscriptionFilter`` and returns a
+``Subscription`` once the server has acknowledged the request:
+
+.. code-block:: cpp
+
+   mcp::SubscriptionFilter filter;
+   filter.toolsListChanged = true;
+   filter.resourceSubscriptions.push_back("mcp://status/counter");
+
+   mcp::Subscription subscription = co_await client.listen(filter);
+
+   for (;;) {
+       auto event = co_await subscription.next();
+       if (!event) {
+           break;  // the stream ended; see subscription.end_reason()
+       }
+       std::cout << event->method << "\n";
+   }
+
+The filter has ``toolsListChanged``, ``promptsListChanged`` and
+``resourcesListChanged`` flags and a list of ``resourceSubscriptions`` URIs. The
+server first answers with ``notifications/subscriptions/acknowledged``, which
+lists the part of the filter it honors. It honors a list-changed type only if
+the matching capability sets ``listChanged``, and resource URIs only if the
+``resources`` capability sets ``subscribe``. ``Subscription::acknowledged()``
+returns what the server honors, and ``Subscription::unhonored()`` what it left
+out.
+
+``Subscription::next()`` returns the notifications of this stream in the order
+they arrived, as a ``SubscriptionEvent`` with the ``method`` and ``params``. The
+``params._meta`` of each carries the id of the listen request under
+``io.modelcontextprotocol/subscriptionId`` (``g_META_SUBSCRIPTION_ID``), which is
+how streams on one connection are told apart. Any number of streams may be open
+on one client. The client holds at most ``ClientOptions::subscription_queue_limit``
+(1024 by default) notifications that ``next()`` has not taken yet, and drops the
+oldest beyond that; ``Subscription::dropped_events()`` counts them.
+
+``Subscription::close()`` ends the stream. A handle does not close its stream
+when it is destroyed. ``Subscription::end_reason()`` says how a stream ended
+(``SubscriptionEnd``): the server closed it, ``close()`` did, the connection
+dropped, or the server answered with an error. After a dropped connection,
+connect a new client and call ``listen()`` again; the server keeps no
+subscription across connections.
+
+``Client::listen()`` throws ``McpError`` with ``g_METHOD_NOT_FOUND`` in a
+session of an older revision.
+
+On the server, nothing changes in the handlers. ``notify_tools_list_changed()``,
+``notify_prompts_list_changed()``, ``notify_resources_list_changed()`` and
+``notify_resource_updated()`` also send to every open stream that asked for the
+notification. A stream stays open until the client cancels it or closes the
+connection. ``Server::close_subscriptions()`` ends every open stream, and
+``Server::subscription_count()`` counts them. The ``on_subscribe()`` and
+``on_unsubscribe()`` callbacks below belong to ``resources/subscribe`` and do
+not run for ``subscriptions/listen``.
+
+Which transports carry the stream:
+
+- stdio, WebSocket and in-memory transports served by ``Server::run()``.
+- ``StreamableHttpSessionManager``, as a server-sent event stream. The client
+  must accept ``text/event-stream``. The stream runs on the manager's shared
+  modern server, see :doc:`/guides/deployment`.
+
+``HttpServerTransport`` answers ``subscriptions/listen`` with
+``g_METHOD_NOT_FOUND``.
+
 Resource Subscriptions
 ----------------------
+
+In a session of protocol revision 2025-11-25 or earlier, a client subscribes to
+a resource URI with the ``resources/subscribe`` request to indicate interest in
+updates whenever that resource changes. A 2026-07-28 session has no such
+request; it lists the URIs in a ``subscriptions/listen`` filter instead.
 
 Server-side Subscription Callbacks
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
