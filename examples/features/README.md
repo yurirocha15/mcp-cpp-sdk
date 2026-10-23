@@ -36,15 +36,17 @@ done
 **What it demonstrates:**
 - `ctx.report_progress()` for real-time progress updates
 - `ctx.is_cancelled()` for cancellation detection
-- Client-side cancellation requests
+- Client-side cancellation requests; in a 2026-07-28 session the cancelled call fails with `g_REQUEST_CANCELLED`
+- `RequestOptions::log_level` asking for the log messages of one request
 
 **Key APIs:**
 - `Context::report_progress(current, total, message)`
 - `Context::is_cancelled()`
+- `RequestOptions::log_level`
 
 **Run:** `./build/release/example-feature-progress-cancellation`
 
-**Expected output:** Progress percentages from 10% to 100%, then cancellation handling
+**Expected output:** Progress percentages up to 30%, the cancellation, and the log messages received
 
 ---
 
@@ -110,9 +112,11 @@ done
 - `server.set_page_size()` for controlling result pagination
 - Cursor-based pagination handling
 - `nextCursor` in list results
+- `Server::set_cache_hints()` and the `ttlMs` / `cacheScope` hints on each page
 
 **Key APIs:**
 - `Server::set_page_size()`
+- `Server::set_cache_hints()`
 
 **Run:** `./build/release/example-feature-pagination`
 
@@ -146,6 +150,7 @@ done
 - `client.set_roots()` for declaring client root URIs
 - `ctx.request_roots()` for server to discover client roots
 - `client.on_roots_list()` for responding to roots/list
+- Roots are a deprecated feature in protocol revision 2026-07-28; they still work, through a multi round-trip request
 
 **Key APIs:**
 - `Client::set_roots()`

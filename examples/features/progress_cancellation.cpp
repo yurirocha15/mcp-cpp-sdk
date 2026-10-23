@@ -6,6 +6,13 @@
 /// - A client that subscribes to progress notifications
 /// - A client that sends a cancellation request
 /// - The tool handler checking ctx.is_cancelled() and exiting early
+/// - RequestOptions::log_level asking the server for the log messages of one request
+///
+/// The client uses the default ClientProtocol::Auto(), so against this server it speaks
+/// 2026-07-28. There the server sends nothing more for a request the client cancelled, not even
+/// its response, so Client::cancel() ends the wait at once and the call fails with
+/// g_REQUEST_CANCELLED. A client of an earlier revision gets the tool's own answer instead; the
+/// code below handles both.
 
 #include <mcp/client/client.hpp>
 #include <mcp/server/server.hpp>
@@ -20,6 +27,7 @@
 #include <exception>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 namespace asio = boost::asio;
@@ -29,6 +37,8 @@ int main() {
         using namespace mcp;
 
         asio::io_context io_ctx;
+        bool client_ok = false;
+        bool tool_saw_cancel = false;
 
         // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
@@ -47,7 +57,7 @@ int main() {
 
         server.add_tool<nlohmann::json, nlohmann::json>(
             "long_task", "A long-running task that reports progress and can be cancelled", tool_schema,
-            [](Context& ctx, const nlohmann::json& args) -> Task<nlohmann::json> {
+            [&tool_saw_cancel](Context& ctx, const nlohmann::json& args) -> Task<nlohmann::json> {
                 int duration_ms = args.at("duration_ms").get<int>();
                 int steps = 10;
                 int step_duration_ms = duration_ms / steps;
@@ -57,6 +67,7 @@ int main() {
                 for (int i = 0; i < steps; ++i) {
                     if (ctx.is_cancelled()) {
                         std::cout << "Tool: Cancellation detected at step " << i << "\n";
+                        tool_saw_cancel = true;
                         co_return nlohmann::json{
                             {"content", nlohmann::json::array({nlohmann::json{
                                             {"type", "text"},
@@ -75,6 +86,8 @@ int main() {
                         "Processing step " + std::to_string(i + 1) + "/" + std::to_string(steps);
                     co_await ctx.report_progress(progress, 100, message);
                     std::cout << "Tool: Reported progress " << progress << "%\n";
+                    // Reaches the client only because its request set RequestOptions::log_level.
+                    co_await ctx.log_info(message);
                 }
 
                 std::cout << "Tool: Completed all steps\n";
@@ -111,23 +124,29 @@ int main() {
                     co_await delay_timer.async_wait(asio::use_awaitable);
 
                     std::cout << "Client: Creating client\n";
-                    // This flow cancels by request id and still reads the tool's answer, which only
-                    // the revisions that start with initialize send for a cancelled request.
-                    mcp::ClientOptions options;
-                    options.protocol = mcp::ClientProtocol::Legacy();
-                    mcp::Client client(client_transport, io_ctx.get_executor(), options);
+                    mcp::Client client(client_transport, io_ctx.get_executor());
 
                     Implementation client_info;
                     client_info.name = "progress-client";
                     client_info.version = "1.0.0";
 
                     std::cout << "Client: Connecting to server\n";
-                    auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "Client: Connected to " << init_result.serverInfo->name << "\n";
+                    {
+                        auto init_result = co_await client.connect(client_info, ClientCapabilities{});
+                        // serverInfo is optional: a server may leave it out.
+                        if (init_result.serverInfo) {
+                            std::cout << "Client: Connected to " << init_result.serverInfo->name
+                                      << "\n";
+                        }
+                    }
 
                     bool progress_received = false;
                     bool cancel_sent = false;
                     int progress_count = 0;
+
+                    int log_count = 0;
+                    client.on_notification("notifications/message",
+                                           [&log_count](const nlohmann::json&) { ++log_count; });
 
                     client.on_progress([&](const mcp::ProgressNotificationParams& params) {
                         progress_received = true;
@@ -141,9 +160,9 @@ int main() {
                             cancel_sent = true;
                             std::cout << "Client: Sending cancellation request\n";
                             // The SDK assigns auto-incrementing integer IDs to JSON-RPC
-                            // requests. The `initialize` call uses ID 1, so our
-                            // `call_tool` uses ID 2. In production, store the
-                            // request ID returned by call_tool instead of hardcoding.
+                            // requests. connect() used ID 1 (the initialize or server/discover
+                            // request), so our tools/call uses ID 2. In production, track the
+                            // request ID instead of hardcoding it.
                             asio::co_spawn(
                                 io_ctx,
                                 [&client]() -> mcp::Task<void> {
@@ -163,23 +182,46 @@ int main() {
                     call_params.arguments = call_args;
                     call_params.meta = nlohmann::json{{"progressToken", "progress-tok-1"}};
 
-                    auto result_json =
-                        co_await client.send_request("tools/call", nlohmann::json(call_params));
-                    auto result = result_json.get<mcp::CallToolResult>();
+                    // Ask the server for the log messages of this request only.
+                    mcp::RequestOptions request_options;
+                    request_options.log_level = mcp::LoggingLevel::eInfo;
 
-                    std::cout << "Client: Tool completed\n";
-                    for (const auto& content_block : result.content) {
-                        if (const auto* text_content = std::get_if<mcp::TextContent>(&content_block)) {
-                            std::cout << "Client: Result text: " << text_content->text << "\n";
+                    bool call_cancelled = false;
+                    try {
+                        auto result_json = co_await client.send_request(
+                            "tools/call", nlohmann::json(call_params), request_options);
+                        auto result = result_json.get<mcp::CallToolResult>();
+
+                        std::cout << "Client: Tool answered\n";
+                        for (const auto& content_block : result.content) {
+                            if (const auto* text_content =
+                                    std::get_if<mcp::TextContent>(&content_block)) {
+                                std::cout << "Client: Result text: " << text_content->text << "\n";
+                            }
                         }
+                        // Only a session of an earlier revision gets here, with the answer of the
+                        // tool that stopped early.
+                        call_cancelled = result.isError.value_or(false);
+                    } catch (const mcp::McpError& error) {
+                        std::cout << "Client: Call ended: " << error.what() << "\n";
+                        call_cancelled = error.code() == mcp::g_REQUEST_CANCELLED;
                     }
 
-                    if (progress_received) {
-                        std::cout << "Client: Successfully received progress notifications\n";
+                    // Give the tool time to see the cancellation and stop.
+                    asio::steady_timer settle_timer(io_ctx.get_executor());
+                    settle_timer.expires_after(std::chrono::milliseconds(300));
+                    co_await settle_timer.async_wait(asio::use_awaitable);
+
+                    std::cout << "Client: Log messages received: " << log_count << "\n";
+                    if (!progress_received || !call_cancelled || !tool_saw_cancel || log_count == 0) {
+                        throw std::runtime_error("the call was not cancelled as expected");
                     }
+                    std::cout << "Client: Successfully received progress and log messages, and "
+                                 "cancelled the call\n";
 
                     std::cout << "Client: Closing connection\n";
                     client.close();
+                    client_ok = true;
 
                 } catch (const std::exception& e) {
                     std::cerr << "Client error: " << e.what() << "\n";
@@ -189,6 +231,10 @@ int main() {
 
         io_ctx.run();
 
+        if (!client_ok) {
+            std::cerr << "Example failed\n";
+            return EXIT_FAILURE;
+        }
         std::cout << "Example completed successfully\n";
         return EXIT_SUCCESS;
 

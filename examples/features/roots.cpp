@@ -7,6 +7,12 @@
 /// - A server tool that calls ctx.request_roots() to discover client roots
 /// - The server displaying discovered roots
 /// - Loopback communication via MemoryTransport
+///
+/// Roots are a deprecated feature in protocol revision 2026-07-28: the specification keeps them
+/// but advises new implementations against adopting them (its deprecated features registry
+/// suggests passing directories or files in tool parameters, resource URIs or server
+/// configuration). They still work. In a 2026-07-28 session the server asks for the roots with an
+/// input_required result, and the client's roots handler answers on the retry of the tools/call.
 
 #include <mcp/client/client.hpp>
 #include <mcp/server/server.hpp>
@@ -21,6 +27,7 @@
 #include <exception>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 namespace asio = boost::asio;
@@ -30,6 +37,7 @@ int main() {
         using namespace mcp;
 
         asio::io_context io_ctx;
+        bool client_ok = false;
 
         // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
@@ -131,13 +139,22 @@ int main() {
                     client_info.version = "1.0.0";
 
                     std::cout << "Client: Connecting to server\n";
-                    auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "Client: Connected to " << init_result.serverInfo->name << "\n";
+                    {
+                        auto init_result = co_await client.connect(client_info, ClientCapabilities{});
+                        // serverInfo is optional: a server may leave it out.
+                        if (init_result.serverInfo) {
+                            std::cout << "Client: Connected to " << init_result.serverInfo->name
+                                      << "\n";
+                        }
+                    }
 
                     std::cout << "Client: Calling discover_roots tool\n";
                     auto result = co_await client.call_tool("discover_roots", nlohmann::json::object());
 
                     std::cout << "Client: Tool completed\n";
+                    if (result.isError.value_or(false)) {
+                        throw std::runtime_error("the tool could not discover the roots");
+                    }
                     std::cout << "Client: Result has " << result.content.size()
                               << " content block(s)\n";
                     for (const auto& content_block : result.content) {
@@ -153,6 +170,7 @@ int main() {
                     asio::steady_timer shutdown_timer(io_ctx.get_executor());
                     shutdown_timer.expires_after(std::chrono::milliseconds(100));
                     co_await shutdown_timer.async_wait(asio::use_awaitable);
+                    client_ok = true;
                     io_ctx.stop();
 
                 } catch (const std::exception& e) {
@@ -164,6 +182,10 @@ int main() {
 
         io_ctx.run();
 
+        if (!client_ok) {
+            std::cerr << "Example failed\n";
+            return EXIT_FAILURE;
+        }
         std::cout << "Example completed successfully\n";
         return EXIT_SUCCESS;
 
