@@ -341,6 +341,7 @@ class GithubPublicationPolicyTest(unittest.TestCase):
             [
                 "gh", "api", "-H", "X-GitHub-Api-Version: 2026-03-10",
                 "repos/example/mcp-cpp-sdk/releases/99",
+                "--jq", "{id, tag_name, draft, prerelease, immutable}",
             ],
         )
         run.side_effect = None

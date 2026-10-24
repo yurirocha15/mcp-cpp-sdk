@@ -76,6 +76,15 @@ class GitHubAnchorOrchestrationTests(unittest.TestCase):
             _release_metadata(repository="example/mcp-cpp-sdk", tag="v0.2.0"),
             (graphql, rest, assets),
         )
+        rest_command = run.call_args_list[1].args[0]
+        self.assertEqual(
+            rest_command[-3:],
+            [
+                "repos/example/mcp-cpp-sdk/releases/tags/v0.2.0",
+                "--jq",
+                "{id, tag_name, draft, prerelease, immutable}",
+            ],
+        )
         asset_command = run.call_args_list[-1].args[0]
         self.assertEqual(asset_command[:4], ["gh", "api", "--paginate", "--slurp"])
         self.assertIn("releases/9/assets?per_page=100", asset_command[-1])

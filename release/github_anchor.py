@@ -10,6 +10,7 @@ import subprocess
 from typing import Mapping, Sequence
 
 from .github_publication import (
+    RELEASE_REST_FIELDS,
     PublicationPolicyError,
     _gh_json,
     verify_live_github_tag,
@@ -99,6 +100,8 @@ def _release_metadata(*, repository: str, tag: str) -> tuple[object, object, obj
             "-H",
             _GITHUB_API_VERSION,
             f"repos/{repository}/releases/tags/{tag}",
+            "--jq",
+            RELEASE_REST_FIELDS,
         ],
         label="release-rest",
     )
