@@ -159,10 +159,22 @@ PUBLISHER_CONDITIONS = {
         "(inputs.target_apt == 'true' || inputs.target_rpm == 'true') }}"
     ),
     "aur": "${{ inputs.mode == 'publish' && inputs.target_aur == 'true' }}",
-    "homebrew": "${{ inputs.mode == 'publish' && inputs.target_homebrew == 'true' }}",
-    "chocolatey": "${{ inputs.mode == 'publish' && inputs.target_chocolatey == 'true' }}",
-    "conan": "${{ inputs.mode == 'publish' && inputs.target_conan2 == 'true' }}",
+    **{
+        job: (
+            f"${{{{ !cancelled() && inputs.mode == 'publish' && inputs.{target} == 'true' "
+            "&& contains(fromJSON('[\"success\",\"skipped\"]'), needs.publish-cloudsmith.result) "
+            "&& contains(fromJSON('[\"success\",\"skipped\"]'), needs.aur.result) }}"
+        )
+        for job, target in (
+            ("homebrew", "target_homebrew"),
+            ("chocolatey", "target_chocolatey"),
+            ("conan", "target_conan2"),
+        )
+    },
 }
+# Providers poll for the whole source run to succeed, so they must not start
+# while the approval-gated direct publishers are still pending.
+PROVIDER_NEEDS = ("publish-cloudsmith", "aur")
 
 
 class PolicyError(RuntimeError):
@@ -501,6 +513,8 @@ def check_job_graph(
         if expression(publication_blocks[job], "if") != expected:
             raise PolicyError(f"publisher {job!r} is not gated by its checkbox")
         if job in {"homebrew", "chocolatey", "conan"}:
+            if sequence(publication_blocks[job], "needs") != PROVIDER_NEEDS:
+                raise PolicyError(f"publisher {job!r} can start before Cloudsmith and AUR")
             if scalar(publication_blocks[job], "uses") != (
                 "./.github/workflows/release-provider-dispatch.yml"
             ):

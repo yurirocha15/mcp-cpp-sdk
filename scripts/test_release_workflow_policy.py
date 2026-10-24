@@ -237,6 +237,37 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_rejects_provider_dispatch_before_direct_publishers(self) -> None:
+        def graph(publication_blocks):
+            return lambda: policy.check_job_graph(
+                self.blocks,
+                self.combined_text,
+                self.candidate_blocks,
+                publication_blocks,
+            )
+
+        for job in ("homebrew", "chocolatey", "conan"):
+            with self.subTest(job=job):
+                publication_blocks = self.copied(self.publication_blocks)
+                publication_blocks[job] = [
+                    line for line in publication_blocks[job] if line != "      - aur"
+                ]
+                self.assert_policy_error(graph(publication_blocks))
+
+                publication_blocks = self.copied(self.publication_blocks)
+                publication_blocks[job] = [
+                    line.replace("!cancelled()", "always()")
+                    for line in publication_blocks[job]
+                ]
+                self.assert_policy_error(graph(publication_blocks))
+
+                publication_blocks = self.copied(self.publication_blocks)
+                publication_blocks[job] = [
+                    line.replace('"success","skipped"]\'), needs.aur', '"success","failure"]\'), needs.aur')
+                    for line in publication_blocks[job]
+                ]
+                self.assert_policy_error(graph(publication_blocks))
+
     def test_rejects_preflight_or_publication_kill_switch_bypass(self) -> None:
         blocks = self.copied(self.blocks)
         blocks["preflight-aur"] = [
