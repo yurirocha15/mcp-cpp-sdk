@@ -23,6 +23,7 @@ from release.artifacts import (
     load_conan_requirements,
     sha256_file,
     validate_candidate_inventory,
+    write_atomic,
 )
 from release.build_identity import (
     expected_native_facts,
@@ -121,6 +122,13 @@ class ArtifactTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_atomic_writes_are_readable_by_other_users(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "evidence.json"
+            write_atomic(path, b"{}")
+            self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(path.read_bytes(), b"{}")
 
     def test_inventory_rejects_traversal_and_symlink(self) -> None:
         with self.assertRaises(ValidationError):

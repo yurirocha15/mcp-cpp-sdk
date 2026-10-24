@@ -76,6 +76,11 @@ def write_atomic(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
+        # mkstemp creates 0600 files; a release builder container writes as root, and the
+        # runner user must still read its outputs to upload them. Windows has no such owner
+        # split, and changing the mode of the open file there blocks the replace below.
+        if os.name == "posix":
+            os.fchmod(descriptor, 0o644)
         with os.fdopen(descriptor, "wb") as output:
             output.write(data)
             output.flush()
