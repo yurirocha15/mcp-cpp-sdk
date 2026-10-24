@@ -119,6 +119,49 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         blocks["policy"].append("        TOKEN: ${{ secrets.RELEASE_GPG_PASSPHRASE }}")
         self.assert_policy_error(lambda: policy.check_job_security(blocks))
 
+    def test_forwarded_secrets_match_the_reviewed_calls(self) -> None:
+        policy.check_job_security(self.blocks)
+        policy.check_job_security(
+            self.publication_blocks,
+            policy.PUBLICATION_JOB_PERMISSIONS,
+            policy.PUBLICATION_ENVIRONMENTS,
+            policy.PUBLICATION_FORWARDED_SECRETS,
+        )
+        self.assertEqual(
+            policy.forwarded_secrets(self.blocks["candidate"])[0],
+            policy.MAIN_FORWARDED_SECRETS["candidate"],
+        )
+
+    def test_rejects_extra_missing_renamed_or_misplaced_forwarded_secret(self) -> None:
+        blocks = self.copied(self.blocks)
+        index = blocks["candidate"].index("    secrets:")
+        blocks["candidate"].insert(
+            index + 1, "      RELEASE_ADMIN_APP_PRIVATE_KEY: ${{ secrets.RELEASE_ADMIN_APP_PRIVATE_KEY }}"
+        )
+        self.assert_policy_error(lambda: policy.check_job_security(blocks))
+
+        blocks = self.copied(self.blocks)
+        blocks["candidate"] = [
+            line for line in blocks["candidate"] if "RELEASE_GPG_PASSPHRASE" not in line
+        ]
+        self.assert_policy_error(lambda: policy.check_job_security(blocks))
+
+        blocks = self.copied(self.blocks)
+        blocks["candidate"] = [
+            line.replace(
+                "RELEASE_GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}",
+                "RELEASE_GPG_PASSPHRASE: ${{ secrets.CLOUDSMITH_API_KEY }}",
+            )
+            for line in blocks["candidate"]
+        ]
+        self.assert_policy_error(lambda: policy.check_job_security(blocks))
+
+        blocks = self.copied(self.blocks)
+        blocks["policy"].extend(
+            ["    secrets:", "      RELEASE_GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}"]
+        )
+        self.assert_policy_error(lambda: policy.check_job_security(blocks))
+
     def test_rejects_unknown_secret_or_persisted_checkout_credentials(self) -> None:
         blocks = self.copied(self.candidate_blocks)
         blocks["signing"].append("        TOKEN: ${{ secrets.UNKNOWN_RELEASE_TOKEN }}")

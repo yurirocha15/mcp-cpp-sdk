@@ -103,6 +103,27 @@ ALLOWED_SECRETS = {
     "secrets.RELEASE_ADMIN_APP_PRIVATE_KEY",
 }
 
+# A reusable workflow receives an environment secret only when its caller passes the secret by
+# name, so these calls forward exactly these names; the called jobs hold the environments.
+MAIN_FORWARDED_SECRETS = {
+    "candidate": frozenset({"RELEASE_GPG_PRIVATE_KEY_B64", "RELEASE_GPG_PASSPHRASE"}),
+    "publication": frozenset(
+        {
+            "AUR_SSH_PRIVATE_KEY_B64",
+            "AUR_SSH_KEY_PASSPHRASE",
+            "CLOUDSMITH_API_KEY",
+            "HOMEBREW_APP_PRIVATE_KEY",
+            "CHOCOLATEY_APP_PRIVATE_KEY",
+            "CONAN_BROKER_APP_PRIVATE_KEY",
+        }
+    ),
+}
+PUBLICATION_FORWARDED_SECRETS = {
+    "homebrew": frozenset({"HOMEBREW_APP_PRIVATE_KEY"}),
+    "chocolatey": frozenset({"CHOCOLATEY_APP_PRIVATE_KEY"}),
+    "conan": frozenset({"CONAN_BROKER_APP_PRIVATE_KEY"}),
+}
+
 PREFLIGHT_CONDITIONS = {
     "preflight-cloudsmith": (
         "${{ needs.contract.outputs.release_kind == 'stable' && "
@@ -291,10 +312,33 @@ def check_action_pins(lines: list[str]) -> None:
             raise PolicyError(f"action {action!r} is not pinned to its reviewed commit")
 
 
+def forwarded_secrets(block: list[str]) -> tuple[frozenset[str], set[int]]:
+    """Return the secrets a reusable-workflow call forwards by name, and their line indexes."""
+
+    if "    secrets:" not in block:
+        return frozenset(), set()
+    if not any(line.startswith("    uses: ./.github/workflows/") for line in block):
+        raise PolicyError("only reusable-workflow calls may forward secrets")
+    start = block.index("    secrets:")
+    names: set[str] = set()
+    indexes = {start}
+    for index in range(start + 1, len(block)):
+        line = block[index]
+        if not line.startswith("      "):
+            break
+        match = re.fullmatch(r"      ([A-Z0-9_]+): \$\{\{ secrets\.([A-Z0-9_]+) \}\}", line)
+        if match is None or match.group(1) != match.group(2):
+            raise PolicyError("a reusable-workflow call may forward secrets only under their own names")
+        names.add(match.group(1))
+        indexes.add(index)
+    return frozenset(names), indexes
+
+
 def check_job_security(
     blocks: dict[str, list[str]],
     expected_permissions: dict[str, dict[str, str]] = MAIN_JOB_PERMISSIONS,
     expected_environments: dict[str, str] = MAIN_ENVIRONMENTS,
+    expected_forwarded: dict[str, frozenset[str]] = MAIN_FORWARDED_SECRETS,
 ) -> None:
     if set(blocks) != set(expected_permissions):
         raise PolicyError("release job inventory differs from reviewed policy")
@@ -304,7 +348,12 @@ def check_job_security(
         expected_environment = expected_environments.get(job)
         if scalar(block, "environment") != expected_environment:
             raise PolicyError(f"job {job!r} has the wrong protected environment")
-        block_text = "\n".join(block)
+        forwarded, forwarding_lines = forwarded_secrets(block)
+        if forwarded != expected_forwarded.get(job, frozenset()):
+            raise PolicyError(f"job {job!r} forwards secrets that differ from reviewed policy")
+        if not {f"secrets.{name}" for name in forwarded} <= ALLOWED_SECRETS:
+            raise PolicyError(f"job {job!r} forwards an unreviewed secret")
+        block_text = "\n".join(line for index, line in enumerate(block) if index not in forwarding_lines)
         secrets = set(re.findall(r"secrets\.[A-Z0-9_]+", block_text))
         if not secrets <= ALLOWED_SECRETS:
             raise PolicyError(f"job {job!r} references an unreviewed secret")
@@ -646,11 +695,13 @@ def main() -> int:
         candidate_blocks,
         CANDIDATE_JOB_PERMISSIONS,
         CANDIDATE_ENVIRONMENTS,
+        {},
     )
     check_job_security(
         publication_blocks,
         PUBLICATION_JOB_PERMISSIONS,
         PUBLICATION_ENVIRONMENTS,
+        PUBLICATION_FORWARDED_SECRETS,
     )
     check_job_graph(blocks, combined_text, candidate_blocks, publication_blocks)
     check_provider_workflows(blocks, publication_blocks, combined_text)
