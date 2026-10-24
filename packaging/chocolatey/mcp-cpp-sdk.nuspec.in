@@ -11,7 +11,7 @@
     <projectUrl>@PROJECT_URL@</projectUrl>
     <projectSourceUrl>@PACKAGE_SOURCE_URL@</projectSourceUrl>
     <packageSourceUrl>@PACKAGE_SOURCE_URL@</packageSourceUrl>
-    <license type="expression">Apache-2.0</license>
+    <licenseUrl>@PROJECT_URL@/blob/v@VERSION@/LICENSE</licenseUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <copyright>@COPYRIGHT@</copyright>
     <tags>@TAGS@</tags>

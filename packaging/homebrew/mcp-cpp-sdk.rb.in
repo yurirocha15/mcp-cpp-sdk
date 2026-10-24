@@ -3,13 +3,12 @@ class McpCppSdk < Formula
   homepage "https://github.com/yurirocha15/mcp-cpp-sdk"
   url "@SOURCE_URL@"
   sha256 "@SOURCE_SHA256@"
-  version "@VERSION@"
   license "Apache-2.0"
 
-  depends_on "boost"
   depends_on "cmake" => :build
   depends_on "googletest" => :build
   depends_on "ninja" => :build
+  depends_on "boost"
   depends_on "nlohmann-json"
   depends_on "openssl@3"
 

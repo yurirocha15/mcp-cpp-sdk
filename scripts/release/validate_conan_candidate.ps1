@@ -60,13 +60,16 @@ foreach ($path in @($archive, $profile, $lockfile)) {
     }
 }
 $profileCompilerVersion = if ($ExpectedMscVer -ge 1940) { '194' } else { '193' }
-$profileText = [System.IO.File]::ReadAllText($profile)
+# A Windows checkout can convert the profile to CRLF; the line pattern below expects LF.
+$profileText = [System.IO.File]::ReadAllText($profile).Replace("`r`n", "`n")
 if ($profileText -notmatch "(?m)^compiler\.version=$profileCompilerVersion$") {
     throw 'The reviewed ConanCenter profile conflicts with the expected MSVC series'
 }
-$python = (Get-Command python.exe -CommandType Application -ErrorAction Stop).Source
-$conan = (Get-Command conan.exe -CommandType Application -ErrorAction Stop).Source
-$cl = (Get-Command cl.exe -CommandType Application -ErrorAction Stop).Source
+# Take the first match on PATH, as a shell would: the Conan installer puts its virtual
+# environment, with its own python.exe, ahead of the runner's Python.
+$python = (Get-Command python.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+$conan = (Get-Command conan.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+$cl = (Get-Command cl.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 
 $probeRoot = Join-Path $env:RUNNER_TEMP 'mcp-cpp-sdk-conan-msvc-probe'
 if (Test-Path -LiteralPath $probeRoot) {

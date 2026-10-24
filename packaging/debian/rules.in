@@ -8,5 +8,9 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 override_dh_auto_configure:
 	dh_auto_configure -- -DMCP_CPP_SDK_BUILD_SHARED=ON -DMCP_CPP_SDK_BUILD_STATIC=ON -DBUILD_TESTING=ON -DMCP_CPP_SDK_CHECK_JSON_MATRIX=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
+# The release publishes the runtime, development and static packages only.
+override_dh_strip:
+	dh_strip --no-automatic-dbgsym
+
 override_dh_auto_test:
 	CTEST_OUTPUT_ON_FAILURE=1 dh_auto_test

@@ -664,11 +664,18 @@ class TemplateTests(unittest.TestCase):
             "aur/PKGBUILD.in",
             "homebrew/mcp-cpp-sdk.rb.in",
             "rpm/mcp-cpp-sdk.spec.in",
-            "chocolatey/mcp-cpp-sdk.nuspec.in",
         ):
             text = (packaging / relative).read_text(encoding="utf-8")
             self.assertIn("Apache-2.0", text, relative)
             self.assertNotIn("MIT", text, relative)
+        # Chocolatey CLI rejects <license>, so the nuspec links the tagged LICENSE it also ships.
+        nuspec = (packaging / "chocolatey/mcp-cpp-sdk.nuspec.in").read_text(encoding="utf-8")
+        self.assertIn("<licenseUrl>@PROJECT_URL@/blob/v@VERSION@/LICENSE</licenseUrl>", nuspec)
+        self.assertNotIn("<license ", nuspec)
+        self.assertIn(
+            "Apache License\n                           Version 2.0",
+            (repository / "LICENSE").read_text(encoding="utf-8"),
+        )
 
         aur = (packaging / "aur/PKGBUILD.in").read_text(encoding="utf-8")
         self.assertIn("options=('!debug' 'staticlibs')", aur)

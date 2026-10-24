@@ -31,6 +31,8 @@ prepare() {
 }
 
 build() {
+  # makepkg's lto option emits bytecode-only objects; the static archive needs machine code too.
+  CXXFLAGS+=' -ffat-lto-objects'
   cmake -S "mcp-cpp-sdk-${pkgver}" -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
     -DMCP_CPP_SDK_BUILD_SHARED=ON -DMCP_CPP_SDK_BUILD_STATIC=ON \
