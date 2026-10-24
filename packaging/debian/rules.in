@@ -2,6 +2,8 @@
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
+include /usr/share/dpkg/architecture.mk
+
 %:
 	dh $@ --buildsystem=cmake+ninja
 
@@ -12,5 +14,8 @@ override_dh_auto_configure:
 override_dh_strip:
 	dh_strip --no-automatic-dbgsym
 
+# The tests are not packaged. Removing their build once they pass leaves the build space to the
+# installed files and their copies in each package.
 override_dh_auto_test:
 	CTEST_OUTPUT_ON_FAILURE=1 dh_auto_test
+	rm -rf obj-$(DEB_HOST_GNU_TYPE)/CMakeFiles/mcp-sdk-tests.dir obj-$(DEB_HOST_GNU_TYPE)/mcp-sdk-tests
