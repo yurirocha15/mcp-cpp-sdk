@@ -20,6 +20,9 @@ TAG = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-r
 ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}")
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _GH_RESPONSE_LIMIT = 65536
+# The REST release object embeds every asset, so a full release outgrows the
+# response limit; the checks read only these fields.
+RELEASE_REST_FIELDS = "{id, tag_name, draft, prerelease, immutable}"
 _API_VERSION = "X-GitHub-Api-Version: 2026-03-10"
 
 
@@ -263,7 +266,10 @@ def probe_existing_release(*, repository: str, repository_id: int, tag: str) -> 
     rest_release = None
     if release_id is not None:
         rest_release = _gh_json(
-            ["api", "-H", _API_VERSION, f"repos/{repository}/releases/{release_id}"],
+            [
+                "api", "-H", _API_VERSION, f"repos/{repository}/releases/{release_id}",
+                "--jq", RELEASE_REST_FIELDS,
+            ],
             label="release-rest",
         )
     return classify_existing_release(

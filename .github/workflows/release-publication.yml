@@ -188,7 +188,15 @@ jobs:
         run: bash scripts/release/publish_aur.sh
   homebrew:
     name: Dispatch the Homebrew App publisher
-    if: ${{ inputs.mode == 'publish' && inputs.target_homebrew == 'true' }}
+    # Providers wait for this whole run to succeed, so they start after the gated
+    # Cloudsmith and AUR jobs.
+    needs:
+      - publish-cloudsmith
+      - aur
+    if: >-
+      ${{ !cancelled() && inputs.mode == 'publish' && inputs.target_homebrew == 'true'
+      && contains(fromJSON('["success","skipped"]'), needs.publish-cloudsmith.result)
+      && contains(fromJSON('["success","skipped"]'), needs.aur.result) }}
     uses: ./.github/workflows/release-provider-dispatch.yml
     with:
       provider: homebrew
@@ -197,12 +205,21 @@ jobs:
       source_commit_sha: ${{ inputs.source_commit_sha }}
       github_release_id: ${{ inputs.github_release_id }}
       release_manifest_sha256: ${{ inputs.manifest_sha256 }}
+    # A reusable workflow gets an environment secret only when the caller passes it by name.
+    secrets:
+      HOMEBREW_APP_PRIVATE_KEY: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
     permissions:
       contents: read
 
   chocolatey:
     name: Dispatch the Chocolatey App publisher
-    if: ${{ inputs.mode == 'publish' && inputs.target_chocolatey == 'true' }}
+    needs:
+      - publish-cloudsmith
+      - aur
+    if: >-
+      ${{ !cancelled() && inputs.mode == 'publish' && inputs.target_chocolatey == 'true'
+      && contains(fromJSON('["success","skipped"]'), needs.publish-cloudsmith.result)
+      && contains(fromJSON('["success","skipped"]'), needs.aur.result) }}
     uses: ./.github/workflows/release-provider-dispatch.yml
     with:
       provider: chocolatey
@@ -211,12 +228,21 @@ jobs:
       source_commit_sha: ${{ inputs.source_commit_sha }}
       github_release_id: ${{ inputs.github_release_id }}
       release_manifest_sha256: ${{ inputs.manifest_sha256 }}
+    # A reusable workflow gets an environment secret only when the caller passes it by name.
+    secrets:
+      CHOCOLATEY_APP_PRIVATE_KEY: ${{ secrets.CHOCOLATEY_APP_PRIVATE_KEY }}
     permissions:
       contents: read
 
   conan:
     name: Dispatch the ConanCenter release-control App
-    if: ${{ inputs.mode == 'publish' && inputs.target_conan2 == 'true' }}
+    needs:
+      - publish-cloudsmith
+      - aur
+    if: >-
+      ${{ !cancelled() && inputs.mode == 'publish' && inputs.target_conan2 == 'true'
+      && contains(fromJSON('["success","skipped"]'), needs.publish-cloudsmith.result)
+      && contains(fromJSON('["success","skipped"]'), needs.aur.result) }}
     uses: ./.github/workflows/release-provider-dispatch.yml
     with:
       provider: conan2
@@ -225,6 +251,9 @@ jobs:
       source_commit_sha: ${{ inputs.source_commit_sha }}
       github_release_id: ${{ inputs.github_release_id }}
       release_manifest_sha256: ${{ inputs.manifest_sha256 }}
+    # A reusable workflow gets an environment secret only when the caller passes it by name.
+    secrets:
+      CONAN_BROKER_APP_PRIVATE_KEY: ${{ secrets.CONAN_BROKER_APP_PRIVATE_KEY }}
     permissions:
       contents: read
 

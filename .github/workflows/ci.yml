@@ -476,6 +476,44 @@ jobs:
         ROUTE_ID: ${{ matrix.id }}
       run: python3 -I scripts/package_build.py build "$ROUTE_ID" --core core --output out
 
+  homebrew-package:
+    # Audits, builds, tests and consumes the release formula on the release's four Homebrew
+    # runners, with the script and timeout the release workflow uses.
+    name: Homebrew package (${{ matrix.bottle_tag }})
+    needs: package-core
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: macos-15-intel, bottle_tag: sequoia}
+          - {runner: macos-15, bottle_tag: arm64_sequoia}
+          - {runner: ubuntu-24.04, bottle_tag: x86_64_linux}
+          - {runner: ubuntu-24.04-arm, bottle_tag: arm64_linux}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+
+    steps:
+    - name: Configure Linuxbrew command path
+      if: runner.os == 'Linux'
+      run: |
+        test -x /home/linuxbrew/.linuxbrew/bin/brew
+        echo /home/linuxbrew/.linuxbrew/bin >>"${GITHUB_PATH}"
+
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      with:
+        persist-credentials: false
+
+    - name: Download the release core
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: package-core
+        path: core
+
+    - name: Audit, install, test and consume the formula
+      run: >-
+        scripts/release/validate_homebrew_candidate.sh
+        "$(cat VERSION)" core "${RUNNER_TEMP}/mcp-cpp-sdk-homebrew-validation"
+
   windows-package:
     # Builds, tests and packages the Windows release payload and validates the ConanCenter recipe
     # on Windows, with the scripts and the Visual Studio, Python, Conan and Chocolatey pins the
