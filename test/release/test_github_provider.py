@@ -23,7 +23,7 @@ TAG = "v0.2.0"
 COMMIT = "1" * 40
 WORKFLOW_HEAD = "6" * 40
 CONTROL_SHA = "7" * 40
-CONTROL_TAG = "release-control-v1"
+CONTROL_TAG = "release-control-v2"
 MANIFEST = "2" * 64
 
 
