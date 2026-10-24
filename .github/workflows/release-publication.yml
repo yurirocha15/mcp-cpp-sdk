@@ -197,6 +197,9 @@ jobs:
       source_commit_sha: ${{ inputs.source_commit_sha }}
       github_release_id: ${{ inputs.github_release_id }}
       release_manifest_sha256: ${{ inputs.manifest_sha256 }}
+    # A reusable workflow gets an environment secret only when the caller passes it by name.
+    secrets:
+      HOMEBREW_APP_PRIVATE_KEY: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
     permissions:
       contents: read
 
@@ -211,6 +214,9 @@ jobs:
       source_commit_sha: ${{ inputs.source_commit_sha }}
       github_release_id: ${{ inputs.github_release_id }}
       release_manifest_sha256: ${{ inputs.manifest_sha256 }}
+    # A reusable workflow gets an environment secret only when the caller passes it by name.
+    secrets:
+      CHOCOLATEY_APP_PRIVATE_KEY: ${{ secrets.CHOCOLATEY_APP_PRIVATE_KEY }}
     permissions:
       contents: read
 
@@ -225,6 +231,9 @@ jobs:
       source_commit_sha: ${{ inputs.source_commit_sha }}
       github_release_id: ${{ inputs.github_release_id }}
       release_manifest_sha256: ${{ inputs.manifest_sha256 }}
+    # A reusable workflow gets an environment secret only when the caller passes it by name.
+    secrets:
+      CONAN_BROKER_APP_PRIVATE_KEY: ${{ secrets.CONAN_BROKER_APP_PRIVATE_KEY }}
     permissions:
       contents: read
 
