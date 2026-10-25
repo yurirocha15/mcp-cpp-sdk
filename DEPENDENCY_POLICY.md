@@ -47,6 +47,31 @@ benefit that is not reasonably achievable with the C++ standard library or an
 existing dependency. Optional features should keep their dependencies private
 and optional whenever possible.
 
+## Vendored code
+
+`third_party/jsoncons` holds a subset of [jsoncons](https://github.com/danielaparker/jsoncons)
+(Boost Software License 1.0), whose JSON Schema extension the SDK uses to
+validate tool schemas and the values checked against them. It is compiled into
+the SDK library and is not a dependency of anything that links the SDK: its
+headers are not installed, its symbols are not exported, and its namespace is
+renamed so that it cannot collide with a jsoncons an application uses itself.
+Distribution packages declare it as bundled.
+
+The tree is generated, never edited by hand. `scripts/vendor_jsoncons.py`
+downloads the release pinned in the script, verifies its SHA-256, copies the
+headers the extension needs and applies the recorded transformation described
+in the script and in `third_party/jsoncons/PROVENANCE`: `std::regex` is replaced
+with the SDK's linear-time matcher, and the namespace and macro prefix are
+renamed. CI runs `python3 scripts/vendor_jsoncons.py --check`, which fails when
+the committed tree differs from the pinned release plus that transformation.
+
+jsoncons was chosen because it implements JSON Schema drafts 4, 6, 7, 2019-09
+and 2020-12, including `$dynamicRef` and the `unevaluated*` keywords, which no
+existing dependency provides. Upstream reports vulnerabilities through GitHub
+Security Advisories. The vendored copy is part of the monthly and pre-release
+dependency review: upstream releases and advisories are checked, and an update
+is made by changing the pinned version and digest and rerunning the script.
+
 ## Vulnerabilities
 
 Report vulnerabilities through the private process in `SECURITY.md`. A known

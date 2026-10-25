@@ -21,3 +21,4 @@ scripts/run_examples.py
 src/**
 test/**
 test_package/**
+third_party/**
