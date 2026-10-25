@@ -30,7 +30,7 @@ ACTION_ALLOWLIST = {
     "actions/attest": "1e69f48acb82d1966a394da916b4c1698aa569d6",
     "actions/create-github-app-token": "64ab729a6294000f5aa4a4bc0b73d1f32bc45510",
     "actions/setup-python": "6d4fd22b20465ccc0f7354476588e8df7c9ca0e0",
-    "cloudsmith-io/cloudsmith-cli-action": "159f1619275d5d3147f059c3cc110938ec221d16",
+    "cloudsmith-io/cloudsmith-cli-action": "69e169e2ad9bc9a1599c2dff464061a00fe9f8ba",
     "ilammy/msvc-dev-cmd": "0b201ec74fa43914dc39ae48a89fd1d8cb592756",
 }
 

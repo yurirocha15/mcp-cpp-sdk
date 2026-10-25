@@ -312,6 +312,9 @@ jobs:
     environment: release-cloudsmith
     permissions:
       contents: read
+    env:
+      # The CLI sends error reports to a third party unless this is set.
+      CLOUDSMITH_NO_TELEMETRY: "1"
     outputs:
       namespace: ${{ steps.destination.outputs.namespace }}
       repository: ${{ steps.destination.outputs.repository }}
@@ -338,11 +341,14 @@ jobs:
           --repository "${{ vars.CLOUDSMITH_REPOSITORY }}"
           --repository-gpg-fingerprint "${{ vars.CLOUDSMITH_REPOSITORY_GPG_FINGERPRINT }}"
       - name: Authenticate the pinned Cloudsmith CLI without publishing
-        uses: cloudsmith-io/cloudsmith-cli-action@159f1619275d5d3147f059c3cc110938ec221d16 # v2.0.3
+        id: cloudsmith-cli
+        uses: cloudsmith-io/cloudsmith-cli-action@69e169e2ad9bc9a1599c2dff464061a00fe9f8ba # v3.1.1
         with:
-          cli-version: "1.19.0"
+          cli-version: "1.30.0"
           api-key: ${{ secrets.CLOUDSMITH_API_KEY }}
       - name: Verify the downloaded Cloudsmith CLI payload
+        env:
+          CLOUDSMITH_CLI_PATH: ${{ steps.cloudsmith-cli.outputs.cli-path }}
         run: bash scripts/release/verify_cloudsmith_cli.sh
       - name: Verify exact Cloudsmith repository read access
         env:
