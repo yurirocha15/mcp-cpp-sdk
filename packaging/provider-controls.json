@@ -2,17 +2,17 @@
     "schema_version": 1,
     "providers": {
         "chocolatey": {
-            "control_tag": "release-control-v2",
+            "control_tag": "release-control-v3",
             "repository": "yurirocha15/mcp-cpp-sdk-chocolatey-publisher",
             "workflow": "publish.yml"
         },
         "conan": {
-            "control_tag": "release-control-v2",
+            "control_tag": "release-control-v3",
             "repository": "yurirocha15/mcp-cpp-sdk-release-control",
             "workflow": "conan-center-pr.yml"
         },
         "homebrew": {
-            "control_tag": "release-control-v2",
+            "control_tag": "release-control-v3",
             "repository": "yurirocha15/homebrew-mcp-cpp-sdk",
             "workflow": "publish-bottles.yml"
         }
