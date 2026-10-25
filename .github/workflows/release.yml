@@ -445,7 +445,6 @@ jobs:
     with:
       provider: homebrew
       environment: release-homebrew
-      anchor_existed: ${{ needs.repository-readiness.outputs.anchor_exists }}
     permissions:
       contents: read
 
@@ -464,7 +463,6 @@ jobs:
     with:
       provider: chocolatey
       environment: release-chocolatey
-      anchor_existed: ${{ needs.repository-readiness.outputs.anchor_exists }}
     permissions:
       contents: read
 
@@ -483,7 +481,6 @@ jobs:
     with:
       provider: conan
       environment: release-control-dispatch
-      anchor_existed: ${{ needs.repository-readiness.outputs.anchor_exists }}
     permissions:
       contents: read
 
@@ -565,13 +562,10 @@ jobs:
       native_matrix: ${{ needs.repository-readiness.outputs.native_matrix }}
       aur_builder: ${{ needs.repository-readiness.outputs.aur_builder }}
       conan_builder: ${{ needs.repository-readiness.outputs.conan_builder }}
-      homebrew_control_sha: ${{ needs.preflight-homebrew.outputs.control_sha }}
       homebrew_repository_id: ${{ needs.preflight-homebrew.outputs.repository_id }}
       homebrew_repository: ${{ needs.preflight-homebrew.outputs.repository }}
-      chocolatey_control_sha: ${{ needs.preflight-chocolatey.outputs.control_sha }}
       chocolatey_repository_id: ${{ needs.preflight-chocolatey.outputs.repository_id }}
       chocolatey_repository: ${{ needs.preflight-chocolatey.outputs.repository }}
-      conan_control_sha: ${{ needs.preflight-conan-broker.outputs.control_sha }}
       conan_repository_id: ${{ needs.preflight-conan-broker.outputs.repository_id }}
       conan_repository: ${{ needs.preflight-conan-broker.outputs.repository }}
       cloudsmith_namespace: ${{ needs.preflight-cloudsmith.outputs.namespace }}

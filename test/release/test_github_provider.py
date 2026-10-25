@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
@@ -10,9 +11,10 @@ from release.github_provider import (
     GitHubProviderError,
     RepositoryTarget,
     build_dispatch_inputs,
-    control_from_contract,
     deterministic_request_uuid,
     dispatch_workflow,
+    publisher_branch_head,
+    require_contract_destination,
     validate_repository,
     validate_workflow,
 )
@@ -23,7 +25,6 @@ TAG = "v0.2.0"
 COMMIT = "1" * 40
 WORKFLOW_HEAD = "6" * 40
 CONTROL_SHA = "7" * 40
-CONTROL_TAG = "release-control-v3"
 MANIFEST = "2" * 64
 
 
@@ -54,7 +55,7 @@ def publisher_api(
     target: RepositoryTarget,
     *,
     dispatch_response: object | None = None,
-    control_sha: str = CONTROL_SHA,
+    head_sha: str = CONTROL_SHA,
 ) -> FakeApi:
     endpoint = f"repos/{target.full_name}/actions/workflows/publish.yml"
     return FakeApi(
@@ -65,9 +66,9 @@ def publisher_api(
                 "path": ".github/workflows/publish.yml",
                 "state": "active",
             },
-            ("GET", f"repos/{target.full_name}/git/ref/tags/{CONTROL_TAG}"): {
-                "ref": f"refs/tags/{CONTROL_TAG}",
-                "object": {"type": "commit", "sha": control_sha},
+            ("GET", f"repos/{target.full_name}/git/ref/heads/main"): {
+                "ref": "refs/heads/main",
+                "object": {"type": "commit", "sha": head_sha},
             },
             ("POST", f"{endpoint}/dispatches"): dispatch_response,
         }
@@ -174,18 +175,10 @@ class DispatchInputTests(unittest.TestCase):
                 build_dispatch_inputs(**arguments)
 
 
-class SignedControlTests(unittest.TestCase):
-    def test_dispatch_control_comes_from_signed_contract(self) -> None:
+class SignedDestinationTests(unittest.TestCase):
+    def test_dispatch_target_must_equal_the_signed_destination(self) -> None:
         target = RepositoryTarget("owner", "publisher", 17)
         contract = mock.Mock(
-            provider_controls={
-                "homebrew": {
-                    "repository": target.full_name,
-                    "workflow": "publish.yml",
-                    "control_tag": CONTROL_TAG,
-                    "control_commit": CONTROL_SHA,
-                }
-            },
             destinations={
                 "homebrew": {
                     "repository": target.full_name,
@@ -197,19 +190,59 @@ class SignedControlTests(unittest.TestCase):
             "release.github_provider.load_publication_contract",
             return_value=contract,
         ):
-            self.assertEqual(
-                control_from_contract(
-                    Path("contract.json"), channel="homebrew",
-                    target=target, workflow="publish.yml",
-                ),
-                (CONTROL_TAG, CONTROL_SHA),
+            require_contract_destination(
+                Path("contract.json"), channel="homebrew", target=target
             )
             contract.destinations["homebrew"]["repository_id"] = "18"
             with self.assertRaises(GitHubProviderError):
-                control_from_contract(
-                    Path("contract.json"), channel="homebrew",
-                    target=target, workflow="publish.yml",
+                require_contract_destination(
+                    Path("contract.json"), channel="homebrew", target=target
                 )
+
+    def test_cli_dispatches_main_at_its_observed_head(self) -> None:
+        target = RepositoryTarget("owner", "publisher", 17)
+        contract = mock.Mock(
+            destinations={
+                "chocolatey": {
+                    "repository": target.full_name,
+                    "repository_id": str(target.repository_id),
+                }
+            },
+        )
+        api = publisher_api(
+            target,
+            dispatch_response={
+                "workflow_run_id": 5,
+                "run_url": f"https://api.github.com/repos/{target.full_name}/actions/runs/5",
+                "html_url": f"https://github.com/{target.full_name}/actions/runs/5",
+            },
+        )
+        output = Path(self.enterContext(tempfile.TemporaryDirectory())) / "out"
+        with mock.patch(
+            "release.github_provider.load_publication_contract", return_value=contract
+        ), mock.patch("release.github_provider.GhApi", return_value=api):
+            status = github_provider.main(
+                [
+                    "chocolatey", "--owner", "owner", "--repository", "publisher",
+                    "--expected-repository-id", "17", "--workflow", "publish.yml",
+                    "--source-repository", SOURCE, "--source-tag", TAG,
+                    "--source-commit-sha", COMMIT,
+                    "--source-workflow-head-sha", WORKFLOW_HEAD,
+                    "--contract", "contract.json",
+                    "--github-release-id", "17", "--source-workflow-run-id", "23",
+                    "--release-manifest-sha256", MANIFEST,
+                    "--github-output", str(output),
+                ]
+            )
+        self.assertEqual(status, 0)
+        method, endpoint, payload = api.calls[-1]
+        self.assertEqual(
+            (method, endpoint),
+            ("POST", f"repos/{target.full_name}/actions/workflows/publish.yml/dispatches"),
+        )
+        self.assertEqual(payload["ref"], "main")
+        self.assertEqual(payload["inputs"]["provider_control_sha"], CONTROL_SHA)
+        self.assertIn("downstream_run_id=5\n", output.read_text(encoding="ascii"))
 
 
 class ProviderIdentityTests(unittest.TestCase):
@@ -233,8 +266,6 @@ class ProviderIdentityTests(unittest.TestCase):
             api,
             target=self.target,
             workflow="publish.yml",
-            control_tag=CONTROL_TAG,
-            control_sha=CONTROL_SHA,
             inputs=inputs,
         )
         self.assertEqual(receipt.run_id, str(run_id))
@@ -243,7 +274,7 @@ class ProviderIdentityTests(unittest.TestCase):
             (
                 "POST",
                 f"repos/{self.target.full_name}/actions/workflows/publish.yml/dispatches",
-                {"ref": CONTROL_TAG, "inputs": inputs},
+                {"ref": "main", "inputs": inputs},
             ),
         )
 
@@ -280,8 +311,6 @@ class ProviderIdentityTests(unittest.TestCase):
                 publisher_api(self.target, dispatch_response={}),
                 target=self.target,
                 workflow="publish.yml",
-                control_tag=CONTROL_TAG,
-                control_sha=CONTROL_SHA,
                 inputs={"source_tag": TAG, "provider_control_sha": CONTROL_SHA},
             )
 
@@ -296,8 +325,6 @@ class ProviderIdentityTests(unittest.TestCase):
             publisher_api(self.target, dispatch_response=response),
             target=self.target,
             workflow="publish.yml",
-            control_tag=CONTROL_TAG,
-            control_sha=CONTROL_SHA,
             inputs={"provider_control_sha": CONTROL_SHA},
         )
         self.assertEqual(receipt.run_id, str(run_id))
@@ -313,8 +340,6 @@ class ProviderIdentityTests(unittest.TestCase):
             publisher_api(self.target, dispatch_response={**base, "added_later": "value"}),
             target=self.target,
             workflow="publish.yml",
-            control_tag=CONTROL_TAG,
-            control_sha=CONTROL_SHA,
             inputs={"provider_control_sha": CONTROL_SHA},
         )
         self.assertEqual(receipt.run_id, "123")
@@ -326,8 +351,6 @@ class ProviderIdentityTests(unittest.TestCase):
                     publisher_api(self.target, dispatch_response=response),
                     target=self.target,
                     workflow="publish.yml",
-                    control_tag=CONTROL_TAG,
-                    control_sha=CONTROL_SHA,
                     inputs={"provider_control_sha": CONTROL_SHA},
                 )
         for field, replacement in (
@@ -342,27 +365,30 @@ class ProviderIdentityTests(unittest.TestCase):
                     publisher_api(self.target, dispatch_response=response),
                     target=self.target,
                     workflow="publish.yml",
-                    control_tag=CONTROL_TAG,
-                    control_sha=CONTROL_SHA,
                     inputs={"provider_control_sha": CONTROL_SHA},
                 )
 
-    def test_dispatch_rejects_changed_or_mismatched_control_tag(self) -> None:
-        for inputs_sha, expected_sha in (
-            (CONTROL_SHA, CONTROL_SHA),
-            ("8" * 40, CONTROL_SHA),
+    def test_dispatch_rejects_a_moved_publisher_branch(self) -> None:
+        with self.assertRaises(GitHubProviderError):
+            dispatch_workflow(
+                publisher_api(self.target, head_sha="8" * 40),
+                target=self.target,
+                workflow="publish.yml",
+                inputs={"provider_control_sha": CONTROL_SHA},
+            )
+
+    def test_publisher_branch_head_must_be_a_direct_main_commit(self) -> None:
+        endpoint = f"repos/{self.target.full_name}/git/ref/heads/main"
+        self.assertEqual(
+            publisher_branch_head(publisher_api(self.target), self.target), CONTROL_SHA
+        )
+        for value in (
+            {"ref": "refs/heads/other", "object": {"type": "commit", "sha": CONTROL_SHA}},
+            {"ref": "refs/heads/main", "object": {"type": "tag", "sha": CONTROL_SHA}},
+            {"ref": "refs/heads/main", "object": {"type": "commit", "sha": "A" * 40}},
         ):
-            with self.subTest(inputs_sha=inputs_sha), self.assertRaises(
-                GitHubProviderError
-            ):
-                dispatch_workflow(
-                    publisher_api(self.target, control_sha="8" * 40),
-                    target=self.target,
-                    workflow="publish.yml",
-                    control_tag=CONTROL_TAG,
-                    control_sha=expected_sha,
-                    inputs={"provider_control_sha": inputs_sha},
-                )
+            with self.subTest(value=value), self.assertRaises(GitHubProviderError):
+                publisher_branch_head(FakeApi({("GET", endpoint): value}), self.target)
 
     def test_target_and_workflow_coordinates_reject_path_injection(self) -> None:
         for owner, repo in (("../owner", "repo"), ("owner", "repo/name")):

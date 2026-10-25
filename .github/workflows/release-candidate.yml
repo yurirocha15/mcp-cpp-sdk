@@ -30,25 +30,16 @@ on:
       conan_builder:
         required: true
         type: string
-      homebrew_control_sha:
-        required: true
-        type: string
       homebrew_repository_id:
         required: true
         type: string
       homebrew_repository:
         required: true
         type: string
-      chocolatey_control_sha:
-        required: true
-        type: string
       chocolatey_repository_id:
         required: true
         type: string
       chocolatey_repository:
-        required: true
-        type: string
-      conan_control_sha:
         required: true
         type: string
       conan_repository_id:
@@ -106,9 +97,6 @@ jobs:
           RELEASE_KIND: ${{ inputs.release_kind }}
           PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
           ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
-          HOMEBREW_CONTROL_SHA: ${{ inputs.homebrew_control_sha }}
-          CHOCOLATEY_CONTROL_SHA: ${{ inputs.chocolatey_control_sha }}
-          CONAN_CONTROL_SHA: ${{ inputs.conan_control_sha }}
           CLOUDSMITH_NAMESPACE: ${{ inputs.cloudsmith_namespace }}
           CLOUDSMITH_REPOSITORY: ${{ inputs.cloudsmith_repository }}
           CLOUDSMITH_REPOSITORY_GPG_FINGERPRINT: ${{ inputs.cloudsmith_repository_gpg_fingerprint }}
@@ -125,9 +113,6 @@ jobs:
           --release-kind "${RELEASE_KIND}" --repository "${GITHUB_REPOSITORY}"
           --primary-fingerprint "${PRIMARY_FINGERPRINT}"
           --artifact-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}"
-          --homebrew-control-commit "${HOMEBREW_CONTROL_SHA}"
-          --chocolatey-control-commit "${CHOCOLATEY_CONTROL_SHA}"
-          --conan-control-commit "${CONAN_CONTROL_SHA}"
           --cloudsmith-namespace "${CLOUDSMITH_NAMESPACE}"
           --cloudsmith-repository "${CLOUDSMITH_REPOSITORY}"
           --cloudsmith-repository-gpg-fingerprint "${CLOUDSMITH_REPOSITORY_GPG_FINGERPRINT}"

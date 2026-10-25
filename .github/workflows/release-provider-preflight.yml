@@ -9,12 +9,7 @@ on:
       environment:
         required: true
         type: string
-      anchor_existed:
-        required: true
-        type: string
     outputs:
-      control_sha:
-        value: ${{ jobs.preflight.outputs.control_sha }}
       repository_id:
         value: ${{ jobs.preflight.outputs.repository_id }}
       repository:
@@ -35,7 +30,6 @@ jobs:
     permissions:
       contents: read
     outputs:
-      control_sha: ${{ steps.control.outputs.control_sha }}
       repository_id: ${{ steps.control.outputs.repository_id }}
       repository: ${{ steps.control.outputs.repository }}
     env:
@@ -59,22 +53,12 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Download historical signed publication policy
-        if: ${{ inputs.anchor_existed == 'true' }}
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
-          path: existing-anchor
-      - name: Verify exact repository, workflow, and immutable control
+      - name: Verify exact repository and active workflow on protected main
         id: control
         env:
           GH_TOKEN: ${{ github.token }}
-          PROVIDER: ${{ inputs.provider }}
         run: >-
           python3 -I -S scripts/run_release_tool.py release.provider_preflight workflow
           --owner "${APP_OWNER}" --repository "${APP_REPOSITORY}"
           --expected-repository-id "${EXPECTED_REPOSITORY_ID}" --workflow "${WORKFLOW}"
-          --controls packaging/provider-controls.json --provider "${PROVIDER}"
-          --policy-source "${{ inputs.anchor_existed == 'true' && 'embedded' || 'current' }}"
-          --signed-contract existing-anchor/release-publication-contract.json
           --github-output "${GITHUB_OUTPUT}"

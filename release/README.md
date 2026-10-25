@@ -66,5 +66,6 @@ selected, so the signed publication contract only carries verified coordinates.
 GitHub, Cloudsmith, and AUR publishers read the public object back before
 reporting success; Cloudsmith RPMs are compared by header and payload digest
 because the repository re-signs them. Homebrew, Chocolatey, and ConanCenter
-changes belong to their control repositories; this repository verifies an
-immutable control snapshot and dispatches a signed release identity only.
+changes belong to their control repositories; this repository dispatches a
+signed release identity to the publisher workflow on each repository's
+protected `main`, at the head commit it reads just before dispatching.
