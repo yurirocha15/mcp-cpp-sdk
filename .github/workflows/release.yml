@@ -85,7 +85,7 @@ jobs:
       target_chocolatey: ${{ steps.contract.outputs.target_chocolatey }}
     steps:
       - name: Checkout protected contract validator
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -119,7 +119,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout protected source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -152,7 +152,7 @@ jobs:
       conan_builder: ${{ steps.readiness.outputs.conan_builder }}
     steps:
       - name: Checkout source and tags
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -206,14 +206,14 @@ jobs:
       contents: read
     steps:
       - name: Checkout protected current immutability policy
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Create a repository-administration read token
         id: app
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.RELEASE_ADMIN_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_ADMIN_APP_PRIVATE_KEY }}
@@ -254,7 +254,7 @@ jobs:
       manifest_sha256: ${{ steps.anchor.outputs.manifest_sha256 }}
     steps:
       - name: Checkout protected current anchor verifier
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
@@ -288,7 +288,7 @@ jobs:
           --github-output "${GITHUB_OUTPUT}"
       - name: Preserve the historical signed policy handoff
         if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
           path: existing-anchor/
@@ -312,20 +312,23 @@ jobs:
     environment: release-cloudsmith
     permissions:
       contents: read
+    env:
+      # The CLI sends error reports to a third party unless this is set.
+      CLOUDSMITH_NO_TELEMETRY: "1"
     outputs:
       namespace: ${{ steps.destination.outputs.namespace }}
       repository: ${{ steps.destination.outputs.repository }}
       repository_gpg_fingerprint: ${{ steps.destination.outputs.repository_gpg_fingerprint }}
     steps:
       - name: Checkout protected current provider policy
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Download historical signed publication policy
         if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
           path: existing-anchor
@@ -338,11 +341,14 @@ jobs:
           --repository "${{ vars.CLOUDSMITH_REPOSITORY }}"
           --repository-gpg-fingerprint "${{ vars.CLOUDSMITH_REPOSITORY_GPG_FINGERPRINT }}"
       - name: Authenticate the pinned Cloudsmith CLI without publishing
-        uses: cloudsmith-io/cloudsmith-cli-action@159f1619275d5d3147f059c3cc110938ec221d16 # v2.0.3
+        id: cloudsmith-cli
+        uses: cloudsmith-io/cloudsmith-cli-action@69e169e2ad9bc9a1599c2dff464061a00fe9f8ba # v3.1.1
         with:
-          cli-version: "1.19.0"
+          cli-version: "1.30.0"
           api-key: ${{ secrets.CLOUDSMITH_API_KEY }}
       - name: Verify the downloaded Cloudsmith CLI payload
+        env:
+          CLOUDSMITH_CLI_PATH: ${{ steps.cloudsmith-cli.outputs.cli-path }}
         run: bash scripts/release/verify_cloudsmith_cli.sh
       - name: Verify exact Cloudsmith repository read access
         env:
@@ -395,14 +401,14 @@ jobs:
       AUR_CLONE_URL: ssh://aur@aur.archlinux.org/mcp-cpp-sdk.git
     steps:
       - name: Checkout protected current provider policy
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Download historical signed publication policy
         if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
           path: existing-anchor
@@ -504,7 +510,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout protected current preflight gate
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
@@ -594,13 +600,13 @@ jobs:
       attestations: write
     steps:
       - name: Checkout protected current attestation policy
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Download signed release bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
           path: signed
@@ -609,7 +615,7 @@ jobs:
           mkdir subjects
           find signed -maxdepth 1 -type f ! -name RELEASE_NOTES.md -exec cp {} subjects/ \;
       - name: Create GitHub build provenance
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: subjects/*
   github-release:
@@ -627,13 +633,13 @@ jobs:
       contents: write
     steps:
       - name: Checkout protected current publication policy
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Download signed release bundle
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
           path: signed
@@ -673,7 +679,7 @@ jobs:
       manifest_sha256: ${{ steps.anchor.outputs.manifest_sha256 || steps.reuse.outputs.manifest_sha256 }}
     steps:
       - name: Checkout protected current verification material
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
@@ -709,7 +715,7 @@ jobs:
             --github-output "${GITHUB_OUTPUT}"
       - name: Download the already verified historical anchor
         if: ${{ needs.repository-readiness.outputs.anchor_exists == 'true' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-existing-anchor-${{ github.run_id }}-${{ github.run_attempt }}
           path: verified
@@ -725,7 +731,7 @@ jobs:
             echo "manifest_sha256=${MANIFEST_SHA256}"
           } >>"${GITHUB_OUTPUT}"
       - name: Upload verified immutable release bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-verified-${{ github.run_id }}-${{ github.run_attempt }}
           path: verified/
