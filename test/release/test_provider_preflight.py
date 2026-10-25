@@ -20,7 +20,7 @@ from release.provider_preflight import (
 
 
 HEAD = "a" * 40
-CONTROL_TAG = "release-control-v2"
+CONTROL_TAG = "release-control-v3"
 WORKFLOWS = {
     "homebrew": "publish-bottles.yml",
     "chocolatey": "publish.yml",
