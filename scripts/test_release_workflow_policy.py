@@ -73,7 +73,7 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         for replacement in ("actions/checkout@v7", "unknown/action@" + "a" * 40):
             lines = [
                 line.replace(
-                    "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+                    "actions/checkout@" + policy.ACTION_ALLOWLIST["actions/checkout"],
                     replacement,
                     1,
                 )

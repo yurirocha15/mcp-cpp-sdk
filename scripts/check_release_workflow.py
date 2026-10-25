@@ -24,12 +24,12 @@ CONTRACT_PATH = Path("scripts/release_dispatch_contract.py")
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
 
 ACTION_ALLOWLIST = {
-    "actions/checkout": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
-    "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-    "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-    "actions/attest": "f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6",
-    "actions/create-github-app-token": "bcd2ba49218906704ab6c1aa796996da409d3eb1",
-    "actions/setup-python": "ece7cb06caefa5fff74198d8649806c4678c61a1",
+    "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "actions/upload-artifact": "cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+    "actions/download-artifact": "9000827ccba6bdab643e8b6fd33ac0654aef8333",
+    "actions/attest": "1e69f48acb82d1966a394da916b4c1698aa569d6",
+    "actions/create-github-app-token": "64ab729a6294000f5aa4a4bc0b73d1f32bc45510",
+    "actions/setup-python": "6d4fd22b20465ccc0f7354476588e8df7c9ca0e0",
     "cloudsmith-io/cloudsmith-cli-action": "159f1619275d5d3147f059c3cc110938ec221d16",
     "ilammy/msvc-dev-cmd": "0b201ec74fa43914dc39ae48a89fd1d8cb592756",
 }
