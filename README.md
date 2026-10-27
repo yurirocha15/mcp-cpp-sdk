@@ -2,6 +2,8 @@
 
 A modern C++20 implementation of the Model Context Protocol (MCP), enabling seamless integration between LLM applications and external tools, resources, and prompts.
 
+[![Release](https://img.shields.io/github/v/release/yurirocha15/mcp-cpp-sdk)](https://github.com/yurirocha15/mcp-cpp-sdk/releases/latest)
+[![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://www.yurirocha.com/mcp-cpp-sdk/)
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://isocpp.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Build Status](https://github.com/yurirocha15/mcp-cpp-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/yurirocha15/mcp-cpp-sdk/actions/workflows/ci.yml)
@@ -28,23 +30,35 @@ shared-workload benchmark adapters in [`benchmark/`](benchmark/).
 
 ### 1. Installation
 
-Package-manager routes are documented in [the installation guide](docs/installation.rst). The GitHub, Cloudsmith (APT/RPM), and AUR jobs read the exact published object back before reporting success. ConanCenter, Homebrew, and Chocolatey remain pending while their provider review or moderation is outstanding. Install only after the requested version appears at the destination; an upload or open registry PR is not availability proof.
+| Platform | How |
+|---|---|
+| Ubuntu 22.04 / 24.04 / 26.04, Debian 12 / 13 | [APT repository](https://www.yurirocha.com/mcp-cpp-sdk/installation.html#apt-deb) |
+| Fedora 43 / 44, Enterprise Linux 9 / 10 | [RPM repository](https://www.yurirocha.com/mcp-cpp-sdk/installation.html#rpm) |
+| Arch Linux | AUR package [`mcp-cpp-sdk`](https://aur.archlinux.org/packages/mcp-cpp-sdk) |
+| macOS / Linux | `brew install yurirocha15/mcp-cpp-sdk/mcp-cpp-sdk` |
+| Windows x64 | SDK zip from the [latest release](https://github.com/yurirocha15/mcp-cpp-sdk/releases/latest) |
+| Any platform | CMake `FetchContent`, below |
+
+The [installation guide](https://www.yurirocha.com/mcp-cpp-sdk/installation.html)
+has the full commands and the CMake and package names.
 
 Versions `0.x.y` are stable releases unless suffixed with `-rc.N`, but each
 pre-1.0 release has a distinct binary identity. Rebuild or relink consumers
-when changing 0.x versions; see the installation guide for exact CMake and
-runtime-package names.
+when changing 0.x versions.
 
-The easiest way to use the SDK is via CMake's `FetchContent`:
+To build the SDK as part of your project with CMake's `FetchContent`:
 
 ```cmake
 include(FetchContent)
 FetchContent_Declare(
     mcp-cpp-sdk
     GIT_REPOSITORY https://github.com/yurirocha15/mcp-cpp-sdk.git
-    # Replace with a verified release tag or full 40-character commit.
-    GIT_TAG <verified-tag-or-commit>
+    GIT_TAG v0.2.0
 )
+# Skip the SDK's own tests, examples and docs.
+set(BUILD_TESTING OFF)
+set(BUILD_EXAMPLES OFF)
+set(BUILD_DOCS OFF)
 FetchContent_MakeAvailable(mcp-cpp-sdk)
 
 target_link_libraries(your_target PRIVATE mcp::sdk)

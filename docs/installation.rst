@@ -1,22 +1,6 @@
 Installation
 ============
 
-Availability rule
------------------
-
-The release pipeline prepares GitHub Release, Conan 2, APT/DEB, RPM, AUR,
-Homebrew, and Chocolatey outputs.  The GitHub, Cloudsmith (APT/RPM), and AUR
-publishers report success only after the exact public object matches the
-release identity.  ConanCenter, Homebrew, and Chocolatey are
-provider-controlled review or moderation routes and remain pending until the
-destination accepts the release.
-
-A package-manager route is installable only after the requested version
-appears at that route's public provider.  Before the first stable release, or
-while a submission is pending, use a reviewed source revision.  Do not infer
-availability from this page, an uploaded file, or an open package-repository
-pull request.
-
 Supported baseline
 ------------------
 
@@ -87,34 +71,31 @@ OpenSSL development package does not install.
 Conan 2
 -------
 
-Conan packages are delivered through a recipe contribution to ConanCenter;
-there is no private Conan server.  Install only after the exact version appears
-in ConanCenter's public package index:
-
-.. code-block:: bash
-
-   conan install --requires=mcp-cpp-sdk/0.2.0 \
-     --options=mcp-cpp-sdk/*:shared=True --build=missing
-
-Use ``shared=False`` for the static package ID.  Pin the version and retain the
-generated lockfile when reproducibility matters.  ConanCenter review may finish
-after the GitHub Release; an open recipe pull request is not an installable
-route.
+The SDK is not in ConanCenter yet.  Until it is, build it from source as
+described in `GitHub Release and source builds`_; that route can use Conan 2
+for the dependencies.
 
 APT / DEB
 ---------
 
-The public APT repository is hosted by Cloudsmith.  The publisher reads each
-exact package identity back before reporting success.  Once
-the requested version appears for your distribution, obtain the repository
-setup instructions from the public repository and inspect the downloaded
-script before running it.  The canonical setup endpoint is:
+The APT repository is hosted by Cloudsmith and serves Ubuntu 22.04, 24.04 and
+26.04 and Debian 12 and 13.  Add its signing key and the repository for your
+distribution:
 
-.. code-block:: text
+.. code-block:: bash
 
-   https://dl.cloudsmith.io/public/mcp-cpp-sdk/mcp-cpp-sdk/cfg/setup/bash.deb.sh
+   sudo curl -fsSL https://dl.cloudsmith.io/public/mcp-cpp-sdk/mcp-cpp-sdk/gpg.AA58C5CE6D55B3F6.key -o /usr/share/keyrings/mcp-cpp-sdk.asc
+   echo "deb [signed-by=/usr/share/keyrings/mcp-cpp-sdk.asc] https://dl.cloudsmith.io/public/mcp-cpp-sdk/mcp-cpp-sdk/deb/$(. /etc/os-release && echo "$ID $VERSION_CODENAME") main" | sudo tee /etc/apt/sources.list.d/mcp-cpp-sdk.list
 
-Then install shared development files, with the optional static archive:
+The repository signing key's fingerprint is
+``1E1A 4FFD 5C7C A18D 7F20 0C3D AA58 C5CE 6D55 B3F6``.  Cloudsmith's setup
+script does the same:
+
+.. code-block:: bash
+
+   curl -fsSL https://dl.cloudsmith.io/public/mcp-cpp-sdk/mcp-cpp-sdk/cfg/setup/bash.deb.sh | sudo bash
+
+Then install the shared development files, with the optional static archive:
 
 .. code-block:: bash
 
@@ -133,14 +114,34 @@ when needed.  Remove the SDK with:
 RPM
 ---
 
-The public RPM repository is also hosted by Cloudsmith.  The publisher reads
-each exact package identity back before reporting success.
-Use its setup instructions only after the requested version appears for the
-matching Fedora or Enterprise Linux route.  The canonical setup endpoint is:
+The RPM repository is also hosted by Cloudsmith and serves Fedora 43 and 44
+and Enterprise Linux 9 and 10.  Add the repository; on Enterprise Linux,
+replace ``rpm/fedora/`` with ``rpm/el/``:
 
-.. code-block:: text
+.. code-block:: bash
 
-   https://dl.cloudsmith.io/public/mcp-cpp-sdk/mcp-cpp-sdk/cfg/setup/bash.rpm.sh
+   sudo tee /etc/yum.repos.d/mcp-cpp-sdk.repo <<'REPO'
+   [mcp-cpp-sdk]
+   name=mcp-cpp-sdk
+   baseurl=https://dl.cloudsmith.io/public/mcp-cpp-sdk/mcp-cpp-sdk/rpm/fedora/$releasever/$basearch
+   gpgkey=https://dl.cloudsmith.io/public/mcp-cpp-sdk/mcp-cpp-sdk/gpg.AA58C5CE6D55B3F6.key
+   gpgcheck=1
+   repo_gpgcheck=1
+   REPO
+
+Cloudsmith's setup script does the same:
+
+.. code-block:: bash
+
+   curl -fsSL https://dl.cloudsmith.io/public/mcp-cpp-sdk/mcp-cpp-sdk/cfg/setup/bash.rpm.sh | sudo bash
+
+On Fedora 44, the repository file the script writes points at a CA bundle that
+Fedora 44 no longer ships, so ``dnf`` cannot load the repository.  Remove that
+line before installing:
+
+.. code-block:: bash
+
+   sudo sed -i '/^sslcacert=/d' /etc/yum.repos.d/mcp-cpp-sdk-mcp-cpp-sdk.repo
 
 On AlmaLinux and Rocky Linux 9 or 10, enable CRB and EPEL before installing
 the development package; they provide the ``json-devel`` dependency used by
@@ -176,9 +177,7 @@ Arch Linux and derivatives
 
 The official AUR release validation baseline is x86_64.  The AUR package base
 is ``mcp-cpp-sdk`` and produces shared and static split
-packages.  The publisher reports success only after reading the exact remote
-package tree back.  After the package base shows the requested
-``pkgver``, inspect the ``PKGBUILD`` and verify the source signature before
+packages.  Inspect the ``PKGBUILD`` and verify the source signature before
 building.  First import the exact public release key that is attached to the
 immutable GitHub Release, inspect its fingerprint, and compare it with
 ``validpgpkeys`` in the ``PKGBUILD``:
@@ -205,9 +204,7 @@ dependencies, but they are not independent release-build baselines.
 Homebrew
 --------
 
-Homebrew publication is a provider-controlled handoff.  Install only after the
-requested formula version appears in the destination tap; an open formula pull
-request is not installable:
+Homebrew on macOS and Linux installs the SDK from the project's tap:
 
 .. code-block:: bash
 
@@ -221,9 +218,9 @@ build where a release has no verified bottle for the host.
 Chocolatey
 ----------
 
-Install the x64 developer SDK from an elevated shell only after Chocolatey
-moderation completes and the exact version appears in the public Chocolatey
-Community Repository.  A pending submission is not installable:
+The Chocolatey package is not in the Chocolatey Community Repository yet;
+until it is, use the Windows SDK zip from the GitHub Release.  Once it is
+published, install the x64 developer SDK from an elevated shell:
 
 .. code-block:: powershell
 
@@ -252,8 +249,7 @@ GitHub Release and source builds
 Each stable GitHub Release provides deterministic source archives, detached
 OpenPGP signatures, ``SHA256SUMS`` with its signature, SBOMs, provenance, and a
 signed release manifest.  Verify the checksum signature and source-archive
-signature before building.  The publisher reports success only after reading
-the exact immutable release and assets back.  Do not use GitHub's
+signature before building.  Do not use GitHub's
 automatically generated source archives as release inputs.
 
 For a source checkout with Conan 2 dependencies:
