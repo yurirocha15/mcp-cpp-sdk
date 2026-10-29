@@ -21,11 +21,6 @@ Installation
 
 See :doc:`installation` for package-manager commands, supported platforms,
 shared/static target selection, verification, and uninstall instructions.
-GitHub, Cloudsmith (APT/RPM), and AUR publication is read back before the
-workflow reports success.  ConanCenter, Homebrew, and Chocolatey
-remain pending during provider review or moderation.  Install only after the
-requested version appears at the destination; until then, build from a
-reviewed source revision.
 
 Using Conan (Recommended)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -52,9 +47,12 @@ Add mcp-cpp-sdk to your CMakeLists.txt:
    FetchContent_Declare(
      mcp-cpp-sdk
      GIT_REPOSITORY https://github.com/yurirocha15/mcp-cpp-sdk.git
-     # Replace with a verified release tag or full 40-character commit.
-     GIT_TAG <verified-tag-or-commit>
+     GIT_TAG v0.2.0
    )
+   # Skip the SDK's own tests, examples and docs.
+   set(BUILD_TESTING OFF)
+   set(BUILD_EXAMPLES OFF)
+   set(BUILD_DOCS OFF)
    FetchContent_MakeAvailable(mcp-cpp-sdk)
 
    target_link_libraries(your_target PRIVATE mcp::sdk)

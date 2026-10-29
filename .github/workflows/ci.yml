@@ -13,8 +13,31 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    # Documentation-only changes skip the build, test and packaging jobs. Build still runs with
+    # every step skipped: its checks are required on main, and a skipped matrix job reports one
+    # unexpanded check name instead of the required ones.
+    name: Detect code changes
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+        fetch-depth: 0
+
+    - name: Classify the change
+      id: classify
+      env:
+        EVENT: ${{ github.event_name }}
+        BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+      run: python3 scripts/ci_changes.py --event "$EVENT" --base "$BASE" --head "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build (${{ matrix.os }}, C++${{ matrix.cppstd }}, ${{ matrix.linkage }})
+    needs: changes
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -31,37 +54,40 @@ jobs:
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      if: needs.changes.outputs.code == 'true'
       with:
         persist-credentials: false
 
     - name: Set up Python
+      if: needs.changes.outputs.code == 'true'
       uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
       with:
         python-version: '3.12'
 
     - name: Install CMake
+      if: needs.changes.outputs.code == 'true'
       uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
       with:
         cmake-version: '3.25'
 
     - name: Setup MSVC
-      if: runner.os == 'Windows'
+      if: needs.changes.outputs.code == 'true' && (runner.os == 'Windows')
       uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
 
     - name: Set Conan Home
-      if: runner.os == 'Windows'
+      if: needs.changes.outputs.code == 'true' && (runner.os == 'Windows')
       run: |
         mkdir -p C:\.c
         echo "CONAN_HOME=C:\.c" >> "$GITHUB_ENV"
       shell: bash
 
     - name: Parse release PowerShell
-      if: runner.os == 'Windows'
+      if: needs.changes.outputs.code == 'true' && (runner.os == 'Windows')
       shell: pwsh
       run: ./scripts/release/check_powershell_syntax.ps1
 
     - name: Test deterministic release ZIP
-      if: runner.os == 'Windows'
+      if: needs.changes.outputs.code == 'true' && (runner.os == 'Windows')
       shell: pwsh
       run: ./scripts/release/test_deterministic_zip.ps1
 
@@ -69,6 +95,7 @@ jobs:
     # pull request's caches, and their copies pushed main's entries out of the repository's
     # 10 GB cache storage, so every pull request built without ccache.
     - name: Restore Conan packages
+      if: needs.changes.outputs.code == 'true'
       id: conan-cache
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
@@ -79,9 +106,11 @@ jobs:
         restore-keys: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-conan-
 
     - name: Install Dependencies
+      if: needs.changes.outputs.code == 'true'
       run: python scripts/init.py
 
     - name: Setup ccache
+      if: needs.changes.outputs.code == 'true'
       uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
       with:
         key: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-${{ matrix.linkage }}-ccache-${{ github.ref }}
@@ -96,6 +125,7 @@ jobs:
     # there and its absence is a broken runner, not an unsupported host. macOS gives lo0 only
     # 127.0.0.1 unless an alias is added, so the skip stays available there.
     - name: Build and Test
+      if: needs.changes.outputs.code == 'true'
       env:
         MCP_REQUIRE_TWIN_LOOPBACK: ${{ runner.os == 'Linux' && '1' || '' }}
       run: >-
@@ -106,26 +136,28 @@ jobs:
     # would. Skipped on Windows: the check drives the compiler from
     # compile_commands.json with GCC/Clang flag spellings.
     - name: Compile README snippets
-      if: runner.os != 'Windows'
+      if: needs.changes.outputs.code == 'true' && (runner.os != 'Windows')
       run: python scripts/check_readme_snippets.py
 
     - name: Run Examples
+      if: needs.changes.outputs.code == 'true'
       run: python scripts/run_examples.py
 
     # On the stdio transport stdout is the protocol channel. Running an example
     # and checking its exit code does not notice prose printed there, so assert
     # the stream separately. run_examples.py builds into build/release.
     - name: Check stdio protocol streams
+      if: needs.changes.outputs.code == 'true'
       run: python scripts/check_stdio_streams.py build/release
 
     # Dependencies built from source leave their source and build trees under p/. Only the
     # packages are needed to restore, so the trees are dropped before the cache is archived.
     - name: Drop Conan build trees before saving the cache
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
+      if: needs.changes.outputs.code == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true')
       run: conan cache clean "*" --source --build --download --temp
 
     - name: Save Conan packages
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
+      if: needs.changes.outputs.code == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true')
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
@@ -135,6 +167,8 @@ jobs:
 
   sanitize:
     name: sanitize (${{ matrix.compiler }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -193,6 +227,8 @@ jobs:
 
   tsan:
     name: tsan (${{ matrix.compiler }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -250,6 +286,8 @@ jobs:
         key: ${{ steps.conan-cache.outputs.cache-primary-key }}
 
   msan:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
 
     steps:
@@ -321,6 +359,8 @@ jobs:
 
   release-safety:
     name: Release safety contracts
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
 
     steps:
@@ -339,7 +379,8 @@ jobs:
         PYTHONPATH=scripts python3 -m unittest -v \
           scripts.test_release_dispatch_contract \
           scripts.test_release_workflow_policy \
-          scripts.test_check_json_matrix
+          scripts.test_check_json_matrix \
+          scripts.test_ci_changes
 
     - name: Validate release artifacts and package templates
       run: |
@@ -355,6 +396,8 @@ jobs:
 
   benchmark-tooling:
     name: Benchmark tooling tests
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
 
     steps:
@@ -372,6 +415,8 @@ jobs:
 
   conan-package:
     name: Conan package (shared=${{ matrix.shared }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -426,6 +471,8 @@ jobs:
     # packages exactly as a release does, with each distribution's compiler, Boost, Python and
     # packaging flags, in the locked release builder images, and test what they install.
     name: Native package source
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     outputs:
       routes: ${{ steps.routes.outputs.routes }}
