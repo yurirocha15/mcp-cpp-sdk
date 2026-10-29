@@ -33,6 +33,15 @@ project(
   VERSION "${MCP_CPP_SDK_VERSION_CORE}"
   LANGUAGES CXX)
 
+# Tests, examples and docs default ON only when this is the top-level project,
+# so a FetchContent or add_subdirectory consumer does not need GTest or Doxygen.
+# PROJECT_IS_TOP_LEVEL needs CMake 3.21.
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+  set(MCP_CPP_SDK_IS_TOP_LEVEL ON)
+else()
+  set(MCP_CPP_SDK_IS_TOP_LEVEL OFF)
+endif()
+
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
 include(cmake/McpCppSdkPkgConfig.cmake)
@@ -183,24 +192,25 @@ if(MCP_CPP_SDK_BUILD_CONFORMANCE)
 endif()
 
 # Documentation target
-option(BUILD_DOCS "Add the Doxygen documentation target" ON)
+option(BUILD_DOCS "Add the Doxygen documentation target"
+       ${MCP_CPP_SDK_IS_TOP_LEVEL})
 if(BUILD_DOCS)
   find_package(Doxygen QUIET)
   if(DOXYGEN_FOUND)
-    set(DOXYGEN_OUTPUT_DIR "${CMAKE_BINARY_DIR}/doxygen")
-    configure_file(${CMAKE_SOURCE_DIR}/docs/Doxyfile.in
-                   ${CMAKE_BINARY_DIR}/Doxyfile @ONLY)
+    set(DOXYGEN_OUTPUT_DIR "${PROJECT_BINARY_DIR}/doxygen")
+    configure_file(${PROJECT_SOURCE_DIR}/docs/Doxyfile.in
+                   ${PROJECT_BINARY_DIR}/Doxyfile @ONLY)
     add_custom_target(
       docs
-      COMMAND ${DOXYGEN_EXECUTABLE} ${CMAKE_BINARY_DIR}/Doxyfile
-      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+      COMMAND ${DOXYGEN_EXECUTABLE} ${PROJECT_BINARY_DIR}/Doxyfile
+      WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
       COMMENT "Generating Doxygen XML"
       VERBATIM)
   endif()
 endif()
 
 # Build Tests
-option(BUILD_TESTING "Build tests" ON)
+option(BUILD_TESTING "Build tests" ${MCP_CPP_SDK_IS_TOP_LEVEL})
 
 # ENABLE_SANITIZERS is declared and applied inside the block below, so with
 # testing off the flag is accepted and does nothing: the build lands in a
@@ -250,6 +260,26 @@ if(BUILD_TESTING)
     COMMAND
       ${CMAKE_COMMAND} -P
       "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/verify-pkgconfig-prefix.cmake")
+  if(NOT CMAKE_CROSSCOMPILING)
+    string(REPLACE ";" "|" MCP_CPP_SDK_SUBPROJECT_PREFIX_PATH
+                   "${CMAKE_PREFIX_PATH}")
+    set(MCP_CPP_SDK_SUBPROJECT_TEST_DIR
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests")
+    add_test(
+      NAME packaging-subproject-defaults
+      COMMAND
+        ${CMAKE_COMMAND} "-DMCP_CPP_SDK_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+        "-DMCP_CPP_SDK_TEST_OUTPUT_DIR=${PROJECT_BINARY_DIR}/subproject-test"
+        "-DMCP_CPP_SDK_GENERATOR=${CMAKE_GENERATOR}"
+        "-DMCP_CPP_SDK_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+        "-DMCP_CPP_SDK_GENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}"
+        "-DMCP_CPP_SDK_CMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+        "-DMCP_CPP_SDK_CMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        "-DMCP_CPP_SDK_CMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}"
+        "-DMCP_CPP_SDK_CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+        "-DMCP_CPP_SDK_PREFIX_PATH=${MCP_CPP_SDK_SUBPROJECT_PREFIX_PATH}" -P
+        "${MCP_CPP_SDK_SUBPROJECT_TEST_DIR}/verify-subproject-defaults.cmake")
+  endif()
   add_test(
     NAME packaging-config-version-prerelease
     COMMAND
@@ -554,7 +584,7 @@ if(MCP_CPP_SDK_BUILD_STATIC)
 endif()
 
 # Examples
-option(BUILD_EXAMPLES "Build example programs" ON)
+option(BUILD_EXAMPLES "Build example programs" ${MCP_CPP_SDK_IS_TOP_LEVEL})
 if(BUILD_EXAMPLES)
   add_executable(example-server-stdio examples/servers/stdio/server_stdio.cpp)
   target_link_libraries(example-server-stdio PRIVATE mcp-cpp-sdk)

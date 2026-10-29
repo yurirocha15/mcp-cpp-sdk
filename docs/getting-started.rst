@@ -74,6 +74,12 @@ Then in your CMakeLists.txt:
    add_subdirectory(third_party/mcp-cpp-sdk)
    target_link_libraries(your_target PRIVATE mcp::sdk)
 
+After 0.2.0, ``BUILD_TESTING``, ``BUILD_EXAMPLES`` and ``BUILD_DOCS`` default
+to ``ON`` only when the SDK is the top-level project, so a project that adds it
+with FetchContent or ``add_subdirectory`` builds only the libraries and does
+not need GTest. With 0.2.0, set the three options to ``OFF`` before adding the
+SDK, as in the FetchContent example.
+
 Building from Source
 --------------------
 

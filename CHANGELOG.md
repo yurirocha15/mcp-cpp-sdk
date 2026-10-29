@@ -6,8 +6,18 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [Unreleased]
 
+### Changed
+
+- `BUILD_TESTING`, `BUILD_EXAMPLES` and `BUILD_DOCS` default to `ON` only when
+  the SDK is the top-level CMake project. Added with FetchContent or
+  `add_subdirectory`, the SDK no longer builds its tests and examples or needs
+  GTest; setting an option still overrides the default.
+
 ### Fixed
 
+- With `BUILD_DOCS=ON` and Doxygen installed, configuring a project that adds
+  the SDK as a subproject failed: the SDK looked for `docs/Doxyfile.in` in the
+  parent project's source directory.
 - The SDK builds with Boost 1.74 and 1.75 (Ubuntu 22.04, Debian 12, RHEL 9),
   the documented minimum, and with Boost 1.87 and later, which removed the
   Asio timer overloads it called.
