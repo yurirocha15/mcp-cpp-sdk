@@ -208,8 +208,7 @@ Homebrew on macOS and Linux installs the SDK from the project's tap:
 
 .. code-block:: bash
 
-   brew tap yurirocha15/mcp-cpp-sdk
-   brew install mcp-cpp-sdk
+   brew install yurirocha15/mcp-cpp-sdk/mcp-cpp-sdk
 
 The formula installs both library variants and their CMake metadata.  Use
 ``brew uninstall mcp-cpp-sdk`` to remove it.  Homebrew falls back to a source
