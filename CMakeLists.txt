@@ -110,6 +110,7 @@ set(MCP_CPP_SDK_SOURCES
     src/server/server_stdio.cpp
     src/server/server_http.cpp
     src/server/server_tool.cpp
+    src/server/mrtr.cpp
     src/server/server.cpp
     src/transport/stdio.cpp
     src/transport/memory.cpp
@@ -370,6 +371,9 @@ if(BUILD_TESTING)
       test/auth/auth_oauth_test.cpp
       test/auth/auth_token_endpoint_auth_test.cpp
       test/client/client_core_test.cpp
+      test/client/client_listen_test.cpp
+      test/client/client_modern_test.cpp
+      test/client/client_mrtr_test.cpp
       test/client/client_features_test.cpp
       test/client/client_notifications_test.cpp
       test/core/capabilities_extensions_test.cpp
@@ -388,6 +392,10 @@ if(BUILD_TESTING)
       test/server/server_handlers_test.cpp
       test/server/server_logging_test.cpp
       test/server/server_middleware_test.cpp
+      test/server/server_modern_era_test.cpp
+      test/server/server_mrtr_test.cpp
+      test/server/server_listen_test.cpp
+      test/server/server_param_headers_test.cpp
       test/server/server_progress_test.cpp
       test/server/server_subscriptions_test.cpp
       test/transport/transport_test.cpp
@@ -396,9 +404,17 @@ if(BUILD_TESTING)
       test/transport/transport_http_test.cpp
       test/transport/transport_http_resumability_test.cpp
       test/transport/transport_http_session_manager_test.cpp
+      test/transport/transport_http_modern_test.cpp
+      test/transport/transport_http_server_modern_test.cpp
+      test/transport/transport_http_client_modern_test.cpp
+      test/transport/transport_http_principal_test.cpp
+      test/transport/transport_http_mrtr_test.cpp
+      test/transport/transport_http_stream_test.cpp
+      test/transport/transport_http_listen_test.cpp
       test/transport/transport_memory_test.cpp
       test/transport/socket_deadline_test.cpp
       test/e2e/e2e_integration_test.cpp
+      test/e2e/e2e_matrix_test.cpp
       test/e2e/e2e_features_test.cpp
       test/server/runtime_test.cpp
       test/server/server_stdio_test.cpp

@@ -20,31 +20,32 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 using json = nlohmann::json;
 
 TEST(ProtocolTest, InitializeRequestSerialization) {
     mcp::InitializeRequest req;
-    req.protocolVersion = std::string(mcp::g_LATEST_PROTOCOL_VERSION);
+    req.protocolVersion = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
     req.clientInfo = {"test-client", "1.0.0"};
     req.capabilities = mcp::ClientCapabilities{};
 
     json json_obj = req;
 
-    EXPECT_EQ(json_obj["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(json_obj["protocolVersion"], std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
     EXPECT_EQ(json_obj["clientInfo"]["name"], "test-client");
     EXPECT_EQ(json_obj["clientInfo"]["version"], "1.0.0");
     EXPECT_TRUE(json_obj["capabilities"].is_object());
 }
 
 TEST(ProtocolTest, InitializeResultDeserialization) {
-    json json_obj = {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+    json json_obj = {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                      {"capabilities", {}},
                      {"serverInfo", {{"name", "test-server"}, {"version", "0.1.0"}}}};
 
     mcp::InitializeResult res = json_obj.get<mcp::InitializeResult>();
 
-    EXPECT_EQ(res.protocolVersion, std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(res.protocolVersion, std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
     EXPECT_EQ(res.serverInfo.name, "test-server");
     EXPECT_FALSE(res.instructions.has_value());
 }
@@ -54,6 +55,7 @@ TEST(ProtocolTest, SupportedProtocolVersions) {
     bool has_2025_03_26 = false;
     bool has_2025_06_18 = false;
     bool has_2025_11_25 = false;
+    bool has_2026_07_28 = false;
 
     for (const auto& version : mcp::g_SUPPORTED_PROTOCOL_VERSIONS) {
         if (version == "2024-11-05") {
@@ -68,12 +70,16 @@ TEST(ProtocolTest, SupportedProtocolVersions) {
         if (version == "2025-11-25") {
             has_2025_11_25 = true;
         }
+        if (version == "2026-07-28") {
+            has_2026_07_28 = true;
+        }
     }
 
     EXPECT_TRUE(has_2024_11_05) << "Protocol version 2024-11-05 not found in supported versions";
     EXPECT_TRUE(has_2025_03_26) << "Protocol version 2025-03-26 not found in supported versions";
     EXPECT_TRUE(has_2025_06_18) << "Protocol version 2025-06-18 not found in supported versions";
     EXPECT_TRUE(has_2025_11_25) << "Protocol version 2025-11-25 not found in supported versions";
+    EXPECT_TRUE(has_2026_07_28) << "Protocol version 2026-07-28 not found in supported versions";
 }
 
 TEST(ProtocolTest, ParseInitializeRequest_2024_11_05) {
@@ -1597,8 +1603,9 @@ TEST(ProtocolTest, ImplementationDescriptionField) {
 }
 
 TEST(ProtocolTest, LatestProtocolVersion) {
-    EXPECT_EQ(std::string(mcp::g_LATEST_PROTOCOL_VERSION), "2025-11-25");
+    EXPECT_EQ(std::string(mcp::g_LATEST_PROTOCOL_VERSION), "2026-07-28");
     EXPECT_EQ(mcp::g_PROTOCOL_VERSION_2025_11_25, "2025-11-25");
+    EXPECT_EQ(mcp::g_PROTOCOL_VERSION_2026_07_28, "2026-07-28");
 }
 
 TEST(ProtocolTest, ClientCapabilitiesEmptySerialization) {
@@ -1810,7 +1817,7 @@ TEST(ProtocolTest, ServerCapabilitiesPartialSerialization) {
 
 TEST(ProtocolTest, InitializeRequestWithClientCapabilities) {
     mcp::InitializeRequest req;
-    req.protocolVersion = std::string(mcp::g_LATEST_PROTOCOL_VERSION);
+    req.protocolVersion = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
     req.clientInfo = {"my-client", "3.0.0"};
     req.clientInfo.description = "An advanced MCP client";
     req.capabilities.roots = mcp::ClientCapabilities::RootsCapability{.listChanged = true};
@@ -1840,7 +1847,7 @@ TEST(ProtocolTest, InitializeRequestWithClientCapabilities) {
 
 TEST(ProtocolTest, InitializeResultWithServerCapabilities) {
     mcp::InitializeResult res;
-    res.protocolVersion = std::string(mcp::g_LATEST_PROTOCOL_VERSION);
+    res.protocolVersion = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
     res.serverInfo = {"my-server", "1.0.0"};
     res.serverInfo.description = "A powerful MCP server";
     res.capabilities.tools = mcp::ServerCapabilities::ToolsCapability{.listChanged = true};
@@ -1978,10 +1985,9 @@ TEST(ProtocolTest, DiscoverRequestPreservesMetaWithoutInterpretingIt) {
     EXPECT_EQ(round_tripped["_meta"], j["_meta"]);
 }
 
-// Server::handle_discover_wire always populates ttlMs/cacheScope (see server_core_test.cpp's
-// DiscoverCachingHintsPresentWithDefaultsOverriddenWhenConfigured), but the DiscoverResult TYPE
-// itself must still round-trip the optionals as absent, and distinguish an explicit ttlMs == 0
-// from ttlMs being absent entirely, for interop with other implementations' responses.
+// The server always sends ttlMs and cacheScope on a discover result, but the DiscoverResult type
+// must still round-trip them as absent, and tell an explicit ttlMs of 0 from an absent one, for
+// results from other implementations.
 TEST(ProtocolTest, DiscoverResultRoundTripsUnsetOptionalCachingHints) {
     mcp::DiscoverResult res;
     res.supportedVersions = {"2026-07-28"};
@@ -2034,6 +2040,57 @@ TEST(ProtocolTest, DiscoverResultCacheScopePublicRoundTrips) {
     auto round_tripped = j.get<mcp::DiscoverResult>();
     ASSERT_TRUE(round_tripped.cacheScope.has_value());
     EXPECT_EQ(*round_tripped.cacheScope, mcp::CacheScope::ePublic);
+}
+
+TEST(ProtocolTest, UnknownCacheScopeIsNotReadAsPublic) {
+    json discover = {{"resultType", "complete"},
+                     {"supportedVersions", {"2026-07-28"}},
+                     {"capabilities", json::object()},
+                     {"ttlMs", 10},
+                     {"cacheScope", "shared"}};
+    auto discover_result = discover.get<mcp::DiscoverResult>();
+    EXPECT_FALSE(discover_result.cacheScope.has_value());
+    EXPECT_FALSE(discover_result.serverInfo.has_value());
+    EXPECT_EQ(discover_result.ttlMs, 10);
+
+    auto tools = json{{"tools", json::array()}, {"cacheScope", "shared"}}.get<mcp::ListToolsResult>();
+    EXPECT_FALSE(tools.cacheScope.has_value());
+    auto read = json{{"contents", json::array()}, {"cacheScope", 7}}.get<mcp::ReadResourceResult>();
+    EXPECT_FALSE(read.cacheScope.has_value());
+}
+
+TEST(ProtocolTest, ListAndReadResultsRoundTripCacheHints) {
+    mcp::ListToolsResult tools;
+    tools.ttlMs = 1000;
+    tools.cacheScope = mcp::CacheScope::ePublic;
+    json tools_json = tools;
+    EXPECT_EQ(tools_json["ttlMs"], 1000);
+    EXPECT_EQ(tools_json["cacheScope"], "public");
+    EXPECT_EQ(json(tools_json.get<mcp::ListToolsResult>()), tools_json);
+
+    mcp::ListPromptsResult prompts;
+    prompts.ttlMs = 0;
+    prompts.cacheScope = mcp::CacheScope::ePrivate;
+    json prompts_json = prompts;
+    EXPECT_EQ(prompts_json["ttlMs"], 0);
+    EXPECT_EQ(json(prompts_json.get<mcp::ListPromptsResult>()), prompts_json);
+
+    mcp::ListResourcesResult resources;
+    resources.ttlMs = 5;
+    EXPECT_EQ(json(json(resources).get<mcp::ListResourcesResult>()), json(resources));
+    mcp::ListResourceTemplatesResult templates;
+    templates.cacheScope = mcp::CacheScope::ePublic;
+    EXPECT_EQ(json(json(templates).get<mcp::ListResourceTemplatesResult>()), json(templates));
+    mcp::ReadResourceResult read;
+    read.ttlMs = 7;
+    read.cacheScope = mcp::CacheScope::ePrivate;
+    json read_json = read;
+    EXPECT_EQ(read_json, (json{{"contents", json::array()}, {"ttlMs", 7}, {"cacheScope", "private"}}));
+    EXPECT_EQ(json(read_json.get<mcp::ReadResourceResult>()), read_json);
+
+    // Without hints, a result serializes as before.
+    EXPECT_EQ(json(mcp::ListToolsResult{}), (json{{"tools", json::array()}}));
+    EXPECT_EQ(json(mcp::ReadResourceResult{}), (json{{"contents", json::array()}}));
 }
 
 TEST(ProtocolTest, CancelledNotificationSerialization) {
@@ -2386,21 +2443,53 @@ TEST(ProtocolTest, RejectsMismatchedContentDiscriminator) {
     EXPECT_THROW((void)unknown_content.get<mcp::ContentBlock>(), std::invalid_argument);
 }
 
-TEST(ProtocolTest, DiscoverableVersionsDoNotLeakIntoLegacyNegotiation) {
-    // 2026-07-28 is discoverable but not negotiable: a legacy initialize requesting it must
-    // fall back to the latest fully-served version, not be echoed back.
-    EXPECT_FALSE(mcp::is_supported_protocol_version(mcp::g_PROTOCOL_VERSION_2026_07_28));
+TEST(ProtocolTest, SupportedVersionsDoNotLeakIntoLegacyNegotiation) {
+    // 2026-07-28 is supported but not negotiable: a legacy initialize requesting it must fall
+    // back to the newest legacy version, not be echoed back.
+    EXPECT_TRUE(mcp::is_supported_protocol_version(mcp::g_PROTOCOL_VERSION_2026_07_28));
     EXPECT_EQ(mcp::negotiate_protocol_version(mcp::g_PROTOCOL_VERSION_2026_07_28),
+              mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
+    EXPECT_NE(mcp::negotiate_protocol_version(mcp::g_LATEST_PROTOCOL_VERSION),
               mcp::g_LATEST_PROTOCOL_VERSION);
 
-    ASSERT_EQ(mcp::g_SUPPORTED_PROTOCOL_VERSIONS.size(), 4u);
-    ASSERT_EQ(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.size(), 5u);
-    for (const auto version : mcp::g_SUPPORTED_PROTOCOL_VERSIONS) {
-        EXPECT_NE(std::find(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.begin(),
-                            mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.end(), version),
-                  mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.end());
+    ASSERT_EQ(mcp::g_SUPPORTED_PROTOCOL_VERSIONS.size(), 5u);
+    for (const auto version : mcp::g_LEGACY_PROTOCOL_VERSIONS) {
+        EXPECT_TRUE(mcp::is_supported_protocol_version(version)) << version;
     }
-    EXPECT_EQ(mcp::g_DISCOVERABLE_PROTOCOL_VERSIONS.back(), mcp::g_PROTOCOL_VERSION_2026_07_28);
+    EXPECT_EQ(mcp::g_SUPPORTED_PROTOCOL_VERSIONS.back(), mcp::g_LATEST_PROTOCOL_VERSION);
+    EXPECT_FALSE(mcp::is_supported_protocol_version("2025-11-26"));
+    EXPECT_FALSE(mcp::is_supported_protocol_version(""));
+}
+
+TEST(ProtocolVersions, LegacyAndModernListsPartitionTheSupportedVersions) {
+    const std::vector<std::string_view> legacy(mcp::g_LEGACY_PROTOCOL_VERSIONS.begin(),
+                                               mcp::g_LEGACY_PROTOCOL_VERSIONS.end());
+    EXPECT_EQ(legacy,
+              (std::vector<std::string_view>{"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}));
+    EXPECT_EQ(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION, "2025-11-25");
+    const std::vector<std::string_view> modern(mcp::g_MODERN_PROTOCOL_VERSIONS.begin(),
+                                               mcp::g_MODERN_PROTOCOL_VERSIONS.end());
+    EXPECT_EQ(modern, (std::vector<std::string_view>{"2026-07-28"}));
+
+    for (const auto version : mcp::g_SUPPORTED_PROTOCOL_VERSIONS) {
+        EXPECT_NE(mcp::is_legacy_protocol_version(version), mcp::is_modern_protocol_version(version))
+            << version;
+    }
+    EXPECT_FALSE(mcp::is_legacy_protocol_version("2025-11-26"));
+    EXPECT_FALSE(mcp::is_modern_protocol_version("2025-11-26"));
+    EXPECT_FALSE(mcp::is_legacy_protocol_version(""));
+    EXPECT_FALSE(mcp::is_modern_protocol_version(""));
+}
+
+TEST(ProtocolVersions, InitializeNegotiatesOnlyLegacyVersions) {
+    for (const auto version : mcp::g_LEGACY_PROTOCOL_VERSIONS) {
+        EXPECT_EQ(mcp::negotiate_protocol_version(version), version);
+    }
+    for (const auto version : mcp::g_MODERN_PROTOCOL_VERSIONS) {
+        EXPECT_EQ(mcp::negotiate_protocol_version(version), "2025-11-25") << version;
+    }
+    EXPECT_EQ(mcp::negotiate_protocol_version("1900-01-01"), "2025-11-25");
+    EXPECT_EQ(mcp::negotiate_protocol_version(""), "2025-11-25");
 }
 
 // --- Explicit-null optional members ---

@@ -2125,7 +2125,8 @@ TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullClientInfoOptionals) {
     auto& init_response = responses[0];
     ASSERT_FALSE(init_response.contains("error")) << "actual error: " << init_response["error"].dump();
     ASSERT_TRUE(init_response.contains("result"));
-    EXPECT_EQ(init_response["result"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(init_response["result"]["protocolVersion"],
+              std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
 }
 
 TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullCapabilityFlags) {

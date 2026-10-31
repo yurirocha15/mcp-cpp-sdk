@@ -60,19 +60,21 @@ inline void from_json(const nlohmann::json& j, EnumSchema& e) {
  * @brief Parameters for a URL-mode elicitation request.
  */
 struct ElicitRequestURLParams {
-    std::string mode = "url";            ///< The elicitation mode (always "url").
-    std::string message;                 ///< The message to present to the user.
-    std::string url;                     ///< The URL that the user should navigate to.
-    std::string elicitationId;           ///< Unique ID for this elicitation.
+    std::string mode = "url";  ///< The elicitation mode (always "url").
+    std::string message;       ///< The message to present to the user.
+    std::string url;           ///< The URL that the user should navigate to.
+    /// Unique ID for this elicitation. Required on the wire before 2026-07-28 (the legacy
+    /// reverse-RPC path generates one when unset); a 2026-07-28 request never carries it.
+    std::optional<std::string> elicitationId;
     std::optional<TaskMetadata> task;    ///< Optional task augmentation metadata.
     std::optional<nlohmann::json> meta;  ///< Reserved for protocol use.
 };
 
 inline void to_json(nlohmann::json& json_obj, const ElicitRequestURLParams& params) {
-    json_obj = nlohmann::json{{"mode", params.mode},
-                              {"message", params.message},
-                              {"url", params.url},
-                              {"elicitationId", params.elicitationId}};
+    json_obj = nlohmann::json{{"mode", params.mode}, {"message", params.message}, {"url", params.url}};
+    if (params.elicitationId) {
+        json_obj["elicitationId"] = *params.elicitationId;
+    }
     if (params.task) {
         json_obj["task"] = *params.task;
     }
@@ -85,7 +87,9 @@ inline void from_json(const nlohmann::json& json_obj, ElicitRequestURLParams& pa
     json_obj.at("mode").get_to(params.mode);
     json_obj.at("message").get_to(params.message);
     json_obj.at("url").get_to(params.url);
-    json_obj.at("elicitationId").get_to(params.elicitationId);
+    if (detail::has_json_value(json_obj, "elicitationId")) {
+        params.elicitationId = json_obj.at("elicitationId").get<std::string>();
+    }
     if (json_obj.contains("task")) {
         params.task = json_obj.at("task").get<TaskMetadata>();
     }

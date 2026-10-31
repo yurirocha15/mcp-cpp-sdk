@@ -203,7 +203,8 @@ naming the tool and the field when a schema cannot be used.
 
 - ``eInvalidSchema``: the schema is not a JSON object, fails its dialect's
   metaschema, holds NaN or Infinity (which JSON cannot represent), or (for
-  ``inputSchema``) does not declare ``"type": "object"``.
+  ``inputSchema``) does not declare ``"type": "object"``, or a tool input
+  schema holds an invalid ``x-mcp-header`` annotation.
 - ``eUnsupportedDialect``: ``$schema`` names a dialect the SDK does not
   implement.
 - ``eUnresolvedRef``: a ``$ref`` points outside the document.

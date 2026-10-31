@@ -438,6 +438,19 @@ argument instead of storing it in a named local, so no SSO string ever enters th
    // DO NOT: auto input = params.get<In>();  // named local stays in frame
    Out output = co_await handler(ctx, params.get<In>());  // direct: never in frame
 
+**Named aggregate arguments**: GCC releases before 13 can destroy a temporary
+built inside a ``co_await`` expression twice
+(`GCC Bug #101367 <https://gcc.gnu.org/bugzilla/show_bug.cgi?id=101367>`_).
+On GCC 11 this hits braced aggregates (``T{...}``, ``T{.field = ...}`` or a bare
+``{...}``) and the result of a conditional expression passed as coroutine
+arguments. Build such an argument as a named local and move it in.
+
+.. code-block:: cpp
+
+   // DO NOT: co_await dispatch(msg, RequestScope{nullptr, std::move(cancelled)});
+   RequestScope scope{nullptr, std::move(cancelled)};
+   co_await dispatch(msg, std::move(scope));
+
 **Rule for wire builders**: ``make_result_wire()`` and ``make_error_wire()`` are
 **synchronous** static helpers. Do NOT convert them to ``Task<void>`` coroutines —
 that would force callers to store ``RequestId`` (SSO risk) in their frames across the

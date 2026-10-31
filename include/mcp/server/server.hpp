@@ -16,6 +16,7 @@
 #include <mcp/transport/transport.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -26,6 +27,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace mcp {
 
@@ -152,6 +154,172 @@ struct ToolValidationStats {
 };
 
 /**
+ * @brief A result whose caching hints Server::set_cache_hints() sets.
+ *
+ * @details Protocol revision 2026-07-28 requires `ttlMs` and `cacheScope` on each of these results.
+ */
+enum class CacheTarget {
+    eDiscover,               ///< server/discover.
+    eToolsList,              ///< tools/list.
+    ePromptsList,            ///< prompts/list.
+    eResourcesList,          ///< resources/list.
+    eResourceTemplatesList,  ///< resources/templates/list.
+    eResourcesRead,          ///< resources/read.
+};
+
+/**
+ * @brief The caching hints a server attaches to a cacheable result of a 2026-07-28 request.
+ *
+ * @details The defaults tell a client not to reuse the result (`ttlMs` 0) and, should it cache it
+ * anyway, not to share it across authorization contexts (`private`).
+ */
+struct CacheHint {
+    /// How long, in milliseconds, a client MAY consider the result fresh. 0 means do not reuse it.
+    std::int64_t ttlMs = 0;
+    /// Who may share a cached copy: only the same authorization context, or anyone.
+    CacheScope scope = CacheScope::ePrivate;
+};
+
+/**
+ * @brief Which protocol revisions a Server serves (see Server::set_protocol_policy()).
+ *
+ * @details A request that carries its protocol version in `_meta` (2026-07-28 and later) is
+ * served on its own, without initialize. A client of 2025-11-25 or earlier starts a session with
+ * initialize. By default a Server serves both, on the same transport.
+ */
+struct ServerProtocolPolicy {
+    /// Serve requests that carry their protocol version in `_meta`. When false, every such
+    /// request is answered with `g_UNSUPPORTED_PROTOCOL_VERSION`.
+    bool serve_modern = true;
+    /// Serve clients that start a session with initialize. When false, initialize is answered
+    /// with `g_METHOD_NOT_FOUND` naming the versions served in its message and in
+    /// `data.supported`, and any other request without a protocol version in `_meta` with
+    /// `g_INVALID_PARAMS`.
+    bool serve_legacy = true;
+    /// The versions initialize may negotiate, each one of g_LEGACY_PROTOCOL_VERSIONS. Unset
+    /// means all of them. An initialize asking for another version negotiates the newest one
+    /// listed.
+    std::optional<std::vector<std::string>> legacy_versions;
+
+    /**
+     * @brief Check that the policy can be applied.
+     *
+     * @throws std::invalid_argument If neither era is served, if legacy clients are served with
+     *         an empty `legacy_versions`, or if `legacy_versions` names a version that is not one
+     *         of g_LEGACY_PROTOCOL_VERSIONS.
+     */
+    void validate() const;
+};
+
+/**
+ * @brief The version initialize negotiates under @p policy.
+ *
+ * @return @p requested when the policy lets initialize negotiate it, otherwise the newest legacy
+ *         version the policy allows.
+ */
+MCP_API std::string negotiate_protocol_version(std::string_view requested,
+                                               const ServerProtocolPolicy& policy);
+
+/**
+ * @brief The protocol versions served under @p policy, oldest first: the legacy versions
+ * initialize may negotiate, then the versions served per request.
+ */
+MCP_API std::vector<std::string> served_protocol_versions(const ServerProtocolPolicy& policy);
+
+/**
+ * @brief Requests a Server refused for their protocol version or per-request protocol fields
+ * (see Server::protocol_rejection_stats()).
+ */
+struct ProtocolRejectionStats {
+    /// Requests whose required `_meta` fields were missing or malformed (`g_INVALID_PARAMS`).
+    std::uint64_t invalid_metadata = 0;
+    /// Requests naming a protocol version the server does not serve
+    /// (`g_UNSUPPORTED_PROTOCOL_VERSION`).
+    std::uint64_t unsupported_version = 0;
+    /// Refusals of requests that name no protocol version in `_meta`: server/discover without
+    /// one, and, when legacy clients are not served, initialize and every other such request. A
+    /// legacy client turned away shows up here and nowhere else.
+    std::uint64_t legacy_shaped = 0;
+};
+
+/// Why a request waiting for client input was given up (see MrtrOptions::on_eviction).
+enum class MrtrEvictionReason : std::uint8_t {
+    eExpired,   ///< The client did not retry within MrtrOptions::ttl.
+    eCapacity,  ///< Room was needed for a newer request (MrtrOptions::max_parked and
+                ///< max_parked_per_principal).
+};
+
+/**
+ * @brief Limits on the 2026-07-28 requests that wait for client input (see
+ *        Server::set_mrtr_options()).
+ *
+ * @details A tools/call, prompts/get or resources/read of protocol revision 2026-07-28 whose handler
+ * asks the client something (Context::elicit(), sample_llm(), request_roots()) is answered with an
+ * `input_required` result, and the handler waits until the client retries the request with the
+ * answers. Each waiting handler holds its coroutine frame; these limits bound them.
+ */
+struct MrtrOptions {
+    /// How long a handler waits for the client's retry before it is given up.
+    std::chrono::milliseconds ttl{std::chrono::minutes(5)};
+    /// Handlers that may wait at once; past this the one that has waited longest is given up.
+    std::size_t max_parked{1024};
+    /// Handlers that may wait at once for one principal (Context::principal()); past this that
+    /// principal's longest-waiting handler is given up.
+    std::size_t max_parked_per_principal{64};
+    /// Called, on no particular thread, each time a waiting handler is given up.
+    std::function<void(MrtrEvictionReason)> on_eviction;
+};
+
+/**
+ * @brief Counters of the 2026-07-28 requests that wait for client input (see Server::mrtr_stats()).
+ */
+struct MrtrStats {
+    std::uint64_t parked = 0;       ///< Handlers waiting for a retry now.
+    std::uint64_t evicted_ttl = 0;  ///< Handlers given up because the retry did not come in time.
+    std::uint64_t evicted_cap = 0;  ///< Handlers given up to make room for newer ones.
+    /// Handlers that went on after being given up and finished; their answers went nowhere.
+    std::uint64_t abandoned_completed = 0;
+    std::uint64_t resume_hit = 0;  ///< Retries that resumed their handler.
+    /// Retries refused because their requestState names no waiting handler (unknown, expired or
+    /// already used).
+    std::uint64_t resume_unknown = 0;
+    /// Retries refused because another principal sent the request that parked the handler.
+    std::uint64_t resume_principal_mismatch = 0;
+    /// Retries refused because they are not the request that parked the handler: another method,
+    /// or other parameters.
+    std::uint64_t resume_params_mismatch = 0;
+};
+
+/**
+ * @brief Per-call state for Server::dispatch_request_direct().
+ */
+struct RequestContext {
+    /// Cancellation flag for this call: setting it cancels the request, and its handler sees it
+    /// through Context::is_cancelled(). When null, the call gets a flag of its own.
+    std::shared_ptr<std::atomic<bool>> cancelled;
+    /// The `Mcp-Param-{Name}` headers of the HTTP request that carried this call, as
+    /// {Name, value} pairs with the value as received. When set, a 2026-07-28 tools/call is
+    /// answered with `g_HEADER_MISMATCH` unless each argument its tool mirrors into a header
+    /// (`x-mcp-header`) that is present and not null has exactly one matching header, and every
+    /// header the tool names has a valid value. Leave unset for a request that did not arrive
+    /// over HTTP.
+    std::optional<std::vector<std::pair<std::string, std::string>>> param_headers;
+    /// Receives, serialized and in order, each notification a handler sends while serving a
+    /// 2026-07-28 request (log messages, progress), so a transport can deliver them ahead of the
+    /// answer. When unset, they go to the transport of a running session, if any.
+    MessageSender notifications;
+    /// Who sent this call, as the transport that carried it authenticated the sender; handlers see
+    /// it as Context::principal(). Empty when unknown.
+    std::string principal;
+    /// Called by the server, while it serves a subscriptions/listen request, with a function to
+    /// call whenever `cancelled` is set (from any thread, after setting it), so a request that
+    /// waits for the client to go away is woken. A transport that streams notifications supplies
+    /// it so that closing the stream ends the subscription. When unset, `cancelled` is not
+    /// watched by anything but the request itself.
+    std::function<void(std::function<void()>)> watch_cancel;
+};
+
+/**
  * @brief MCP server that handles client requests over a transport.
  *
  * Manages the JSON-RPC message loop, dispatching incoming requests to
@@ -187,7 +355,11 @@ class MCP_API Server {
      * @param input_schema JSON schema for the tool's input parameters.
      * @param handler      Handler invoked on tools/call requests.
      * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
-     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     *         CompiledSchema), the input schema does not declare `"type": "object"`, or an
+     *         `x-mcp-header` annotation breaks the rules of the 2026-07-28 tools specification
+     *         (not a string, empty or not an HTTP token, repeated ignoring case, on a property
+     *         that is not a string, integer or boolean, or on a property not reached through
+     *         `properties` alone).
      * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
@@ -212,7 +384,11 @@ class MCP_API Server {
      * a structuredContent field alongside content.
      *
      * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
-     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     *         CompiledSchema), the input schema does not declare `"type": "object"`, or an
+     *         `x-mcp-header` annotation breaks the rules of the 2026-07-28 tools specification
+     *         (not a string, empty or not an HTTP token, repeated ignoring case, on a property
+     *         that is not a string, integer or boolean, or on a property not reached through
+     *         `properties` alone).
      * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
@@ -243,7 +419,11 @@ class MCP_API Server {
      * @param input_schema JSON schema for the tool's input parameters.
      * @param handler      Synchronous handler: takes JSON params, returns JSON result.
      * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
-     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     *         CompiledSchema), the input schema does not declare `"type": "object"`, or an
+     *         `x-mcp-header` annotation breaks the rules of the 2026-07-28 tools specification
+     *         (not a string, empty or not an HTTP token, repeated ignoring case, on a property
+     *         that is not a string, integer or boolean, or on a property not reached through
+     *         `properties` alone).
      * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     void add_tool(const std::string& name, const std::string& description,
@@ -260,7 +440,11 @@ class MCP_API Server {
      * @param tool Tool metadata.
      * @param handler Asynchronous raw handler receiving tool arguments.
      * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
-     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     *         CompiledSchema), the input schema does not declare `"type": "object"`, or an
+     *         `x-mcp-header` annotation breaks the rules of the 2026-07-28 tools specification
+     *         (not a string, empty or not an HTTP token, repeated ignoring case, on a property
+     *         that is not a string, integer or boolean, or on a property not reached through
+     *         `properties` alone).
      * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     void add_raw_tool(const Tool& tool, TypeErasedHandler handler);
@@ -271,7 +455,11 @@ class MCP_API Server {
      * @param tool Tool metadata.
      * @param handler Synchronous raw handler receiving tool arguments.
      * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
-     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     *         CompiledSchema), the input schema does not declare `"type": "object"`, or an
+     *         `x-mcp-header` annotation breaks the rules of the 2026-07-28 tools specification
+     *         (not a string, empty or not an HTTP token, repeated ignoring case, on a property
+     *         that is not a string, integer or boolean, or on a property not reached through
+     *         `properties` alone).
      * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     void add_raw_tool(const Tool& tool, std::function<nlohmann::json(const nlohmann::json&)> handler);
@@ -378,25 +566,73 @@ class MCP_API Server {
     void set_instructions(std::string instructions);
 
     /**
-     * @brief Set the `ttlMs` caching hint returned by server/discover.
+     * @brief Set the `ttlMs` and `cacheScope` hints of one kind of result.
      *
-     * @details Defaults to `0` ("do not cache") until overridden. Read unsynchronized by
-     * request handlers; must be called before run().
+     * @details Applies to results of 2026-07-28 requests; a result of an earlier revision carries
+     * no hints. Until set, a target uses the CacheHint defaults. A handler's result that already
+     * carries `ttlMs` or `cacheScope` keeps its own value. Read unsynchronized by request
+     * handlers, so it must be called before the server serves its first request: before run()
+     * or the first dispatch_request_direct().
+     * With StreamableHttpSessionManager, configure the Server in the factory, before passing it
+     * to set_modern_server(), or through modern_server() before listen().
      *
-     * @param ttl_ms How long, in milliseconds, the client MAY consider the discover result fresh.
-     * @throws std::invalid_argument If `ttl_ms` is negative.
+     * @param target The result the hints apply to.
+     * @param hint The hints.
+     * @throws std::invalid_argument If `hint.ttlMs` is negative.
      */
-    void set_discover_ttl_ms(std::int64_t ttl_ms);
+    void set_cache_hints(CacheTarget target, CacheHint hint);
 
     /**
-     * @brief Set the `cacheScope` caching hint returned by server/discover.
+     * @brief Choose whether results of 2026-07-28 requests name this server.
      *
-     * @details Defaults to `CacheScope::ePrivate` until overridden. Read unsynchronized by
-     * request handlers; must be called before run().
-     *
-     * @param scope The intended cache scope of the discover result.
+     * @details When true (the default), every such result carries the server's name and version
+     * under `_meta` (`io.modelcontextprotocol/serverInfo`), as the revision recommends. Results of
+     * earlier revisions never do. Must be called before the server serves its first request:
+     * before run() or the first dispatch_request_direct().
+     * With StreamableHttpSessionManager, configure the Server in the factory, before passing it
+     * to set_modern_server(), or through modern_server() before listen().
      */
-    void set_discover_cache_scope(CacheScope scope);
+    void set_report_server_info(bool report);
+
+    /**
+     * @brief Choose which protocol revisions this server serves.
+     *
+     * @details Takes effect for every transport. Must be called before the server serves its
+     * first request.
+     *
+     * @param policy The revisions to serve.
+     * @throws std::invalid_argument If ServerProtocolPolicy::validate() refuses the policy.
+     * @throws std::logic_error If the server has already served a request or run() has started.
+     */
+    void set_protocol_policy(ServerProtocolPolicy policy);
+
+    /// Requests refused for their protocol version or per-request protocol fields since this
+    /// server was created.
+    [[nodiscard]] ProtocolRejectionStats protocol_rejection_stats() const;
+
+    /**
+     * @brief Set the limits on 2026-07-28 requests that wait for client input.
+     *
+     * @details The waiting handlers live in this server, so a client's retry must reach the same
+     * server instance (and process) as the request it retries; one that does not is answered as
+     * for an unknown requestState. When run() ends, its transport can bring no more retries, and
+     * the waiting handlers are given up. Takes effect for requests parked afterwards.
+     *
+     * @param options The limits.
+     */
+    void set_mrtr_options(MrtrOptions options);
+
+    /// Counters of the 2026-07-28 requests that wait, or waited, for client input.
+    [[nodiscard]] MrtrStats mrtr_stats() const;
+
+    /**
+     * @brief Give up every handler waiting for the retry of a 2026-07-28 request.
+     *
+     * @details Each throws from its question, so its frame unwinds, and its answer is discarded.
+     * For when no retry can arrive any more: run() does this when it ends, and
+     * StreamableHttpSessionManager::close() for its modern server.
+     */
+    void abandon_waiting_handlers();
 
     /**
      * @brief Send a JSON-RPC request to the connected client and await its response.
@@ -433,9 +669,12 @@ class MCP_API Server {
      * after that throws std::runtime_error.
      *
      * The session enforces the initialization sequence. When @p transport is an
-     * HttpServerTransport, a session the client ends with HTTP DELETE is over and
-     * the next client must initialize again; a transport that wraps an
-     * HttpServerTransport is not recognized as one.
+     * HttpServerTransport, or wraps one and returns it from
+     * ITransport::http_server_transport(), a session the client ends with HTTP DELETE
+     * is over and the next client must initialize again, the `Mcp-Param-*` headers of
+     * 2026-07-28 tools/call requests are checked, and notifications of 2026-07-28
+     * requests are dropped. A wrapper that does not return it is served like any other
+     * transport.
      *
      * @param transport The transport to use for message exchange. Ownership is shared.
      * @param executor  The executor to use for async operations.
@@ -492,6 +731,8 @@ class MCP_API Server {
      * Used by stateless HTTP JSON mode to avoid creating a transport-backed
      * server session for request/response messages. The request envelope is
      * validated, but no stateful initialize/initialized handshake is required.
+     * A request that carries its protocol version in `_meta` is served as a 2026-07-28
+     * request: its version and per-request fields are checked.
      *
      * @details Request parameter decoding failures are returned as `g_INVALID_PARAMS` (-32602).
      * Exceptions thrown by middleware, or by resource, prompt and completion handlers, are
@@ -504,6 +745,22 @@ class MCP_API Server {
      * The Server object must outlive the returned task.
      */
     Task<std::string> dispatch_request_direct(nlohmann::json json_msg);
+
+    /**
+     * @brief Dispatch a parsed JSON-RPC request with per-call state and return its serialized
+     * response.
+     *
+     * @details As the one-argument overload. A `tools/call` is cancelled through
+     * `request_context.cancelled`, never through notifications/cancelled, so concurrent calls
+     * that reuse a request id stay independent.
+     *
+     * @param json_msg The parsed JSON-RPC request object.
+     * @param request_context Per-call state.
+     * @return A task that resolves to the serialized JSON-RPC response.
+     *
+     * The Server object must outlive the returned task.
+     */
+    Task<std::string> dispatch_request_direct(nlohmann::json json_msg, RequestContext request_context);
 
     /**
      * @brief Check whether the server has been initialized.
@@ -521,6 +778,9 @@ class MCP_API Server {
 
     /**
      * @brief Send a notifications/tools/list_changed notification to the client.
+     *
+     * Also sent, tagged with its subscription id, to each open subscriptions/listen
+     * stream that asked for it; the same holds for the three notify methods below.
      *
      * The Server object must outlive the returned task.
      */
@@ -549,6 +809,20 @@ class MCP_API Server {
      */
     Task<void> notify_resource_updated(const std::string& uri);
 
+    /**
+     * @brief Ends every open subscriptions/listen stream gracefully.
+     *
+     * Each stream's request is answered with its empty `resultType: "complete"` result carrying
+     * the stream's `io.modelcontextprotocol/subscriptionId`, which the transport that carried the
+     * request then delivers. Returns at once and may be called from any thread. Streams opened
+     * later are not affected. A stream that ends because its client cancelled it, or its
+     * transport closed, gets no response.
+     */
+    void close_subscriptions();
+
+    /// @brief The number of subscriptions/listen streams currently open on this server.
+    [[nodiscard]] std::size_t subscription_count() const;
+
     /// @brief Callback invoked when a client subscribes to or unsubscribes from a resource URI.
     using SubscriptionHandler = std::function<void(const std::string& uri)>;
 
@@ -569,7 +843,8 @@ class MCP_API Server {
     /**
      * @brief Get the currently active server log level.
      *
-     * @return The log level used when filtering context log messages.
+     * @return The log level used when filtering context log messages of requests of 2025-11-25
+     * and earlier. A 2026-07-28 request is filtered by its own io.modelcontextprotocol/logLevel.
      */
     [[nodiscard]] LoggingLevel get_log_level() const;
 
