@@ -1,23 +1,10 @@
 # Benchmark results
 
-## Publication status
-
-The `production-full` run `20261018_020318_production-full` completed every gate.
-Its manifest is `complete` with `publishable_candidate: true`. The publishable
-comparison is the five-C++-SDK table below. The TCP_NODELAY builds and the
-official language SDKs ran in the same run, but their tables are diagnostic.
-
-The evidence bundle is retained locally at
-`benchmark/results/20261018_020318_production-full/`. Generated result
-directories are intentionally ignored by Git; an external citation should
-include an unchanged copy of that bundle. The SHA-256 of its sorted per-file
-checksum stream is
-`2923ba1ffcf102c637e4666f4c8133a31e44891e5ee9f75a5ba34f51a365b4cd`.
-To recompute it, run this from inside the bundle directory:
-
-```bash
-find . -type f | LC_ALL=C sort | sed 's|^\./||' | xargs -d '\n' sha256sum | sha256sum
-```
+These results come from the `production-full` run
+`20261018_020318_production-full`, which put the same MCP/Redis/HTTP workload on
+every target. The [C++ SDKs](#c-sdks) table is the comparison; the other tables
+are diagnostic. [Evidence bundle](#evidence-bundle) at the end says how to check
+the run.
 
 ## Run configuration
 
@@ -118,6 +105,24 @@ Python and Rust failed one check each in all six of their gates: Python on the
 checkout tool schema, and Rust on the checkout `rate_limit_count` fixture. In
 those gates Rust reported 295 while Redis recorded the expected counter change
 from 0 to 1.
+
+## Evidence bundle
+
+The run completed every gate. Its manifest is `complete` with `publishable_candidate: true`. The publishable
+comparison is the five-C++-SDK table above. The TCP_NODELAY builds and the
+official language SDKs ran in the same run, but their tables are diagnostic.
+
+The evidence bundle is retained locally at
+`benchmark/results/20261018_020318_production-full/`. Generated result
+directories are intentionally ignored by Git; an external citation should
+include an unchanged copy of that bundle. The SHA-256 of its sorted per-file
+checksum stream is
+`2923ba1ffcf102c637e4666f4c8133a31e44891e5ee9f75a5ba34f51a365b4cd`.
+To recompute it, run this from inside the bundle directory:
+
+```bash
+find . -type f | LC_ALL=C sort | sed 's|^\./||' | xargs -d '\n' sha256sum | sha256sum
+```
 
 ## Audit evidence
 

@@ -13,6 +13,9 @@ baseline is its Python server ported to the official Python SDK 2.x; see
 local profile in `alternatives/benchmark.js`; it does not use the upstream k6
 script.
 
+The measured results are in [RESULTS.md](RESULTS.md). A reduced smoke test proves
+that the harness works; it is not a performance result.
+
 ## Prerequisites
 
 - A Linux host with Docker cgroup accounting enabled; the harness reads Linux
@@ -402,6 +405,3 @@ docker compose down
 # Optional full cleanup, including images and volumes.
 docker compose down --rmi all --volumes
 ```
-
-See [RESULTS.md](RESULTS.md) for publication status. A reduced smoke test proves
-that the harness works; it is not a performance result.

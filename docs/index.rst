@@ -11,13 +11,12 @@ features, this SDK offers a clean, type-safe API for building MCP servers and cl
 Features
 --------
 
-* **Shared or static linkage**: Install and link the variant that fits your application
 * **Modern C++20**: Leverages coroutines, concepts, and ranges
 * **Flexible transports**: stdio, WebSocket, Streamable HTTP, and custom transport support
 * **Type-safe**: Strong typing with JSON serialization via nlohmann_json
 * **Async-first**: Built on Boost.Asio for high-performance I/O
 * **Broad MCP surface**: Tools, resources, prompts, sampling, roots, progress, and notifications
-* **Measured conformance**: Pinned official suites with explicit expected-failure evidence
+* **Conformance tested**: The official MCP suites run in CI, with known gaps listed
 * **Authentication building blocks**: Experimental OAuth helpers and HTTP bearer validation
 
 Quick Links
