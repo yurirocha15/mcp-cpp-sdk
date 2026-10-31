@@ -6,10 +6,16 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths-ignore: ['docs/**', '**.md', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
+    paths:
+      - '.github/workflows/**'
+      - 'conformance/run.sh'
+      - 'scripts/**'
   pull_request:
     branches: [main]
-    paths-ignore: ['docs/**', '**.md', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
+    paths:
+      - '.github/workflows/**'
+      - 'conformance/run.sh'
+      - 'scripts/**'
 
 permissions:
   contents: read
