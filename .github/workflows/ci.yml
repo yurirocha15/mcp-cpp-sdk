@@ -12,8 +12,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # A new push to a pull request replaces its older run. Pushes to main each keep their own run.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   changes:
+    # Runner concurrency is shared by every repository on the account, so the matrices below cap
+    # their parallel jobs and pull requests run packaging only when it can be affected.
     # Documentation-only changes skip the build, test and packaging jobs. Build still runs with
     # every step skipped: its checks are required on main, and a skipped matrix job reports one
     # unexpanded check name instead of the required ones.
@@ -21,6 +28,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.classify.outputs.code }}
+      packaging: ${{ steps.classify.outputs.packaging }}
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -41,6 +49,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
         include:
           - {os: ubuntu-24.04, cppstd: '20', linkage: both}
@@ -115,7 +124,7 @@ jobs:
       with:
         key: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-${{ matrix.linkage }}-ccache-${{ github.ref }}
         save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        restore-keys: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-${{ matrix.linkage }}-ccache-
+        restore-keys: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-${{ matrix.linkage }}-ccache
         max-size: 500M
 
     # MCP_REQUIRE_TWIN_LOOPBACK turns the OAuthSetterPairAtomicity skips into failures. Those tests
@@ -166,14 +175,12 @@ jobs:
         key: ${{ steps.conan-cache.outputs.cache-primary-key }}
 
   sanitize:
-    name: sanitize (${{ matrix.compiler }})
+    # Both compilers share one runner. Each builds in its own directory, and the Clang step runs
+    # even when the GCC step fails so that one run reports both.
+    name: sanitize
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        compiler: [default, clang]
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -204,15 +211,21 @@ jobs:
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
       with:
-        key: ubuntu-24.04-sanitize-${{ matrix.compiler }}-ccache-${{ github.ref }}
+        key: ubuntu-24.04-sanitize-ccache-${{ github.ref }}
         save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        restore-keys: ubuntu-24.04-sanitize-${{ matrix.compiler }}-ccache-
-        max-size: 500M
+        restore-keys: ubuntu-24.04-sanitize-ccache
+        max-size: 1500M
 
-    - name: Build and Test with Sanitizers
+    - name: Build and Test with Sanitizers (GCC)
       env:
         MCP_REQUIRE_TWIN_LOOPBACK: '1'
-      run: python scripts/build.py --sanitize --compiler ${{ matrix.compiler }} --test --quiet
+      run: python scripts/build.py --sanitize --compiler default --test --quiet
+
+    - name: Build and Test with Sanitizers (Clang)
+      if: ${{ !cancelled() }}
+      env:
+        MCP_REQUIRE_TWIN_LOOPBACK: '1'
+      run: python scripts/build.py --sanitize --compiler clang --test --quiet
 
     - name: Drop Conan build trees before saving the cache
       if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
@@ -226,14 +239,12 @@ jobs:
         key: ${{ steps.conan-cache.outputs.cache-primary-key }}
 
   tsan:
-    name: tsan (${{ matrix.compiler }})
+    # Both compilers share one runner. Each builds in its own directory, and the Clang step runs
+    # even when the GCC step fails so that one run reports both.
+    name: tsan
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        compiler: [default, clang]
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -264,15 +275,21 @@ jobs:
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
       with:
-        key: ubuntu-24.04-tsan-${{ matrix.compiler }}-ccache-${{ github.ref }}
+        key: ubuntu-24.04-tsan-ccache-${{ github.ref }}
         save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        restore-keys: ubuntu-24.04-tsan-${{ matrix.compiler }}-ccache-
-        max-size: 500M
+        restore-keys: ubuntu-24.04-tsan-ccache
+        max-size: 1G
 
-    - name: Build and Test with ThreadSanitizer
+    - name: Build and Test with ThreadSanitizer (GCC)
       env:
         MCP_REQUIRE_TWIN_LOOPBACK: '1'
-      run: python scripts/build.py --tsan --compiler ${{ matrix.compiler }} --test --quiet
+      run: python scripts/build.py --tsan --compiler default --test --quiet
+
+    - name: Build and Test with ThreadSanitizer (Clang)
+      if: ${{ !cancelled() }}
+      env:
+        MCP_REQUIRE_TWIN_LOOPBACK: '1'
+      run: python scripts/build.py --tsan --compiler clang --test --quiet
 
     - name: Drop Conan build trees before saving the cache
       if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
@@ -331,8 +348,8 @@ jobs:
       with:
         key: ubuntu-24.04-msan-ccache-${{ github.ref }}
         save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        restore-keys: ubuntu-24.04-msan-ccache-
-        max-size: 500M
+        restore-keys: ubuntu-24.04-msan-ccache
+        max-size: 1G
 
     - name: Build and Test with MemorySanitizer
       env:
@@ -420,6 +437,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         shared: ['False', 'True']
 
@@ -472,7 +490,7 @@ jobs:
     # packaging flags, in the locked release builder images, and test what they install.
     name: Native package source
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.packaging == 'true'
     runs-on: ubuntu-24.04
     outputs:
       routes: ${{ steps.routes.outputs.routes }}
@@ -504,6 +522,7 @@ jobs:
     timeout-minutes: 120
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
         include: ${{ fromJSON(needs.package-core.outputs.routes) }}
 
@@ -530,6 +549,7 @@ jobs:
     needs: package-core
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - {runner: macos-15-intel, bottle_tag: sequoia}
