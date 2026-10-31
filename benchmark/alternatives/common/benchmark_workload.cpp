@@ -207,6 +207,39 @@ class RedisClient {
 
     void discard(const std::vector<std::string>& args) const { (void)command(args); }
 
+    /// Sends @p commands in one round trip and returns the integer reply of the first.
+    std::int64_t pipeline_first_integer(const std::vector<std::vector<std::string>>& commands) const {
+        Lease connection{*this, acquire()};
+        for (const auto& args : commands) {
+            std::vector<const char*> argv;
+            std::vector<std::size_t> lengths;
+            for (const auto& arg : args) {
+                argv.push_back(arg.data());
+                lengths.push_back(arg.size());
+            }
+            if (redisAppendCommandArgv(connection.value, static_cast<int>(argv.size()), argv.data(),
+                                       lengths.data()) != REDIS_OK) {
+                redisFree(connection.value);
+                connection.value = nullptr;
+                throw std::runtime_error("Redis command failed");
+            }
+        }
+        std::int64_t first = 0;
+        for (std::size_t i = 0; i < commands.size(); ++i) {
+            void* raw = nullptr;
+            if (redisGetReply(connection.value, &raw) != REDIS_OK) {
+                redisFree(connection.value);
+                connection.value = nullptr;
+                throw std::runtime_error("Redis command failed");
+            }
+            Reply reply(static_cast<redisReply*>(raw));
+            if (i == 0 && reply.value && reply.value->type == REDIS_REPLY_INTEGER) {
+                first = reply.value->integer;
+            }
+        }
+        return first;
+    }
+
    private:
     struct Reply {
         redisReply* value = nullptr;
@@ -348,10 +381,9 @@ class Workload::Impl {
                                  "&min_price=" + number(min_price) + "&max_price=" + number(max_price) +
                                  "&limit=" + std::to_string(limit);
 
-        auto search = pool_.submit([this, path] { return http_.get(path); });
         auto popular = pool_.submit(
             [this] { return redis_.string_array({"ZREVRANGE", "bench:popular", "0", "9"}); });
-        Json search_data = Json::parse(search.get());
+        Json search_data = Json::parse(http_.get(path));
         const auto popular_raw = popular.get();
 
         Json ids = Json::array();
@@ -405,12 +437,10 @@ class Workload::Impl {
 
         auto product = pool_.submit(
             [this, product_id] { return http_.get("/products/" + std::to_string(product_id)); });
-        auto history = pool_.submit([this, user_id] {
-            return redis_.string_array({"LRANGE", "bench:history:" + user_id, "0", "4"});
-        });
+        const auto history = redis_.string_array({"LRANGE", "bench:history:" + user_id, "0", "4"});
         (void)product.get();
         Json recent = Json::array();
-        for (const auto& entry : history.get()) {
+        for (const auto& entry : history) {
             Json parsed = Json::parse(entry, nullptr, false);
             recent.push_back(parsed.is_discarded() ? Json{{"raw", entry}} : std::move(parsed));
         }
@@ -439,18 +469,11 @@ class Workload::Impl {
 
         auto calculated = pool_.submit(
             [this, body = calculate.dump()] { return http_.post("/cart/calculate", body); });
-        auto rate =
-            pool_.submit([this, key = rate_key.str()] { return redis_.integer({"INCR", key}); });
-        auto history = pool_.submit([this, history_key, value = order_entry.dump()] {
-            redis_.discard({"RPUSH", history_key, value});
-        });
-        auto popularity = pool_.submit([this, product_id] {
-            redis_.discard({"ZINCRBY", "bench:popular", "1", "product:" + std::to_string(product_id)});
-        });
+        const auto rate_count = redis_.pipeline_first_integer(
+            {{"INCR", rate_key.str()},
+             {"RPUSH", history_key, order_entry.dump()},
+             {"ZINCRBY", "bench:popular", "1", "product:" + std::to_string(product_id)}});
         Json calc = Json::parse(calculated.get());
-        const auto rate_count = rate.get();
-        history.get();
-        popularity.get();
         return {{"order_id", calc.value("order_id", order_entry["order_id"].get<std::string>())},
                 {"user_id", user_id},
                 {"total", calc.value("total", 0.0)},
