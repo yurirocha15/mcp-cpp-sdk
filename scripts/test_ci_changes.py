@@ -92,16 +92,55 @@ class ClassifierTests(unittest.TestCase):
         self.assertTrue(self.code(head, base="f" * 40))
         self.assertTrue(self.code(self.commit()))  # empty diff
 
-    def test_manual_runs_always_need_code_jobs(self) -> None:
+    def classify(self, event: str, head: str, base: str | None = None) -> list[str]:
+        return subprocess.run(
+            [sys.executable, ci_changes.__file__, "--event", event,
+             "--base", self.base if base is None else base, "--head", head],
+            check=True, capture_output=True, text=True,
+        ).stdout.split()
+
+    def test_manual_runs_always_need_every_job(self) -> None:
         self.write("docs/index.rst", "Index, edited\n")
         head = self.commit()
-        for event, expected in (("workflow_dispatch", "code=true"), ("pull_request", "code=false")):
-            output = subprocess.run(
-                [sys.executable, ci_changes.__file__, "--event", event,
-                 "--base", self.base, "--head", head],
-                check=True, capture_output=True, text=True,
-            ).stdout.strip()
-            self.assertEqual(output, expected)
+        self.assertEqual(
+            self.classify("workflow_dispatch", head), ["code=true", "packaging=true"]
+        )
+        self.assertEqual(
+            self.classify("pull_request", head), ["code=false", "packaging=false"]
+        )
+
+    def test_pull_request_source_change_skips_packaging(self) -> None:
+        self.write("src/main.cpp", "int y;\n")
+        head = self.commit()
+        self.assertEqual(self.classify("pull_request", head), ["code=true", "packaging=false"])
+        self.assertEqual(self.classify("push", head), ["code=true", "packaging=true"])
+
+    def test_pull_request_packaging_change_runs_packaging(self) -> None:
+        for path in ("CMakeLists.txt", "cmake/config.cmake.in", "packaging/targets.json",
+                     "release/model.py", "scripts/release/build_windows.ps1",
+                     "scripts/package_build.py", ".github/workflows/ci.yml",
+                     ".github/workflows/release-candidate.yml", "conanfile.py", "VERSION"):
+            with self.subTest(path=path):
+                self.write(path, f"{path}\n")
+                head = self.commit()
+                self.assertEqual(
+                    self.classify("pull_request", head), ["code=true", "packaging=true"]
+                )
+                self.base = head
+
+    def test_documentation_push_skips_packaging(self) -> None:
+        self.write("docs/index.rst", "Index, edited\n")
+        self.assertEqual(self.classify("push", self.commit()), ["code=false", "packaging=false"])
+
+    def test_doubt_runs_packaging(self) -> None:
+        self.write("src/main.cpp", "int y;\n")
+        head = self.commit()
+        self.assertEqual(
+            self.classify("pull_request", head, base=""), ["code=true", "packaging=true"]
+        )
+        self.assertEqual(
+            self.classify("pull_request", head, base="f" * 40), ["code=true", "packaging=true"]
+        )
 
 
 if __name__ == "__main__":
