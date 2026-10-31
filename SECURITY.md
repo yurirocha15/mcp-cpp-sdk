@@ -12,10 +12,10 @@ personal data in the report.
 
 ## Release integrity
 
-Only package routes marked `LIVE` by an immutable GitHub Release record are
-supported. Release source archives, checksums, manifests, and SBOMs are
-published with verification material. A registry upload or an open packaging
-pull request is not by itself a supported release.
+Install only from the routes in the
+[installation guide](https://www.yurirocha.com/mcp-cpp-sdk/installation.html).
+Each GitHub Release publishes its source archives, checksums, manifest and SBOMs
+with signatures you can verify.
 
 If release integrity is in doubt, stop installing the affected version and
 report it privately through GitHub Security Advisories.

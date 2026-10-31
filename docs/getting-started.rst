@@ -7,14 +7,15 @@ to building your first MCP server and client.
 Prerequisites
 -------------
 
-Before installing mcp-cpp-sdk, ensure you have the following:
+You need:
 
 * **C++20 compiler**: GCC 11+, Clang 14+, AppleClang 15+, or MSVC 2022
-* **CMake**: Version 3.20 or higher
-* **Boost**: Recent version with Asio and Beast support (managed via Conan for source builds)
-* **nlohmann_json**: Installed automatically for source builds via Conan
-* **Conan**: Version 2.0+ (for dependency management)
-* **Chocolatey** (Windows only): Required for dependency installation via ``scripts/init.py``. Install from `chocolatey.org <https://chocolatey.org/install>`__.
+* **CMake**: 3.20 or newer
+* **Boost** 1.74+, **nlohmann_json** 3.10.5+ and **OpenSSL** 3.0+, which the
+  packages below install for you
+
+Building the SDK itself with its scripts also needs **Conan** 2 and, on Windows,
+`Chocolatey <https://chocolatey.org/install>`__.
 
 Installation
 ------------
@@ -22,10 +23,10 @@ Installation
 See :doc:`installation` for package-manager commands, supported platforms,
 shared/static target selection, verification, and uninstall instructions.
 
-Using Conan (Recommended)
-^^^^^^^^^^^^^^^^^^^^^^^^^^
+From a Source Checkout with Conan
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The easiest way to get started is with Conan package manager:
+In a clone of this repository, Conan can provide the dependencies:
 
 .. code-block:: bash
 

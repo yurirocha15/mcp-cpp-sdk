@@ -1,40 +1,33 @@
 Installation
 ============
 
-Supported baseline
-------------------
+Requirements
+------------
 
 The SDK requires CMake 3.20 or newer, C++20, Boost 1.74 or newer,
-nlohmann_json 3.10.5 or newer, and OpenSSL 3.0 or newer.  Supported compiler
-minima are GCC 11, Clang 14, AppleClang 15, and MSVC 2022 with the v143
-toolset.  C++20 and C++23 consumers are tested independently.
+nlohmann_json 3.10.5 or newer, and OpenSSL 3.0 or newer.  The minimum compilers
+are GCC 11, Clang 14, AppleClang 15, and MSVC 2022 with the v143 toolset.  Both
+C++20 and C++23 projects are tested.
 
-Every ``0.x.y`` is a stable release unless its version has an ``-rc.N``
-suffix, but SemVer does not promise binary compatibility before 1.0.  Each
-stable 0.x release therefore has an exact shared-library/DLL identity and an
-exact CMake package-version match.  Rebuild or relink consumers when changing
-0.x versions; do not replace one 0.x shared binary underneath an executable
-built against another.  A 1.x dispatch is deliberately blocked until the
-project adopts and validates ABI policy for every released platform family.
+Versions ``0.x.y`` are stable releases unless they carry an ``-rc.N`` suffix, but
+they are not binary compatible with each other.  Rebuild your project when you
+change versions, and do not swap one 0.x shared library for another under an
+existing executable.
 
-The native-package build matrix targets:
+Packages are built for:
 
 * Ubuntu 22.04, 24.04, and 26.04 on amd64 and arm64;
 * Debian 12 and 13 on amd64 and arm64;
 * Fedora 43 and 44 on x86_64 and aarch64;
-* Enterprise Linux 9 and 10 on x86_64 and aarch64; AlmaLinux, Rocky Linux,
-  and other compatible derivatives can use the matching Enterprise Linux
-  route but are not independently tested;
+* Enterprise Linux 9 and 10 on x86_64 and aarch64, which AlmaLinux, Rocky Linux
+  and other compatible distributions can use;
 * current Arch Linux on x86_64;
-* current supported Homebrew macOS and Linux bottle runners; and
+* Homebrew on macOS (Intel and Apple silicon) and Linux (x86_64 and arm64); and
 * Windows x64 with MSVC 2022 and the dynamic CRT.
 
-Compatible Ubuntu and Debian derivatives can use the route for their base
-distribution, compatible Fedora derivatives can use the matching Fedora or
-Enterprise Linux route, and Arch derivatives can build the AUR package.  Only
-the exact systems listed above are release-build baselines, so verify the
-derivative's base version, architecture, dependency versions, and ABI before
-deployment.
+Distributions based on these can usually use their parent's packages, and Arch
+derivatives can build the AUR package, but only the systems listed here are built
+and tested.
 
 CMake linkage selection
 -----------------------
@@ -58,8 +51,8 @@ For an explicit variant:
    find_package(mcp-cpp-sdk 0.2.0 EXACT CONFIG REQUIRED)
    target_link_libraries(my_application PRIVATE mcp::sdk_shared)
 
-Replace the last target with ``mcp::sdk_static`` for static linkage.  Do not
-select a variant by guessing a physical library filename.
+Replace the last target with ``mcp::sdk_static`` for static linkage.  Link these
+targets rather than a library filename.
 
 The packages also install pkg-config files: ``mcp-cpp-sdk`` (the default),
 ``mcp-cpp-sdk-shared`` and ``mcp-cpp-sdk-static``.  ``pkg-config --libs
@@ -175,8 +168,8 @@ Uninstall with:
 Arch Linux and derivatives
 --------------------------
 
-The official AUR release validation baseline is x86_64.  The AUR package base
-is ``mcp-cpp-sdk`` and produces shared and static split
+The AUR package ``mcp-cpp-sdk`` is built and tested on x86_64 and produces shared
+and static split
 packages.  Inspect the ``PKGBUILD`` and verify the source signature before
 building.  First import the exact public release key that is attached to the
 immutable GitHub Release, inspect its fingerprint, and compare it with
@@ -199,7 +192,7 @@ immutable GitHub Release, inspect its fingerprint, and compare it with
 Remove installed split packages with ``pacman -Rns mcp-cpp-sdk`` and, if
 installed, ``mcp-cpp-sdk-static``.  Manjaro and other Arch derivatives can
 build the AUR package when they remain compatible with the targeted Arch
-dependencies, but they are not independent release-build baselines.
+dependencies, but they are not tested separately.
 
 Homebrew
 --------

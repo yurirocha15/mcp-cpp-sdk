@@ -1,6 +1,6 @@
 # mcp-cpp-sdk
 
-A modern C++20 implementation of the Model Context Protocol (MCP), enabling seamless integration between LLM applications and external tools, resources, and prompts.
+A C++20 SDK for the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). Build servers that give LLM applications tools, resources and prompts, and clients that use them.
 
 [![Release](https://img.shields.io/github/v/release/yurirocha15/mcp-cpp-sdk)](https://github.com/yurirocha15/mcp-cpp-sdk/releases/latest)
 [![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://www.yurirocha.com/mcp-cpp-sdk/)
@@ -11,20 +11,11 @@ A modern C++20 implementation of the Model Context Protocol (MCP), enabling seam
 
 ## Why mcp-cpp-sdk?
 
-- **Modern C++20**: Coroutine-based asynchronous I/O with Boost.Asio.
-- **Shared or Static**: The same public API is available through explicit CMake targets for either linkage model.
-- **Typed Protocol Models**: Strongly typed models for the supported MCP surface, with `nlohmann/json` interoperability.
-- **Flexible Transports**: Native support for Stdio, WebSocket, and Streamable HTTP.
-- **Measured Interoperability**: Official client and server conformance suites run in CI against a pinned `2025-11-25` regression baseline, with unsupported scenarios kept visible. A green baseline means no drift, not that an SDK tier has been achieved.
-
-### How this implementation differs
-
-The SDK combines a compiled client/server/transport runtime with header-based
-protocol models and typed handler templates. Ordinary tool return values are
-normalized into protocol-valid structured results, while complete raw
-`CallToolResult` values use an explicit API. Interoperability and performance
-claims are kept reproducible through the pinned conformance baseline and the
-shared-workload benchmark adapters in [`benchmark/`](benchmark/).
+- **C++20 coroutines**: Asynchronous I/O on Boost.Asio, written with `co_await`.
+- **Typed protocol models**: MCP messages are C++ types that convert to and from `nlohmann/json`.
+- **Three transports**: Stdio, WebSocket and Streamable HTTP.
+- **Tested against the spec**: The official MCP conformance suites run in CI against protocol `2025-11-25`, and [known gaps](conformance/expected-failures.yml) are listed. This is not an official SDK tier rating.
+- **Fast**: Throughput and latency on par with the official Rust SDK in our [benchmark](benchmark/RESULTS.md).
 
 ## Quick Start
 
@@ -42,9 +33,8 @@ shared-workload benchmark adapters in [`benchmark/`](benchmark/).
 The [installation guide](https://www.yurirocha.com/mcp-cpp-sdk/installation.html)
 has the full commands and the CMake and package names.
 
-Versions `0.x.y` are stable releases unless suffixed with `-rc.N`, but each
-pre-1.0 release has a distinct binary identity. Rebuild or relink consumers
-when changing 0.x versions.
+Before 1.0, releases are not binary compatible with each other, so rebuild your
+project when you change versions.
 
 To build the SDK as part of your project with CMake's `FetchContent`:
 
@@ -141,22 +131,23 @@ server.add_tool<nlohmann::json, nlohmann::json>("long_task", "A task with progre
     });
 ```
 
+## Documentation
+
+Guides, API reference and integration details are on the **[documentation site](https://www.yurirocha.com/mcp-cpp-sdk)**.
+
+- **[Getting Started](https://www.yurirocha.com/mcp-cpp-sdk/getting-started.html)**: Detailed installation and build instructions.
+- **[Core Concepts](https://www.yurirocha.com/mcp-cpp-sdk/concepts/index.html)**: Deep dive into Tools, Resources, and Transports.
+- **[Client App Integrations](https://www.yurirocha.com/mcp-cpp-sdk/integrations/client-apps.html)**: How to connect your server to Claude, IDEs, and the MCP Inspector.
+- **[Examples](https://www.yurirocha.com/mcp-cpp-sdk/examples.html)**: Walkthrough of included example applications.
+
 ## Compiler Notes
 
 ### GCC 12 and 13: initializer lists inside a `co_await` expression
 
 GCC 12 and GCC 13 crash with an internal compiler error when a `co_await`
-expression contains an initializer list whose elements have non-trivial
-destructors. GCC 13 is the default compiler on Ubuntu 24.04, so this is easy to
-hit on a stock toolchain. The error looks like this with GCC 13.3 (GCC 12.4
-reports line 10556), and names the closing brace of the enclosing lambda rather
-than the offending argument:
-
-```
-internal compiler error: in build_special_member_call, at cp/call.cc:11096
-```
-
-Build the container into a named variable first:
+expression contains an initializer list with non-trivial elements. GCC 13 is the
+default compiler on Ubuntu 24.04, so this is easy to hit. Build the value into a
+named variable first:
 
 ```cpp
 // Crashes GCC 12 and GCC 13
@@ -168,30 +159,9 @@ nlohmann::json arguments{{"name", "World"}};
 auto result = co_await client.call_tool("hello", arguments);
 ```
 
-The trigger is the initializer list, not the type, so it is not specific to
-`nlohmann::json`: `std::map<std::string, std::string>{{"a", "b"}}` and
-`std::vector<std::string>{"a", "b"}` crash the same way, while
-`std::vector<int>{1, 2, 3}` and `nlohmann::json::object()` do not. Parentheses
-do not help, because `nlohmann::json({{"a", 1}})` still forms an initializer
-list. Only hoisting the value out of the `co_await` expression avoids it.
-
-This is a compiler defect rather than an SDK one, and no change to the SDK's
-signatures avoids it: taking the argument by value instead of by reference
-still crashes.
-
-The contributing guide's [Known
-Issues](https://yurirocha15.github.io/mcp-cpp-sdk/contributing.html#known-issues)
-section carries the full case list, alongside the separate GCC 11 coroutine bug
-this codebase also works around.
-
-## Documentation
-
-For full guides, API reference, and integration details, visit our **[Documentation Site](https://yurirocha15.github.io/mcp-cpp-sdk)**.
-
-- **[Getting Started](https://yurirocha15.github.io/mcp-cpp-sdk/getting-started.html)**: Detailed installation and build instructions.
-- **[Core Concepts](https://yurirocha15.github.io/mcp-cpp-sdk/concepts/index.html)**: Deep dive into Tools, Resources, and Transports.
-- **[Client App Integrations](https://yurirocha15.github.io/mcp-cpp-sdk/integrations/client-apps.html)**: How to connect your server to Claude, IDEs, and the MCP Inspector.
-- **[Examples](https://yurirocha15.github.io/mcp-cpp-sdk/examples.html)**: Walkthrough of included example applications.
+This is a compiler bug, not an SDK one. The contributing guide's
+[Known Issues](https://www.yurirocha.com/mcp-cpp-sdk/contributing.html#known-issues)
+section has the full list of affected code and a separate GCC 11 coroutine bug.
 
 ---
 
@@ -235,10 +205,8 @@ python scripts/build.py --examples --test
 
 Please see the [CONTRIBUTING guide](docs/contributing.rst) for the full process.
 
-Project maintenance commitments and release gates are documented in the
-[maintenance policy](MAINTENANCE.md), [dependency policy](DEPENDENCY_POLICY.md),
-[versioning policy](VERSIONING.md), [Tier roadmap](ROADMAP.md), and
-[security policy](SECURITY.md).
+Project policies: [maintenance](MAINTENANCE.md), [dependencies](DEPENDENCY_POLICY.md),
+[versioning](VERSIONING.md), [security](SECURITY.md) and the [roadmap](ROADMAP.md).
 
 ## License
 
