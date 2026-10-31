@@ -40,11 +40,20 @@ NO_JOB_PATTERNS = (
     "conformance/*",
     "docs/*",
 )
-LIBRARY = ("CMakeLists.txt", "VERSION", "cmake/*", "conanfile.py", "include/*", "src/*")
+LIBRARY = (
+    "CMakeLists.txt",
+    "VERSION",
+    "cmake/*",
+    "conanfile.py",
+    "include/*",
+    "src/*",
+    "third_party/*",
+)
 TESTS = (
     "test/auth/*",
     "test/client/*",
     "test/core/*",
+    "test/data/*",
     "test/e2e/*",
     "test/server/*",
     "test/support/*",
@@ -75,6 +84,7 @@ PACKAGE_CORE = (
     "scripts/package_build.py",
     "scripts/run_release_tool.py",
     "test_package/*",
+    "third_party/*",
 )
 PACKAGE_VALIDATION = ("release/consumer_validation.py", "release/package_validation.py")
 # The native builder and what it imports. Windows reaches it through collect_build_identity.py.
@@ -112,7 +122,9 @@ JOB_INPUTS = {
         "packaging/*",
         "release/*",
         "scripts/*",
+        "test/data/*",
         "test/release/*",
+        "third_party/*",
     ),
     "benchmark": ("benchmark/*",),
     "powershell": ("scripts/release/*.ps1",),
