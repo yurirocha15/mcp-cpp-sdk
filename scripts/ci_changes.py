@@ -3,8 +3,9 @@
 Decide which jobs in ci.yml a change needs.
 
 JOB_INPUTS lists the paths each job reads, so a job runs only when something it
-reads changed. README.md is the one exception: the code jobs compile its C++
-blocks, so a README change counts for them when those blocks differ.
+reads changed. The exception is the C++ that the code jobs compile from the
+documentation: a change to README.md counts for them when its C++ blocks differ,
+and a change to an rst file when its complete programs differ.
 
 Packaging jobs take most of a run's runners, and runner concurrency is shared
 across the account, so a pull request runs them only when it changes how a
@@ -22,6 +23,8 @@ import fnmatch
 import re
 import subprocess
 import sys
+
+from check_doc_snippets import snippets_in_text
 
 # ci.yml defines every job, so a change to it needs them all.
 CI_WORKFLOW = ".github/workflows/ci.yml"
@@ -102,6 +105,7 @@ JOB_INPUTS = {
     "code": LIBRARY + TESTS + (
         "examples/*",
         "scripts/build.py",
+        "scripts/check_doc_snippets.py",
         "scripts/check_json_matrix.py",
         "scripts/check_readme_snippets.py",
         "scripts/check_stdio_streams.py",
@@ -110,6 +114,7 @@ JOB_INPUTS = {
         "scripts/json_census.py",
         "scripts/json_census_dispositions.json",
         "scripts/run_examples.py",
+        "scripts/test_check_doc_snippets.py",
         "scripts/test_check_json_matrix.py",
     ),
     "conan": LIBRARY + ("LICENSE", "scripts/init.py", "test_package/*"),
@@ -184,6 +189,15 @@ def readme_cpp_blocks(revision):
     return CPP_FENCE_RE.findall(text)
 
 
+def doc_programs(revision, path):
+    """Return the programs CI compiles from an rst file; a file absent at revision has none."""
+    try:
+        text = git("show", f"{revision}:{path}")
+    except subprocess.CalledProcessError:
+        return []
+    return [body for _, body in snippets_in_text(text) if "int main(" in body]
+
+
 def changed_files(base, head):
     """Return the changed paths, or an empty list when the change cannot be determined."""
     if not base or base == ZERO_SHA:
@@ -211,6 +225,9 @@ def needed_jobs(event, base, head):
         return set(JOB_INPUTS)
     jobs = set().union(*(jobs_reading(path, event) for path in changed))
     if "README.md" in changed and readme_cpp_blocks(base) != readme_cpp_blocks(head):
+        jobs.add("code")
+    if any(doc_programs(base, path) != doc_programs(head, path)
+           for path in changed if path.endswith(".rst")):
         jobs.add("code")
     if jobs & PACKAGE_JOBS:
         jobs.add("package_core")

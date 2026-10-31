@@ -22,6 +22,16 @@ A server-side handler can initiate elicitation using the :doc:`context` object's
 
 The ``elicit()`` method takes an ``ElicitRequestParams`` object and returns a ``Task<ElicitResult>``.
 
+How the question reaches the client depends on the protocol revision of the
+session. In a session of 2025-11-25 or earlier the server sends an
+``elicitation/create`` request. In a 2026-07-28 session the server cannot send
+requests, so for a ``tools/call``, ``prompts/get`` or ``resources/read`` it
+answers with an ``input_required`` result that holds the question, and the
+client retries the request with the answer. Your handler and your client code
+are the same in both cases. See :doc:`protocol`. If the client did not declare
+the capability the question needs in the request, the server answers with
+``g_MISSING_REQUIRED_CLIENT_CAPABILITY``.
+
 Form-based Elicitation
 ----------------------
 
@@ -57,6 +67,10 @@ URL-based elicitation (``ElicitRequestURLParams``) is used when the user needs t
    url_params.elicitationId = "login-flow-456";
 
    auto result = co_await ctx.elicit(url_params);
+
+``elicitationId`` is optional. For a session of an earlier revision,
+``ctx.elicit()`` generates one when you leave it unset. A 2026-07-28 question
+carries none.
 
 Client-side Handling
 --------------------
@@ -96,7 +110,7 @@ Example Walkthrough
 The complete elicitation flow involves:
 
 1. **Server** calls ``ctx.elicit()`` within a tool handler.
-2. **SDK** sends an ``elicitation/create`` request to the client.
+2. **SDK** sends an ``elicitation/create`` request to the client (in a 2026-07-28 session, it answers the client's request with an ``input_required`` result instead).
 3. **Client** receives the request via its ``on_elicitation()`` handler.
 4. **Client** presents a UI to the user and awaits their response.
 5. **Client** returns an ``ElicitResult`` to the server.

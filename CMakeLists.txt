@@ -718,6 +718,14 @@ if(BUILD_EXAMPLES)
   target_link_libraries(example-feature-http-server-convenience
                         PRIVATE mcp-cpp-sdk)
 
+  add_executable(example-feature-modern-client
+                 examples/features/modern_client.cpp)
+  target_link_libraries(example-feature-modern-client PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-legacy-protocols
+                 examples/features/legacy_protocols.cpp)
+  target_link_libraries(example-feature-legacy-protocols PRIVATE mcp-cpp-sdk)
+
   # Benchmark targets
   add_executable(example-benchmark-stdio examples/benchmark/benchmark_stdio.cpp)
   target_link_libraries(example-benchmark-stdio PRIVATE mcp-cpp-sdk)

@@ -54,11 +54,74 @@ A typical loopback test follows these steps:
 6.  Spawn a separate coroutine to execute client requests, using `co_await` to wait for responses, and then use your testing framework (like GoogleTest) to verify the results.
 7.  Run the `io_context` until all work is complete or a timeout occurs.
 
-Here is a simplified example of this pattern from our integration test suite:
+Here is a simplified example of this pattern. A default ``Client`` and a default
+``Server`` speak protocol revision 2026-07-28 with each other, so the test
+needs no handshake of its own: ``connect()`` sends one ``server/discover``
+request.
 
-.. literalinclude:: ../../test/e2e/e2e_integration_test.cpp
-   :language: cpp
-   :lines: 42-75
+.. code-block:: cpp
+
+   boost::asio::io_context io_ctx;
+   auto [client_transport, server_transport] =
+       mcp::create_memory_transport_pair(io_ctx.get_executor());
+
+   mcp::Server server(mcp::Implementation{"test-server", "1.0"}, mcp::ServerCapabilities{});
+   mcp::Client client(client_transport, io_ctx.get_executor());
+
+   // Run the server loop in the background.
+   boost::asio::co_spawn(
+       io_ctx,
+       [&]() -> mcp::Task<void> {
+           try {
+               co_await server.run(server_transport, io_ctx.get_executor());
+           } catch (...) {
+           }
+       },
+       boost::asio::detached);
+
+   boost::asio::co_spawn(
+       io_ctx,
+       [&]() -> mcp::Task<void> {
+           {
+               auto connected = co_await client.connect("test-client", "1.0");
+               EXPECT_EQ(connected.era, mcp::ProtocolEra::eModern);
+               EXPECT_EQ(connected.protocolVersion, "2026-07-28");
+           }
+
+           client.close();
+           server_transport->close();
+       },
+       boost::asio::detached);
+
+   io_ctx.run();
+
+Testing Both Protocol Eras
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A server serves 2026-07-28 requests and the older revisions at once, and a
+client picks one when it connects, so a server test often runs once per era.
+Set ``ClientOptions::protocol`` to choose:
+
+.. code-block:: cpp
+
+   mcp::ClientOptions options;
+   options.protocol = mcp::ClientProtocol::Version("2026-07-28");  // or Legacy(), Auto()
+   mcp::Client client(client_transport, io_ctx.get_executor(), options);
+
+``ConnectResult::era`` and ``ConnectResult::protocolVersion`` tell a test which
+era a session ended up in. ``ClientOptions::on_era_decision`` reports why. To
+test a server that must refuse older clients, give it a ``ServerProtocolPolicy``
+with ``serve_legacy = false`` through ``Server::set_protocol_policy()`` before it
+runs; to test how it treats a client of an older revision, pin the client with
+``ClientProtocol::Legacy()``. Some calls exist in only one era: ``Client::ping()``
+and ``resources/subscribe`` only in legacy sessions, ``Client::listen()`` only in
+2026-07-28 sessions.
+
+Without a transport, ``Server::dispatch_request_direct()`` takes a JSON-RPC request
+and returns the serialized response. A request that carries the
+``io.modelcontextprotocol/protocolVersion`` and
+``io.modelcontextprotocol/clientCapabilities`` keys in ``params._meta`` is served
+as a 2026-07-28 request.
 
 Writing Scripted Tests
 ----------------------
@@ -74,9 +137,9 @@ When writing scripted tests, consider the following:
 .. code-block:: cpp
 
     boost::asio::co_spawn(io_ctx, [&]() -> mcp::Task<void> {
-        // 1. Connect and verify version handshake
-        auto init_res = co_await client->connect(client_info, client_caps);
-        EXPECT_EQ(init_res.serverInfo->version, "1.0");
+        // 1. Connect and verify what the server declared
+        auto connected = co_await client->connect(client_info, client_caps);
+        EXPECT_EQ(connected.serverInfo->version, "1.0");
 
         // 2. Call a tool and verify the content.
         // Build the arguments into a named variable: an initializer list inside

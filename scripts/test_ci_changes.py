@@ -38,6 +38,19 @@ Prose.
 int main() { return 0; }
 ```
 """
+GUIDE = """Guide
+=====
+
+Prose.
+
+.. code-block:: cpp
+
+   int main() { return 0; }
+
+.. code-block:: cpp
+
+   client.ping();
+"""
 
 
 class ClassifierTests(unittest.TestCase):
@@ -52,6 +65,7 @@ class ClassifierTests(unittest.TestCase):
         self.git("config", "commit.gpgsign", "false")
         self.write("README.md", README)
         self.write("docs/index.rst", "Index\n")
+        self.write("docs/guide.rst", GUIDE)
         self.write("src/main.cpp", "int x;\n")
         self.base = self.commit()
 
@@ -107,6 +121,23 @@ class ClassifierTests(unittest.TestCase):
         self.write("README.md", README.replace("return 0;", "return 1;"))
         self.assertEqual(self.jobs("pull_request", self.commit()), {"code"})
 
+    def test_doc_prose_and_fragments_run_nothing(self) -> None:
+        self.write("docs/guide.rst",
+                   GUIDE.replace("Prose.", "Better prose.").replace("ping", "close"))
+        self.assertEqual(self.jobs("pull_request", self.commit()), set())
+
+    def test_doc_program_runs_code_jobs(self) -> None:
+        self.write("docs/guide.rst", GUIDE.replace("return 0;", "return 1;"))
+        self.assertEqual(self.jobs("pull_request", self.commit()), {"code"})
+
+    def test_new_doc_program_runs_code_jobs(self) -> None:
+        self.write("docs/other.rst", GUIDE)
+        self.assertEqual(self.jobs("pull_request", self.commit()), {"code"})
+
+    def test_removed_doc_page_runs_nothing(self) -> None:
+        self.git("rm", "-q", "docs/index.rst")
+        self.assertEqual(self.jobs("pull_request", self.commit()), set())
+
     def test_pull_request_runs_only_the_jobs_reading_the_path(self) -> None:
         expected = {
             "src/main.cpp": LIBRARY_JOBS,
@@ -116,6 +147,7 @@ class ClassifierTests(unittest.TestCase):
             "test/pipe_stream.hpp": {"code"},
             "examples/features/pagination.cpp": {"code"},
             "scripts/run_examples.py": {"code", "release"},
+            "scripts/check_doc_snippets.py": {"code", "release"},
             "test_package/conanfile.py": {"conan"} | PACKAGES,
             "LICENSE": {"conan"},
             "benchmark/run.sh": {"benchmark"},

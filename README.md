@@ -14,6 +14,7 @@ A C++20 SDK for the [Model Context Protocol](https://modelcontextprotocol.io) (M
 - **C++20 coroutines**: Asynchronous I/O on Boost.Asio, written with `co_await`.
 - **Typed protocol models**: MCP messages are C++ types that convert to and from `nlohmann/json`.
 - **Three transports**: Stdio, WebSocket and Streamable HTTP.
+- **Protocol revisions**: A `Server` serves revision `2026-07-28` alongside `2025-11-25` and earlier on the same transport. A `Client` detects which one the server speaks when it connects.
 - **Tested against the spec**: The official MCP conformance suites run in CI against protocol `2025-11-25`, and [known gaps](conformance/expected-failures.yml) are listed. This is not an official SDK tier rating.
 - **Fast**: Throughput and latency on par with the official Rust SDK in our [benchmark](benchmark/RESULTS.md).
 
@@ -94,7 +95,8 @@ int main() {
     mcp::Client client(transport, io.get_executor());
 
     boost::asio::co_spawn(io, [&]() -> mcp::Task<void> {
-        co_await client.connect("my-client", "1.0.0");
+        mcp::ConnectResult connected = co_await client.connect("my-client", "1.0.0");
+        std::cerr << "Connected using protocol " << connected.protocolVersion << '\n';
         nlohmann::json arguments{{"name", "World"}};
         auto result = co_await client.call_tool("hello", arguments);
         std::cerr << nlohmann::json(result).dump(2) << '\n';
@@ -105,8 +107,16 @@ int main() {
 }
 ```
 
-Note the named `arguments` variable. See [Compiler
-Notes](#compiler-notes) for why it is not built inline.
+`Client` defaults to `mcp::ClientProtocol::Auto()`: it sends `server/discover`
+first and falls back to `initialize` when the server does not answer as a
+2026-07-28 server. `connect()` returns a `mcp::ConnectResult` holding the
+session's `era`, the `protocolVersion` in use, the server's `capabilities`, and,
+when the server sent them, `serverInfo`, `instructions` and `supportedVersions`.
+To skip detection, set `ClientOptions::protocol` to
+`mcp::ClientProtocol::Legacy()` or `mcp::ClientProtocol::Version("2026-07-28")`.
+
+Note the named `arguments` variable. See [Compiler Notes](#compiler-notes) for
+why it is not built inline.
 
 ## Usage Highlights
 
@@ -159,9 +169,28 @@ nlohmann::json arguments{{"name", "World"}};
 auto result = co_await client.call_tool("hello", arguments);
 ```
 
-This is a compiler bug, not an SDK one. The contributing guide's
+This is a compiler bug, not an SDK one.
+
+### GCC 11: temporaries inside a `co_await`
+
+GCC releases before 13 can destroy a temporary created inside a `co_await`
+expression twice
+([GCC bug 101367](https://gcc.gnu.org/bugzilla/show_bug.cgi?id=101367)). With
+GCC 11 a braced aggregate argument such as `mcp::Implementation{...}` crashes
+the program. Build such a value as a named variable before the `co_await`:
+
+```cpp
+// Crashes with GCC 11
+co_await client.connect(mcp::Implementation{"my-client", "1.0.0"}, capabilities);
+
+// Works
+mcp::Implementation client_info{"my-client", "1.0.0"};
+co_await client.connect(client_info, capabilities);
+```
+
+The contributing guide's
 [Known Issues](https://www.yurirocha.com/mcp-cpp-sdk/contributing.html#known-issues)
-section has the full list of affected code and a separate GCC 11 coroutine bug.
+section has the full list of affected code for both compiler bugs.
 
 ---
 
