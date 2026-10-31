@@ -124,7 +124,7 @@ jobs:
       with:
         key: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-${{ matrix.linkage }}-ccache-${{ github.ref }}
         save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        restore-keys: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-${{ matrix.linkage }}-ccache-
+        restore-keys: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-${{ matrix.linkage }}-ccache
         max-size: 500M
 
     # MCP_REQUIRE_TWIN_LOOPBACK turns the OAuthSetterPairAtomicity skips into failures. Those tests
@@ -213,8 +213,8 @@ jobs:
       with:
         key: ubuntu-24.04-sanitize-ccache-${{ github.ref }}
         save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        restore-keys: ubuntu-24.04-sanitize-ccache-
-        max-size: 1G
+        restore-keys: ubuntu-24.04-sanitize-ccache
+        max-size: 1500M
 
     - name: Build and Test with Sanitizers (GCC)
       env:
@@ -277,7 +277,7 @@ jobs:
       with:
         key: ubuntu-24.04-tsan-ccache-${{ github.ref }}
         save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        restore-keys: ubuntu-24.04-tsan-ccache-
+        restore-keys: ubuntu-24.04-tsan-ccache
         max-size: 1G
 
     - name: Build and Test with ThreadSanitizer (GCC)
@@ -348,8 +348,8 @@ jobs:
       with:
         key: ubuntu-24.04-msan-ccache-${{ github.ref }}
         save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        restore-keys: ubuntu-24.04-msan-ccache-
-        max-size: 500M
+        restore-keys: ubuntu-24.04-msan-ccache
+        max-size: 1G
 
     - name: Build and Test with MemorySanitizer
       env:
