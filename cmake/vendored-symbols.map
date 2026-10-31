@@ -1,0 +1,10 @@
+/* Linker version script for the shared library: every symbol whose name
+   mentions the vendored jsoncons namespace is local. Hidden visibility
+   already covers jsoncons itself, but GCC 11 exports standard library
+   templates instantiated over jsoncons enumerations, such as
+   std::vector<mcp_detail_jsoncons::parse_state>, whatever their visibility.
+   Symbols not listed here keep their visibility. */
+{
+  local:
+    *mcp_detail_jsoncons*;
+};

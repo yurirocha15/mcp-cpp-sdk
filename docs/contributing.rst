@@ -127,7 +127,7 @@ Example test structure:
    TEST(ServerTest, AddToolRegistersCorrectly) {
        mcp::Server server(/* ... */);
 
-       server.add_tool("test", "A test tool", {},
+       server.add_tool("test", "A test tool", {{"type", "object"}},
            [](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
                co_return nlohmann::json{{"result", "ok"}};
            });

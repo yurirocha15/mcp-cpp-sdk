@@ -6,12 +6,62 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [Unreleased]
 
+### Added
+
+- `CompiledSchema` (`mcp/protocol/schema.hpp`): compiles a JSON Schema and
+  validates values against it, reporting violations with instance paths.
+  A schema without `$schema` is read as 2020-12; 2019-09, draft-07, draft-06
+  and draft-04 may be named, and any other `$schema` is refused with
+  `SchemaError`. The schema itself is checked against its dialect's
+  metaschema. `SchemaOptions` bounds the nesting of a validated value
+  (64 levels by default), the number of violations reported and the pattern
+  matching steps of one validation. JSON cannot
+  represent NaN or Infinity: a schema holding one is refused, and a value
+  holding one is checked as the `null` it would be sent as.
+  References resolve only within the document and to the supported
+  metaschemas; any other `$ref` is refused with
+  `SchemaError::Category::eUnresolvedRef`, and nothing is fetched. Evaluation
+  is bounded in path length, work and pattern matching steps (the latter in
+  proportion to the text in the value): a validation that exceeds them reports
+  the value as invalid, and a schema that exceeds them for any value, such as
+  `{"$ref": "#"}`, is refused when compiled.
+- `examples/features/schema_validation.cpp`, which shows each tool schema
+  check on the server and the client and exits with a failure status if one
+  does not hold.
+
 ### Changed
 
 - `BUILD_TESTING`, `BUILD_EXAMPLES` and `BUILD_DOCS` default to `ON` only when
   the SDK is the top-level CMake project. Added with FetchContent or
   `add_subdirectory`, the SDK no longer builds its tests and examples or needs
   GTest; setting an option still overrides the default.
+- `tools/call` naming an unknown tool and `prompts/get` naming an unknown
+  prompt are answered with `g_INVALID_PARAMS` (`-32602`), as the tools and
+  prompts specifications list, instead of `g_METHOD_NOT_FOUND` (`-32601`).
+- `Server::add_tool()` and `add_raw_tool()` compile the tool's `inputSchema`
+  and `outputSchema` and throw `SchemaError` when either is not a JSON Schema
+  object that `CompiledSchema` accepts, or when the input schema does not
+  declare `"type": "object"`, which the 2025-11-25 and 2026-07-28 schemas
+  require. Previously any JSON value was advertised as the schema.
+- `tools/call` arguments are validated against the tool's input schema, as
+  the 2025-11-25 and 2026-07-28 revisions require of servers. Arguments that
+  do not conform are answered with an `isError` result listing the
+  violations, and the handler does not run; middleware still sees the call.
+  The check also applies to `Server::invoke_tool()`. `Server::set_tool_validation()` with
+  `ToolValidationOptions::validate_arguments = false` turns it off, and
+  `Server::tool_validation_stats()` counts refused calls.
+- The `structuredContent` of a successful tool result is checked against the
+  tool's `outputSchema`, which the 2025-11-25 and 2026-07-28 revisions require
+  it to conform to. A result that does not conform is answered with
+  `g_INTERNAL_ERROR` naming the violations
+  (`ToolValidationOptions::validate_structured_content` turns the check off).
+- `Client::list_tools()` compiles each listed tool's schemas and leaves out a
+  tool whose schema cannot be used (invalid, an unsupported dialect, or a
+  `$ref` outside the document), reporting it through
+  `ClientOptions::on_tool_schema_error`. `Client::call_tool()` checks the
+  `structuredContent` of a successful result against the tool's listed
+  `outputSchema` and throws `StructuredContentError` when it does not conform.
+  `ClientOptions::validate_tool_schemas = false` turns both off.
 
 ### Fixed
 

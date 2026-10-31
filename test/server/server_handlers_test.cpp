@@ -1076,6 +1076,30 @@ TEST_F(ServerHandlersTest, DuplicateNamedRegistrationsAreRejected) {
                  std::invalid_argument);
 }
 
+// The prompts spec lists "Invalid prompt name" under -32602 (Invalid params): the method exists,
+// the name it was given does not.
+TEST_F(ServerHandlersTest, UnknownPromptReturnsInvalidParams) {
+    mcp::ServerCapabilities caps;
+    caps.prompts = mcp::ServerCapabilities::PromptsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    nlohmann::json get_req;
+    get_req["jsonrpc"] = "2.0";
+    get_req["id"] = "2";
+    get_req["method"] = "prompts/get";
+    get_req["params"] = nlohmann::json{{"name", "nonexistent"}};
+
+    auto responses = run_request(setup, std::move(get_req));
+
+    ASSERT_EQ(responses.size(), 2);
+    auto& error_response = responses[1];
+    EXPECT_EQ(error_response["id"], "2");
+    ASSERT_TRUE(error_response.contains("error")) << "response: " << error_response.dump();
+    EXPECT_EQ(error_response["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_NE(error_response["error"]["message"].get<std::string>().find("nonexistent"),
+              std::string::npos);
+}
+
 TEST_F(ServerHandlersTest, PromptsGetReturnsPromptMessages) {
     mcp::ServerCapabilities caps;
     mcp::ServerCapabilities::PromptsCapability prompts_cap;
@@ -1244,7 +1268,7 @@ TEST_F(ServerHandlersTest, UnknownToolReturnsError) {
     auto& error_response = responses[1];
     EXPECT_EQ(error_response["id"], "2");
     ASSERT_TRUE(error_response.contains("error"));
-    EXPECT_EQ(error_response["error"]["code"], mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(error_response["error"]["code"], mcp::g_INVALID_PARAMS);
     EXPECT_TRUE(error_response["error"]["message"].get<std::string>().find("nonexistent") !=
                 std::string::npos);
 }
@@ -1866,10 +1890,10 @@ TEST_F(ServerHandlersTest, UnknownToolDiagnosticFlattensClientChosenName) {
     // rejected earlier by params validation or routed to some other diagnostic that flattens its
     // own message; either would make the assertions below pass for a reason unrelated to the site
     // under test. The code pins WHICH of the two "Unknown tool" sites this is: the RPC path refuses
-    // in handle_tools_call_wire with g_METHOD_NOT_FOUND, whereas the invoke_tool path throws and
+    // in handle_tools_call_wire with g_INVALID_PARAMS, whereas the invoke_tool path throws and
     // surfaces as g_INTERNAL_ERROR through the dispatcher. Dump the message on failure so a vacuous
     // pass cannot hide.
-    ASSERT_EQ(error_response["error"]["code"], mcp::g_METHOD_NOT_FOUND)
+    ASSERT_EQ(error_response["error"]["code"], mcp::g_INVALID_PARAMS)
         << "response: " << error_response.dump();
     ASSERT_EQ(message.rfind("Unknown tool: ", 0), 0U) << "actual message: " << message;
     ASSERT_NE(message.find("zqtripwire"), std::string::npos) << "actual message: " << message;
@@ -1901,7 +1925,7 @@ TEST_F(ServerHandlersTest, UnknownToolDiagnosticBoundsClientChosenName) {
     ASSERT_TRUE(error_response.contains("error")) << "response: " << error_response.dump();
     const auto message = error_response["error"]["message"].get<std::string>();
 
-    ASSERT_EQ(error_response["error"]["code"], mcp::g_METHOD_NOT_FOUND)
+    ASSERT_EQ(error_response["error"]["code"], mcp::g_INVALID_PARAMS)
         << "actual message prefix: " << message.substr(0, 64);
     ASSERT_EQ(message.rfind("Unknown tool: ", 0), 0U)
         << "actual message prefix: " << message.substr(0, 64);
