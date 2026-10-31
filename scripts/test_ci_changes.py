@@ -113,6 +113,7 @@ class ClassifierTests(unittest.TestCase):
             "include/mcp/sdk.hpp": LIBRARY_JOBS,
             "test/core/protocol_test.cpp": {"code"},
             "test/data/json-schema/suite.json": {"code", "release"},
+            "test/pipe_stream.hpp": {"code"},
             "examples/features/pagination.cpp": {"code"},
             "scripts/run_examples.py": {"code", "release"},
             "test_package/conanfile.py": {"conan"} | PACKAGES,

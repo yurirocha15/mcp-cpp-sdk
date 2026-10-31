@@ -9,13 +9,17 @@ on:
     paths:
       - '.github/workflows/**'
       - 'conformance/run.sh'
+      - 'include/**'
       - 'scripts/**'
+      - 'src/**'
   pull_request:
     branches: ['**']
     paths:
       - '.github/workflows/**'
       - 'conformance/run.sh'
+      - 'include/**'
       - 'scripts/**'
+      - 'src/**'
 
 permissions:
   contents: read
