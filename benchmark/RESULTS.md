@@ -15,6 +15,12 @@ target container had the same 2-CPU and 2-GiB limits. Every row used the shared
 and TCP_NODELAY builds alike, also had to pass the `adapter-exact-v1` adapter
 checks in preflight and postflight.
 
+Every target, k6, Redis, and the API service ran on one machine: an AMD Ryzen 9
+9900X (12 cores, 24 threads) with 30.4 GiB of memory, on Ubuntu 24.04 with Linux
+7.0.0 and Docker 29.6.2, using the `powersave` CPU governor. Absolute numbers
+will differ on other hardware and between runs. Sample CV shows how much the
+three rounds of this run varied.
+
 CPU follows Docker's convention: 100% is one fully used core. Resource values
 are from the round selected for that target's median throughput. Target
 saturation is reported but not gated. Headroom gates apply to Redis, the API
@@ -120,10 +126,4 @@ The run completed and passed:
   input checks throughout the run.
 
 The run measured commit `e30c35c82524473f1fd56f7423eeb6d349810b98` with a clean
-working tree. Its deterministic source tree hash covers the SDK sources and the
-benchmark harness at that commit, including the previous version of this file,
-and is
-`06f6b83e754b658e7be619aa3a0146e71beb06165bc1cc9db38ac5b4565b4486`.
-The run's k6 and Compose inputs hash to
-`0fbba8de4ea920ef9fede8a3208246d2339216b70ffea817befc6826bbb86e48`
-and `a9d6c1e7501e67092207703482f5e065b19a1f57ff302be04618878dd590c7b3`.
+working tree.
