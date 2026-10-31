@@ -153,6 +153,12 @@ PREFLIGHT_CONDITIONS = {
     ),
 }
 
+# A resume skips the fresh-anchor jobs, so the default success() check would skip publication.
+PUBLICATION_CONDITION = (
+    "${{ !cancelled() && needs.contract.outputs.mode == 'publish' && "
+    "needs.candidate.result == 'success' && needs.github-anchor.result == 'success' }}"
+)
+
 PUBLISHER_CONDITIONS = {
     "publish-cloudsmith": (
         "${{ inputs.mode == 'publish' && "
@@ -422,8 +428,12 @@ def check_job_graph(
         "candidate workflow call",
     )
     publication_call = "\n".join(blocks["publication"])
-    if "github-anchor" not in sequence(blocks["publication"], "needs"):
+    if not {"candidate", "github-anchor"} <= set(sequence(blocks["publication"], "needs")):
         raise PolicyError("publication workflow call bypasses the immutable anchor")
+    if expression(blocks["publication"], "if") != PUBLICATION_CONDITION:
+        raise PolicyError("publication workflow call does not admit a selected resume")
+    if "PUBLICATION_RESULT" not in "\n".join(blocks["release-summary"]):
+        raise PolicyError("release summary does not fail a publish that did not publish")
     require_fragments(
         publication_call,
         (

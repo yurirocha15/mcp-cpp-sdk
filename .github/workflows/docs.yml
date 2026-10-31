@@ -6,13 +6,40 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    paths:
+      - '.github/workflows/docs.yml'
+      - 'CMakeLists.txt'
+      - 'VERSION'
+      - 'cmake/**'
+      - 'conanfile.py'
+      - 'docs/**'
+      - 'examples/**'
+      - 'include/**'
+      - 'scripts/build.py'
+      - 'scripts/init.py'
+      - 'test/e2e/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/docs.yml'
+      - 'CMakeLists.txt'
+      - 'VERSION'
+      - 'cmake/**'
+      - 'conanfile.py'
+      - 'docs/**'
+      - 'examples/**'
+      - 'include/**'
+      - 'scripts/build.py'
+      - 'scripts/init.py'
+      - 'test/e2e/**'
 
 permissions:
   contents: read
 
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  # Deployments queue behind each other. A new push to a pull request replaces its older build.
+  group: ${{ github.event.pull_request.number && format('docs-{0}', github.event.pull_request.number) || 'pages' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-docs:
@@ -31,8 +58,9 @@ jobs:
         uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
         with:
           cmake-version: '3.25'
-      - name: Cache Conan packages
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore Conan packages
+        id: conan-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.conan2/p
           key: ubuntu-latest-conan-docs-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
@@ -44,12 +72,20 @@ jobs:
           python3 scripts/init.py --docs
       - name: Build Doxygen and Sphinx documentation
         run: python3 scripts/build.py --docs --jobs "$(nproc)"
+      - name: Save Conan packages
+        if: github.event_name != 'pull_request' && steps.conan-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.conan2/p
+          key: ${{ steps.conan-cache.outputs.cache-primary-key }}
       - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: build/docs/html
   deploy:
     needs: build-docs
+    if: github.event_name != 'pull_request'
     permissions:
       contents: read
       pages: write

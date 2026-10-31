@@ -6,10 +6,32 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths-ignore: ['docs/**', '**.md', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
+    paths:
+      - '.github/workflows/conformance.yml'
+      - 'CMakeLists.txt'
+      - 'VERSION'
+      - 'cmake/**'
+      - 'conanfile.py'
+      - 'conformance/**'
+      - 'include/**'
+      - 'scripts/build.py'
+      - 'scripts/init.py'
+      - 'src/**'
+      - '!**.md'
   pull_request:
     branches: [main]
-    paths-ignore: ['docs/**', '**.md', 'LICENSE', '.github/ISSUE_TEMPLATE/**']
+    paths:
+      - '.github/workflows/conformance.yml'
+      - 'CMakeLists.txt'
+      - 'VERSION'
+      - 'cmake/**'
+      - 'conanfile.py'
+      - 'conformance/**'
+      - 'include/**'
+      - 'scripts/build.py'
+      - 'scripts/init.py'
+      - 'src/**'
+      - '!**.md'
 
 permissions:
   contents: read

@@ -237,6 +237,46 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_publication_runs_after_skipped_fresh_anchor_jobs(self) -> None:
+        blocks = self.copied(self.blocks)
+        blocks["publication"] = [line for line in blocks["publication"] if "    if: " not in line]
+        self.assert_policy_error(
+            lambda: policy.check_job_graph(
+                blocks,
+                self.combined_text,
+                self.candidate_blocks,
+                self.publication_blocks,
+            )
+        )
+
+    def test_publication_requires_a_successful_candidate(self) -> None:
+        blocks = self.copied(self.blocks)
+        blocks["publication"] = [
+            line for line in blocks["publication"] if line != "      - candidate"
+        ]
+        self.assert_policy_error(
+            lambda: policy.check_job_graph(
+                blocks,
+                self.combined_text,
+                self.candidate_blocks,
+                self.publication_blocks,
+            )
+        )
+
+    def test_summary_fails_a_publish_that_did_not_publish(self) -> None:
+        blocks = self.copied(self.blocks)
+        blocks["release-summary"] = [
+            line for line in blocks["release-summary"] if "PUBLICATION_RESULT" not in line
+        ]
+        self.assert_policy_error(
+            lambda: policy.check_job_graph(
+                blocks,
+                self.combined_text,
+                self.candidate_blocks,
+                self.publication_blocks,
+            )
+        )
+
     def test_rejects_provider_dispatch_before_direct_publishers(self) -> None:
         def graph(publication_blocks):
             return lambda: policy.check_job_graph(

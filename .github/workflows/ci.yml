@@ -20,15 +20,21 @@ concurrency:
 jobs:
   changes:
     # Runner concurrency is shared by every repository on the account, so the matrices below cap
-    # their parallel jobs and pull requests run packaging only when it can be affected.
-    # Documentation-only changes skip the build, test and packaging jobs. Build still runs with
+    # their parallel jobs and each job runs only when a file it reads changed. Build still runs with
     # every step skipped: its checks are required on main, and a skipped matrix job reports one
     # unexpanded check name instead of the required ones.
-    name: Detect code changes
+    name: Detect changes
     runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.classify.outputs.code }}
-      packaging: ${{ steps.classify.outputs.packaging }}
+      conan: ${{ steps.classify.outputs.conan }}
+      release: ${{ steps.classify.outputs.release }}
+      benchmark: ${{ steps.classify.outputs.benchmark }}
+      powershell: ${{ steps.classify.outputs.powershell }}
+      package_core: ${{ steps.classify.outputs.package_core }}
+      native_package: ${{ steps.classify.outputs.native_package }}
+      homebrew_package: ${{ steps.classify.outputs.homebrew_package }}
+      windows_package: ${{ steps.classify.outputs.windows_package }}
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -90,16 +96,6 @@ jobs:
         mkdir -p C:\.c
         echo "CONAN_HOME=C:\.c" >> "$GITHUB_ENV"
       shell: bash
-
-    - name: Parse release PowerShell
-      if: needs.changes.outputs.code == 'true' && (runner.os == 'Windows')
-      shell: pwsh
-      run: ./scripts/release/check_powershell_syntax.ps1
-
-    - name: Test deterministic release ZIP
-      if: needs.changes.outputs.code == 'true' && (runner.os == 'Windows')
-      shell: pwsh
-      run: ./scripts/release/test_deterministic_zip.ps1
 
     # Pull requests restore caches and never save them. A pull request cannot read another
     # pull request's caches, and their copies pushed main's entries out of the repository's
@@ -378,7 +374,7 @@ jobs:
   release-safety:
     name: Release safety contracts
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.release == 'true'
     runs-on: ubuntu-24.04
 
     steps:
@@ -412,10 +408,30 @@ jobs:
     - name: Lint all GitHub Actions workflows
       run: scripts/release/lint_workflows.sh
 
+  release-powershell:
+    name: Release PowerShell
+    needs: changes
+    if: needs.changes.outputs.powershell == 'true'
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Parse release PowerShell
+      run: ./scripts/release/check_powershell_syntax.ps1
+
+    - name: Test deterministic release ZIP
+      run: ./scripts/release/test_deterministic_zip.ps1
+
   benchmark-tooling:
     name: Benchmark tooling tests
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.benchmark == 'true'
     runs-on: ubuntu-24.04
 
     steps:
@@ -434,7 +450,7 @@ jobs:
   conan-package:
     name: Conan package (shared=${{ matrix.shared }})
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.conan == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -491,7 +507,7 @@ jobs:
     # packaging flags, in the locked release builder images, and test what they install.
     name: Native package source
     needs: changes
-    if: needs.changes.outputs.packaging == 'true'
+    if: needs.changes.outputs.package_core == 'true'
     runs-on: ubuntu-24.04
     outputs:
       routes: ${{ steps.routes.outputs.routes }}
@@ -518,7 +534,8 @@ jobs:
 
   package:
     name: Native package (${{ matrix.id }})
-    needs: package-core
+    needs: [changes, package-core]
+    if: needs.changes.outputs.native_package == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     strategy:
@@ -547,7 +564,8 @@ jobs:
     # Audits, builds, tests and consumes the release formula on the release's four Homebrew
     # runners, with the script and timeout the release workflow uses.
     name: Homebrew package (${{ matrix.bottle_tag }})
-    needs: package-core
+    needs: [changes, package-core]
+    if: needs.changes.outputs.homebrew_package == 'true'
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -587,7 +605,8 @@ jobs:
     # on Windows, with the scripts and the Visual Studio, Python, Conan and Chocolatey pins the
     # release workflow uses.
     name: Windows package
-    needs: package-core
+    needs: [changes, package-core]
+    if: needs.changes.outputs.windows_package == 'true'
     runs-on: windows-2022
     timeout-minutes: 120
     defaults:

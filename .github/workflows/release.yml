@@ -734,9 +734,14 @@ jobs:
 
   publication:
     name: Publish the manually selected release channels
+    # A resume skips the fresh-anchor jobs, and the default success() would then skip this job.
+    if: >-
+      ${{ !cancelled() && needs.contract.outputs.mode == 'publish' &&
+          needs.candidate.result == 'success' && needs.github-anchor.result == 'success' }}
     needs:
       - contract
       - repository-readiness
+      - candidate
       - github-anchor
     uses: ./.github/workflows/release-publication.yml
     with:
@@ -779,6 +784,7 @@ jobs:
     env:
       OPERATION: ${{ inputs.operation }}
       TAG: ${{ inputs.tag }}
+      PUBLICATION_RESULT: ${{ needs.publication.result }}
       CANDIDATE_RESULT: ${{ needs.candidate.result }}
       ANCHOR_RESULT: ${{ needs.github-anchor.result }}
       CLOUDSMITH_RESULT: ${{ needs.publication.outputs.cloudsmith_result || needs.publication.result }}
@@ -806,3 +812,7 @@ jobs:
             echo "| Chocolatey | ${CHOCOLATEY_RESULT} | ${CHOCOLATEY_URL} |"
             echo "| ConanCenter | ${CONAN_RESULT} | ${CONAN_URL} |"
           } >>"${GITHUB_STEP_SUMMARY}"
+          if [[ "${OPERATION}" == publish-* && "${PUBLICATION_RESULT}" != success ]]; then
+            echo "::error::publication result is ${PUBLICATION_RESULT}"
+            exit 1
+          fi
