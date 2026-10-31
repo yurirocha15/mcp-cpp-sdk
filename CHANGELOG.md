@@ -422,6 +422,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   answering of protocol messages run on the HTTP executor, and the new
   `Server::set_handler_executor()` is how a `Server` is told where its
   handlers run.
+- The Streamable HTTP server no longer parses a finished 2026-07-28 response
+  to read its error code when the response has no `"error"` member.
 
 ### Removed
 

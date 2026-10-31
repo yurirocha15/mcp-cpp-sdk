@@ -1311,7 +1311,7 @@ struct StreamableHttpSessionManager::Impl {
                     half_closed = true;
                     client_finished_sending = true;
                 }
-                const auto error_code = detail::response_error_code(*response);
+                const auto error_code = detail::serialized_response_error_code(*response);
                 if (error_code == g_HEADER_MISMATCH) {
                     header_mismatch_rejections_.fetch_add(1, std::memory_order_relaxed);
                 }

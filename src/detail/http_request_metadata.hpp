@@ -182,6 +182,16 @@ inline std::optional<int> response_error_code(const std::string& response) {
     return code->get<int>();
 }
 
+/// response_error_code for a response this SDK serialized itself. The serializer never escapes
+/// ASCII, so an error response always contains the literal `"error"` key, and a response without it
+/// is a result that needs no parse.
+inline std::optional<int> serialized_response_error_code(const std::string& response) {
+    if (response.find("\"error\"") == std::string::npos) {
+        return std::nullopt;
+    }
+    return response_error_code(response);
+}
+
 /// The `Mcp-Param-{Name}` headers of @p request as {Name, value} pairs, in the order received.
 /// The prefix is matched ignoring case, and every instance of a repeated header is kept.
 inline std::vector<std::pair<std::string, std::string>> mcp_param_headers(
