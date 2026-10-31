@@ -14,10 +14,14 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <limits>
+#include <mutex>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 
 namespace mcp {
@@ -337,6 +341,67 @@ struct CompiledSchemaImpl {
     std::optional<detail::NativeSchema> native;
 };
 
+namespace {
+
+/// Compiled schemas by their source text and options. A server that builds one `Server` per
+/// session registers the same tools every time; compiling is far dearer than validating, so a
+/// repeat compile of the same schema returns the one already built. The cache is bounded and
+/// evicts the oldest entry first.
+class CompiledSchemaCache {
+   public:
+    std::shared_ptr<const CompiledSchemaImpl> find(const std::string& key) {
+        std::lock_guard lock(mutex_);
+        const auto it = entries_.find(key);
+        return it == entries_.end() ? nullptr : it->second;
+    }
+
+    void insert(std::string key, std::shared_ptr<const CompiledSchemaImpl> compiled) {
+        if (key.size() > g_max_key_bytes) {
+            return;
+        }
+        std::lock_guard lock(mutex_);
+        if (!entries_.emplace(key, std::move(compiled)).second) {
+            return;
+        }
+        order_.push_back(std::move(key));
+        if (order_.size() > g_max_entries) {
+            entries_.erase(order_.front());
+            order_.pop_front();
+        }
+    }
+
+   private:
+    static constexpr std::size_t g_max_entries = 256;
+    static constexpr std::size_t g_max_key_bytes = 64 * 1024;
+
+    std::mutex mutex_;
+    std::unordered_map<std::string, std::shared_ptr<const CompiledSchemaImpl>> entries_;
+    std::deque<std::string> order_;
+};
+
+CompiledSchemaCache& compiled_schema_cache() {
+    static CompiledSchemaCache cache;
+    return cache;
+}
+
+/// The cache key, or nothing for a schema that has no faithful text (invalid UTF-8 in a string).
+std::optional<std::string> cache_key(const nlohmann::json& schema, const SchemaOptions& options) {
+    std::string key = std::to_string(options.max_instance_depth) + ',' +
+                      std::to_string(options.max_reported_violations) + ',' +
+                      std::to_string(options.base_pattern_steps) + ',' +
+                      std::to_string(options.pattern_steps_per_text_byte) + ',' +
+                      std::to_string(options.max_evaluation_work) + ',' +
+                      std::to_string(options.max_pattern_instructions) + '\n';
+    try {
+        key += schema.dump();
+    } catch (const nlohmann::json::exception&) {
+        return std::nullopt;
+    }
+    return key;
+}
+
+}  // namespace
+
 SchemaError::SchemaError(Category category, const std::string& message)
     : std::invalid_argument(message), category_(category) {}
 
@@ -358,6 +423,13 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
         // Serialized for a peer, it would carry null in that place: not the schema checked here.
         throw SchemaError(SchemaError::Category::eInvalidSchema,
                           "JSON Schema contains NaN or Infinity, which JSON cannot represent");
+    }
+
+    auto key = cache_key(schema, options);
+    if (key) {
+        if (auto cached = compiled_schema_cache().find(*key)) {
+            return CompiledSchema(std::move(cached));
+        }
     }
 
     std::string_view dialect = supported_dialects()[0];
@@ -465,8 +537,12 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
         const detail::PatternBudget native_patterns(options.max_pattern_instructions);
         return detail::NativeSchema::compile(schema);
     }();
-    return CompiledSchema(std::make_shared<const CompiledSchemaImpl>(CompiledSchemaImpl{
-        schema, options, schema_shape.nodes, std::move(*compiled), std::move(native)}));
+    auto result = std::make_shared<const CompiledSchemaImpl>(CompiledSchemaImpl{
+        schema, options, schema_shape.nodes, std::move(*compiled), std::move(native)});
+    if (key) {
+        compiled_schema_cache().insert(std::move(*key), result);
+    }
+    return CompiledSchema(std::move(result));
 }
 
 ValidationResult CompiledSchema::validate(const nlohmann::json& instance) const {

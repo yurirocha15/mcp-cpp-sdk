@@ -1463,6 +1463,44 @@ TEST(CompiledSchema, CopiesShareTheSchema) {
     EXPECT_TRUE(copy.validate("x").valid);
 }
 
+// Compiling the same schema again returns a schema that behaves identically, and a different
+// schema, or the same one under different options, is never answered with another's.
+TEST(CompiledSchema, RepeatedCompileKeepsEachSchemaDistinct) {
+    const json integer = {{"type", "integer"}};
+    const json text = {{"type", "string"}};
+    for (int round = 0; round < 3; ++round) {
+        const auto first = CompiledSchema::compile(integer);
+        const auto second = CompiledSchema::compile(text);
+        EXPECT_TRUE(first.validate(1).valid);
+        EXPECT_FALSE(first.validate("x").valid);
+        EXPECT_TRUE(second.validate("x").valid);
+        EXPECT_FALSE(second.validate(1).valid);
+        EXPECT_EQ(first.schema(), integer);
+        EXPECT_EQ(second.schema(), text);
+    }
+
+    // An integer and a float with the same value are different schema texts.
+    const auto whole = CompiledSchema::compile({{"const", 1}});
+    const auto fraction = CompiledSchema::compile({{"const", 1.5}});
+    EXPECT_TRUE(whole.validate(1).valid);
+    EXPECT_FALSE(whole.validate(1.5).valid);
+    EXPECT_TRUE(fraction.validate(1.5).valid);
+
+    mcp::SchemaOptions shallow;
+    shallow.max_instance_depth = 1;
+    const json nested = {{"type", "array"}};
+    EXPECT_TRUE(CompiledSchema::compile(nested).validate(json::array({json::array({1})})).valid);
+    EXPECT_FALSE(
+        CompiledSchema::compile(nested, shallow).validate(json::array({json::array({1})})).valid);
+}
+
+// A schema that cannot be compiled is refused every time, not only the first.
+TEST(CompiledSchema, RefusalIsRepeatedAfterRecompile) {
+    const json invalid = {{"type", "not-a-type"}};
+    EXPECT_EQ(compile_error(invalid), SchemaError::Category::eInvalidSchema);
+    EXPECT_EQ(compile_error(invalid), SchemaError::Category::eInvalidSchema);
+}
+
 // One compiled schema validated from several threads at once must give the same answers as
 // single-threaded validation. The tsan job runs this under ThreadSanitizer.
 TEST(CompiledSchema, ConcurrentValidateMatchesSequential) {
