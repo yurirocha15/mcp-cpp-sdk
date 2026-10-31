@@ -868,6 +868,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::vector<Tool> tools;
     std::map<std::string, ToolRegistration, std::less<>> tool_handlers;
     ToolValidationOptions tool_validation;
+    /// Where tool handlers run, when that is not the executor the server runs on.
+    std::optional<boost::asio::any_io_executor> handler_executor;
     std::atomic<std::uint64_t> argument_rejections{0};
     std::atomic<std::uint64_t> structured_content_rejections{0};
 
@@ -1166,6 +1168,10 @@ void Server::use(Middleware mw) { impl_->middlewares.push_back(std::move(mw)); }
 
 void Server::set_completion_provider(CompletionHandler handler) {
     impl_->completion_handler = std::move(handler);
+}
+
+void Server::set_handler_executor(const boost::asio::any_io_executor& executor) {
+    impl_->handler_executor = executor;
 }
 
 void Server::set_tool_validation(const ToolValidationOptions& options) {
@@ -2641,6 +2647,17 @@ Task<std::string> Server::Impl::handle_discover_wire(const nlohmann::json& json_
                                nlohmann::json(discover_result), CacheTarget::eDiscover);
 }
 
+namespace {
+
+/// Calls @p handler. It is a named coroutine, not a lambda handed to co_spawn, so what it holds
+/// lives in its own frame; the caller keeps @p context and @p arguments alive until it returns.
+Task<nlohmann::json> call_handler(const TypeErasedHandler& handler, Context& context,
+                                  const nlohmann::json& arguments) {
+    co_return co_await handler(context, arguments);
+}
+
+}  // namespace
+
 Task<nlohmann::json> Server::Impl::invoke_tool_impl(
     CallToolParams params, std::shared_ptr<std::atomic<bool>> cancelled,
     std::optional<ProgressToken> progress_token, std::shared_ptr<const RequestMetadata> request_meta,
@@ -2671,8 +2688,8 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(
     }
     TypeErasedHandler guarded_handler =
         [original_handler = iter->second.handler, input_schema = std::move(input_schema),
-         rejections = &argument_rejections](Context& inner_ctx,
-                                            const nlohmann::json& arguments) -> Task<nlohmann::json> {
+         rejections = &argument_rejections, handler_executor = handler_executor](
+            Context& inner_ctx, const nlohmann::json& arguments) -> Task<nlohmann::json> {
         if (input_schema) {
             if (auto rejection = argument_rejection(*input_schema, arguments)) {
                 rejections->fetch_add(1, std::memory_order_relaxed);
@@ -2680,6 +2697,10 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(
             }
         }
         try {
+            if (handler_executor) {
+                co_return co_await detail::spawn_awaitable(
+                    *handler_executor, call_handler(original_handler, inner_ctx, arguments));
+            }
             co_return co_await original_handler(inner_ctx, arguments);
         } catch (const std::exception& error) {
             co_return nlohmann::json(

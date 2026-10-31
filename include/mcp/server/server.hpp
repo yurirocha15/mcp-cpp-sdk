@@ -558,6 +558,17 @@ class MCP_API Server {
      */
     void set_tool_validation(const ToolValidationOptions& options);
 
+    /**
+     * @brief Run tool handlers on @p executor instead of the executor the server runs on.
+     *
+     * @details The server's own work (reading, parsing and answering protocol messages) stays on
+     * the executor passed to run(); only the call of a tool handler moves to @p executor, and the
+     * server resumes on its own executor when it returns. A handler that blocks then ties up a
+     * thread of @p executor rather than one the transport needs. Read unsynchronized by request
+     * handlers; must be called before run().
+     */
+    void set_handler_executor(const boost::asio::any_io_executor& executor);
+
     /// Tool calls refused by validation since this server was created.
     [[nodiscard]] ToolValidationStats tool_validation_stats() const;
 

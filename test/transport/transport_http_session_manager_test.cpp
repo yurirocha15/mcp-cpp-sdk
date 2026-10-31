@@ -1818,6 +1818,99 @@ TEST_F(SessionManagerTest, StatelessDispatchUsesConfiguredToolExecutor) {
     EXPECT_EQ(json::parse(response.body)["result"]["content"][0]["text"], "tool executor");
 }
 
+// A session keeps its protocol work on the HTTP executor and moves only the tool handler to the
+// tool executor, and what the handler sends through its Context still arrives in order.
+TEST_F(SessionManagerTest, SessionWithToolExecutorRunsHandlersOffTheHttpThread) {
+    const unsigned short port = 19118;
+    const auto http_thread = std::this_thread::get_id();
+    std::atomic<bool> sync_handler_on_http_thread{true};
+    std::atomic<bool> coroutine_handler_on_http_thread{true};
+    asio::thread_pool tool_pool(2);
+
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx_.get_executor(), "127.0.0.1", port,
+        [&](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities capabilities;
+            capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
+            capabilities.logging = json::object();
+            auto server = std::make_unique<mcp::Server>(
+                mcp::Implementation{"executor-session-server", "1.0.0"}, std::move(capabilities));
+            server->add_tool<json, mcp::CallToolResult>(
+                "sync", "Blocks its thread", json{{"type", "object"}},
+                [&](json) -> mcp::CallToolResult {
+                    sync_handler_on_http_thread.store(std::this_thread::get_id() == http_thread);
+                    return mcp::make_tool_text_result("sync done");
+                });
+            server->add_tool<json, mcp::CallToolResult>(
+                "notify", "Reports through its context", json{{"type", "object"}},
+                [&](mcp::Context& ctx, json) -> mcp::Task<mcp::CallToolResult> {
+                    coroutine_handler_on_http_thread.store(std::this_thread::get_id() == http_thread);
+                    co_await ctx.log_info("tool started");
+                    co_await ctx.report_progress(0.5, 1.0, "halfway");
+                    co_return mcp::make_tool_text_result("coroutine done");
+                });
+            return server;
+        });
+    manager.set_tool_executor(tool_pool.get_executor());
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse listed;
+    RawResponse sync_response;
+    RawResponse notify_response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            auto init = co_await do_initialize(io_ctx_.get_executor(), port);
+            EXPECT_EQ(init.status, 200);
+            auto initialized = co_await send_initialized(io_ctx_.get_executor(), port, init.session_id);
+            EXPECT_EQ(initialized.status, 202);
+
+            const std::string version(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
+            const json list_request = {{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 2}};
+            listed = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                          list_request.dump(), init.session_id, version, std::nullopt,
+                                          std::nullopt, "application/json");
+            const json sync_request = {{"jsonrpc", "2.0"},
+                                       {"method", "tools/call"},
+                                       {"params", {{"name", "sync"}, {"arguments", json::object()}}},
+                                       {"id", 3}};
+            sync_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                                 sync_request.dump(), init.session_id, version,
+                                                 std::nullopt, std::nullopt, "application/json");
+            const json notify_request = {{"jsonrpc", "2.0"},
+                                         {"method", "tools/call"},
+                                         {"params",
+                                          {{"name", "notify"},
+                                           {"arguments", json::object()},
+                                           {"_meta", {{"progressToken", "progress-1"}}}}},
+                                         {"id", 4}};
+            notify_response =
+                co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                     notify_request.dump(), init.session_id, version, std::nullopt,
+                                     std::nullopt, "application/json, text/event-stream");
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+    tool_pool.join();
+
+    ASSERT_EQ(listed.status, 200);
+    EXPECT_EQ(json::parse(listed.body)["result"]["tools"].size(), 2);
+    ASSERT_EQ(sync_response.status, 200);
+    EXPECT_EQ(json::parse(sync_response.body)["result"]["content"][0]["text"], "sync done");
+    EXPECT_FALSE(sync_handler_on_http_thread.load());
+
+    ASSERT_EQ(notify_response.status, 200);
+    EXPECT_FALSE(coroutine_handler_on_http_thread.load());
+    const auto events = parse_sse_events(notify_response.body);
+    ASSERT_EQ(events.size(), 3);
+    EXPECT_EQ(events[0].second.at("method"), "notifications/message");
+    EXPECT_EQ(events[1].second.at("method"), "notifications/progress");
+    EXPECT_EQ(events[2].second.at("result").at("content").at(0).at("text"), "coroutine done");
+}
+
 // ===========================================================================
 // Server-side OAuth challenge, metadata route and unauthenticated paths
 // ===========================================================================

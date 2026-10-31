@@ -413,6 +413,15 @@ Versioning; a `0.x` version is a stable release unless its version has an
   that only uses a pattern the matcher cannot run leaves the tool's results
   unchecked. `ClientOptions::validate_tool_schemas = false` turns all of this
   off.
+- `CompiledSchema::compile()` returns the schema it already compiled when it
+  is given the same schema and options again (up to 256 schemas are kept,
+  oldest first out), so a server factory that registers the same tools for
+  every session compiles their schemas once, not once per session.
+- `StreamableHttpSessionManager::set_tool_executor()` now moves only the call
+  of a tool handler to that executor. A session's reading, parsing and
+  answering of protocol messages run on the HTTP executor, and the new
+  `Server::set_handler_executor()` is how a `Server` is told where its
+  handlers run.
 
 ### Removed
 

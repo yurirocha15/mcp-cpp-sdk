@@ -522,13 +522,18 @@ struct StreamableHttpSessionManager::Impl {
         if (server && protocol_policy_) {
             server->set_protocol_policy(*protocol_policy_);
         }
+        // The server's own work runs on the HTTP executor; only a tool handler, which may block,
+        // moves to the tool executor.
+        if (server && tool_executor_) {
+            server->set_handler_executor(tool_executor_);
+        }
         return server;
     }
 
     std::shared_ptr<Server> modern_server() {
         std::lock_guard lock(modern_server_mutex_);
         if (!modern_server_) {
-            modern_server_ = build_server(tool_executor_ ? tool_executor_ : executor);
+            modern_server_ = build_server(executor);
         }
         return modern_server_;
     }
@@ -562,7 +567,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         std::shared_ptr<ITransport> server_transport = server_mem;
-        auto server_exec = tool_executor_ ? tool_executor_ : executor;
+        auto server_exec = executor;
 
         boost::asio::co_spawn(
             conn_strand,
@@ -1023,7 +1028,7 @@ struct StreamableHttpSessionManager::Impl {
             co_return detail_session_mgr::make_empty_json_response(request, http::status::accepted);
         }
 
-        const auto dispatch_executor = tool_executor_ ? tool_executor_ : executor;
+        const auto dispatch_executor = executor;
         if (!stateless_server) {
             stateless_server = build_server(dispatch_executor);
         }
@@ -1109,7 +1114,7 @@ struct StreamableHttpSessionManager::Impl {
 
         // The server answers on the dispatch executor while the connection watches the client, so
         // a client that goes away cancels the request.
-        const auto dispatch_executor = tool_executor_ ? tool_executor_ : executor;
+        const auto dispatch_executor = executor;
         auto request_id = request_json.at("id");
         boost::asio::co_spawn(
             dispatch_executor,
