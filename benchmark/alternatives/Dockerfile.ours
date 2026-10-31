@@ -19,6 +19,7 @@ COPY CMakeLists.txt VERSION LICENSE ./
 COPY cmake/ cmake/
 COPY include/ include/
 COPY src/ src/
+COPY third_party/ third_party/
 COPY benchmark/alternatives/ benchmark/alternatives/
 
 RUN cmake -S /src/benchmark/alternatives -B /build \
