@@ -6,9 +6,9 @@ Build and test the SDK's native packages the way a release does, without signing
   python3 scripts/package_build.py core --output core
   python3 scripts/package_build.py build debian-bookworm-amd64 --core core --output out
 
-`core` runs release.construct_core for HEAD. The provider control commits and repository ids it
-is given are placeholders: they only fill the publication contract, which a release constructs
-from live provider state and which no package build reads.
+`core` runs release.construct_core for HEAD. The provider repository ids and Cloudsmith key
+fingerprint it is given are placeholders: they only fill the publication contract, which a
+release constructs from live provider state and which no package build reads.
 
 `build` runs release.native_builder for one route in its locked builder image, as the release
 does: the package build with its own tests, then a consumer built against the extracted
@@ -70,7 +70,6 @@ def construct(output):
     version = package_version()
     signers = load_json("release/trusted-release-signers.json")
     signer = next(s for s in signers["signers"] if s["id"] == signers["active_signer_id"])
-    controls = load_json("packaging/provider-controls.json")["providers"]
     command = [
         *TOOL, "release.construct_core", "--root", str(ROOT), "--output", str(output),
         "--version", version, "--tag", f"v{version}", "--commit", git("rev-parse", "HEAD"),
@@ -82,10 +81,12 @@ def construct(output):
         "--cloudsmith-namespace", "mcp-cpp-sdk", "--cloudsmith-repository", "mcp-cpp-sdk",
         "--cloudsmith-repository-gpg-fingerprint", PLACEHOLDER_COMMIT,
     ]
-    for provider, prefix in (("homebrew", "homebrew"), ("chocolatey", "chocolatey"),
-                             ("conan", "conan-control")):
-        command += [f"--{provider}-control-commit", PLACEHOLDER_COMMIT,
-                    f"--{prefix}-repository", controls[provider]["repository"],
+    for prefix, repository in (
+        ("homebrew", "yurirocha15/homebrew-mcp-cpp-sdk"),
+        ("chocolatey", "yurirocha15/mcp-cpp-sdk-chocolatey-publisher"),
+        ("conan-control", "yurirocha15/mcp-cpp-sdk-release-control"),
+    ):
+        command += [f"--{prefix}-repository", repository,
                     f"--{prefix}-repository-id", PLACEHOLDER_REPOSITORY_ID]
     return subprocess.run(command, cwd=ROOT, check=False).returncode
 

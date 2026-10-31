@@ -31,6 +31,11 @@ export HOMEBREW_GIT_NAME='mcp-cpp-sdk release validation'
 export HOMEBREW_GIT_EMAIL='releases@users.noreply.github.com'
 
 brew tap-new "${tap}"
+# Homebrew refuses to load an untrusted tap outside `brew install`; older releases have no trust
+# command.
+if brew trust --help >/dev/null 2>&1; then
+  brew trust --tap "${tap}"
+fi
 tap_root="$(brew --repository "${tap}")"
 test -d "${tap_root}/Formula"
 production="${tap_root}/Formula/mcp-cpp-sdk.rb"

@@ -395,11 +395,6 @@ class ArtifactTests(unittest.TestCase):
             contract_bytes = canonical_json_bytes(
                 build_publication_contract(
                     root=Path(__file__).resolve().parents[2],
-                    control_commits={
-                        "homebrew": "3" * 40,
-                        "chocolatey": "4" * 40,
-                        "conan": "5" * 40,
-                    },
                     destinations=PROVIDER_DESTINATIONS,
                 )
             )

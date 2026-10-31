@@ -616,6 +616,15 @@ int main() { std::cout << _MSC_VER << " " << sizeof(void*) << "\n"; }
     ) -FailureMessage 'Chocolatey package metadata rendering failed'
     Copy-Item -LiteralPath 'packaging/chocolatey/chocolateyuninstall.ps1.in' `
         -Destination 'chocolatey/tools/chocolateyuninstall.ps1'
+    # The Chocolatey publisher compares both scripts byte for byte with its LF templates.
+    foreach ($script in @(
+        'chocolatey/tools/chocolateyinstall.ps1',
+        'chocolatey/tools/chocolateyuninstall.ps1'
+    )) {
+        if ([System.IO.File]::ReadAllBytes((Join-Path $repoRoot $script)) -contains [byte]13) {
+            throw "$script must use LF line endings"
+        }
+    }
     Copy-Item -LiteralPath 'LICENSE' -Destination 'chocolatey/LICENSE.txt'
     Write-Utf8File -Path 'chocolatey/VERIFICATION.txt' -Content (
         "The archive SHA-256 is $sha256 and is bound by the immutable GitHub Release manifest.`n"

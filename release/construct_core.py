@@ -71,7 +71,6 @@ def construct_core(
     repository: str,
     primary_fingerprint: str,
     artifact_fingerprint: str,
-    provider_control_commits: dict[str, str],
     provider_destinations: dict[str, dict[str, str]],
 ) -> None:
     version = SemVer.parse(version_text)
@@ -129,7 +128,6 @@ def construct_core(
     write_publication_contract(
         output / CONTRACT_ASSET,
         root=root,
-        control_commits=provider_control_commits,
         destinations=provider_destinations,
     )
 
@@ -216,9 +214,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--primary-fingerprint", required=True)
     parser.add_argument("--artifact-fingerprint", required=True)
-    parser.add_argument("--homebrew-control-commit", default="")
-    parser.add_argument("--chocolatey-control-commit", default="")
-    parser.add_argument("--conan-control-commit", default="")
     parser.add_argument("--cloudsmith-namespace", default="")
     parser.add_argument("--cloudsmith-repository", default="")
     parser.add_argument("--cloudsmith-repository-gpg-fingerprint", default="")
@@ -245,11 +240,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             repository=args.repository,
             primary_fingerprint=args.primary_fingerprint,
             artifact_fingerprint=args.artifact_fingerprint,
-            provider_control_commits={
-                "homebrew": args.homebrew_control_commit,
-                "chocolatey": args.chocolatey_control_commit,
-                "conan": args.conan_control_commit,
-            },
             provider_destinations={
                 "cloudsmith": {
                     "namespace": args.cloudsmith_namespace,

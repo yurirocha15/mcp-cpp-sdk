@@ -21,17 +21,10 @@ from .strict_json import load_strict
 
 CONTRACT_ASSET = "release-publication-contract.json"
 SUPPORTED_SCHEMA_VERSIONS = frozenset({1})
-_SHA1 = re.compile(r"[0-9a-f]{40}")
 _OCI_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-_CONTROL_TAG = re.compile(r"release-control-v[1-9][0-9]*")
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _CLOUDSMITH_COORDINATE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 _GPG_FINGERPRINT = re.compile(r"[0-9A-F]{40}")
-_WORKFLOWS = {
-    "homebrew": "publish-bottles.yml",
-    "chocolatey": "publish.yml",
-    "conan": "conan-center-pr.yml",
-}
 _V1_NATIVE_TARGET_IDS = (
     "ubuntu-jammy-amd64", "ubuntu-jammy-arm64",
     "ubuntu-noble-amd64", "ubuntu-noble-arm64",
@@ -52,56 +45,15 @@ class PublicationContract:
     channel_targets: Mapping[str, object]
     destinations: Mapping[str, Mapping[str, str]]
     conan_requirements: tuple[str, ...]
-    provider_controls: Mapping[str, Mapping[str, object]]
 
 
 def _read_json(path: Path) -> object:
     return load_strict(path, label=f"publication input {path.name}")
 
 
-def _provider_snapshots(
-    controls_path: Path, control_commits: Mapping[str, str]
-) -> dict[str, object]:
-    controls = _read_json(controls_path)
-    if not isinstance(controls, Mapping) or set(controls) != {"schema_version", "providers"}:
-        raise ValidationError("provider control source schema is not exact")
-    providers = controls.get("providers")
-    if controls.get("schema_version") != 1 or not isinstance(providers, Mapping):
-        raise ValidationError("provider control source version is unsupported")
-    if set(providers) != set(_WORKFLOWS) or set(control_commits) != set(_WORKFLOWS):
-        raise ValidationError("provider control source inventory is not exact")
-    snapshots: dict[str, object] = {}
-    for provider in sorted(_WORKFLOWS):
-        entry = providers[provider]
-        if not isinstance(entry, Mapping) or set(entry) != {
-            "repository", "control_tag", "workflow"
-        }:
-            raise ValidationError("provider control source entry is malformed")
-        repository = entry.get("repository")
-        control_tag = entry.get("control_tag")
-        commit = control_commits[provider]
-        if (
-            not isinstance(repository, str)
-            or _REPOSITORY.fullmatch(repository) is None
-            or not isinstance(control_tag, str)
-            or _CONTROL_TAG.fullmatch(control_tag) is None
-            or _SHA1.fullmatch(commit) is None
-            or entry.get("workflow") != _WORKFLOWS[provider]
-        ):
-            raise ValidationError("provider control source identity is malformed")
-        snapshots[provider] = {
-            "repository": repository,
-            "control_tag": control_tag,
-            "control_commit": commit,
-            "workflow": _WORKFLOWS[provider],
-        }
-    return snapshots
-
-
 def build_publication_contract(
     *,
     root: Path,
-    control_commits: Mapping[str, str],
     destinations: Mapping[str, Mapping[str, str]],
 ) -> dict[str, object]:
     """Capture all versioned publication inputs needed after the anchor is immutable."""
@@ -135,9 +87,6 @@ def build_publication_contract(
         "conan_requirements": list(
             load_conan_requirements(root / "packaging/conan-center/requirements.json")
         ),
-        "provider_controls": _provider_snapshots(
-            root / "packaging/provider-controls.json", control_commits
-        ),
     }
     # Validate what we emit so construction and consumption cannot drift.
     parse_publication_contract(contract)
@@ -160,9 +109,12 @@ def parse_publication_contract(value: object) -> PublicationContract:
 
     fields = {
         "schema_version", "native_targets", "channel_targets", "destinations",
-        "native_builders", "conan_requirements", "provider_controls",
+        "native_builders", "conan_requirements",
     }
-    if not isinstance(value, Mapping) or set(value) != fields:
+    # Contracts signed while providers ran from control tags also carry
+    # ``provider_controls``. Providers now run from their protected ``main``,
+    # so that historical field is accepted and not read.
+    if not isinstance(value, Mapping) or set(value) - {"provider_controls"} != fields:
         raise ValidationError("publication contract schema is not exact")
     if value.get("schema_version") not in SUPPORTED_SCHEMA_VERSIONS:
         raise ValidationError("publication contract version is unsupported")
@@ -271,44 +223,12 @@ def parse_publication_contract(value: object) -> PublicationContract:
     if any(CONAN_REFERENCE_RE.fullmatch(reference) is None for reference in requirements):
         raise ValidationError("publication contract Conan requirement is malformed")
 
-    controls = value.get("provider_controls")
-    if not isinstance(controls, Mapping) or set(controls) != set(_WORKFLOWS):
-        raise ValidationError("publication contract provider controls are incomplete")
-    normalized_controls: dict[str, Mapping[str, object]] = {}
-    for provider in sorted(_WORKFLOWS):
-        control = controls[provider]
-        if not isinstance(control, Mapping) or set(control) != {
-            "repository", "control_tag", "control_commit", "workflow"
-        }:
-            raise ValidationError("publication contract provider control is malformed")
-        if (
-            not isinstance(control.get("repository"), str)
-            or _REPOSITORY.fullmatch(control["repository"]) is None
-            or not isinstance(control.get("control_tag"), str)
-            or _CONTROL_TAG.fullmatch(control["control_tag"]) is None
-            or not isinstance(control.get("control_commit"), str)
-            or _SHA1.fullmatch(control["control_commit"]) is None
-            or control.get("workflow") != _WORKFLOWS[provider]
-        ):
-            raise ValidationError("publication contract provider control identity is malformed")
-        normalized_controls[provider] = control
-    for provider, destination in (
-        ("homebrew", "homebrew"),
-        ("chocolatey", "chocolatey"),
-        ("conan", "conan_control"),
-    ):
-        if normalized_controls[provider]["repository"] != normalized_destinations[destination]["repository"]:
-            raise ValidationError(
-                "publication contract provider and destination repositories disagree"
-            )
-
     return PublicationContract(
         native_targets=targets,
         native_builders=tuple(builders),
         channel_targets=dict(channel_targets),
         destinations=normalized_destinations,
         conan_requirements=requirements,
-        provider_controls=normalized_controls,
     )
 
 
@@ -354,14 +274,12 @@ def write_publication_contract(
     path: Path,
     *,
     root: Path,
-    control_commits: Mapping[str, str],
     destinations: Mapping[str, Mapping[str, str]],
 ) -> None:
     path.write_bytes(
         canonical_json_bytes(
             build_publication_contract(
                 root=root,
-                control_commits=control_commits,
                 destinations=destinations,
             )
         )

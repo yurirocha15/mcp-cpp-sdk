@@ -35,13 +35,15 @@ from .publication_contract import load_publication_contract
 _SHA1 = re.compile(r"[0-9a-f]{40}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _POSITIVE_DECIMAL = re.compile(r"[1-9][0-9]*")
-_CONTROL_TAG = re.compile(r"release-control-v[1-9][0-9]*")
 _CHANNELS = frozenset({"homebrew", "chocolatey", "conan2"})
-_CONTRACT_CHANNELS = {
-    "homebrew": ("homebrew", "homebrew"),
-    "chocolatey": ("chocolatey", "chocolatey"),
-    "conan2": ("conan", "conan_control"),
+_CONTRACT_DESTINATIONS = {
+    "homebrew": "homebrew",
+    "chocolatey": "chocolatey",
+    "conan2": "conan_control",
 }
+# Publishers run from their protected default branch; the dispatched commit
+# is the branch head observed immediately before the dispatch.
+_PUBLISHER_BRANCH = "main"
 
 
 @dataclass(frozen=True)
@@ -129,36 +131,42 @@ def build_dispatch_inputs(
     return common
 
 
-def control_from_contract(
+def require_contract_destination(
     path: Path,
     *,
     channel: str,
     target: RepositoryTarget,
-    workflow: str,
-) -> tuple[str, str]:
-    """Bind a dispatch to the control identity signed into the GitHub anchor."""
+) -> None:
+    """Bind a dispatch to the publisher repository signed into the GitHub anchor."""
 
     try:
-        provider, destination_name = _CONTRACT_CHANNELS[channel]
+        destination_name = _CONTRACT_DESTINATIONS[channel]
     except KeyError as error:
         raise GitHubProviderError("unsupported publisher channel") from error
-    contract = load_publication_contract(path)
-    control = contract.provider_controls[provider]
-    destination = contract.destinations[destination_name]
+    destination = load_publication_contract(path).destinations[destination_name]
     if (
-        control["repository"] != target.full_name
-        or control["workflow"] != workflow
-        or destination["repository"] != target.full_name
+        destination["repository"] != target.full_name
         or destination["repository_id"] != str(target.repository_id)
     ):
         raise GitHubProviderError(
             "publisher configuration differs from the signed release contract"
         )
-    tag = control["control_tag"]
-    commit = control["control_commit"]
-    if not isinstance(tag, str) or not isinstance(commit, str):
-        raise GitHubProviderError("signed provider control identity is malformed")
-    return tag, commit
+
+
+def publisher_branch_head(api: ApiRequest, target: RepositoryTarget) -> str:
+    """Return the commit at the head of the publisher's protected branch."""
+
+    ref = mapping(
+        api("GET", f"repos/{target.full_name}/git/ref/heads/{_PUBLISHER_BRANCH}"),
+        "publisher branch",
+    )
+    ref_object = mapping(ref.get("object"), "publisher branch object")
+    if (
+        ref.get("ref") != f"refs/heads/{_PUBLISHER_BRANCH}"
+        or ref_object.get("type") != "commit"
+    ):
+        raise GitHubProviderError("publisher branch is not a direct commit reference")
+    return _full_sha(ref_object.get("sha"), "publisher branch head")
 
 
 def dispatch_workflow(
@@ -166,15 +174,10 @@ def dispatch_workflow(
     *,
     target: RepositoryTarget,
     workflow: str,
-    control_tag: str,
-    control_sha: str,
     inputs: Mapping[str, str],
 ) -> DispatchReceipt:
     validate_repository(api, target)
     validate_workflow(api, target, workflow)
-    if not isinstance(control_tag, str) or _CONTROL_TAG.fullmatch(control_tag) is None:
-        raise GitHubProviderError("provider control tag is not canonical")
-    expected_control_sha = _full_sha(control_sha, "provider control commit")
     if not isinstance(inputs, Mapping) or not inputs:
         raise GitHubProviderError("publisher dispatch inputs are missing")
     if any(
@@ -189,27 +192,14 @@ def dispatch_workflow(
         for key, value in inputs.items()
     ):
         raise GitHubProviderError("publisher dispatch inputs are not canonical strings")
-    if inputs.get("provider_control_sha") != expected_control_sha:
+    if inputs.get("provider_control_sha") != publisher_branch_head(api, target):
         raise GitHubProviderError(
-            "publisher dispatch does not carry the preflighted control commit"
-        )
-    ref = mapping(
-        api("GET", f"repos/{target.full_name}/git/ref/tags/{control_tag}"),
-        "provider control tag",
-    )
-    ref_object = mapping(ref.get("object"), "provider control tag object")
-    if (
-        ref.get("ref") != f"refs/tags/{control_tag}"
-        or ref_object.get("type") != "commit"
-        or ref_object.get("sha") != expected_control_sha
-    ):
-        raise GitHubProviderError(
-            "provider control tag changed after its reviewed preflight"
+            "publisher branch moved after its head was read for this dispatch"
         )
     response = api(
         "POST",
         f"repos/{target.full_name}/actions/workflows/{quote(workflow, safe='')}/dispatches",
-        {"ref": control_tag, "inputs": dict(inputs)},
+        {"ref": _PUBLISHER_BRANCH, "inputs": dict(inputs)},
     )
     value = mapping(response, "workflow dispatch response")
     if not {"workflow_run_id", "run_url", "html_url"} <= set(value):
@@ -255,29 +245,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         target = RepositoryTarget(
             args.owner, args.repository, args.expected_repository_id
         )
-        control_tag, control_sha = control_from_contract(
-            args.contract,
-            channel=args.channel,
-            target=target,
-            workflow=args.workflow,
+        require_contract_destination(
+            args.contract, channel=args.channel, target=target
         )
+        api = GhApi()
         inputs = build_dispatch_inputs(
             channel=args.channel,
             source_repository=args.source_repository,
             source_tag=args.source_tag,
             source_commit_sha=args.source_commit_sha,
             source_workflow_head_sha=args.source_workflow_head_sha,
-            provider_control_sha=control_sha,
+            provider_control_sha=publisher_branch_head(api, target),
             github_release_id=args.github_release_id,
             source_workflow_run_id=args.source_workflow_run_id,
             release_manifest_sha256=args.release_manifest_sha256,
         )
         receipt = dispatch_workflow(
-            GhApi(),
+            api,
             target=target,
             workflow=args.workflow,
-            control_tag=control_tag,
-            control_sha=control_sha,
             inputs=inputs,
         )
         with args.github_output.open("a", encoding="ascii") as output:
