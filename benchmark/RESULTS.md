@@ -1,20 +1,25 @@
 # Benchmark results
 
-These results come from the `production-full` run
-`20261018_020318_production-full`, which put the same MCP/Redis/HTTP workload on
-every target. The [C++ SDKs](#c-sdks) table is the comparison; the other tables
-are diagnostic. [Evidence bundle](#evidence-bundle) at the end says how to check
-the run.
+These results come from a `production-full` run on 2026-10-18, which put the
+same MCP/Redis/HTTP workload on every target. The [C++ SDKs](#c-sdks) table is
+the comparison; the other tables are diagnostic. [Audit evidence](#audit-evidence)
+at the end lists what the run passed.
 
 ## Run configuration
 
 The run measured all twelve targets in three counterbalanced rounds (order seed
-1792256598). Each round used 50 VUs, a separate 15-second ramp plus 60-second
+1792335571). Each round used 50 VUs, a separate 15-second ramp plus 60-second
 warmup, and a five-minute constant-load measurement for every target. Every
 target container had the same 2-CPU and 2-GiB limits. Every row used the shared
 `upstream-v2-strict-mcp-v1` measured contract. The nine C++ targets, default
 and TCP_NODELAY builds alike, also had to pass the `adapter-exact-v1` adapter
 checks in preflight and postflight.
+
+Every target, k6, Redis, and the API service ran on one machine: an AMD Ryzen 9
+9900X (12 cores, 24 threads) with 30.4 GiB of memory, on Ubuntu 24.04 with Linux
+7.0.0 and Docker 29.6.2, using the `powersave` CPU governor. Absolute numbers
+will differ on other hardware and between runs. Sample CV shows how much the
+three rounds of this run varied.
 
 CPU follows Docker's convention: 100% is one fully used core. Resource values
 are from the round selected for that target's median throughput. Target
@@ -25,11 +30,11 @@ service, k6, and the host, and every one of them passed.
 
 | C++ SDK | Protocol | Median ops/s | Sample CV | p50 ms | p95 ms | p99 ms | Target p95 CPU | Target p95 memory | Errors |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| This SDK | 2024-11-05 | 3,511.17 | 0.29% | 0.49 | 1.96 | 2.84 | 156.08% | 45.38 MiB | 0 |
-| hkr04/cpp-mcp | 2025-03-26 | 678.33 | 0.02% | 40.76 | 41.83 | 41.93 | 21.09% | 24.64 MiB | 0 |
-| FastMCPP | 2024-11-05 | 1,123.51 | 0.03% | 0.35 | 41.80 | 42.09 | 37.98% | 34.47 MiB | 0 |
-| cxxmcp | 2024-11-05 | 2,935.91 | 0.53% | 1.74 | 6.44 | 8.07 | 78.24% | 37.28 MiB | 0 |
-| Neumann-Labs/mcp-cpp | 2025-11-25 | 675.82 | 0.03% | 40.80 | 41.86 | 42.01 | 35.96% | 55.69 MiB | 0 |
+| This SDK | 2024-11-05 | 3,564.90 | 0.46% | 0.43 | 1.71 | 2.46 | 148.47% | 44.74 MiB | 0 |
+| hkr04/cpp-mcp | 2025-03-26 | 678.67 | 0.03% | 40.77 | 41.82 | 41.91 | 21.12% | 31.35 MiB | 0 |
+| FastMCPP | 2024-11-05 | 1,123.39 | 0.04% | 0.38 | 41.78 | 42.07 | 40.98% | 35.61 MiB | 0 |
+| cxxmcp | 2024-11-05 | 3,043.31 | 0.89% | 1.48 | 5.71 | 7.13 | 71.34% | 30.72 MiB | 0 |
+| Neumann-Labs/mcp-cpp | 2025-11-25 | 675.95 | 0.04% | 40.80 | 41.85 | 42.02 | 38.44% | 54.26 MiB | 0 |
 
 hkr04/cpp-mcp, FastMCPP, cxxmcp, and Neumann-Labs/mcp-cpp leave `TCP_NODELAY`
 off. The same adapters built with it on are measured in
@@ -39,11 +44,11 @@ The measured operation rates for all rounds were:
 
 | C++ SDK | Round 1 | Round 2 | Round 3 | Selected round |
 |---|---:|---:|---:|---:|
-| This SDK | 3,511.17 | 3,513.23 | 3,494.97 | 1 |
-| hkr04/cpp-mcp | 678.33 | 678.25 | 678.47 | 1 |
-| FastMCPP | 1,123.96 | 1,123.51 | 1,123.28 | 2 |
-| cxxmcp | 2,935.91 | 2,939.83 | 2,910.99 | 1 |
-| Neumann-Labs/mcp-cpp | 675.81 | 675.82 | 676.14 | 2 |
+| This SDK | 3,537.98 | 3,567.21 | 3,564.90 | 3 |
+| hkr04/cpp-mcp | 678.68 | 678.30 | 678.67 | 3 |
+| FastMCPP | 1,123.39 | 1,123.44 | 1,122.72 | 1 |
+| cxxmcp | 2,997.48 | 3,043.31 | 3,044.94 | 2 |
+| Neumann-Labs/mcp-cpp | 675.95 | 675.66 | 676.21 | 1 |
 
 These numbers describe this pinned MCP/Redis/HTTP workload and environment;
 they are not a general-purpose application-performance claim.
@@ -57,28 +62,28 @@ run:
 
 | C++ SDK | Build | Median ops/s | Sample CV | p50 ms | p95 ms | p99 ms | Target p95 CPU | Target p95 memory | Errors |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| hkr04/cpp-mcp | default | 678.33 | 0.02% | 40.76 | 41.83 | 41.93 | 21.09% | 24.64 MiB | 0 |
-| hkr04/cpp-mcp | TCP_NODELAY | 3,592.47 | 0.04% | 0.36 | 1.66 | 2.54 | 97.69% | 31.95 MiB | 0 |
-| FastMCPP | default | 1,123.51 | 0.03% | 0.35 | 41.80 | 42.09 | 37.98% | 34.47 MiB | 0 |
-| FastMCPP | TCP_NODELAY | 3,501.11 | 0.08% | 0.40 | 1.62 | 2.47 | 119.59% | 34.33 MiB | 0 |
-| cxxmcp | default | 2,935.91 | 0.53% | 1.74 | 6.44 | 8.07 | 78.24% | 37.28 MiB | 0 |
-| cxxmcp | TCP_NODELAY | 2,932.93 | 0.16% | 1.73 | 6.49 | 8.12 | 76.77% | 32.36 MiB | 0 |
-| Neumann-Labs/mcp-cpp | default | 675.82 | 0.03% | 40.80 | 41.86 | 42.01 | 35.96% | 55.69 MiB | 0 |
-| Neumann-Labs/mcp-cpp | TCP_NODELAY | 3,482.83 | 0.09% | 0.43 | 1.90 | 3.19 | 204.10% | 46.76 MiB | 0 |
+| hkr04/cpp-mcp | default | 678.67 | 0.03% | 40.77 | 41.82 | 41.91 | 21.12% | 31.35 MiB | 0 |
+| hkr04/cpp-mcp | TCP_NODELAY | 3,639.57 | 0.30% | 0.32 | 1.47 | 2.24 | 90.38% | 33.79 MiB | 0 |
+| FastMCPP | default | 1,123.39 | 0.04% | 0.38 | 41.78 | 42.07 | 40.98% | 35.61 MiB | 0 |
+| FastMCPP | TCP_NODELAY | 3,565.90 | 0.68% | 0.36 | 1.43 | 2.17 | 111.25% | 38.08 MiB | 0 |
+| cxxmcp | default | 3,043.31 | 0.89% | 1.48 | 5.71 | 7.13 | 71.34% | 30.72 MiB | 0 |
+| cxxmcp | TCP_NODELAY | 3,036.82 | 0.77% | 1.49 | 5.78 | 7.25 | 70.73% | 33.50 MiB | 0 |
+| Neumann-Labs/mcp-cpp | default | 675.95 | 0.04% | 40.80 | 41.85 | 42.02 | 38.44% | 54.26 MiB | 0 |
+| Neumann-Labs/mcp-cpp | TCP_NODELAY | 3,555.02 | 0.57% | 0.38 | 1.65 | 2.50 | 191.82% | 43.45 MiB | 0 |
 
-With `TCP_NODELAY` on, the p50 of hkr04/cpp-mcp fell from 40.76 ms to 0.36 ms,
-and that of Neumann-Labs/mcp-cpp from 40.80 ms to 0.43 ms. FastMCPP's p95 fell
-from 41.80 ms to 1.62 ms. Median throughput rose from 678.33 to 3,592.47 ops/s
-for hkr04/cpp-mcp, from 1,123.51 to 3,501.11 for FastMCPP, and from 675.82 to
-3,482.83 for Neumann-Labs/mcp-cpp. cxxmcp's median throughput changed by
--0.10%.
+With `TCP_NODELAY` on, the p50 of hkr04/cpp-mcp fell from 40.77 ms to 0.32 ms,
+and that of Neumann-Labs/mcp-cpp from 40.80 ms to 0.38 ms. FastMCPP's p95 fell
+from 41.78 ms to 1.43 ms. Median throughput rose from 678.67 to 3,639.57 ops/s
+for hkr04/cpp-mcp, from 1,123.39 to 3,565.90 for FastMCPP, and from 675.95 to
+3,555.02 for Neumann-Labs/mcp-cpp. cxxmcp's median throughput changed by
+-0.21%.
 
 | C++ SDK | Build | Round 1 | Round 2 | Round 3 | Selected round |
 |---|---|---:|---:|---:|---:|
-| hkr04/cpp-mcp | TCP_NODELAY | 3,590.95 | 3,592.47 | 3,593.71 | 2 |
-| FastMCPP | TCP_NODELAY | 3,504.12 | 3,498.86 | 3,501.11 | 3 |
-| cxxmcp | TCP_NODELAY | 2,930.06 | 2,932.93 | 2,939.13 | 2 |
-| Neumann-Labs/mcp-cpp | TCP_NODELAY | 3,486.76 | 3,480.36 | 3,482.83 | 3 |
+| hkr04/cpp-mcp | TCP_NODELAY | 3,620.85 | 3,639.59 | 3,639.57 | 3 |
+| FastMCPP | TCP_NODELAY | 3,529.34 | 3,565.90 | 3,575.04 | 2 |
+| cxxmcp | TCP_NODELAY | 2,998.36 | 3,036.82 | 3,040.27 | 2 |
+| Neumann-Labs/mcp-cpp | TCP_NODELAY | 3,521.83 | 3,555.02 | 3,557.98 | 2 |
 
 ## Official language SDKs (diagnostic)
 
@@ -89,15 +94,15 @@ were read from the measured images.
 
 | SDK | Protocol | Median ops/s | Sample CV | p50 ms | p95 ms | p99 ms | Target p95 CPU | Target p95 memory | Errors |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Python SDK (`mcp` 2.3.0) | 2024-11-05 | 992.79 | 0.64% | 17.01 | 68.63 | 94.53 | 204.00% | 275.40 MiB | 0 |
-| Go SDK (`go-sdk` v1.2.0) | 2024-11-05 | 2,388.24 | 0.84% | 1.47 | 29.25 | 34.16 | 207.25% | 28.97 MiB | 0 |
-| Rust SDK (`rmcp` 0.17.0) | 2024-11-05 | 3,640.86 | 0.05% | 0.46 | 1.93 | 2.80 | 56.51% | 16.79 MiB | 0 |
+| Python SDK (`mcp` 2.3.0) | 2024-11-05 | 1,067.43 | 1.67% | 15.05 | 66.65 | 88.80 | 203.22% | 297.60 MiB | 0 |
+| Go SDK (`go-sdk` v1.2.0) | 2024-11-05 | 2,463.22 | 1.26% | 1.35 | 28.30 | 33.79 | 207.45% | 28.38 MiB | 0 |
+| Rust SDK (`rmcp` 0.17.0) | 2024-11-05 | 3,687.20 | 0.06% | 0.39 | 1.66 | 2.42 | 52.85% | 30.73 MiB | 0 |
 
 | SDK | Round 1 | Round 2 | Round 3 | Selected round |
 |---|---:|---:|---:|---:|
-| Python SDK | 1,001.70 | 989.30 | 992.79 | 3 |
-| Go SDK | 2,380.27 | 2,388.24 | 2,418.24 | 2 |
-| Rust SDK | 3,638.93 | 3,640.86 | 3,642.27 | 2 |
+| Python SDK | 1,037.63 | 1,067.43 | 1,068.84 | 2 |
+| Go SDK | 2,463.22 | 2,510.62 | 2,451.64 | 1 |
+| Rust SDK | 3,683.99 | 3,687.20 | 3,687.80 | 2 |
 
 All three passed every eligibility gate, including the direct Redis side-effect
 checks. The `adapter-exact-v1` checks are advisory for them. Go passed them.
@@ -106,27 +111,9 @@ checkout tool schema, and Rust on the checkout `rate_limit_count` fixture. In
 those gates Rust reported 295 while Redis recorded the expected counter change
 from 0 to 1.
 
-## Evidence bundle
-
-The run completed every gate. Its manifest is `complete` with `publishable_candidate: true`. The publishable
-comparison is the five-C++-SDK table above. The TCP_NODELAY builds and the
-official language SDKs ran in the same run, but their tables are diagnostic.
-
-The evidence bundle is retained locally at
-`benchmark/results/20261018_020318_production-full/`. Generated result
-directories are intentionally ignored by Git; an external citation should
-include an unchanged copy of that bundle. The SHA-256 of its sorted per-file
-checksum stream is
-`2923ba1ffcf102c637e4666f4c8133a31e44891e5ee9f75a5ba34f51a365b4cd`.
-To recompute it, run this from inside the bundle directory:
-
-```bash
-find . -type f | LC_ALL=C sort | sed 's|^\./||' | xargs -d '\n' sha256sum | sha256sum
-```
-
 ## Audit evidence
 
-The completed bundle records and passed:
+The run completed and passed:
 
 - 72/72 protocol gates (preflight and postflight for 36 measured rounds) under
   the universal contract, with the required `adapter-exact-v1` checks passing
@@ -138,12 +125,5 @@ The completed bundle records and passed:
 - source tree digest checks after the last round, and immutable k6 and Compose
   input checks throughout the run.
 
-The run measured commit `a68b77f3f0cfb0812cf4dbf1e76cd87c495c0f17` with a clean
-working tree. Its deterministic source tree hash covers that commit's `benchmark/`
-directory, including the previous version of this file, and is
-`a741bbfdcc87165b19b4087079d5b0af58196826fff15e2be3b5a9c35b2eef67`.
-`source_snapshot.tar` hashes to
-`32897301e7fec5b91c2d48d19c416b8b0a880b9e5d92d818eeb144330a7d283d`.
-The archived k6 and Compose inputs hash to
-`0fbba8de4ea920ef9fede8a3208246d2339216b70ffea817befc6826bbb86e48`
-and `a9d6c1e7501e67092207703482f5e065b19a1f57ff302be04618878dd590c7b3`.
+The run measured commit `e30c35c82524473f1fd56f7423eeb6d349810b98` with a clean
+working tree.
