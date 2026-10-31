@@ -424,6 +424,18 @@ Versioning; a `0.x` version is a stable release unless its version has an
   handlers run.
 - The Streamable HTTP server no longer parses a finished 2026-07-28 response
   to read its error code when the response has no `"error"` member.
+- A 2026-07-28 `tools/call`, `prompts/get` or `resources/read` from a client
+  that declares no `elicitation`, `sampling` or `roots` capability runs its
+  handler inside the request, since such a client can never be asked for
+  input. A handler that asks anyway still gets the missing-capability answer.
+  Other requests keep the parked-handler path.
+- A server without middleware calls a tool with the arguments as they arrived,
+  without copying the call's parameters or the registered handler, and
+  `tools/list` sends the tools it serialized at registration when it lists
+  them all. A handler's `CallToolResult` is moved into the response, and a
+  result of type `CallToolResult` is no longer decoded a second time to
+  validate it; `to_json` has overloads that take a `CallToolResult`,
+  `ContentBlock` or `TextContent` by rvalue and move what they hold.
 
 ### Removed
 

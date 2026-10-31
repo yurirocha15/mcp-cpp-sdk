@@ -117,7 +117,7 @@ class MrtrTest : public ::testing::Test {
     std::atomic<bool> release_handler_{false};
     std::atomic<bool> working_on_{false};
 
-    std::unique_ptr<mcp::Server> make_server() {
+    std::unique_ptr<mcp::Server> make_server(bool with_middleware = true) {
         mcp::ServerCapabilities caps;
         caps.tools = mcp::ServerCapabilities::ToolsCapability{};
         caps.prompts = mcp::ServerCapabilities::PromptsCapability{};
@@ -130,6 +130,21 @@ class MrtrTest : public ::testing::Test {
                 const auto answer = co_await ctx.elicit(form_elicitation("Your name?"));
                 co_return json{{"name", answer.content.value_or(json::object()).value("name", "")}};
             });
+        server->add_tool<json, json>("quiet", "Never asks", json{{"type", "object"}},
+                                     [](mcp::Context& /*ctx*/, json args) -> mcp::Task<json> {
+                                         co_return json{{"ok", true}, {"echo", std::move(args)}};
+                                     });
+        server->add_tool<json, json>("quiet_progress", "Reports progress, never asks",
+                                     json{{"type", "object"}},
+                                     [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                         co_await ctx.report_progress(1, 2);
+                                         co_return json{{"done", true}};
+                                     });
+        server->add_tool<json, json>("fails", "Throws", json{{"type", "object"}},
+                                     [](mcp::Context& /*ctx*/, json /*args*/) -> mcp::Task<json> {
+                                         throw std::runtime_error("tool failure");
+                                         co_return json::object();
+                                     });
         server->add_tool<json, json>(
             "ask_twice", "Asks two questions, one after the other", json{{"type", "object"}},
             [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
@@ -259,11 +274,13 @@ class MrtrTest : public ::testing::Test {
                 {"messages", json::array({{{"role", "user"},
                                            {"content", {{"type", "text"}, {"text", "Hi " + name}}}}})}};
         });
-        server->use([this](mcp::Context& ctx, const json& params,
-                           mcp::TypeErasedHandler next) -> mcp::Task<json> {
-            middleware_runs_.fetch_add(1);
-            co_return co_await next(ctx, params);
-        });
+        if (with_middleware) {
+            server->use([this](mcp::Context& ctx, const json& params,
+                               mcp::TypeErasedHandler next) -> mcp::Task<json> {
+                middleware_runs_.fetch_add(1);
+                co_return co_await next(ctx, params);
+            });
+        }
         return server;
     }
 
@@ -1204,6 +1221,194 @@ TEST_F(MrtrTest, LegacyRequestsStillUseServerToClientRequests) {
     ASSERT_GE(written.size(), 2u);
     EXPECT_EQ(written[1]["method"], "elicitation/create") << written[1];
     EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+}
+
+/// The same requests against a server without middleware, which calls its tools without building
+/// their parameters object, and one with.
+class MrtrWithoutMiddlewareTest : public MrtrTest {
+   protected:
+    MrtrWithoutMiddlewareTest() { server_ = make_server(false); }
+};
+
+TEST_F(MrtrWithoutMiddlewareTest, ClientWithoutInputCapabilitiesIsServedWithoutParking) {
+    json bare;
+    json eliciting;
+    run([&]() -> mcp::Task<void> {
+        const auto req_bare = call_tool(1, "quiet", {{"x", 1}}, json::object());
+        bare = co_await send(req_bare);
+        const auto req_eliciting = call_tool(2, "quiet", {{"x", 1}});
+        eliciting = co_await send(req_eliciting);
+    });
+
+    for (const auto* response : {&bare, &eliciting}) {
+        ASSERT_TRUE(response->contains("result")) << *response;
+        EXPECT_EQ((*response)["result"]["resultType"], "complete") << *response;
+        EXPECT_EQ((*response)["result"]["structuredContent"],
+                  (json{{"ok", true}, {"echo", {{"x", 1}}}}))
+            << *response;
+    }
+    EXPECT_EQ(bare["id"], 1);
+    EXPECT_EQ(eliciting["id"], 2);
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+}
+
+TEST_F(MrtrWithoutMiddlewareTest, QuestionOfAClientThatCannotAnswerIsRefused) {
+    json elicitation;
+    json sampling;
+    json roots;
+    json prompt;
+    run([&]() -> mcp::Task<void> {
+        const auto req_elicitation = call_tool(1, "ask", json::object(), json::object());
+        elicitation = co_await send(req_elicitation);
+        const auto req_sampling = call_tool(2, "sample", json::object(), json::object());
+        sampling = co_await send(req_sampling);
+        const auto req_roots = call_tool(3, "roots", json::object(), json::object());
+        roots = co_await send(req_roots);
+        const auto req_prompt = modern(4, "prompts/get", {{"name", "greet"}}, json::object());
+        prompt = co_await send(req_prompt);
+    });
+
+    EXPECT_EQ(elicitation["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << elicitation;
+    EXPECT_EQ(elicitation["error"]["data"]["requiredCapabilities"],
+              (json{{"elicitation", {{"form", json::object()}}}}));
+    EXPECT_EQ(sampling["error"]["data"]["requiredCapabilities"], (json{{"sampling", json::object()}}));
+    EXPECT_EQ(roots["error"]["data"]["requiredCapabilities"], (json{{"roots", json::object()}}));
+    EXPECT_EQ(prompt["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << prompt;
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+}
+
+TEST_F(MrtrWithoutMiddlewareTest, RefusalWinsOverAHandlerThatCatchesIt) {
+    json response;
+    run([&]() -> mcp::Task<void> {
+        const auto req_response = call_tool(1, "ask_catching", json::object(), json::object());
+        response = co_await send(req_response);
+    });
+
+    EXPECT_EQ(abandoned_caught_.load(), 1);
+    ASSERT_TRUE(response.contains("error")) << response;
+    EXPECT_EQ(response["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << response;
+}
+
+TEST_F(MrtrWithoutMiddlewareTest, ParallelQuestionsAreRefusedTogether) {
+    json response;
+    run([&]() -> mcp::Task<void> {
+        const auto req_response = call_tool(1, "ask_parallel", json::object(), json::object());
+        response = co_await send(req_response);
+    });
+
+    ASSERT_TRUE(response.contains("error")) << response;
+    EXPECT_EQ(response["error"]["data"]["requiredCapabilities"],
+              (json{{"elicitation", {{"form", json::object()}}}}))
+        << response;
+}
+
+TEST_F(MrtrWithoutMiddlewareTest, ProgressReachesTheRequestStream) {
+    std::vector<json> notifications;
+    json response;
+    run([&]() -> mcp::Task<void> {
+        auto request = call_tool(1, "quiet_progress", json::object(), json::object());
+        request["params"]["_meta"]["progressToken"] = "token-1";
+        mcp::RequestContext context;
+        context.notifications = [&notifications](std::string_view message) -> mcp::Task<void> {
+            notifications.push_back(json::parse(message));
+            co_return;
+        };
+        response = co_await send_with(server_.get(), std::move(request), std::move(context));
+    });
+
+    ASSERT_EQ(notifications.size(), 1u);
+    EXPECT_EQ(notifications[0]["method"], "notifications/progress");
+    EXPECT_EQ(notifications[0]["params"]["progressToken"], "token-1");
+    EXPECT_EQ(response["result"]["structuredContent"], (json{{"done", true}})) << response;
+}
+
+TEST_F(MrtrWithoutMiddlewareTest, AToolThatThrowsFailsInsideItsResult) {
+    json response;
+    run([&]() -> mcp::Task<void> {
+        const auto req_response = call_tool(1, "fails", json::object(), json::object());
+        response = co_await send(req_response);
+    });
+
+    ASSERT_TRUE(response.contains("result")) << response;
+    EXPECT_EQ(response["result"]["isError"], true) << response;
+}
+
+TEST_F(MrtrWithoutMiddlewareTest, MalformedToolCallsAreAnsweredAsWithMiddleware) {
+    auto with_middleware = make_server(true);
+    auto bad_token = modern(5, "tools/call", {{"name", "quiet"}});
+    bad_token["params"]["_meta"]["progressToken"] = json::array();
+    const std::vector<json> malformed = {
+        modern(1, "tools/call", {{"name", 7}}),
+        modern(2, "tools/call", {{"arguments", json::object()}}),
+        modern(3, "tools/call", {{"name", "quiet"}, {"arguments", json::array({1})}}),
+        modern(4, "tools/call", {{"name", "missing"}}),
+        bad_token,
+    };
+    std::vector<json> plain;
+    std::vector<json> wrapped;
+    run([&]() -> mcp::Task<void> {
+        for (const auto& request : malformed) {
+            const auto answered = co_await send(request);
+            plain.push_back(answered);
+            mcp::RequestContext context;
+            const auto answered_wrapped =
+                co_await send_with(with_middleware.get(), request, std::move(context));
+            wrapped.push_back(answered_wrapped);
+        }
+    });
+
+    ASSERT_EQ(plain.size(), malformed.size());
+    for (std::size_t index = 0; index < malformed.size(); ++index) {
+        ASSERT_TRUE(plain[index].contains("error")) << plain[index];
+        EXPECT_EQ(plain[index]["error"]["code"], mcp::g_INVALID_PARAMS) << plain[index];
+        EXPECT_EQ(plain[index], wrapped[index]) << malformed[index];
+    }
+    for (const std::size_t index : {0u, 1u, 2u, 4u}) {
+        EXPECT_EQ(
+            plain[index]["error"]["message"].get<std::string>().rfind("Invalid tools/call params: ", 0),
+            0u)
+            << plain[index];
+    }
+    EXPECT_EQ(plain[2]["error"]["message"],
+              "Invalid tools/call params: CallToolParams arguments must be a JSON object");
+    EXPECT_EQ(plain[3]["error"]["message"], "Unknown tool: missing");
+}
+
+TEST_F(MrtrWithoutMiddlewareTest, ListedToolsMatchTheOnesBuiltPageByPage) {
+    json listed;
+    std::vector<json> collected;
+    json last_page;
+    run([&]() -> mcp::Task<void> {
+        const auto list_request = modern(1, "tools/list", json::object(), json::object());
+        listed = co_await send(list_request);
+        server_->set_page_size(1);
+        std::string cursor;
+        for (int guard = 0; guard < 64; ++guard) {
+            json params = json::object();
+            if (!cursor.empty()) {
+                params["cursor"] = cursor;
+            }
+            const auto page_request = modern(2, "tools/list", params, json::object());
+            last_page = co_await send(page_request);
+            for (const auto& tool : last_page["result"]["tools"]) {
+                collected.push_back(tool);
+            }
+            if (!last_page["result"].contains("nextCursor")) {
+                break;
+            }
+            cursor = last_page["result"]["nextCursor"].get<std::string>();
+        }
+    });
+
+    ASSERT_TRUE(listed.contains("result")) << listed;
+    EXPECT_EQ(listed["id"], 1);
+    EXPECT_EQ(listed["result"]["resultType"], "complete") << listed;
+    EXPECT_FALSE(listed["result"].contains("nextCursor")) << listed;
+    EXPECT_TRUE(listed["result"]["_meta"].contains("io.modelcontextprotocol/serverInfo")) << listed;
+    EXPECT_TRUE(listed["result"].contains("ttlMs")) << listed;
+    ASSERT_GE(collected.size(), 5u);
+    EXPECT_EQ(listed["result"]["tools"], json(collected));
+    EXPECT_EQ(listed["result"]["tools"][0]["name"], "ask");
 }
 
 }  // namespace

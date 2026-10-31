@@ -46,6 +46,9 @@ namespace detail {
 enum class ToolResultMode : std::uint8_t {
     eNormalize,
     eValidated,
+    /// The handler returns a CallToolResult value, which serializes to a result the protocol can
+    /// decode: only the checks that depend on the protocol revision remain.
+    eTyped,
 };
 
 /// @brief Detects whether Fn is invocable with (In) returning Task<Out>.
@@ -380,7 +383,7 @@ class MCP_API Server {
         tool.inputSchema = input_schema;
         auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
         constexpr auto result_mode = std::same_as<Out, CallToolResult>
-                                         ? detail::ToolResultMode::eValidated
+                                         ? detail::ToolResultMode::eTyped
                                          : detail::ToolResultMode::eNormalize;
         register_tool(std::move(tool), detail::wrap_handler<In, Out>(std::move(async_handler)),
                       result_mode);
@@ -410,7 +413,7 @@ class MCP_API Server {
         tool.outputSchema = output_schema;
         auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
         constexpr auto result_mode = std::same_as<Out, CallToolResult>
-                                         ? detail::ToolResultMode::eValidated
+                                         ? detail::ToolResultMode::eTyped
                                          : detail::ToolResultMode::eNormalize;
         register_tool(std::move(tool), detail::wrap_handler<In, Out>(std::move(async_handler)),
                       result_mode);

@@ -187,6 +187,37 @@ MrtrEntry::MrtrEntry(const boost::asio::any_io_executor& executor,
     resume_signal.expires_at(std::chrono::steady_clock::time_point::max());
 }
 
+bool client_can_answer_input(const nlohmann::json& request_meta) {
+    const auto declared = request_meta.find(g_META_CLIENT_CAPABILITIES);
+    if (declared == request_meta.end() || !declared->is_object()) {
+        return false;
+    }
+    for (const char* name : {"elicitation", "sampling", "roots"}) {
+        const auto capability = declared->find(name);
+        if (capability != declared->end() && capability->is_object()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool InlineInput::refuse(const nlohmann::json& request) {
+    const auto declared = request_meta_->meta.find(g_META_CLIENT_CAPABILITIES);
+    const auto missing = missing_client_capabilities(
+        declared != request_meta_->meta.end() ? *declared : nlohmann::json::object(), request);
+    if (missing.empty()) {
+        return false;
+    }
+    std::lock_guard lock(mutex_);
+    missing_.merge_patch(missing);
+    return true;
+}
+
+nlohmann::json InlineInput::missing_capabilities() const {
+    std::lock_guard lock(mutex_);
+    return missing_;
+}
+
 nlohmann::json missing_client_capabilities(const nlohmann::json& client_capabilities,
                                            const nlohmann::json& request) {
     const auto& method = request.at("method").get_ref<const std::string&>();
