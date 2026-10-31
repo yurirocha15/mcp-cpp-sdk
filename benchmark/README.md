@@ -39,12 +39,15 @@ cd benchmark
 # Run the language baselines as a diagnostic (not a publishable ranking).
 ./run.sh baseline
 
-# Run the C++ SDKs, their TCP_NODELAY builds, and the language baselines
-# in one counterbalanced run.
+# Run the C++ SDKs, ours-coroutines, their TCP_NODELAY builds, and the language
+# baselines in one counterbalanced run.
 ./run.sh full
 
 # Run selected servers.
 ./run.sh ours-comparable hkr04
+
+# Compare this SDK's thread-based and coroutine-based workloads.
+./run.sh ours-comparable ours-coroutines
 ```
 
 The publishable C++ comparison uses the production defaults: three measured
@@ -82,6 +85,10 @@ requires an explicit action.
 | `fastmcpp` | FastMCPP | 8085 |
 | `cxxmcp` | cxxmcp | 8086 |
 | `neumann` | Neumann-Labs/mcp-cpp | 8087 |
+
+`ours-coroutines` (host port 8098) is not part of `cpp-sdks`. It is a second build
+of this SDK's adapter whose tool handlers are C++20 coroutines; see
+[Coroutine workload](#coroutine-workload). Select it by name or through `full`.
 
 External source repositories and exact commits are recorded in
 `alternatives/sources.tsv`. The adapters use each SDK's public API. They do not
@@ -178,6 +185,89 @@ tool also reported separately.
 
 This is an end-to-end Redis/HTTP workload. It is not a parser-only,
 serialization-only, or in-process SDK microbenchmark.
+
+## Coroutine workload
+
+`ours-comparable` runs the shared, synchronous `benchmark_workload`: each tool
+handler blocks on libcurl and hiredis, submits its parallel steps to a 64-thread
+pool, and runs on a 50-thread handler pool. `ours-coroutines` runs the same
+tools as coroutines. `common/async_workload.cpp` reaches the API service and
+Redis through asio sockets (a Beast HTTP client and a small RESP client), a
+handler suspends while it waits, and the parallel steps of one tool call run
+concurrently without extra threads. It sets no handler pool; the two I/O threads
+run the handlers.
+
+The Redis commands, HTTP requests, and result shape match the shared workload,
+and `ours-coroutines` must pass the same `upstream-v2-strict-mcp-v1` and
+`adapter-exact-v1` checks as `ours-comparable`. One difference remains: the
+shared workload gives each HTTP request a 10 s timeout and a 2 s connect
+timeout, and the coroutine workload sets neither.
+
+Because the two builds run different application code, `ours-coroutines` is
+reported next to `ours-comparable` and is never ranked against the other SDKs'
+shared-workload adapters. The build is chosen with the `OURS_MODEL` build
+argument of `alternatives/Dockerfile.ours` (`threads`, the default, or
+`coroutines`).
+
+## Protocol revision 2026-07-28
+
+`run.sh` measures with `alternatives/benchmark.js`, which negotiates protocol
+`2024-11-05`. `alternatives/benchmark_modern.js` runs the same workload and
+checks over protocol `2026-07-28`, where each request stands alone and no
+session is created. It reads these environment variables:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SERVER_URL` | `http://localhost:8080/mcp` | Endpoint under test |
+| `SERVER_NAME` | `unknown` | Label in the summary |
+| `MCP_PROTOCOL_VERSION` | `2026-07-28` | Revision requested |
+| `BENCHMARK_MODE` | `measurement` | `warmup` or `measurement` |
+| `BENCHMARK_VUS` | `50` | Virtual users |
+| `BENCHMARK_SLEEP` | `0.05` | Seconds each virtual user sleeps per iteration |
+| `BENCHMARK_RAMP_DURATION` | `15s` | Warmup ramp |
+| `BENCHMARK_WARMUP_DURATION` | `60s` | Warmup load |
+| `BENCHMARK_MEASURE_DURATION` | `5m` | Measurement load |
+| `OUTPUT_PATH` | `<SERVER_NAME>_<mode>_summary.json` | Summary file |
+
+`run.sh` does not run this script. To use it, start Redis and the API service,
+start a server on the benchmark network, and run k6 against it:
+
+```bash
+cd benchmark
+export BENCHMARK_CPUSET=$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0)))))')
+docker compose up -d redis api-service
+docker compose --profile seeder run --rm redis-seeder
+cd ..
+docker build -f benchmark/alternatives/Dockerfile.ours --build-arg OURS_MODEL=coroutines -t ours-coroutines .
+docker run -d --name modern-server --network benchmark_mcp-network -p 8089:8080 \
+  -e PORT=8080 -e REDIS_URL=redis://redis:6379 -e API_SERVICE_URL=http://api-service:8100 \
+  ours-coroutines
+mkdir -p results
+docker run --rm --network host -v "$PWD/benchmark/alternatives:/scripts:ro" -v "$PWD/results:/results" \
+  --user "$(id -u):$(id -g)" \
+  -e SERVER_URL=http://localhost:8089/mcp -e SERVER_NAME=ours-coroutines \
+  -e BENCHMARK_MODE=measurement -e BENCHMARK_MEASURE_DURATION=30s \
+  -e OUTPUT_PATH=/results/ours-coroutines.json \
+  grafana/k6@sha256:82e44a45a38ed22bf5636fe50fe8a07967c3074f7aa66567c6a7501ab9bb3a9f \
+  run /scripts/benchmark_modern.js
+docker rm -f modern-server
+```
+
+`baselines/rust-server` is the Rust server of the pinned upstream benchmark
+ported to `rmcp` 3.8.0, the release that serves `2026-07-28`. Its dependency
+set (`Cargo.lock`), its compiler and runtime images, and `rmcp` itself are
+pinned. The workload is the upstream one, except that `checkout` returns the
+result of the `INCR` command as `rate_limit_count`, as the C++ servers do. It
+listens on port 8095 inside its container, so publish it with `-p 8089:8095`:
+
+```bash
+docker build -t rmcp-3.8 benchmark/baselines/rust-server
+docker run -d --name modern-server --network benchmark_mcp-network -p 8089:8095 \
+  -e REDIS_URL=redis://redis:6379 -e API_SERVICE_URL=http://api-service:8100 rmcp-3.8
+```
+
+Compare servers at the same `BENCHMARK_SLEEP`. The API service is shared by every server and
+saturates before the servers do when `BENCHMARK_SLEEP=0`.
 
 ## Concurrency and resource controls
 
