@@ -181,10 +181,19 @@ function requestMeta() {
     };
 }
 
+// Every request carries an id that no other request of the run shares: the number of the virtual
+// user and a counter of that user's requests, as a client that numbers its requests would send.
+let requestCounter = 0;
+
+function nextRequestId() {
+    requestCounter += 1;
+    return __VU * 1e9 + requestCounter;
+}
+
 // One self-contained request. The headers mirror what the body says; a server must refuse a
 // request whose headers and body disagree.
 function modernRequest(method, params, name, metricName) {
-    const id = 1;
+    const id = nextRequestId();
     const headers = Object.assign({}, BASE_HEADERS, {'Mcp-Method': method});
     if (name !== undefined)
         headers['Mcp-Name'] = name;

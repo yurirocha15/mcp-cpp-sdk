@@ -206,8 +206,8 @@ register_session_mode() {
 # A server key names the SDK and the session mode it serves older protocol revisions in. Protocol
 # 2026-07-28 has no sessions, so the mode only matters for the revisions that do. An SDK that has no
 # switch for a mode has no key for it.
-CPP_SDK_SERVERS=(ours-comparable-stateful ours-comparable-stateless ours-comparable-modern hkr04 fastmcpp cxxmcp neumann)
-NODELAY_SERVERS=(hkr04-nodelay fastmcpp-nodelay cxxmcp-nodelay neumann-nodelay)
+CPP_SDK_SERVERS=(ours-comparable-stateful ours-comparable-stateless ours-comparable-modern hkr04 fastmcpp cxxmcp cxxmcp-modern neumann)
+NODELAY_SERVERS=(hkr04-nodelay fastmcpp-nodelay cxxmcp-nodelay cxxmcp-nodelay-modern neumann-nodelay)
 VARIANT_SERVERS=(ours-coroutines-stateful ours-coroutines-stateless ours-coroutines-modern)
 BASELINE_SERVERS=(python-stateless python-modern go-stateless go-stateful go-modern rust-stateless rust-stateful rust-modern)
 FULL_SERVERS=("${CPP_SDK_SERVERS[@]}" "${VARIANT_SERVERS[@]}" "${NODELAY_SERVERS[@]}" "${BASELINE_SERVERS[@]}")
@@ -254,7 +254,7 @@ register_modern() {
         REQUIRE_SUPPLEMENTAL[$key]="${REQUIRE_SUPPLEMENTAL[$sdk]}"
     fi
 }
-for sdk in ours-comparable ours-coroutines python go rust; do
+for sdk in ours-comparable ours-coroutines python go rust cxxmcp cxxmcp-nodelay; do
     register_modern "$sdk"
 done
 
@@ -982,8 +982,8 @@ load_alternative_manifest
 declare -A seen_servers=()
 for server in "${selected_servers[@]}"; do
     case "$server" in
-        cpp|hkr04|fastmcpp|cxxmcp|neumann) ;;
-        hkr04-nodelay|fastmcpp-nodelay|cxxmcp-nodelay|neumann-nodelay) ;;
+        cpp|hkr04|fastmcpp|cxxmcp|cxxmcp-modern|neumann) ;;
+        hkr04-nodelay|fastmcpp-nodelay|cxxmcp-nodelay|cxxmcp-nodelay-modern|neumann-nodelay) ;;
         ours-comparable-stateful|ours-comparable-stateless|ours-comparable-modern) ;;
         ours-coroutines-stateful|ours-coroutines-stateless|ours-coroutines-modern) ;;
         python-stateless|python-modern|rust-stateful|rust-stateless|rust-modern) ;;
@@ -1110,7 +1110,8 @@ chmod 0444 "$RUNTIME_COMPOSE_FILE" "$K6_RUNTIME_SCRIPT_DIR/benchmark.js" \
 
 ensure_upstream_sources
 for server in "${selected_servers[@]}"; do
-    source_id="${server%-nodelay}"
+    source_id="${server%-modern}"
+    source_id="${source_id%-nodelay}"
     if [[ -n "${ALTERNATIVE_REPO[$source_id]:-}" ]]; then
         [[ "${ALTERNATIVE_STATUS[$source_id]}" == "supported" ]] || {
             error "$server is not runnable: ${ALTERNATIVE_STATUS[$source_id]}"
