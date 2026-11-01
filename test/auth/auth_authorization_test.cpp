@@ -1629,6 +1629,7 @@ std::pair<std::size_t, bool> prompts_for_one_request(mcp::auth::OAuthClientTrans
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
     const auto base = server.base_url();
+    int refusals = 0;
 
     server.set_handler([&](const http::request<http::string_body>& request) {
         const std::string target(request.target());
@@ -1640,11 +1641,12 @@ std::pair<std::size_t, bool> prompts_for_one_request(mcp::auth::OAuthClientTrans
                               R"(Bearer scope="mcp:admin", resource_metadata=")" + base + R"(/prm")");
                 return challenge;
             }
+            // A different scope every time, so no refusal asks for what is already granted.
             http::response<http::string_body> challenge{http::status::forbidden, 11};
             challenge.set(http::field::www_authenticate,
-                          R"(Bearer error="insufficient_scope", scope="mcp:admin", )"
-                          R"(resource_metadata=")" +
-                              base + R"(/prm")");
+                          R"(Bearer error="insufficient_scope", scope="mcp:admin)" +
+                              std::to_string(++refusals) + R"(", resource_metadata=")" + base +
+                              R"(/prm")");
             return challenge;
         }
         if (target == "/prm") {
@@ -1718,6 +1720,114 @@ TEST(AuthScopeStepUpTest, StepUpsPerRequestAreConfigurable) {
     const auto [prompts_with, failed_with] = prompts_for_one_request(many);
     EXPECT_TRUE(failed_with);
     EXPECT_EQ(prompts_with, 3U);
+}
+
+namespace {
+
+/// What a step-up scenario observed: the scope of every authorization request, and whether the
+/// write failed.
+struct StepUpOutcome {
+    std::vector<std::string> requested_scopes;
+    std::exception_ptr failure;
+    int mcp_calls{0};
+};
+
+/// Writes one request through an OAuthClientTransport against a server that challenges the first
+/// call with `first_scope` and then refuses every authorized call with the scope
+/// `refusal_scope(n)` returns for the n-th refusal, until it returns an empty string, after which the
+/// call succeeds.
+StepUpOutcome run_step_up_scenario(const std::string& first_scope,
+                                   const std::function<std::string(int)>& refusal_scope) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    StepUpOutcome outcome;
+    int refusals = 0;
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/mcp") {
+            ++outcome.mcp_calls;
+            if (request[http::field::authorization].empty()) {
+                http::response<http::string_body> challenge{http::status::unauthorized, 11};
+                challenge.set(http::field::www_authenticate, R"(Bearer scope=")" + first_scope +
+                                                                 R"(", resource_metadata=")" + base +
+                                                                 R"(/prm")");
+                return challenge;
+            }
+            const auto scope = refusal_scope(++refusals);
+            if (scope.empty()) {
+                return status_response(http::status::accepted);
+            }
+            http::response<http::string_body> challenge{http::status::forbidden, 11};
+            challenge.set(http::field::www_authenticate,
+                          R"(Bearer error="insufficient_scope", scope=")" + scope +
+                              R"(", resource_metadata=")" + base + R"(/prm")");
+            return challenge;
+        }
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(40), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            auto inner =
+                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+                io_ctx.get_executor(), store, config, recording_callback(&outcome.requested_scopes));
+            mcp::auth::OAuthClientTransport transport(inner, manager);
+            try {
+                co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+            } catch (...) {
+                outcome.failure = std::current_exception();
+            }
+            transport.close();
+            server.close();
+        },
+        asio::detached);
+    io_ctx.run();
+    return outcome;
+}
+
+}  // namespace
+
+// A refusal that asks only for scopes the token already carries cannot be cured by authorizing
+// again, so the user is not prompted and the refusal reaches the caller.
+TEST(AuthScopeStepUpTest, ChallengeAddingNoNewScopeDoesNotReauthorize) {
+    const auto outcome =
+        run_step_up_scenario("mcp:basic mcp:read", [](int) { return std::string("mcp:read"); });
+
+    EXPECT_NE(outcome.failure, nullptr);
+    EXPECT_EQ(outcome.requested_scopes.size(), 1U);
+    EXPECT_EQ(outcome.mcp_calls, 2);
+}
+
+TEST(AuthScopeStepUpTest, ChallengeWithNewScopeStillReauthorizes) {
+    const auto outcome = run_step_up_scenario(
+        "mcp:basic", [](int n) { return n == 1 ? std::string("mcp:basic mcp:write") : std::string(); });
+
+    EXPECT_EQ(outcome.failure, nullptr);
+    ASSERT_EQ(outcome.requested_scopes.size(), 2U);
+    EXPECT_TRUE(has_scopes(outcome.requested_scopes[1], {"mcp:basic", "mcp:write"}));
+    EXPECT_EQ(outcome.mcp_calls, 3);
 }
 
 // A scope one authorization server granted means nothing to another: a step-up that moves to a new
