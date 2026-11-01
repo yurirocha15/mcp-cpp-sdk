@@ -112,6 +112,7 @@ class ClassifierTests(unittest.TestCase):
             "src/main.cpp": LIBRARY_JOBS,
             "include/mcp/sdk.hpp": LIBRARY_JOBS,
             "test/core/protocol_test.cpp": {"code"},
+            "test/data/json-schema/suite.json": {"code", "release"},
             "examples/features/pagination.cpp": {"code"},
             "scripts/run_examples.py": {"code", "release"},
             "test_package/conanfile.py": {"conan"} | PACKAGES,
@@ -142,6 +143,7 @@ class ClassifierTests(unittest.TestCase):
             "cmake/config.cmake.in": LIBRARY_JOBS | PACKAGES,
             "conanfile.py": LIBRARY_JOBS | {"release"} | PACKAGES,
             "VERSION": LIBRARY_JOBS | {"release"} | PACKAGES,
+            "third_party/jsoncons/PROVENANCE": LIBRARY_JOBS | {"release"} | PACKAGES,
             ".github/workflows/ci.yml": ALL_JOBS,
         }
         for path, jobs in expected.items():

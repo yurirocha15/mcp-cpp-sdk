@@ -128,6 +128,30 @@ TypeErasedHandler wrap_handler(Fn fn) {
 }  // namespace detail
 
 /**
+ * @brief Which checks a Server applies to tool calls (see Server::set_tool_validation()).
+ *
+ * Both protocol revisions require servers to validate tool inputs; turning a check off is for an
+ * application that validates them itself.
+ */
+struct ToolValidationOptions {
+    /// Check `tools/call` arguments against the tool's input schema. Arguments that do not conform
+    /// are answered with an `isError` result listing the violations, and the handler does not run.
+    bool validate_arguments = true;
+    /// Check the `structuredContent` of a successful result against the tool's output schema. A
+    /// result that does not conform is a fault in the tool, answered with `g_INTERNAL_ERROR`.
+    bool validate_structured_content = true;
+};
+
+/**
+ * @brief Tool calls a Server's validation has refused (see Server::tool_validation_stats()).
+ */
+struct ToolValidationStats {
+    std::uint64_t argument_rejections = 0;  ///< Calls whose arguments did not conform.
+    /// Calls whose result's `structuredContent` did not conform to the output schema.
+    std::uint64_t structured_content_rejections = 0;
+};
+
+/**
  * @brief MCP server that handles client requests over a transport.
  *
  * Manages the JSON-RPC message loop, dispatching incoming requests to
@@ -162,6 +186,9 @@ class MCP_API Server {
      * @param description  Human-readable description.
      * @param input_schema JSON schema for the tool's input parameters.
      * @param handler      Handler invoked on tools/call requests.
+     * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
+     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_tool(const std::string& name, const std::string& description,
@@ -183,6 +210,10 @@ class MCP_API Server {
      *
      * Like add_tool(), but also sets the tool's outputSchema so results include
      * a structuredContent field alongside content.
+     *
+     * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
+     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_tool(const std::string& name, const std::string& description,
@@ -211,6 +242,9 @@ class MCP_API Server {
      * @param description  Human-readable description.
      * @param input_schema JSON schema for the tool's input parameters.
      * @param handler      Synchronous handler: takes JSON params, returns JSON result.
+     * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
+     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     void add_tool(const std::string& name, const std::string& description,
                   const nlohmann::json& input_schema,
@@ -225,6 +259,9 @@ class MCP_API Server {
      *
      * @param tool Tool metadata.
      * @param handler Asynchronous raw handler receiving tool arguments.
+     * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
+     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     void add_raw_tool(const Tool& tool, TypeErasedHandler handler);
 
@@ -233,6 +270,9 @@ class MCP_API Server {
      *
      * @param tool Tool metadata.
      * @param handler Synchronous raw handler receiving tool arguments.
+     * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
+     *         CompiledSchema), or the input schema does not declare `"type": "object"`.
+     * @throws std::invalid_argument when a tool with the same name is already registered.
      */
     void add_raw_tool(const Tool& tool, std::function<nlohmann::json(const nlohmann::json&)> handler);
 
@@ -310,6 +350,16 @@ class MCP_API Server {
      * @param handler The handler that provides completion results.
      */
     void set_completion_provider(CompletionHandler handler);
+
+    /**
+     * @brief Set which checks apply to tool calls.
+     *
+     * @details Read unsynchronized by request handlers; must be called before run().
+     */
+    void set_tool_validation(const ToolValidationOptions& options);
+
+    /// Tool calls refused by validation since this server was created.
+    [[nodiscard]] ToolValidationStats tool_validation_stats() const;
 
     /**
      * @brief Set the page size for paginated list responses.

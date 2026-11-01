@@ -599,10 +599,10 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(len(first[0]["files"]), 2)
         self.assertEqual(len(first[1]["components"]), 2)
-        self.assertEqual(first[0]["packages"][0]["licenseDeclared"], "Apache-2.0")
+        self.assertEqual(first[0]["packages"][0]["licenseDeclared"], "Apache-2.0 AND BSL-1.0")
         self.assertEqual(
-            first[1]["metadata"]["component"]["licenses"][0]["license"]["id"],
-            "Apache-2.0",
+            first[1]["metadata"]["component"]["licenses"][0]["expression"],
+            "Apache-2.0 AND BSL-1.0",
         )
 
 
