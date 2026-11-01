@@ -24,12 +24,14 @@ COPY src/ src/
 COPY third_party/ third_party/
 COPY benchmark/alternatives/ benchmark/alternatives/
 
+# Compile jobs; the machine builds one image at a time and each translation unit needs gigabytes.
+ARG BUILD_JOBS=4
 RUN cmake -S /src/benchmark/alternatives -B /build \
       -DBENCHMARK_SDK=ours \
       -DBENCHMARK_SDK_SOURCE=/src \
       -DBENCHMARK_OURS_MODEL=${OURS_MODEL} \
       -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build /build --target alternative-benchmark-server -j"$(nproc)"
+    && cmake --build /build --target alternative-benchmark-server -j"${BUILD_JOBS}"
 
 ENV PORT=8080
 EXPOSE 8080
