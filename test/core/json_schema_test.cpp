@@ -1888,7 +1888,7 @@ const std::vector<SuiteFileCount> g_2020_12_counts = {
     {"minLength.json", 7, 0},
     {"minProperties.json", 10, 0},
     {"minimum.json", 11, 0},
-    {"multipleOf.json", 11, 0},
+    {"multipleOf.json", 13, 0},
     {"not.json", 40, 0},
     {"oneOf.json", 27, 0},
     {"pattern.json", 9, 3},
@@ -1902,7 +1902,7 @@ const std::vector<SuiteFileCount> g_2020_12_counts = {
     {"type.json", 80, 0},
     {"unevaluatedItems.json", 71, 0},
     {"unevaluatedProperties.json", 129, 0},
-    {"uniqueItems.json", 69, 0},
+    {"uniqueItems.json", 65, 0},
     {"vocabulary.json", 0, 5},
 };
 
@@ -1932,7 +1932,7 @@ const std::vector<SuiteFileCount> g_draft7_counts = {
     {"minLength.json", 7, 0},
     {"minProperties.json", 10, 0},
     {"minimum.json", 11, 0},
-    {"multipleOf.json", 11, 0},
+    {"multipleOf.json", 13, 0},
     {"not.json", 38, 0},
     {"oneOf.json", 27, 0},
     {"pattern.json", 9, 0},
@@ -1943,7 +1943,7 @@ const std::vector<SuiteFileCount> g_draft7_counts = {
     {"refRemote.json", 0, 23},
     {"required.json", 18, 0},
     {"type.json", 80, 0},
-    {"uniqueItems.json", 69, 0},
+    {"uniqueItems.json", 65, 0},
 };
 
 TEST(Suite, Required2020_12) {
