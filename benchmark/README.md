@@ -122,6 +122,17 @@ Both keys of an SDK start the same container.
 | Python | none | `python-stateless` |
 | hkr04, FastMCPP, cxxmcp, Neumann and their TCP_NODELAY builds | `hkr04`, `fastmcpp`, `cxxmcp`, `neumann` (and `-nodelay`) | none |
 
+Protocol `2026-07-28` runs under the names `ours-comparable-modern`, `ours-coroutines-modern`,
+`python-modern`, `go-modern` and `rust-modern`. They start the same containers, request that
+revision through `alternatives/benchmark_modern.js` and the verifier's `--protocol-version
+2026-07-28` (a `server/discover` check, then self-contained requests), and show `sessionless` in the
+Mode column. cxxmcp answers `server/discover` and `initialize` for that revision from v1.3.0, but with 20
+concurrent clients that use the same request id it answered 562 of 800 requests with
+`"duplicate client request id"`. The k6 profile uses a fixed request id, so under 50 concurrent
+clients it fails the correctness gate, and cxxmcp has no key for that revision. hkr04, FastMCPP and
+Neumann-Labs answer every `initialize` with an older revision, including when it asks for
+`2026-07-28`. All of this was checked against the pinned commits.
+
 A server that has no switch for a mode has no name for it, so it is left out of that comparison
 rather than approximated. The reasons, read from each SDK's source at the pinned commit and, for
 Python, observed on the benchmark container:

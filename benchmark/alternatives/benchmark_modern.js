@@ -13,6 +13,7 @@ import {Counter, Rate, Trend} from 'k6/metrics';
 const SERVER_URL = __ENV.SERVER_URL || 'http://localhost:8080/mcp';
 const SERVER_NAME = __ENV.SERVER_NAME || 'unknown';
 const PROTOCOL_VERSION = __ENV.MCP_PROTOCOL_VERSION || '2026-07-28';
+const EXPECTED_PROTOCOL_VERSION = __ENV.EXPECTED_PROTOCOL_VERSION || null;
 const MODE = (__ENV.BENCHMARK_MODE || 'measurement').toLowerCase();
 const BENCHMARK_CONTRACT = __ENV.BENCHMARK_CONTRACT || 'upstream-v2-strict-mcp-v1';
 
@@ -407,6 +408,7 @@ export function handleSummary(data) {
             mode: MODE,
             server_url: SERVER_URL,
             requested_protocol_version: PROTOCOL_VERSION,
+            expected_negotiated_protocol_version: EXPECTED_PROTOCOL_VERSION,
             eligibility_contract: BENCHMARK_CONTRACT,
             vus: VUS,
             sleep_seconds: SLEEP_SECONDS,

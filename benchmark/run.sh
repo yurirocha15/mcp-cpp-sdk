@@ -9,9 +9,12 @@ UPSTREAM_BENCHMARK_DIR="$SCRIPT_DIR/benchmark-mcp-servers-v2"
 UPSTREAM_BENCHMARK_REPO="https://github.com/thiagomendes/benchmark-mcp-servers-v2.git"
 UPSTREAM_BENCHMARK_COMMIT="8a9a5f8ef505f46b6079072ef4603304ca672e33"
 K6_SCRIPT="$SCRIPT_DIR/alternatives/benchmark.js"
+K6_MODERN_SCRIPT="$SCRIPT_DIR/alternatives/benchmark_modern.js"
 K6_RUNTIME_SCRIPT_DIR="$SCRIPT_DIR/alternatives"
 RUNTIME_COMPOSE_SHA256=""
 RUNTIME_K6_SHA256=""
+RUNTIME_K6_MODERN_SHA256=""
+MODERN_PROTOCOL_VERSION="2026-07-28"
 ALTERNATIVE_MANIFEST="$SCRIPT_DIR/alternatives/sources.tsv"
 ALTERNATIVE_SOURCE_DIR="$SCRIPT_DIR/alternative-sdks"
 MCP_PROTOCOL_VERSION="2024-11-05"
@@ -203,10 +206,10 @@ register_session_mode() {
 # A server key names the SDK and the session mode it serves older protocol revisions in. Protocol
 # 2026-07-28 has no sessions, so the mode only matters for the revisions that do. An SDK that has no
 # switch for a mode has no key for it.
-CPP_SDK_SERVERS=(ours-comparable-stateful ours-comparable-stateless hkr04 fastmcpp cxxmcp neumann)
+CPP_SDK_SERVERS=(ours-comparable-stateful ours-comparable-stateless ours-comparable-modern hkr04 fastmcpp cxxmcp neumann)
 NODELAY_SERVERS=(hkr04-nodelay fastmcpp-nodelay cxxmcp-nodelay neumann-nodelay)
-VARIANT_SERVERS=(ours-coroutines-stateful ours-coroutines-stateless)
-BASELINE_SERVERS=(python-stateless go-stateless go-stateful rust-stateless rust-stateful)
+VARIANT_SERVERS=(ours-coroutines-stateful ours-coroutines-stateless ours-coroutines-modern)
+BASELINE_SERVERS=(python-stateless python-modern go-stateless go-stateful go-modern rust-stateless rust-stateful rust-modern)
 FULL_SERVERS=("${CPP_SDK_SERVERS[@]}" "${VARIANT_SERVERS[@]}" "${NODELAY_SERVERS[@]}" "${BASELINE_SERVERS[@]}")
 
 declare -A REQUIRE_SUPPLEMENTAL=(
@@ -233,6 +236,36 @@ register_session_mode rust stateful
 register_session_mode rust stateless
 register_session_mode go stateful
 register_session_mode go stateless
+
+# Protocol 2026-07-28 has no sessions, so each SDK that serves it has one key for it. The key
+# starts the same container as its older-revision keys.
+declare -A REQUESTED_PROTOCOL=()
+register_modern() {
+    local sdk="$1" key="$1-modern"
+    SERVICE_NAME[$key]="${SERVICE_NAME[$sdk]}"
+    CONTAINER_NAME[$key]="${CONTAINER_NAME[$sdk]}"
+    MCP_URL[$key]="${MCP_URL[$sdk]}"
+    HEALTH_URL[$key]="${HEALTH_URL[$sdk]}"
+    HEALTH_KIND[$key]="${HEALTH_KIND[$sdk]}"
+    EXPECTED_SERVER_TYPE[$key]="${EXPECTED_SERVER_TYPE[$sdk]}"
+    SESSION_MODE[$key]="sessionless"
+    REQUESTED_PROTOCOL[$key]="$MODERN_PROTOCOL_VERSION"
+    if [[ -n "${REQUIRE_SUPPLEMENTAL[$sdk]:-}" ]]; then
+        REQUIRE_SUPPLEMENTAL[$key]="${REQUIRE_SUPPLEMENTAL[$sdk]}"
+    fi
+}
+for sdk in ours-comparable ours-coroutines python go rust; do
+    register_modern "$sdk"
+done
+
+requested_protocol() { printf '%s' "${REQUESTED_PROTOCOL[$1]:-$MCP_PROTOCOL_VERSION}"; }
+k6_script_name() {
+    if [[ "$(requested_protocol "$1")" == "$MODERN_PROTOCOL_VERSION" ]]; then
+        printf 'benchmark_modern.js'
+    else
+        printf 'benchmark.js'
+    fi
+}
 
 declare -A ALTERNATIVE_REPO=()
 declare -A ALTERNATIVE_COMMIT=()
@@ -261,11 +294,13 @@ USAGE
 
 verify_runtime_harness() {
     [[ -n "$RUNTIME_COMPOSE_SHA256" && -n "$RUNTIME_K6_SHA256" ]] || return 0
-    local compose_sha256 k6_sha256
+    local compose_sha256 k6_sha256 k6_modern_sha256
     compose_sha256="$(sha256sum "$RUNTIME_COMPOSE_FILE" | awk '{print $1}')"
     k6_sha256="$(sha256sum "$K6_RUNTIME_SCRIPT_DIR/benchmark.js" | awk '{print $1}')"
+    k6_modern_sha256="$(sha256sum "$K6_RUNTIME_SCRIPT_DIR/benchmark_modern.js" | awk '{print $1}')"
     [[ "$compose_sha256" == "$RUNTIME_COMPOSE_SHA256" \
-        && "$k6_sha256" == "$RUNTIME_K6_SHA256" ]] || {
+        && "$k6_sha256" == "$RUNTIME_K6_SHA256" \
+        && "$k6_modern_sha256" == "$RUNTIME_K6_MODERN_SHA256" ]] || {
         error "Immutable runtime harness changed during the benchmark"
         return 1
     }
@@ -544,7 +579,8 @@ wait_for_mcp() {
     info "Waiting for $name MCP initialize at $url"
     while true; do
         if python3 "$SCRIPT_DIR/verify_server.py" "$url" \
-            --name "$name-readiness" --initialize-only >/dev/null 2>&1; then
+            --name "$name-readiness" --initialize-only \
+            --protocol-version "$(requested_protocol "$name")" >/dev/null 2>&1; then
             ok "$name is accepting MCP requests"
             return 0
         fi
@@ -662,7 +698,7 @@ run_k6_warmup() {
         -v "$server_results:/results" \
         -e SERVER_URL="$server_url" \
         -e SERVER_NAME="$server" \
-        -e MCP_PROTOCOL_VERSION="$MCP_PROTOCOL_VERSION" \
+        -e MCP_PROTOCOL_VERSION="$(requested_protocol "$server")" \
         -e EXPECTED_PROTOCOL_VERSION="$negotiated_protocol_version" \
         -e BENCHMARK_CONTRACT="$ELIGIBILITY_CONTRACT" \
         -e BENCHMARK_MODE=warmup \
@@ -670,7 +706,7 @@ run_k6_warmup() {
         -e BENCHMARK_RAMP_DURATION="$BENCHMARK_RAMP_DURATION" \
         -e BENCHMARK_WARMUP_DURATION="$BENCHMARK_WARMUP_DURATION" \
         -e OUTPUT_PATH="/results/warmup_summary_run${run_idx}.json" \
-        "$K6_IMAGE" run /scripts/benchmark.js \
+        "$K6_IMAGE" run "/scripts/$(k6_script_name "$server")" \
         2>&1 | tee "$log_file"
     pipeline_status=("${PIPESTATUS[@]}")
     set -e
@@ -715,14 +751,14 @@ run_k6_measurement() {
         -v "$server_results:/results" \
         -e SERVER_URL="$server_url" \
         -e SERVER_NAME="$server" \
-        -e MCP_PROTOCOL_VERSION="$MCP_PROTOCOL_VERSION" \
+        -e MCP_PROTOCOL_VERSION="$(requested_protocol "$server")" \
         -e EXPECTED_PROTOCOL_VERSION="$negotiated_protocol_version" \
         -e BENCHMARK_CONTRACT="$ELIGIBILITY_CONTRACT" \
         -e BENCHMARK_MODE=measurement \
         -e BENCHMARK_VUS="$BENCHMARK_VUS" \
         -e BENCHMARK_MEASURE_DURATION="$BENCHMARK_MEASURE_DURATION" \
         -e OUTPUT_PATH="/results/k6_summary_run${run_idx}.json" \
-        "$K6_IMAGE" run --paused --address 127.0.0.1:6565 /scripts/benchmark.js \
+        "$K6_IMAGE" run --paused --address 127.0.0.1:6565 "/scripts/$(k6_script_name "$server")" \
         2>&1 | tee "$log_file" &
     k6_pid=$!
 
@@ -838,8 +874,12 @@ write_run_manifest() {
           else error("compose images did not contain the exact selected container set with immutable IDs")
           end
     ' > "$RESULTS_DIR/compose_images.json"
-    local session_modes_json='{}'
+    local session_modes_json='{}' requested_protocols_json='{}'
     for target in "${selected_servers[@]}"; do
+        requested_protocols_json="$(
+            jq -c --arg target "$target" --arg version "$(requested_protocol "$target")" \
+                '. + {($target): $version}' <<< "$requested_protocols_json"
+        )"
         session_modes_json="$(
             jq -c --arg target "$target" --arg mode "${SESSION_MODE[$target]:-}" \
                 '. + {($target): $mode}' <<< "$session_modes_json"
@@ -860,6 +900,7 @@ write_run_manifest() {
         --arg host_network_policy "$HOST_NETWORK_POLICY" \
         --argjson supplemental_targets "$supplemental_targets_json" \
         --argjson session_modes "$session_modes_json" \
+        --argjson requested_protocols "$requested_protocols_json" \
         --argjson k6_cpus "$BENCHMARK_K6_CPUS" \
         --argjson k6_memory_bytes "$BENCHMARK_K6_MEMORY_BYTES" \
         --slurpfile schedule "$RESULTS_DIR/run_order.json" \
@@ -878,6 +919,7 @@ write_run_manifest() {
             }
           },
           session_modes: $session_modes,
+          requested_protocols: $requested_protocols,
           resource_collection: {host_network_policy: $host_network_policy},
           k6_image: $k6_image, schedule: $schedule[0], images: $images[0]}' \
         > "$RESULTS_DIR/run_manifest.json"
@@ -888,17 +930,16 @@ generate_comparison() {
     {
         printf "Benchmark comparison (%s profile)\n" "$RUN_PROFILE"
         printf "Only separate constant-VU measurement invocations are reported.\n"
-        printf "Requested MCP revision: %s; each row records the server-selected revision.\n" \
-            "$MCP_PROTOCOL_VERSION"
+        printf "Each row records the MCP revision the server selected; run_manifest.json records the one requested.\n"
         printf "Eligibility contract: %s (identical measured predicates for every row).\n" \
             "$ELIGIBILITY_CONTRACT"
         printf "Supplemental adapter contract: %s (out-of-band evidence).\n" \
             "$SUPPLEMENTAL_CONTRACT"
         printf "Results: %s\n\n" "${RESULTS_DIR#"$(dirname "$SCRIPT_DIR")/"}"
-        printf "%-28s %-10s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
+        printf "%-28s %-12s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
             "Server" "Mode" "Protocol" "Operations" "Ops/s" "CV%" "p50(ms)" "p95(ms)" "p99(ms)" "ErrorRate"
-        printf "%-28s %-10s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
-            "----------------------------" "----------" "------------" "------------" "----------" "--------" \
+        printf "%-28s %-12s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
+            "----------------------------" "------------" "------------" "------------" "----------" "--------" \
             "------------" "------------" "------------" "------------"
         local server summary multi_stats protocol operations rps p50 p95 p99 err_rate cv_pct
         for server in "${selected_servers[@]}"; do
@@ -912,7 +953,7 @@ generate_comparison() {
             p99="$(jq -r '.latency.combined_tool_call.p99_ms' "$summary")"
             err_rate="$(jq -r '.errors.mcp_rate' "$summary")"
             cv_pct="$(jq -r '.sample_cv_pct' "$multi_stats")"
-            printf "%-28s %-10s %-12s %-12s %-10.2f %-8.2f %-12.2f %-12.2f %-12.2f %-12.4f\n" \
+            printf "%-28s %-12s %-12s %-12s %-10.2f %-8.2f %-12.2f %-12.2f %-12.2f %-12.4f\n" \
                 "$server" "${SESSION_MODE[$server]:-}" "$protocol" "$operations" "$rps" "$cv_pct" \
                 "$p50" "$p95" "$p99" "$err_rate"
         done
@@ -943,9 +984,10 @@ for server in "${selected_servers[@]}"; do
     case "$server" in
         cpp|hkr04|fastmcpp|cxxmcp|neumann) ;;
         hkr04-nodelay|fastmcpp-nodelay|cxxmcp-nodelay|neumann-nodelay) ;;
-        ours-comparable-stateful|ours-comparable-stateless) ;;
-        ours-coroutines-stateful|ours-coroutines-stateless) ;;
-        python-stateless|rust-stateful|rust-stateless|go-stateful|go-stateless) ;;
+        ours-comparable-stateful|ours-comparable-stateless|ours-comparable-modern) ;;
+        ours-coroutines-stateful|ours-coroutines-stateless|ours-coroutines-modern) ;;
+        python-stateless|python-modern|rust-stateful|rust-stateless|rust-modern) ;;
+        go-stateful|go-stateless|go-modern) ;;
         gopher-mcp)
             error "gopher-mcp exposes legacy HTTP+SSE rather than the shared /mcp Streamable HTTP contract"
             exit 2
@@ -988,7 +1030,8 @@ RUN_PROFILE="smoke"
 baseline_selection=true
 for server in "${selected_servers[@]}"; do
     case "$server" in
-        python-stateless|go-stateful|go-stateless|rust-stateful|rust-stateless) ;;
+        python-stateless|python-modern|go-stateful|go-stateless|go-modern) ;;
+        rust-stateful|rust-stateless|rust-modern) ;;
         *) baseline_selection=false ;;
     esac
 done
@@ -1041,6 +1084,7 @@ if [[ "$RUN_PROFILE" != "smoke" && "$HOST_CPU_LIMIT" -lt 9 ]]; then
 fi
 compose version >/dev/null
 [[ -f "$K6_SCRIPT" ]] || { error "Missing local k6 profile: $K6_SCRIPT"; exit 1; }
+[[ -f "$K6_MODERN_SCRIPT" ]] || { error "Missing local k6 profile: $K6_MODERN_SCRIPT"; exit 1; }
 for helper in benchmark_order.py capture_container.py capture_environment.py \
     collect_stats.py select_median_run.py summarize_collector_failures.py \
     validate_resource_headroom.py verify_server.py; do
@@ -1050,15 +1094,18 @@ done
 mkdir -p "$RESULTS_DIR/harness"
 cp "$COMPOSE_FILE" "$RESULTS_DIR/harness/docker-compose.yml"
 cp "$K6_SCRIPT" "$RESULTS_DIR/harness/benchmark.js"
+cp "$K6_MODERN_SCRIPT" "$RESULTS_DIR/harness/benchmark_modern.js"
 (
     cd "$RESULTS_DIR/harness"
-    sha256sum benchmark.js docker-compose.yml > SHA256SUMS
+    sha256sum benchmark.js benchmark_modern.js docker-compose.yml > SHA256SUMS
 )
 RUNTIME_COMPOSE_FILE="$RESULTS_DIR/harness/docker-compose.yml"
 K6_RUNTIME_SCRIPT_DIR="$RESULTS_DIR/harness"
 RUNTIME_COMPOSE_SHA256="$(sha256sum "$RUNTIME_COMPOSE_FILE" | awk '{print $1}')"
 RUNTIME_K6_SHA256="$(sha256sum "$K6_RUNTIME_SCRIPT_DIR/benchmark.js" | awk '{print $1}')"
+RUNTIME_K6_MODERN_SHA256="$(sha256sum "$K6_RUNTIME_SCRIPT_DIR/benchmark_modern.js" | awk '{print $1}')"
 chmod 0444 "$RUNTIME_COMPOSE_FILE" "$K6_RUNTIME_SCRIPT_DIR/benchmark.js" \
+    "$K6_RUNTIME_SCRIPT_DIR/benchmark_modern.js" \
     "$K6_RUNTIME_SCRIPT_DIR/SHA256SUMS"
 
 ensure_upstream_sources
@@ -1186,6 +1233,7 @@ for run_idx in $(seq 1 "$BENCHMARK_RUNS"); do
         reset_redis_dataset
         info "[$server] correctness and negotiation gate"
         verifier_contract_args=(
+            --protocol-version "$(requested_protocol "$server")"
             --eligibility-contract "$ELIGIBILITY_CONTRACT"
             --redis-url "redis://127.0.0.1:6379/0"
         )
