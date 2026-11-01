@@ -53,6 +53,45 @@ This separation (SEP-2352) prevents a vulnerability where a single MCP server pr
 
 **Do not merge these stores.** Use separate persistent implementations, keyed correctly, and validate that a stored credential's issuer matches the issuer being contacted before presenting the credential. The SDK's :cpp:func:`mcp::auth::select_client_identity` function validates the issuer binding automatically when reusing stored credentials; operators who implement custom storage must enforce the same check.
 
+Scope State and Step-Up
+-----------------------
+
+The scope an authorization granted is state the manager keeps between
+authorizations, and it is bound to the authorization server in the same way the
+client credentials above are. A step-up request is the union of the refused
+operation's scope and the scope the *current* issuer granted, taken from the
+token response and, when the response omits it, from the request. Scope granted
+by another issuer is never carried over: it means nothing to a different
+authorization server, and sending it would ask the user to approve scopes for a
+server that never issued them. The granted scope is held in memory only.
+
+Two limits stop a server from driving an endless sequence of consent prompts. A
+challenge whose every scope is literally present in the current issuer's
+granted scope is not acted on, because authorizing again would request what the
+token already carries; the ``403`` is reported to the caller. The match is
+exact, so a challenge written differently from the grant, or relying on a scope
+hierarchy, still triggers an authorization. And a request costs at most the
+authorization its ``401`` asks for and the step-ups
+``OAuthClientTransportOptions::max_step_ups_per_request`` allows (one by
+default). Neither limit tracks an operation
+across requests: the same operation refused again later starts again from zero.
+
+``offline_access`` is added to the authorization request only when the
+authorization server lists it in ``scopes_supported`` and no explicit
+``OAuthAuthorizationConfig::scope`` is set, and
+``OAuthAuthorizationConfig::request_offline_access`` turns that off. It asks
+the server for a refresh token, so a deployment that does not want its
+clients to hold one should disable it. A refresh token is never assumed: the
+manager works the same when the server issues none.
+
+``client_identity.client_metadata_url`` is checked when the manager is
+constructed and must be an ``https`` URL with a path, and no fragment, username or password, or
+``.`` or ``..`` path segment. Hosting
+the metadata document, and making sure its ``client_id`` is that URL, is the
+application's job. Dynamic client registration remains available but is
+deprecated by the specification; prefer pre-registered credentials or a client
+ID metadata document.
+
 The Class That Applies These Controls
 --------------------------------------
 

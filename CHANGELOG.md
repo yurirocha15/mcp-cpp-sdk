@@ -573,6 +573,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   and another to drain the queue. Messages still reach the transport one at a
   time and in the order they were given, including one that a caller on the
   strand gives after a `post_message()`.
+- The OAuth guides (`docs/concepts/oauth.rst`, `docs/guides/oauth-security.rst`)
+  describe how the scope of an authorization request is chosen, that a step-up
+  unions the challenge with the scope the issuer granted, the limits on
+  repeated authorization, `offline_access`, the client metadata document URL
+  rule and the deprecation of dynamic client registration.
 
 ### Removed
 

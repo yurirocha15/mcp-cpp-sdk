@@ -113,6 +113,71 @@ metadata document, or a dynamic registration.
 A complete runnable flow, including a mock authorization server, is in
 ``examples/features/oauth_flow.cpp``.
 
+.. _oauth-scopes-and-step-up:
+
+Scopes, step-up and refresh tokens
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The scope of an authorization request is chosen in this order: the
+``scope`` set on ``OAuthAuthorizationConfig``, which wins and is used as it is;
+else the ``scope`` of the challenge; else the ``scopes_supported`` of the
+protected-resource metadata; else no ``scope`` parameter at all. The challenge
+is authoritative for the operation it refused, and the SDK assumes no set
+relationship between it and ``scopes_supported``.
+
+A ``403`` whose challenge carries ``error="insufficient_scope"`` names only the
+scopes the refused operation needs. When the scope came from the challenge or
+from ``scopes_supported``, the manager sends the union of that scope and the
+scope the previous authorization **granted**, so a step-up does not drop what
+the user already approved. The union is built from what the authorization
+server granted, not from what the client asked for: the ``scope`` of the token
+response, or the requested scope when the response omits it. Scopes the server
+refused are therefore not requested again on every step-up. The granted scope
+is kept in memory with the issuer that granted it and is used only for that
+issuer; a step-up that moves to another authorization server asks for the
+challenge's scope alone. It is not persisted, so after a restart the first
+step-up starts from the challenge's scope.
+
+A challenge whose every scope is literally present in the granted scope of the
+current issuer adds nothing a new authorization could give, so the manager does
+not ask the user again: ``try_handle_challenge`` returns ``false`` and
+``OAuthClientTransport`` reports the ``403`` to the caller. The comparison is
+exact. A scope the server grants under another spelling, or through a scope
+hierarchy, is not recognised and the challenge is acted on. Independently of
+that, a request costs at most the authorization its ``401`` asks for and the
+step-ups ``OAuthClientTransportOptions::max_step_ups_per_request`` allows.
+
+Refresh tokens are the authorization server's to issue, and a client must not
+assume it will. When the authorization server lists ``offline_access`` in its
+``scopes_supported``, the manager adds it to the scope of the authorization
+request, so the server may issue a refresh token. A server that does not list
+it is never sent it. A scope set in ``OAuthAuthorizationConfig::scope`` is used
+as it is, without ``offline_access``. Set
+``OAuthAuthorizationConfig::request_offline_access`` to ``false`` to request
+exactly the selected scope.
+
+``OAuthClientTransport`` handles these challenges for a ``Client`` in every
+protocol era: a ``401`` to the ``server/discover`` request that
+``ClientProtocol::Auto()`` sends first is authorized and replayed like any
+other, and so is a ``403`` on a request retried in a multi round trip
+exchange.
+
+Client identity
+~~~~~~~~~~~~~~~
+
+The manager picks the client identity in this order: credentials injected with
+``client_id`` or ``client_identity.pre_registered``, a client ID metadata
+document when the authorization server supports them, a registration already
+stored for the issuer, and dynamic client registration. Dynamic registration is deprecated by the specification and kept
+for compatibility, so prefer one of the first two. A client ID metadata
+document URL, ``client_identity.client_metadata_url``, must be an ``https`` URL
+with a path, and no fragment, username or password, or ``.`` or ``..`` path
+segment; the manager's constructor throws
+``std::invalid_argument`` for any other. The SDK neither hosts that document nor
+checks that its ``client_id`` equals the URL, which stay the application's
+responsibility. Stored registrations are kept per authorization server, so a change of
+server never reuses another server's ``client_id`` or secret.
+
 .. _oauth-protecting-a-server:
 
 Protecting a server
