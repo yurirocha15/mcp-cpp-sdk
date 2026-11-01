@@ -109,6 +109,7 @@ set(MCP_CPP_SDK_SOURCES
     src/auth/metadata_policy.cpp
     src/auth/oauth.cpp
     src/client/client.cpp
+    src/detail/sealed_state.cpp
     src/server/server_stdio.cpp
     src/server/server_http.cpp
     src/server/server_tool.cpp
@@ -393,6 +394,7 @@ if(BUILD_TESTING)
       test/core/json_schema_test.cpp
       test/core/protocol_test.cpp
       test/core/regex_test.cpp
+      test/core/sealed_state_test.cpp
       test/core/serialized_transport_writer_test.cpp
       test/core/strand_executor_test.cpp
       test/server/roots_test.cpp
@@ -442,7 +444,9 @@ if(BUILD_TESTING)
       test/transport/transport_factory_test.cpp
       test/core/gcc11_sso_crash_test.cpp
       test/core/json_peer_input_matrix_test.cpp)
-  add_executable(mcp-sdk-tests ${TEST_SRCS})
+  # The sealed-state codec is internal and not exported from the shared library,
+  # so its test builds the source itself.
+  add_executable(mcp-sdk-tests ${TEST_SRCS} src/detail/sealed_state.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
   target_compile_definitions(
     mcp-sdk-tests
