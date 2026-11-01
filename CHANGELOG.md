@@ -786,6 +786,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   at compile time. Use `TransportFactory::create_stdio()` and
   `TransportFactory::create_http_client()`. They are removed no earlier than
   the next major release.
+- `Context::sample_llm()` and `Context::request_roots()` are deprecated in
+  their documentation only, because protocol revision 2026-07-28 deprecates
+  sampling and roots but clients of earlier revisions still rely on them. They
+  get the compile-time warning in the first release after 2027-07-28, the
+  earliest date the revision allows their removal.
 
 ### Removed
 
