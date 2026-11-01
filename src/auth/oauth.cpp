@@ -2653,6 +2653,42 @@ struct OAuthClientTransport::Impl {
         std::size_t step_ups{0};
     };
 
+    /// Reports that `operation`'s write is waiting for the authenticator to handle a challenge, and
+    /// that it has stopped, to the observer the caller of the transport installed. It holds only
+    /// shared pointers, so it is safe to keep in a coroutine frame.
+    class InteractionScope {
+       public:
+        InteractionScope(std::shared_ptr<Impl> owner, std::shared_ptr<WriteOperation> operation)
+            : owner_(std::move(owner)), operation_(std::move(operation)) {
+            notify(true);
+        }
+        InteractionScope(const InteractionScope&) = delete;
+        InteractionScope& operator=(const InteractionScope&) = delete;
+        ~InteractionScope() { notify(false); }
+
+       private:
+        void notify(bool waiting) noexcept {
+            if (!operation_->request_key) {
+                return;
+            }
+            try {
+                ITransport::InteractionObserver observer;
+                {
+                    std::lock_guard lock(owner_->observer_mutex);
+                    observer = owner_->interaction_observer;
+                }
+                if (observer) {
+                    observer(*operation_->request_key, waiting);
+                }
+            } catch (...) {
+                // An observer that throws must not turn a finished write into a crash.
+            }
+        }
+
+        std::shared_ptr<Impl> owner_;
+        std::shared_ptr<WriteOperation> operation_;
+    };
+
     /// At most three authorization challenges are honoured per logical request, so a server that
     /// keeps refusing a scope it will never grant cannot drive an unbounded authorization loop.
     static constexpr int g_max_authorization_challenges = 3;
@@ -2939,6 +2975,7 @@ struct OAuthClientTransport::Impl {
                     operation->authorized_after_unauthorized =
                         operation->authorized_after_unauthorized || operation->refresh_allowed;
                     throw_if_closed(*operation->owner);
+                    InteractionScope waiting_for_person(operation->owner, operation);
                     authorized = co_await await_unless_closed(
                         operation->owner, operation->owner->authenticator->try_handle_challenge(
                                               operation->authenticate_challenge));
@@ -3030,6 +3067,8 @@ struct OAuthClientTransport::Impl {
     std::uint64_t next_generation{0};
     bool closed{false};
     bool uses_http_authorization_header{false};
+    std::mutex observer_mutex;
+    ITransport::InteractionObserver interaction_observer;
 };
 
 OAuthClientTransport::OAuthClientTransport(std::shared_ptr<ITransport> inner,
@@ -3059,6 +3098,11 @@ Task<std::string> OAuthClientTransport::read_message() { return Impl::read(impl_
 
 bool OAuthClientTransport::overlapping_writes() const noexcept {
     return impl_->inner->overlapping_writes();
+}
+
+void OAuthClientTransport::set_interaction_observer(InteractionObserver observer) {
+    std::lock_guard lock(impl_->observer_mutex);
+    impl_->interaction_observer = std::move(observer);
 }
 
 Task<void> OAuthClientTransport::write_message(std::string_view message) {

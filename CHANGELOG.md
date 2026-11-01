@@ -318,6 +318,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   does not list it is never sent it, a scope set in
   `OAuthAuthorizationConfig::scope` is used as it is, and `false` requests
   exactly the selected scope.
+- `ITransport::set_interaction_observer()`, through which a transport reports
+  that the write of a request is waiting for a person. `OAuthClientTransport`
+  reports the wait for `Authenticator::try_handle_challenge()`, and `Client`
+  installs an observer on its transport.
 
 ### Changed
 
@@ -808,6 +812,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   password, or a `.` or `..` path segment, by throwing
   `std::invalid_argument`, instead of using it as a client identifier the
   authorization specification does not allow.
+- A request's timeout, and the `probe_timeout` of `ClientProtocol::Auto()`, no
+  longer run while `OAuthClientTransport` waits for the user to answer an
+  authorization prompt. A prompt that took longer than the timeout failed the
+  request, and one that took longer than `probe_timeout` made `connect()` fall
+  back to a legacy `initialize` against a server that speaks 2026-07-28.
 - `OAuthAuthorizationManager` keeps the scope an authorization granted together
   with the issuer that granted it, and unions it into a step-up request only
   for that issuer. A step-up that moves to another authorization server asks

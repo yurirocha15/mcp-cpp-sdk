@@ -2,6 +2,7 @@
 
 #include <mcp/core/core.hpp>
 
+#include <functional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -149,6 +150,30 @@ class ITransport {
      * on such a transport.
      */
     [[nodiscard]] virtual bool overlapping_writes() const noexcept { return false; }
+
+    /**
+     * @brief Callback with which a transport reports that the write of a request is waiting for a
+     *        person.
+     *
+     * @param request_key Correlation key of the JSON-RPC request being written
+     *        (`RequestId::correlation_key()`).
+     * @param waiting True when the wait begins, false when it ends. Every call with true is
+     *        followed by exactly one call with false for the same key, on every path including a
+     *        failed or cancelled write.
+     */
+    using InteractionObserver = std::function<void(std::string_view request_key, bool waiting)>;
+
+    /**
+     * @brief Install the observer a transport tells when a write waits for a person.
+     *
+     * @details Client installs one so that the time a request spends waiting for a person, such as
+     * an OAuth consent prompt run by OAuthClientTransport, does not count against that request's
+     * deadline. The observer may be called from any thread. A transport that never waits for a
+     * person ignores it (the default).
+     *
+     * @param observer The observer, replacing any earlier one; empty to remove it.
+     */
+    virtual void set_interaction_observer(InteractionObserver observer) { static_cast<void>(observer); }
 };
 
 }  // namespace mcp

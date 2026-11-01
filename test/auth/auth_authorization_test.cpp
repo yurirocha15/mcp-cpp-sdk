@@ -1738,8 +1738,10 @@ struct StepUpOutcome {
 /// call with `first_scope` and then refuses every authorized call with the scope
 /// `refusal_scope(n)` returns for the n-th refusal, until it returns an empty string, after which the
 /// call succeeds.
-StepUpOutcome run_step_up_scenario(const std::string& first_scope,
-                                   const std::function<std::string(int)>& refusal_scope) {
+StepUpOutcome run_step_up_scenario(
+    const std::string& first_scope, const std::function<std::string(int)>& refusal_scope,
+    const std::function<void(std::string_view key, bool waiting, std::size_t prompts)>& observer =
+        nullptr) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
     const auto base = server.base_url();
@@ -1796,6 +1798,12 @@ StepUpOutcome run_step_up_scenario(const std::string& first_scope,
             auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
                 io_ctx.get_executor(), store, config, recording_callback(&outcome.requested_scopes));
             mcp::auth::OAuthClientTransport transport(inner, manager);
+            if (observer) {
+                // Handed the number of prompts so far, to place the wait around the consent.
+                transport.set_interaction_observer([&](std::string_view key, bool waiting) {
+                    observer(key, waiting, outcome.requested_scopes.size());
+                });
+            }
             try {
                 co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
             } catch (...) {
@@ -4599,9 +4607,8 @@ TEST(AuthAuthorizationManagerTest, ARefreshThatBeganEarlierDoesNotPresentARotate
     EXPECT_EQ(original_presented, 1) << "the original refresh token was presented more than once";
 }
 
-// A challenge cancelled before it reaches the consent callback must not ask for consent. Served
-// discovery from the cache with a pre-registered identity, it makes no network call before the
-// callback, so its aborted client alone would not stop it.
+// A challenge cancelled before it reaches the consent callback must not ask for consent, and its
+// failure says it was cancelled.
 TEST(AuthAuthorizationManagerTest, ACancelledChallengeDoesNotAskForConsent) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
@@ -6641,9 +6648,11 @@ http::response<http::string_body> insufficient_scope_response(const std::string&
 /// Connects a Client over OAuthClientTransport to an endpoint that answers every request without a
 /// bearer token with a 401, issues "token-N" for the N-th authorization, and answers the rest as a
 /// 2026-07-28 or a legacy server would. `body` runs once connected.
-ClientAuthRun run_client_auth(
-    const mcp::ClientProtocol& protocol, const AuthorizedAnswer& answer,
-    const std::function<mcp::Task<void>(mcp::Client&, ClientAuthRun&)>& body) {
+ClientAuthRun run_client_auth(const mcp::ClientProtocol& protocol, const AuthorizedAnswer& answer,
+                              const std::function<mcp::Task<void>(mcp::Client&, ClientAuthRun&)>& body,
+                              const std::function<void(mcp::ClientOptions&)>& tune = nullptr,
+                              const mcp::auth::AuthorizationCallback& consent = nullptr,
+                              int server_budget = 60, mcp::Client** client_slot = nullptr) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
     const auto base = server.base_url();
@@ -6714,7 +6723,15 @@ ClientAuthRun run_client_auth(
         response.set(http::field::connection, "close");
         return response;
     });
-    asio::co_spawn(io_ctx, server.serve(60), asio::detached);
+    asio::co_spawn(io_ctx, server.serve(server_budget), asio::detached);
+    // Only a guard against a hang: no test asserts that anything finishes within it.
+    asio::steady_timer hang_guard(io_ctx, std::chrono::seconds(120));
+    hang_guard.async_wait([&](const boost::system::error_code& error) {
+        if (!error) {
+            run.error = "the test did not finish";
+            io_ctx.stop();
+        }
+    });
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -6729,11 +6746,18 @@ ClientAuthRun run_client_auth(
             auto inner =
                 std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
             auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
-                io_ctx.get_executor(), store, config, recording_callback(&run.consent_scopes));
+                io_ctx.get_executor(), store, config,
+                consent ? consent : recording_callback(&run.consent_scopes));
             auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, manager);
             mcp::ClientOptions options;
             options.protocol = protocol;
+            if (tune) {
+                tune(options);
+            }
             mcp::Client client(transport, io_ctx.get_executor(), options);
+            if (client_slot != nullptr) {
+                *client_slot = &client;
+            }
             client.on_request("elicitation/create", [](const json&) -> mcp::Task<json> {
                 co_return json{{"action", "accept"}, {"content", json::object()}};
             });
@@ -6745,6 +6769,7 @@ ClientAuthRun run_client_auth(
             }
             client.close();
             server.close();
+            hang_guard.cancel();
         },
         asio::detached);
     io_ctx.run();
@@ -6879,4 +6904,153 @@ TEST(AuthModernClientTest, PinnedLegacyUnchanged) {
     EXPECT_EQ(std::count(methods.begin(), methods.end(), "server/discover"), 0);
     EXPECT_EQ(methods.front(), "initialize");
     EXPECT_EQ(methods.back(), "tools/call");
+}
+
+namespace {
+
+/// A consent step that takes `duration` to answer, as a user reading a prompt does.
+mcp::auth::AuthorizationCallback slow_consent(std::chrono::milliseconds duration, int* prompts) {
+    return [duration, prompts](const mcp::auth::AuthorizationRequest& request)
+               -> mcp::Task<mcp::auth::AuthorizationResponse> {
+        ++*prompts;
+        asio::steady_timer wait(co_await asio::this_coro::executor, duration);
+        co_await wait.async_wait(asio::use_awaitable);
+        mcp::auth::AuthorizationResponse response;
+        response.code = "test-authorization-code";
+        response.state = request.state;
+        response.iss = request.issuer;
+        co_return response;
+    };
+}
+
+// The deadline of the request under test, and how long its consent takes. They are equal on
+// purpose: the consent timer starts after the request's deadline timer, so it expires after it,
+// and an io_context runs expired timers in order of expiry however slow the machine is. A client
+// that lets the deadline run during the consent therefore fails the request before the consent
+// returns, at any speed; one that stops it never does. The deadline is long enough that the work
+// either side of the consent, a few loopback requests, is a small part of it.
+constexpr auto g_deadline = std::chrono::milliseconds(3000);
+
+}  // namespace
+
+TEST(ClientAuthDeadlineTest, ConsentLongerThanRequestTimeoutDoesNotFailTheRequest) {
+    int prompts = 0;
+    const auto run = run_client_auth(
+        mcp::ClientProtocol::Version("2026-07-28"), nullptr, call_the_tool,
+        [](mcp::ClientOptions& options) { options.request_timeout = g_deadline; },
+        slow_consent(g_deadline, &prompts));
+
+    EXPECT_EQ(run.error, "");
+    EXPECT_EQ(prompts, 1);
+    ASSERT_TRUE(run.connected.has_value());
+    EXPECT_EQ(run.connected->era, mcp::ProtocolEra::eModern);
+}
+
+TEST(ClientAuthDeadlineTest, ConsentLongerThanProbeTimeoutStaysModern) {
+    int prompts = 0;
+    std::vector<mcp::EraDecision> decisions;
+    const auto run = run_client_auth(
+        mcp::ClientProtocol::Auto(), nullptr, call_the_tool,
+        [&decisions](mcp::ClientOptions& options) {
+            options.probe_timeout = g_deadline;
+            options.on_era_decision = [&decisions](const mcp::EraDecision& decision) {
+                decisions.push_back(decision);
+            };
+        },
+        slow_consent(g_deadline, &prompts));
+
+    EXPECT_EQ(run.error, "");
+    EXPECT_EQ(prompts, 1);
+    ASSERT_EQ(decisions.size(), 1U);
+    EXPECT_EQ(decisions[0].era, mcp::ProtocolEra::eModern);
+    EXPECT_EQ(decisions[0].reason, mcp::EraReason::eDiscoverOk);
+    EXPECT_EQ(std::count_if(run.calls.begin(), run.calls.end(),
+                            [](const auto& call) { return call.method == "initialize"; }),
+              0);
+}
+
+// The deadline stops while the person decides, not for good: once the consent has returned, a
+// request the server never answers still times out. The consent answers at once, so the only
+// thing that can end the wait is the deadline resuming; a client that never resumed it would wait
+// for ever, which the run's hang guard reports.
+TEST(ClientAuthDeadlineTest, TimeoutStillFiresAfterConsentReturns) {
+    int prompts = 0;
+    // Four requests are answered: the refused discover, the two metadata documents and the token.
+    // The replay of the discover request is then never accepted and waits out its deadline.
+    const auto run = run_client_auth(
+        mcp::ClientProtocol::Version("2026-07-28"), nullptr, call_the_tool,
+        [](mcp::ClientOptions& options) { options.request_timeout = g_deadline; },
+        slow_consent(std::chrono::milliseconds(0), &prompts), 4);
+
+    EXPECT_EQ(prompts, 1);
+    EXPECT_FALSE(run.connected.has_value());
+    EXPECT_NE(run.error.find("timed out"), std::string::npos) << run.error;
+}
+
+// Closing the client while the consent is open fails the request at once, and the wait that was
+// stopped for the consent does not keep it alive.
+TEST(ClientAuthDeadlineTest, CloseDuringConsentStillCancels) {
+    mcp::Client* client = nullptr;
+    int prompts = 0;
+    const auto closing_consent = [&](const mcp::auth::AuthorizationRequest& request)
+        -> mcp::Task<mcp::auth::AuthorizationResponse> {
+        ++prompts;
+        client->close();
+        mcp::auth::AuthorizationResponse response;
+        response.code = "test-authorization-code";
+        response.state = request.state;
+        response.iss = request.issuer;
+        co_return response;
+    };
+    const auto run = run_client_auth(
+        mcp::ClientProtocol::Version("2026-07-28"), nullptr, call_the_tool,
+        [](mcp::ClientOptions& options) { options.request_timeout = g_deadline; }, closing_consent, 60,
+        &client);
+
+    EXPECT_EQ(prompts, 1);
+    EXPECT_FALSE(run.connected.has_value());
+    EXPECT_EQ(run.error.find("timed out"), std::string::npos) << run.error;
+    EXPECT_FALSE(run.error.empty());
+}
+
+// What Client relies on, without any timing: the transport reports the wait around the
+// authorization, once, keyed by the request, and the consent runs inside it.
+TEST(ClientAuthDeadlineTest, TransportReportsTheWaitAroundTheAuthorization) {
+    struct Event {
+        std::string key;
+        bool waiting;
+        std::size_t prompts_so_far;
+    };
+    std::vector<Event> events;
+    const auto outcome = run_step_up_scenario(
+        "mcp:basic", [](int) { return std::string(); },
+        [&events](std::string_view key, bool waiting, std::size_t prompts) {
+            events.push_back({std::string(key), waiting, prompts});
+        });
+
+    EXPECT_EQ(outcome.failure, nullptr);
+    ASSERT_EQ(outcome.requested_scopes.size(), 1U);
+    const auto key = mcp::RequestId{int64_t{1}}.correlation_key();
+    ASSERT_EQ(events.size(), 2U);
+    EXPECT_EQ(events[0].key, key);
+    EXPECT_TRUE(events[0].waiting);
+    EXPECT_EQ(events[0].prompts_so_far, 0U);
+    EXPECT_EQ(events[1].key, key);
+    EXPECT_FALSE(events[1].waiting);
+    EXPECT_EQ(events[1].prompts_so_far, 1U);
+}
+
+// A write whose authorization fails still ends the wait it began.
+TEST(ClientAuthDeadlineTest, TransportEndsTheWaitWhenTheAuthorizationFails) {
+    int begun = 0;
+    int ended = 0;
+    // Every refusal names a scope not yet granted, so the write ends with an error once the one
+    // step-up a request may cost has been prompted.
+    const auto outcome = run_step_up_scenario(
+        "mcp:basic", [](int n) { return "mcp:extra" + std::to_string(n); },
+        [&](std::string_view, bool waiting, std::size_t) { ++(waiting ? begun : ended); });
+
+    EXPECT_NE(outcome.failure, nullptr);
+    EXPECT_EQ(begun, 2);
+    EXPECT_EQ(ended, 2);
 }
