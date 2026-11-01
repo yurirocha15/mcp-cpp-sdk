@@ -803,6 +803,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   password, or a `.` or `..` path segment, by throwing
   `std::invalid_argument`, instead of using it as a client identifier the
   authorization specification does not allow.
+- `OAuthAuthorizationManager` keeps the scope an authorization granted together
+  with the issuer that granted it, and unions it into a step-up request only
+  for that issuer. A step-up that moves to another authorization server asks
+  for the challenge's scope alone.
 
 ## [0.2.0] - 2026-10-21
 

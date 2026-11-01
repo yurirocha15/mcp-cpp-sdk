@@ -1829,9 +1829,11 @@ struct OAuthAuthorizationManager::Impl {
     /// requested at all. An explicit configured scope overrides both. The two sources are never
     /// merged with each other: the spec forbids assuming any set relationship between them. Scope
     /// already granted by an earlier authorization *is* merged in, because a 403 step-up challenge
-    /// names only what the refused operation needed.
+    /// names only what the refused operation needed; only what `issuer` itself granted, since a
+    /// scope means nothing to another authorization server.
     static std::optional<std::string> select_scope(const Impl& owner, const BearerChallenge& challenge,
-                                                   const ProtectedResourceMetadata& resource) {
+                                                   const ProtectedResourceMetadata& resource,
+                                                   const std::string& issuer) {
         if (owner.config.scope) {
             return owner.config.scope;
         }
@@ -1844,9 +1846,17 @@ struct OAuthAuthorizationManager::Impl {
         std::optional<std::string> granted;
         {
             std::lock_guard lock(owner.state_mutex);
-            granted = owner.granted_scope;
+            granted = granted_scope_for(owner, issuer);
         }
         return union_scopes(selected, granted);
+    }
+
+    /// The scope `issuer` granted, held under `state_mutex`, which the caller holds.
+    static std::optional<std::string> granted_scope_for(const Impl& owner, const std::string& issuer) {
+        if (owner.granted && owner.granted->issuer == issuer) {
+            return owner.granted->scope;
+        }
+        return std::nullopt;
     }
 
     /// Record the four authorization-server facts client identity selection turns on.
@@ -1965,7 +1975,7 @@ struct OAuthAuthorizationManager::Impl {
             auth_server.authorization_response_iss_parameter_supported.value_or(false);
         request.client_id = identity.client_id;
         request.redirect_uri = owner.config.redirect_uri;
-        request.scope = select_scope(owner, challenge, resource);
+        request.scope = select_scope(owner, challenge, resource, auth_server.issuer);
         // Added after selection so it never enters a step-up union as if a challenge had named it,
         // and only when the server lists it: a client must not assume a refresh token is issued.
         // A scope the application configured is used as it is.
@@ -2107,8 +2117,9 @@ struct OAuthAuthorizationManager::Impl {
             owner.token_config = operation->token_config;
             // What the server actually granted, falling back to what was asked for when the token
             // response stays silent (RFC 6749 §5.1 makes `scope` optional in that case).
-            owner.granted_scope =
+            const auto& granted_scope =
                 operation->token.scope ? operation->token.scope : operation->request.scope;
+            owner.granted = GrantedScope{operation->request.issuer, granted_scope};
         }
         owner.token_store->store(owner.config.server_url, operation->token);
         co_return true;
@@ -2413,7 +2424,12 @@ struct OAuthAuthorizationManager::Impl {
     std::optional<AuthorizationRequest> last_request;
     std::optional<OAuthClientInformation> last_identity;
     std::optional<OAuthConfig> token_config;
-    std::optional<std::string> granted_scope;
+    /// The scope the last successful authorization was granted, with the issuer that granted it.
+    struct GrantedScope {
+        std::string issuer;
+        std::optional<std::string> scope;
+    };
+    std::optional<GrantedScope> granted;
     /// Non-null exactly while one authorization flow is running; cancelling it releases the
     /// requests that coalesced onto it.
     std::shared_ptr<Flight> flight;
