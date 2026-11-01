@@ -27,9 +27,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = REPO_ROOT / "test" / "data" / "json-schema"
 
-COMMIT = "55719286c33ae0d1823bfb65fea10338a19bc37c"
+COMMIT = "245a45abc90190c0bff04d97e6d2b541b4bb9f12"
 TARBALL_URL = f"https://github.com/json-schema-org/JSON-Schema-Test-Suite/archive/{COMMIT}.tar.gz"
-TARBALL_SHA256 = "c65cf5b4152b9edfc71644252249e9402d3563ddaeb6f0fa80aeef2a85cefcf7"
+TARBALL_SHA256 = "b60bdf58fd414e9b86c8be70b03e3b2d596b8bc3bc822a2083d86041cea4b20e"
 DIALECTS = ("draft2020-12", "draft7")
 
 
