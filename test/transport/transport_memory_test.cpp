@@ -1,3 +1,4 @@
+#include "../../src/detail/strand_executor.hpp"
 #include "../support/hang_guard.hpp"
 #include "mcp/transport/memory.hpp"
 
@@ -548,4 +549,125 @@ TEST_F(MemoryTransportTest, ConcurrentCloseWakesReadersOnRunningThreadPool) {
     ASSERT_TRUE(all_readers_started) << "watchdog: readers did not all start within 30s";
     EXPECT_EQ(close_errors.load(std::memory_order_acquire), reader_count);
     EXPECT_EQ(unexpected_completions.load(std::memory_order_acquire), 0);
+}
+
+// The HTTP session manager makes both endpoints of a session over the one strand of the
+// connection, so the endpoints share a strand instead of each getting its own.
+TEST_F(MemoryTransportTest, EndpointsOverOneStrandExchangeMessagesInBothDirections) {
+    const auto strand = mcp::detail::make_strand_executor(io_ctx_.get_executor());
+    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(strand);
+
+    std::vector<std::string> received_by_b;
+    std::vector<std::string> received_by_a;
+    boost::asio::co_spawn(
+        strand,
+        [ta = std::move(transport_a), tb = std::move(transport_b), &received_by_a,
+         &received_by_b]() -> mcp::Task<void> {
+            co_await ta->write_message("a1");
+            co_await tb->write_message("b1");
+            co_await ta->write_message("a2");
+            received_by_b.push_back(co_await tb->read_message());
+            received_by_b.push_back(co_await tb->read_message());
+            received_by_a.push_back(co_await ta->read_message());
+        },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(received_by_b, (std::vector<std::string>{"a1", "a2"}));
+    EXPECT_EQ(received_by_a, (std::vector<std::string>{"b1"}));
+}
+
+TEST_F(MemoryTransportTest, ConcurrentReadWriteIsSafeWhenEndpointsShareOneStrand) {
+    constexpr int round_count = 4;
+    constexpr int message_count = 256;
+
+    for (int round = 0; round < round_count; ++round) {
+        boost::asio::io_context io_context;
+        const auto strand = mcp::detail::make_strand_executor(io_context.get_executor());
+        auto [transport_a, transport_b] = mcp::create_memory_transport_pair(strand);
+
+        std::atomic<int> write_completions{0};
+        std::atomic<int> failures{0};
+        std::vector<std::string> received;
+        received.reserve(message_count);
+
+        // The reader runs on the shared strand. Half the writers do too and half run on the
+        // context, so writes arrive both from inside the strand and from other threads.
+        boost::asio::co_spawn(
+            strand,
+            [transport_b, &received]() -> mcp::Task<void> {
+                for (int index = 0; index < message_count; ++index) {
+                    received.push_back(co_await transport_b->read_message());
+                }
+            },
+            [&failures](std::exception_ptr error) {
+                if (error) {
+                    failures.fetch_add(1, std::memory_order_relaxed);
+                }
+            });
+
+        std::vector<std::string> expected;
+        expected.reserve(message_count);
+        for (int index = 0; index < message_count; ++index) {
+            auto message = "round-" + std::to_string(round) + "-message-" + std::to_string(index);
+            expected.push_back(message);
+            const boost::asio::any_io_executor writer_executor =
+                index % 2 == 0 ? strand : boost::asio::any_io_executor(io_context.get_executor());
+            boost::asio::co_spawn(
+                writer_executor,
+                [transport_a, message = std::move(message)]() -> mcp::Task<void> {
+                    co_await transport_a->write_message(message);
+                },
+                [&write_completions, &failures](std::exception_ptr error) {
+                    if (error) {
+                        failures.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    write_completions.fetch_add(1, std::memory_order_release);
+                });
+        }
+
+        std::vector<std::thread> workers;
+        workers.reserve(4);
+        for (int index = 0; index < 4; ++index) {
+            workers.emplace_back([&io_context]() { io_context.run(); });
+        }
+        for (auto& worker : workers) {
+            worker.join();
+        }
+
+        std::sort(received.begin(), received.end());
+        std::sort(expected.begin(), expected.end());
+        EXPECT_EQ(failures.load(std::memory_order_acquire), 0) << "round " << round;
+        EXPECT_EQ(write_completions.load(std::memory_order_acquire), message_count)
+            << "round " << round;
+        EXPECT_EQ(received, expected) << "round " << round;
+    }
+}
+
+TEST_F(MemoryTransportTest, ClosingWakesReadersOfBothEndpointsThatShareOneStrand) {
+    const auto strand = mcp::detail::make_strand_executor(io_ctx_.get_executor());
+    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(strand);
+
+    int close_errors = 0;
+    for (const auto& transport : {transport_a, transport_b}) {
+        boost::asio::co_spawn(
+            strand,
+            [transport, &close_errors]() -> mcp::Task<void> {
+                try {
+                    (void)co_await transport->read_message();
+                } catch (const std::runtime_error& error) {
+                    EXPECT_STREQ(error.what(), "transport closed");
+                    ++close_errors;
+                }
+            },
+            boost::asio::detached);
+    }
+
+    io_ctx_.poll();
+    transport_a->close();
+    io_ctx_.restart();
+    io_ctx_.run();
+
+    EXPECT_EQ(close_errors, 2);
 }

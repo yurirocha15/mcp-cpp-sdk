@@ -1,5 +1,7 @@
 #include <mcp/detail/serialized_transport_writer.hpp>
 
+#include "../detail/strand_executor.hpp"
+
 #include <mcp/transport/transport.hpp>
 
 #include <boost/asio/co_spawn.hpp>
@@ -55,7 +57,7 @@ struct SerializedTransportWriterState {
 
     SerializedTransportWriterState(std::shared_ptr<ITransport> owned_transport,
                                    const boost::asio::any_io_executor& executor)
-        : transport(std::move(owned_transport)), strand(boost::asio::make_strand(executor)) {}
+        : transport(std::move(owned_transport)), strand(mcp::detail::make_strand_executor(executor)) {}
 
     static void complete(const std::shared_ptr<Operation>& operation,
                          std::exception_ptr error = nullptr) {
@@ -145,7 +147,7 @@ struct SerializedTransportWriterState {
     }
 
     std::shared_ptr<ITransport> transport;
-    boost::asio::strand<boost::asio::any_io_executor> strand;
+    boost::asio::any_io_executor strand;
     std::deque<std::shared_ptr<Operation>> queue;
     bool draining{false};
     /// Bytes of the messages queued or being written.

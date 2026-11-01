@@ -384,6 +384,7 @@ if(BUILD_TESTING)
       test/core/protocol_test.cpp
       test/core/regex_test.cpp
       test/core/serialized_transport_writer_test.cpp
+      test/core/strand_executor_test.cpp
       test/server/roots_test.cpp
       test/server/sampling_test.cpp
       test/server/server_core_test.cpp

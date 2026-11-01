@@ -6,6 +6,7 @@
 #include "../detail/peer_json.hpp"
 #include "../detail/request_meta.hpp"
 #include "../detail/spawn_awaitable.hpp"
+#include "../detail/strand_executor.hpp"
 #include "mrtr.hpp"
 
 #include <mcp/detail/secure_random.hpp>
@@ -648,7 +649,7 @@ struct Server::Session {
     std::shared_ptr<ITransport> transport;
     MemoryTransport* memory_transport = nullptr;
     const HttpServerTransport* http_transport = nullptr;
-    std::unique_ptr<boost::asio::strand<boost::asio::any_io_executor>> strand;
+    std::unique_ptr<boost::asio::any_io_executor> strand;
     std::shared_ptr<detail::SerializedTransportWriter> writer;
     std::map<std::string, PendingRequest> pending_requests;
     std::map<std::string, std::shared_ptr<std::atomic<bool>>> in_flight;
@@ -1608,8 +1609,8 @@ Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransp
         detail::bind_server(*http_transport,
                             {impl->make_param_header_check(), impl->supported_versions()});
     }
-    session->strand = std::make_unique<boost::asio::strand<boost::asio::any_io_executor>>(
-        boost::asio::make_strand(executor));
+    session->strand =
+        std::make_unique<boost::asio::any_io_executor>(detail::make_strand_executor(executor));
     session->writer =
         std::make_shared<detail::SerializedTransportWriter>(session->transport, *session->strand);
     session->drain_timer = std::make_shared<boost::asio::steady_timer>(*session->strand);

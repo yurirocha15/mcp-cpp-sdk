@@ -1,3 +1,5 @@
+#include "../../src/detail/strand_executor.hpp"
+
 #include <mcp/detail/serialized_transport_writer.hpp>
 #include <mcp/transport/transport.hpp>
 
@@ -184,6 +186,59 @@ TEST(SerializedTransportWriterTest, WrittenAndCanceledMessagesStopCounting) {
     EXPECT_NE(canceled_error, nullptr);
     EXPECT_EQ(transport->messages(), (std::vector<std::string>{"first"}));
     EXPECT_EQ(writer.queued_bytes(), 0U);
+}
+
+// The server runs a session on one strand and gives that strand to its writer, which then queues
+// and drains on it instead of on a strand of its own.
+TEST(SerializedTransportWriterTest, WritesStaySerializedOnAStrandTheWriterIsGiven) {
+    constexpr int context_writers = 64;
+
+    boost::asio::io_context io_context;
+    const auto strand = mcp::detail::make_strand_executor(io_context.get_executor());
+    auto transport = std::make_shared<OverlapDetectingTransport>();
+    mcp::detail::SerializedTransportWriter writer(transport, strand);
+
+    std::atomic<int> failures{0};
+    const auto count_failure = [&failures](std::exception_ptr error) {
+        if (error) {
+            failures.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+
+    boost::asio::co_spawn(
+        strand,
+        [writer]() mutable -> mcp::Task<void> {
+            co_await writer.write_message(std::string{"first"});
+            co_await writer.write_message(std::string{"second"});
+        },
+        count_failure);
+    for (int index = 0; index < context_writers; ++index) {
+        boost::asio::co_spawn(
+            io_context,
+            [writer, message = "context-" + std::to_string(index)]() mutable -> mcp::Task<void> {
+                co_await writer.write_message(message);
+            },
+            count_failure);
+    }
+
+    std::vector<std::thread> workers;
+    workers.reserve(4);
+    for (int index = 0; index < 4; ++index) {
+        workers.emplace_back([&io_context]() { io_context.run(); });
+    }
+    for (auto& worker : workers) {
+        worker.join();
+    }
+
+    const auto messages = transport->messages();
+    const auto first = std::find(messages.begin(), messages.end(), "first");
+    const auto second = std::find(messages.begin(), messages.end(), "second");
+    EXPECT_EQ(failures.load(std::memory_order_acquire), 0);
+    EXPECT_EQ(transport->max_active_writes(), 1);
+    EXPECT_EQ(messages.size(), static_cast<std::size_t>(context_writers + 2));
+    ASSERT_NE(first, messages.end());
+    ASSERT_NE(second, messages.end());
+    EXPECT_LT(first, second);
 }
 
 }  // namespace

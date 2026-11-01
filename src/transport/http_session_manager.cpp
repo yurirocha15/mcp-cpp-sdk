@@ -8,6 +8,7 @@
 #include "../detail/peer_json.hpp"
 #include "../detail/principal.hpp"
 #include "../detail/socket_probe.hpp"
+#include "../detail/strand_executor.hpp"
 
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/secure_random.hpp>
@@ -17,6 +18,7 @@
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/dispatch.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
@@ -110,8 +112,8 @@ inline void append_sse_event(std::string& out, const std::string& id, const std:
 /// and, once the server has answered, the response. Filled from the dispatch executor and read on
 /// the connection's strand, which owns `signal`.
 struct ModernExchange : std::enable_shared_from_this<ModernExchange> {
-    ModernExchange(boost::asio::strand<boost::asio::any_io_executor> strand_arg,
-                   std::size_t max_queued_arg, bool streams_arg)
+    ModernExchange(boost::asio::any_io_executor strand_arg, std::size_t max_queued_arg,
+                   bool streams_arg)
         : strand(std::move(strand_arg)),
           signal(strand),
           max_queued(max_queued_arg),
@@ -172,7 +174,7 @@ struct ModernExchange : std::enable_shared_from_this<ModernExchange> {
         wake();
     }
 
-    boost::asio::strand<boost::asio::any_io_executor> strand;
+    boost::asio::any_io_executor strand;
     boost::asio::steady_timer signal;
     bool woken{false};
     const std::size_t max_queued;
@@ -539,7 +541,7 @@ struct StreamableHttpSessionManager::Impl {
     }
 
     std::shared_ptr<detail_session_mgr::SessionRuntime> create_session(
-        boost::asio::strand<boost::asio::any_io_executor> conn_strand, std::string principal) {
+        boost::asio::any_io_executor conn_strand, std::string principal) {
         if (closed.load(std::memory_order_acquire)) {
             return nullptr;
         }
@@ -701,7 +703,7 @@ struct StreamableHttpSessionManager::Impl {
     }
 
     Task<void> handle_connection(const std::shared_ptr<Connection>& connection,
-                                 boost::asio::strand<boost::asio::any_io_executor> conn_strand) {
+                                 boost::asio::any_io_executor conn_strand) {
         namespace beast = boost::beast;
 
         auto& stream = *connection;
@@ -902,8 +904,7 @@ struct StreamableHttpSessionManager::Impl {
         co_return std::nullopt;
     }
 
-    Task<Reply> handle_request(const StringRequest& request,
-                               boost::asio::strand<boost::asio::any_io_executor> conn_strand,
+    Task<Reply> handle_request(const StringRequest& request, boost::asio::any_io_executor conn_strand,
                                std::unique_ptr<Server>& stateless_server, detail::BudgetLease& bytes,
                                std::optional<std::string> principal_id) {
         if (closed.load(std::memory_order_acquire)) {
@@ -1049,8 +1050,7 @@ struct StreamableHttpSessionManager::Impl {
     /// @p check_headers is false for a request that names no 2026-07-28 version and reaches here
     /// only because legacy clients are not served; the server refuses it.
     Task<Reply> handle_modern_post(const StringRequest& request, nlohmann::json request_json,
-                                   bool check_headers,
-                                   boost::asio::strand<boost::asio::any_io_executor> conn_strand,
+                                   bool check_headers, boost::asio::any_io_executor conn_strand,
                                    std::string principal) {
         if (closed.load(std::memory_order_acquire)) {
             co_return detail_session_mgr::make_error_response(
@@ -1568,8 +1568,7 @@ struct StreamableHttpSessionManager::Impl {
 
     std::variant<std::shared_ptr<detail_session_mgr::SessionRuntime>, StringResponse>
     resolve_session_for_post(const StringRequest& request, const nlohmann::json& request_json,
-                             boost::asio::strand<boost::asio::any_io_executor> conn_strand,
-                             std::string principal) {
+                             boost::asio::any_io_executor conn_strand, std::string principal) {
         if (closed.load(std::memory_order_acquire)) {
             return detail_session_mgr::make_error_response(request, http::status::service_unavailable,
                                                            "Transport closed");
@@ -1663,8 +1662,7 @@ struct StreamableHttpSessionManager::Impl {
     /// @p principal_id is the principal the bearer token validator named, if it named one. Requests
     /// are attributed to it, or else to a digest of their Authorization header. A request served
     /// without a session carries that principal; a session belongs to the principal that created it.
-    Task<Reply> handle_post(const StringRequest& request,
-                            boost::asio::strand<boost::asio::any_io_executor> conn_strand,
+    Task<Reply> handle_post(const StringRequest& request, boost::asio::any_io_executor conn_strand,
                             std::unique_ptr<Server>& stateless_server, detail::BudgetLease& bytes,
                             std::optional<std::string> principal_id) {
         if (closed.load(std::memory_order_acquire)) {
@@ -1847,8 +1845,7 @@ struct StreamableHttpSessionManager::Impl {
     /// Last-Event-ID resumes a stream: one still going on is served live from there, and one that
     /// ended is replayed.
     Task<Reply> handle_get(const StringRequest& request, std::string principal,
-                           detail::BudgetLease& bytes,
-                           boost::asio::strand<boost::asio::any_io_executor> conn_strand) {
+                           detail::BudgetLease& bytes, boost::asio::any_io_executor conn_strand) {
         const auto session_header_it = request.find("Mcp-Session-Id");
         if (session_header_it == request.end()) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
@@ -1974,7 +1971,7 @@ struct StreamableHttpSessionManager::Impl {
     }
 
     static void signal_timer(const std::shared_ptr<boost::asio::steady_timer>& timer) {
-        boost::asio::post(timer->get_executor(), [timer]() { (void)timer->cancel(); });
+        boost::asio::dispatch(timer->get_executor(), [timer]() { (void)timer->cancel(); });
     }
 
     /// Routes a message the session's server wrote: a response to the stream of its POST, which
@@ -2438,7 +2435,7 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
             (void)socket.close(ignored);
             continue;
         }
-        auto conn_strand = boost::asio::make_strand(impl->executor);
+        auto conn_strand = detail::make_strand_executor(impl->executor);
         auto native_handle = socket.release();
         boost::asio::ip::tcp::socket conn_socket(conn_strand, boost::asio::ip::tcp::v4(),
                                                  native_handle);

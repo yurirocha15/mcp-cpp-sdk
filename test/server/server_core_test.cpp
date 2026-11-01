@@ -1,3 +1,4 @@
+#include "../../src/detail/strand_executor.hpp"
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
@@ -105,6 +106,21 @@ mcp::Task<void> verify_memory_transport_parse_recovery(
     {
         auto response_wire = co_await client_transport->read_message();
         responses->push_back(nlohmann::json::parse(response_wire));
+    }
+    client_transport->close();
+}
+
+/// Sends @p request_count pings, one after the answer to the last, then closes the transport.
+mcp::Task<void> ping_memory_transport(std::shared_ptr<mcp::ITransport> client_transport,
+                                      int request_count, std::vector<nlohmann::json>* responses) {
+    for (int id = 1; id <= request_count; ++id) {
+        const auto ping_wire = std::make_shared<const std::string>(
+            nlohmann::json{{"jsonrpc", "2.0"}, {"id", id}, {"method", "ping"}}.dump());
+        co_await client_transport->write_message(*ping_wire);
+        {
+            auto response_wire = co_await client_transport->read_message();
+            responses->push_back(nlohmann::json::parse(response_wire));
+        }
     }
     client_transport->close();
 }
@@ -699,6 +715,37 @@ TEST_F(ServerCoreTest, MemoryTransportRecoversFromMalformedJson) {
     EXPECT_FALSE(responses[0].contains("id"));
     EXPECT_EQ(responses[1]["id"], 7);
     EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
+}
+
+// A Server given a strand to run on, over memory transports on that same strand, reads, writes
+// and answers without any of those crossing to another strand.
+TEST_F(ServerCoreTest, ServesMemoryTransportsThatShareTheStrandItRunsOn) {
+    constexpr int request_count = 25;
+
+    mcp::Server server({"shared-strand-server", "1.0"}, mcp::ServerCapabilities{});
+    const auto strand = mcp::detail::make_strand_executor(io_ctx_.get_executor());
+    auto [server_transport, client_transport] = mcp::create_memory_transport_pair(strand);
+
+    std::vector<nlohmann::json> responses;
+    std::exception_ptr server_error;
+    std::exception_ptr client_error;
+    boost::asio::co_spawn(
+        io_ctx_, server.run(server_transport, strand),
+        [&server_error](std::exception_ptr error) { server_error = std::move(error); });
+    boost::asio::co_spawn(
+        strand, ping_memory_transport(client_transport, request_count, &responses),
+        [&client_error](std::exception_ptr error) { client_error = std::move(error); });
+
+    io_ctx_.run();
+
+    EXPECT_EQ(server_error, nullptr);
+    EXPECT_EQ(client_error, nullptr);
+    ASSERT_EQ(responses.size(), static_cast<std::size_t>(request_count));
+    for (int id = 1; id <= request_count; ++id) {
+        const auto& response = responses[static_cast<std::size_t>(id - 1)];
+        EXPECT_EQ(response["id"], id);
+        EXPECT_EQ(response["result"], nlohmann::json::object());
+    }
 }
 
 TEST_F(ServerCoreTest, ParameterDecodingErrorsRemainDistinctFromHandlerFailures) {

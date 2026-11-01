@@ -436,6 +436,22 @@ Versioning; a `0.x` version is a stable release unless its version has an
   result of type `CallToolResult` is no longer decoded a second time to
   validate it; `to_json` has overloads that take a `CallToolResult`,
   `ContentBlock` or `TextContent` by rvalue and move what they hold.
+- The strands that the HTTP session manager makes for a connection, `Server`
+  for a session, `MemoryTransport` for an endpoint and the serialized
+  transport writer are kept as an `any_io_executor`. A strand over the
+  executor of an `io_context` is built as
+  `boost::asio::strand<io_context::executor_type>`, which with Boost 1.83 is
+  small enough for the `any_io_executor` to store inline, so the copies and the
+  `prefer()` and `require()` calls that Boost.Asio makes for each asynchronous
+  operation no longer allocate; the `strand<any_io_executor>` it replaces
+  allocated for each of them. With Boost 1.74 that strand is 32 bytes and still
+  allocates. A `MemoryTransport` or writer given a strand of this kind uses it
+  instead of putting a second strand over it, and an in-memory read or write
+  made by a coroutine that already runs on the strand it needs runs in place
+  rather than through a spawned coroutine. The timer that wakes a pending HTTP
+  request is cancelled in place when the code that signals it already runs on
+  the timer's strand. On the benchmark's 2025-03-26 workload the strand change
+  took the allocation calls from 1396 to 767 per operation.
 
 ### Removed
 

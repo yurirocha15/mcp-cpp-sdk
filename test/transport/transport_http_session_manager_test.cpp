@@ -291,6 +291,69 @@ mcp::Task<RawResponse> send_initialized(const asio::any_io_executor& executor, u
                                    session_id, std::move(header_protocol_version));
 }
 
+/// One TCP connection that stays open across requests, carrying the requests of every session
+/// that is posted to it.
+class KeepAliveClient {
+   public:
+    explicit KeepAliveClient(const asio::any_io_executor& executor)
+        : executor_(executor), stream_(executor) {}
+
+    mcp::Task<void> connect(unsigned short port) {
+        auto resolver = asio::ip::tcp::resolver(executor_);
+        auto endpoints =
+            co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
+        co_await stream_.async_connect(*endpoints.begin(), asio::use_awaitable);
+    }
+
+    /// POST @p body to /mcp for @p session_id (none when empty) and read the answer.
+    mcp::Task<RawResponse> post(std::string body, std::string session_id = {}) {
+        http::request<http::string_body> request{http::verb::post, "/mcp", 11};
+        request.set(http::field::host, "127.0.0.1");
+        request.set(http::field::content_type, "application/json");
+        request.set(http::field::accept, "application/json");
+        request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+        if (!session_id.empty()) {
+            request.set("Mcp-Session-Id", session_id);
+        }
+        request.body() = std::move(body);
+        request.prepare_payload();
+        co_await http::async_write(stream_, request, asio::use_awaitable);
+
+        http::response<http::string_body> response;
+        co_await http::async_read(stream_, buffer_, response, asio::use_awaitable);
+
+        RawResponse result;
+        result.status = response.result_int();
+        result.body = response.body();
+        if (auto session_it = response.find("Mcp-Session-Id"); session_it != response.end()) {
+            result.session_id = std::string(session_it->value());
+        }
+        co_return result;
+    }
+
+   private:
+    asio::any_io_executor executor_;
+    beast::tcp_stream stream_;
+    beast::flat_buffer buffer_;
+};
+
+json make_initialize_request(int id) {
+    return {{"jsonrpc", "2.0"},
+            {"method", "initialize"},
+            {"params",
+             {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
+              {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
+              {"capabilities", json::object()}}},
+            {"id", id}};
+}
+
+json make_echo_request(int id, const std::string& message) {
+    return {{"jsonrpc", "2.0"},
+            {"method", "tools/call"},
+            {"params", {{"name", "echo"}, {"arguments", {{"message", message}}}}},
+            {"id", id}};
+}
+
 }  // namespace
 
 // ===========================================================================
@@ -1051,6 +1114,127 @@ TEST_F(SessionManagerTest, MultipleConcurrentSessionsSameIds) {
 
     EXPECT_EQ(body_a["result"]["content"][0]["text"], "from-A");
     EXPECT_EQ(body_b["result"]["content"][0]["text"], "from-B");
+}
+
+// Both sessions are created over the one connection, so their transports share that connection's
+// strand; each request still reaches its own session, in turn.
+TEST_F(SessionManagerTest, TwoSessionsOnOneConnectionAreAnsweredEachByItsOwnServer) {
+    const unsigned short port = 19160;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    std::vector<std::string> session_ids;
+    std::vector<std::string> expected;
+    std::vector<std::string> echoed;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            KeepAliveClient client(io_ctx_.get_executor());
+            co_await client.connect(port);
+
+            for (int index = 0; index < 2; ++index) {
+                auto init = co_await client.post(make_initialize_request(index + 1).dump());
+                EXPECT_EQ(init.status, 200);
+                session_ids.push_back(init.session_id);
+                json initialized = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
+                auto accepted = co_await client.post(initialized.dump(), init.session_id);
+                EXPECT_EQ(accepted.status, 202);
+            }
+            EXPECT_EQ(manager.session_count(), 2);
+
+            for (int round = 0; round < 3; ++round) {
+                for (int session = 0; session < 2; ++session) {
+                    auto message =
+                        "session-" + std::to_string(session) + "-round-" + std::to_string(round);
+                    expected.push_back(message);
+                    auto answer = co_await client.post(make_echo_request(10 + round, message).dump(),
+                                                       session_ids[static_cast<std::size_t>(session)]);
+                    EXPECT_EQ(answer.status, 200);
+                    echoed.push_back(
+                        json::parse(answer.body)["result"]["content"][0]["text"].get<std::string>());
+                }
+            }
+
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(session_ids.size(), 2U);
+    EXPECT_NE(session_ids[0], session_ids[1]);
+    EXPECT_EQ(echoed, expected);
+}
+
+// Sessions are served from keep-alive connections and from fresh ones, on several threads: a
+// request from a connection other than the one that created its session reaches the session's
+// strand from outside it.
+TEST_F(SessionManagerTest, ManySessionsAreAnsweredCorrectlyOnManyThreads) {
+    constexpr int session_count = 8;
+    constexpr int calls_per_session = 20;
+    constexpr int thread_count = 4;
+    const unsigned short port = 19161;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    std::atomic<int> correct{0};
+    std::atomic<int> wrong{0};
+    std::atomic<int> finished{0};
+    for (int worker = 0; worker < session_count; ++worker) {
+        asio::co_spawn(
+            io_ctx_,
+            [&, worker]() -> mcp::Task<void> {
+                try {
+                    KeepAliveClient client(io_ctx_.get_executor());
+                    co_await client.connect(port);
+                    auto init = co_await client.post(make_initialize_request(1).dump());
+                    const auto session_id = init.session_id;
+                    json initialized = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
+                    (void)co_await client.post(initialized.dump(), session_id);
+
+                    for (int call = 0; call < calls_per_session; ++call) {
+                        const auto message =
+                            "worker-" + std::to_string(worker) + "-call-" + std::to_string(call);
+                        const auto request = make_echo_request(call + 2, message).dump();
+                        RawResponse answer;
+                        if (call % 2 == 0) {
+                            answer = co_await client.post(request, session_id);
+                        } else {
+                            answer =
+                                co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                     "/mcp", request, session_id);
+                        }
+                        const auto body = json::parse(answer.body, nullptr, false);
+                        if (answer.status == 200 && body.is_object() && body.contains("result") &&
+                            body["result"]["content"][0]["text"] == message) {
+                            correct.fetch_add(1, std::memory_order_relaxed);
+                        } else {
+                            wrong.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    }
+                } catch (const std::exception&) {
+                    wrong.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (finished.fetch_add(1, std::memory_order_acq_rel) + 1 == session_count) {
+                    manager.close();
+                }
+            },
+            asio::detached);
+    }
+
+    std::vector<std::thread> threads;
+    threads.reserve(thread_count);
+    for (int index = 0; index < thread_count; ++index) {
+        threads.emplace_back([this] { io_ctx_.run(); });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    EXPECT_EQ(wrong.load(), 0);
+    EXPECT_EQ(correct.load(), session_count * calls_per_session);
 }
 
 // ---------------------------------------------------------------------------
