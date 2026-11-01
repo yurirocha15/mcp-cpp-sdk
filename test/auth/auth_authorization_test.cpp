@@ -28,8 +28,10 @@
 #include <exception>
 #include <functional>
 #include <future>
+#include <map>
 #include <mcp/auth/client_identity.hpp>
 #include <mcp/auth/oauth.hpp>
+#include <mcp/client/client.hpp>
 #include <mcp/transport/http_client.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 
@@ -6600,4 +6602,281 @@ TEST(AuthOfflineAccessTest, DoesNotDuplicateWhenChallengeAlreadyHasIt) {
 
     ASSERT_TRUE(outcome.authorized);
     EXPECT_EQ(outcome.authorization_scope, "mcp:read offline_access");
+}
+
+namespace {
+
+/// What a Client saw while authorizing against a protected MCP endpoint over HTTP.
+struct ClientAuthRun {
+    std::vector<std::string> consent_scopes;
+    /// Method, request id and bearer token of every request the MCP endpoint received.
+    struct Call {
+        std::string method;
+        json id;
+        std::string authorization;
+    };
+    std::vector<Call> calls;
+    std::optional<mcp::ConnectResult> connected;
+    std::string error;
+};
+
+/// How the protected endpoint answers an authorized request: nullopt falls through to the default
+/// answer for the era. `index` counts the authorized requests of that method, from one.
+using AuthorizedAnswer = std::function<std::optional<http::response<http::string_body>>(
+    const json& message, const std::string& token, int index, const std::string& base)>;
+
+json rpc_ok(const json& message, json result) {
+    return {{"jsonrpc", "2.0"}, {"id", message.at("id")}, {"result", std::move(result)}};
+}
+
+http::response<http::string_body> insufficient_scope_response(const std::string& base,
+                                                              const std::string& scope) {
+    http::response<http::string_body> challenge{http::status::forbidden, 11};
+    challenge.set(http::field::www_authenticate, R"(Bearer error="insufficient_scope", scope=")" +
+                                                     scope + R"(", resource_metadata=")" + base +
+                                                     R"(/prm")");
+    return challenge;
+}
+
+/// Connects a Client over OAuthClientTransport to an endpoint that answers every request without a
+/// bearer token with a 401, issues "token-N" for the N-th authorization, and answers the rest as a
+/// 2026-07-28 or a legacy server would. `body` runs once connected.
+ClientAuthRun run_client_auth(
+    const mcp::ClientProtocol& protocol, const AuthorizedAnswer& answer,
+    const std::function<mcp::Task<void>(mcp::Client&, ClientAuthRun&)>& body) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    ClientAuthRun run;
+    std::map<std::string, int> authorized_by_method;
+    int tokens_issued = 0;
+    // The fixture closes the socket after each answer, so say so: a client that pools connections
+    // would otherwise write its next request to a socket nobody reads.
+    const auto route = [&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/mcp") {
+            const auto message = json::parse(request.body(), nullptr, false);
+            const auto method = message.is_object() ? message.value("method", "") : std::string();
+            const std::string authorization(request[http::field::authorization]);
+            run.calls.push_back(
+                {method, message.is_object() ? message.value("id", json()) : json(), authorization});
+            if (authorization.empty()) {
+                http::response<http::string_body> challenge{http::status::unauthorized, 11};
+                challenge.set(http::field::www_authenticate,
+                              R"(Bearer scope="mcp:basic", resource_metadata=")" + base + R"(/prm")");
+                return challenge;
+            }
+            const auto token = authorization.substr(std::string("Bearer ").size());
+            if (answer) {
+                if (auto custom = answer(message, token, ++authorized_by_method[method], base)) {
+                    return std::move(*custom);
+                }
+            }
+            if (method == "server/discover") {
+                return json_response(
+                    rpc_ok(message, {{"resultType", "complete"},
+                                     {"supportedVersions", json::array({"2026-07-28"})},
+                                     {"capabilities", {{"tools", json::object()}}},
+                                     {"_meta",
+                                      {{"io.modelcontextprotocol/serverInfo",
+                                        {{"name", "protected"}, {"version", "1"}}}}}}));
+            }
+            if (method == "initialize") {
+                return json_response(
+                    rpc_ok(message, {{"protocolVersion", "2025-11-25"},
+                                     {"capabilities", {{"tools", json::object()}}},
+                                     {"serverInfo", {{"name", "protected"}, {"version", "1"}}}}));
+            }
+            if (method == "tools/call") {
+                return json_response(rpc_ok(
+                    message, {{"resultType", "complete"},
+                              {"content", json::array({{{"type", "text"}, {"text", "done"}}})}}));
+            }
+            return status_response(http::status::accepted);
+        }
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, true));
+        }
+        if (target == "/token") {
+            auto token = token_document();
+            token["access_token"] = "token-" + std::to_string(++tokens_issued);
+            return json_response(token);
+        }
+        return status_response(http::status::not_found);
+    };
+    server.set_handler([&route](const http::request<http::string_body>& request) {
+        auto response = route(request);
+        response.set(http::field::connection, "close");
+        return response;
+    });
+    asio::co_spawn(io_ctx, server.serve(60), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            auto inner =
+                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+                io_ctx.get_executor(), store, config, recording_callback(&run.consent_scopes));
+            auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, manager);
+            mcp::ClientOptions options;
+            options.protocol = protocol;
+            mcp::Client client(transport, io_ctx.get_executor(), options);
+            client.on_request("elicitation/create", [](const json&) -> mcp::Task<json> {
+                co_return json{{"action", "accept"}, {"content", json::object()}};
+            });
+            try {
+                run.connected = co_await client.connect("auth-client", "1.0");
+                co_await body(client, run);
+            } catch (const std::exception& failure) {
+                run.error = failure.what();
+            }
+            client.close();
+            server.close();
+        },
+        asio::detached);
+    io_ctx.run();
+    return run;
+}
+
+mcp::Task<void> call_the_tool(mcp::Client& client, ClientAuthRun& run) {
+    const json arguments = {{"x", 1}};
+    const auto result = co_await client.call_tool("ask", arguments);
+    if (result.content.size() != 1U) {
+        run.error = "unexpected tool result";
+    }
+}
+
+std::vector<std::string> methods_of(const ClientAuthRun& run) {
+    std::vector<std::string> methods;
+    for (const auto& call : run.calls) {
+        methods.push_back(call.method);
+    }
+    return methods;
+}
+
+}  // namespace
+
+TEST(AuthModernClientTest, ChallengeOn401ThenSuccessUnderAutoEra) {
+    const auto run = run_client_auth(mcp::ClientProtocol::Auto(), nullptr, call_the_tool);
+
+    EXPECT_EQ(run.error, "");
+    ASSERT_TRUE(run.connected.has_value());
+    EXPECT_EQ(run.connected->era, mcp::ProtocolEra::eModern);
+    // One authorization: the refused probe is replayed with the new token, never turned into a
+    // legacy initialize.
+    EXPECT_EQ(run.consent_scopes, (std::vector<std::string>{"mcp:basic"}));
+    EXPECT_EQ(methods_of(run),
+              (std::vector<std::string>{"server/discover", "server/discover", "tools/call"}));
+    EXPECT_EQ(run.calls[0].authorization, "");
+    EXPECT_EQ(run.calls[1].authorization, "Bearer token-1");
+    EXPECT_EQ(run.calls[2].authorization, "Bearer token-1");
+}
+
+TEST(AuthModernClientTest, StepUp403OnToolsCall) {
+    const auto run = run_client_auth(
+        mcp::ClientProtocol::Auto(),
+        [](const json& message, const std::string& token, int,
+           const std::string& base) -> std::optional<http::response<http::string_body>> {
+            if (message.value("method", "") == "tools/call" && token == "token-1") {
+                return insufficient_scope_response(base, "mcp:write");
+            }
+            return std::nullopt;
+        },
+        call_the_tool);
+
+    EXPECT_EQ(run.error, "");
+    ASSERT_EQ(run.consent_scopes.size(), 2U);
+    EXPECT_EQ(run.consent_scopes[0], "mcp:basic");
+    EXPECT_TRUE(has_scopes(run.consent_scopes[1], {"mcp:basic", "mcp:write"}));
+    const auto methods = methods_of(run);
+    ASSERT_EQ(methods.size(), 4U);
+    EXPECT_EQ(run.calls[2].method, "tools/call");
+    EXPECT_EQ(run.calls[2].authorization, "Bearer token-1");
+    EXPECT_EQ(run.calls[3].method, "tools/call");
+    EXPECT_EQ(run.calls[3].authorization, "Bearer token-2");
+    // The replay is the refused request, unchanged.
+    EXPECT_EQ(run.calls[2].id, run.calls[3].id);
+}
+
+TEST(AuthModernClientTest, StepUpInsideMrtrRetry) {
+    const auto run = run_client_auth(
+        mcp::ClientProtocol::Version("2026-07-28"),
+        [](const json& message, const std::string& token, int index,
+           const std::string& base) -> std::optional<http::response<http::string_body>> {
+            if (message.value("method", "") != "tools/call") {
+                return std::nullopt;
+            }
+            if (index == 1) {
+                return json_response(
+                    rpc_ok(message, {{"resultType", "input_required"},
+                                     {"inputRequests",
+                                      {{"ask",
+                                        {{"method", "elicitation/create"},
+                                         {"params",
+                                          {{"mode", "form"},
+                                           {"message", "which"},
+                                           {"requestedSchema",
+                                            {{"type", "object"}, {"properties", json::object()}}}}}}}}},
+                                     {"requestState", "round-1"}}));
+            }
+            if (token == "token-1") {
+                return insufficient_scope_response(base, "mcp:write");
+            }
+            return std::nullopt;
+        },
+        call_the_tool);
+
+    EXPECT_EQ(run.error, "");
+    ASSERT_EQ(run.consent_scopes.size(), 2U);
+    EXPECT_TRUE(has_scopes(run.consent_scopes[1], {"mcp:basic", "mcp:write"}));
+    std::vector<ClientAuthRun::Call> tool_calls;
+    for (const auto& call : run.calls) {
+        if (call.method == "tools/call") {
+            tool_calls.push_back(call);
+        }
+    }
+    ASSERT_EQ(tool_calls.size(), 3U);
+    // The retry that carries the answers is a new request; the step-up replays that one.
+    EXPECT_NE(tool_calls[0].id, tool_calls[1].id);
+    EXPECT_EQ(tool_calls[1].id, tool_calls[2].id);
+    EXPECT_EQ(tool_calls[1].authorization, "Bearer token-1");
+    EXPECT_EQ(tool_calls[2].authorization, "Bearer token-2");
+}
+
+TEST(AuthModernClientTest, PinnedModernWorks) {
+    const auto run =
+        run_client_auth(mcp::ClientProtocol::Version("2026-07-28"), nullptr, call_the_tool);
+
+    EXPECT_EQ(run.error, "");
+    ASSERT_TRUE(run.connected.has_value());
+    EXPECT_EQ(run.connected->era, mcp::ProtocolEra::eModern);
+    EXPECT_EQ(run.consent_scopes, (std::vector<std::string>{"mcp:basic"}));
+    EXPECT_EQ(methods_of(run),
+              (std::vector<std::string>{"server/discover", "server/discover", "tools/call"}));
+}
+
+TEST(AuthModernClientTest, PinnedLegacyUnchanged) {
+    const auto run = run_client_auth(mcp::ClientProtocol::Legacy(), nullptr, call_the_tool);
+
+    EXPECT_EQ(run.error, "");
+    ASSERT_TRUE(run.connected.has_value());
+    EXPECT_EQ(run.connected->era, mcp::ProtocolEra::eLegacy);
+    EXPECT_EQ(run.consent_scopes, (std::vector<std::string>{"mcp:basic"}));
+    const auto methods = methods_of(run);
+    EXPECT_EQ(std::count(methods.begin(), methods.end(), "server/discover"), 0);
+    EXPECT_EQ(methods.front(), "initialize");
+    EXPECT_EQ(methods.back(), "tools/call");
 }
