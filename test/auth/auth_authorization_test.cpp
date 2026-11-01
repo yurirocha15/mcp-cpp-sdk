@@ -1720,6 +1720,89 @@ TEST(AuthScopeStepUpTest, StepUpsPerRequestAreConfigurable) {
     EXPECT_EQ(prompts_with, 3U);
 }
 
+// A scope one authorization server granted means nothing to another: a step-up that moves to a new
+// server asks for the challenge's scope alone, and a challenge back at the first server does not
+// inherit what the second one granted.
+TEST(AuthScopeStepUpTest, GrantedScopeDoesNotCarryToAnotherIssuer) {
+    asio::io_context io_ctx;
+    LoopbackServer server_a(io_ctx);
+    LoopbackServer server_b(io_ctx);
+    const auto base_a = server_a.base_url();
+    const auto base_b = server_b.base_url();
+
+    server_a.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base_a + "/mcp"}, {"authorization_servers", json::array({base_a})}});
+        }
+        if (target == "/prm-b") {
+            return json_response(
+                {{"resource", base_a + "/mcp"}, {"authorization_servers", json::array({base_b})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base_a, true));
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    server_b.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base_b, true));
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server_a.serve(12), asio::detached);
+    asio::co_spawn(io_ctx, server_b.serve(12), asio::detached);
+
+    ManagerFixture fixture;
+    fixture.config.server_url = base_a + "/mcp";
+    fixture.config.client_id = "test-client";
+    fixture.config.redirect_uri = "http://127.0.0.1:9999/callback";
+    fixture.config.policy = loopback_policy(server_a.origin());
+    fixture.config.policy.allowed_origins.push_back(server_b.origin());
+
+    std::vector<std::string> requested_scopes;
+    std::exception_ptr failure;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
+                                                         fixture.config,
+                                                         recording_callback(&requested_scopes));
+            try {
+                (void)co_await manager.try_handle_challenge(
+                    R"(Bearer scope="a:one", resource_metadata=")" + base_a + R"(/prm")");
+                (void)co_await manager.try_handle_challenge(
+                    R"(Bearer error="insufficient_scope", scope="b:two", )"
+                    R"(resource_metadata=")" +
+                    base_a + R"(/prm-b")");
+                (void)co_await manager.try_handle_challenge(
+                    R"(Bearer error="insufficient_scope", scope="a:three", )"
+                    R"(resource_metadata=")" +
+                    base_a + R"(/prm")");
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            server_a.close();
+            server_b.close();
+        },
+        asio::detached);
+    io_ctx.run();
+
+    ASSERT_EQ(failure, nullptr);
+    ASSERT_EQ(requested_scopes.size(), 3U);
+    EXPECT_EQ(requested_scopes[0], "a:one");
+    EXPECT_EQ(requested_scopes[1], "b:two");
+    EXPECT_EQ(requested_scopes[2], "a:three");
+}
+
 // A step-up whose challenge names a different authorization server, and which that server's user
 // refuses, leaves the grant with the server that issued it: the next refresh sends the stored
 // refresh token to that server, not to the one that refused.
