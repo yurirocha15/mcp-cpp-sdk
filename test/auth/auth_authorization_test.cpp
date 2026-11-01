@@ -6257,3 +6257,154 @@ TEST(AuthDiagnosticSanitizationTest, CapsTheAuthorizationServerIdentifierItRepor
         << "the peer's " << oversized_length << "-byte identifier was not capped; message is "
         << message.size() << " bytes";
 }
+
+namespace {
+
+/// What one challenge round trip sent to the authorization endpoint and the token endpoint.
+struct OfflineAccessOutcome {
+    std::string authorization_scope;
+    std::string token_body;
+    bool authorized{false};
+};
+
+/// Runs one challenge against a loopback server whose authorization server metadata lists
+/// `as_scopes` (absent when null), with the protected resource metadata listing `prm_scopes`.
+OfflineAccessOutcome run_offline_access_case(
+    const std::optional<json>& as_scopes, const std::optional<json>& prm_scopes,
+    const std::string& challenge_scope,
+    const std::function<void(mcp::auth::OAuthAuthorizationConfig&)>& adjust) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            json document = {{"resource", base + "/mcp"},
+                             {"authorization_servers", json::array({base})}};
+            if (prm_scopes) {
+                document["scopes_supported"] = *prm_scopes;
+            }
+            return json_response(document);
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            auto metadata = auth_server_metadata(base, true);
+            if (as_scopes) {
+                metadata["scopes_supported"] = *as_scopes;
+            }
+            return json_response(metadata);
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+    adjust(config);
+
+    OfflineAccessOutcome outcome;
+    std::vector<std::string> requested_scopes;
+    std::exception_ptr failure;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            mcp::auth::OAuthAuthorizationManager manager(
+                io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(), config,
+                recording_callback(&requested_scopes));
+            try {
+                std::string header = "Bearer resource_metadata=\"" + base + "/prm\"";
+                if (!challenge_scope.empty()) {
+                    header += ", scope=\"" + challenge_scope + "\"";
+                }
+                outcome.authorized = co_await manager.try_handle_challenge(header);
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            server.close();
+        },
+        asio::detached);
+    io_ctx.run();
+
+    EXPECT_EQ(failure, nullptr);
+    if (!requested_scopes.empty()) {
+        outcome.authorization_scope = requested_scopes.front();
+    }
+    if (server.bodies().size() >= 3U) {
+        outcome.token_body = server.bodies()[2];
+    }
+    return outcome;
+}
+
+const auto no_adjustment = [](mcp::auth::OAuthAuthorizationConfig&) {};
+
+}  // namespace
+
+TEST(AuthOfflineAccessTest, RequestsOfflineAccessWhenListed) {
+    const auto outcome = run_offline_access_case(json::array({"mcp:read", "offline_access"}),
+                                                 std::nullopt, "mcp:read", no_adjustment);
+
+    ASSERT_TRUE(outcome.authorized);
+    EXPECT_EQ(outcome.authorization_scope, "mcp:read offline_access");
+}
+
+TEST(AuthOfflineAccessTest, NeverRequestsWhenNotListed) {
+    const auto without_list =
+        run_offline_access_case(std::nullopt, std::nullopt, "mcp:read", no_adjustment);
+    const auto other_scopes =
+        run_offline_access_case(json::array({"mcp:read"}), std::nullopt, "mcp:read", no_adjustment);
+
+    EXPECT_EQ(without_list.authorization_scope, "mcp:read");
+    EXPECT_EQ(other_scopes.authorization_scope, "mcp:read");
+}
+
+TEST(AuthOfflineAccessTest, FlagOffOmitsIt) {
+    const auto outcome = run_offline_access_case(
+        json::array({"mcp:read", "offline_access"}), std::nullopt, "mcp:read",
+        [](mcp::auth::OAuthAuthorizationConfig& config) { config.request_offline_access = false; });
+
+    ASSERT_TRUE(outcome.authorized);
+    EXPECT_EQ(outcome.authorization_scope, "mcp:read");
+}
+
+TEST(AuthOfflineAccessTest, ExplicitConfiguredScopeIsUsedAsItIs) {
+    const auto outcome = run_offline_access_case(
+        json::array({"mcp:read", "offline_access"}), std::nullopt, "mcp:read",
+        [](mcp::auth::OAuthAuthorizationConfig& config) { config.scope = "mcp:configured"; });
+
+    ASSERT_TRUE(outcome.authorized);
+    EXPECT_EQ(outcome.authorization_scope, "mcp:configured");
+}
+
+TEST(AuthOfflineAccessTest, NoScopeStillOmittedWhenScopesSupportedUndefined) {
+    const auto outcome = run_offline_access_case(std::nullopt, std::nullopt, "", no_adjustment);
+
+    ASSERT_TRUE(outcome.authorized);
+    EXPECT_EQ(outcome.authorization_scope, "");
+}
+
+// The authorization-code token request has no scope parameter (RFC 6749 section 4.1.3), so
+// offline_access travels only on the authorization request.
+TEST(AuthOfflineAccessTest, TokenRequestDoesNotCarryScope) {
+    const auto outcome = run_offline_access_case(json::array({"mcp:read", "offline_access"}),
+                                                 std::nullopt, "mcp:read", no_adjustment);
+
+    ASSERT_TRUE(outcome.authorized);
+    ASSERT_FALSE(outcome.token_body.empty());
+    EXPECT_EQ(outcome.token_body.find("scope="), std::string::npos) << outcome.token_body;
+    EXPECT_EQ(outcome.token_body.find("offline_access"), std::string::npos) << outcome.token_body;
+}
+
+TEST(AuthOfflineAccessTest, DoesNotDuplicateWhenChallengeAlreadyHasIt) {
+    const auto outcome =
+        run_offline_access_case(json::array({"mcp:read", "offline_access"}), std::nullopt,
+                                "mcp:read offline_access", no_adjustment);
+
+    ASSERT_TRUE(outcome.authorized);
+    EXPECT_EQ(outcome.authorization_scope, "mcp:read offline_access");
+}

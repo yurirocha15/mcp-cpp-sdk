@@ -311,6 +311,13 @@ Versioning; a `0.x` version is a stable release unless its version has an
   but at least 100 ms, which doubles while streams keep ending with nothing, and
   does not ask again after a 405. A request's stream that ends before its
   response is resumed with a GET naming its last event, at most three times.
+- `OAuthAuthorizationConfig::request_offline_access` (default `true`):
+  `OAuthAuthorizationManager` adds `offline_access` to the scope of the
+  authorization request when the authorization server lists it in
+  `scopes_supported`, so the server may issue a refresh token. A server that
+  does not list it is never sent it, a scope set in
+  `OAuthAuthorizationConfig::scope` is used as it is, and `false` requests
+  exactly the selected scope.
 
 ### Changed
 
