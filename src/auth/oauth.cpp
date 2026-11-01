@@ -1966,6 +1966,15 @@ struct OAuthAuthorizationManager::Impl {
         request.client_id = identity.client_id;
         request.redirect_uri = owner.config.redirect_uri;
         request.scope = select_scope(owner, challenge, resource);
+        // Added after selection so it never enters a step-up union as if a challenge had named it,
+        // and only when the server lists it: a client must not assume a refresh token is issued.
+        // A scope the application configured is used as it is.
+        if (owner.config.request_offline_access && !owner.config.scope &&
+            auth_server.scopes_supported &&
+            std::find(auth_server.scopes_supported->begin(), auth_server.scopes_supported->end(),
+                      "offline_access") != auth_server.scopes_supported->end()) {
+            request.scope = union_scopes(request.scope, std::string("offline_access"));
+        }
         // Defence in depth: `run_challenge` already rejected an unidentified resource before any
         // outbound request. Re-checking here is a pure string comparison that cannot fail on that
         // path, and keeps `build_request` correct if a second caller ever appears.

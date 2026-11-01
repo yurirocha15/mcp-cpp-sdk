@@ -704,6 +704,12 @@ struct OAuthAuthorizationConfig {
     /// Scope override. When set it wins over both the challenge scope and the resource metadata;
     /// when unset the challenge scope is preferred, then `scopes_supported`, then no scope at all.
     std::optional<std::string> scope;
+    /// Add `offline_access` to the scope of the authorization request when the authorization
+    /// server lists it in `scopes_supported`, so it may issue a refresh token. Applies on top of
+    /// the challenge and resource metadata scope sources; an explicit `scope` is used as it is. A
+    /// server that does not list it is never sent it. Set to false to request exactly the
+    /// selected scope.
+    bool request_offline_access{true};
     /// Client identity inputs consulted when no `client_id` was supplied: a published client ID
     /// metadata document URL, injected credentials, and the metadata used for registration.
     ClientIdentityConfig client_identity;
