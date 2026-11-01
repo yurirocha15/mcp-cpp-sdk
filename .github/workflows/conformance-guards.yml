@@ -9,6 +9,7 @@ on:
     paths:
       - '.github/workflows/**'
       - 'conformance/run.sh'
+      - 'conformance/runner/package.json'
       - 'include/**'
       - 'scripts/**'
       - 'src/**'
@@ -17,6 +18,7 @@ on:
     paths:
       - '.github/workflows/**'
       - 'conformance/run.sh'
+      - 'conformance/runner/package.json'
       - 'include/**'
       - 'scripts/**'
       - 'src/**'
@@ -46,7 +48,9 @@ jobs:
           python-version: '3.12'
 
       - name: Assert the alpha conformance runner cannot gate CI
-        run: python3 scripts/check_alpha_runner_guard.py
+        run: |
+          python3 scripts/check_alpha_runner_guard.py
+          PYTHONPATH=scripts python3 -m unittest -v scripts.test_check_alpha_runner_guard
 
   protocol-constants:
     name: Protocol constants name their era

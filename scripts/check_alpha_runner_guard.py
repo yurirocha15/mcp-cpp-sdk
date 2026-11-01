@@ -5,8 +5,9 @@ Keeps the alpha conformance runner side-channel (
 ``@modelcontextprotocol/conformance@0.2.0-alpha.12``, spec ``2026-07-28``)
 permanently non-default and non-CI-gating:
 
-  (i)   ``conformance/run.sh`` must stay pinned to the locked ``0.1.16``
-        runner used for tier evidence.
+  (i)   ``conformance/runner/package.json`` must pin an exact, non-prerelease
+        runner version, and ``conformance/run.sh`` must read that pin instead
+        of naming a version of its own.
   (ii)  no file under ``.github/workflows/`` or ``scripts/`` (this guard
         excluded) may reference the alpha results directory
         (``conformance-results-alpha``) as a tier-evidence path.
@@ -22,13 +23,16 @@ presence-based.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RUN_SH = REPO_ROOT / "conformance" / "run.sh"
-PINNED_VERSION = "0.1.16"
+PACKAGE_JSON = REPO_ROOT / "conformance" / "runner" / "package.json"
+RUNNER_PACKAGE = "@modelcontextprotocol/conformance"
+EXACT_RELEASE = re.compile(r"\d+\.\d+\.\d+")
 
 SCAN_DIRS = (
     REPO_ROOT / ".github" / "workflows",
@@ -46,16 +50,38 @@ class GuardError(RuntimeError):
     """Raised when an alpha-runner non-gating invariant is violated."""
 
 
-def check_pin() -> None:
-    if not RUN_SH.is_file():
-        raise GuardError(f"{RUN_SH} does not exist; cannot verify the {PINNED_VERSION} pin")
-    text = RUN_SH.read_text(encoding="utf-8")
-    if PINNED_VERSION not in text:
+def read_pin(package_json: Path = PACKAGE_JSON) -> str:
+    if not package_json.is_file():
+        raise GuardError(f"{package_json} does not exist; cannot read the runner pin")
+    try:
+        pin = json.loads(package_json.read_text(encoding="utf-8"))["dependencies"][RUNNER_PACKAGE]
+    except (KeyError, TypeError, ValueError) as error:
+        raise GuardError(f"{package_json} does not pin {RUNNER_PACKAGE}: {error!r}") from error
+    if not isinstance(pin, str) or not EXACT_RELEASE.fullmatch(pin):
         raise GuardError(
-            f"{RUN_SH.relative_to(REPO_ROOT)} no longer contains the pinned runner version "
-            f"'{PINNED_VERSION}' (run.sh stays pinned while the alpha "
-            "harness is a separate, non-default, non-CI-gating side channel)"
+            f"{package_json.relative_to(REPO_ROOT) if package_json.is_relative_to(REPO_ROOT) else package_json} "
+            f"pins {RUNNER_PACKAGE} to {pin!r}; the gate needs an exact release version "
+            "(no range and no -alpha, -beta or -rc suffix)"
         )
+    return pin
+
+
+def check_pin(run_sh: Path = RUN_SH, package_json: Path = PACKAGE_JSON) -> str:
+    pin = read_pin(package_json)
+    if not run_sh.is_file():
+        raise GuardError(f"{run_sh} does not exist; cannot verify it reads the runner pin")
+    text = run_sh.read_text(encoding="utf-8")
+    if "runner/package.json" not in text:
+        raise GuardError(
+            "conformance/run.sh does not read conformance/runner/package.json, so it "
+            "would not check the installed runner against the single pin"
+        )
+    if re.search(r"(?<![\d.])\d+\.\d+\.\d+(?![\d.])", text):
+        raise GuardError(
+            "conformance/run.sh names a runner version of its own; it must take the "
+            "version from conformance/runner/package.json"
+        )
+    return pin
 
 
 def iter_scanned_files() -> list[Path]:
@@ -97,11 +123,11 @@ def check_no_gating_reference() -> None:
 
 
 def main() -> int:
-    check_pin()
+    pin = check_pin()
     check_no_gating_reference()
     print(
-        f"alpha-runner guard passed: {RUN_SH.relative_to(REPO_ROOT)} pinned to "
-        f"{PINNED_VERSION}; no CI workflow or scripts/ guard references the alpha "
+        f"alpha-runner guard passed: {RUN_SH.relative_to(REPO_ROOT)} reads the "
+        f"{pin} pin from {PACKAGE_JSON.relative_to(REPO_ROOT)}; no CI workflow or scripts/ guard references the alpha "
         "runner/results as a gating condition"
     )
     return 0
