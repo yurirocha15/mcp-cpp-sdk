@@ -50,12 +50,15 @@ class MCP_API TransportFactory {
  * @brief Legacy free-function factory for stdio transport.
  * @deprecated Use TransportFactory::create_stdio instead.
  */
+MCP_DEPRECATED("use TransportFactory::create_stdio; removal no earlier than the next major release")
 MCP_API std::shared_ptr<ITransport> make_stdio_transport(Runtime& runtime);
 
 /**
  * @brief Legacy free-function factory for HTTP client transport.
  * @deprecated Use TransportFactory::create_http_client instead.
  */
+MCP_DEPRECATED(
+    "use TransportFactory::create_http_client; removal no earlier than the next major release")
 MCP_API std::shared_ptr<ITransport> make_http_client_transport(Runtime& runtime,
                                                                const std::string& url);
 
