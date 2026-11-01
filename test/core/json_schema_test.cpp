@@ -10,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -18,6 +19,8 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <map>
+#include <optional>
 #include <random>
 #include <set>
 #include <string>
@@ -1660,11 +1663,27 @@ TEST(CompiledSchema, ConcurrentValidateMatchesSequential) {
 
 // --- JSON-Schema-Test-Suite (test/data/json-schema, see scripts/vendor_json_schema_test_suite.py).
 
+/// Why a suite group is left out of the run. A by-design exclusion is a refusal the SDK keeps. An
+/// engine-gap exclusion is a case the validator gets wrong today: the run fails once the group
+/// passes, so the change that fixes it removes the exclusion.
+enum class SuiteGap {
+    eByDesign,
+    eEngineGap
+};
+
 /// A suite group left out of the run, with the reason. `group` "*" leaves out the whole file.
 struct SuiteExclusion {
     const char* file;
     const char* group;
+    SuiteGap category;
     const char* reason;
+};
+
+/// The cases of one suite file that run and the cases that are excluded.
+struct SuiteFileCount {
+    const char* file;
+    std::size_t run;
+    std::size_t excluded;
 };
 
 struct SuiteOutcome {
@@ -1673,21 +1692,55 @@ struct SuiteOutcome {
     std::size_t excluded = 0;
     std::vector<std::string> failures;
     std::set<std::string> unused_exclusions;
+    /// Engine-gap exclusions whose group now passes.
+    std::vector<std::string> fixed_engine_gaps;
+    /// File name -> {cases run, cases excluded}.
+    std::map<std::string, std::pair<std::size_t, std::size_t>> per_file;
 };
 
-/// Runs the suite's files for one dialect. The suite's schemas do not name their dialect; when
-/// @p dialect_uri is set it is added as `$schema` to every object schema, because a schema without
-/// `$schema` is read as 2020-12.
+struct GroupOutcome {
+    std::size_t passed = 0;
+    std::size_t total = 0;
+    std::vector<std::string> failures;
+};
+
+/// Runs one suite group. When @p dialect_uri is set it is added as `$schema` to an object schema
+/// that has none, because a schema without `$schema` is read as 2020-12.
+GroupOutcome run_group(const json& group, const std::string& key, const char* dialect_uri) {
+    GroupOutcome outcome;
+    const auto& tests = group.at("tests");
+    json schema_json = group.at("schema");
+    if (dialect_uri != nullptr && schema_json.is_object() && !schema_json.contains("$schema")) {
+        schema_json["$schema"] = dialect_uri;
+    }
+    std::optional<CompiledSchema> schema;
+    try {
+        schema = CompiledSchema::compile(schema_json);
+    } catch (const std::exception& error) {
+        outcome.total += tests.size();
+        outcome.failures.push_back(key + " | compile: " + error.what());
+        return outcome;
+    }
+    for (const auto& test : tests) {
+        ++outcome.total;
+        if (schema->validate(test.at("data")).valid == test.at("valid").get<bool>()) {
+            ++outcome.passed;
+        } else {
+            outcome.failures.push_back(key + " | " + test.at("description").get<std::string>());
+        }
+    }
+    return outcome;
+}
+
+/// Runs the suite's files for one dialect.
 SuiteOutcome run_suite(const std::string& dialect_dir, const std::vector<SuiteExclusion>& exclusions,
                        const char* dialect_uri = nullptr) {
     SuiteOutcome outcome;
-    std::set<std::string> whole_file_exclusions;
+    std::map<std::string, SuiteGap> categories;
     for (const auto& exclusion : exclusions) {
         const auto key = std::string(exclusion.file) + " | " + exclusion.group;
         outcome.unused_exclusions.insert(key);
-        if (std::string_view(exclusion.group) == "*") {
-            whole_file_exclusions.insert(key);
-        }
+        categories.emplace(key, exclusion.category);
     }
     const std::filesystem::path dir =
         std::filesystem::path(MCP_TEST_DATA_DIR) / "json-schema" / dialect_dir;
@@ -1701,56 +1754,71 @@ SuiteOutcome run_suite(const std::string& dialect_dir, const std::vector<SuiteEx
     for (const auto& file : files) {
         std::ifstream stream(file);
         const json groups = json::parse(stream);
+        auto& counts = outcome.per_file[file.filename().string()];
         for (const auto& group : groups) {
             const auto key =
                 file.filename().string() + " | " + group.at("description").get<std::string>();
             const auto whole_file = file.filename().string() + " | *";
-            bool excluded = outcome.unused_exclusions.erase(key) == 1;
-            if (whole_file_exclusions.count(whole_file) == 1) {
+            std::optional<SuiteGap> category;
+            if (outcome.unused_exclusions.erase(key) == 1) {
+                category = categories.at(key);
+            }
+            if (categories.count(whole_file) == 1) {
                 outcome.unused_exclusions.erase(whole_file);
-                excluded = true;
+                category = categories.at(whole_file);
             }
             const auto& tests = group.at("tests");
-            if (excluded) {
+            if (category) {
                 outcome.excluded += tests.size();
-                continue;
-            }
-            json schema_json = group.at("schema");
-            if (dialect_uri != nullptr && schema_json.is_object() && !schema_json.contains("$schema")) {
-                schema_json["$schema"] = dialect_uri;
-            }
-            std::optional<CompiledSchema> schema;
-            try {
-                schema = CompiledSchema::compile(schema_json);
-            } catch (const std::exception& error) {
-                outcome.total += tests.size();
-                outcome.failures.push_back(key + " | compile: " + error.what());
-                continue;
-            }
-            for (const auto& test : tests) {
-                ++outcome.total;
-                if (schema->validate(test.at("data")).valid == test.at("valid").get<bool>()) {
-                    ++outcome.passed;
-                } else {
-                    outcome.failures.push_back(key + " | " + test.at("description").get<std::string>());
+                counts.second += tests.size();
+                if (*category == SuiteGap::eEngineGap &&
+                    run_group(group, key, dialect_uri).failures.empty()) {
+                    outcome.fixed_engine_gaps.push_back(key);
                 }
+                continue;
             }
+            const auto result = run_group(group, key, dialect_uri);
+            outcome.total += result.total;
+            outcome.passed += result.passed;
+            counts.first += result.total;
+            outcome.failures.insert(outcome.failures.end(), result.failures.begin(),
+                                    result.failures.end());
         }
     }
     return outcome;
 }
 
-void expect_suite(const SuiteOutcome& outcome, std::size_t expected_total,
-                  std::size_t expected_excluded) {
+void expect_suite(const SuiteOutcome& outcome, const std::vector<SuiteFileCount>& expected) {
     for (const auto& failure : outcome.failures) {
         ADD_FAILURE() << failure;
     }
     for (const auto& unused : outcome.unused_exclusions) {
         ADD_FAILURE() << "exclusion matches no test group: " << unused;
     }
-    // The counts pin the data: a case cannot disappear from the run without changing them.
-    EXPECT_EQ(outcome.total, expected_total);
-    EXPECT_EQ(outcome.excluded, expected_excluded);
+    for (const auto& fixed : outcome.fixed_engine_gaps) {
+        ADD_FAILURE() << "engine-gap exclusion now passes, remove it: " << fixed;
+    }
+    // The counts pin the data per file: a case cannot disappear from one file while another gains.
+    std::map<std::string, std::pair<std::size_t, std::size_t>> pinned;
+    for (const auto& count : expected) {
+        pinned.emplace(count.file, std::make_pair(count.run, count.excluded));
+    }
+    for (const auto& [file, actual] : outcome.per_file) {
+        const auto found = pinned.find(file);
+        if (found == pinned.end()) {
+            ADD_FAILURE() << file << ": not pinned (run " << actual.first << ", excluded "
+                          << actual.second << ")";
+        } else if (found->second != actual) {
+            ADD_FAILURE() << file << ": expected run " << found->second.first << ", excluded "
+                          << found->second.second << "; got run " << actual.first << ", excluded "
+                          << actual.second;
+        }
+    }
+    for (const auto& [file, count] : pinned) {
+        if (outcome.per_file.count(file) == 0) {
+            ADD_FAILURE() << file << ": pinned but missing from the suite data";
+        }
+    }
     EXPECT_EQ(outcome.passed, outcome.total);
 }
 
@@ -1759,40 +1827,132 @@ constexpr const char* g_remote_reason =
 constexpr const char* g_remote_metaschema_reason =
     "declares a custom metaschema served from http://localhost:1234; only the bundled dialects are "
     "supported";
+constexpr const char* g_unicode_property_reason = "mcp::detail::Regex rejects Unicode property escapes";
 
 const std::vector<SuiteExclusion> g_2020_12_exclusions = {
-    {"refRemote.json", "*", g_remote_reason},
-    {"dynamicRef.json", "strict-tree schema, guards against misspelled properties", g_remote_reason},
-    {"dynamicRef.json", "tests for implementation dynamic anchor and reference link", g_remote_reason},
+    {"refRemote.json", "*", SuiteGap::eByDesign, g_remote_reason},
+    {"dynamicRef.json", "strict-tree schema, guards against misspelled properties", SuiteGap::eByDesign,
+     g_remote_reason},
+    {"dynamicRef.json", "tests for implementation dynamic anchor and reference link",
+     SuiteGap::eByDesign, g_remote_reason},
     {"dynamicRef.json", "$ref and $dynamicAnchor are independent of order - $defs first",
-     g_remote_reason},
+     SuiteGap::eByDesign, g_remote_reason},
     {"dynamicRef.json", "$ref and $dynamicAnchor are independent of order - $ref first",
+     SuiteGap::eByDesign, g_remote_reason},
+    {"dynamicRef.json", "$ref to $dynamicRef finds detached $dynamicAnchor", SuiteGap::eByDesign,
      g_remote_reason},
-    {"dynamicRef.json", "$ref to $dynamicRef finds detached $dynamicAnchor", g_remote_reason},
     {"vocabulary.json", "schema that uses custom metaschema with with no validation vocabulary",
+     SuiteGap::eByDesign, g_remote_metaschema_reason},
+    {"vocabulary.json", "ignore unrecognized optional vocabulary", SuiteGap::eByDesign,
      g_remote_metaschema_reason},
-    {"vocabulary.json", "ignore unrecognized optional vocabulary", g_remote_metaschema_reason},
-    {"pattern.json", "pattern with Unicode property escape requires unicode mode",
-     "mcp::detail::Regex rejects Unicode property escapes"},
-    {"patternProperties.json", "patternProperties with Unicode property escape",
-     "mcp::detail::Regex rejects Unicode property escapes"},
+    {"pattern.json", "pattern with Unicode property escape requires unicode mode", SuiteGap::eByDesign,
+     g_unicode_property_reason},
+    {"patternProperties.json", "patternProperties with Unicode property escape", SuiteGap::eByDesign,
+     g_unicode_property_reason},
     {"dynamicRef.json", "$dynamicRef avoids the root of each schema, but scopes are still registered",
-     "jsoncons resolves this $dynamicRef scope case differently"},
+     SuiteGap::eEngineGap, "jsoncons resolves this $dynamicRef scope case differently"},
 };
 
 const std::vector<SuiteExclusion> g_draft7_exclusions = {
-    {"refRemote.json", "*", g_remote_reason},
+    {"refRemote.json", "*", SuiteGap::eByDesign, g_remote_reason},
+};
+
+const std::vector<SuiteFileCount> g_2020_12_counts = {
+    {"additionalProperties.json", 21, 0},
+    {"allOf.json", 30, 0},
+    {"anchor.json", 8, 0},
+    {"anyOf.json", 18, 0},
+    {"boolean_schema.json", 18, 0},
+    {"const.json", 54, 0},
+    {"contains.json", 21, 0},
+    {"content.json", 18, 0},
+    {"default.json", 7, 0},
+    {"defs.json", 2, 0},
+    {"dependentRequired.json", 20, 0},
+    {"dependentSchemas.json", 20, 0},
+    {"dynamicRef.json", 29, 15},
+    {"enum.json", 53, 0},
+    {"exclusiveMaximum.json", 4, 0},
+    {"exclusiveMinimum.json", 4, 0},
+    {"format.json", 133, 0},
+    {"if-then-else.json", 30, 0},
+    {"infinite-loop-detection.json", 2, 0},
+    {"items.json", 29, 0},
+    {"maxContains.json", 14, 0},
+    {"maxItems.json", 6, 0},
+    {"maxLength.json", 7, 0},
+    {"maxProperties.json", 10, 0},
+    {"maximum.json", 8, 0},
+    {"minContains.json", 28, 0},
+    {"minItems.json", 6, 0},
+    {"minLength.json", 7, 0},
+    {"minProperties.json", 10, 0},
+    {"minimum.json", 11, 0},
+    {"multipleOf.json", 11, 0},
+    {"not.json", 40, 0},
+    {"oneOf.json", 27, 0},
+    {"pattern.json", 9, 3},
+    {"patternProperties.json", 23, 3},
+    {"prefixItems.json", 11, 0},
+    {"properties.json", 28, 0},
+    {"propertyNames.json", 22, 0},
+    {"ref.json", 79, 0},
+    {"refRemote.json", 0, 31},
+    {"required.json", 18, 0},
+    {"type.json", 80, 0},
+    {"unevaluatedItems.json", 71, 0},
+    {"unevaluatedProperties.json", 129, 0},
+    {"uniqueItems.json", 69, 0},
+    {"vocabulary.json", 0, 5},
+};
+
+const std::vector<SuiteFileCount> g_draft7_counts = {
+    {"additionalItems.json", 19, 0},
+    {"additionalProperties.json", 16, 0},
+    {"allOf.json", 30, 0},
+    {"anyOf.json", 18, 0},
+    {"boolean_schema.json", 18, 0},
+    {"const.json", 54, 0},
+    {"contains.json", 21, 0},
+    {"default.json", 7, 0},
+    {"definitions.json", 2, 0},
+    {"dependencies.json", 36, 0},
+    {"enum.json", 47, 0},
+    {"exclusiveMaximum.json", 4, 0},
+    {"exclusiveMinimum.json", 4, 0},
+    {"format.json", 102, 0},
+    {"if-then-else.json", 30, 0},
+    {"infinite-loop-detection.json", 2, 0},
+    {"items.json", 28, 0},
+    {"maxItems.json", 6, 0},
+    {"maxLength.json", 7, 0},
+    {"maxProperties.json", 10, 0},
+    {"maximum.json", 8, 0},
+    {"minItems.json", 6, 0},
+    {"minLength.json", 7, 0},
+    {"minProperties.json", 10, 0},
+    {"minimum.json", 11, 0},
+    {"multipleOf.json", 11, 0},
+    {"not.json", 38, 0},
+    {"oneOf.json", 27, 0},
+    {"pattern.json", 9, 0},
+    {"patternProperties.json", 23, 0},
+    {"properties.json", 28, 0},
+    {"propertyNames.json", 22, 0},
+    {"ref.json", 78, 0},
+    {"refRemote.json", 0, 23},
+    {"required.json", 18, 0},
+    {"type.json", 80, 0},
+    {"uniqueItems.json", 69, 0},
 };
 
 TEST(Suite, Required2020_12) {
-    const auto outcome = run_suite("draft2020-12", g_2020_12_exclusions);
-    expect_suite(outcome, 1245, 57);
+    expect_suite(run_suite("draft2020-12", g_2020_12_exclusions), g_2020_12_counts);
 }
 
 TEST(Suite, RequiredDraft7) {
-    const auto outcome =
-        run_suite("draft7", g_draft7_exclusions, "http://json-schema.org/draft-07/schema#");
-    expect_suite(outcome, 906, 23);
+    expect_suite(run_suite("draft7", g_draft7_exclusions, "http://json-schema.org/draft-07/schema#"),
+                 g_draft7_counts);
 }
 
 }  // namespace
