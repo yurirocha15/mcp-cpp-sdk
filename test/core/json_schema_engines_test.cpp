@@ -77,8 +77,8 @@ TEST(SchemaEngines, AgreeOnEverySuiteCase) {
             }
         }
     }
-    // 1302 cases: the run and the excluded ones of the 2020-12 suite data.
-    EXPECT_EQ(compared, 1302u);
+    // 1300 cases: the run and the excluded ones of the 2020-12 suite data.
+    EXPECT_EQ(compared, 1300u);
 }
 
 }  // namespace

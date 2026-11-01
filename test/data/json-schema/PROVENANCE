@@ -1,4 +1,4 @@
-JSON-Schema-Test-Suite 55719286c33ae0d1823bfb65fea10338a19bc37c
-source: https://github.com/json-schema-org/JSON-Schema-Test-Suite/archive/55719286c33ae0d1823bfb65fea10338a19bc37c.tar.gz
-sha256: c65cf5b4152b9edfc71644252249e9402d3563ddaeb6f0fa80aeef2a85cefcf7
+JSON-Schema-Test-Suite 245a45abc90190c0bff04d97e6d2b541b4bb9f12
+source: https://github.com/json-schema-org/JSON-Schema-Test-Suite/archive/245a45abc90190c0bff04d97e6d2b541b4bb9f12.tar.gz
+sha256: b60bdf58fd414e9b86c8be70b03e3b2d596b8bc3bc822a2083d86041cea4b20e
 files: tests/{draft2020-12,draft7}/*.json (required cases only), LICENSE; copied unchanged
