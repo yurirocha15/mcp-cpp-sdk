@@ -7,8 +7,8 @@ application operations for every comparable C++ SDK.
 The application workload is based on
 [TM Dev Lab v2](https://github.com/thiagomendes/benchmark-mcp-servers-v2), pinned
 to commit `8a9a5f8ef505f46b6079072ef4603304ca672e33`. That repository supplies the API
-service, Redis seeder, and the Go and Rust baseline server sources. The Python
-baseline is its Python server ported to the official Python SDK 2.x; see
+service and Redis seeder. The Python, Go and Rust baselines are its servers ported
+to the current official SDKs; see
 [Language baselines](#language-baselines). Load generation uses the audited
 local profile in `alternatives/benchmark.js`; it does not use the upstream k6
 script.
@@ -44,10 +44,10 @@ cd benchmark
 ./run.sh full
 
 # Run selected servers.
-./run.sh ours-comparable hkr04
+./run.sh ours-comparable-stateful hkr04
 
 # Compare this SDK's thread-based and coroutine-based workloads.
-./run.sh ours-comparable ours-coroutines
+./run.sh ours-comparable-stateful ours-coroutines-stateful
 ```
 
 The publishable C++ comparison uses the production defaults: three measured
@@ -80,13 +80,13 @@ requires an explicit action.
 
 | Benchmark name | SDK | Host port |
 |---|---|---:|
-| `ours-comparable` | this SDK | 8089 |
+| `ours-comparable-stateful`, `ours-comparable-stateless` | this SDK | 8089 |
 | `hkr04` | hkr04/cpp-mcp | 8084 |
 | `fastmcpp` | FastMCPP | 8085 |
 | `cxxmcp` | cxxmcp | 8086 |
 | `neumann` | Neumann-Labs/mcp-cpp | 8087 |
 
-`ours-coroutines` (host port 8098) is not part of `cpp-sdks`. It is a second build
+`ours-coroutines-stateful` and `ours-coroutines-stateless` (host port 8098) are not part of `cpp-sdks`. It is a second build
 of this SDK's adapter whose tool handlers are C++20 coroutines; see
 [Coroutine workload](#coroutine-workload). Select it by name or through `full`.
 
@@ -106,6 +106,41 @@ Streamable HTTP endpoint exercised here, so including it would test a different
 transport contract. cxxmcp is included: the local client sends the required
 negotiated protocol-version header after initialization.
 
+## Session modes
+
+A server name carries the session mode the server runs older protocol revisions in. Protocol
+`2026-07-28` has no sessions, so the mode only matters for the revisions before it. `run.sh` passes
+the mode to the server as `MCP_SESSION_MODE` (`stateful` or `stateless`) when it starts the service,
+records it in `run_manifest.json` under `session_modes`, and prints it in `comparison.txt`.
+Both keys of an SDK start the same container.
+
+| SDK | Stateful | Stateless |
+|---|---|---|
+| this SDK (threads, coroutines) | `ours-comparable-stateful`, `ours-coroutines-stateful` | `ours-comparable-stateless`, `ours-coroutines-stateless` |
+| Rust (`rmcp`) | `rust-stateful` | `rust-stateless` |
+| Go | `go-stateful` | `go-stateless` |
+| Python | none | `python-stateless` |
+| hkr04, FastMCPP, cxxmcp, Neumann and their TCP_NODELAY builds | `hkr04`, `fastmcpp`, `cxxmcp`, `neumann` (and `-nodelay`) | none |
+
+A server that has no switch for a mode has no name for it, so it is left out of that comparison
+rather than approximated. The reasons, read from each SDK's source at the pinned commit and, for
+Python, observed on the benchmark container:
+
+- hkr04, FastMCPP and Neumann-Labs only serve sessions: a request without a known session id is
+  rejected.
+- cxxmcp can serve stateless requests, but only those that carry the protocol version, client
+  information and capabilities in `_meta`. The k6 profile does not send them, so the harness
+  does not offer that mode.
+- The Python container runs four uvicorn workers. Sessions live in the memory of one worker, so
+  the session id of a later request reaches a worker that does not hold it and the server answers
+  404. A stateful run would need a single worker, which is a different deployment from the
+  stateless run.
+
+Each server answers `initialize` with the revision it chooses, so the stateful runs do not share
+one revision. By their source, hkr04 answers `2025-03-26`, FastMCPP `2024-11-05` and Neumann-Labs
+`2025-11-25` whatever the client requests. `comparison.txt` records the revision each row
+measured.
+
 ## Language baselines
 
 The baseline group is separate from the comparable C++ group. Each baseline is
@@ -114,12 +149,12 @@ SDK, not an adapter over the shared C++ workload:
 
 | Benchmark name | SDK | Host port |
 |---|---|---:|
-| `python` | Python SDK (`mcp` 2.3.0) | 8081 |
-| `go` | Go SDK (`github.com/modelcontextprotocol/go-sdk`) | 8082 |
-| `rust` | Rust SDK (`rmcp`) | 8083 |
+| `python-stateless` | Python SDK (`mcp` 2.3.0) | 8081 |
+| `go-stateful`, `go-stateless` | Go SDK (`github.com/modelcontextprotocol/go-sdk` v1.8.0) | 8082 |
+| `rust-stateful`, `rust-stateless` | Rust SDK (`rmcp` 3.8.0) | 8083 |
 
-The pinned upstream repository supplies the Go and Rust servers and the shared
-infrastructure. Its Python server was written for the 1.x `mcp` API, which the
+The pinned upstream repository supplies the shared infrastructure; the three servers are the
+copies under `baselines/`. The upstream Python server was written for the 1.x `mcp` API, which the
 2.x releases removed, and its version ranges now resolve to 2.x. The
 `baselines/python-server` copy makes only the changes 2.x requires: `FastMCP`
 became `MCPServer`, the stateless JSON transport options moved to
@@ -129,11 +164,10 @@ image. The optimized `cpp` baseline is retained as a separate application
 implementation and must not be presented as an SDK-adapter result.
 
 Python, Go, and Rust are rerun after harness changes, but their results remain
-diagnostic. The Go and Rust upstream Docker builds contain floating inputs: Go
-regenerates dependency resolution during the image build, Rust does not copy its
-lockfile into the build, and both Dockerfiles use unpinned base-image tags.
-Exact built image identities are retained with every run, but these inputs
-prevent a source commit from defining a bit-for-bit rebuild.
+diagnostic. The Python, Go and Rust copies pin their dependencies (`constraints.txt`,
+`go.sum`, `Cargo.lock`) and their base images by digest. `baselines/go-server` is the upstream
+Go server built against the Go SDK release that serves `2026-07-28`; the workload is unchanged.
+Exact built image identities are retained with every run.
 
 Every target uses the same `upstream-v2-strict-mcp-v1` measurement eligibility
 contract. It preserves the pinned benchmark's observable business predicates
@@ -145,10 +179,8 @@ supplemental check does not execute in the measured k6 path.
 The supplemental diagnostics intentionally expose two upstream limitations
 without excluding otherwise working language baselines. Python accepts the
 canonical checkout call but advertises unconstrained array elements for its
-untyped `items: list` parameter. Rust executes all three Redis mutations in one
-pipeline, but returns the pipeline's `ZADD` result as `rate_limit_count` instead
-of the `INCR` result. Both pass the inherited observable predicates and the
-direct Redis side-effect gate; Python and Rust simply record the corresponding
+untyped `items: list` parameter. It passes the inherited observable predicates and the
+direct Redis side-effect gate, and simply records the corresponding
 `adapter-exact-v1` diagnostic as false. These interface, build, and execution
 differences are why language baselines must not appear in the publishable C++
 SDK ranking.
@@ -265,6 +297,9 @@ docker build -t rmcp-3.8 benchmark/baselines/rust-server
 docker run -d --name modern-server --network benchmark_mcp-network -p 8089:8095 \
   -e REDIS_URL=redis://redis:6379 -e API_SERVICE_URL=http://api-service:8100 rmcp-3.8
 ```
+
+On older protocol revisions the server serves no sessions unless `MCP_SESSION_MODE=stateful` is set;
+`2026-07-28` requests never have one.
 
 Compare servers at the same `BENCHMARK_SLEEP`. The API service is shared by every server and
 saturates before the servers do when `BENCHMARK_SLEEP=0`.

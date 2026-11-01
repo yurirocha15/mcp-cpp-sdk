@@ -95,6 +95,7 @@ services:
     ports:
       - "8089:8080"
     environment:
+      - MCP_SESSION_MODE=${MCP_SESSION_MODE:-}
       - PORT=8080
       - REDIS_URL=redis://redis:6379
       - API_SERVICE_URL=http://api-service:8100
@@ -122,6 +123,7 @@ services:
     ports:
       - "8098:8080"
     environment:
+      - MCP_SESSION_MODE=${MCP_SESSION_MODE:-}
       - PORT=8080
       - REDIS_URL=redis://redis:6379
       - API_SERVICE_URL=http://api-service:8100
@@ -148,6 +150,7 @@ services:
     ports:
       - "8081:8082"
     environment:
+      - MCP_SESSION_MODE=${MCP_SESSION_MODE:-}
       - REDIS_URL=redis://redis:6379
       - API_SERVICE_URL=http://api-service:8100
     deploy:
@@ -170,13 +173,14 @@ services:
 
   go-server:
     build:
-      context: ./benchmark-mcp-servers-v2/go-server
+      context: ./baselines/go-server
       dockerfile: Dockerfile
     container_name: mcp-go-server
     cpuset: "${BENCHMARK_CPUSET:-}"
     ports:
       - "8082:8081"
     environment:
+      - MCP_SESSION_MODE=${MCP_SESSION_MODE:-}
       - REDIS_URL=redis://redis:6379
       - API_SERVICE_URL=http://api-service:8100
     deploy:
@@ -199,13 +203,14 @@ services:
 
   rust-server:
     build:
-      context: ./benchmark-mcp-servers-v2/rust-server
+      context: ./baselines/rust-server
       dockerfile: Dockerfile
     container_name: mcp-rust-server
     cpuset: "${BENCHMARK_CPUSET:-}"
     ports:
       - "8083:8095"
     environment:
+      - MCP_SESSION_MODE=${MCP_SESSION_MODE:-}
       - REDIS_URL=redis://redis:6379
       - API_SERVICE_URL=http://api-service:8100
     deploy:

@@ -308,13 +308,17 @@ async fn main() -> Result<()> {
     let ct = tokio_util::sync::CancellationToken::new();
     let server = BenchmarkServer::new().await?;
 
+    // Requests of 2026-07-28 have no session; legacy_session_mode only decides whether an older
+    // client gets one. MCP_SESSION_MODE=stateful serves older clients with sessions; anything
+    // else (the default) serves them without.
+    let stateful = std::env::var("MCP_SESSION_MODE").is_ok_and(|mode| mode == "stateful");
+    tracing::warn!("session mode for older protocol revisions: {}", if stateful { "stateful" } else { "stateless" });
+
     let service = StreamableHttpService::new(
         move || Ok(server.clone()),
         LocalSessionManager::default().into(),
-        // Requests of 2026-07-28 have no session; legacy_session_mode only decides whether an
-        // older client gets one.
         StreamableHttpServerConfig::default()
-            .with_legacy_session_mode(false)
+            .with_legacy_session_mode(stateful)
             .with_json_response(true)
             .with_cancellation_token(ct.child_token()),
     );

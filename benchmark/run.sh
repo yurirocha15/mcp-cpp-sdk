@@ -178,10 +178,35 @@ ALL_MCP_SERVICES=(
     hkr04-server fastmcpp-server cxxmcp-server neumann-server
     hkr04-nodelay-server fastmcpp-nodelay-server cxxmcp-nodelay-server neumann-nodelay-server
 )
-CPP_SDK_SERVERS=(ours-comparable hkr04 fastmcpp cxxmcp neumann)
+declare -A SESSION_MODE=(
+    [hkr04]=stateful [fastmcpp]=stateful [cxxmcp]=stateful [neumann]=stateful
+    [hkr04-nodelay]=stateful [fastmcpp-nodelay]=stateful [cxxmcp-nodelay]=stateful
+    [neumann-nodelay]=stateful
+)
+
+# Copies the table rows of an SDK to the key of one of its session modes. Both keys of an SDK
+# share one service; run.sh passes the mode to it as MCP_SESSION_MODE when it starts the service.
+register_session_mode() {
+    local sdk="$1" mode="$2" key="$1-$2"
+    SERVICE_NAME[$key]="${SERVICE_NAME[$sdk]}"
+    CONTAINER_NAME[$key]="${CONTAINER_NAME[$sdk]}"
+    MCP_URL[$key]="${MCP_URL[$sdk]}"
+    HEALTH_URL[$key]="${HEALTH_URL[$sdk]}"
+    HEALTH_KIND[$key]="${HEALTH_KIND[$sdk]}"
+    EXPECTED_SERVER_TYPE[$key]="${EXPECTED_SERVER_TYPE[$sdk]}"
+    SESSION_MODE[$key]="$mode"
+    if [[ -n "${REQUIRE_SUPPLEMENTAL[$sdk]:-}" ]]; then
+        REQUIRE_SUPPLEMENTAL[$key]="${REQUIRE_SUPPLEMENTAL[$sdk]}"
+    fi
+}
+
+# A server key names the SDK and the session mode it serves older protocol revisions in. Protocol
+# 2026-07-28 has no sessions, so the mode only matters for the revisions that do. An SDK that has no
+# switch for a mode has no key for it.
+CPP_SDK_SERVERS=(ours-comparable-stateful ours-comparable-stateless hkr04 fastmcpp cxxmcp neumann)
 NODELAY_SERVERS=(hkr04-nodelay fastmcpp-nodelay cxxmcp-nodelay neumann-nodelay)
-VARIANT_SERVERS=(ours-coroutines)
-BASELINE_SERVERS=(python go rust)
+VARIANT_SERVERS=(ours-coroutines-stateful ours-coroutines-stateless)
+BASELINE_SERVERS=(python-stateless go-stateless go-stateful rust-stateless rust-stateful)
 FULL_SERVERS=("${CPP_SDK_SERVERS[@]}" "${VARIANT_SERVERS[@]}" "${NODELAY_SERVERS[@]}" "${BASELINE_SERVERS[@]}")
 
 declare -A REQUIRE_SUPPLEMENTAL=(
@@ -197,6 +222,18 @@ declare -A REQUIRE_SUPPLEMENTAL=(
     [neumann]=1
 )
 
+for sdk in ours-comparable ours-coroutines; do
+    register_session_mode "$sdk" stateful
+    register_session_mode "$sdk" stateless
+done
+# Python has no stateful key: its sessions live in the memory of one uvicorn worker, and the
+# container runs four, so the session id of a later request reaches a worker that does not hold it.
+register_session_mode python stateless
+register_session_mode rust stateful
+register_session_mode rust stateless
+register_session_mode go stateful
+register_session_mode go stateless
+
 declare -A ALTERNATIVE_REPO=()
 declare -A ALTERNATIVE_COMMIT=()
 declare -A ALTERNATIVE_STATUS=()
@@ -206,13 +243,13 @@ collector_ready_files=()
 usage() {
     cat <<'USAGE'
 Usage:
-  ./run.sh                  # five comparable C++ SDKs
-  ./run.sh cpp-sdks         # five comparable C++ SDKs
+  ./run.sh                  # the comparable C++ SDKs
+  ./run.sh cpp-sdks         # the comparable C++ SDKs
   ./run.sh baseline         # Python, Go, and Rust baselines
   ./run.sh all              # all corrected C++ and language baselines
   ./run.sh full             # C++ SDKs, ours-coroutines, their TCP_NODELAY builds, and baselines
-  ./run.sh ours-comparable ours-coroutines  # thread-based and coroutine-based workload of this SDK
-  ./run.sh python go rust   # selected servers
+  ./run.sh ours-comparable-stateful ours-coroutines-stateful  # thread-based and coroutine-based workload of this SDK
+  ./run.sh python-stateless go-stateful rust-stateless        # selected servers
   ./run.sh hkr04,cxxmcp     # selected servers (comma-separated)
 
 Production profile: 3 rounds, 50 VUs, 15s ramp + 60s warmup, then a
@@ -801,6 +838,13 @@ write_run_manifest() {
           else error("compose images did not contain the exact selected container set with immutable IDs")
           end
     ' > "$RESULTS_DIR/compose_images.json"
+    local session_modes_json='{}'
+    for target in "${selected_servers[@]}"; do
+        session_modes_json="$(
+            jq -c --arg target "$target" --arg mode "${SESSION_MODE[$target]:-}" \
+                '. + {($target): $mode}' <<< "$session_modes_json"
+        )"
+    done
     jq -n \
         --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg profile "$RUN_PROFILE" \
@@ -815,6 +859,7 @@ write_run_manifest() {
         --arg supplemental_contract "$SUPPLEMENTAL_CONTRACT" \
         --arg host_network_policy "$HOST_NETWORK_POLICY" \
         --argjson supplemental_targets "$supplemental_targets_json" \
+        --argjson session_modes "$session_modes_json" \
         --argjson k6_cpus "$BENCHMARK_K6_CPUS" \
         --argjson k6_memory_bytes "$BENCHMARK_K6_MEMORY_BYTES" \
         --slurpfile schedule "$RESULTS_DIR/run_order.json" \
@@ -832,6 +877,7 @@ write_run_manifest() {
               required_targets: $supplemental_targets
             }
           },
+          session_modes: $session_modes,
           resource_collection: {host_network_policy: $host_network_policy},
           k6_image: $k6_image, schedule: $schedule[0], images: $images[0]}' \
         > "$RESULTS_DIR/run_manifest.json"
@@ -849,10 +895,10 @@ generate_comparison() {
         printf "Supplemental adapter contract: %s (out-of-band evidence).\n" \
             "$SUPPLEMENTAL_CONTRACT"
         printf "Results: %s\n\n" "${RESULTS_DIR#"$(dirname "$SCRIPT_DIR")/"}"
-        printf "%-18s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
-            "Server" "Protocol" "Operations" "Ops/s" "CV%" "p50(ms)" "p95(ms)" "p99(ms)" "ErrorRate"
-        printf "%-18s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
-            "------------------" "------------" "------------" "----------" "--------" \
+        printf "%-28s %-10s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
+            "Server" "Mode" "Protocol" "Operations" "Ops/s" "CV%" "p50(ms)" "p95(ms)" "p99(ms)" "ErrorRate"
+        printf "%-28s %-10s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
+            "----------------------------" "----------" "------------" "------------" "----------" "--------" \
             "------------" "------------" "------------" "------------"
         local server summary multi_stats protocol operations rps p50 p95 p99 err_rate cv_pct
         for server in "${selected_servers[@]}"; do
@@ -866,8 +912,9 @@ generate_comparison() {
             p99="$(jq -r '.latency.combined_tool_call.p99_ms' "$summary")"
             err_rate="$(jq -r '.errors.mcp_rate' "$summary")"
             cv_pct="$(jq -r '.sample_cv_pct' "$multi_stats")"
-            printf "%-18s %-12s %-12s %-10.2f %-8.2f %-12.2f %-12.2f %-12.2f %-12.4f\n" \
-                "$server" "$protocol" "$operations" "$rps" "$cv_pct" "$p50" "$p95" "$p99" "$err_rate"
+            printf "%-28s %-10s %-12s %-12s %-10.2f %-8.2f %-12.2f %-12.2f %-12.2f %-12.4f\n" \
+                "$server" "${SESSION_MODE[$server]:-}" "$protocol" "$operations" "$rps" "$cv_pct" \
+                "$p50" "$p95" "$p99" "$err_rate"
         done
     } | tee "$comparison_file"
 }
@@ -894,8 +941,11 @@ load_alternative_manifest
 declare -A seen_servers=()
 for server in "${selected_servers[@]}"; do
     case "$server" in
-        cpp|ours-comparable|ours-coroutines|python|go|rust|hkr04|fastmcpp|cxxmcp|neumann) ;;
+        cpp|hkr04|fastmcpp|cxxmcp|neumann) ;;
         hkr04-nodelay|fastmcpp-nodelay|cxxmcp-nodelay|neumann-nodelay) ;;
+        ours-comparable-stateful|ours-comparable-stateless) ;;
+        ours-coroutines-stateful|ours-coroutines-stateless) ;;
+        python-stateless|rust-stateful|rust-stateless|go-stateful|go-stateless) ;;
         gopher-mcp)
             error "gopher-mcp exposes legacy HTTP+SSE rather than the shared /mcp Streamable HTTP contract"
             exit 2
@@ -938,7 +988,7 @@ RUN_PROFILE="smoke"
 baseline_selection=true
 for server in "${selected_servers[@]}"; do
     case "$server" in
-        python|go|rust) ;;
+        python-stateless|go-stateful|go-stateless|rust-stateful|rust-stateless) ;;
         *) baseline_selection=false ;;
     esac
 done
@@ -1055,7 +1105,8 @@ python3 "$SCRIPT_DIR/capture_environment.py" "${environment_args[@]}"
 
 build_services=(api-service redis-seeder)
 for server in "${selected_servers[@]}"; do
-    build_services+=("${SERVICE_NAME[$server]}")
+    [[ " ${build_services[*]} " == *" ${SERVICE_NAME[$server]} "* ]] \
+        || build_services+=("${SERVICE_NAME[$server]}")
 done
 info "Building every selected server once before the schedule"
 compose build "${build_services[@]}" 2>&1 | tee "$RESULTS_DIR/build.log"
@@ -1067,8 +1118,10 @@ python3 "$SCRIPT_DIR/capture_environment.py" \
 image_services=(redis api-service)
 expected_image_containers=(mcp-redis mcp-api-service mcp-redis-seeder)
 for server in "${selected_servers[@]}"; do
-    image_services+=("${SERVICE_NAME[$server]}")
-    expected_image_containers+=("${CONTAINER_NAME[$server]}")
+    [[ " ${image_services[*]} " == *" ${SERVICE_NAME[$server]} "* ]] || {
+        image_services+=("${SERVICE_NAME[$server]}")
+        expected_image_containers+=("${CONTAINER_NAME[$server]}")
+    }
 done
 compose --profile seeder create "${image_services[@]}" redis-seeder >/dev/null
 
@@ -1117,6 +1170,7 @@ for run_idx in $(seq 1 "$BENCHMARK_RUNS"); do
 
         info "[$sequence_index] $server round $run_idx: recreate target"
         compose stop "${ALL_MCP_SERVICES[@]}" >/dev/null
+        export MCP_SESSION_MODE="${SESSION_MODE[$server]}"
         compose up -d --force-recreate --no-deps "$service"
         if [[ "${HEALTH_KIND[$server]}" == "mcp" ]]; then
             wait_for_mcp "$server" "${HEALTH_URL[$server]}" 90
