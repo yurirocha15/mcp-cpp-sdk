@@ -791,6 +791,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   its timeout first. A request refused on its headers gets only the refusal.
 - `http_bearer_token()` skips every space after `Bearer`, as RFC 6750 allows,
   so a validator is no longer handed a token with leading spaces.
+- `OAuthAuthorizationManager` refuses a `client_identity.client_metadata_url`
+  that is not an `https` URL with a path, or that has a fragment, a username or
+  password, or a `.` or `..` path segment, by throwing
+  `std::invalid_argument`, instead of using it as a client identifier the
+  authorization specification does not allow.
 
 ## [0.2.0] - 2026-10-21
 

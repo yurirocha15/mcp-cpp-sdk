@@ -2470,6 +2470,46 @@ struct OAuthAuthorizationManager::Impl {
     }
 };
 
+namespace {
+
+/// A client metadata document URL must use https (the scheme is case-insensitive) and carry a
+/// path, without a fragment, a username or password, or single-dot and double-dot path segments:
+/// any of them would make it a different client identifier than the one the document names.
+bool is_valid_client_metadata_url(const std::string& url) {
+    constexpr std::string_view scheme = "https://";
+    if (url.size() < scheme.size() || url.find('#') != std::string::npos ||
+        !std::equal(scheme.begin(), scheme.end(), url.begin(), [](char expected, char actual) {
+            return std::tolower(static_cast<unsigned char>(actual)) == expected;
+        })) {
+        return false;
+    }
+    const auto authority_end = url.find_first_of("/?", scheme.size());
+    if (authority_end == std::string::npos || authority_end == scheme.size() ||
+        url[authority_end] != '/') {
+        return false;
+    }
+    if (url.find('@', scheme.size()) < authority_end) {
+        return false;
+    }
+    const auto path_end = std::min(url.find('?', authority_end), url.size());
+    const std::string_view path(url.data() + authority_end + 1, path_end - authority_end - 1);
+    for (std::size_t start = 0; start <= path.size();) {
+        const auto slash = path.find('/', start);
+        const auto segment =
+            path.substr(start, slash == std::string_view::npos ? slash : slash - start);
+        if (segment == "." || segment == "..") {
+            return false;
+        }
+        if (slash == std::string_view::npos) {
+            break;
+        }
+        start = slash + 1;
+    }
+    return true;
+}
+
+}  // namespace
+
 OAuthAuthorizationManager::OAuthAuthorizationManager(const net::any_io_executor& executor,
                                                      std::shared_ptr<TokenStore> token_store,
                                                      OAuthAuthorizationConfig config,
@@ -2485,6 +2525,13 @@ OAuthAuthorizationManager::OAuthAuthorizationManager(const net::any_io_executor&
         throw std::invalid_argument(
             "OAuthAuthorizationConfig sets client_id, client_secret or client_issuer alongside "
             "client_identity.pre_registered; set only one of them");
+    }
+    const auto& metadata_url = config.client_identity.client_metadata_url;
+    if (metadata_url && !metadata_url->empty() && !is_valid_client_metadata_url(*metadata_url)) {
+        throw std::invalid_argument(
+            "client_identity.client_metadata_url must be an https URL with a path and no "
+            "fragment: " +
+            sanitize_for_diagnostics(*metadata_url));
     }
     impl_ = std::make_shared<Impl>(executor, std::move(token_store), std::move(config),
                                    std::move(callback));
