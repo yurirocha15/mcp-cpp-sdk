@@ -1859,6 +1859,31 @@ struct OAuthAuthorizationManager::Impl {
         return std::nullopt;
     }
 
+    /// Whether `challenge` is an insufficient-scope refusal whose every scope `issuer` already
+    /// granted. Authorizing again would ask for what the token carries, so the user would be
+    /// prompted for a grant the server has just shown it does not honor. Only a literal match
+    /// counts: a scope the server grants under another spelling, or through a hierarchy, is not
+    /// recognised here, and then the challenge is acted on as usual.
+    static bool adds_no_new_scope(const Impl& owner, const BearerChallenge& challenge,
+                                  const std::string& issuer) {
+        if (challenge.error != "insufficient_scope" || !challenge.scope || challenge.scope->empty()) {
+            return false;
+        }
+        std::optional<std::string> granted;
+        {
+            std::lock_guard lock(owner.state_mutex);
+            granted = granted_scope_for(owner, issuer);
+        }
+        if (!granted) {
+            return false;
+        }
+        const auto held = split_scopes(*granted);
+        const auto wanted = split_scopes(*challenge.scope);
+        return !wanted.empty() && std::all_of(wanted.begin(), wanted.end(), [&held](const auto& scope) {
+            return std::find(held.begin(), held.end(), scope) != held.end();
+        });
+    }
+
     /// Record the four authorization-server facts client identity selection turns on.
     static ClientIdentityServerFacts server_facts(const AuthServerMetadata& auth_server) {
         ClientIdentityServerFacts facts;
@@ -2078,6 +2103,11 @@ struct OAuthAuthorizationManager::Impl {
             throw std::runtime_error(
                 "Authorization server metadata does not list S256 in "
                 "code_challenge_methods_supported");
+        }
+
+        // After the issuer is known and before anything is registered or asked of the user.
+        if (adds_no_new_scope(owner, operation->challenge, operation->auth_metadata->issuer)) {
+            co_return false;
         }
 
         operation->facts = server_facts(*operation->auth_metadata);

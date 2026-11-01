@@ -807,6 +807,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   with the issuer that granted it, and unions it into a step-up request only
   for that issuer. A step-up that moves to another authorization server asks
   for the challenge's scope alone.
+- `OAuthAuthorizationManager` no longer asks the user to authorize again for an
+  `insufficient_scope` challenge whose every scope the authorization server
+  already granted: the refusal reaches the caller instead. A scope counts as
+  granted only when it appears literally in the granted scope, and the
+  step-ups one request may cost stay limited by
+  `OAuthClientTransportOptions::max_step_ups_per_request`.
 
 ## [0.2.0] - 2026-10-21
 
