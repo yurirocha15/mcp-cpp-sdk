@@ -410,6 +410,7 @@ if(BUILD_TESTING)
       test/core/json_dump_test.cpp
       test/core/json_parse_test.cpp
       test/core/jsonrpc_envelope_test.cpp
+      test/core/json_schema_engines_test.cpp
       test/core/json_schema_test.cpp
       test/core/protocol_test.cpp
       test/core/tasks_test.cpp
