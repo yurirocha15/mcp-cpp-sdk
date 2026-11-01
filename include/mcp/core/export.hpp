@@ -17,3 +17,7 @@
 #else
 #define MCP_API
 #endif
+
+// Marks a declaration deprecated. The message names the replacement and the earliest release that
+// may remove it (see VERSIONING.md).
+#define MCP_DEPRECATED(message) [[deprecated(message)]]
