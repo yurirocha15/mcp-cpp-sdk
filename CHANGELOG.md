@@ -581,7 +581,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   describe how the scope of an authorization request is chosen, that a step-up
   unions the challenge with the scope the issuer granted, the limits on
   repeated authorization, `offline_access`, the client metadata document URL
-  rule and the deprecation of dynamic client registration.
+  rule and the deprecation of dynamic client registration, and
+  `docs/concepts/oauth.rst` says that request deadlines do not run while the
+  user answers an authorization prompt.
 
 ### Removed
 
