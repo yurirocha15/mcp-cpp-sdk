@@ -307,6 +307,10 @@ class Context {
     /**
      * @brief Request the client to sample an LLM (reverse RPC).
      *
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates sampling, with removal no
+     * earlier than 2027-07-28. Clients of earlier revisions still rely on it, so it is not marked
+     * with MCP_DEPRECATED yet.
+     *
      * @details Sends a "sampling/createMessage" request to the client
      * and awaits the response. Requires the Context to be constructed
      * with a RequestSender.
@@ -391,6 +395,10 @@ class Context {
 
     /**
      * @brief Request the list of roots from the client (reverse RPC).
+     *
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates roots, with removal no
+     * earlier than 2027-07-28. Clients of earlier revisions still rely on it, so it is not marked
+     * with MCP_DEPRECATED yet.
      *
      * @details Sends a "roots/list" request to the client and awaits
      * the response. The client provides its configured root URIs.
