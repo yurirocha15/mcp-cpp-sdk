@@ -19,8 +19,12 @@ if [[ ! -x "$RUNNER" ]]; then
     exit 2
 fi
 runner_version="$("$RUNNER" --version)"
-if [[ "$runner_version" != "0.1.16" ]]; then
-    echo "Unexpected conformance runner version: $runner_version (expected 0.1.16)" >&2
+expected_version="$(python3 -c '
+import json, sys
+print(json.load(open(sys.argv[1]))["dependencies"]["@modelcontextprotocol/conformance"])
+' "$SCRIPT_DIR/runner/package.json")"
+if [[ "$runner_version" != "$expected_version" ]]; then
+    echo "Unexpected conformance runner version: $runner_version (expected $expected_version)" >&2
     exit 2
 fi
 if [[ ! -x "$SERVER" || ! -x "$CLIENT" ]]; then
