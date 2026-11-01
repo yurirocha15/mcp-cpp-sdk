@@ -122,6 +122,19 @@ def summarize_suite(suite: str, root: Path) -> dict[str, object]:
     }
 
 
+def read_metadata(output_dir: Path) -> dict[str, str]:
+    metadata_path = output_dir / "metadata.txt"
+    metadata = {}
+    for line in metadata_path.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            metadata[key] = value
+    for key in ("runner", "protocol_version"):
+        if not metadata.get(key):
+            raise SystemExit(f"{metadata_path} has no {key}")
+    return metadata
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server-results", type=Path, required=True)
@@ -131,13 +144,14 @@ def main() -> None:
     parser.add_argument("--client-status", type=int, required=True)
     args = parser.parse_args()
 
+    metadata = read_metadata(args.output_dir)
     suites = {
         "server": summarize_suite("server", args.server_results),
         "client": summarize_suite("client", args.client_results),
     }
     summary = {
-        "runner": "@modelcontextprotocol/conformance@0.1.16",
-        "protocol_version": "2025-11-25",
+        "runner": metadata["runner"],
+        "protocol_version": metadata["protocol_version"],
         "runner_exit_status": {
             "server": args.server_status,
             "client": args.client_status,
