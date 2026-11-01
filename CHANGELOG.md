@@ -779,6 +779,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `docs/concepts/oauth.rst` says that request deadlines do not run while the
   user answers an authorization prompt.
 
+### Deprecated
+
+- `mcp::make_stdio_transport()` and `mcp::make_http_client_transport()` are
+  marked with the new `MCP_DEPRECATED` macro (`mcp/core/export.hpp`) and warn
+  at compile time. Use `TransportFactory::create_stdio()` and
+  `TransportFactory::create_http_client()`. They are removed no earlier than
+  the next major release.
+
 ### Removed
 
 - The task types of the experimental shape of 2025-11-25: the `tasks` member of
