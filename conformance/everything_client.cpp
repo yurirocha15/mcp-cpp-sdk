@@ -66,6 +66,16 @@ std::optional<std::string> optional_environment(std::string_view name) {
     return std::string(value);
 }
 
+/// The runner names the revision under test in MCP_CONFORMANCE_PROTOCOL_VERSION when it is given
+/// --spec-version. Unset, the client keeps its default protocol detection.
+mcp::ClientOptions client_options_from_environment() {
+    mcp::ClientOptions options;
+    if (const auto version = optional_environment("MCP_CONFORMANCE_PROTOCOL_VERSION")) {
+        options.protocol = mcp::ClientProtocol::Version(*version);
+    }
+    return options;
+}
+
 nlohmann::json apply_schema_defaults(const nlohmann::json& request) {
     nlohmann::json content = nlohmann::json::object();
     if (!request.contains("requestedSchema")) {
@@ -483,7 +493,7 @@ int main(int argc, char** argv) {
                 std::make_shared<mcp::auth::OAuthClientTransport>(transport, machine_authenticator);
         }
 
-        mcp::Client client(transport, executor);
+        mcp::Client client(transport, executor, client_options_from_environment());
         install_reverse_rpc_handlers(client);
 
         auto completion =
