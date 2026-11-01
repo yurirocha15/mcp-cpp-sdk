@@ -926,6 +926,16 @@ class MCP_API OAuthClientTransport final : public ITransport {
     /** @brief What the wrapped transport does. */
     [[nodiscard]] bool overlapping_writes() const noexcept override;
 
+    /**
+     * @brief Report to @p observer while a write waits for Authenticator::try_handle_challenge().
+     *
+     * @details The challenge can run an interactive authorization, whose time is the user's and not
+     * the request's. The observer is told when a write begins and ends that wait, keyed by the
+     * request's correlation key; Client uses it to stop the request's deadline while it lasts. A
+     * refresh runs no such prompt and is not reported.
+     */
+    void set_interaction_observer(InteractionObserver observer) override;
+
    private:
     struct Impl;
     std::shared_ptr<Impl> impl_;

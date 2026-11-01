@@ -370,6 +370,9 @@ struct Client::Impl {
         bool completed{false};
         /// The era probe: a reply that cannot be decoded is an answer to it, see fail_probe().
         bool probe{false};
+        /// Set while the transport reports the write is waiting for a person: what was left of the
+        /// time budget, which resumes running afterwards. `deadline` is the far future meanwhile.
+        std::optional<std::chrono::steady_clock::duration> paused_remaining;
     };
 
     Impl(std::shared_ptr<ITransport> client_transport, const boost::asio::any_io_executor& executor,
@@ -1318,14 +1321,18 @@ struct Client::Impl {
                 });
         }
 
-        try {
-            co_await pending_request->timer.async_wait(boost::asio::use_awaitable);
-        } catch (const boost::system::system_error& error) {
-            if (error.code() != boost::asio::error::operation_aborted) {
-                erase_pending_request(state, request_correlation_key(id));
-                throw;
+        // The wait ends when the timer fires, when a response or failure signals it, and when the
+        // deadline is paused or resumed, which moves the timer. Only the last goes back to waiting.
+        do {
+            try {
+                co_await pending_request->timer.async_wait(boost::asio::use_awaitable);
+            } catch (const boost::system::system_error& error) {
+                if (error.code() != boost::asio::error::operation_aborted) {
+                    erase_pending_request(state, request_correlation_key(id));
+                    throw;
+                }
             }
-        }
+        } while (deadline_moved(state, id));
 
         nlohmann::json result;
         std::optional<Error> error;
@@ -1693,6 +1700,41 @@ struct Client::Impl {
         return mcp::detail::dump_json(nlohmann::json(std::move(response)));
     }
 
+    /// Whether request `id` is still waiting on a deadline that has not come: the timer woke because
+    /// the deadline was paused or resumed, not because it fired or the request finished.
+    static bool deadline_moved(const std::shared_ptr<Impl>& state, int64_t id) {
+        const auto id_key = request_correlation_key(id);
+        std::lock_guard lock(state->pending_requests_mutex);
+        const auto iter = state->pending_requests.find(id_key);
+        return iter != state->pending_requests.end() && !iter->second->completed &&
+               std::chrono::steady_clock::now() < iter->second->deadline;
+    }
+
+    /// The transport says the write of request `key` waits for a person, such as an OAuth consent
+    /// prompt. The prompt's time is the user's, so the request's deadline stops until it ends.
+    static void on_interaction(const std::shared_ptr<Impl>& state, std::string_view key, bool waiting) {
+        std::lock_guard lock(state->pending_requests_mutex);
+        const auto iter = state->pending_requests.find(key);
+        if (iter == state->pending_requests.end()) {
+            return;
+        }
+        auto& pending = *iter->second;
+        const auto now = std::chrono::steady_clock::now();
+        if (waiting && !pending.completed && !pending.paused_remaining) {
+            pending.paused_remaining = pending.deadline > now
+                                           ? pending.deadline - now
+                                           : std::chrono::steady_clock::duration::zero();
+            pending.deadline = std::chrono::steady_clock::time_point::max();
+            pending.timer.expires_at(pending.deadline);
+        } else if (!waiting && pending.paused_remaining) {
+            pending.deadline = now + *pending.paused_remaining;
+            pending.paused_remaining.reset();
+            if (!pending.completed) {
+                pending.timer.expires_at(pending.deadline);
+            }
+        }
+    }
+
     static void signal_pending_request(PendingRequest& pending_request) {
         pending_request.timer.expires_at(std::chrono::steady_clock::now());
     }
@@ -1935,6 +1977,12 @@ Client::Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_
         throw std::invalid_argument("Client incoming request memory limit must be positive");
     }
     impl_ = std::make_shared<Impl>(std::move(transport), executor, std::move(options));
+    impl_->transport->set_interaction_observer(
+        [state = std::weak_ptr<Impl>(impl_)](std::string_view key, bool waiting) {
+            if (const auto alive = state.lock()) {
+                Impl::on_interaction(alive, key, waiting);
+            }
+        });
 }
 
 Client::~Client() { close(); }
