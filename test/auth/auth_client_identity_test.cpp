@@ -22,6 +22,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -830,4 +831,61 @@ TEST(AuthClientIdentityLoopbackTest, ReusesTheRegistrationRecordedForTheSameIssu
     EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::dynamic_registration);
     EXPECT_EQ(fixture.identity->client_id, "registered-client");
     EXPECT_EQ(server.count("/register"), 1U);
+}
+
+namespace {
+
+void construct_with_metadata_url(const std::string& url) {
+    asio::io_context io_ctx;
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = "https://mcp.example/mcp";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.client_identity.client_metadata_url = url;
+    mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(),
+                                                 std::make_shared<mcp::auth::InMemoryTokenStore>(),
+                                                 config, echoing_callback(nullptr));
+}
+
+}  // namespace
+
+TEST(AuthClientIdentityConfigTest, RejectsHttpClientMetadataUrl) {
+    EXPECT_THROW(construct_with_metadata_url("http://client.example/metadata.json"),
+                 std::invalid_argument);
+}
+
+TEST(AuthClientIdentityConfigTest, RejectsMetadataUrlWithoutPath) {
+    EXPECT_THROW(construct_with_metadata_url("https://client.example"), std::invalid_argument);
+    EXPECT_THROW(construct_with_metadata_url("https://client.example?x=1"), std::invalid_argument);
+}
+
+TEST(AuthClientIdentityConfigTest, RejectsMetadataUrlWithFragment) {
+    EXPECT_THROW(construct_with_metadata_url("https://client.example/metadata.json#frag"),
+                 std::invalid_argument);
+}
+
+TEST(AuthClientIdentityConfigTest, RejectsMetadataUrlWithUserInfo) {
+    EXPECT_THROW(construct_with_metadata_url("https://user:pw@client.example/metadata.json"),
+                 std::invalid_argument);
+    EXPECT_THROW(construct_with_metadata_url("https://user@client.example/metadata.json"),
+                 std::invalid_argument);
+}
+
+TEST(AuthClientIdentityConfigTest, RejectsMetadataUrlWithDotSegments) {
+    EXPECT_THROW(construct_with_metadata_url("https://client.example/../metadata.json"),
+                 std::invalid_argument);
+    EXPECT_THROW(construct_with_metadata_url("https://client.example/./metadata.json"),
+                 std::invalid_argument);
+    EXPECT_THROW(construct_with_metadata_url("https://client.example/a/../metadata.json"),
+                 std::invalid_argument);
+    EXPECT_THROW(construct_with_metadata_url("https://client.example/a/.."), std::invalid_argument);
+}
+
+TEST(AuthClientIdentityConfigTest, AcceptsMetadataUrlDotsInsideSegmentsAndAnyCaseScheme) {
+    EXPECT_NO_THROW(construct_with_metadata_url("https://client.example/a.b/..c/metadata.json"));
+    EXPECT_NO_THROW(construct_with_metadata_url("HTTPS://client.example/metadata.json"));
+    EXPECT_NO_THROW(construct_with_metadata_url("Https://client.example/metadata.json?v=1"));
+}
+
+TEST(AuthClientIdentityConfigTest, AcceptsHttpsUrlWithPath) {
+    EXPECT_NO_THROW(construct_with_metadata_url("https://client.example/metadata.json"));
 }
