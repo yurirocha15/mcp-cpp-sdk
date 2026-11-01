@@ -162,6 +162,27 @@ protocol era: a ``401`` to the ``server/discover`` request that
 other, and so is a ``403`` on a request retried in a multi round trip
 exchange.
 
+Timeouts while the user decides
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The consent callback is the user's time, not the request's.
+While ``OAuthClientTransport`` waits for the manager to handle a challenge,
+which includes the callback and the discovery and token requests around it, the
+deadline of the request being written does not run: neither
+``ClientOptions::request_timeout`` nor, for the first request of
+``ClientProtocol::Auto()``, ``ClientOptions::probe_timeout``. The deadline
+resumes with the time that was left when the authorization ends, so a request
+the server then never answers still times out, and a slow prompt never makes
+``connect()`` fall back to ``initialize`` against a server that speaks
+2026-07-28. Only the request whose write is waiting is affected. A refresh runs
+no prompt and keeps the deadline running, and so does any transport other than
+``OAuthClientTransport``; a transport of your own reports such a wait through
+``ITransport::set_interaction_observer()``.
+
+Nothing bounds the callback itself, so an application whose prompt may never
+return must bound it, for example by throwing from the callback after its own
+limit. Closing the client fails the waiting request at once.
+
 Client identity
 ~~~~~~~~~~~~~~~
 
