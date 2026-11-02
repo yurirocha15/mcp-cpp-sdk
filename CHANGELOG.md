@@ -414,16 +414,20 @@ Versioning; a `0.x` version is a stable release unless its version has an
   unchecked. `ClientOptions::validate_tool_schemas = false` turns all of this
   off.
 - `CompiledSchema::compile()` returns the schema it already compiled when it
-  is given the same schema and options again (up to 256 schemas are kept,
-  oldest first out), so a server factory that registers the same tools for
-  every session compiles their schemas once, not once per session. A schema
-  whose text with its options is over 64 KiB is compiled every time and not
-  kept.
+  is given the same schema and options again and something still holds that
+  schema, so a server factory that registers the same tools for every session
+  compiles their schemas once while sessions overlap, not once per session.
+  The cache keeps at most 256 schemas, oldest first out, and lets go of a
+  compiled schema with its last holder, so the schemas of a peer's tool
+  listing are not kept for the life of the process. A schema whose text with
+  its options is over 64 KiB is compiled every time and not kept.
 - `StreamableHttpSessionManager::set_tool_executor()` now moves only the call
-  of a tool handler to that executor. A session's reading, parsing and
-  answering of protocol messages run on the HTTP executor, and the new
-  `Server::set_handler_executor()` is how a `Server` is told where its
-  handlers run. The executor passed to the server factory is the HTTP
+  of a tool, resource or prompt handler to that executor. A session's reading,
+  parsing and answering of protocol messages run on the HTTP executor, and the
+  new `Server::set_handler_executor()` is how a `Server` is told where its
+  handlers run. Each handler call runs on a strand of its own, so a handler
+  that fans out with `co_await (a || b)` never has two branches running at
+  once, and two calls of one session may run at the same time. The executor passed to the server factory is the HTTP
   executor, where it used to be the tool executor when one was set.
 - The Streamable HTTP server no longer parses a finished 2026-07-28 response
   to read its error code when the response has no `"error"` member.

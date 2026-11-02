@@ -2,6 +2,8 @@
 #include <mcp/detail/regex.hpp>
 #include <mcp/protocol/schema.hpp>
 
+#include "../../src/protocol/schema_cache.hpp"
+
 #include <gtest/gtest.h>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -1465,6 +1467,22 @@ TEST(CompiledSchema, CopiesShareTheSchema) {
 
 // Compiling the same schema again returns a schema that behaves identically, and a different
 // schema, or the same one under different options, is never answered with another's.
+// The cache serves a repeat while something holds the schema and lets the compiled form go with the
+// last holder, so schemas taken from a peer are not kept for the life of the process.
+TEST(CompiledSchema, CacheLetsGoOfASchemaWithItsLastHolder) {
+    const auto before = mcp::detail::compiled_schema_cache_live_entries();
+    std::vector<mcp::CompiledSchema> held;
+    for (int index = 0; index < 20; ++index) {
+        held.push_back(mcp::CompiledSchema::compile(
+            nlohmann::json{{"type", "object"},
+                           {"properties", {{"field" + std::to_string(index), {{"type", "string"}}}}}}));
+    }
+    EXPECT_EQ(mcp::detail::compiled_schema_cache_live_entries(), before + 20);
+
+    held.clear();
+    EXPECT_EQ(mcp::detail::compiled_schema_cache_live_entries(), before);
+}
+
 TEST(CompiledSchema, RepeatedCompileKeepsEachSchemaDistinct) {
     const json integer = {{"type", "integer"}};
     const json text = {{"type", "string"}};

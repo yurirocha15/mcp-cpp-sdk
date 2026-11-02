@@ -3,6 +3,7 @@
 #include <mcp/detail/regex.hpp>
 #include "../detail/diagnostic_text.hpp"
 #include "native_schema.hpp"
+#include "schema_cache.hpp"
 
 // The only translation unit that includes jsoncons. The vendored copy lives in the
 // mcp_detail_jsoncons namespace (see scripts/vendor_jsoncons.py), so none of it can collide with a
@@ -14,9 +15,10 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <deque>
 #include <exception>
+#include <iterator>
 #include <limits>
+#include <list>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -345,38 +347,83 @@ namespace {
 
 /// Compiled schemas by their source text and options. A server that builds one `Server` per
 /// session registers the same tools every time; compiling is far dearer than validating, so a
-/// repeat compile of the same schema returns the one already built. The cache is bounded and
-/// evicts the oldest entry first.
+/// repeat compile of the same schema returns the one already built. The cache holds a schema only
+/// weakly: it serves a repeat while a session still holds the schema, and releases the compiled
+/// form with the last holder, so a schema taken from a peer, such as a client's tool listing, is
+/// not kept for the life of the process. What stays after the last holder is its key, a text of up
+/// to g_max_key_bytes, until a later insert drops it; the cache is bounded in entries and evicts
+/// the oldest first.
 class CompiledSchemaCache {
    public:
     std::shared_ptr<const CompiledSchemaImpl> find(const std::string& key) {
         std::lock_guard lock(mutex_);
-        const auto it = entries_.find(key);
-        return it == entries_.end() ? nullptr : it->second;
+        const auto it = index_.find(std::string_view(key));
+        if (it == index_.end()) {
+            return nullptr;
+        }
+        auto compiled = it->second->compiled.lock();
+        if (!compiled) {
+            erase(it->second);
+        }
+        return compiled;
     }
 
-    void insert(std::string key, std::shared_ptr<const CompiledSchemaImpl> compiled) {
+    void insert(std::string key, const std::shared_ptr<const CompiledSchemaImpl>& compiled) {
         if (key.size() > g_max_key_bytes) {
             return;
         }
         std::lock_guard lock(mutex_);
-        if (!entries_.emplace(key, std::move(compiled)).second) {
-            return;
+        if (const auto it = index_.find(std::string_view(key)); it != index_.end()) {
+            if (!it->second->compiled.expired()) {
+                return;
+            }
+            erase(it->second);
         }
-        order_.push_back(std::move(key));
-        if (order_.size() > g_max_entries) {
-            entries_.erase(order_.front());
-            order_.pop_front();
+        // Every entry whose schema is gone goes first, then the oldest if the cache is still full.
+        for (auto entry = order_.begin(); entry != order_.end();) {
+            const auto current = entry++;
+            if (current->compiled.expired()) {
+                erase(current);
+            }
         }
+        while (order_.size() >= g_max_entries) {
+            erase(order_.begin());
+        }
+        order_.push_back(Entry{std::move(key), compiled});
+        const auto added = std::prev(order_.end());
+        index_.emplace(std::string_view(added->key), added);
+    }
+
+    std::size_t live_entries() {
+        std::lock_guard lock(mutex_);
+        std::size_t live = 0;
+        for (const auto& entry : order_) {
+            if (!entry.compiled.expired()) {
+                ++live;
+            }
+        }
+        return live;
     }
 
    private:
+    struct Entry {
+        std::string key;
+        std::weak_ptr<const CompiledSchemaImpl> compiled;
+    };
+    using Order = std::list<Entry>;
+
     static constexpr std::size_t g_max_entries = 256;
     static constexpr std::size_t g_max_key_bytes = 64 * 1024;
 
+    void erase(Order::iterator entry) {
+        index_.erase(std::string_view(entry->key));
+        order_.erase(entry);
+    }
+
     std::mutex mutex_;
-    std::unordered_map<std::string, std::shared_ptr<const CompiledSchemaImpl>> entries_;
-    std::deque<std::string> order_;
+    /// Oldest first. Nodes do not move, so the views in index_ stay valid until the node goes.
+    Order order_;
+    std::unordered_map<std::string_view, Order::iterator> index_;
 };
 
 CompiledSchemaCache& compiled_schema_cache() {
@@ -585,5 +632,11 @@ ValidationResult CompiledSchema::validate(const nlohmann::json& instance) const 
 }
 
 const nlohmann::json& CompiledSchema::schema() const noexcept { return impl_->source; }
+
+namespace detail {
+
+std::size_t compiled_schema_cache_live_entries() { return compiled_schema_cache().live_entries(); }
+
+}  // namespace detail
 
 }  // namespace mcp
