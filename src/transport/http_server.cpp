@@ -1,3 +1,4 @@
+#include "../detail/accept_retry.hpp"
 #include "../detail/beast_string.hpp"
 #include "../detail/peer_json.hpp"
 
@@ -10,6 +11,7 @@
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -1134,6 +1136,7 @@ Task<void> HttpServerTransport::listen_impl(std::shared_ptr<Impl> impl) {
         }
 
         boost::asio::ip::tcp::socket socket(impl->strand);
+        bool retry = false;
         try {
             socket = co_await impl->acceptor.async_accept(boost::asio::use_awaitable);
         } catch (const boost::system::system_error& err) {
@@ -1141,7 +1144,16 @@ Task<void> HttpServerTransport::listen_impl(std::shared_ptr<Impl> impl) {
                 err.code() == boost::asio::error::operation_aborted) {
                 co_return;
             }
-            throw;
+            if (!detail::accept_failure_can_pass(err.code())) {
+                throw;
+            }
+            retry = true;
+        }
+        if (retry) {
+            boost::asio::steady_timer pause(impl->strand, detail::g_accept_retry_delay);
+            boost::system::error_code ignored;
+            co_await pause.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ignored));
+            continue;
         }
 
         if (impl->state->closed.load(std::memory_order_acquire)) {

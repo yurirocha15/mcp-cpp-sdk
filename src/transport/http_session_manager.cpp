@@ -1,3 +1,4 @@
+#include "../detail/accept_retry.hpp"
 #include "../detail/beast_string.hpp"
 #include "../detail/jsonrpc_envelope.hpp"
 #include "../detail/memory_transport_read.hpp"
@@ -1262,6 +1263,7 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
         }
 
         boost::asio::ip::tcp::socket socket(impl->listener_strand);
+        bool retry = false;
         try {
             socket = co_await impl->acceptor.async_accept(boost::asio::use_awaitable);
         } catch (const boost::system::system_error& err) {
@@ -1269,7 +1271,16 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
                 err.code() == boost::asio::error::operation_aborted) {
                 co_return;
             }
-            throw;
+            if (!detail::accept_failure_can_pass(err.code())) {
+                throw;
+            }
+            retry = true;
+        }
+        if (retry) {
+            boost::asio::steady_timer pause(impl->listener_strand, detail::g_accept_retry_delay);
+            boost::system::error_code ignored;
+            co_await pause.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ignored));
+            continue;
         }
 
         auto conn_strand = boost::asio::make_strand(impl->executor);
