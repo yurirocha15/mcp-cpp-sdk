@@ -741,6 +741,10 @@ install(
   FILES LICENSE
   DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/mcp-cpp-sdk"
   COMPONENT Runtime)
+install(
+  FILES third_party/jsoncons/LICENSE
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/mcp-cpp-sdk/jsoncons"
+  COMPONENT Runtime)
 
 configure_package_config_file(
   cmake/mcp-cpp-sdk-config.cmake.in

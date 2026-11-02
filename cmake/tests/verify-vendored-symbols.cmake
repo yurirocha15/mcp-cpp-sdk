@@ -1,7 +1,7 @@
 # Verifies that the vendored jsoncons stays private to the SDK library: no
 # symbol of the original jsoncons namespace in the static archive, no jsoncons
 # symbol exported from the shared library, and no jsoncons file or reference in
-# the install tree.
+# the install tree other than its license, which must be there.
 #
 # Inputs: MCP_CPP_SDK_NM, MCP_CPP_SDK_BUILD_DIR, and optionally
 # MCP_CPP_SDK_STATIC_LIBRARY and MCP_CPP_SDK_SHARED_LIBRARY.
@@ -55,9 +55,14 @@ file(
   GLOB_RECURSE installed_files
   LIST_DIRECTORIES false
   "${VENDORED_INSTALL_DIR}/*")
+set(JSONCONS_LICENSE_INSTALLED FALSE)
 foreach(installed IN LISTS installed_files)
-  string(TOLOWER "${installed}" installed_lower)
-  if(installed_lower MATCHES "jsoncons")
+  file(RELATIVE_PATH installed_relative "${VENDORED_INSTALL_DIR}"
+       "${installed}")
+  string(TOLOWER "${installed_relative}" installed_lower)
+  if(installed_relative MATCHES "/licenses/mcp-cpp-sdk/jsoncons/LICENSE$")
+    set(JSONCONS_LICENSE_INSTALLED TRUE)
+  elseif(installed_lower MATCHES "jsoncons")
     message(FATAL_ERROR "jsoncons file installed: ${installed}")
   endif()
   if(installed MATCHES "\\.(cmake|pc)$")
@@ -68,4 +73,7 @@ foreach(installed IN LISTS installed_files)
     endif()
   endif()
 endforeach()
+if(NOT JSONCONS_LICENSE_INSTALLED)
+  message(FATAL_ERROR "the jsoncons license is not in the install tree")
+endif()
 file(REMOVE_RECURSE "${VENDORED_INSTALL_DIR}")

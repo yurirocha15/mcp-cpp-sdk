@@ -675,6 +675,20 @@ class TemplateTests(unittest.TestCase):
         nuspec = (packaging / "chocolatey/mcp-cpp-sdk.nuspec.in").read_text(encoding="utf-8")
         self.assertIn("<licenseUrl>@PROJECT_URL@/blob/v@VERSION@/LICENSE</licenseUrl>", nuspec)
         self.assertNotIn("<license ", nuspec)
+        # jsoncons is compiled into the library, so every package carries its notice as well.
+        self.assertIn(
+            "Boost Software License",
+            (repository / "third_party/jsoncons/LICENSE").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            'FILES third_party/jsoncons/LICENSE\n'
+            '  DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/mcp-cpp-sdk/jsoncons"',
+            (repository / "CMakeLists.txt").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "%license LICENSE LICENSE.jsoncons",
+            (packaging / "rpm/mcp-cpp-sdk.spec.in").read_text(encoding="utf-8"),
+        )
         self.assertIn(
             "Apache License\n                           Version 2.0",
             (repository / "LICENSE").read_text(encoding="utf-8"),
@@ -700,7 +714,8 @@ class TemplateTests(unittest.TestCase):
         self.assertIn("-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-DNDEBUG\n", rpm_spec)
         self.assertEqual(
             (packaging / "debian/not-installed.in").read_text(encoding="utf-8"),
-            "usr/share/licenses/mcp-cpp-sdk/LICENSE\n",
+            "usr/share/licenses/mcp-cpp-sdk/LICENSE\n"
+            "usr/share/licenses/mcp-cpp-sdk/jsoncons/LICENSE\n",
         )
 
         debian_devel = (packaging / "debian/libmcp-cpp-sdk-dev.install.in").read_text(

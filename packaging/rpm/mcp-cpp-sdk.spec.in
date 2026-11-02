@@ -50,6 +50,7 @@ Static library and private dependency metadata for explicit static consumers.
 
 %prep
 %autosetup
+cp -p third_party/jsoncons/LICENSE LICENSE.jsoncons
 
 %build
 %cmake -G Ninja -DMCP_CPP_SDK_BUILD_SHARED=ON -DMCP_CPP_SDK_BUILD_STATIC=ON -DBUILD_TESTING=ON -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-DNDEBUG
@@ -65,7 +66,7 @@ rm -rf %{__cmake_builddir}/CMakeFiles/mcp-sdk-tests.dir
 rm -rf %{buildroot}%{_licensedir}/mcp-cpp-sdk
 
 %files -n mcp-cpp-sdk@ABI_VERSION@-libs
-%license LICENSE
+%license LICENSE LICENSE.jsoncons
 %{_libdir}/libmcp-cpp-sdk.so.@ABI_VERSION@*
 
 %files devel

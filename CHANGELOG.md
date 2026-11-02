@@ -311,6 +311,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `examples/features/schema_validation.cpp`, which shows each tool schema
   check on the server and the client and exits with a failure status if one
   does not hold.
+- Packages now include the license of the vendored jsoncons library (BSL-1.0):
+  under `share/licenses/mcp-cpp-sdk/jsoncons/` in the install tree, which is
+  also what the Windows archive holds, and as `LICENSE.jsoncons` in the RPM.
 - Sessions of protocol revision 2025-11-25 and earlier stream over HTTP. In
   `StreamableHttpSessionManager` and `HttpServerTransport`, a POST from a
   client that accepts SSE over HTTP/1.1 becomes a stream once the server sends
