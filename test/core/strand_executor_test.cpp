@@ -243,7 +243,7 @@ TEST(StrandExecutorTest, BlockingNeverQueuesWhereDispatchRunsInline) {
     asio::post(strand, [&] {
         asio::dispatch(strand, [&] { dispatched_inline = true; });
         const asio::any_io_executor never = asio::require(strand, execution::blocking.never);
-        execution::execute(never, [&] { queued_ran = true; });
+        never.execute([&] { queued_ran = true; });
         queued_ran_early = queued_ran;
     });
     io_context.run();
