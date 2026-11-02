@@ -421,7 +421,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   of a tool handler to that executor. A session's reading, parsing and
   answering of protocol messages run on the HTTP executor, and the new
   `Server::set_handler_executor()` is how a `Server` is told where its
-  handlers run.
+  handlers run. The executor passed to the server factory is the HTTP
+  executor, where it used to be the tool executor when one was set.
 - The Streamable HTTP server no longer parses a finished 2026-07-28 response
   to read its error code when the response has no `"error"` member.
 - A 2026-07-28 `tools/call`, `prompts/get` or `resources/read` from a client

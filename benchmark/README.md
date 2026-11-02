@@ -127,7 +127,8 @@ Protocol `2026-07-28` runs under the names `ours-comparable-modern`, `ours-corou
 revision through `alternatives/benchmark_modern.js` and the verifier's `--protocol-version
 2026-07-28` (a `server/discover` check, then self-contained requests), and show `sessionless` in the
 Mode column. Every request of `benchmark_modern.js` carries its own id, built from the number of the virtual user
-and a counter of that user's requests, so no two requests of a run share one. cxxmcp serves the
+and a counter of that user's requests, so no two requests of one k6 process share one except the
+single request in `setup()`, which uses id 1; the warmup and the measurement are separate processes. cxxmcp serves the
 revision from v1.3.0 and has the keys `cxxmcp-modern` and `cxxmcp-nodelay-modern`; with a fixed id it
 answered 562 of 800 requests of 20 concurrent clients with `"duplicate client request id"`.
 hkr04, FastMCPP and Neumann-Labs answer every `initialize` with an older revision, including when it
@@ -242,9 +243,11 @@ run the handlers.
 
 The Redis commands, HTTP requests, and result shape match the shared workload,
 and `ours-coroutines` must pass the same `upstream-v2-strict-mcp-v1` and
-`adapter-exact-v1` checks as `ours-comparable`. One difference remains: the
+`adapter-exact-v1` checks as `ours-comparable`. Two differences remain: the
 shared workload gives each HTTP request a 10 s timeout and a 2 s connect
-timeout, and the coroutine workload sets neither.
+timeout, and the coroutine workload sets neither; and the coroutine workload
+retries a request once on a fresh connection when a pooled one was closed by
+the peer while idle.
 
 Because the two builds run different application code, `ours-coroutines` is
 reported next to `ours-comparable` and is never ranked against the other SDKs'
@@ -255,9 +258,10 @@ argument of `alternatives/Dockerfile.ours` (`threads`, the default, or
 ## Protocol revision 2026-07-28
 
 `run.sh` measures with `alternatives/benchmark.js`, which negotiates protocol
-`2024-11-05`. `alternatives/benchmark_modern.js` runs the same workload and
-checks over protocol `2026-07-28`, where each request stands alone and no
-session is created. It reads these environment variables:
+`2024-11-05`, for the stateful and stateless server keys. For the `*-modern` keys it
+measures with `alternatives/benchmark_modern.js`, which runs the same workload and
+checks over protocol `2026-07-28`, where each request stands alone and no session is
+created. It reads these environment variables, which `run.sh` sets for each cell:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -272,28 +276,11 @@ session is created. It reads these environment variables:
 | `BENCHMARK_MEASURE_DURATION` | `5m` | Measurement load |
 | `OUTPUT_PATH` | `<SERVER_NAME>_<mode>_summary.json` | Summary file |
 
-`run.sh` does not run this script. To use it, start Redis and the API service,
-start a server on the benchmark network, and run k6 against it:
+To measure one cell of it, name its key:
 
 ```bash
 cd benchmark
-export BENCHMARK_CPUSET=$(python3 -c 'import os; print(",".join(map(str, sorted(os.sched_getaffinity(0)))))')
-docker compose up -d redis api-service
-docker compose --profile seeder run --rm redis-seeder
-cd ..
-docker build -f benchmark/alternatives/Dockerfile.ours --build-arg OURS_MODEL=coroutines -t ours-coroutines .
-docker run -d --name modern-server --network benchmark_mcp-network -p 8089:8080 \
-  -e PORT=8080 -e REDIS_URL=redis://redis:6379 -e API_SERVICE_URL=http://api-service:8100 \
-  ours-coroutines
-mkdir -p results
-docker run --rm --network host -v "$PWD/benchmark/alternatives:/scripts:ro" -v "$PWD/results:/results" \
-  --user "$(id -u):$(id -g)" \
-  -e SERVER_URL=http://localhost:8089/mcp -e SERVER_NAME=ours-coroutines \
-  -e BENCHMARK_MODE=measurement -e BENCHMARK_MEASURE_DURATION=30s \
-  -e OUTPUT_PATH=/results/ours-coroutines.json \
-  grafana/k6@sha256:82e44a45a38ed22bf5636fe50fe8a07967c3074f7aa66567c6a7501ab9bb3a9f \
-  run /scripts/benchmark_modern.js
-docker rm -f modern-server
+./run.sh ours-coroutines-modern
 ```
 
 `baselines/rust-server` is the Rust server of the pinned upstream benchmark
