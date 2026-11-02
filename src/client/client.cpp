@@ -9,6 +9,7 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -28,6 +29,9 @@
 namespace mcp {
 
 namespace {
+
+/// Requests of the server a client answers at once before it stops reading.
+constexpr std::size_t g_max_incoming_requests = 1024;
 
 std::optional<nlohmann::json> make_paginated_params(const std::optional<std::string>& cursor) {
     if (!cursor) {
@@ -177,6 +181,7 @@ struct Client::Impl {
         boost::asio::post(state->strand, [state, message = std::move(message)]() mutable {
             fail_pending_requests(state, Error{g_CONNECTION_CLOSED, std::move(message), std::nullopt});
             state->transport->close();
+            state->incoming_requests_wake.cancel();
         });
     }
 
@@ -280,6 +285,16 @@ struct Client::Impl {
             for (;;) {
                 auto raw = co_await state->transport->read_message();
                 dispatch_message(state, raw);
+                // The server's requests run in the background, and each holds memory until its
+                // answer is written. Reading stops here until they are fewer.
+                while (state->incoming_requests >= g_max_incoming_requests &&
+                       !state->closed.load(std::memory_order_acquire)) {
+                    state->incoming_requests_wake.expires_at(
+                        std::chrono::steady_clock::time_point::max());
+                    boost::system::error_code ignored;
+                    co_await state->incoming_requests_wake.async_wait(
+                        boost::asio::redirect_error(boost::asio::use_awaitable, ignored));
+                }
             }
         } catch (const std::exception& error) {
             state->closed.store(true, std::memory_order_release);
@@ -334,9 +349,13 @@ struct Client::Impl {
                     throw McpError(g_INVALID_REQUEST,
                                    "JSON-RPC request id must be a string or integer");
                 }
+                ++state->incoming_requests;
                 boost::asio::co_spawn(state->strand,
                                       dispatch_incoming_request(state, std::move(json_message)),
-                                      boost::asio::detached);
+                                      [state](const std::exception_ptr&) {
+                                          --state->incoming_requests;
+                                          state->incoming_requests_wake.cancel();
+                                      });
             } else if (!has_id && has_method) {
                 dispatch_notification(state, json_message);
             }
@@ -561,6 +580,9 @@ struct Client::Impl {
 
     std::shared_ptr<ITransport> transport;
     boost::asio::strand<boost::asio::any_io_executor> strand;
+    /// How many requests of the server are being answered. Touched on the strand only.
+    std::size_t incoming_requests{0};
+    boost::asio::steady_timer incoming_requests_wake{strand};
     ClientOptions options;
     detail::SerializedTransportWriter writer;
 

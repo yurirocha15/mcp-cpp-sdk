@@ -369,6 +369,30 @@ class MCP_API Server {
     void set_page_size(std::size_t size);
 
     /**
+     * @brief Set how many requests of one session may run at once.
+     *
+     * @details A request past the limit is answered with an error instead of being queued, so a
+     * peer that sends requests faster than they finish cannot grow the process without bound. The
+     * same answer goes to a request that would take the bytes of the requests running past
+     * 256 MiB, on a transport that reports them.
+     *
+     * @param limit The limit, at least 1. The default is 1024.
+     * @throws std::invalid_argument If @p limit is 0.
+     */
+    void set_max_in_flight_requests(std::size_t limit);
+
+    /**
+     * @brief Set how long a request the server sends the client may wait for its answer.
+     *
+     * @details The request then fails in the handler that made it, as a client that never answers
+     * would otherwise hold that handler for as long as the session lasts.
+     *
+     * @param timeout The timeout, longer than zero. The default is ten minutes.
+     * @throws std::invalid_argument If @p timeout is not positive.
+     */
+    void set_reverse_request_timeout(std::chrono::milliseconds timeout);
+
+    /**
      * @brief Set the instructions string returned by initialize and server/discover.
      *
      * @details Read unsynchronized by request handlers; must be called before run().

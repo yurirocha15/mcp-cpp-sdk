@@ -385,6 +385,7 @@ if(BUILD_TESTING)
       test/server/server_core_test.cpp
       test/server/server_cancellation_test.cpp
       test/server/server_elicitation_test.cpp
+      test/server/server_limits_test.cpp
       test/server/server_handlers_test.cpp
       test/server/server_logging_test.cpp
       test/server/server_middleware_test.cpp
