@@ -671,10 +671,13 @@ class TemplateTests(unittest.TestCase):
             text = (packaging / relative).read_text(encoding="utf-8")
             self.assertIn("Apache-2.0", text, relative)
             self.assertNotIn("MIT", text, relative)
-        # Chocolatey CLI rejects <license>, so the nuspec links the tagged LICENSE it also ships.
+        # Chocolatey CLI rejects <license>, so the nuspec links the tagged LICENSE. The package
+        # downloads the archive at install time, so it holds no license or verification file.
         nuspec = (packaging / "chocolatey/mcp-cpp-sdk.nuspec.in").read_text(encoding="utf-8")
         self.assertIn("<licenseUrl>@PROJECT_URL@/blob/v@VERSION@/LICENSE</licenseUrl>", nuspec)
         self.assertNotIn("<license ", nuspec)
+        self.assertNotIn("LICENSE.txt", nuspec)
+        self.assertNotIn("VERIFICATION.txt", nuspec)
         # jsoncons is compiled into the library, so every package carries its notice as well.
         self.assertIn(
             "Boost Software License",

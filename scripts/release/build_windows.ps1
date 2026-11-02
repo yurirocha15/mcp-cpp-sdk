@@ -625,10 +625,6 @@ int main() { std::cout << _MSC_VER << " " << sizeof(void*) << "\n"; }
             throw "$script must use LF line endings"
         }
     }
-    Copy-Item -LiteralPath 'LICENSE' -Destination 'chocolatey/LICENSE.txt'
-    Write-Utf8File -Path 'chocolatey/VERIFICATION.txt' -Content (
-        "The archive SHA-256 is $sha256 and is bound by the immutable GitHub Release manifest.`n"
-    )
     Invoke-CheckedCommand -FilePath $choco -Arguments @(
         'pack', 'chocolatey/mcp-cpp-sdk.nuspec',
         '--outputdirectory', 'out',

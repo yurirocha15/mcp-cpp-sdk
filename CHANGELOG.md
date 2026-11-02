@@ -882,6 +882,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Fixed
 
+- The Chocolatey package no longer contains `LICENSE.txt` and
+  `VERIFICATION.txt`. It downloads the Windows archive at install time, with
+  the checksum in its install script.
 - The shared library exported the symbols of the dependencies linked into it
   statically, such as the static OpenSSL of a Conan build. Another OpenSSL in
   the same process, such as the system one that libcurl loads, then called the
