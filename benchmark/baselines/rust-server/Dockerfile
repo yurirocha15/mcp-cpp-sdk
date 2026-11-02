@@ -5,14 +5,17 @@
 FROM rust@sha256:b8e062b1c3a80183df83d9ba187cadd2b5ab84bc78d453dbfeb2fccd5f982247 AS builder
 WORKDIR /app
 
+# Caps the compile jobs so an image build leaves room for the other work on the host.
+ARG BUILD_JOBS=4
+
 # Build the dependencies once, apart from the sources.
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs
-RUN cargo build --release --locked
+RUN cargo build --release --locked --jobs "${BUILD_JOBS}"
 RUN rm src/main.rs
 
 COPY src/ src/
-RUN touch src/main.rs && cargo build --release --locked
+RUN touch src/main.rs && cargo build --release --locked --jobs "${BUILD_JOBS}"
 
 FROM debian@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 RUN apt-get update && apt-get install -y ca-certificates curl && \
