@@ -2687,3 +2687,20 @@ TEST(PeerJsonTest, ParsePeerJsonDiscardsDocumentsNestedTooDeeplyOrInvalid) {
     // Two megabytes of brackets: refused before anything is built from them.
     EXPECT_TRUE(mcp::detail::parse_peer_json(nested(1'000'000)).is_discarded());
 }
+
+TEST(ProtocolElicitation, UnknownActionIsAnError) {
+    EXPECT_THROW((void)nlohmann::json({{"action", "maybe"}}).get<mcp::ElicitResult>(), std::exception);
+    EXPECT_THROW((void)nlohmann::json({{"action", 1}}).get<mcp::ElicitResult>(), std::exception);
+    EXPECT_EQ(nlohmann::json({{"action", "decline"}}).get<mcp::ElicitResult>().action,
+              mcp::ElicitAction::eDecline);
+    EXPECT_EQ(nlohmann::json(mcp::ElicitResult{mcp::ElicitAction::eCancel, {}, {}})["action"],
+              "cancel");
+}
+
+TEST(ProtocolElicitation, FormRequestMayLeaveItsModeOut) {
+    const auto params =
+        nlohmann::json({{"message", "Name?"}, {"requestedSchema", {{"type", "object"}}}})
+            .get<mcp::ElicitRequestParams>();
+    ASSERT_TRUE(std::holds_alternative<mcp::ElicitRequestFormParams>(params));
+    EXPECT_EQ(std::get<mcp::ElicitRequestFormParams>(params).mode, "form");
+}

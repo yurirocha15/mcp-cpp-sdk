@@ -70,6 +70,9 @@ SCALARS = {
 # the right arm, so they are excluded by name, with the reason recorded here
 # and reprinted in the generated file.  check_json_matrix.py counts them as
 # covered so the build stays honest about what the matrix does not reach.
+# Enums with a decoder of their own, which refuses a value it does not know, and a value it takes.
+STRICT_ENUMS = {"ElicitAction": "accept"}
+
 UNSYNTHESISABLE = {
     "JSONRPCResponse": "std::variant; from_json dispatches on which key is present",
     "JSONRPCMessage": "std::variant; from_json dispatches on which key is present",
@@ -77,6 +80,8 @@ UNSYNTHESISABLE = {
     "ResourceContents": "std::variant; from_json dispatches on text vs blob",
     "CompleteReference": "std::variant; from_json dispatches on the 'type' discriminator",
     "ElicitRequestParams": "std::variant; from_json dispatches on mode",
+    "ElicitRequest": "its params are the ElicitRequestParams variant",
+    "ElicitAction": "an enum; ElicitResult.action covers its decoder",
     "SamplingMessageContent": "std::variant; from_json accepts a block or a list of blocks",
     "PrimitiveSchemaDefinition": "base of EnumSchema; exercised through its derived type",
     "RequestId": "std::variant of string and integer; it has no fields to vary",
@@ -150,6 +155,7 @@ def load_protocol(base: str):
         for k, v in census.parse_bases(text, root).items():
             bases.setdefault(k, v)
         enums.update(enum_values(text))
+        enums.update(STRICT_ENUMS)
         defaults.update(member_defaults(text, root))
         # Keep the qualification: the census keys a nested capability by
         # `ClientCapabilities::RootsCapability`, and shortening it here left
@@ -550,7 +556,8 @@ def render(base: str) -> tuple[str, dict]:
                     predict(row, "absent"),
                     predict(row, "null"),
                     predict(row, "wrong_type"),
-                    predict(row, "oversized"),
+                    # A very long string is a value a strict enum does not know.
+                    predict(row, "oversized") or ctype in STRICT_ENUMS,
                 )
             )
         if not cases:
