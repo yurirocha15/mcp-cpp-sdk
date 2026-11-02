@@ -2095,6 +2095,197 @@ TEST_F(SessionManagerTest, SessionWithToolExecutorRunsHandlersOffTheHttpThread) 
     EXPECT_EQ(events[2].second.at("result").at("content").at(0).at("text"), "coroutine done");
 }
 
+// A resource or prompt handler, like a tool handler, runs on the tool executor and not on the
+// HTTP thread that a blocking one would hold.
+TEST_F(SessionManagerTest, ResourceAndPromptHandlersRunOnTheToolExecutor) {
+    const unsigned short port = 19164;
+    const auto http_thread = std::this_thread::get_id();
+    std::atomic<bool> resource_on_http_thread{true};
+    std::atomic<bool> prompt_on_http_thread{true};
+    asio::thread_pool tool_pool(1);
+
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx_.get_executor(), "127.0.0.1", port,
+        [&](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities capabilities;
+            capabilities.resources = mcp::ServerCapabilities::ResourcesCapability{};
+            capabilities.prompts = mcp::ServerCapabilities::PromptsCapability{};
+            auto server = std::make_unique<mcp::Server>(
+                mcp::Implementation{"executor-resource-server", "1.0.0"}, std::move(capabilities));
+            mcp::Resource resource;
+            resource.uri = "res://where";
+            resource.name = "where";
+            server->add_resource<json, mcp::ReadResourceResult>(
+                resource, [&](json) -> mcp::ReadResourceResult {
+                    resource_on_http_thread.store(std::this_thread::get_id() == http_thread);
+                    mcp::ReadResourceResult result;
+                    mcp::TextResourceContents contents;
+                    contents.uri = "res://where";
+                    contents.text = "read";
+                    result.contents.emplace_back(std::move(contents));
+                    return result;
+                });
+            mcp::Prompt prompt;
+            prompt.name = "where";
+            server->add_prompt<json, mcp::GetPromptResult>(prompt, [&](json) -> mcp::GetPromptResult {
+                prompt_on_http_thread.store(std::this_thread::get_id() == http_thread);
+                mcp::GetPromptResult result;
+                result.description = "got";
+                return result;
+            });
+            return server;
+        });
+    manager.set_stateless_json_mode(true);
+    manager.set_tool_executor(tool_pool.get_executor());
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    RawResponse read_response;
+    RawResponse prompt_response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const json read_request = {{"jsonrpc", "2.0"},
+                                       {"method", "resources/read"},
+                                       {"params", {{"uri", "res://where"}}},
+                                       {"id", 1}};
+            read_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                                 read_request.dump());
+            const json prompt_request = {{"jsonrpc", "2.0"},
+                                         {"method", "prompts/get"},
+                                         {"params", {{"name", "where"}}},
+                                         {"id", 2}};
+            prompt_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                   "/mcp", prompt_request.dump());
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+    tool_pool.join();
+
+    EXPECT_EQ(read_response.status, 200);
+    EXPECT_EQ(json::parse(read_response.body)["result"]["contents"][0]["text"], "read");
+    EXPECT_FALSE(resource_on_http_thread.load());
+    EXPECT_EQ(prompt_response.status, 200);
+    EXPECT_EQ(json::parse(prompt_response.body)["result"]["description"], "got");
+    EXPECT_FALSE(prompt_on_http_thread.load());
+}
+
+// A handler that runs two branches at once, as `co_await (a && b)` does, is safe only when the
+// branches run one at a time, so a server on several threads, with or without a tool executor,
+// must run the handler on a strand. The branches are started by hand because Boost 1.74 has no
+// awaitable operators.
+struct FanOutProbe {
+    std::atomic<int> inside{0};
+    std::atomic<int> overlaps{0};
+    std::atomic<int> finished{0};
+};
+
+/// Keeps the thread busy for @p duration. A sleep this short can last a whole clock tick on Windows.
+void spin_for(std::chrono::microseconds duration) {
+    const auto until = std::chrono::steady_clock::now() + duration;
+    while (std::chrono::steady_clock::now() < until) {
+    }
+}
+
+mcp::Task<void> fan_out_branch(std::shared_ptr<FanOutProbe> probe, int rounds) {
+    const auto executor = co_await asio::this_coro::executor;
+    for (int round = 0; round < rounds; ++round) {
+        if (probe->inside.fetch_add(1) != 0) {
+            probe->overlaps.fetch_add(1);
+        }
+        spin_for(std::chrono::microseconds(50));
+        probe->inside.fetch_sub(1);
+        co_await asio::post(executor, asio::use_awaitable);
+    }
+}
+
+/// Runs two branches at once and returns when both have finished.
+mcp::Task<void> fan_out(std::shared_ptr<FanOutProbe> probe, int rounds) {
+    const auto executor = co_await asio::this_coro::executor;
+    auto remaining = std::make_shared<std::atomic<int>>(2);
+    for (int branch = 0; branch < 2; ++branch) {
+        asio::co_spawn(executor, fan_out_branch(probe, rounds),
+                       [remaining](std::exception_ptr) { remaining->fetch_sub(1); });
+    }
+    while (remaining->load() != 0) {
+        co_await asio::post(executor, asio::use_awaitable);
+    }
+}
+
+void run_fan_out_case(asio::io_context& io_ctx, unsigned short port, bool with_tool_pool,
+                      FanOutProbe& probe) {
+    constexpr int g_requests = 4;
+    constexpr int g_rounds = 200;
+    asio::thread_pool tool_pool(4);
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx.get_executor(), "127.0.0.1", port,
+        [&probe](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities capabilities;
+            capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
+            auto server = std::make_unique<mcp::Server>(mcp::Implementation{"fan-out-server", "1.0.0"},
+                                                        std::move(capabilities));
+            server->add_tool<json, mcp::CallToolResult>(
+                "fan_out", "Runs two branches at once", json{{"type", "object"}},
+                [&probe](mcp::Context&, json) -> mcp::Task<mcp::CallToolResult> {
+                    // Branches of one call must not overlap; two calls may.
+                    auto call = std::make_shared<FanOutProbe>();
+                    co_await fan_out(call, g_rounds);
+                    probe.overlaps.fetch_add(call->overlaps.load());
+                    probe.finished.fetch_add(1);
+                    co_return mcp::make_tool_text_result("done");
+                });
+            return server;
+        });
+    manager.set_stateless_json_mode(true);
+    if (with_tool_pool) {
+        manager.set_tool_executor(tool_pool.get_executor());
+    }
+    asio::co_spawn(io_ctx, manager.listen(), asio::detached);
+
+    auto pending = std::make_shared<std::atomic<int>>(g_requests);
+    for (int index = 0; index < g_requests; ++index) {
+        asio::co_spawn(
+            io_ctx,
+            [&io_ctx, &manager, port, pending, index]() -> mcp::Task<void> {
+                const json request = {{"jsonrpc", "2.0"},
+                                      {"method", "tools/call"},
+                                      {"params", {{"name", "fan_out"}, {"arguments", json::object()}}},
+                                      {"id", index + 1}};
+                co_await raw_request(io_ctx.get_executor(), port, http::verb::post, "/mcp",
+                                     request.dump());
+                if (pending->fetch_sub(1) == 1) {
+                    manager.close();
+                }
+            },
+            asio::detached);
+    }
+
+    std::vector<std::thread> workers;
+    for (int index = 0; index < 3; ++index) {
+        workers.emplace_back([&io_ctx] { io_ctx.run(); });
+    }
+    io_ctx.run();
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    tool_pool.join();
+}
+
+TEST_F(SessionManagerTest, HandlerBranchesNeverOverlapOnSeveralHttpThreads) {
+    FanOutProbe probe;
+    run_fan_out_case(io_ctx_, 19162, false, probe);
+    EXPECT_EQ(probe.finished.load(), 4);
+    EXPECT_EQ(probe.overlaps.load(), 0);
+}
+
+TEST_F(SessionManagerTest, HandlerBranchesNeverOverlapOnAToolPool) {
+    FanOutProbe probe;
+    run_fan_out_case(io_ctx_, 19163, true, probe);
+    EXPECT_EQ(probe.finished.load(), 4);
+    EXPECT_EQ(probe.overlaps.load(), 0);
+}
+
 // ===========================================================================
 // Server-side OAuth challenge, metadata route and unauthenticated paths
 // ===========================================================================

@@ -1081,6 +1081,12 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                             std::shared_ptr<detail::MrtrEntry> mrtr,
                                             std::shared_ptr<const std::string> related_request,
                                             std::shared_ptr<detail::InlineInput> inline_input);
+    /// Calls @p handler on a strand of its own, over the handler executor when one is set, and
+    /// otherwise over the executor the caller runs on unless that is a strand already. A handler
+    /// may fan out with `co_await (a || b)` or `co_await (a && b)`, which Boost.Asio makes safe
+    /// only when every branch runs one at a time.
+    Task<nlohmann::json> call_on_handler_strand(const TypeErasedHandler& handler, Context& ctx,
+                                                const nlohmann::json& arguments);
     /// Checks @p arguments against the tool's input schema and runs its handler. A tool that
     /// throws has failed at its own job, which the protocol reports inside the result as isError.
     Task<nlohmann::json> call_tool_handler(const ToolRegistration& tool, Context& ctx,
@@ -2820,6 +2826,21 @@ Task<nlohmann::json> call_handler(const TypeErasedHandler& handler, Context& con
 
 }  // namespace
 
+Task<nlohmann::json> Server::Impl::call_on_handler_strand(const TypeErasedHandler& handler,
+                                                          Context& ctx,
+                                                          const nlohmann::json& arguments) {
+    if (handler_executor) {
+        co_return co_await detail::spawn_awaitable(detail::make_strand_executor(*handler_executor),
+                                                   call_handler(handler, ctx, arguments));
+    }
+    auto executor = co_await boost::asio::this_coro::executor;
+    if (detail::is_strand_executor(executor)) {
+        co_return co_await handler(ctx, arguments);
+    }
+    co_return co_await detail::spawn_awaitable(detail::make_strand_executor(executor),
+                                               call_handler(handler, ctx, arguments));
+}
+
 Task<nlohmann::json> Server::Impl::call_tool_handler(const ToolRegistration& tool, Context& ctx,
                                                      const nlohmann::json& arguments) {
     // Arguments that do not conform to the input schema are a tool execution error too, so the
@@ -2831,11 +2852,7 @@ Task<nlohmann::json> Server::Impl::call_tool_handler(const ToolRegistration& too
         }
     }
     try {
-        if (handler_executor) {
-            co_return co_await detail::spawn_awaitable(*handler_executor,
-                                                       call_handler(tool.handler, ctx, arguments));
-        }
-        co_return co_await tool.handler(ctx, arguments);
+        co_return co_await call_on_handler_strand(tool.handler, ctx, arguments);
     } catch (const std::exception& error) {
         co_return nlohmann::json(
             make_tool_error_result(detail::sanitize_for_diagnostics(error.what())));
@@ -3104,12 +3121,10 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
             "Unknown resource: " + params.uri, nlohmann::json{{"uri", params.uri}});
     }
 
-    auto handler = build_middleware_chain(match->handler);
-
     nlohmann::json params_json = params;
     auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
                             scope.notifications, scope.principal, scope.mrtr, scope.related_request, scope.inline_input);
-    nlohmann::json handler_result = co_await handler(ctx, params_json);
+    nlohmann::json handler_result = co_await call_through_middleware(match->handler, ctx, params_json);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result),
                                CacheTarget::eResourcesRead);
 }
@@ -3724,10 +3739,15 @@ Task<void> Server::Impl::notify_resource_updated_on_strand(std::shared_ptr<Sessi
 
 Task<nlohmann::json> Server::Impl::call_through_middleware(const TypeErasedHandler& final_handler,
                                                            Context& ctx, const nlohmann::json& params) {
+    TypeErasedHandler on_strand = [this, &final_handler](
+                                      Context& inner_ctx,
+                                      const nlohmann::json& inner_params) -> Task<nlohmann::json> {
+        co_return co_await call_on_handler_strand(final_handler, inner_ctx, inner_params);
+    };
     if (middlewares.empty()) {
-        co_return co_await final_handler(ctx, params);
+        co_return co_await on_strand(ctx, params);
     }
-    auto handler = build_middleware_chain(final_handler);
+    auto handler = build_middleware_chain(std::move(on_strand));
     co_return co_await handler(ctx, params);
 }
 

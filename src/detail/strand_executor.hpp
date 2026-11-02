@@ -24,6 +24,13 @@ template <typename Target>
 #endif
 }
 
+/// Whether @p executor is a strand: one that runs the handlers it is given one at a time.
+[[nodiscard]] inline bool is_strand_executor(const boost::asio::any_io_executor& executor) {
+    return holds_executor_of_type<boost::asio::strand<boost::asio::io_context::executor_type>>(
+               executor) ||
+           holds_executor_of_type<boost::asio::strand<boost::asio::any_io_executor>>(executor);
+}
+
 /// A strand over @p base, as the any_io_executor that the SDK's coroutines, timers and sockets take.
 ///
 /// An any_io_executor stores a target of up to three words inline and puts a larger one in a
