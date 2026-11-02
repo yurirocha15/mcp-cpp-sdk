@@ -740,6 +740,23 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::shared_ptr<const nlohmann::json> message;
     };
 
+    /// The progress token of a request served inside the request itself, or none. A request that
+    /// was parked reports through its own state, which carries the token.
+    static std::optional<ProgressToken> inline_progress_token(const RequestScope& scope) {
+        if (scope.inline_input == nullptr || scope.meta == nullptr) {
+            return std::nullopt;
+        }
+        const auto token = scope.meta->meta.find("progressToken");
+        if (token == scope.meta->meta.end()) {
+            return std::nullopt;
+        }
+        try {
+            return token->get<ProgressToken>();
+        } catch (const nlohmann::json::exception&) {
+            return std::nullopt;
+        }
+    }
+
     /// Why a subscriptions/listen stream ended.
     enum class ListenEnd : std::uint8_t {
         eOpen,
@@ -2993,19 +3010,19 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
     auto cancelled = scope.cancelled ? scope.cancelled : std::make_shared<std::atomic<bool>>(false);
     nlohmann::json handler_result;
     if (middlewares.empty()) {
-        handler_result = co_await invoke_tool_direct(*call.name, *call.arguments, std::move(cancelled),
-                                                     std::move(progress_token), scope.meta,
-                                                     scope.session_request, scope.notifications,
-                                                     scope.principal, scope.mrtr, scope.related_request, scope.inline_input);
+        handler_result = co_await invoke_tool_direct(
+            *call.name, *call.arguments, std::move(cancelled), std::move(progress_token), scope.meta,
+            scope.session_request, scope.notifications, scope.principal, scope.mrtr,
+            scope.related_request, scope.inline_input);
     } else {
         // Middleware sees, and may rewrite, the whole parameters object.
         CallToolParams params{
             *call.name, *call.arguments,
             call.meta != nullptr ? std::optional<nlohmann::json>(*call.meta) : std::nullopt};
-        handler_result = co_await invoke_tool_impl(std::move(params), std::move(cancelled),
-                                                   std::move(progress_token), scope.meta,
-                                                   scope.session_request, scope.notifications,
-                                                   scope.principal, scope.mrtr, scope.related_request, scope.inline_input);
+        handler_result = co_await invoke_tool_impl(
+            std::move(params), std::move(cancelled), std::move(progress_token), scope.meta,
+            scope.session_request, scope.notifications, scope.principal, scope.mrtr,
+            scope.related_request, scope.inline_input);
     }
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }
@@ -3080,8 +3097,9 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
     auto iter = resource_handlers.find(params.uri);
     if (iter != resource_handlers.end()) {
         nlohmann::json params_json = params;
-        auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                                scope.notifications, scope.principal, scope.mrtr, scope.related_request, scope.inline_input);
+        auto ctx = make_context(scope.cancelled, inline_progress_token(scope), scope.meta,
+                                scope.session_request, scope.notifications, scope.principal, scope.mrtr,
+                                scope.related_request, scope.inline_input);
         nlohmann::json handler_result =
             co_await call_through_middleware(iter->second, ctx, params_json);
         co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result),
@@ -3122,8 +3140,9 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
     }
 
     nlohmann::json params_json = params;
-    auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                            scope.notifications, scope.principal, scope.mrtr, scope.related_request, scope.inline_input);
+    auto ctx = make_context(scope.cancelled, inline_progress_token(scope), scope.meta,
+                            scope.session_request, scope.notifications, scope.principal, scope.mrtr,
+                            scope.related_request, scope.inline_input);
     nlohmann::json handler_result = co_await call_through_middleware(match->handler, ctx, params_json);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result),
                                CacheTarget::eResourcesRead);
@@ -3524,8 +3543,9 @@ Task<std::string> Server::Impl::handle_prompts_get_wire(const nlohmann::json& js
     }
 
     nlohmann::json params_json = std::move(params);
-    auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                            scope.notifications, scope.principal, scope.mrtr, scope.related_request, scope.inline_input);
+    auto ctx = make_context(scope.cancelled, inline_progress_token(scope), scope.meta,
+                            scope.session_request, scope.notifications, scope.principal, scope.mrtr,
+                            scope.related_request, scope.inline_input);
     nlohmann::json handler_result = co_await call_through_middleware(iter->second, ctx, params_json);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }

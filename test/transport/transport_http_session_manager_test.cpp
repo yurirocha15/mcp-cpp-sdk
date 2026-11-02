@@ -2095,6 +2095,77 @@ TEST_F(SessionManagerTest, SessionWithToolExecutorRunsHandlersOffTheHttpThread) 
     EXPECT_EQ(events[2].second.at("result").at("content").at(0).at("text"), "coroutine done");
 }
 
+// A 2026-07-28 client that declares no capabilities is served without parking the handler, and
+// the progress that a resource or prompt handler reports still reaches it.
+TEST_F(SessionManagerTest, ResourceAndPromptProgressReachesAClientWithoutCapabilities) {
+    const unsigned short port = 19165;
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx_.get_executor(), "127.0.0.1", port,
+        [](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities capabilities;
+            capabilities.resources = mcp::ServerCapabilities::ResourcesCapability{};
+            capabilities.prompts = mcp::ServerCapabilities::PromptsCapability{};
+            auto server = std::make_unique<mcp::Server>(mcp::Implementation{"progress-server", "1.0.0"},
+                                                        std::move(capabilities));
+            mcp::Resource resource;
+            resource.uri = "res://progress";
+            resource.name = "progress";
+            server->add_resource<json, mcp::ReadResourceResult>(
+                resource, [](mcp::Context& ctx, json) -> mcp::Task<mcp::ReadResourceResult> {
+                    co_await ctx.report_progress(1, 2);
+                    mcp::ReadResourceResult result;
+                    mcp::TextResourceContents contents;
+                    contents.uri = "res://progress";
+                    contents.text = "read";
+                    result.contents.emplace_back(std::move(contents));
+                    co_return result;
+                });
+            mcp::Prompt prompt;
+            prompt.name = "progress";
+            server->add_prompt<json, mcp::GetPromptResult>(
+                prompt, [](mcp::Context& ctx, json) -> mcp::Task<mcp::GetPromptResult> {
+                    co_await ctx.report_progress(1, 2);
+                    mcp::GetPromptResult result;
+                    result.description = "got";
+                    co_return result;
+                });
+            return server;
+        });
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    const auto meta = json{{"io.modelcontextprotocol/protocolVersion", "2026-07-28"},
+                           {"io.modelcontextprotocol/clientCapabilities", json::object()},
+                           {"progressToken", "token-1"}};
+    RawResponse read_response;
+    RawResponse prompt_response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const json read_request = {{"jsonrpc", "2.0"},
+                                       {"method", "resources/read"},
+                                       {"params", {{"uri", "res://progress"}, {"_meta", meta}}},
+                                       {"id", 1}};
+            read_response = co_await modern_post(io_ctx_.get_executor(), port, read_request);
+            const json prompt_request = {{"jsonrpc", "2.0"},
+                                         {"method", "prompts/get"},
+                                         {"params", {{"name", "progress"}, {"_meta", meta}}},
+                                         {"id", 2}};
+            prompt_response = co_await modern_post(io_ctx_.get_executor(), port, prompt_request);
+            manager.close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    for (const auto* response : {&read_response, &prompt_response}) {
+        ASSERT_EQ(response->status, 200) << response->body;
+        const auto events = parse_sse_events(response->body);
+        ASSERT_EQ(events.size(), 2U) << response->body;
+        EXPECT_EQ(events[0].second.at("method"), "notifications/progress");
+        EXPECT_EQ(events[0].second.at("params").at("progressToken"), "token-1");
+        EXPECT_TRUE(events[1].second.contains("result"));
+    }
+}
+
 // A resource or prompt handler, like a tool handler, runs on the tool executor and not on the
 // HTTP thread that a blocking one would hold.
 TEST_F(SessionManagerTest, ResourceAndPromptHandlersRunOnTheToolExecutor) {
