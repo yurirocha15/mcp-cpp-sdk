@@ -78,7 +78,7 @@ Server
 * Handles JSON-RPC message dispatch
 * Executes handler functions with proper context
 * Supports multiple handler signatures (sync/async, with/without context)
-* Serializes each server session through a Boost.Asio strand
+* Keeps each server session's own state on a Boost.Asio strand and runs every handler call on a strand of its own, so handlers of one session can overlap
 
 **Key responsibilities**:
 
@@ -313,10 +313,11 @@ Type erasure unifies these at runtime, so ``Server`` internals stay simple.
 Thread Safety Model
 -------------------
 
-Client runtime transitions and each server session are serialized through
-Boost.Asio strands. Separate HTTP sessions may run concurrently, and a
-``StreamableHttpSessionManager`` can place tool work on a separate executor.
-Application state shared by handlers therefore still needs its own
+Client runtime transitions and the state of each server session are serialized
+through Boost.Asio strands. Each handler call runs on a strand of its own, so
+handlers of one session can overlap, as can handlers of separate HTTP sessions,
+and a ``StreamableHttpSessionManager`` can place tool work on a separate
+executor. Application state shared by handlers therefore needs its own
 synchronization.
 
 Complete server registrations before starting a session. Configure Origin and
