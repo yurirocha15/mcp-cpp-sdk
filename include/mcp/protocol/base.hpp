@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
@@ -195,6 +196,21 @@ struct Error {
     std::optional<nlohmann::json> data;  ///< Additional information about the error.
 };
 
+namespace detail {
+
+[[nodiscard]] inline bool is_number_outside_int(const nlohmann::json& value) {
+    if (value.is_number_unsigned()) {
+        return value.get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+    }
+    if (value.is_number_integer()) {
+        const auto number = value.get<std::int64_t>();
+        return number < std::numeric_limits<int>::min() || number > std::numeric_limits<int>::max();
+    }
+    return value.is_number();
+}
+
+}  // namespace detail
+
 inline void to_json(nlohmann::json& json_obj, const Error& error) {
     json_obj = nlohmann::json{{"code", error.code}, {"message", error.message}};
     if (error.data) {
@@ -203,7 +219,13 @@ inline void to_json(nlohmann::json& json_obj, const Error& error) {
 }
 
 inline void from_json(const nlohmann::json& json_obj, Error& error) {
-    json_obj.at("code").get_to(error.code);
+    // A numeric code that does not fit is still an error: converting it would be undefined
+    // behaviour, and refusing it would leave the caller waiting for an answer.
+    if (detail::is_number_outside_int(json_obj.at("code"))) {
+        error.code = g_INTERNAL_ERROR;
+    } else {
+        json_obj.at("code").get_to(error.code);
+    }
     // JSON-RPC 2.0 requires `message`, but a peer that omits it or sends it as null has still
     // told us which error occurred. Decoding to an empty message keeps `code` -- the part a
     // caller acts on -- rather than discarding the whole error object.

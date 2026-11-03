@@ -4,6 +4,8 @@
 
 #include <gtest/gtest.h>
 
+#include <optional>
+
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -80,6 +82,53 @@ TEST_F(ServerLoggingTest, SetLevelChangesServerLogLevel) {
     EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
 
     EXPECT_EQ(server.get_log_level(), mcp::LoggingLevel::eWarning);
+}
+
+TEST_F(ServerLoggingTest, ANewClientOnAReusedServerStartsAtTheDefaultLevel) {
+    mcp::Implementation info;
+    info.name = "test-server";
+    info.version = "1.0";
+    mcp::ServerCapabilities caps;
+    caps.logging = nlohmann::json::object();
+    mcp::Server server(std::move(info), std::move(caps));
+    const auto default_level = server.get_log_level();
+
+    auto first = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    first->enqueue_message(make_initialize_request("1").dump());
+    first->enqueue_message(make_initialized_notification().dump());
+    first->enqueue_message(nlohmann::json{
+        {"jsonrpc", "2.0"},
+        {"id", "2"},
+        {"method", "logging/setLevel"},
+        {"params",
+         {{"level", "error"}}}}.dump());
+    int first_answers = 0;
+    first->set_on_write([&](std::string_view) {
+        if (++first_answers == 2) {
+            first->close();
+        }
+    });
+    auto second = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    std::optional<mcp::LoggingLevel> level_after_the_first_client;
+    std::optional<mcp::LoggingLevel> level_for_the_second_client;
+    second->set_on_write([&](std::string_view) {
+        level_for_the_second_client = server.get_log_level();
+        second->close();
+    });
+    second->enqueue_message(make_initialize_request("3").dump());
+
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await server.run(first, io_ctx_.get_executor());
+            level_after_the_first_client = server.get_log_level();
+            co_await server.run(second, io_ctx_.get_executor());
+        },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    ASSERT_EQ(level_after_the_first_client, mcp::LoggingLevel::eError);
+    EXPECT_EQ(level_for_the_second_client, default_level);
 }
 
 TEST_F(ServerLoggingTest, LogFilteredByLevel) {

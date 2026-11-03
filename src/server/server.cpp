@@ -577,6 +577,8 @@ struct Server::PendingRequest {
     bool completed{false};
     /// The session_epoch() it was sent in. Only that session may answer it.
     std::uint64_t epoch{0};
+    /// Set for a request a handler is waiting on: cancelling that handler ends the wait.
+    std::shared_ptr<std::atomic<bool>> caller_cancelled;
 };
 
 struct Server::Session {
@@ -735,15 +737,17 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                          std::optional<ProgressToken> progress_token = std::nullopt);
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
 
-    Task<nlohmann::json> send_request(const std::string& method,
+    Task<nlohmann::json> send_request(std::shared_ptr<std::atomic<bool>> caller_cancelled,
+                                      const std::string& method,
                                       const std::optional<nlohmann::json>& params);
     static Task<nlohmann::json> await_reverse_response(std::shared_ptr<Session> session,
                                                        std::shared_ptr<const std::string> wire,
                                                        std::int64_t id,
-                                                       std::chrono::milliseconds timeout);
+                                                       std::chrono::milliseconds timeout,
+                                                       std::shared_ptr<std::atomic<bool>> cancelled);
     static Task<nlohmann::json> await_reverse_response_on_strand(
         std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, std::int64_t id,
-        std::chrono::milliseconds timeout);
+        std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled);
     Task<void> send_notification(const std::string& method,
                                  const std::optional<nlohmann::json>& params);
     Task<void> notify_resource_updated_on_strand(std::shared_ptr<Session> session,
@@ -895,13 +899,14 @@ LoggingLevel Server::get_log_level() const { return impl_->log_level.load(std::m
 // with no diagnostic; change this line to co_await in the same commit if you ever do.
 Task<nlohmann::json> Server::send_request(const std::string& method,
                                           const std::optional<nlohmann::json>& params) {
-    return impl_->send_request(method, params);
+    return impl_->send_request(nullptr, method, params);
 }
 
 // Deliberately not a coroutine -- see the note on Server::send_request above. It takes both
 // parameters by reference and its caller forwards with a plain `return`, so the body must run
 // before that return completes.
-Task<nlohmann::json> Server::Impl::send_request(const std::string& method,
+Task<nlohmann::json> Server::Impl::send_request(std::shared_ptr<std::atomic<bool>> caller_cancelled,
+                                                const std::string& method,
                                                 const std::optional<nlohmann::json>& params) {
     // Distinct from the two failures below: a handler still running after its Server was
     // destroyed has to be able to tell that apart from a session that is merely closing and
@@ -923,23 +928,24 @@ Task<nlohmann::json> Server::Impl::send_request(const std::string& method,
     request.params = params;
     auto wire = std::make_shared<const std::string>(nlohmann::json(std::move(request)).dump());
     const std::chrono::milliseconds timeout(reverse_request_timeout_ms.load(std::memory_order_relaxed));
-    return await_reverse_response(std::move(session), std::move(wire), id, timeout);
+    return await_reverse_response(std::move(session), std::move(wire), id, timeout,
+                                  std::move(caller_cancelled));
 }
 
-Task<nlohmann::json> Server::Impl::await_reverse_response(std::shared_ptr<Session> session,
-                                                          std::shared_ptr<const std::string> wire,
-                                                          int64_t id,
-                                                          std::chrono::milliseconds timeout) {
+Task<nlohmann::json> Server::Impl::await_reverse_response(
+    std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, int64_t id,
+    std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled) {
     auto strand = *session->strand;
     // A caller's awaitable keeps its original executor across an awaited post. Launch the
     // complete correlation lifecycle on the session strand so map and timer state stay confined.
     return mcp::detail::spawn_awaitable(
-        strand, await_reverse_response_on_strand(std::move(session), std::move(wire), id, timeout));
+        strand, await_reverse_response_on_strand(std::move(session), std::move(wire), id, timeout,
+                                                 std::move(cancelled)));
 }
 
 Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
     std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, int64_t id,
-    std::chrono::milliseconds timeout) {
+    std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled) {
     if (session->stopping.load(std::memory_order_acquire)) {
         throw std::runtime_error("server session is closing");
     }
@@ -949,7 +955,8 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
     {
         const auto id_key = RequestId{std::to_string(id)}.correlation_key();
         const auto [pending_it, inserted] = session->pending_requests.try_emplace(
-            id_key, PendingRequest{timer, {}, std::nullopt, false, session_epoch(*session)});
+            id_key, PendingRequest{
+                        timer, {}, std::nullopt, false, session_epoch(*session), std::move(cancelled)});
         static_cast<void>(pending_it);
         if (!inserted) {
             throw std::runtime_error("duplicate pending request id: " + id_key);
@@ -1059,6 +1066,8 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
 
     lifecycle.store(Impl::LifecycleState::eUninitialized, std::memory_order_relaxed);
     shutdown_requested.store(false, std::memory_order_relaxed);
+    // The next client on a reused Server starts from the default, not from what the last one chose.
+    log_level.store(g_default_log_level, std::memory_order_relaxed);
 
     try {
         for (;;) {
@@ -1232,12 +1241,12 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
     }
 
     return {*transport,
-            [impl = shared_from_this(), session, epoch](
+            [impl = shared_from_this(), session, epoch, cancelled](
                 std::string method, std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
                 if (session && Impl::session_epoch(*session) != epoch) {
                     throw std::runtime_error("the client ended the session this request belongs to");
                 }
-                return impl->send_request(method, params);
+                return impl->send_request(cancelled, method, params);
             },
             std::move(cancelled),
             std::move(progress_token),
@@ -1336,6 +1345,11 @@ Task<std::string> Server::Impl::dispatch_request_wire(nlohmann::json json_msg, b
     } catch (const InvalidParamsError& error) {
         error_code = g_INVALID_PARAMS;
         error_payload = error.what();
+    } catch (const nlohmann::json::exception&) {
+        // Its text describes the library, and quotes bytes of the value that could not be encoded.
+        if (json_msg.contains("id")) {
+            error_payload = "The result could not be encoded as JSON";
+        }
     } catch (const std::exception& error) {
         if (json_msg.contains("id")) {
             // Handler text can carry build paths or third-party library detail, and reaches the
@@ -1385,6 +1399,16 @@ void Server::Impl::dispatch_notification(const nlohmann::json& json_msg) {
         auto it = session->in_flight.find(id_str);
         if (it != session->in_flight.end()) {
             it->second->store(true, std::memory_order_relaxed);
+            // A handler waiting for the client cannot look at its flag. Without this it would stay
+            // parked until the reverse request timed out, counting against the limit on requests.
+            for (auto& [pending_id, pending] : session->pending_requests) {
+                if (pending.caller_cancelled == it->second && !pending.completed) {
+                    pending.error =
+                        Error{g_REQUEST_CANCELLED, "The request was cancelled", std::nullopt};
+                    pending.completed = true;
+                    pending.timer->cancel();
+                }
+            }
         }
     }
 }

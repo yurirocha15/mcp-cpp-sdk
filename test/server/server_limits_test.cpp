@@ -155,6 +155,50 @@ TEST_F(ServerLimitsTest, ClientThatNeverAnswersFailsTheHandlerAtTheTimeout) {
     EXPECT_NE(answer_to(1)->dump().find("did not answer in time"), std::string::npos) << *answer_to(1);
 }
 
+TEST_F(ServerLimitsTest, CancellingAHandlerEndsItsWaitForTheClient) {
+    std::string failure;
+    server_->add_tool<json, json>("ask-through-context", "Asks the client", json{{"type", "object"}},
+                                  [&](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                      try {
+                                          co_await ctx.request_roots();
+                                      } catch (const std::exception& error) {
+                                          failure = error.what();
+                                      }
+                                      co_return json::object();
+                                  });
+    run([&]() -> mcp::Task<void> {
+        co_await initialized();
+        transport_->enqueue_message(
+            json{{"jsonrpc", "2.0"},
+                 {"id", 1},
+                 {"method", "tools/call"},
+                 {"params", {{"name", "ask-through-context"}, {"arguments", json::object()}}}}
+                .dump());
+        co_await wait_until([this] {
+            return !written_.empty() && written_.back().value("method", "") == "roots/list";
+        });
+        transport_->enqueue_message(json{
+            {"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 1}}}}
+                                        .dump());
+        co_await wait_until([&failure] { return !failure.empty(); });
+    });
+    EXPECT_NE(failure.find("cancelled"), std::string::npos) << failure;
+}
+
+TEST_F(ServerLimitsTest, AResultThatCannotBeEncodedDoesNotExposeTheLibraryText) {
+    server_->add_tool<json, json>(
+        "not-text", "Returns bytes", json{{"type", "object"}},
+        [](json /*args*/) -> mcp::Task<json> { co_return json{{"bytes", std::string("\xff\xfe")}}; });
+    run([&]() -> mcp::Task<void> {
+        co_await initialized();
+        transport_->enqueue_message(call(1, "not-text").dump());
+        co_await wait_until([this] { return answer_to(1) != nullptr; });
+    });
+    ASSERT_NE(answer_to(1), nullptr);
+    EXPECT_EQ(answer_to(1)->dump().find("json.exception"), std::string::npos) << *answer_to(1);
+    EXPECT_EQ((*answer_to(1))["error"]["code"], mcp::g_INTERNAL_ERROR) << *answer_to(1);
+}
+
 TEST_F(ServerLimitsTest, SettersRefuseValuesThatCannotWork) {
     EXPECT_THROW(server_->set_max_in_flight_requests(0), std::invalid_argument);
     EXPECT_THROW(server_->set_reverse_request_timeout(std::chrono::milliseconds(0)),

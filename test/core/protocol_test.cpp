@@ -2704,3 +2704,20 @@ TEST(ProtocolElicitation, FormRequestMayLeaveItsModeOut) {
     ASSERT_TRUE(std::holds_alternative<mcp::ElicitRequestFormParams>(params));
     EXPECT_EQ(std::get<mcp::ElicitRequestFormParams>(params).mode, "form");
 }
+
+// Converting the double to int would be undefined behaviour, and a peer chooses the value. It is
+// still an error, so it decodes to one instead of leaving the caller waiting.
+TEST(ProtocolError, ACodeThatIsNoIntOfThisSizeDecodesToInternalError) {
+    const auto decode = [](nlohmann::json code) {
+        return nlohmann::json{{"code", std::move(code)}, {"message", "m"}}.get<mcp::Error>();
+    };
+    EXPECT_EQ(decode(1e308).code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(1.5).code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(4294967296LL).code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(-4294967296LL).code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(18446744073709551615ULL).code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(1e308).message, "m");
+    EXPECT_EQ(decode(-32601).code, -32601);
+    EXPECT_EQ(decode(7).code, 7);
+    EXPECT_THROW((void)decode("x"), nlohmann::json::exception);
+}
