@@ -261,6 +261,19 @@ struct HttpServerTransport::Impl {
         return response;
     }
 
+    /// Whether a client without the session's id may end it: nothing has used it for the idle
+    /// timeout, and no request of it is waiting.
+    bool session_left_idle(const StringRequest& request) const {
+        std::chrono::milliseconds timeout{};
+        {
+            std::lock_guard lock(configuration_mutex);
+            timeout = session_idle_timeout;
+        }
+        return session_active && timeout > std::chrono::milliseconds::zero() &&
+               request.find("MCP-Session-Id") == request.end() && pending_responses.empty() &&
+               std::chrono::steady_clock::now() - session_last_used >= timeout;
+    }
+
     Task<SessionCheckResult> validate_post_session(const StringRequest& request) {
         const auto session_header_it = request.find("MCP-Session-Id");
         const bool session_header_present = session_header_it != request.end();
@@ -272,6 +285,7 @@ struct HttpServerTransport::Impl {
             if (session_header_it->value() != *session_id) {
                 co_return SessionCheckResult{false, "Invalid MCP-Session-Id header"};
             }
+            session_last_used = std::chrono::steady_clock::now();
             co_return SessionCheckResult{true, {}};
         }
 
@@ -538,6 +552,9 @@ struct HttpServerTransport::Impl {
         const bool is_sessionless_discover = is_discover_request(request_json) && has_valid_id &&
                                              request.find("MCP-Session-Id") == request.end();
         if (!is_sessionless_discover) {
+            if (is_initialize_request(request_json) && session_left_idle(request)) {
+                co_await terminate_session();
+            }
             const auto session_check = co_await validate_post_session(request);
             if (!session_check.ok) {
                 co_return make_error_response(request, http::status::bad_request,
@@ -547,6 +564,11 @@ struct HttpServerTransport::Impl {
 
         const bool has_request_id = request_json.contains("id");
         const bool has_method = request_json.contains("method");
+        // An answer to a request of the server belongs to the session that was asked. Without an
+        // established one, the sender of this message is nobody the server asked anything.
+        if (!has_method && !session_active) {
+            co_return make_error_response(request, http::status::bad_request, "No active session");
+        }
         if (!has_request_id || !has_method) {
             enqueue_incoming_message(request.body());
             co_return make_empty_json_response(request, http::status::accepted);
@@ -924,6 +946,7 @@ struct HttpServerTransport::Impl {
             }
             pending_it->second.session_header = impl->session_id;
             impl->session_active = true;
+            impl->session_last_used = std::chrono::steady_clock::now();
             impl->session_ended_awaiting_next = false;
         }
 
@@ -941,6 +964,9 @@ struct HttpServerTransport::Impl {
     bool listening_started{false};
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
+    std::chrono::steady_clock::time_point session_last_used;
+    /// Guarded by configuration_mutex.
+    std::chrono::milliseconds session_idle_timeout{std::chrono::minutes(5)};
     std::unordered_set<std::string> sessionless_request_ids;
     std::string sentinel_id_prefix;
     std::uint64_t sentinel_id_counter{0};
@@ -1030,6 +1056,11 @@ void HttpServerTransport::set_async_bearer_token_validator(AsyncBearerTokenValid
         throw std::logic_error("HttpServerTransport accepts one bearer token validator");
     }
     impl_->async_bearer_token_validator = std::move(validator);
+}
+
+void HttpServerTransport::set_session_idle_timeout(std::chrono::milliseconds timeout) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->session_idle_timeout = timeout;
 }
 
 void HttpServerTransport::set_max_request_body_bytes(std::size_t max_bytes) {

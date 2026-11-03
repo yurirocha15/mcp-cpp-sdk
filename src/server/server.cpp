@@ -575,6 +575,8 @@ struct Server::PendingRequest {
     nlohmann::json result;
     std::optional<Error> error;
     bool completed{false};
+    /// The session_epoch() it was sent in. Only that session may answer it.
+    std::uint64_t epoch{0};
 };
 
 struct Server::Session {
@@ -947,7 +949,7 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
     {
         const auto id_key = RequestId{std::to_string(id)}.correlation_key();
         const auto [pending_it, inserted] = session->pending_requests.try_emplace(
-            id_key, PendingRequest{timer, {}, std::nullopt, false});
+            id_key, PendingRequest{timer, {}, std::nullopt, false, session_epoch(*session)});
         static_cast<void>(pending_it);
         if (!inserted) {
             throw std::runtime_error("duplicate pending request id: " + id_key);
@@ -1398,6 +1400,10 @@ void Server::Impl::dispatch_response(const nlohmann::json& json_msg) {
 
     auto it = session->pending_requests.find(id_str);
     if (it == session->pending_requests.end()) {
+        return;
+    }
+    // Ids are small numbers, so another session's client could name this one.
+    if (it->second.epoch != session_epoch(*session)) {
         return;
     }
 

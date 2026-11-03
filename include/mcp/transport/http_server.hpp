@@ -7,6 +7,7 @@
 #include <mcp/transport/transport.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -40,7 +41,8 @@ class EventStore {
     /**
      * @brief Construct an event store with a given capacity.
      *
-     * @param capacity Maximum number of events to retain.
+     * @param capacity Maximum number of events to retain. Past
+     *        constants::g_event_store_max_bytes the oldest go first as well.
      */
     explicit EventStore(std::size_t capacity = constants::g_event_store_default_capacity)
         : capacity_(capacity) {}
@@ -53,8 +55,11 @@ class EventStore {
      */
     std::string append(std::string data) {
         auto id = std::to_string(++next_id_);
+        stored_bytes_ += data.size();
         events_.push_back(StoredEvent{id, std::move(data)});
-        while (events_.size() > capacity_) {
+        while (events_.size() > capacity_ ||
+               (events_.size() > 1 && stored_bytes_ > constants::g_event_store_max_bytes)) {
+            stored_bytes_ -= events_.front().data.size();
             events_.pop_front();
         }
         return id;
@@ -126,6 +131,7 @@ class EventStore {
      */
     void clear() {
         events_.clear();
+        stored_bytes_ = 0;
         next_id_ = 0;
     }
 
@@ -136,6 +142,7 @@ class EventStore {
     };
 
     std::size_t capacity_;
+    std::size_t stored_bytes_{0};
     std::deque<StoredEvent> events_;
     std::uint64_t next_id_{0};
 };
@@ -264,6 +271,18 @@ class MCP_API HttpServerTransport final : public ITransport {
      * @throws std::logic_error If listen() has already been called or the transport is closed.
      */
     void set_max_request_body_bytes(std::size_t max_bytes);
+
+    /**
+     * @brief Set how long a session may sit idle before a new client can take its place.
+     *
+     * @details This transport serves one session at a time. Without this, a client that left
+     * without a DELETE would keep every other client out until the process restarts. An
+     * initialize then ends a session that has no request waiting and has been idle this long.
+     *
+     * @param timeout The time, or zero to keep a session until its DELETE. The default is five
+     *        minutes.
+     */
+    void set_session_idle_timeout(std::chrono::milliseconds timeout);
 
     /**
      * @brief Set the parameters sent in the `WWW-Authenticate` header of every 401.

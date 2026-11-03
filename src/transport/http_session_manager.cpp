@@ -21,6 +21,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -75,6 +76,26 @@ struct SessionRuntime {
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
     SseEventList unassigned_stream_events;
+
+    /// A response has succeeded on this session, so its initialize did.
+    std::atomic<bool> established{false};
+    /// When a request last named this session, as a steady_clock count.
+    std::atomic<std::chrono::steady_clock::rep> last_used{
+        std::chrono::steady_clock::now().time_since_epoch().count()};
+
+    void touch() {
+        last_used.store(std::chrono::steady_clock::now().time_since_epoch().count(),
+                        std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] bool idle_for(std::chrono::milliseconds timeout) {
+        const std::chrono::steady_clock::duration used{last_used.load(std::memory_order_relaxed)};
+        if (std::chrono::steady_clock::now().time_since_epoch() - used < timeout) {
+            return false;
+        }
+        std::lock_guard lock(response_mutex);
+        return pending_responses.empty();
+    }
 
     explicit SessionRuntime(
         std::string id, std::size_t event_store_capacity = constants::g_event_store_default_capacity)
@@ -195,6 +216,7 @@ struct StreamableHttpSessionManager::Impl {
     boost::asio::any_io_executor executor;
     boost::asio::any_io_executor tool_executor_;
     boost::asio::strand<boost::asio::any_io_executor> listener_strand;
+    boost::asio::steady_timer expiry_timer{listener_strand};
     boost::asio::ip::tcp::acceptor acceptor;
 
     StreamableHttpSessionManager::ServerFactory factory;
@@ -223,6 +245,8 @@ struct StreamableHttpSessionManager::Impl {
     std::unordered_set<std::shared_ptr<Connection>> active_connections_;
     mutable std::shared_mutex sessions_mutex_;
     SessionMap sessions;
+    /// Guarded by configuration_mutex_.
+    SessionLimits session_limits;
     // Answers sessionless server/discover requests. Built once on the first one, so a peer that
     // needs no session or credential cannot make the factory run per request.
     std::mutex discover_server_mutex_;
@@ -374,7 +398,58 @@ struct StreamableHttpSessionManager::Impl {
         if (it == sessions.end()) {
             return nullptr;
         }
+        it->second->touch();
         return it->second;
+    }
+
+    bool at_session_limit() const {
+        SessionLimits limits;
+        {
+            std::lock_guard lock(configuration_mutex_);
+            limits = session_limits;
+        }
+        std::shared_lock lock(sessions_mutex_);
+        return sessions.size() >= limits.max_sessions;
+    }
+
+    /// Ends the sessions nobody has used for the idle timeout, as a client may leave without a
+    /// DELETE. Runs for as long as the manager listens.
+    static Task<void> expire_idle_sessions(std::shared_ptr<Impl> impl) {
+        for (;;) {
+            SessionLimits limits;
+            {
+                std::lock_guard lock(impl->configuration_mutex_);
+                limits = impl->session_limits;
+            }
+            constexpr auto g_longest_sweep = std::chrono::seconds(30);
+            constexpr auto g_shortest_sweep = std::chrono::milliseconds(10);
+            const auto sweep = limits.idle_timeout > std::chrono::milliseconds::zero()
+                                   ? std::chrono::milliseconds(limits.idle_timeout / 4)
+                                   : std::chrono::milliseconds(g_longest_sweep);
+            impl->expiry_timer.expires_after(
+                std::clamp<std::chrono::milliseconds>(sweep, g_shortest_sweep, g_longest_sweep));
+            boost::system::error_code ignored;
+            co_await impl->expiry_timer.async_wait(
+                boost::asio::redirect_error(boost::asio::use_awaitable, ignored));
+            if (impl->closed.load(std::memory_order_acquire)) {
+                co_return;
+            }
+            if (limits.idle_timeout <= std::chrono::milliseconds::zero()) {
+                continue;
+            }
+            std::vector<std::string> idle;
+            {
+                std::shared_lock lock(impl->sessions_mutex_);
+                for (const auto& [id, session] : impl->sessions) {
+                    if (session->idle_for(limits.idle_timeout)) {
+                        idle.push_back(id);
+                    }
+                }
+            }
+            for (const auto& id : idle) {
+                impl->destroy_session(id);
+            }
+        }
     }
 
     void destroy_session(const std::string& session_id) {
@@ -701,6 +776,10 @@ struct StreamableHttpSessionManager::Impl {
                     request, http::status::bad_request, g_INVALID_REQUEST,
                     "Missing Mcp-Session-Id header; only initialize is allowed without a session");
             }
+            if (at_session_limit()) {
+                return detail_session_mgr::make_error_response(
+                    request, http::status::service_unavailable, "Too many sessions");
+            }
             return create_session(conn_strand);
         }
 
@@ -845,7 +924,16 @@ struct StreamableHttpSessionManager::Impl {
                 std::string(negotiate_protocol_version(requested_protocol_version)));
         }
 
+        // A session exists to serve the client that initialized it, so one whose initialize did
+        // not succeed is not kept: nobody will come back for it.
+        const bool created_here = is_initialize && request.find("Mcp-Session-Id") == request.end();
         if (!request_json.contains("id") || !request_json.contains("method")) {
+            if (created_here) {
+                destroy_session(session->session_id);
+                co_return detail_session_mgr::make_jsonrpc_error_response(
+                    request, http::status::bad_request, g_INVALID_REQUEST,
+                    "initialize must be a request");
+            }
             co_await session->client_transport->write_json(std::move(request_json));
             auto response =
                 detail_session_mgr::make_empty_json_response(request, http::status::accepted);
@@ -871,7 +959,12 @@ struct StreamableHttpSessionManager::Impl {
 
         co_await session->client_transport->write_json(std::move(request_json));
 
-        co_return co_await wait_for_response(session.get(), request, request_id_key, timer_signal);
+        auto response =
+            co_await wait_for_response(session.get(), request, request_id_key, timer_signal);
+        if (created_here && !session->established.load(std::memory_order_acquire)) {
+            destroy_session(session->session_id);
+        }
+        co_return response;
     }
 
     Task<StringResponse> handle_delete(const StringRequest& request) {
@@ -1028,6 +1121,11 @@ struct StreamableHttpSessionManager::Impl {
                 if (!message) {
                     break;
                 }
+                if (!session->established.load(std::memory_order_acquire)) {
+                    const auto parsed = detail::parse_peer_json(*message);
+                    session->established.store(parsed.is_object() && parsed.contains("result"),
+                                               std::memory_order_release);
+                }
                 dispatch_response_to_pending(session.get(), std::move(*message),
                                              json_only_mode->load(std::memory_order_acquire));
             }
@@ -1179,6 +1277,14 @@ void StreamableHttpSessionManager::set_unauthenticated_paths(std::vector<std::st
     }
 }
 
+void StreamableHttpSessionManager::set_session_limits(const SessionLimits& limits) {
+    if (limits.max_sessions == 0) {
+        throw std::invalid_argument("The session limit must be at least 1");
+    }
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->session_limits = limits;
+}
+
 std::size_t StreamableHttpSessionManager::session_count() const {
     std::shared_lock lock(impl_->sessions_mutex_);
     return impl_->sessions.size();
@@ -1216,6 +1322,7 @@ void StreamableHttpSessionManager::close() {
         boost::system::error_code ec;
         (void)impl->acceptor.cancel(ec);
         (void)impl->acceptor.close(ec);
+        impl->expiry_timer.cancel();
     });
     impl->close_active_connections();
 
@@ -1253,6 +1360,8 @@ void StreamableHttpSessionManager::close() {
 Task<void> StreamableHttpSessionManager::listen() {
     auto impl = impl_;
     (void)impl->begin_listening();
+    boost::asio::co_spawn(impl->listener_strand, Impl::expire_idle_sessions(impl),
+                          boost::asio::detached);
     return boost::asio::co_spawn(impl->listener_strand, listen_impl(impl), boost::asio::use_awaitable);
 }
 
