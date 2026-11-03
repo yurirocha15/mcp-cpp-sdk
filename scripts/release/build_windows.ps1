@@ -592,9 +592,11 @@ int main() { std::cout << _MSC_VER << " " << sizeof(void*) << "\n"; }
         SUMMARY = 'Model Context Protocol C++ SDK'
         DESCRIPTION = 'C++20 Model Context Protocol SDK development package.'
         PROJECT_URL = "https://github.com/$Repository"
-        PACKAGE_SOURCE_URL = "https://github.com/$Repository"
+        PACKAGE_SOURCE_URL = "https://github.com/$Repository/tree/v$Version/packaging/chocolatey"
         COPYRIGHT = 'mcp-cpp-sdk contributors'
         TAGS = 'mcp cpp sdk development admin'
+        # The runtime must be at least as new as the tools that built the archive.
+        VCREDIST_MIN_VERSION = ($actualVCToolsVersion -split '\.')[0..1] -join '.'
     }
     Write-Utf8File -Path $installValuesPath -Content (
         $installValues | ConvertTo-Json -Compress

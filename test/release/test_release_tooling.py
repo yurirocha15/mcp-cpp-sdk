@@ -757,7 +757,8 @@ class TemplateTests(unittest.TestCase):
             "SUMMARY": "C++20 Model Context Protocol SDK",
             "DESCRIPTION": "C++20 MCP SDK & tools",
             "PROJECT_URL": "https://github.com/yurirocha15/mcp-cpp-sdk",
-            "PACKAGE_SOURCE_URL": "https://github.com/yurirocha15/mcp-cpp-sdk",
+            "PACKAGE_SOURCE_URL": "https://github.com/yurirocha15/mcp-cpp-sdk/tree/v0.2.0/packaging/chocolatey",
+            "VCREDIST_MIN_VERSION": "14.44",
             "TAGS": "mcp cpp20 sdk",
             "ARCHIVE_URL": "https://github.com/yurirocha15/mcp-cpp-sdk/releases/download/v0.2.0/mcp-cpp-sdk-0.2.0-windows-x64-v143-md.zip",
             "ARCHIVE_SHA256": "2" * 64,
@@ -780,8 +781,35 @@ class TemplateTests(unittest.TestCase):
             dependencies = nuspec.findall(".//n:dependency", namespace)
             self.assertEqual(
                 [(item.attrib.get("id"), item.attrib.get("version")) for item in dependencies],
-                [("vcredist140", None)],
+                [("vcredist140", "14.44")],
             )
+            fields = {
+                name: nuspec.findtext(f".//n:{name}", namespaces=namespace)
+                for name in ("title", "projectSourceUrl", "packageSourceUrl", "releaseNotes")
+            }
+            self.assertEqual(
+                fields,
+                {
+                    "title": "Model Context Protocol C++ SDK",
+                    "projectSourceUrl": "https://github.com/yurirocha15/mcp-cpp-sdk/tree/v0.2.0",
+                    "packageSourceUrl": (
+                        "https://github.com/yurirocha15/mcp-cpp-sdk/tree/v0.2.0/packaging/chocolatey"
+                    ),
+                    "releaseNotes": (
+                        "https://github.com/yurirocha15/mcp-cpp-sdk/releases/tag/v0.2.0"
+                    ),
+                },
+            )
+            nuspec_values = {
+                name: values[name] for name in inventory["chocolatey/mcp-cpp-sdk.nuspec.in"]
+            }
+            for invalid in ("14", "14.4", "15.44", "14.44.35207"):
+                with self.assertRaises(ValidationError):
+                    render_file(
+                        packaging / "chocolatey/mcp-cpp-sdk.nuspec.in",
+                        output_root / "invalid.nuspec",
+                        {**nuspec_values, "VCREDIST_MIN_VERSION": invalid},
+                    )
             control = (output_root / "debian/control").read_text(encoding="utf-8")
             self.assertIn("Package: libmcp-cpp-sdk0.2.0\n", control)
             self.assertIn("Depends: libmcp-cpp-sdk0.2.0 (= ${binary:Version})", control)

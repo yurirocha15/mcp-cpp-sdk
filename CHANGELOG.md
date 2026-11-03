@@ -882,6 +882,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Fixed
 
+- The Chocolatey package names the SDK in its title, links the release notes
+  and the tagged source, and requires `vcredist140` at least as new as the
+  Visual C++ tools that built the archive.
 - The Chocolatey package no longer contains `LICENSE.txt` and
   `VERIFICATION.txt`. It downloads the Windows archive at install time, with
   the checksum in its install script.
