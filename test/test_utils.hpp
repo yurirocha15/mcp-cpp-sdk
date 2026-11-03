@@ -87,6 +87,9 @@ class ScriptedTransport final : public mcp::ITransport {
     /// While set, writes wait, as they do for a peer that stopped reading.
     void hold_writes(bool hold) { hold_writes_.store(hold); }
 
+    /// Messages enqueued and not yet read. For a single-threaded io_context.
+    [[nodiscard]] std::size_t unread() const { return incoming_.size(); }
+
     [[nodiscard]] const std::vector<std::string>& written() const { return written_; }
     [[nodiscard]] bool is_closed() const { return closed_; }
     [[nodiscard]] const boost::asio::strand<boost::asio::any_io_executor>& strand() const {

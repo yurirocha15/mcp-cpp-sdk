@@ -56,6 +56,14 @@ class MCP_API SerializedTransportWriter {
         std::shared_ptr<const std::string> message,
         std::shared_ptr<const std::atomic<bool>> cancel_before_start) const;
 
+    /**
+     * @brief Queue one message without waiting for it to be written.
+     *
+     * Its bytes count in queued_bytes() from the moment this returns, so a caller can bound what it
+     * queues this way. Nobody waits for the write, so a failed write is not reported.
+     */
+    void post_message(std::shared_ptr<const std::string> message) const;
+
     /// Bytes of the messages queued or being written: what waits on a peer that reads slowly.
     [[nodiscard]] std::size_t queued_bytes() const noexcept;
 

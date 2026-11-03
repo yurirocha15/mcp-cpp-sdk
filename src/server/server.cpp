@@ -706,6 +706,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Task<void> run_session(std::shared_ptr<Session> session);
     /// Whether a message of @p message_bytes must not start another dispatch in the background.
     bool session_is_full(const Session& session, std::size_t message_bytes) const;
+    /// Writes @p answer, made by the read loop itself, without holding up reading while it can.
+    Task<void> answer_from_read_loop(Session& session, std::shared_ptr<const std::string> answer);
     static bool is_identified_request(const nlohmann::json& json_msg);
     Task<void> dispatch(nlohmann::json json_msg);
     Task<void> notify_resource_updated(const std::string& uri);
@@ -1123,7 +1125,8 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
                 parse_failed = true;
             }
             if (parse_failed) {
-                co_await session->writer->write_message(make_parse_error_wire());
+                co_await answer_from_read_loop(
+                    *session, std::make_shared<const std::string>(make_parse_error_wire()));
                 continue;
             }
             message_bytes = detail::json_memory_cost(json_msg);
@@ -1131,9 +1134,10 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
             // peer stops taking answers. Answers to the server's own requests still get through.
             if (session_is_full(*session, message_bytes)) {
                 if (is_identified_request(json_msg)) {
-                    co_await session->writer->write_message(
-                        make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
-                                        "Too many requests in flight"));
+                    co_await answer_from_read_loop(
+                        *session, std::make_shared<const std::string>(make_error_wire(
+                                      json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+                                      "Too many requests in flight")));
                 } else {
                     try {
                         co_await dispatch_on_strand(std::move(json_msg));
@@ -1208,6 +1212,20 @@ Task<void> Server::Impl::wait_for_dispatches(Session& session) {
             }
         }
     }
+}
+
+Task<void> Server::Impl::answer_from_read_loop(Session& session,
+                                               std::shared_ptr<const std::string> answer) {
+    // Waiting for the write would stop reading, and with it the answers to this server's own
+    // requests, which a peer at its own limit may be waiting to write before it reads again.
+    // Answers are queued instead while what is queued stays within the byte limit; past it,
+    // reading waits for the peer.
+    if (session.writer->queued_bytes() + answer->size() <=
+        max_in_flight_bytes.load(std::memory_order_relaxed)) {
+        session.writer->post_message(std::move(answer));
+        co_return;
+    }
+    co_await session.writer->write_message(std::move(answer));
 }
 
 bool Server::Impl::session_is_full(const Session& session, std::size_t message_bytes) const {

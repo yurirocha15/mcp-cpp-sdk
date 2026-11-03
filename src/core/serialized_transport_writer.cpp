@@ -5,6 +5,7 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/error.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
@@ -82,18 +83,23 @@ struct SerializedTransportWriterState {
         state->draining = false;
     }
 
+    /// Queues @p operation, whose bytes are already counted, and starts draining. On the strand.
+    static void push(const std::shared_ptr<SerializedTransportWriterState>& state,
+                     std::shared_ptr<Operation> operation) {
+        state->queue.push_back(std::move(operation));
+        if (!state->draining) {
+            state->draining = true;
+            boost::asio::co_spawn(state->strand, drain(state), boost::asio::detached);
+        }
+    }
+
     static Task<void> enqueue_and_wait(std::shared_ptr<SerializedTransportWriterState> state,
                                        std::shared_ptr<const std::string> message,
                                        std::shared_ptr<const std::atomic<bool>> cancel_before_start) {
         auto operation = std::make_shared<Operation>(state->strand, std::move(message),
                                                      std::move(cancel_before_start));
         state->queued_bytes.fetch_add(operation->message->size(), std::memory_order_relaxed);
-        state->queue.push_back(operation);
-
-        if (!state->draining) {
-            state->draining = true;
-            boost::asio::co_spawn(state->strand, drain(state), boost::asio::detached);
-        }
+        push(state, operation);
 
         while (!operation->completed) {
             boost::system::error_code ignored;
@@ -144,6 +150,22 @@ Task<void> SerializedTransportWriter::write_message(std::string_view message) co
 
 Task<void> SerializedTransportWriter::write_message(std::shared_ptr<const std::string> message) const {
     return write_message(std::move(message), nullptr);
+}
+
+void SerializedTransportWriter::post_message(std::shared_ptr<const std::string> message) const {
+    if (!state_) {
+        throw std::logic_error("Cannot use a moved-from SerializedTransportWriter");
+    }
+    if (!message) {
+        throw std::invalid_argument("SerializedTransportWriter message must not be null");
+    }
+    auto state = state_;
+    state->queued_bytes.fetch_add(message->size(), std::memory_order_relaxed);
+    boost::asio::post(state->strand, [state, message = std::move(message)]() mutable {
+        using State = SerializedTransportWriterState;
+        State::push(state,
+                    std::make_shared<State::Operation>(state->strand, std::move(message), nullptr));
+    });
 }
 
 Task<void> SerializedTransportWriter::write_message(

@@ -82,7 +82,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   (`Server::set_max_in_flight_bytes()`). A request counts as its parsed JSON
   takes memory, which for an array of empty objects is about 27 times its text.
   A request past either limit is answered with `-32603`, and reading stops
-  while the peer takes no answers. A `Client` stops reading while it answers
+  while the peer takes no answers. Those refusals are queued without holding up
+  reading while they fit in the byte limit, so a client that stopped reading
+  until its own answers are read does not stall the session. A
+  `Client` stops reading while it answers
   1024 requests of the server or they hold 256 MiB
   (`ClientOptions::max_incoming_request_bytes`). A session holds at most 4096
   resource subscriptions, with at most 8 MiB of URIs together; those of an

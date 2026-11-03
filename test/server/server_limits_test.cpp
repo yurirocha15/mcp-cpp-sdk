@@ -160,6 +160,70 @@ TEST_F(ServerLimitsTest, AnswerFromTheClientIsReadAtTheLimit) {
         << *answer_to(1);
 }
 
+// A client at its own limit stops reading until the answers it is writing are read. The server
+// must go on reading them while a refusal it made waits to be written, or both wait for good.
+TEST_F(ServerLimitsTest, AnswerFromTheClientIsReadWhileARefusalWaitsToBeWritten) {
+    std::atomic<bool> answered{false};
+    server_->add_tool<json, json>("ask_and_mark", "Asks the client", json{{"type", "object"}},
+                                  [this, &answered](json /*args*/) -> mcp::Task<json> {
+                                      auto roots =
+                                          co_await server_->send_request("roots/list", std::nullopt);
+                                      answered.store(true);
+                                      co_return roots;
+                                  });
+    run([&]() -> mcp::Task<void> {
+        co_await initialized();
+        server_->set_max_in_flight_requests(1);
+        transport_->enqueue_message(call(1, "ask_and_mark").dump());
+        co_await wait_until([this] {
+            return !written_.empty() && written_.back().value("method", "") == "roots/list";
+        });
+        const auto reverse_id = written_.back().at("id");
+        transport_->hold_writes(true);
+        transport_->enqueue_message(
+            json{{"jsonrpc", "2.0"}, {"id", "refused"}, {"method", "ping"}}.dump());
+        transport_->enqueue_message(
+            json{{"jsonrpc", "2.0"}, {"id", reverse_id}, {"result", {{"roots", json::array()}}}}
+                .dump());
+        co_await wait_until([&answered] { return answered.load(); });
+        transport_->hold_writes(false);
+        co_await wait_until(
+            [this] { return answer_to(1) != nullptr && answer_to("refused") != nullptr; });
+    });
+    EXPECT_TRUE(answered.load());
+    ASSERT_NE(answer_to("refused"), nullptr);
+    EXPECT_EQ((*answer_to("refused"))["error"]["code"], mcp::g_INTERNAL_ERROR);
+    ASSERT_NE(answer_to(1), nullptr);
+    EXPECT_EQ((*answer_to(1))["result"]["structuredContent"], (json{{"roots", json::array()}}));
+}
+
+// Refusals the read loop makes are queued without waiting only while what is queued stays within
+// the byte limit. A client that sends requests and never reads must still stop being read.
+TEST_F(ServerLimitsTest, RefusalsPastTheByteLimitStopTheReading) {
+    std::size_t unread = 0;
+    run([&]() -> mcp::Task<void> {
+        co_await initialized();
+        server_->set_max_in_flight_requests(1);
+        server_->set_max_in_flight_bytes(4096);
+        transport_->enqueue_message(call(1, "held").dump());
+        co_await wait_until([this] { return running_.load() == 1; });
+        transport_->hold_writes(true);
+        for (int id = 100; id < 1100; ++id) {
+            transport_->enqueue_message(
+                json{{"jsonrpc", "2.0"}, {"id", id}, {"method", "ping"}}.dump());
+        }
+        boost::asio::steady_timer settle(io_.get_executor(), std::chrono::milliseconds(100));
+        co_await settle.async_wait(boost::asio::use_awaitable);
+        unread = transport_->unread();
+        release_.store(true);
+        transport_->hold_writes(false);
+        co_await wait_until([this] { return answer_to(1099) != nullptr; });
+    });
+    // About 4096 bytes of refusals, 90 bytes each, are queued; the rest wait to be read.
+    EXPECT_GT(unread, 800U);
+    ASSERT_NE(answer_to(1099), nullptr);
+}
+
 TEST_F(ServerLimitsTest, ClientThatNeverAnswersFailsTheHandlerAtTheTimeout) {
     server_->set_reverse_request_timeout(std::chrono::milliseconds(50));
     run([&]() -> mcp::Task<void> {
