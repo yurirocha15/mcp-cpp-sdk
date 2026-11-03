@@ -4,6 +4,7 @@
 #include <mcp/core/export.hpp>
 #include <mcp/transport/transport.hpp>
 
+#include <cstddef>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -38,6 +39,18 @@ class MCP_API StdioTransport final : public ITransport {
      * finish. Because a generic std::istream cannot be cancelled, callers
      * using a blocking custom stream must make it return EOF before destroying
      * the transport.
+     *
+     * @note The output stream is written on a thread of the transport's own, so
+     * a peer that stops reading cannot stop the executor. A write to a closed
+     * pipe fails instead of raising SIGPIPE.
+     *
+     * @note std::cin and std::cout with their original buffers stand for the
+     * process's standard descriptors, which the transport then reads and writes
+     * directly: the C library holds a lock for the whole of a blocked read or
+     * write, and exit() would wait for it. So anything an application read ahead
+     * into std::cin stays there, and close() ends a wait for input. Destruction
+     * waits one second for a write that a stalled peer is blocking and then
+     * leaves it to finish on its own.
      */
     explicit StdioTransport(const boost::asio::any_io_executor& executor,
                             std::istream& input = std::cin, std::ostream& output = std::cout);
@@ -110,6 +123,15 @@ class MCP_API StdioTransport final : public ITransport {
      * inside the supplied std::istream.
      */
     void close() override;
+
+    /**
+     * @brief Set the longest input line the transport accepts, in bytes.
+     *
+     * A longer line fails the read and ends the input, so a peer cannot grow memory by never
+     * sending a newline. The default is 16 MiB, the limit of the WebSocket transports. Call it
+     * before the first read.
+     */
+    void set_max_message_bytes(std::size_t bytes);
 
    private:
     struct OwnStdoutTag {};

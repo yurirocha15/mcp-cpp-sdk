@@ -8,12 +8,20 @@
 #include <condition_variable>
 #include <csignal>
 #include <cstddef>
+#include <cstdlib>
 #include <mutex>
+#include <optional>
 #include <ostream>
 #include <sstream>
 #include <streambuf>
 #include <string>
 #include <thread>
+
+#if !defined(_WIN32)
+#include <sys/ioctl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -157,6 +165,161 @@ class CollectingStreambuf : public std::streambuf {
 };
 
 constexpr std::chrono::milliseconds g_response_budget{10000};
+
+#if !defined(_WIN32)
+
+namespace {
+
+/// A server on real standard streams, in a child process. The blocking reads and writes these tests
+/// are about only exist on real descriptors.
+class StdioServerProcess {
+   public:
+    StdioServerProcess() {
+        int to_child[2];
+        int from_child[2];
+        EXPECT_EQ(::pipe(to_child), 0);
+        EXPECT_EQ(::pipe(from_child), 0);
+        child_ = ::fork();
+        if (child_ == 0) {
+            ::dup2(to_child[0], STDIN_FILENO);
+            ::dup2(from_child[1], STDOUT_FILENO);
+            for (const int descriptor : {to_child[0], to_child[1], from_child[0], from_child[1]}) {
+                ::close(descriptor);
+            }
+            mcp::Implementation info;
+            info.name = "stdio-child";
+            info.version = "1.0";
+            mcp::Server server(std::move(info), mcp::ServerCapabilities{});
+            server.run_stdio();
+            // A real exit: it flushes the C library's streams, which waits for any thread holding
+            // their locks in a blocked read or write.
+            std::exit(0);
+        }
+        ::close(to_child[0]);
+        ::close(from_child[1]);
+        to_child_ = to_child[1];
+        from_child_ = from_child[0];
+    }
+
+    ~StdioServerProcess() {
+        close_stdin();
+        close_stdout_reader();
+        if (child_ > 0 && !reaped_) {
+            ::kill(child_, SIGKILL);
+            ::waitpid(child_, nullptr, 0);
+        }
+    }
+
+    StdioServerProcess(const StdioServerProcess&) = delete;
+    StdioServerProcess& operator=(const StdioServerProcess&) = delete;
+
+    void send(const std::string& text) const {
+        ASSERT_EQ(::write(to_child_, text.data(), text.size()), static_cast<ssize_t>(text.size()));
+    }
+
+    /// Blocks until the server answered once, which shows its signal handler is installed.
+    void wait_until_serving() const {
+        send(R"({"jsonrpc":"2.0","id":1,"method":"ping"})"
+             "\n");
+        char byte = 0;
+        ASSERT_EQ(::read(from_child_, &byte, 1), 1);
+    }
+
+    /// Fills the pipe the server writes to, by asking for answers nobody reads.
+    void fill_stdout_pipe() const {
+        const std::string ping = R"({"jsonrpc":"2.0","id":2,"method":"ping"})"
+                                 "\n";
+        int pending = 0;
+        // Sends in small steps: the server stops reading its input once it cannot write.
+        for (;;) {
+            std::string batch;
+            for (int i = 0; i < 64; ++i) {
+                batch += ping;
+            }
+            send(batch);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            ASSERT_EQ(::ioctl(from_child_, FIONREAD, &pending), 0);
+            if (pending >= 60000) {
+                return;
+            }
+        }
+    }
+
+    void signal(int number) const { ASSERT_EQ(::kill(child_, number), 0); }
+
+    void close_stdin() {
+        if (to_child_ >= 0) {
+            ::close(to_child_);
+            to_child_ = -1;
+        }
+    }
+
+    void close_stdout_reader() {
+        if (from_child_ >= 0) {
+            ::close(from_child_);
+            from_child_ = -1;
+        }
+    }
+
+    /// The child's wait status, or nullopt when it is still running after two minutes: a bound for
+    /// reporting a hang, not a measure of how fast it should be.
+    std::optional<int> wait_for_exit() {
+        for (int i = 0; i < 24000; ++i) {
+            int status = 0;
+            if (::waitpid(child_, &status, WNOHANG) == child_) {
+                reaped_ = true;
+                return status;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return std::nullopt;
+    }
+
+   private:
+    pid_t child_{-1};
+    int to_child_{-1};
+    int from_child_{-1};
+    bool reaped_{false};
+};
+
+}  // namespace
+
+// The parent keeps standard input open here, so nothing but the signal can end the run.
+TEST(RunStdioProcess, SignalEndsTheRunWhileStandardInputStaysOpen) {
+    for (const int number : {SIGTERM, SIGINT}) {
+        StdioServerProcess server;
+        server.wait_until_serving();
+        server.signal(number);
+        const auto status = server.wait_for_exit();
+        ASSERT_TRUE(status.has_value());
+        EXPECT_TRUE(WIFEXITED(*status));
+        EXPECT_EQ(WEXITSTATUS(*status), 0);
+    }
+}
+
+TEST(RunStdioProcess, SignalEndsTheRunWhileThePeerStopsReading) {
+    StdioServerProcess server;
+    server.wait_until_serving();
+    server.fill_stdout_pipe();
+    server.signal(SIGTERM);
+    const auto status = server.wait_for_exit();
+    ASSERT_TRUE(status.has_value());
+    EXPECT_TRUE(WIFEXITED(*status));
+}
+
+TEST(RunStdioProcess, ClosedStandardOutputIsNotAFatalSignal) {
+    StdioServerProcess server;
+    server.wait_until_serving();
+    server.close_stdout_reader();
+    server.send(R"({"jsonrpc":"2.0","id":2,"method":"ping"})"
+                "\n");
+    server.close_stdin();
+    const auto status = server.wait_for_exit();
+    ASSERT_TRUE(status.has_value());
+    EXPECT_FALSE(WIFSIGNALED(*status)) << "signal " << WTERMSIG(*status);
+}
+
+#endif
 
 }  // namespace
 

@@ -515,6 +515,115 @@ TEST_F(StdioTransportTest, PolymorphicThroughBasePointer) {
     transport->close();
 }
 
+TEST_F(StdioTransportTest, LinesLongerThanTheReadChunkArriveIntact) {
+    const std::string first(200000, 'a');
+    const std::string exact_chunk(65535, 'b');
+    const std::string last(70000, 'c');
+    std::istringstream input(first + "\n\n" + exact_chunk + "\n" + last);
+    std::ostringstream output;
+    mcp::StdioTransport transport(io_ctx_.get_executor(), input, output);
+
+    std::vector<std::string> lines;
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            for (int i = 0; i < 4; ++i) {
+                lines.push_back(co_await transport.read_message());
+            }
+        },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    ASSERT_EQ(lines.size(), 4U);
+    EXPECT_EQ(lines[0], first);
+    EXPECT_EQ(lines[1], "");
+    EXPECT_EQ(lines[2], exact_chunk);
+    EXPECT_EQ(lines[3], last);
+}
+
+TEST_F(StdioTransportTest, LineOverTheLimitFailsTheRead) {
+    std::istringstream input("0123456789\n" + std::string(200000, 'x') + "\nnot reached\n");
+    std::ostringstream output;
+    mcp::StdioTransport transport(io_ctx_.get_executor(), input, output);
+    transport.set_max_message_bytes(10);
+
+    std::optional<std::string> at_the_limit;
+    std::string error;
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            at_the_limit = co_await transport.read_message();
+            try {
+                co_await transport.read_message();
+            } catch (const std::runtime_error& failure) {
+                error = failure.what();
+            }
+        },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(at_the_limit, "0123456789");
+    EXPECT_NE(error.find("exceeds 10 bytes"), std::string::npos) << error;
+}
+
+namespace {
+
+/// Input that never ends and counts what is taken from it, until told to end.
+class EndlessLines final : public std::streambuf {
+   public:
+    EndlessLines() { setg(line_.data(), line_.data(), line_.data()); }
+
+    std::size_t taken() const { return taken_.load(); }
+    void finish() { finished_.store(true); }
+
+   protected:
+    int_type underflow() override {
+        if (finished_.load()) {
+            return traits_type::eof();
+        }
+        taken_.fetch_add(line_.size());
+        setg(line_.data(), line_.data(), line_.data() + line_.size());
+        return traits_type::to_int_type(line_[0]);
+    }
+
+   private:
+    std::string line_ = std::string(1023, 'x') + "\n";
+    std::atomic<std::size_t> taken_{0};
+    std::atomic<bool> finished_{false};
+};
+
+}  // namespace
+
+// Nobody calls read_message() here, as when a server stops reading at its in-flight limit.
+TEST_F(StdioTransportTest, ReadAheadStopsWhenNothingTakesTheLines) {
+    EndlessLines lines;
+    std::istream input(&lines);
+    std::ostringstream output;
+    mcp::StdioTransport transport(io_ctx_.get_executor(), input, output);
+
+    bool first_read = false;
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await transport.read_message();
+            first_read = true;
+        },
+        boost::asio::detached);
+    io_ctx_.run();
+    ASSERT_TRUE(first_read);
+
+    // The reader is past the limit, or stopped at it, once the count stops moving.
+    std::size_t seen = 0;
+    while (lines.taken() != seen || seen == 0) {
+        seen = lines.taken();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    EXPECT_LT(seen, 20U * 1024U * 1024U);
+
+    lines.finish();
+    transport.close();
+}
+
 // The protocol channel on this transport is a real process stream, so the tests
 // that distinguish a shared stdout from an owned one have to work at the file
 // descriptor level. POSIX only; the Windows implementation of
