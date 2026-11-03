@@ -157,10 +157,7 @@ When writing scripted tests, consider the following:
             EXPECT_EQ(text->text, "test");
         }
 
-        // 3. Verify server-side state if accessible
-        EXPECT_TRUE(server->has_tool("echo"));
-
-        // 4. Gracefully close the connection
+        // 3. Gracefully close the connection
         client->close();
     }, boost::asio::detached);
 

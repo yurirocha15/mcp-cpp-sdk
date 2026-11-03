@@ -78,7 +78,8 @@ particular:
   ``g_METHOD_NOT_FOUND``.
 * Server requests to the client (elicitation, sampling, roots) are real
   requests that the server sends to the client during the handler.
-  ``set_roots(roots, true)`` sends ``notifications/roots/list_changed``.
+  ``set_roots(roots, true)`` sends ``notifications/roots/list_changed`` when the
+  client declared ``roots.listChanged``.
 * Results carry no cache hints.
 * The response of a request that the client cancelled with
   ``notifications/cancelled`` is still sent for 2025-11-25 and earlier.

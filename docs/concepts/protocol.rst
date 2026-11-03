@@ -181,8 +181,9 @@ Some details to know:
   minutes by default), and how many may wait (1024 in all and 64 per principal
   by default). ``Server::mrtr_stats()`` counts them. A handler that is given up
   throws from its question.
-* Any other 2026-07-28 request, such as ``tools/list``, cannot ask the client
-  anything, and these ``ctx`` calls throw ``std::runtime_error``.
+* Only ``tools/call``, ``resources/read`` and ``prompts/get`` can ask the client
+  anything. In any other 2026-07-28 request these ``ctx`` calls throw
+  ``std::runtime_error``.
 
 Subscriptions
 -------------

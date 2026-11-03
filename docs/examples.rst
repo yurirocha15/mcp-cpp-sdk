@@ -107,7 +107,7 @@ client_stdio
 
 A stdio MCP client demonstrating:
 
-* **Connection**: Initialize handshake with server capabilities
+* **Connection**: ``server/discover``, falling back to ``initialize`` for an older server
 * **Tools**: List available tools, call tools with typed arguments
 * **Resources**: List resources, read resource contents
 * **Resource Templates**: List template metadata
@@ -196,7 +196,7 @@ In-process loopback demonstration using **Streamable HTTP transport**:
 
 * **HttpServerTransport + HttpClientTransport**: Full HTTP stack for MCP communication
 * **Anti-hang co_spawn pattern**: Safe concurrent server/client execution
-* **MCP-Protocol-Version header**: Support for versioned HTTP headers (e.g., ``2025-11-25``)
+* **MCP-Protocol-Version header**: Sent with every request (``2026-07-28`` here)
 
 This example shows how to use the HTTP transport layer for network-based
 MCP communication with standard headers.
