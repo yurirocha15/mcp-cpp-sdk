@@ -1244,6 +1244,16 @@ TEST(ProtocolTest, RequestIdIntegerSerialization) {
     EXPECT_EQ(std::get<int64_t>(deserialized.value), 7);
 }
 
+// An id above INT64_MAX could not be echoed back as it was sent.
+TEST(ProtocolTest, RequestIdAboveInt64Throws) {
+    EXPECT_THROW(nlohmann::json::parse("9223372036854775808").get<mcp::RequestId>(),
+                 std::invalid_argument);
+    EXPECT_THROW(nlohmann::json::parse("18446744073709551615").get<mcp::RequestId>(),
+                 std::invalid_argument);
+    const auto largest = nlohmann::json::parse("9223372036854775807").get<mcp::RequestId>();
+    EXPECT_EQ(nlohmann::json(largest).dump(), "9223372036854775807");
+}
+
 TEST(ProtocolTest, RequestIdInvalidTypeThrows) {
     nlohmann::json j = 3.14;
     EXPECT_THROW(j.get<mcp::RequestId>(), std::invalid_argument);

@@ -486,8 +486,7 @@ Params deserialize_request_params(const nlohmann::json& message, std::string_vie
 }
 
 bool has_valid_request_id(const nlohmann::json& message) {
-    return message.contains("id") &&
-           (message.at("id").is_string() || message.at("id").is_number_integer());
+    return message.contains("id") && detail::is_request_id(message.at("id"));
 }
 
 // A peer that serializes an absent optional as an explicit null means the member is not there, and
@@ -1195,7 +1194,7 @@ bool Server::Impl::is_identified_request(const nlohmann::json& json_msg) {
         return false;
     }
     const auto id = json_msg.find("id");
-    return id != json_msg.end() && (id->is_string() || id->is_number_integer());
+    return id != json_msg.end() && detail::is_request_id(*id);
 }
 
 Task<void> Server::dispatch(nlohmann::json json_msg) { return impl_->dispatch(std::move(json_msg)); }

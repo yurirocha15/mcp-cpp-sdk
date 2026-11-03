@@ -547,8 +547,7 @@ struct HttpServerTransport::Impl {
         // string or an integer: this path replaces it with a sentinel, so the server's own id check
         // never runs on it.
         const bool has_valid_id =
-            request_json.contains("id") &&
-            (request_json.at("id").is_string() || request_json.at("id").is_number_integer());
+            request_json.contains("id") && detail::is_request_id(request_json.at("id"));
         const bool is_sessionless_discover = is_discover_request(request_json) && has_valid_id &&
                                              request.find("MCP-Session-Id") == request.end();
         if (!is_sessionless_discover) {
@@ -573,16 +572,19 @@ struct HttpServerTransport::Impl {
             enqueue_incoming_message(request.body());
             co_return make_empty_json_response(request, http::status::accepted);
         }
-        // The Server answers a request whose id is neither a string nor an integer with a null id,
-        // since it has none it may echo, so that answer could never be matched to this request.
-        if (!request_json.at("id").is_string() && !request_json.at("id").is_number_integer()) {
+        // The Server answers a request whose id is neither a string nor an integer within int64_t
+        // with a null id, since it has none it may echo, so that answer could never be matched to
+        // this request.
+        if (!detail::is_request_id(request_json.at("id"))) {
             co_return make_json_response(
                 request, http::status::bad_request,
-                nlohmann::json{{"jsonrpc", "2.0"},
-                               {"id", nullptr},
-                               {"error",
-                                {{"code", g_INVALID_REQUEST},
-                                 {"message", "JSON-RPC request id must be a string or an integer"}}}}
+                nlohmann::json{
+                    {"jsonrpc", "2.0"},
+                    {"id", nullptr},
+                    {"error",
+                     {{"code", g_INVALID_REQUEST},
+                      {"message",
+                       "JSON-RPC request id must be a string or an integer within int64_t"}}}}
                     .dump());
         }
 

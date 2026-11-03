@@ -355,9 +355,10 @@ struct Client::Impl {
                 // swallowed and the peer never hears back. Reject an unusable id here, where the
                 // drop is reported, instead of leaving the request silently unanswered.
                 const auto& id = json_message.at("id");
-                if (!id.is_string() && !id.is_number_integer()) {
+                if (!detail::is_request_id(id)) {
                     throw McpError(g_INVALID_REQUEST,
-                                   "JSON-RPC request id must be a string or integer");
+                                   "JSON-RPC request id must be a string or an integer within "
+                                   "int64_t");
                 }
                 ++state->incoming_requests;
                 boost::asio::co_spawn(state->strand,
@@ -393,7 +394,7 @@ struct Client::Impl {
     static void dispatch_response(const std::shared_ptr<Impl>& state,
                                   const nlohmann::json& json_message) {
         const auto& id = json_message.at("id");
-        if (!id.is_string() && !id.is_number_integer()) {
+        if (!detail::is_request_id(id)) {
             return;
         }
         const auto id_key = id.get<RequestId>().correlation_key();

@@ -39,6 +39,8 @@ struct Reply {
 mcp::Task<Reply> send(asio::any_io_executor executor, unsigned short port, std::string body,
                       Headers headers) {
     beast::tcp_stream stream(executor);
+    // A bound for reporting a server that never answers, not a measure of speed.
+    stream.expires_after(std::chrono::minutes(2));
     co_await stream.async_connect(asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port),
                                   asio::use_awaitable);
     http::request<http::string_body> request{http::verb::post, "/mcp", 11};
@@ -107,7 +109,12 @@ class SessionLimitsTest : public ::testing::Test {
         asio::co_spawn(
             io_,
             [this, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
-                co_await exchange();
+                // A failed exchange still closes the server, or the test would never return.
+                try {
+                    co_await exchange();
+                } catch (const std::exception& error) {
+                    ADD_FAILURE() << error.what();
+                }
                 manager_.close();
             },
             asio::detached);
@@ -126,11 +133,6 @@ class SessionLimitsTest : public ::testing::Test {
 
 Headers session_header(const Reply& initialized) {
     return {{"Mcp-Session-Id", initialized.session_id.value_or("")}};
-}
-
-Headers established_headers(const Reply& initialized) {
-    return {{"MCP-Session-Id", initialized.session_id.value_or("")},
-            {"MCP-Protocol-Version", json::parse(initialized.body)["result"]["protocolVersion"]}};
 }
 
 json bad_initialize() { return {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "initialize"}}; }
@@ -182,16 +184,39 @@ TEST_F(SessionLimitsTest, IdleSessionEnds) {
     EXPECT_EQ(later.status, 404u);
 }
 
+// Requests keep a session alive past the idle timeout, which counts from the last one.
 TEST_F(SessionLimitsTest, UsedSessionStays) {
-    manager_.set_session_limits({10, std::chrono::milliseconds(2000)});
+    constexpr auto idle = std::chrono::milliseconds(300);
+    manager_.set_session_limits({10, idle});
     std::size_t after_use = 0;
     run([&]() -> mcp::Task<void> {
         const auto first = co_await post(make_initialize_request("1"));
         const auto session = session_header(first);
-        co_await post_only(ping(), session);
+        for (int i = 0; i < 8; ++i) {
+            co_await pause(idle / 3);
+            co_await post_only(ping(), session);
+        }
         after_use = manager_.session_count();
     });
     EXPECT_EQ(after_use, 1u);
+}
+
+// An id the server could not echo unchanged would leave the request waiting for good, and the
+// session busy with it.
+TEST_F(SessionLimitsTest, RequestIdBeyondInt64IsRefused) {
+    manager_.set_session_limits({10, std::chrono::milliseconds(40)});
+    Reply refused;
+    bool ended = false;
+    run([&]() -> mcp::Task<void> {
+        const auto first = co_await post(make_initialize_request("1"));
+        refused =
+            co_await post(json::parse(R"({"jsonrpc":"2.0","id":18446744073709551615,"method":"ping"})"),
+                          session_header(first));
+        ended = co_await wait_until([this] { return manager_.session_count() == 0; });
+    });
+    EXPECT_EQ(refused.status, 400u);
+    EXPECT_EQ(json::parse(refused.body)["error"]["code"], mcp::g_INVALID_REQUEST);
+    EXPECT_TRUE(ended);
 }
 
 TEST_F(SessionLimitsTest, SessionLimitMustAllowASession) {
@@ -251,7 +276,11 @@ class ReverseBindingTest : public ::testing::Test {
         asio::co_spawn(
             io_,
             [this, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
-                co_await exchange();
+                try {
+                    co_await exchange();
+                } catch (const std::exception& error) {
+                    ADD_FAILURE() << error.what();
+                }
                 transport_->close();
             },
             asio::detached);
@@ -361,6 +390,20 @@ TEST_F(ReverseBindingTest, ClientThatLeftIdleLetsTheNextOneIn) {
     EXPECT_EQ(second.status, 200u) << second.body;
     EXPECT_TRUE(second.session_id.has_value());
     EXPECT_NE(second.session_id, first.session_id);
+}
+
+TEST_F(ReverseBindingTest, RequestIdBeyondInt64IsRefused) {
+    Reply refused;
+    run([&]() -> mcp::Task<void> {
+        const auto initialized = co_await post(make_initialize_request("i"));
+        const Headers session{
+            {"MCP-Session-Id", initialized.session_id.value_or("")},
+            {"MCP-Protocol-Version", json::parse(initialized.body)["result"]["protocolVersion"]}};
+        refused = co_await post(
+            json::parse(R"({"jsonrpc":"2.0","id":9223372036854775808,"method":"ping"})"), session);
+    });
+    EXPECT_EQ(refused.status, 400u);
+    EXPECT_EQ(json::parse(refused.body)["error"]["code"], mcp::g_INVALID_REQUEST);
 }
 
 TEST_F(ReverseBindingTest, ActiveSessionKeepsNextClientOut) {

@@ -174,13 +174,28 @@ inline void to_json(nlohmann::json& json_obj, const RequestId& id) {
     std::visit([&json_obj](auto&& val) { json_obj = val; }, id.value);
 }
 
+namespace detail {
+
+/// Whether @p value can be a request id: a string, or an integer that fits in int64_t. A larger one
+/// could not be echoed back unchanged, so its answer would never be matched to the request.
+[[nodiscard]] inline bool is_request_id(const nlohmann::json& value) {
+    if (value.is_number_unsigned()) {
+        return value.get<std::uint64_t>() <=
+               static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    }
+    return value.is_string() || value.is_number_integer();
+}
+
+}  // namespace detail
+
 inline void from_json(const nlohmann::json& json_obj, RequestId& id) {
+    if (!detail::is_request_id(json_obj)) {
+        throw std::invalid_argument("RequestId must be a string or an integer within int64_t");
+    }
     if (json_obj.is_string()) {
         id.value = json_obj.get<std::string>();
-    } else if (json_obj.is_number_integer()) {
-        id.value = json_obj.get<int64_t>();
     } else {
-        throw std::invalid_argument("RequestId must be a string or integer");
+        id.value = json_obj.get<int64_t>();
     }
 }
 

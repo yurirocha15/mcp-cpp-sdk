@@ -103,6 +103,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   server, including its signal handling. A closed standard output no longer
   raises SIGPIPE; it ends the run. When standard input ends, the requests
   already read still run to completion and their answers are written first.
+- A request id that is an integer above INT64_MAX is refused as an invalid
+  request. It could not be echoed back unchanged, so over HTTP its request was
+  never answered and kept its session from expiring.
 - `StdioTransport` accepts input lines of at most 16 MiB
   (`set_max_message_bytes()`) and reads at most 16 MiB ahead of `read_message()`.
 - `WebSocketServerTransport` has a 30 second deadline on the upgrade
