@@ -101,7 +101,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Server::run_stdio()` did not stop on SIGTERM or SIGINT while standard input
   stayed open, and a parent that stopped reading standard output blocked the
   server, including its signal handling. A closed standard output no longer
-  raises SIGPIPE.
+  raises SIGPIPE; it ends the run. When standard input ends, the requests
+  already read still run to completion and their answers are written first.
 - `StdioTransport` accepts input lines of at most 16 MiB
   (`set_max_message_bytes()`) and reads at most 16 MiB ahead of `read_message()`.
 - `WebSocketServerTransport` has a 30 second deadline on the upgrade

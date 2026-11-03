@@ -57,8 +57,9 @@ method, which blocks the main thread until the connection is closed.
        server.run_stdio();
    }
 
-``run_stdio()`` returns when the client closes standard input or on SIGINT or
-SIGTERM, also while the client has stopped reading. Input lines are limited to
+``run_stdio()`` returns when the client closes standard input, once the requests
+already read have been answered, and when standard output is closed. SIGINT and
+SIGTERM end it at once, also while the client has stopped reading. Input lines are limited to
 16 MiB; a longer one ends the input. To change that, build a ``StdioTransport``,
 call ``set_max_message_bytes()`` and pass it to ``Server::run()``.
 

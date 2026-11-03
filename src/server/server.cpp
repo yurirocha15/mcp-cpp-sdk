@@ -9,6 +9,7 @@
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/memory.hpp>
+#include <mcp/transport/stdio.hpp>
 
 // GCC 11 SSO Coroutine Safety — see docs/contributing.rst "Known Issues" for full details.
 // Do NOT store std::string in a coroutine frame across co_await (GCC bugs #107288/#100611).
@@ -699,6 +700,10 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     [[nodiscard]] bool transport_started_new_session() const;
     void reset_session(const std::shared_ptr<Session>& session);
     static void abandon_session_work(const std::shared_ptr<Session>& session);
+    /// Fails the server's own requests that are still waiting for an answer.
+    static void abandon_pending_requests(Session& session);
+    /// Returns once no request of @p session is running.
+    static Task<void> wait_for_dispatches(Session& session);
 
     static Task<void> run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransport> transport,
                           boost::asio::any_io_executor executor);
@@ -1142,28 +1147,40 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
     // every later run() is refused for the lifetime of this Server.
     try {
         session->stopping.store(true, std::memory_order_release);
+        if (dynamic_cast<StdioTransport*>(session->transport.get()) != nullptr) {
+            // The end of standard input is how a client asks a stdio server to finish, and it may
+            // still be reading standard output: the requests already started run to their end and
+            // their answers are written before the transport closes. A signal closes it at once.
+            // Answers to the server's own requests can no longer arrive.
+            abandon_pending_requests(*session);
+            co_await wait_for_dispatches(*session);
+        }
         abandon_session_work(session);
         session->transport->close();
 
-        while (session->active_dispatches.load(std::memory_order_acquire) != 0) {
-            session->drain_timer->expires_at(std::chrono::steady_clock::time_point::max());
-            if (session->active_dispatches.load(std::memory_order_acquire) == 0) {
-                break;
-            }
-            try {
-                co_await session->drain_timer->async_wait(boost::asio::use_awaitable);
-            } catch (const boost::system::system_error& error) {
-                if (error.code() != boost::asio::error::operation_aborted) {
-                    throw;
-                }
-            }
-        }
+        co_await wait_for_dispatches(*session);
     } catch (...) {
         reset_session(session);
         throw;
     }
 
     reset_session(session);
+}
+
+Task<void> Server::Impl::wait_for_dispatches(Session& session) {
+    while (session.active_dispatches.load(std::memory_order_acquire) != 0) {
+        session.drain_timer->expires_at(std::chrono::steady_clock::time_point::max());
+        if (session.active_dispatches.load(std::memory_order_acquire) == 0) {
+            break;
+        }
+        try {
+            co_await session.drain_timer->async_wait(boost::asio::use_awaitable);
+        } catch (const boost::system::system_error& error) {
+            if (error.code() != boost::asio::error::operation_aborted) {
+                throw;
+            }
+        }
+    }
 }
 
 bool Server::Impl::session_is_full(const Session& session, std::size_t message_bytes) const {
@@ -2024,7 +2041,11 @@ void Server::Impl::abandon_session_work(const std::shared_ptr<Session>& session)
         static_cast<void>(id);
         cancelled->store(true, std::memory_order_relaxed);
     }
-    for (auto& [id, pending] : session->pending_requests) {
+    abandon_pending_requests(*session);
+}
+
+void Server::Impl::abandon_pending_requests(Session& session) {
+    for (auto& [id, pending] : session.pending_requests) {
         static_cast<void>(id);
         if (!pending.completed) {
             pending.error = Error{g_CONNECTION_CLOSED, "Server session closed", std::nullopt};

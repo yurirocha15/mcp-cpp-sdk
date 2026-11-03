@@ -41,6 +41,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(__GLIBCXX__)
+#include <ext/stdio_filebuf.h>
+#endif
+
 namespace mcp {
 namespace {
 
@@ -152,6 +156,21 @@ class DescriptorStreambuf final : public std::streambuf {
 /// std::cin and std::cout no longer stand for the descriptors.
 std::streambuf* const g_process_stdin_buffer = std::cin.rdbuf();
 std::streambuf* const g_process_stdout_buffer = std::cout.rdbuf();
+
+/// Whether @p buffer is the process's own buffer for @p descriptor: the one the stream started with,
+/// or the one libstdc++ puts in its place when the program calls std::ios::sync_with_stdio(false).
+bool is_process_buffer(std::streambuf* buffer, std::streambuf* original, int descriptor) {
+    if (buffer == original) {
+        return true;
+    }
+#if defined(__GLIBCXX__)
+    auto* file_buffer = dynamic_cast<__gnu_cxx::stdio_filebuf<char>*>(buffer);
+    return file_buffer != nullptr && file_buffer->fd() == descriptor;
+#else
+    static_cast<void>(descriptor);
+    return false;
+#endif
+}
 
 /// Standard output as a stream of its own. std::cout writes through the C library, whose lock is
 /// held for the whole of a blocked write, and exit() takes that lock to flush: a peer that stopped
@@ -377,15 +396,23 @@ struct StdioTransport::Impl {
 #endif
         }
 
-        void open_wake_pipe() {
+        /// Opens the pipe before the reader starts. @p closed tells whether close() has already
+        /// run; it found no pipe to wake then, so the pipe starts out woken.
+        void open_wake_pipe(const std::atomic<bool>& closed) {
 #if !defined(_WIN32)
             std::array<int, 2> ends{-1, -1};
             if (::pipe(ends.data()) == 0) {
                 ::fcntl(ends[0], F_SETFD, FD_CLOEXEC);
                 ::fcntl(ends[1], F_SETFD, FD_CLOEXEC);
+                std::lock_guard lock(mutex);
                 wake_read = ends[0];
                 wake_write = ends[1];
+                if (closed.load(std::memory_order_acquire)) {
+                    wake_input_wait();
+                }
             }
+#else
+            static_cast<void>(closed);
 #endif
         }
 
@@ -443,11 +470,20 @@ struct StdioTransport::Impl {
     }
 
     static bool is_process_stdout(const std::ostream& output) {
-        return &output == &std::cout && output.rdbuf() == g_process_stdout_buffer;
+        return &output == &std::cout &&
+               is_process_buffer(output.rdbuf(), g_process_stdout_buffer, kStdoutDescriptor);
     }
 
     [[nodiscard]] bool reads_process_stdin() const {
-        return &input == &std::cin && input.rdbuf() == g_process_stdin_buffer;
+        return &input == &std::cin &&
+               is_process_buffer(input.rdbuf(), g_process_stdin_buffer, kStdinDescriptor);
+    }
+
+    /// Whether the reader can take standard input from the descriptor. Input still buffered in a
+    /// replaced stream buffer would be skipped that way. Called before the reader starts.
+    [[nodiscard]] bool reads_stdin_descriptor() const {
+        return reads_process_stdin() &&
+               (input.rdbuf() == g_process_stdin_buffer || input.rdbuf()->in_avail() <= 0);
     }
 
     ~Impl() {
@@ -577,8 +613,8 @@ struct StdioTransport::Impl {
         std::lock_guard lock(threads_mutex);
         if (!reader_started && !shared_state->closed.load(std::memory_order_acquire)) {
             reader_started = true;
-            if (reads_process_stdin()) {
-                shared_state->pump->open_wake_pipe();
+            if (reads_stdin_descriptor()) {
+                shared_state->pump->open_wake_pipe(shared_state->closed);
                 reader_thread = std::thread([pump = shared_state->pump]() {
                     DescriptorLines lines(kStdinDescriptor, pump->wake_read);
                     read_lines([&lines](std::string& line,
@@ -648,6 +684,12 @@ struct StdioTransport::Impl {
             pump->writing_waiter.reset();
             if (pump->state && waiter) {
                 complete_write(pump->state, std::move(waiter), written);
+            }
+            if (!written && pump->state) {
+                // The peer is no longer reading: nothing more can be answered, so the transport
+                // closes and the reader stops instead of starting work whose answers would be lost.
+                boost::asio::post(pump->state->strand,
+                                  [shared_state = pump->state] { close_state(shared_state); });
             }
             pump->wake.notify_all();
         }

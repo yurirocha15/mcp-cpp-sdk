@@ -1,6 +1,10 @@
 #include "mcp/detail/signal.hpp"
 #include "mcp/server/server.hpp"
 
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -9,6 +13,8 @@
 #include <csignal>
 #include <cstddef>
 #include <cstdlib>
+#include <functional>
+#include <iostream>
 #include <mutex>
 #include <optional>
 #include <ostream>
@@ -174,7 +180,10 @@ namespace {
 /// are about only exist on real descriptors.
 class StdioServerProcess {
    public:
-    StdioServerProcess() {
+    /// @p setup adds what the test needs to the child's server. @p unsynced has the child call
+    /// std::ios::sync_with_stdio(false) first, which replaces the standard streams' buffers.
+    explicit StdioServerProcess(const std::function<void(mcp::Server&)>& setup = {},
+                                bool unsynced = false) {
         int to_child[2];
         int from_child[2];
         EXPECT_EQ(::pipe(to_child), 0);
@@ -186,10 +195,18 @@ class StdioServerProcess {
             for (const int descriptor : {to_child[0], to_child[1], from_child[0], from_child[1]}) {
                 ::close(descriptor);
             }
+            if (unsynced) {
+                std::ios::sync_with_stdio(false);
+            }
             mcp::Implementation info;
             info.name = "stdio-child";
             info.version = "1.0";
-            mcp::Server server(std::move(info), mcp::ServerCapabilities{});
+            mcp::ServerCapabilities capabilities;
+            capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
+            mcp::Server server(std::move(info), std::move(capabilities));
+            if (setup) {
+                setup(server);
+            }
             server.run_stdio();
             // A real exit: it flushes the C library's streams, which waits for any thread holding
             // their locks in a blocked read or write.
@@ -225,27 +242,42 @@ class StdioServerProcess {
         ASSERT_EQ(::read(from_child_, &byte, 1), 1);
     }
 
-    /// Fills the pipe the server writes to, by asking for answers nobody reads.
+    /// Fills the pipe the server writes to, by asking for answers nobody reads, until the server
+    /// blocks writing: the bytes waiting in the pipe then stop growing while answers are still owed.
     void fill_stdout_pipe() const {
         const std::string ping = R"({"jsonrpc":"2.0","id":2,"method":"ping"})"
                                  "\n";
         int pending = 0;
+        int last = -1;
+        int unchanged = 0;
         // Sends in small steps: the server stops reading its input once it cannot write.
-        for (;;) {
+        while (unchanged < 3) {
             std::string batch;
             for (int i = 0; i < 64; ++i) {
                 batch += ping;
             }
             send(batch);
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
             ASSERT_EQ(::ioctl(from_child_, FIONREAD, &pending), 0);
-            if (pending >= 60000) {
-                return;
-            }
+            unchanged = pending > 0 && pending == last ? unchanged + 1 : 0;
+            last = pending;
         }
     }
 
     void signal(int number) const { ASSERT_EQ(::kill(child_, number), 0); }
+
+    /// Everything the server writes until it closes standard output.
+    std::string read_to_end() const {
+        std::string text;
+        char chunk[65536];
+        for (;;) {
+            const auto count = ::read(from_child_, chunk, sizeof(chunk));
+            if (count <= 0) {
+                return text;
+            }
+            text.append(chunk, static_cast<std::size_t>(count));
+        }
+    }
 
     void close_stdin() {
         if (to_child_ >= 0) {
@@ -302,6 +334,55 @@ TEST(RunStdioProcess, SignalEndsTheRunWhileThePeerStopsReading) {
     server.wait_until_serving();
     server.fill_stdout_pipe();
     server.signal(SIGTERM);
+    const auto status = server.wait_for_exit();
+    ASSERT_TRUE(status.has_value());
+    EXPECT_TRUE(WIFEXITED(*status));
+}
+
+// std::ios::sync_with_stdio(false) gives std::cin and std::cout new buffers; they still stand for the
+// process's descriptors, so a signal still ends the run.
+TEST(RunStdioProcess, SignalEndsTheRunWithUnsyncedStandardStreams) {
+    StdioServerProcess server({}, true);
+    server.wait_until_serving();
+    server.signal(SIGTERM);
+    const auto status = server.wait_for_exit();
+    ASSERT_TRUE(status.has_value());
+    EXPECT_TRUE(WIFEXITED(*status));
+}
+
+// A peer that stopped reading can be answered no more, so the run ends without waiting for the
+// end of its input.
+TEST(RunStdioProcess, ClosedStandardOutputEndsTheRun) {
+    StdioServerProcess server;
+    server.wait_until_serving();
+    server.close_stdout_reader();
+    server.send(R"({"jsonrpc":"2.0","id":2,"method":"ping"})"
+                "\n");
+    const auto status = server.wait_for_exit();
+    ASSERT_TRUE(status.has_value());
+    EXPECT_TRUE(WIFEXITED(*status));
+}
+
+// The answer to a request read before the input ended is written in full, however slowly the peer
+// reads it.
+TEST(RunStdioProcess, AnswerStartedBeforeTheInputEndsIsWrittenInFull) {
+    constexpr std::size_t size = 800000;
+    StdioServerProcess server([](mcp::Server& child) {
+        child.add_tool<nlohmann::json, nlohmann::json>(
+            "big", "Returns a large result", nlohmann::json{{"type", "object"}},
+            [](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+                co_return nlohmann::json{{"text", std::string(size, 'x')}};
+            });
+    });
+    server.send(make_initialize_request("1").dump() + "\n");
+    server.send(make_initialized_notification().dump() + "\n");
+    server.send(make_tool_call_request("2", "big", nlohmann::json::object()).dump() + "\n");
+    server.close_stdin();
+    // Longer than the transport waits for output when it is destroyed.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    const auto responses = parse_responses(server.read_to_end());
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1]["result"]["structuredContent"]["text"].get<std::string>().size(), size);
     const auto status = server.wait_for_exit();
     ASSERT_TRUE(status.has_value());
     EXPECT_TRUE(WIFEXITED(*status));
@@ -391,6 +472,36 @@ TEST_F(ServerStdioTest, RunStdioHandlesToolCall) {
     EXPECT_EQ(tool_response["id"], "2");
     ASSERT_TRUE(tool_response.contains("result"));
     EXPECT_EQ(tool_response["result"]["structuredContent"]["greeting"], "Hello, World");
+}
+
+// The end of the input lets the requests already read finish: each still gets its answer.
+TEST_F(ServerStdioTest, EveryRequestReadBeforeTheInputEndsIsAnswered) {
+    server_->add_tool<nlohmann::json, nlohmann::json>(
+        "pause", "Answers after a short wait", nlohmann::json{{"type", "object"}},
+        [](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+            auto executor = co_await boost::asio::this_coro::executor;
+            boost::asio::steady_timer timer(executor, std::chrono::milliseconds(20));
+            co_await timer.async_wait(boost::asio::use_awaitable);
+            co_return nlohmann::json{{"done", true}};
+        });
+    constexpr int calls = 50;
+    std::string text =
+        make_initialize_request("1").dump() + "\n" + make_initialized_notification().dump() + "\n";
+    for (int i = 0; i < calls; ++i) {
+        text +=
+            make_tool_call_request("c" + std::to_string(i), "pause", nlohmann::json::object()).dump() +
+            "\n";
+    }
+    std::istringstream input(text);
+    std::ostringstream output;
+
+    server_->run_stdio(input, output);
+
+    const auto responses = parse_responses(output.str());
+    ASSERT_EQ(responses.size(), static_cast<std::size_t>(calls) + 1);
+    for (const auto& response : responses) {
+        EXPECT_TRUE(response.contains("result")) << response.dump();
+    }
 }
 
 TEST_F(ServerStdioTest, RunStdioExitsCleanlyOnEmptyInput) {
