@@ -98,6 +98,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   sessions (`set_connection_limits()`). A replay of missed events on a GET
   counts against that memory until it is written, so slow readers can no
   longer each hold a copy of the whole replay store.
+- `HttpClientTransport` starts a new session when the server answers 404 for
+  the current one, as the specification requires, and sends the failed request
+  once more in it (`set_reinitialize_on_expired_session()`). After a session
+  expired, every later call failed with 404.
 - `StreamableHttpSessionManager` holds at most 10,000 sessions and ends a session
   idle for five minutes (`set_session_limits()`), and keeps no session for a
   failed initialize. An SSE replay store keeps at most 32 MiB.

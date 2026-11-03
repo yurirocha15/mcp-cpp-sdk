@@ -1,6 +1,8 @@
 #include "../test_utils.hpp"
 
+#include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
+#include "mcp/transport/http_client.hpp"
 #include "mcp/transport/http_server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
 
@@ -220,6 +222,29 @@ TEST_F(SessionLimitsTest, IdleSessionEnds) {
 }
 
 // Requests keep a session alive past the idle timeout, which counts from the last one.
+// A session the server ended is forgotten; the client starts a new one and its call goes through.
+TEST_F(SessionLimitsTest, ClientStartsANewSessionWhenTheOldOneExpired) {
+    manager_.set_session_limits({10, std::chrono::milliseconds(40)});
+    bool answered = false;
+    std::string first_session;
+    std::string second_session;
+    run([&]() -> mcp::Task<void> {
+        auto transport = std::make_shared<mcp::HttpClientTransport>(
+            io_.get_executor(), "http://127.0.0.1:" + std::to_string(port_) + "/mcp");
+        mcp::Client client(transport, io_.get_executor());
+        co_await client.connect("expired", "1.0");
+        first_session = transport->session_id();
+        co_await wait_until([this] { return manager_.session_count() == 0; });
+        co_await client.ping();
+        answered = true;
+        second_session = transport->session_id();
+        client.close();
+    });
+    EXPECT_TRUE(answered);
+    EXPECT_FALSE(second_session.empty());
+    EXPECT_NE(first_session, second_session);
+}
+
 TEST_F(SessionLimitsTest, UsedSessionStays) {
     constexpr auto idle = std::chrono::milliseconds(300);
     manager_.set_session_limits({10, idle});
