@@ -65,25 +65,88 @@ operator^=(evaluation_flags& lhs, evaluation_flags rhs) noexcept
 // applicators over recursive references can make the number of evaluation steps exponential in
 // the value's depth. eval_context is created for every keyword evaluated, so it enforces both.
 // Creating one copies the evaluation path and the dynamic scope, so a step costs work in
-// proportion to the path's length, and the budget is charged accordingly.
-class evaluation_limit_error : public std::runtime_error
-{
-public:
-    using std::runtime_error::runtime_error;
-};
+// proportion to the path's length, and the budget is charged accordingly. Copies of JSON
+// pointers are charged to the same budget (see jsonpointer::evaluation_work).
+using evaluation_limit_error = jsonpointer::evaluation_limit_error;
 
 struct evaluation_limits
 {
     // Longest evaluation path, counted in keywords and array indexes.
     static constexpr std::size_t max_depth = 192;
 
+    // Messages one branching keyword keeps from its branches. A keyword counts every message, so
+    // its verdict does not depend on how many are kept.
+    static constexpr std::size_t max_kept_messages = 16;
+
+    // Longest excerpt of a value or a schema quoted in a message, in bytes.
+    static constexpr std::size_t max_excerpt = 256;
+
     // Evaluation work left for the validation running on this thread. A step with an evaluation
     // path of n tokens costs n + 1. The caller sets it before each validation; the initial value
     // does not limit anything.
     static std::size_t& work_left()
     {
-        static thread_local std::size_t work = static_cast<std::size_t>(-1);
-        return work;
+        return jsonpointer::evaluation_work::left();
+    }
+
+    // Bytes that the messages kept by branching keywords may still take on this thread. The
+    // caller sets it before each validation; the initial value does not limit anything.
+    static std::size_t& kept_message_bytes_left()
+    {
+        static thread_local std::size_t bytes = static_cast<std::size_t>(-1);
+        return bytes;
+    }
+
+    static void keep_message_bytes(std::size_t bytes)
+    {
+        std::size_t& left = kept_message_bytes_left();
+        if (left < bytes)
+        {
+            throw evaluation_limit_error("the messages kept for failed branches take too much memory");
+        }
+        left -= bytes;
+    }
+
+    static void release_message_bytes(std::size_t bytes)
+    {
+        kept_message_bytes_left() += bytes;
+    }
+
+    static std::string_view excerpt(std::string_view text)
+    {
+        return text.substr(0, max_excerpt);
+    }
+
+    // Longest property name kept in an instance location or an evaluation path, in bytes. The SDK
+    // reports only instance locations, flattened and cut to 256 bytes, and flattening turns at
+    // most 3 bytes into 1, so the first 772 bytes of a name are all a report can show. Every step
+    // under the name copies both, so a longer name would cost its whole length for each item
+    // below it.
+    static constexpr std::size_t max_location_token = 1024;
+
+    static std::string_view location_token(std::string_view name)
+    {
+        return name.substr(0, max_location_token);
+    }
+
+    // A value as a message names it: a scalar quoted in full, a string cut to an excerpt, and an
+    // array or object by its size, so a message takes the same time whatever the value holds.
+    template <typename Json>
+    static std::string describe(const Json& value)
+    {
+        if (value.is_string())
+        {
+            return "'" + std::string(excerpt(value.as_string_view())) + "'";
+        }
+        if (value.is_array())
+        {
+            return "An array of length " + std::to_string(value.size());
+        }
+        if (value.is_object())
+        {
+            return "An object of size " + std::to_string(value.size());
+        }
+        return "'" + value.template as<std::string>() + "'";
     }
 
     // Pattern matching steps left for the validation running on this thread, as
@@ -109,12 +172,7 @@ struct evaluation_limits
     // keyword's values.
     static void charge(std::size_t units)
     {
-        std::size_t& work = work_left();
-        if (work < units)
-        {
-            throw evaluation_limit_error("schema evaluation takes too much work");
-        }
-        work -= units;
+        jsonpointer::evaluation_work::charge(units);
     }
 
     static void enter(std::size_t depth)
@@ -179,7 +237,7 @@ public:
     }
 
     eval_context(const eval_context& parent, mcp_detail_jsoncons::string_view name)
-        : dynamic_scope_{parent.dynamic_scope_}, eval_path_(parent.eval_path() / name),
+        : dynamic_scope_{parent.dynamic_scope_}, eval_path_(parent.eval_path() / evaluation_limits::location_token(name)),
           flags_(parent.flags_)
           
     {
@@ -188,7 +246,7 @@ public:
 
     eval_context(const eval_context& parent, mcp_detail_jsoncons::string_view name,
         evaluation_flags flags)
-        : dynamic_scope_{parent.dynamic_scope_}, eval_path_(parent.eval_path() / name),
+        : dynamic_scope_{parent.dynamic_scope_}, eval_path_(parent.eval_path() / evaluation_limits::location_token(name)),
           flags_(flags)
     {
         evaluation_limits::enter(eval_path_.tokens().size());

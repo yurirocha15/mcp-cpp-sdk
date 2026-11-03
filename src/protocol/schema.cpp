@@ -10,6 +10,7 @@
 #include <jsoncons/json.hpp>
 #include <jsoncons_ext/jsonschema/jsonschema.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -54,20 +55,58 @@ std::string_view find_dialect(std::string_view uri) {
     return {};
 }
 
-/// Evaluation work every validation may do, plus `g_work_per_level` for each node of the value and
-/// each level that node is nested at. The vendored jsoncons charges a step one more than the
-/// length of its evaluation path, which is what the step costs; in an optimized build one unit
-/// takes about 15 ns. Ordinary schemas, including recursive ones through `anyOf`, take at most
-/// about 64 units per node and level, so the budget only stops evaluations whose work grows
-/// exponentially with the value's depth.
+/// Evaluation work every validation may do. The vendored jsoncons charges a step one more than the
+/// length of its evaluation path, which is what the step costs, and charges copies of locations
+/// and whole-string keywords by their length (see scripts/vendor_jsoncons.py).
 constexpr std::size_t g_base_work = 1'000'000;
-constexpr std::size_t g_work_per_level = 256;
+/// Work allowed per unit of the value (see ValueShape::units), before the allowance for each node
+/// of the schema below.
+constexpr std::size_t g_work_per_unit = 256;
+/// Further work allowed per unit of the value for each node of the schema: a step that compares
+/// the value with a schema value, such as an `enum` member, costs 8.
+constexpr std::size_t g_work_per_unit_and_schema_node = 8;
+/// Memory the messages kept for failed branches may hold at once during one validation.
+constexpr std::size_t g_max_kept_message_bytes = 32 * 1024 * 1024;
+
+std::size_t saturating_add(std::size_t left, std::size_t right) {
+    return left > std::numeric_limits<std::size_t>::max() - right
+               ? std::numeric_limits<std::size_t>::max()
+               : left + right;
+}
+
+std::size_t saturating_multiply(std::size_t left, std::size_t right) {
+    return right != 0 && left > std::numeric_limits<std::size_t>::max() / right
+               ? std::numeric_limits<std::size_t>::max()
+               : left * right;
+}
 
 struct ValueShape {
     bool too_deep = false;
-    bool non_finite = false;     ///< Holds a NaN or an infinity, which JSON cannot represent.
-    std::size_t levels = 0;      ///< Sum over the value's nodes of their depth plus one.
+    bool non_finite = false;  ///< Holds a NaN or an infinity, which JSON cannot represent.
+    std::size_t nodes = 0;    ///< Values in the value, itself included.
+    std::size_t levels = 0;   ///< Sum over the value's nodes of their depth plus one.
+    /// Sum over the value's nodes of the bytes of the property names on their path, as much of
+    /// each name as a location keeps.
+    std::size_t path_bytes = 0;
     std::size_t text_bytes = 0;  ///< Bytes of the strings and property names in the value.
+
+    /// The size of the value as evaluation work grows with it. A step at a node costs what copying
+    /// its location costs, one per level and one per 32 bytes of the names on its path, and every
+    /// 16 bytes of text cost one, as reading the text does.
+    [[nodiscard]] std::size_t units() const {
+        return saturating_add(saturating_add(levels, path_bytes / 32), text_bytes / 16);
+    }
+
+    /// The evaluation work a validation of the value may do against a schema of @p schema_nodes
+    /// nodes, at most @p max_work. It grows with the product of the two sizes, which pays for each
+    /// part of the schema evaluating each part of the value a few times, and stops evaluations
+    /// whose work grows exponentially with the value's depth.
+    [[nodiscard]] std::size_t evaluation_work(std::size_t schema_nodes, std::size_t max_work) const {
+        const auto per_unit = saturating_add(
+            g_work_per_unit, saturating_multiply(g_work_per_unit_and_schema_node, schema_nodes));
+        const auto work = saturating_add(g_base_work, saturating_multiply(units(), per_unit));
+        return std::min(work, max_work);
+    }
 
     /// The pattern matching steps (see mcp::detail::Regex::search) a validation of the value may
     /// take under @p options. Typical patterns take a handful of steps per byte; one that runs many
@@ -88,11 +127,18 @@ struct ValueShape {
 /// value.
 ValueShape measure(const nlohmann::json& value, std::size_t depth_limit) {
     ValueShape shape;
-    std::vector<std::pair<const nlohmann::json*, std::size_t>> pending{{&value, 0}};
+    struct Pending {
+        const nlohmann::json* node;
+        std::size_t depth;
+        std::size_t path_bytes;
+    };
+    std::vector<Pending> pending{{&value, 0, 0}};
     while (!pending.empty()) {
-        const auto [node, depth] = pending.back();
+        const auto [node, depth, path_bytes] = pending.back();
         pending.pop_back();
+        ++shape.nodes;
         shape.levels += depth + 1;
+        shape.path_bytes = saturating_add(shape.path_bytes, path_bytes);
         if (!node->is_structured()) {
             shape.non_finite =
                 shape.non_finite || (node->is_number_float() && !std::isfinite(node->get<double>()));
@@ -108,30 +154,36 @@ ValueShape measure(const nlohmann::json& value, std::size_t depth_limit) {
         if (node->is_object()) {
             for (const auto& [key, child] : node->items()) {
                 shape.text_bytes += key.size();
-                pending.emplace_back(&child, depth + 1);
+                const auto kept = std::min(key.size(), jcs::evaluation_limits::max_location_token);
+                pending.push_back({&child, depth + 1, path_bytes + kept});
             }
         } else {
             for (const auto& child : *node) {
-                pending.emplace_back(&child, depth + 1);
+                pending.push_back({&child, depth + 1, path_bytes});
             }
         }
     }
     return shape;
 }
 
-/// Sets the evaluation work and pattern matching budgets for the validations this thread runs
-/// while it is alive (see the evaluation limits scripts/vendor_jsoncons.py adds to jsoncons).
+/// Sets the evaluation work, pattern matching and kept message budgets for the validations this
+/// thread runs while it is alive (see the evaluation limits scripts/vendor_jsoncons.py adds to
+/// jsoncons).
 class WorkBudget {
    public:
-    WorkBudget(const ValueShape& shape, const SchemaOptions& options)
+    WorkBudget(const ValueShape& shape, std::size_t schema_nodes, const SchemaOptions& options)
         : saved_work_(jcs::evaluation_limits::work_left()),
-          saved_pattern_steps_(jcs::evaluation_limits::pattern_steps_left()) {
-        jcs::evaluation_limits::work_left() = g_base_work + g_work_per_level * shape.levels;
+          saved_pattern_steps_(jcs::evaluation_limits::pattern_steps_left()),
+          saved_message_bytes_(jcs::evaluation_limits::kept_message_bytes_left()) {
+        jcs::evaluation_limits::work_left() =
+            shape.evaluation_work(schema_nodes, options.max_evaluation_work);
         jcs::evaluation_limits::pattern_steps_left() = shape.pattern_steps(options);
+        jcs::evaluation_limits::kept_message_bytes_left() = g_max_kept_message_bytes;
     }
     ~WorkBudget() {
         jcs::evaluation_limits::work_left() = saved_work_;
         jcs::evaluation_limits::pattern_steps_left() = saved_pattern_steps_;
+        jcs::evaluation_limits::kept_message_bytes_left() = saved_message_bytes_;
     }
     WorkBudget(const WorkBudget&) = delete;
     WorkBudget& operator=(const WorkBudget&) = delete;
@@ -139,6 +191,7 @@ class WorkBudget {
    private:
     std::size_t saved_work_;
     std::size_t saved_pattern_steps_;
+    std::size_t saved_message_bytes_;
 };
 
 /// Copies an nlohmann value into a jsoncons value. Recurses once per level, so callers check the
@@ -260,11 +313,24 @@ std::string describe(std::string_view prefix, std::string_view detail) {
     return std::string(prefix) + detail::sanitize_for_diagnostics(detail);
 }
 
+/// The error for @p error, a pattern of the schema that cannot be used. A pattern that is not a
+/// regular expression makes the schema invalid; one that is valid but cannot be run here is
+/// reported as unsupported.
+SchemaError pattern_error(const detail::RegexError& error) {
+    if (error.kind() == detail::RegexError::Kind::eInvalid) {
+        return SchemaError(SchemaError::Category::eInvalidSchema,
+                           describe("JSON Schema pattern is not a regular expression: ", error.what()));
+    }
+    return SchemaError(SchemaError::Category::eUnsupportedPattern,
+                       describe("JSON Schema pattern cannot be used: ", error.what()));
+}
+
 }  // namespace
 
 struct CompiledSchemaImpl {
     nlohmann::json source;
     SchemaOptions options;
+    std::size_t schema_nodes;  ///< Values in the schema document, itself included.
     jcs::json_schema<jc::json> compiled;
     /// Set when the schema uses only the keywords NativeSchema implements; validation then walks
     /// the value directly instead of converting it for jsoncons.
@@ -315,7 +381,8 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
     SchemaViolation first_problem;
     bool schema_invalid = false;
     try {
-        const WorkBudget budget(schema_shape, SchemaOptions{});
+        // The metaschema is the schema here; its size is fixed, so the value alone sets the budget.
+        const WorkBudget budget(schema_shape, 0, options);
         metaschema(dialect).validate(converted, [&](const jcs::validation_message& message) {
             if (!schema_invalid) {
                 const auto& problem = innermost(message);
@@ -347,13 +414,15 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
         return jc::json::null();
     };
     std::optional<jcs::json_schema<jc::json>> compiled;
+    // Patterns that cannot be used are collected instead of ending the compile, so that any other
+    // problem the schema has is found and reported first.
+    detail::PatternBudget patterns(options.max_pattern_instructions);
     try {
         auto evaluation =
             jcs::evaluation_options{}.default_version(std::string(supported_dialects()[0]));
         compiled.emplace(jcs::make_json_schema(std::move(converted), refuse, evaluation));
     } catch (const detail::RegexError& error) {
-        throw SchemaError(SchemaError::Category::eUnsupportedPattern,
-                          describe("JSON Schema pattern cannot be used: ", error.what()));
+        throw pattern_error(error);
     } catch (const std::exception& error) {
         if (!refused.empty()) {
             // jsoncons also asks for the metaschema of an embedded resource's `$schema`.
@@ -368,16 +437,20 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
         throw SchemaError(SchemaError::Category::eInvalidSchema,
                           describe("JSON Schema cannot be compiled: ", error.what()));
     }
+    if (patterns.problem()) {
+        throw pattern_error(*patterns.problem());
+    }
 
     // A reference cycle that never descends into the value exceeds the evaluation limits whatever
     // the value is. Trying a few trivial values finds it now instead of on every validation.
     ValueShape trivial;
+    trivial.nodes = 1;
     trivial.levels = 1;
     for (const auto& probe :
          {jc::json::null(), jc::json(jc::json_object_arg), jc::json(jc::json_array_arg), jc::json(""),
           jc::json(0), jc::json(true)}) {
         try {
-            const WorkBudget budget(trivial, SchemaOptions{});
+            const WorkBudget budget(trivial, schema_shape.nodes, options);
             (void)compiled->is_valid(probe);
         } catch (const jcs::evaluation_limit_error& error) {
             throw SchemaError(
@@ -386,8 +459,14 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
         }
     }
 
+    // NativeSchema compiles the patterns again, within a budget of its own; one it cannot compile
+    // leaves the schema to jsoncons.
+    auto native = [&schema, &options] {
+        const detail::PatternBudget native_patterns(options.max_pattern_instructions);
+        return detail::NativeSchema::compile(schema);
+    }();
     return CompiledSchema(std::make_shared<const CompiledSchemaImpl>(CompiledSchemaImpl{
-        schema, options, std::move(*compiled), detail::NativeSchema::compile(schema)}));
+        schema, options, schema_shape.nodes, std::move(*compiled), std::move(native)}));
 }
 
 ValidationResult CompiledSchema::validate(const nlohmann::json& instance) const {
@@ -403,13 +482,14 @@ ValidationResult CompiledSchema::validate(const nlohmann::json& instance) const 
 
     if (impl_->native) {
         impl_->native->validate(instance, options.max_reported_violations, shape.pattern_steps(options),
-                                g_base_work + g_work_per_level * shape.levels, result);
+                                shape.evaluation_work(impl_->schema_nodes, options.max_evaluation_work),
+                                result);
         return result;
     }
 
     const auto converted = to_jsoncons(instance);
     try {
-        const WorkBudget budget(shape, options);
+        const WorkBudget budget(shape, impl_->schema_nodes, options);
         impl_->compiled.validate(converted, [&](const jcs::validation_message& message) {
             result.valid = false;
             if (result.violations.size() < options.max_reported_violations) {

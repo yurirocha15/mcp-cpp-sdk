@@ -14,8 +14,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   and draft-04 may be named, and any other `$schema` is refused with
   `SchemaError`. The schema itself is checked against its dialect's
   metaschema. `SchemaOptions` bounds the nesting of a validated value
-  (64 levels by default), the number of violations reported and the pattern
-  matching steps of one validation. JSON cannot
+  (64 levels by default), the number of violations reported, the pattern
+  matching steps and evaluation work of one validation, and the instructions
+  the patterns of one schema compile to. JSON cannot
   represent NaN or Infinity: a schema holding one is refused, and a value
   holding one is checked as the `null` it would be sent as.
   References resolve only within the document and to the supported
@@ -118,6 +119,21 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - The evaluation budget now covers `enum` and `const` comparisons,
   `dependentRequired`, `properties` and `uniqueItems` on colliding hashes, and
   the text a failed branch keeps. Regular expression compilation is bounded.
+- Schema validation copied a long property name at every step under it, kept
+  every message of every failed branch of a keyword such as `anyOf`, and built
+  some messages from the whole value. Locations keep the first 1024 bytes of a
+  name, which is more
+  than a report shows; a branching keyword keeps 16 messages, the kept messages
+  may hold 32 MiB, and messages quote an excerpt. The work allowed grows with
+  the size of the schema as well as of the value, so a large `enum` or a union
+  of object types over an ordinary array is not stopped, up to
+  `SchemaOptions::max_evaluation_work`. The patterns of one schema may compile
+  to `SchemaOptions::max_pattern_instructions` instructions in all.
+- jsoncons matched a property name or keyword containing NUL only up to the NUL,
+  and property names sharing a hash made its lookups quadratic.
+- A `pattern` that is not a regular expression, such as `(`, makes a schema
+  invalid instead of unsupported, and a pattern the matcher cannot run no
+  longer hides another problem in the schema, such as a `$ref` outside it.
 - `Server::run_stdio()` did not stop on SIGTERM or SIGINT while standard input
   stayed open, and a parent that stopped reading standard output blocked the
   server, including its signal handling. A closed standard output no longer

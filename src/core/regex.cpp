@@ -180,7 +180,7 @@ class Parser {
     std::size_t parse() {
         auto root = parse_alternation(0);
         if (pos_ != text_.size()) {
-            fail(peek() == ')' ? "unmatched ')'" : "unexpected character");
+            fail(RegexError::Kind::eInvalid, peek() == ')' ? "unmatched ')'" : "unexpected character");
         }
         return root;
     }
@@ -189,9 +189,9 @@ class Parser {
     std::vector<std::vector<Range>> classes;
 
    private:
-    [[noreturn]] void fail(const std::string& reason) const {
-        throw RegexError("invalid regular expression at offset " + std::to_string(pos_) + ": " +
-                         reason);
+    [[noreturn]] void fail(RegexError::Kind kind, const std::string& reason) const {
+        throw RegexError(
+            kind, "invalid regular expression at offset " + std::to_string(pos_) + ": " + reason);
     }
 
     bool at_end() const { return pos_ >= text_.size(); }
@@ -265,7 +265,8 @@ class Parser {
             while (!at_end() && peek() >= '0' && peek() <= '9') {
                 value = value * 10 + (peek() - '0');
                 if (value > Regex::max_repeat_count) {
-                    fail("repetition count exceeds " + std::to_string(Regex::max_repeat_count));
+                    fail(RegexError::Kind::eTooLarge,
+                         "repetition count exceeds " + std::to_string(Regex::max_repeat_count));
                 }
                 ++pos_;
                 ++digits;
@@ -289,7 +290,7 @@ class Parser {
             return false;
         }
         if (high && *high < low) {
-            fail("numbers out of order in {} quantifier");
+            fail(RegexError::Kind::eInvalid, "numbers out of order in {} quantifier");
         }
         min = low;
         max = high;
@@ -315,7 +316,7 @@ class Parser {
             return atom;
         }
         if (assertion) {
-            fail("nothing to repeat");
+            fail(RegexError::Kind::eInvalid, "nothing to repeat");
         }
         accept('?');  // A lazy quantifier matches the same inputs.
         Node node;
@@ -354,12 +355,12 @@ class Parser {
             case '*':
             case '+':
             case '?':
-                fail("nothing to repeat");
+                fail(RegexError::Kind::eInvalid, "nothing to repeat");
             case '{': {
                 std::uint32_t min = 0;
                 std::optional<std::uint32_t> max;
                 if (parse_braces(min, max)) {
-                    fail("nothing to repeat");
+                    fail(RegexError::Kind::eInvalid, "nothing to repeat");
                 }
                 ++pos_;
                 return add_char(c);
@@ -372,31 +373,32 @@ class Parser {
 
     std::size_t parse_group(std::uint32_t depth) {
         if (depth + 1 > Regex::max_nesting) {
-            fail("groups nested deeper than " + std::to_string(Regex::max_nesting));
+            fail(RegexError::Kind::eTooLarge,
+                 "groups nested deeper than " + std::to_string(Regex::max_nesting));
         }
         ++pos_;  // '('
         if (accept('?')) {
             if (accept(':')) {
                 // non-capturing
             } else if (peek() == '=' || peek() == '!') {
-                fail("lookahead is not supported");
+                fail(RegexError::Kind::eUnsupported, "lookahead is not supported");
             } else if (peek() == '<' && (peek(1) == '=' || peek(1) == '!')) {
-                fail("lookbehind is not supported");
+                fail(RegexError::Kind::eUnsupported, "lookbehind is not supported");
             } else if (accept('<')) {
                 const std::size_t name_start = pos_;
                 while (!at_end() && (is_word_character(peek()) || peek() == '$')) {
                     ++pos_;
                 }
                 if (pos_ == name_start || !accept('>')) {
-                    fail("invalid group name");
+                    fail(RegexError::Kind::eUnsupported, "invalid group name");
                 }
             } else {
-                fail("invalid group");
+                fail(RegexError::Kind::eUnsupported, "invalid group");
             }
         }
         auto inner = parse_alternation(depth + 1);
         if (!accept(')')) {
-            fail("missing ')'");
+            fail(RegexError::Kind::eInvalid, "missing ')'");
         }
         return inner;
     }
@@ -413,7 +415,7 @@ class Parser {
             } else if (h >= 'A' && h <= 'F') {
                 nibble = h - 'A' + 10;
             } else {
-                fail("invalid hexadecimal escape");
+                fail(RegexError::Kind::eUnsupported, "invalid hexadecimal escape");
             }
             value = value * 16 + nibble;
             ++pos_;
@@ -429,11 +431,11 @@ class Parser {
             while (!at_end() && peek() != '}') {
                 value = value * 16 + parse_hex(1);
                 if (++digits > 6 || value > g_max_code_point) {
-                    fail("code point out of range");
+                    fail(RegexError::Kind::eUnsupported, "code point out of range");
                 }
             }
             if (digits == 0 || !accept('}')) {
-                fail("invalid \\u{} escape");
+                fail(RegexError::Kind::eUnsupported, "invalid \\u{} escape");
             }
             return value;
         }
@@ -454,7 +456,7 @@ class Parser {
     /// the single code point otherwise. `in_class` makes `\b` a backspace.
     ClassAtom parse_escape_atom(bool in_class) {
         if (at_end()) {
-            fail("\\ at end of pattern");
+            fail(RegexError::Kind::eInvalid, "\\ at end of pattern");
         }
         const char32_t c = peek();
         ++pos_;
@@ -483,13 +485,13 @@ class Parser {
                 return {char32_t{'\r'}, {}};
             case '0':
                 if (peek() >= '0' && peek() <= '9') {
-                    fail("octal escapes are not supported");
+                    fail(RegexError::Kind::eUnsupported, "octal escapes are not supported");
                 }
                 return {char32_t{0}, {}};
             case 'c': {
                 const char32_t letter = peek();
                 if (!((letter >= 'a' && letter <= 'z') || (letter >= 'A' && letter <= 'Z'))) {
-                    fail("invalid \\c escape");
+                    fail(RegexError::Kind::eUnsupported, "invalid \\c escape");
                 }
                 ++pos_;
                 return {static_cast<char32_t>(letter % 32), {}};
@@ -500,9 +502,9 @@ class Parser {
                 return {parse_unicode_escape(), {}};
             case 'p':
             case 'P':
-                fail("Unicode property escapes are not supported");
+                fail(RegexError::Kind::eUnsupported, "Unicode property escapes are not supported");
             case 'k':
-                fail("backreferences are not supported");
+                fail(RegexError::Kind::eUnsupported, "backreferences are not supported");
             case 'b':
                 if (in_class) {
                     return {char32_t{'\b'}, {}};
@@ -514,10 +516,12 @@ class Parser {
                 break;
         }
         if (c >= '1' && c <= '9') {
-            fail(in_class ? "octal escapes are not supported" : "backreferences are not supported");
+            fail(RegexError::Kind::eUnsupported,
+                 in_class ? "octal escapes are not supported" : "backreferences are not supported");
         }
         if (is_word_character(c)) {
-            fail("unknown escape \\" + std::string(1, static_cast<char>(c)));
+            fail(RegexError::Kind::eUnsupported,
+                 "unknown escape \\" + std::string(1, static_cast<char>(c)));
         }
         return {c, {}};
     }
@@ -540,7 +544,7 @@ class Parser {
 
     ClassAtom parse_class_atom() {
         if (at_end()) {
-            fail("missing ']'");
+            fail(RegexError::Kind::eInvalid, "missing ']'");
         }
         if (accept('\\')) {
             return parse_escape_atom(true);
@@ -560,7 +564,7 @@ class Parser {
                 auto high = parse_class_atom();
                 if (low.code_point && high.code_point) {
                     if (*low.code_point > *high.code_point) {
-                        fail("range out of order in character class");
+                        fail(RegexError::Kind::eInvalid, "range out of order in character class");
                     }
                     ranges.push_back({*low.code_point, *high.code_point});
                     continue;
@@ -598,7 +602,8 @@ class Compiler {
         // A subtree that emits nothing is visited again for each repetition around it, so the
         // program size alone does not bound this.
         if (++visits_ > g_max_compile_visits) {
-            throw RegexError("regular expression takes too long to compile");
+            throw RegexError(RegexError::Kind::eTooLarge,
+                             "regular expression takes too long to compile");
         }
         const Node& node = nodes_[index];
         switch (node.kind) {
@@ -632,8 +637,9 @@ class Compiler {
 
     std::size_t emit(Instruction instruction) {
         if (program_.size() >= Regex::max_program_size) {
-            throw RegexError("regular expression compiles to more than " +
-                             std::to_string(Regex::max_program_size) + " instructions");
+            throw RegexError(RegexError::Kind::eTooLarge, "regular expression compiles to more than " +
+                                                              std::to_string(Regex::max_program_size) +
+                                                              " instructions");
         }
         program_.push_back(instruction);
         return program_.size() - 1;
@@ -739,6 +745,60 @@ struct RegexProgram {
     bool anchored = false;
 };
 
+namespace {
+
+/// The innermost PatternBudget alive on this thread.
+thread_local PatternBudget* g_active_budget = nullptr;
+
+}  // namespace
+
+RegexError::RegexError(Kind kind, const std::string& message)
+    : std::invalid_argument(message), kind_(kind) {}
+
+PatternBudget::PatternBudget(std::size_t max_instructions) noexcept
+    : instructions_left_(max_instructions), outer_(g_active_budget) {
+    g_active_budget = this;
+}
+
+PatternBudget::~PatternBudget() { g_active_budget = outer_; }
+
+void PatternBudget::charge(std::size_t instructions) {
+    if (instructions > instructions_left_) {
+        throw RegexError(RegexError::Kind::eTooLarge,
+                         "the patterns compile to more instructions in all than the budget allows");
+    }
+    instructions_left_ -= instructions;
+}
+
+void PatternBudget::record(const RegexError& error) {
+    const bool invalid = error.kind() == RegexError::Kind::eInvalid;
+    if (!problem_ || (invalid && problem_->kind() != RegexError::Kind::eInvalid)) {
+        problem_ = error;
+    }
+}
+
+Regex PatternBudget::compile(std::string_view pattern) {
+    auto* budget = g_active_budget;
+    if (budget == nullptr) {
+        return Regex(pattern);
+    }
+    try {
+        return Regex(pattern);
+    } catch (const RegexError& error) {
+        budget->record(error);
+    }
+    // An empty class matches nothing. It is compiled outside the budget, which may be spent.
+    g_active_budget = nullptr;
+    try {
+        Regex nothing("[]");
+        g_active_budget = budget;
+        return nothing;
+    } catch (...) {
+        g_active_budget = budget;
+        throw;
+    }
+}
+
 Regex::Regex(std::string_view pattern) {
     auto program = std::make_shared<RegexProgram>();
     program->pattern = std::string(pattern);
@@ -749,6 +809,13 @@ Regex::Regex(std::string_view pattern) {
     compiler.compile(root);
     compiler.emit({Op::eMatch, 0, 0});
     program->anchored = program->instructions.front().op == Op::eInputStart;
+    if (g_active_budget != nullptr) {
+        std::size_t ranges = 0;
+        for (const auto& ranges_of_class : program->classes) {
+            ranges += ranges_of_class.size();
+        }
+        g_active_budget->charge(program->instructions.size() + ranges);
+    }
     program_ = std::move(program);
 }
 

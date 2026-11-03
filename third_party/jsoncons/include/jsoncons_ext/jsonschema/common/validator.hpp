@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <set>
 #include <unordered_set>
 #include <vector>
 
@@ -54,17 +55,55 @@ namespace jsonschema {
             mcp_detail_jsoncons::optional<Json>& /*patch*/) = 0;
     };
 
+    // Added by mcp-cpp-sdk (scripts/vendor_jsoncons.py): the memory a copy of @p msg takes,
+    // with the messages under it.
+    inline std::size_t message_bytes(const validation_message& msg)
+    {
+        std::size_t bytes = sizeof(validation_message) + msg.keyword().size() + msg.message().size() +
+                            msg.schema_location().string().size();
+        for (const auto& token : msg.instance_location())
+        {
+            bytes += sizeof(std::string) + token.size();
+        }
+        for (const auto& token : msg.eval_path())
+        {
+            bytes += sizeof(std::string) + token.size();
+        }
+        for (const auto& detail : msg.details())
+        {
+            bytes += message_bytes(detail);
+        }
+        return bytes;
+    }
+
     template <typename Json>
     struct collecting_error_listener : public error_reporter<Json>
     {
         std::vector<validation_message> errors;
 
+        collecting_error_listener() = default;
+        collecting_error_listener(const collecting_error_listener&) = delete;
+        collecting_error_listener& operator=(const collecting_error_listener&) = delete;
+
+        ~collecting_error_listener()
+        {
+            evaluation_limits::release_message_bytes(kept_bytes_);
+        }
+
     private:
-        walk_state do_error(const validation_message& msg, 
+        std::size_t kept_bytes_ = 0;
+
+        walk_state do_error(const validation_message& msg,
             mcp_detail_jsoncons::optional<Json>& /*patch*/) final
         {
             evaluation_limits::charge(64 + 8 * msg.details().size());
-            errors.push_back(msg);
+            if (errors.size() < evaluation_limits::max_kept_messages)
+            {
+                const std::size_t bytes = message_bytes(msg);
+                evaluation_limits::keep_message_bytes(bytes);
+                kept_bytes_ += bytes;
+                errors.push_back(msg);
+            }
             return walk_state::advance;
         }
     };
@@ -189,7 +228,7 @@ namespace jsonschema {
     
     struct evaluation_results
     {
-        std::unordered_set<std::string> evaluated_properties;
+        std::set<std::string> evaluated_properties;
         range_collection evaluated_items;
 
         void merge(const evaluation_results& results)
@@ -203,7 +242,7 @@ namespace jsonschema {
                 evaluated_items.insert(index_range);
             }
         }
-        void merge(std::unordered_set<std::string>&& properties)
+        void merge(std::set<std::string>&& properties)
         {
             auto end = std::make_move_iterator(properties.end());
             for (auto it = std::make_move_iterator(properties.begin()); it != end; ++it)
