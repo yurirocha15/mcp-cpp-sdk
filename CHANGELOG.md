@@ -34,9 +34,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 - Middleware also runs for `resources/subscribe`, `resources/unsubscribe` and
   `completion/complete`, so `make_auth_middleware()` guards them too.
-- `GET` on the MCP endpoint answers `405` unless it resumes with `Last-Event-ID`.
-  It used to answer `200` with an empty JSON body, which the specification does
-  not allow; a resume with nothing to replay answers an empty SSE stream.
+- `GET` on the MCP endpoint within a session answers `405` with
+  `Allow: POST, DELETE` unless it resumes with `Last-Event-ID`; a `GET` without
+  a session is answered `400`. It used to answer `200` with an empty JSON body,
+  which the specification does not allow; a resume with nothing to replay
+  answers an empty SSE stream.
 - `BUILD_TESTING`, `BUILD_EXAMPLES` and `BUILD_DOCS` default to `ON` only when
   the SDK is the top-level CMake project. Added with FetchContent or
   `add_subdirectory`, the SDK no longer builds its tests and examples or needs
