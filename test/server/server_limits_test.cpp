@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -29,6 +30,9 @@ mcp::Task<void> wait_until(std::function<bool()> condition) {
     while (!condition() && std::chrono::steady_clock::now() < give_up) {
         boost::asio::steady_timer timer(executor, std::chrono::milliseconds(1));
         co_await timer.async_wait(boost::asio::use_awaitable);
+    }
+    if (!condition()) {
+        ADD_FAILURE() << "gave up waiting";
     }
 }
 
@@ -77,7 +81,12 @@ class ServerLimitsTest : public ::testing::Test {
         boost::asio::co_spawn(
             io_,
             [this, exchange = std::move(exchange)]() -> mcp::Task<void> {
-                co_await exchange();
+                // A failed exchange still ends the session, or the test would never return.
+                try {
+                    co_await exchange();
+                } catch (const std::exception& error) {
+                    ADD_FAILURE() << error.what();
+                }
                 transport_->close();
             },
             boost::asio::detached);
@@ -146,7 +155,9 @@ TEST_F(ServerLimitsTest, AnswerFromTheClientIsReadAtTheLimit) {
         co_await wait_until([this] { return answer_to(1) != nullptr; });
     });
     ASSERT_NE(answer_to(1), nullptr);
-    EXPECT_TRUE(answer_to(1)->contains("result")) << *answer_to(1);
+    // A handler that failed is answered with a result too, marked isError.
+    EXPECT_EQ((*answer_to(1))["result"]["structuredContent"], (json{{"roots", json::array()}}))
+        << *answer_to(1);
 }
 
 TEST_F(ServerLimitsTest, ClientThatNeverAnswersFailsTheHandlerAtTheTimeout) {
@@ -158,6 +169,94 @@ TEST_F(ServerLimitsTest, ClientThatNeverAnswersFailsTheHandlerAtTheTimeout) {
     });
     ASSERT_NE(answer_to(1), nullptr);
     EXPECT_NE(answer_to(1)->dump().find("did not answer in time"), std::string::npos) << *answer_to(1);
+    // The client is told the server no longer wants the answer.
+    const auto asked = std::find_if(written_.begin(), written_.end(), [](const json& message) {
+        return message.value("method", "") == "roots/list";
+    });
+    ASSERT_NE(asked, written_.end());
+    const auto told = std::find_if(written_.begin(), written_.end(), [&asked](const json& message) {
+        return message.value("method", "") == "notifications/cancelled" &&
+               message["params"]["requestId"] == (*asked)["id"];
+    });
+    EXPECT_NE(told, written_.end());
+}
+
+// A cancel read before the handler asks the client has no wait to end yet; the ask must not go out.
+TEST_F(ServerLimitsTest, CancelReadBeforeTheHandlerAsksEndsItsAsk) {
+    std::string failure;
+    server_->add_tool<json, json>("ask-later", "Asks the client once released",
+                                  json{{"type", "object"}},
+                                  [&](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                      running_.fetch_add(1);
+                                      co_await wait_until([this] { return release_.load(); });
+                                      try {
+                                          co_await ctx.request_roots();
+                                      } catch (const std::exception& error) {
+                                          failure = error.what();
+                                      }
+                                      co_return json::object();
+                                  });
+    run([&]() -> mcp::Task<void> {
+        co_await initialized();
+        transport_->enqueue_message(call(1, "ask-later").dump());
+        co_await wait_until([this] { return running_.load() == 1; });
+        transport_->enqueue_message(json{
+            {"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 1}}}}
+                                        .dump());
+        // Answered after the cancel was read: both are dispatched in order on the session strand.
+        transport_->enqueue_message(json{{"jsonrpc", "2.0"}, {"id", "p"}, {"method", "ping"}}.dump());
+        co_await wait_until([this] { return answer_to("p") != nullptr; });
+        release_.store(true);
+        co_await wait_until([&failure] { return !failure.empty(); });
+    });
+    EXPECT_NE(failure.find("cancelled"), std::string::npos) << failure;
+    for (const auto& message : written_) {
+        EXPECT_NE(message.value("method", ""), "roots/list") << message;
+    }
+}
+
+// An error the server cannot decode still answers its request, which fails at once.
+TEST_F(ServerLimitsTest, MalformedErrorFromTheClientFailsTheHandler) {
+    std::vector<json> errors = {"boom", json{{"code", "-32000"}, {"message", "m"}},
+                                json{{"message", "m"}}, json{{"code", -32000}, {"message", 5}}};
+    std::vector<std::string> failures;
+    server_->add_tool<json, json>("ask-through-context", "Asks the client", json{{"type", "object"}},
+                                  [&](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                      try {
+                                          co_await ctx.request_roots();
+                                          failures.emplace_back("answered");
+                                      } catch (const std::exception& error) {
+                                          failures.emplace_back(error.what());
+                                      }
+                                      co_return json::object();
+                                  });
+    run([&]() -> mcp::Task<void> {
+        co_await initialized();
+        for (std::size_t i = 0; i < errors.size(); ++i) {
+            const auto asked_before =
+                std::count_if(written_.begin(), written_.end(),
+                              [](const json& m) { return m.value("method", "") == "roots/list"; });
+            transport_->enqueue_message(
+                json{{"jsonrpc", "2.0"},
+                     {"id", static_cast<int>(i) + 10},
+                     {"method", "tools/call"},
+                     {"params", {{"name", "ask-through-context"}, {"arguments", json::object()}}}}
+                    .dump());
+            co_await wait_until([this, asked_before] {
+                return std::count_if(written_.begin(), written_.end(), [](const json& m) {
+                           return m.value("method", "") == "roots/list";
+                       }) > asked_before;
+            });
+            const auto reverse_id = written_.back().at("id");
+            transport_->enqueue_message(
+                json{{"jsonrpc", "2.0"}, {"id", reverse_id}, {"error", errors[i]}}.dump());
+            co_await wait_until([&failures, i] { return failures.size() == i + 1; });
+        }
+    });
+    ASSERT_EQ(failures.size(), errors.size());
+    for (const auto& failure : failures) {
+        EXPECT_NE(failure.find("Malformed"), std::string::npos) << failure;
+    }
 }
 
 TEST_F(ServerLimitsTest, CancellingAHandlerEndsItsWaitForTheClient) {

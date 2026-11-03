@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -213,6 +214,8 @@ struct Error {
 
 namespace detail {
 
+/// Whether @p value is a number that is not an integer in the range of int. JSON does not tell
+/// -32601 from -32601.0, so a float with no fraction counts as an integer.
 [[nodiscard]] inline bool is_number_outside_int(const nlohmann::json& value) {
     if (value.is_number_unsigned()) {
         return value.get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<int>::max());
@@ -221,7 +224,13 @@ namespace detail {
         const auto number = value.get<std::int64_t>();
         return number < std::numeric_limits<int>::min() || number > std::numeric_limits<int>::max();
     }
-    return value.is_number();
+    if (value.is_number_float()) {
+        const auto number = value.get<double>();
+        return !(number >= static_cast<double>(std::numeric_limits<int>::min()) &&
+                 number <= static_cast<double>(std::numeric_limits<int>::max()) &&
+                 number == std::trunc(number));
+    }
+    return false;
 }
 
 }  // namespace detail

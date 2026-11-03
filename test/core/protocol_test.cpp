@@ -2728,6 +2728,8 @@ TEST(ProtocolError, ACodeThatIsNoIntOfThisSizeDecodesToInternalError) {
     EXPECT_EQ(decode(18446744073709551615ULL).code, mcp::g_INTERNAL_ERROR);
     EXPECT_EQ(decode(1e308).message, "m");
     EXPECT_EQ(decode(-32601).code, -32601);
+    EXPECT_EQ(decode(-32601.0).code, -32601);
+    EXPECT_EQ(decode(-1.5).code, mcp::g_INTERNAL_ERROR);
     EXPECT_EQ(decode(7).code, 7);
     EXPECT_THROW((void)decode("x"), nlohmann::json::exception);
 }

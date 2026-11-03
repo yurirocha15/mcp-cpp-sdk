@@ -82,6 +82,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - A request the server sent fails in its handler after ten minutes
   (`Server::set_reverse_request_timeout()`), and at once when the `tools/call`
   it belongs to is cancelled, instead of holding the handler for the session.
+  A cancel that arrives before the handler asks stops the request from being
+  sent. The client is sent `notifications/cancelled` for a request the server
+  gave up on.
 - `StreamableHttpSessionManager` holds at most 10,000 sessions and ends a session
   idle for five minutes (`set_session_limits()`), and keeps no session for a
   failed initialize. An SSE replay store keeps at most 32 MiB.
@@ -116,8 +119,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   transport, not only on `HttpServerTransport`.
 - A result that cannot be encoded as JSON is answered with a plain message
   instead of the JSON library's exception text.
-- An error `code` that does not fit an `int` decodes to `-32603`; converting it
-  was undefined behaviour.
+- An error `code` that is not an integer in the range of `int` decodes to
+  `-32603`; converting it was undefined behaviour. A float with no fraction,
+  such as `-32601.0`, decodes to that integer. An error object that cannot be
+  decoded at all still answers the server's request it names, which fails
+  instead of waiting for its timeout.
 
 - With `BUILD_DOCS=ON` and Doxygen installed, configuring a project that adds
   the SDK as a subproject failed: the SDK looked for `docs/Doxyfile.in` in the

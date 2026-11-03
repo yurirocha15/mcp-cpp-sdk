@@ -538,16 +538,9 @@ bool is_valid_response_envelope(const nlohmann::json& message) {
         return false;
     }
 
-    if (!has_error_member(message)) {
-        return true;
-    }
-
-    try {
-        static_cast<void>(message.at("error").get<Error>());
-        return true;
-    } catch (const std::exception&) {
-        return false;
-    }
+    // An error that cannot be decoded still answers the request it names: dispatch_response
+    // fails that request instead of leaving its handler waiting.
+    return true;
 }
 
 std::string make_invalid_request_wire(const nlohmann::json& message, std::string_view reason) {
@@ -953,6 +946,11 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
     if (session->stopping.load(std::memory_order_acquire)) {
         throw std::runtime_error("server session is closing");
     }
+    // A cancel that came before the handler asked has nothing to wake, so it is checked here.
+    if (cancelled && cancelled->load(std::memory_order_relaxed)) {
+        throw std::runtime_error("JSON-RPC error " + std::to_string(g_REQUEST_CANCELLED) +
+                                 ": The request was cancelled");
+    }
 
     auto timer = std::make_shared<boost::asio::steady_timer>(*session->strand);
     timer->expires_after(timeout);
@@ -1009,6 +1007,25 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
     auto json_result = std::move(it->second.result);
     auto error = std::move(it->second.error);
     session->pending_requests.erase(it);
+
+    if (error && (error->code == g_REQUEST_CANCELLED || error->code == g_REQUEST_TIMEOUT)) {
+        // The server gave up on its request, so the client can stop working on it.
+        std::string notice;
+        {
+            CancelledNotificationParams params;
+            params.requestId = RequestId{std::to_string(id)};
+            params.reason = error->message;
+            JSONRPCNotification notification;
+            notification.method = "notifications/cancelled";
+            notification.params = nlohmann::json(std::move(params));
+            notice = nlohmann::json(std::move(notification)).dump();
+        }
+        try {
+            co_await session->writer->write_message(notice);
+        } catch (const std::exception&) {
+            // The session may be ending; the request is over either way.
+        }
+    }
 
     if (error) {
         // Same defect as the peer-controlled text in the client's McpError, opposite direction:
@@ -1448,7 +1465,13 @@ void Server::Impl::dispatch_response(const nlohmann::json& json_msg) {
     }
 
     if (has_error_member(json_msg)) {
-        it->second.error = json_msg.at("error").get<Error>();
+        try {
+            it->second.error = json_msg.at("error").get<Error>();
+        } catch (const std::exception&) {
+            // Still an answer: the request failed, and the handler must not wait on.
+            it->second.error =
+                Error{g_INVALID_REQUEST, "Malformed JSON-RPC error object", std::nullopt};
+        }
     } else if (json_msg.contains("result")) {
         it->second.result = json_msg.at("result");
     }
