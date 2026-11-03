@@ -303,6 +303,82 @@ TEST_F(HttpResumabilityTest, GetWithLastEventIdReplaysEvents) {
     EXPECT_NE(replay_body.find("\"result\":\"second\""), std::string::npos);
 }
 
+// A replay holds its own copy of the events until it is read, so it counts against what requests may
+// hold; slow readers cannot each take a copy of the whole store.
+TEST_F(HttpResumabilityTest, ReplayCountsAgainstTheRequestBudget) {
+    mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 0, 100);
+    server_transport.set_connection_limits({0, std::chrono::seconds(30), 4096, 256 * 1024});
+    asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
+
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            auto init_json = nlohmann::json::parse(co_await server_transport.read_message());
+            nlohmann::json init_response = {
+                {"jsonrpc", "2.0"},
+                {"result",
+                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                  {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
+                  {"capabilities", {}}}},
+                {"id", init_json.at("id")}};
+            co_await server_transport.write_message(init_response.dump());
+            for (int i = 0; i < 2; ++i) {
+                auto request = nlohmann::json::parse(co_await server_transport.read_message());
+                nlohmann::json response = {
+                    {"jsonrpc", "2.0"}, {"result", std::string(100000, 'r')}, {"id", request.at("id")}};
+                co_await server_transport.write_message(response.dump());
+            }
+        },
+        asio::detached);
+
+    unsigned int replay_status = 0;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const auto url = "http://127.0.0.1:" + std::to_string(server_transport.port()) + "/mcp";
+            mcp::HttpClientTransport client_transport(io_ctx_.get_executor(), url);
+            nlohmann::json init_request = {
+                {"jsonrpc", "2.0"},
+                {"method", "initialize"},
+                {"params",
+                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                  {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
+                  {"capabilities", {}}}},
+                {"id", 1}};
+            co_await client_transport.write_message(init_request.dump());
+            co_await client_transport.read_message();
+            for (int id = 2; id <= 3; ++id) {
+                nlohmann::json request = {{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", id}};
+                co_await client_transport.write_message(request.dump());
+                co_await client_transport.read_message();
+            }
+
+            beast::tcp_stream stream(io_ctx_.get_executor());
+            co_await stream.async_connect(
+                asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), server_transport.port()),
+                asio::use_awaitable);
+            http::request<http::empty_body> get_request{http::verb::get, "/mcp", 11};
+            get_request.set(http::field::host, "127.0.0.1");
+            get_request.set(http::field::accept, "text/event-stream");
+            get_request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+            get_request.set("MCP-Session-Id", client_transport.session_id());
+            get_request.set("Last-Event-ID", "1");
+            co_await http::async_write(stream, get_request, asio::use_awaitable);
+            beast::flat_buffer response_buffer;
+            http::response<http::string_body> response;
+            co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
+            replay_status = response.result_int();
+
+            client_transport.close();
+            server_transport.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(replay_status, 503u);
+}
+
 TEST_F(HttpResumabilityTest, GetWithEvictedEventIdReturns410) {
     mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18093, 2);
 

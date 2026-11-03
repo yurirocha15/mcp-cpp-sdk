@@ -95,7 +95,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   longer read. They close a connection that takes more than 60 seconds to send
   a request, accept connections up to three quarters of the descriptor limit,
   and handle at most 4096 requests holding at most 1 GiB at once across all
-  sessions (`set_connection_limits()`).
+  sessions (`set_connection_limits()`). A replay of missed events on a GET
+  counts against that memory until it is written, so slow readers can no
+  longer each hold a copy of the whole replay store.
 - `StreamableHttpSessionManager` holds at most 10,000 sessions and ends a session
   idle for five minutes (`set_session_limits()`), and keeps no session for a
   failed initialize. An SSE replay store keeps at most 32 MiB.

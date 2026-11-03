@@ -689,7 +689,7 @@ struct HttpServerTransport::Impl {
         co_return make_json_response(request, http::status::ok, "{}");
     }
 
-    Task<StringResponse> handle_get(const StringRequest& request) {
+    Task<StringResponse> handle_get(const StringRequest& request, detail::BudgetLease& bytes) {
         const nlohmann::json request_json = {"method", "get"};
         if (auto error = check_protocol_version(request, request_json)) {
             co_return std::move(*error);
@@ -712,6 +712,16 @@ struct HttpServerTransport::Impl {
             if (!missed_events.has_value()) {
                 co_return make_error_response(request, http::status::gone,
                                               "Event ID has been evicted from store");
+            }
+            // Each replay holds its own copy of the events until the client has read it, so the
+            // copies count against what requests may hold.
+            std::size_t replay_bytes = 0;
+            for (const auto& [id, data] : *missed_events) {
+                replay_bytes += 2 * (id.size() + data.size());
+            }
+            if (!bytes.grow_to(replay_bytes)) {
+                co_return make_error_response(request, http::status::service_unavailable,
+                                              "Server busy");
             }
             // An empty stream is an answer here too: the client asked to resume one.
             co_return make_sse_replay_response(request, *missed_events);
@@ -768,7 +778,7 @@ struct HttpServerTransport::Impl {
             co_return co_await handle_post(request, bytes);
         }
         if (request.method() == http::verb::get) {
-            co_return co_await handle_get(request);
+            co_return co_await handle_get(request, bytes);
         }
         if (request.method() == http::verb::delete_) {
             co_return co_await handle_delete(request);

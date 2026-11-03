@@ -670,7 +670,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         if (request.method() == http::verb::get) {
-            co_return co_await handle_get(request);
+            co_return co_await handle_get(request, bytes);
         }
 
         if (request.method() == http::verb::delete_) {
@@ -1001,7 +1001,7 @@ struct StreamableHttpSessionManager::Impl {
         co_return detail_session_mgr::make_json_response(request, http::status::ok, "{}");
     }
 
-    Task<StringResponse> handle_get(const StringRequest& request) {
+    Task<StringResponse> handle_get(const StringRequest& request, detail::BudgetLease& bytes) {
         const auto session_header_it = request.find("Mcp-Session-Id");
         if (session_header_it == request.end()) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
@@ -1034,6 +1034,16 @@ struct StreamableHttpSessionManager::Impl {
             if (!missed_events.has_value()) {
                 co_return detail_session_mgr::make_error_response(
                     request, http::status::gone, "Event ID has been evicted from store");
+            }
+            // Each replay holds its own copy of the events until the client has read it, so the
+            // copies count against what requests may hold.
+            std::size_t replay_bytes = 0;
+            for (const auto& [id, data] : *missed_events) {
+                replay_bytes += 2 * (id.size() + data.size());
+            }
+            if (!bytes.grow_to(replay_bytes)) {
+                co_return detail_session_mgr::make_error_response(
+                    request, http::status::service_unavailable, "Server busy");
             }
             // An empty stream is an answer here too: the client asked to resume one.
             co_return detail_session_mgr::make_sse_response(request, *missed_events);

@@ -127,7 +127,7 @@ using RefuseBeforeBody = std::function<Task<std::optional<StringResponse>>(const
 
 /// Reads one request into @p parser within @p limits. The headers are read first and given to
 /// @p refuse_before_body, so a request that is refused never has its body read or held; then the
-/// body is charged to @p bytes by its declared length, or by @p body_limit when it declares none.
+/// body is charged to @p bytes by its declared length, or by @p body_limit when it is chunked.
 /// Returns false when the connection is to end, after writing whatever answer is due.
 inline Task<bool> read_request_within_limits(
     boost::beast::tcp_stream& stream, boost::beast::flat_buffer& buffer,
@@ -168,10 +168,15 @@ inline Task<bool> read_request_within_limits(
         co_await write_final_response(stream, std::move(*refusal));
         co_return false;
     }
+    // Without a Content-Length a request has a body only when it is chunked, and then its length
+    // is known only once read.
     const auto declared = parser.content_length();
-    const std::size_t body_bytes =
-        declared ? static_cast<std::size_t>(std::min<std::uint64_t>(*declared, body_limit))
-                 : body_limit;
+    std::size_t body_bytes = 0;
+    if (declared) {
+        body_bytes = static_cast<std::size_t>(std::min<std::uint64_t>(*declared, body_limit));
+    } else if (parser.chunked()) {
+        body_bytes = body_limit;
+    }
     if (!bytes.grow_to(body_bytes)) {
         stream.expires_never();
         // Named: GCC 11 mishandles a temporary in a co_await operand.
