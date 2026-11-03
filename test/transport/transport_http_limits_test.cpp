@@ -526,6 +526,37 @@ TEST_F(ReverseBindingTest, ClientThatLeftIdleLetsTheNextOneIn) {
     EXPECT_NE(second.session_id, first.session_id);
 }
 
+// The session of a client that left idle and was taken over is gone, so its id is not found, as
+// for a session that ended: a client then starts a new session instead of failing.
+TEST_F(ReverseBindingTest, SessionTakenOverIsNotFoundForItsOldClient) {
+    transport_->set_session_idle_timeout(std::chrono::milliseconds(20));
+    Reply post_reply;
+    std::string get_reply;
+    std::string delete_reply;
+    run([&]() -> mcp::Task<void> {
+        const auto first = co_await post(make_initialize_request("first"));
+        const auto version = json::parse(first.body)["result"]["protocolVersion"].get<std::string>();
+        co_await pause(std::chrono::milliseconds(40));
+        const auto second = co_await post(make_initialize_request("second"));
+        EXPECT_EQ(second.status, 200u) << second.body;
+        const Headers old_session{{"MCP-Session-Id", first.session_id.value_or("")},
+                                  {"MCP-Protocol-Version", version}};
+        post_reply = co_await post(ping(), old_session);
+        const auto request_line = [&](const char* method) {
+            return std::string(method) + " /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nMCP-Session-Id: " +
+                   first.session_id.value_or("") + "\r\nMCP-Protocol-Version: " + version +
+                   "\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n";
+        };
+        get_reply = co_await raw_exchange(io_.get_executor(), transport_->port(), request_line("GET"),
+                                          std::chrono::seconds(20));
+        delete_reply = co_await raw_exchange(io_.get_executor(), transport_->port(),
+                                             request_line("DELETE"), std::chrono::seconds(20));
+    });
+    EXPECT_EQ(post_reply.status, 404u) << post_reply.body;
+    EXPECT_EQ(get_reply.rfind("HTTP/1.1 404", 0), 0u) << get_reply;
+    EXPECT_EQ(delete_reply.rfind("HTTP/1.1 404", 0), 0u) << delete_reply;
+}
+
 TEST_F(ReverseBindingTest, RequestIdBeyondInt64IsRefused) {
     Reply refused;
     run([&]() -> mcp::Task<void> {

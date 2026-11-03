@@ -110,7 +110,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   failed initialize. An SSE replay store keeps at most 32 MiB.
 - On `HttpServerTransport`, an initialize now ends a session idle for five
   minutes (`set_session_idle_timeout()`), so a client that left without a
-  DELETE does not keep the next one out.
+  DELETE does not keep the next one out. A request naming a session the
+  transport does not hold, such as one ended this way, is answered `404`,
+  as for a session that ended, so the client starts a new session.
 - An answer to a server request is accepted only from the session it was sent
   in, and an answer needs an established session.
 - Both HTTP accept loops stopped when the process ran out of file

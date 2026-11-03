@@ -77,7 +77,15 @@ struct HttpServerTransport::Impl {
     struct SessionCheckResult {
         bool ok{false};
         std::string error_message;
+        http::status status{http::status::bad_request};
     };
+
+    /// A request naming a session this transport does not hold: one that ended, was taken over by
+    /// another client's initialize, or never existed. Like a terminated session, it is not found,
+    /// so a client starts a new one.
+    static SessionCheckResult session_not_found() {
+        return SessionCheckResult{false, "Session not found", http::status::not_found};
+    }
 
     Impl(const boost::asio::any_io_executor& executor, std::string host, unsigned short port,
          std::size_t event_store_capacity)
@@ -284,7 +292,7 @@ struct HttpServerTransport::Impl {
                 co_return SessionCheckResult{false, "Session active"};
             }
             if (session_header_it->value() != *session_id) {
-                co_return SessionCheckResult{false, "Invalid MCP-Session-Id header"};
+                co_return session_not_found();
             }
             session_last_used = std::chrono::steady_clock::now();
             co_return SessionCheckResult{true, {}};
@@ -295,7 +303,7 @@ struct HttpServerTransport::Impl {
         }
 
         if (session_header_present) {
-            co_return SessionCheckResult{false, "Session not established"};
+            co_return session_not_found();
         }
 
         co_return SessionCheckResult{true, {}};
@@ -312,7 +320,7 @@ struct HttpServerTransport::Impl {
         }
 
         if (session_header_it->value() != *session_id) {
-            co_return SessionCheckResult{false, "Invalid MCP-Session-Id header"};
+            co_return session_not_found();
         }
 
         co_return SessionCheckResult{true, {}};
@@ -547,7 +555,7 @@ struct HttpServerTransport::Impl {
             }
             const auto session_check = co_await validate_post_session(request);
             if (!session_check.ok) {
-                co_return make_error_response(request, http::status::bad_request,
+                co_return make_error_response(request, session_check.status,
                                               session_check.error_message);
             }
         }
@@ -681,8 +689,7 @@ struct HttpServerTransport::Impl {
 
         const auto session_check = co_await validate_delete_session(request);
         if (!session_check.ok) {
-            co_return make_error_response(request, http::status::bad_request,
-                                          session_check.error_message);
+            co_return make_error_response(request, session_check.status, session_check.error_message);
         }
 
         co_await terminate_session();
@@ -695,14 +702,15 @@ struct HttpServerTransport::Impl {
             co_return std::move(*error);
         }
 
-        if (!session_id.has_value()) {
-            co_return make_error_response(request, http::status::bad_request, "No active session");
-        }
-
         const auto session_header_it = request.find("MCP-Session-Id");
-        if (session_header_it == request.end() || session_header_it->value() != *session_id) {
-            co_return make_error_response(request, http::status::bad_request,
-                                          "Invalid MCP-Session-Id header");
+        if (session_header_it == request.end()) {
+            co_return make_error_response(
+                request, http::status::bad_request,
+                session_id.has_value() ? "Missing MCP-Session-Id header" : "No active session");
+        }
+        if (!session_id.has_value() || session_header_it->value() != *session_id) {
+            const auto not_found = session_not_found();
+            co_return make_error_response(request, not_found.status, not_found.error_message);
         }
 
         const auto last_event_id_it = request.find("Last-Event-ID");

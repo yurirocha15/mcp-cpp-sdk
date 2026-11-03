@@ -1477,9 +1477,8 @@ TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
 
     EXPECT_FALSE(timed_out);
     EXPECT_FALSE(discover_reached_server);
-    EXPECT_EQ(discover_status, http::status::bad_request) << "body: " << discover_body;
-    EXPECT_NE(discover_body.find("Invalid MCP-Session-Id header"), std::string::npos)
-        << "body: " << discover_body;
+    EXPECT_EQ(discover_status, http::status::not_found) << "body: " << discover_body;
+    EXPECT_NE(discover_body.find("Session not found"), std::string::npos) << "body: " << discover_body;
 }
 
 TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsStillRejected) {
