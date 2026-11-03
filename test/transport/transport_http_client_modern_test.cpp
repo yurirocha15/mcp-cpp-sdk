@@ -248,7 +248,13 @@ class RawServer {
                     }
                 }
                 if (!reply.stream.empty()) {
-                    co_await stream_reply(self, socket, std::move(reply));
+                    try {
+                        co_await stream_reply(self, socket, std::move(reply));
+                    } catch (const std::exception&) {
+                        // A write failed: the client left before the watcher noticed.
+                        ++self->streams_abandoned;
+                        co_return;
+                    }
                 } else {
                     auto text = std::make_shared<std::string>(head(reply, false) + reply.body);
                     co_await asio::async_write(*socket, asio::buffer(*text), asio::use_awaitable);
