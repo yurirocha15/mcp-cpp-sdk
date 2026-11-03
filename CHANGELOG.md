@@ -74,11 +74,16 @@ Versioning; a `0.x` version is a stable release unless its version has an
 ### Fixed
 
 - A session runs at
-  most 1024 requests, or 256 MiB of them on a transport that hands over text
-  (`Server::set_max_in_flight_requests()`); a request past that is answered with
-  `-32603`, and reading stops while the peer takes no answers. A `Client` stops
-  reading while it answers 1024 requests of the server. A session holds at most
-  4096 resource subscriptions.
+  most 1024 requests (`Server::set_max_in_flight_requests()`), and its running
+  requests and the answers the peer has not taken yet may hold at most 256 MiB
+  (`Server::set_max_in_flight_bytes()`). A request counts as its parsed JSON
+  takes memory, which for an array of empty objects is about 27 times its text.
+  A request past either limit is answered with `-32603`, and reading stops
+  while the peer takes no answers. A `Client` stops reading while it answers
+  1024 requests of the server or they hold 256 MiB
+  (`ClientOptions::max_incoming_request_bytes`). A session holds at most 4096
+  resource subscriptions, with at most 8 MiB of URIs together; those of an
+  ended HTTP session no longer count against the next one.
 - A request the server sent fails in its handler after ten minutes
   (`Server::set_reverse_request_timeout()`), and at once when the `tools/call`
   it belongs to is cancelled, instead of holding the handler for the session.

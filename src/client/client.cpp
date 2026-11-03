@@ -297,7 +297,10 @@ struct Client::Impl {
                 dispatch_message(state, raw);
                 // The server's requests run in the background, and each holds memory until its
                 // answer is written. Reading stops here until they are fewer.
-                while (state->incoming_requests >= g_max_incoming_requests &&
+                while ((state->incoming_requests >= g_max_incoming_requests ||
+                        state->incoming_request_bytes + state->writer.queued_bytes() >=
+                            state->options.max_incoming_request_bytes) &&
+                       state->incoming_requests != 0 &&
                        !state->closed.load(std::memory_order_acquire)) {
                     state->incoming_requests_wake.expires_at(
                         std::chrono::steady_clock::time_point::max());
@@ -360,11 +363,14 @@ struct Client::Impl {
                                    "JSON-RPC request id must be a string or an integer within "
                                    "int64_t");
                 }
+                const auto cost = detail::json_memory_cost(json_message);
                 ++state->incoming_requests;
+                state->incoming_request_bytes += cost;
                 boost::asio::co_spawn(state->strand,
                                       dispatch_incoming_request(state, std::move(json_message)),
-                                      [state](const std::exception_ptr&) {
+                                      [state, cost](const std::exception_ptr&) {
                                           --state->incoming_requests;
+                                          state->incoming_request_bytes -= cost;
                                           state->incoming_requests_wake.cancel();
                                       });
             } else if (!has_id && has_method) {
@@ -593,6 +599,8 @@ struct Client::Impl {
     boost::asio::strand<boost::asio::any_io_executor> strand;
     /// How many requests of the server are being answered. Touched on the strand only.
     std::size_t incoming_requests{0};
+    /// Memory those requests take, as json_memory_cost() estimates it. Touched on the strand only.
+    std::size_t incoming_request_bytes{0};
     boost::asio::steady_timer incoming_requests_wake{strand};
     ClientOptions options;
     detail::SerializedTransportWriter writer;
@@ -699,6 +707,9 @@ Client::Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_
     }
     if (options.request_timeout <= std::chrono::milliseconds::zero()) {
         throw std::invalid_argument("Client request timeout must be positive");
+    }
+    if (options.max_incoming_request_bytes == 0) {
+        throw std::invalid_argument("Client incoming request memory limit must be positive");
     }
     impl_ = std::make_shared<Impl>(std::move(transport), executor, std::move(options));
 }

@@ -376,13 +376,28 @@ class MCP_API Server {
      *
      * @details A request past the limit is answered with an error instead of being queued, so a
      * peer that sends requests faster than they finish cannot grow the process without bound. The
-     * same answer goes to a request that would take the bytes of the requests running past
-     * 256 MiB, on a transport that reports them.
+     * same answer goes to a request past the memory limit, set_max_in_flight_bytes().
      *
      * @param limit The limit, at least 1. The default is 1024.
      * @throws std::invalid_argument If @p limit is 0.
      */
     void set_max_in_flight_requests(std::size_t limit);
+
+    /**
+     * @brief Set how much memory the requests of one session that are running, and their answers
+     * that are not written yet, may take.
+     *
+     * @details A request is counted as its parsed JSON takes memory, which can be far more than its
+     * text: an array of empty objects takes about 27 times its length. An answer is counted by its
+     * length until the peer has taken it, so a peer that stops reading stops the session from
+     * reading more requests. A request that would go past the limit is answered with an error, as
+     * one past set_max_in_flight_requests() is. The handlers' own copies of a request are not
+     * counted.
+     *
+     * @param bytes The limit, at least 1. The default is 256 MiB.
+     * @throws std::invalid_argument If @p bytes is 0.
+     */
+    void set_max_in_flight_bytes(std::size_t bytes);
 
     /**
      * @brief Set how long a request the server sends the client may wait for its answer.

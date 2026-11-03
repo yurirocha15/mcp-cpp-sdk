@@ -165,10 +165,11 @@ struct UriTemplatePattern {
 // times the templates' size, so the length is bounded to keep one resources/read cheap whatever a
 // client sends. Real resource identifiers sit far below this.
 constexpr std::size_t g_MAX_TEMPLATE_MATCH_URI_LENGTH = 512;
-/// Bytes of requests one session may have running together.
-constexpr std::size_t g_max_in_flight_bytes = 256U * 1024U * 1024U;
-/// Resources one session may subscribe to.
+/// The default of Server::set_max_in_flight_bytes().
+constexpr std::size_t g_default_max_in_flight_bytes = 256U * 1024U * 1024U;
+/// Resources one session may subscribe to, and the bytes of their URIs together.
 constexpr std::size_t g_max_subscriptions = 4096;
+constexpr std::size_t g_max_subscription_bytes = 8U * 1024U * 1024U;
 
 /// Does `uri` match the automaton `states` from start to end? Every state the input can be in is
 /// followed at once, as in Thompson's construction, so the work is linear in the URI's length and
@@ -585,6 +586,8 @@ struct Server::Session {
     /// Subscribed URI to the session_epoch() it was made in. A subscription from a session the
     /// client has since ended delivers nothing.
     std::map<std::string, std::uint64_t> subscriptions;
+    /// Bytes of the URIs in `subscriptions`.
+    std::size_t subscription_bytes{0};
     std::shared_ptr<boost::asio::steady_timer> drain_timer;
     std::atomic_size_t active_dispatches{0};
     /// The size of the messages being dispatched, on transports that hand over text.
@@ -660,6 +663,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::atomic<LoggingLevel> log_level{g_default_log_level};
     std::size_t page_size{0};
     std::atomic_size_t max_in_flight_requests{1024};
+    std::atomic_size_t max_in_flight_bytes{g_default_max_in_flight_bytes};
     std::atomic<std::chrono::milliseconds::rep> reverse_request_timeout_ms{
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::minutes(10)).count()};
 
@@ -845,6 +849,13 @@ ToolValidationStats Server::tool_validation_stats() const {
 }
 
 void Server::set_page_size(std::size_t size) { impl_->page_size = size; }
+
+void Server::set_max_in_flight_bytes(std::size_t bytes) {
+    if (bytes == 0) {
+        throw std::invalid_argument("The in-flight memory limit must be at least 1 byte");
+    }
+    impl_->max_in_flight_bytes.store(bytes, std::memory_order_relaxed);
+}
 
 void Server::set_max_in_flight_requests(std::size_t limit) {
     if (limit == 0) {
@@ -1107,7 +1118,6 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
                     auto raw = co_await session->transport->read_message();
                     json_msg = detail::parse_peer_json(raw);
                     parse_failed = json_msg.is_discarded();
-                    message_bytes = raw.size();
                 }
             } catch (const nlohmann::json::parse_error&) {
                 parse_failed = true;
@@ -1116,6 +1126,7 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
                 co_await session->writer->write_message(make_parse_error_wire());
                 continue;
             }
+            message_bytes = detail::json_memory_cost(json_msg);
             // Past the limit nothing is left running in the background, so reading stops when the
             // peer stops taking answers. Answers to the server's own requests still get through.
             if (session_is_full(*session, message_bytes)) {
@@ -1202,8 +1213,9 @@ Task<void> Server::Impl::wait_for_dispatches(Session& session) {
 bool Server::Impl::session_is_full(const Session& session, std::size_t message_bytes) const {
     return session.active_dispatches.load(std::memory_order_relaxed) >=
                max_in_flight_requests.load(std::memory_order_relaxed) ||
-           session.active_dispatch_bytes.load(std::memory_order_relaxed) + message_bytes >
-               g_max_in_flight_bytes;
+           session.active_dispatch_bytes.load(std::memory_order_relaxed) +
+                   session.writer->queued_bytes() + message_bytes >
+               max_in_flight_bytes.load(std::memory_order_relaxed);
 }
 
 bool Server::Impl::is_identified_request(const nlohmann::json& json_msg) {
@@ -1795,9 +1807,28 @@ Task<std::string> Server::Impl::handle_subscribe_wire(const nlohmann::json& json
         [this, uri = std::move(params.uri)](Context&, const nlohmann::json&) -> Task<nlohmann::json> {
             auto session = session_snapshot();
             if (session) {
-                if (session->subscriptions.size() >= g_max_subscriptions &&
-                    !session->subscriptions.contains(uri)) {
-                    throw InvalidParamsError("Too many resource subscriptions");
+                if (!session->subscriptions.contains(uri)) {
+                    const auto epoch = Impl::session_epoch(*session);
+                    const auto full = [&session, &uri] {
+                        return session->subscriptions.size() >= g_max_subscriptions ||
+                               session->subscription_bytes + uri.size() > g_max_subscription_bytes;
+                    };
+                    if (full()) {
+                        // Subscriptions of a session that ended are only dropped lazily.
+                        for (auto it = session->subscriptions.begin();
+                             it != session->subscriptions.end();) {
+                            if (it->second != epoch) {
+                                session->subscription_bytes -= it->first.size();
+                                it = session->subscriptions.erase(it);
+                            } else {
+                                ++it;
+                            }
+                        }
+                    }
+                    if (full()) {
+                        throw InvalidParamsError("Too many resource subscriptions");
+                    }
+                    session->subscription_bytes += uri.size();
                 }
                 session->subscriptions[uri] = Impl::session_epoch(*session);
             }
@@ -1817,8 +1848,8 @@ Task<std::string> Server::Impl::handle_unsubscribe_wire(const nlohmann::json& js
     auto handler = build_middleware_chain(
         [this, uri = std::move(params.uri)](Context&, const nlohmann::json&) -> Task<nlohmann::json> {
             auto session = session_snapshot();
-            if (session) {
-                session->subscriptions.erase(uri);
+            if (session && session->subscriptions.erase(uri) != 0) {
+                session->subscription_bytes -= uri.size();
             }
             if (unsubscribe_handler) {
                 unsubscribe_handler(uri);
@@ -1968,6 +1999,7 @@ Task<void> Server::Impl::notify_resource_updated_on_strand(std::shared_ptr<Sessi
         co_return;
     }
     if (it->second != Impl::session_epoch(*session)) {
+        session->subscription_bytes -= it->first.size();
         session->subscriptions.erase(it);
         co_return;
     }

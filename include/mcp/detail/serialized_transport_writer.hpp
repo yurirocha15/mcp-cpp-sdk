@@ -6,6 +6,7 @@
 #include <boost/asio/any_io_executor.hpp>
 
 #include <atomic>
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -54,6 +55,9 @@ class MCP_API SerializedTransportWriter {
     [[nodiscard]] Task<void> write_message(
         std::shared_ptr<const std::string> message,
         std::shared_ptr<const std::atomic<bool>> cancel_before_start) const;
+
+    /// Bytes of the messages queued or being written: what waits on a peer that reads slowly.
+    [[nodiscard]] std::size_t queued_bytes() const noexcept;
 
    private:
     std::shared_ptr<SerializedTransportWriterState> state_;

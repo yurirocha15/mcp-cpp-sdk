@@ -2,6 +2,7 @@
 
 #include "mcp/server/server.hpp"
 
+#include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -54,8 +55,14 @@ class ScriptedTransport final : public mcp::ITransport {
     }
 
     mcp::Task<void> write_message(std::string_view message) override {
+        // Copied first: the caller's view need not outlive a held write.
+        std::string text(message);
         co_await boost::asio::post(strand_, boost::asio::use_awaitable);
-        written_.emplace_back(message);
+        while (hold_writes_.load() && !closed_) {
+            boost::asio::steady_timer pause(strand_, std::chrono::milliseconds(1));
+            co_await pause.async_wait(boost::asio::use_awaitable);
+        }
+        written_.push_back(std::move(text));
         if (on_write_) {
             on_write_(written_.back());
         }
@@ -77,6 +84,9 @@ class ScriptedTransport final : public mcp::ITransport {
         on_write_ = std::move(callback);
     }
 
+    /// While set, writes wait, as they do for a peer that stopped reading.
+    void hold_writes(bool hold) { hold_writes_.store(hold); }
+
     [[nodiscard]] const std::vector<std::string>& written() const { return written_; }
     [[nodiscard]] bool is_closed() const { return closed_; }
     [[nodiscard]] const boost::asio::strand<boost::asio::any_io_executor>& strand() const {
@@ -90,6 +100,7 @@ class ScriptedTransport final : public mcp::ITransport {
     std::vector<std::string> written_;
     std::function<void(std::string_view)> on_write_;
     bool closed_ = false;
+    std::atomic<bool> hold_writes_{false};
 };
 
 // ---------------------------------------------------------------------------

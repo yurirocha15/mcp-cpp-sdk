@@ -406,6 +406,41 @@ TEST_F(ReverseBindingTest, RequestIdBeyondInt64IsRefused) {
     EXPECT_EQ(json::parse(refused.body)["error"]["code"], mcp::g_INVALID_REQUEST);
 }
 
+// Subscriptions of a session that ended are not the next client's: they must not use up its limit.
+TEST_F(ReverseBindingTest, SubscriptionsOfAnEndedSessionLeaveRoomForTheNext) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    caps.resources->subscribe = true;
+    server_ = std::make_unique<mcp::Server>(mcp::Implementation{"limits", "1.0"}, caps);
+    const auto subscribe = [](int id) {
+        return json{{"jsonrpc", "2.0"},
+                    {"id", id},
+                    {"method", "resources/subscribe"},
+                    {"params", {{"uri", "mem://" + std::to_string(id) + std::string(1048576, 'u')}}}};
+    };
+    const auto open_session = [this](std::string id) -> mcp::Task<Headers> {
+        const auto initialized = co_await post(make_initialize_request(std::move(id)));
+        const Headers session{
+            {"MCP-Session-Id", initialized.session_id.value_or("")},
+            {"MCP-Protocol-Version", json::parse(initialized.body)["result"]["protocolVersion"]}};
+        co_await post_only(make_initialized_notification(), session);
+        co_return session;
+    };
+    Reply full;
+    Reply next;
+    run([&]() -> mcp::Task<void> {
+        const auto first = co_await open_session("a");
+        for (int id = 1; id <= 8; ++id) {
+            full = co_await post(subscribe(id), first);
+        }
+        co_await end_session(first.front().second);
+        const auto second = co_await open_session("b");
+        next = co_await post(subscribe(100), second);
+    });
+    EXPECT_NE(full.body.find("Too many resource subscriptions"), std::string::npos) << full.body;
+    EXPECT_NE(json::parse(next.body).value("result", json()), json()) << next.body;
+}
+
 TEST_F(ReverseBindingTest, ActiveSessionKeepsNextClientOut) {
     transport_->set_session_idle_timeout(std::chrono::hours(1));
     Reply second;

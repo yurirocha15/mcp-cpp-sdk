@@ -87,6 +87,14 @@ struct ClientOptions {
      * the deadline.
      */
     std::chrono::milliseconds request_timeout{std::chrono::seconds(30)};
+    /**
+     * @brief Memory the server's requests being answered, and the answers not yet written, may
+     * take before the client stops reading. 256 MiB unless set; must be positive.
+     *
+     * A request is counted as its parsed JSON takes memory, which can be far more than its text.
+     * The client also stops reading while it answers 1024 requests of the server.
+     */
+    std::size_t max_incoming_request_bytes{std::size_t{256} * 1024 * 1024};
     /** @brief Reject malformed JSON-RPC envelopes received from the peer. */
     bool strict_protocol_validation{true};
     /**

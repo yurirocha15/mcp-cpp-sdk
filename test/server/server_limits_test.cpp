@@ -303,10 +303,106 @@ TEST_F(ServerLimitsTest, AResultThatCannotBeEncodedDoesNotExposeTheLibraryText) 
     EXPECT_EQ((*answer_to(1))["error"]["code"], mcp::g_INTERNAL_ERROR) << *answer_to(1);
 }
 
+// A request is counted as its parsed JSON takes memory: an array of empty objects takes far more than
+// its text.
+TEST_F(ServerLimitsTest, RequestsAreCountedByTheMemoryTheyTake) {
+    server_->set_max_in_flight_bytes(std::size_t{8} * 1024 * 1024);
+    const auto padded = [](int id) {
+        auto message = call(id, "held");
+        message["params"]["arguments"]["p"] = json(40000, json::object());
+        return message;
+    };
+    run([&]() -> mcp::Task<void> {
+        co_await initialized();
+        transport_->enqueue_message(padded(1).dump());
+        transport_->enqueue_message(padded(2).dump());
+        co_await wait_until([this] { return running_.load() == 2; });
+        transport_->enqueue_message(padded(3).dump());
+        co_await wait_until([this] { return answer_to(3) != nullptr; });
+        release_.store(true);
+        co_await wait_until([this] { return answer_to(1) != nullptr && answer_to(2) != nullptr; });
+    });
+    ASSERT_NE(answer_to(3), nullptr);
+    ASSERT_TRUE(answer_to(3)->contains("error")) << *answer_to(3);
+    EXPECT_EQ((*answer_to(3))["error"]["code"], mcp::g_INTERNAL_ERROR) << *answer_to(3);
+    EXPECT_EQ(running_.load(), 2);
+}
+
+// Answers the peer has not taken count too, so a peer that stops reading stops the session from
+// starting more work.
+TEST_F(ServerLimitsTest, AnswersNotTakenCountAgainstTheMemoryLimit) {
+    std::atomic<int> answered{0};
+    // The answer carries the value twice, as structuredContent and as text: about 300 KB.
+    server_->add_tool<json, json>("big", "Returns 150 KB", json{{"type", "object"}},
+                                  [&answered](json /*args*/) -> mcp::Task<json> {
+                                      answered.fetch_add(1);
+                                      co_return json{{"text", std::string(150000, 'x')}};
+                                  });
+    server_->set_max_in_flight_bytes(std::size_t{1} * 1024 * 1024);
+    int while_held = 0;
+    run([&]() -> mcp::Task<void> {
+        co_await initialized();
+        transport_->hold_writes(true);
+        for (int id = 1; id <= 10; ++id) {
+            transport_->enqueue_message(call(id, "big").dump());
+        }
+        co_await wait_until([&answered] { return answered.load() >= 3; });
+        boost::asio::steady_timer settle(io_.get_executor(), std::chrono::milliseconds(50));
+        co_await settle.async_wait(boost::asio::use_awaitable);
+        while_held = answered.load();
+        transport_->hold_writes(false);
+        co_await wait_until([this] {
+            for (int id = 1; id <= 10; ++id) {
+                if (answer_to(id) == nullptr) {
+                    return false;
+                }
+            }
+            return true;
+        });
+    });
+    EXPECT_GE(while_held, 3);
+    EXPECT_LE(while_held, 4);
+}
+
 TEST_F(ServerLimitsTest, SettersRefuseValuesThatCannotWork) {
+    EXPECT_THROW(server_->set_max_in_flight_bytes(0), std::invalid_argument);
     EXPECT_THROW(server_->set_max_in_flight_requests(0), std::invalid_argument);
     EXPECT_THROW(server_->set_reverse_request_timeout(std::chrono::milliseconds(0)),
                  std::invalid_argument);
+}
+
+// The URIs of a session's subscriptions are limited in bytes as well as in number.
+TEST_F(ServerLimitsTest, SubscriptionUrisAreLimitedInBytes) {
+    const auto subscribe = [](int id) {
+        return json{{"jsonrpc", "2.0"},
+                    {"id", id},
+                    {"method", "resources/subscribe"},
+                    {"params", {{"uri", "mem://" + std::to_string(id) + std::string(1048576, 'u')}}}};
+    };
+    run([&]() -> mcp::Task<void> {
+        co_await initialized();
+        for (int id = 1; id <= 8; ++id) {
+            transport_->enqueue_message(subscribe(id).dump());
+            co_await wait_until([this, id] { return answer_to(id) != nullptr; });
+        }
+        // Dropping one makes room again.
+        transport_->enqueue_message(json{{"jsonrpc", "2.0"},
+                                         {"id", 20},
+                                         {"method", "resources/unsubscribe"},
+                                         {"params", {{"uri", subscribe(1)["params"]["uri"]}}}}
+                                        .dump());
+        transport_->enqueue_message(subscribe(9).dump());
+        co_await wait_until([this] { return answer_to(9) != nullptr; });
+    });
+    for (int id = 1; id <= 7; ++id) {
+        ASSERT_NE(answer_to(id), nullptr);
+        EXPECT_TRUE(answer_to(id)->contains("result")) << id;
+    }
+    ASSERT_NE(answer_to(8), nullptr);
+    ASSERT_TRUE(answer_to(8)->contains("error"));
+    EXPECT_EQ((*answer_to(8))["error"]["code"], mcp::g_INVALID_PARAMS);
+    ASSERT_NE(answer_to(9), nullptr);
+    EXPECT_TRUE(answer_to(9)->contains("result")) << *answer_to(9);
 }
 
 TEST_F(ServerLimitsTest, SubscriptionsOfASessionAreLimited) {
@@ -352,7 +448,11 @@ class FloodingPeer final : public mcp::ITransport {
             }
             if (flooding_) {
                 ++pings_read;
-                co_return json{{"jsonrpc", "2.0"}, {"id", pings_read}, {"method", "ping"}}.dump();
+                json ping{{"jsonrpc", "2.0"}, {"id", pings_read}, {"method", "ping"}};
+                if (padding > 0) {
+                    ping["params"]["p"] = json(padding, json::object());
+                }
+                co_return ping.dump();
             }
         }
     }
@@ -393,6 +493,8 @@ class FloodingPeer final : public mcp::ITransport {
     }
 
     int pings_read{0};
+    /// Empty objects each ping carries: little text, much memory once parsed.
+    std::size_t padding{0};
 
    private:
     boost::asio::steady_timer stalled_;
@@ -424,4 +526,41 @@ TEST(ClientLimits, ServerThatTakesNoAnswersCannotFloodTheClient) {
     io.run();
 
     EXPECT_EQ(settled, 1024);
+}
+
+// Requests are counted by the memory they take parsed, not by their text.
+TEST(ClientLimits, ServerRequestsAreLimitedByTheMemoryTheyTake) {
+    boost::asio::io_context io;
+    auto peer = std::make_shared<FloodingPeer>(io.get_executor());
+    peer->padding = 20000;
+    mcp::ClientOptions options;
+    options.max_incoming_request_bytes = std::size_t{4} * 1024 * 1024;
+    mcp::Client client(peer, io.get_executor(), options);
+
+    int settled = 0;
+    boost::asio::co_spawn(
+        io,
+        [&]() -> mcp::Task<void> {
+            co_await client.connect("limits", "1.0");
+            co_await wait_until([&] { return peer->pings_read >= 3; });
+            boost::asio::steady_timer settle(io.get_executor(), std::chrono::milliseconds(50));
+            co_await settle.async_wait(boost::asio::use_awaitable);
+            settled = peer->pings_read;
+            client.close();
+        },
+        boost::asio::detached);
+    io.run();
+
+    // 20,000 empty objects take more than 1 MiB parsed, and about 60 KB as text.
+    EXPECT_GE(settled, 3);
+    EXPECT_LE(settled, 4);
+}
+
+TEST(ClientLimits, IncomingRequestMemoryLimitMustBePositive) {
+    boost::asio::io_context io;
+    mcp::ClientOptions options;
+    options.max_incoming_request_bytes = 0;
+    EXPECT_THROW(
+        mcp::Client(std::make_shared<FloodingPeer>(io.get_executor()), io.get_executor(), options),
+        std::invalid_argument);
 }

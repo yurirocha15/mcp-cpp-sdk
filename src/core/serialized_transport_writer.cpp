@@ -58,6 +58,7 @@ struct SerializedTransportWriterState {
             if (operation->cancel_before_start &&
                 operation->cancel_before_start->load(std::memory_order_acquire)) {
                 state->queue.pop_front();
+                state->queued_bytes.fetch_sub(operation->message->size(), std::memory_order_relaxed);
                 complete(operation, std::make_exception_ptr(boost::system::system_error(
                                         boost::asio::error::operation_aborted)));
                 continue;
@@ -74,6 +75,7 @@ struct SerializedTransportWriterState {
             }
 
             state->queue.pop_front();
+            state->queued_bytes.fetch_sub(operation->message->size(), std::memory_order_relaxed);
             complete(operation, std::move(error));
         }
 
@@ -85,6 +87,7 @@ struct SerializedTransportWriterState {
                                        std::shared_ptr<const std::atomic<bool>> cancel_before_start) {
         auto operation = std::make_shared<Operation>(state->strand, std::move(message),
                                                      std::move(cancel_before_start));
+        state->queued_bytes.fetch_add(operation->message->size(), std::memory_order_relaxed);
         state->queue.push_back(operation);
 
         if (!state->draining) {
@@ -107,6 +110,8 @@ struct SerializedTransportWriterState {
     boost::asio::strand<boost::asio::any_io_executor> strand;
     std::deque<std::shared_ptr<Operation>> queue;
     bool draining{false};
+    /// Bytes of the messages queued or being written.
+    std::atomic<std::size_t> queued_bytes{0};
 };
 
 SerializedTransportWriter::SerializedTransportWriter(std::shared_ptr<ITransport> transport,
@@ -115,6 +120,10 @@ SerializedTransportWriter::SerializedTransportWriter(std::shared_ptr<ITransport>
     if (!state_->transport) {
         throw std::invalid_argument("SerializedTransportWriter requires a transport");
     }
+}
+
+std::size_t SerializedTransportWriter::queued_bytes() const noexcept {
+    return state_ ? state_->queued_bytes.load(std::memory_order_relaxed) : 0;
 }
 
 Task<void> SerializedTransportWriter::write_message(std::string_view message) const {
