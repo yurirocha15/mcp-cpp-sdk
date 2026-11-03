@@ -7,6 +7,7 @@
 #include <boost/asio/ip/tcp.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -76,6 +77,41 @@ class MCP_API WebSocketServerTransport final : public ITransport {
     void set_allow_all_origins(bool allow_all);
 
     /**
+     * @brief Limit the time from the first read or write to the end of the upgrade.
+     *
+     * A peer that connects and says nothing fails the pending read after this long, 30 seconds by
+     * default. Zero, a negative value, or one too long for the clock to represent disables it.
+     * Accepting connections one at a time lets one silent socket hold up the next for this long,
+     * so give each accepted socket its own coroutine. Call it before the first read or write.
+     *
+     * @throws std::logic_error If the handshake has started or the transport is closed.
+     */
+    void set_handshake_timeout(std::chrono::milliseconds timeout);
+
+    /**
+     * @brief Close a connection whose peer has gone quiet, or stopped reading, for this long.
+     *
+     * The transport pings a quiet peer halfway through, so a peer that answers pings stays
+     * connected however idle the session is. The same limit applies to one write. The default is
+     * five minutes. Zero, a negative value, or one too long for the clock to represent disables it.
+     * Call it before the first read or write.
+     *
+     * @throws std::logic_error If the handshake has started or the transport is closed.
+     */
+    void set_idle_timeout(std::chrono::milliseconds timeout);
+
+    /**
+     * @brief Set the largest message the transport accepts, in bytes.
+     *
+     * A larger message ends the connection. The default is 16 MiB. A client receiving results
+     * larger than that needs the same setting on its transport. Call it before the first read or
+     * write.
+     *
+     * @throws std::logic_error If the handshake has started or the transport is closed.
+     */
+    void set_max_message_bytes(std::size_t bytes);
+
+    /**
      * @brief Close the WebSocket connection. Safe to call multiple times.
      */
     void close() override;
@@ -141,6 +177,14 @@ class MCP_API WebSocketClientTransport final : public ITransport {
     /**
      * @brief Close the WebSocket connection. Safe to call multiple times.
      */
+    /**
+     * @brief Set the largest message the transport accepts, in bytes.
+     *
+     * A larger message ends the connection. The default is 16 MiB. Call it before the first read
+     * or write.
+     */
+    void set_max_message_bytes(std::size_t bytes);
+
     void close() override;
 
    private:

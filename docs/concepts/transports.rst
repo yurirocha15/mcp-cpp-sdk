@@ -159,6 +159,19 @@ the HTTP transports do. An upgrade without an ``Origin`` header is accepted.
 Configure origins before the first ``read_message()`` or ``write_message()``,
 which perform the handshake.
 
+Three limits protect a server from a peer that stops cooperating, and take
+effect when set before that first read or write:
+
+- ``set_handshake_timeout()`` limits the upgrade, 30 seconds by default. Give
+  each accepted socket its own coroutine: accepting one at a time lets a socket
+  that says nothing hold up the next one for this long.
+- ``set_idle_timeout()`` closes a connection whose peer has gone quiet or stopped
+  reading, five minutes by default. A quiet peer is pinged first, so one that
+  answers pings stays connected however idle the session is.
+- ``set_max_message_bytes()`` sets the largest message accepted, 16 MiB by
+  default; a larger one ends the connection. The client transport has the same
+  setter, and needs it to receive larger results.
+
 MemoryTransport for Testing
 ---------------------------
 
