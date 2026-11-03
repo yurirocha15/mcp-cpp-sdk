@@ -390,6 +390,80 @@ TEST_F(HttpResumabilityTest, GetWithEvictedEventIdReturns410) {
     EXPECT_EQ(get_status_code, 410);
 }
 
+// A server either answers GET with an SSE stream or with 405, so a client can tell which it got.
+TEST_F(HttpResumabilityTest, GetAnswersWithAStreamOnlyWhenResuming) {
+    mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18099);
+    mcp::HttpClientTransport client_transport(io_ctx_.get_executor(), "http://127.0.0.1:18099/mcp");
+
+    std::optional<http::response<http::string_body>> plain;
+    std::optional<http::response<http::string_body>> resumed;
+    asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            auto request = nlohmann::json::parse(co_await server_transport.read_message());
+            nlohmann::json answer = {{"jsonrpc", "2.0"},
+                                     {"result",
+                                      {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                                       {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
+                                       {"capabilities", nlohmann::json::object()}}},
+                                     {"id", request.at("id")}};
+            co_await server_transport.write_message(answer.dump());
+        },
+        asio::detached);
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            nlohmann::json initialize = {
+                {"jsonrpc", "2.0"},
+                {"method", "initialize"},
+                {"params",
+                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                  {"capabilities", nlohmann::json::object()},
+                  {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}}}},
+                {"id", 1}};
+            co_await client_transport.write_message(initialize.dump());
+            co_await client_transport.read_message();
+
+            const auto get = [&](std::optional<std::string> last_event_id)
+                -> mcp::Task<http::response<http::string_body>> {
+                beast::tcp_stream stream(io_ctx_.get_executor());
+                auto resolver = asio::ip::tcp::resolver(io_ctx_.get_executor());
+                auto endpoints =
+                    co_await resolver.async_resolve("127.0.0.1", "18099", asio::use_awaitable);
+                co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+                http::request<http::empty_body> get_request{http::verb::get, "/mcp", 11};
+                get_request.set(http::field::host, "127.0.0.1");
+                get_request.set(http::field::accept, "text/event-stream");
+                get_request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+                get_request.set("MCP-Session-Id", client_transport.session_id());
+                if (last_event_id) {
+                    get_request.set("Last-Event-ID", *last_event_id);
+                }
+                co_await http::async_write(stream, get_request, asio::use_awaitable);
+                beast::flat_buffer buffer;
+                http::response<http::string_body> response;
+                co_await http::async_read(stream, buffer, response, asio::use_awaitable);
+                co_return response;
+            };
+            plain = co_await get(std::nullopt);
+            resumed = co_await get(std::string("1"));
+            client_transport.close();
+            server_transport.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_TRUE(plain.has_value());
+    EXPECT_EQ(plain->result_int(), 405);
+    EXPECT_EQ((*plain)[http::field::allow], "POST, DELETE");
+    ASSERT_TRUE(resumed.has_value());
+    EXPECT_EQ(resumed->result_int(), 200);
+    EXPECT_EQ((*resumed)[http::field::content_type], "text/event-stream");
+    EXPECT_EQ(resumed->body(), "");
+}
+
 TEST_F(HttpResumabilityTest, ClientParsesEventIdFromSseResponse) {
     mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18094);
 

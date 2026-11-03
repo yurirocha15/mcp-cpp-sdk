@@ -31,6 +31,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Changed
 
+- Middleware also runs for `resources/subscribe`, `resources/unsubscribe` and
+  `completion/complete`, so `make_auth_middleware()` guards them too.
+- `GET` on the MCP endpoint answers `405` unless it resumes with `Last-Event-ID`.
+  It used to answer `200` with an empty JSON body, which the specification does
+  not allow; a resume with nothing to replay answers an empty SSE stream.
 - `BUILD_TESTING`, `BUILD_EXAMPLES` and `BUILD_DOCS` default to `ON` only when
   the SDK is the top-level CMake project. Added with FetchContent or
   `add_subdirectory`, the SDK no longer builds its tests and examples or needs
@@ -67,6 +72,48 @@ Versioning; a `0.x` version is a stable release unless its version has an
   off.
 
 ### Fixed
+
+- A session runs at
+  most 1024 requests, or 256 MiB of them on a transport that hands over text
+  (`Server::set_max_in_flight_requests()`); a request past that is answered with
+  `-32603`, and reading stops while the peer takes no answers. A `Client` stops
+  reading while it answers 1024 requests of the server. A session holds at most
+  4096 resource subscriptions.
+- A request the server sent fails in its handler after ten minutes
+  (`Server::set_reverse_request_timeout()`), and at once when the `tools/call`
+  it belongs to is cancelled, instead of holding the handler for the session.
+- `StreamableHttpSessionManager` holds at most 10,000 sessions and ends a session
+  idle for five minutes (`set_session_limits()`), and keeps no session for a
+  failed initialize. An SSE replay store keeps at most 32 MiB.
+- On `HttpServerTransport`, an initialize now ends a session idle for five
+  minutes (`set_session_idle_timeout()`), so a client that left without a
+  DELETE does not keep the next one out.
+- An answer to a server request is accepted only from the session it was sent
+  in, and an answer needs an established session.
+- Both HTTP accept loops stopped when the process ran out of file
+  descriptors. They now wait and try again.
+- A reply to `elicitation/create` with an unknown action decoded as `accept`. It
+  now fails to decode. A form request may leave out `mode`, as the specification
+  allows.
+- The evaluation budget now covers `enum` and `const` comparisons,
+  `dependentRequired`, `properties` and `uniqueItems` on colliding hashes, and
+  the text a failed branch keeps. Regular expression compilation is bounded.
+- `Server::run_stdio()` did not stop on SIGTERM or SIGINT while standard input
+  stayed open, and a parent that stopped reading standard output blocked the
+  server, including its signal handling. A closed standard output no longer
+  raises SIGPIPE.
+- `StdioTransport` accepts input lines of at most 16 MiB
+  (`set_max_message_bytes()`) and reads at most 16 MiB ahead of `read_message()`.
+- `WebSocketServerTransport` has a 30 second deadline on the upgrade
+  (`set_handshake_timeout()`) and closes a connection whose peer has gone quiet
+  or stopped reading for five minutes (`set_idle_timeout()`), pinging it first.
+  Both WebSocket transports gained `set_max_message_bytes()`.
+- A new client on a reused `Server` starts at the default log level on every
+  transport, not only on `HttpServerTransport`.
+- A result that cannot be encoded as JSON is answered with a plain message
+  instead of the JSON library's exception text.
+- An error `code` that does not fit an `int` decodes to `-32603`; converting it
+  was undefined behaviour.
 
 - With `BUILD_DOCS=ON` and Doxygen installed, configuring a project that adds
   the SDK as a subproject failed: the SDK looked for `docs/Doxyfile.in` in the

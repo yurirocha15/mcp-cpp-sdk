@@ -742,12 +742,15 @@ struct HttpServerTransport::Impl {
                 co_return make_error_response(request, http::status::gone,
                                               "Event ID has been evicted from store");
             }
-            if (!missed_events->empty()) {
-                co_return make_sse_replay_response(request, *missed_events);
-            }
+            // An empty stream is an answer here too: the client asked to resume one.
+            co_return make_sse_replay_response(request, *missed_events);
         }
 
-        co_return make_empty_json_response(request, http::status::ok);
+        // Answers travel on the response to each POST, so there is no stream to open.
+        auto refusal = make_error_response(request, http::status::method_not_allowed,
+                                           "This server offers no SSE stream on GET");
+        refusal.set(http::field::allow, "POST, DELETE");
+        co_return refusal;
     }
 
     Task<StringResponse> handle_request(const StringRequest& request) {

@@ -1027,12 +1027,15 @@ struct StreamableHttpSessionManager::Impl {
                 co_return detail_session_mgr::make_error_response(
                     request, http::status::gone, "Event ID has been evicted from store");
             }
-            if (!missed_events->empty()) {
-                co_return detail_session_mgr::make_sse_response(request, *missed_events);
-            }
+            // An empty stream is an answer here too: the client asked to resume one.
+            co_return detail_session_mgr::make_sse_response(request, *missed_events);
         }
 
-        co_return detail_session_mgr::make_empty_json_response(request, http::status::ok);
+        // Answers travel on the response to each POST, so there is no stream to open.
+        auto refusal = detail_session_mgr::make_error_response(
+            request, http::status::method_not_allowed, "This server offers no SSE stream on GET");
+        refusal.set(http::field::allow, "POST, DELETE");
+        co_return refusal;
     }
 
     static void signal_timer(const std::shared_ptr<boost::asio::steady_timer>& timer) {

@@ -1752,31 +1752,43 @@ Task<std::string> Server::Impl::handle_resource_templates_list_wire(const nlohma
 
 Task<std::string> Server::Impl::handle_subscribe_wire(const nlohmann::json& json_msg) {
     auto params = deserialize_request_params<ResourceSubscribeParams>(json_msg, "resources/subscribe");
-    auto session = session_snapshot();
-    if (session) {
-        if (session->subscriptions.size() >= g_max_subscriptions &&
-            !session->subscriptions.contains(params.uri)) {
-            throw InvalidParamsError("Too many resource subscriptions");
-        }
-        session->subscriptions[params.uri] = Impl::session_epoch(*session);
-    }
-    if (subscribe_handler) {
-        subscribe_handler(params.uri);
-    }
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object());
+    auto handler = build_middleware_chain(
+        [this, uri = std::move(params.uri)](Context&, const nlohmann::json&) -> Task<nlohmann::json> {
+            auto session = session_snapshot();
+            if (session) {
+                if (session->subscriptions.size() >= g_max_subscriptions &&
+                    !session->subscriptions.contains(uri)) {
+                    throw InvalidParamsError("Too many resource subscriptions");
+                }
+                session->subscriptions[uri] = Impl::session_epoch(*session);
+            }
+            if (subscribe_handler) {
+                subscribe_handler(uri);
+            }
+            co_return nlohmann::json::object();
+        });
+    auto ctx = make_context();
+    nlohmann::json handler_result = co_await handler(ctx, json_msg.at("params"));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
 }
 
 Task<std::string> Server::Impl::handle_unsubscribe_wire(const nlohmann::json& json_msg) {
     auto params =
         deserialize_request_params<ResourceUnsubscribeParams>(json_msg, "resources/unsubscribe");
-    auto session = session_snapshot();
-    if (session) {
-        session->subscriptions.erase(params.uri);
-    }
-    if (unsubscribe_handler) {
-        unsubscribe_handler(params.uri);
-    }
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object());
+    auto handler = build_middleware_chain(
+        [this, uri = std::move(params.uri)](Context&, const nlohmann::json&) -> Task<nlohmann::json> {
+            auto session = session_snapshot();
+            if (session) {
+                session->subscriptions.erase(uri);
+            }
+            if (unsubscribe_handler) {
+                unsubscribe_handler(uri);
+            }
+            co_return nlohmann::json::object();
+        });
+    auto ctx = make_context();
+    nlohmann::json handler_result = co_await handler(ctx, json_msg.at("params"));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
 }
 
 Task<std::string> Server::Impl::handle_prompts_list_wire(const nlohmann::json& json_msg) {
@@ -1827,10 +1839,14 @@ Task<std::string> Server::Impl::handle_complete_wire(const nlohmann::json& json_
                                   "No completion handler registered");
     }
 
-    auto complete_result = co_await completion_handler(params);
-
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(),
-                               nlohmann::json(std::move(complete_result)));
+    auto handler =
+        build_middleware_chain([this, params](Context&, const nlohmann::json&) -> Task<nlohmann::json> {
+            auto complete_result = co_await completion_handler(params);
+            co_return nlohmann::json(std::move(complete_result));
+        });
+    auto ctx = make_context();
+    nlohmann::json handler_result = co_await handler(ctx, json_msg.at("params"));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
 }
 
 std::string Server::Impl::make_result_wire(const RequestId& id, nlohmann::json result) {

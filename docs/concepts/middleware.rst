@@ -1,7 +1,7 @@
 Middleware
 ==========
 
-Middleware provides a powerful way to intercept and augment the execution of tool handlers, resource requests, and prompt retrievals. By using middleware, you can implement cross-cutting concerns like logging, authentication, rate limiting, and request validation without cluttering your core business logic.
+Middleware provides a powerful way to intercept and augment the execution of tool handlers, resource requests, prompt retrievals, resource subscriptions and completions: every request that reaches an application handler. Requests the server answers itself, such as the list methods, ``ping`` and ``logging/setLevel``, do not pass through it. By using middleware, you can implement cross-cutting concerns like logging, authentication, rate limiting, and request validation without cluttering your core business logic.
 
 Overview
 --------

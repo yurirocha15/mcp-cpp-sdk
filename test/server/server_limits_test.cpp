@@ -68,7 +68,6 @@ class ServerLimitsTest : public ::testing::Test {
         transport_->set_on_write(
             [this](std::string_view text) { written_.push_back(json::parse(text)); });
         transport_->enqueue_message(make_initialize_request("i").dump());
-        transport_->enqueue_message(make_initialized_notification().dump());
     }
 
     void run(std::function<mcp::Task<void>()> exchange) {
@@ -94,9 +93,14 @@ class ServerLimitsTest : public ::testing::Test {
         return nullptr;
     }
 
-    /// Initialize is done and its dispatch has ended.
+    /// The session is ready and nothing of the handshake is still dispatching: a request answered
+    /// after notifications/initialized was read shows the first, and the pause the second.
     mcp::Task<void> initialized() {
         co_await wait_until([this] { return answer_to("i") != nullptr; });
+        transport_->enqueue_message(make_initialized_notification().dump());
+        transport_->enqueue_message(
+            json{{"jsonrpc", "2.0"}, {"id", "ready"}, {"method", "tools/list"}}.dump());
+        co_await wait_until([this] { return answer_to("ready") != nullptr; });
         boost::asio::steady_timer settle(io_.get_executor(), std::chrono::milliseconds(5));
         co_await settle.async_wait(boost::asio::use_awaitable);
     }
@@ -128,9 +132,9 @@ TEST_F(ServerLimitsTest, RequestPastTheLimitIsRefusedAndTheSessionGoesOn) {
 
 // The handler holds a place until the client answers, so the answer must still be read at the limit.
 TEST_F(ServerLimitsTest, AnswerFromTheClientIsReadAtTheLimit) {
-    server_->set_max_in_flight_requests(1);
     run([&]() -> mcp::Task<void> {
         co_await initialized();
+        server_->set_max_in_flight_requests(1);
         transport_->enqueue_message(call(1, "ask").dump());
         co_await wait_until([this] {
             return !written_.empty() && written_.back().value("method", "") == "roots/list";
@@ -148,6 +152,7 @@ TEST_F(ServerLimitsTest, AnswerFromTheClientIsReadAtTheLimit) {
 TEST_F(ServerLimitsTest, ClientThatNeverAnswersFailsTheHandlerAtTheTimeout) {
     server_->set_reverse_request_timeout(std::chrono::milliseconds(50));
     run([&]() -> mcp::Task<void> {
+        co_await initialized();
         transport_->enqueue_message(call(1, "ask").dump());
         co_await wait_until([this] { return answer_to(1) != nullptr; });
     });
@@ -262,6 +267,13 @@ class FloodingPeer final : public mcp::ITransport {
                                      {{"protocolVersion", "2025-11-25"},
                                       {"capabilities", json::object()},
                                       {"serverInfo", {{"name", "flood"}, {"version", "1"}}}}}}
+                                   .dump());
+            co_return;
+        }
+        if (sent.value("method", "") == "server/discover") {
+            replies_.push_back(json{{"jsonrpc", "2.0"},
+                                    {"id", sent.at("id")},
+                                    {"error", {{"code", -32601}, {"message", "Method not found"}}}}
                                    .dump());
             co_return;
         }

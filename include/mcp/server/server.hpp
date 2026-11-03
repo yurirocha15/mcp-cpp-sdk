@@ -338,7 +338,10 @@ class MCP_API Server {
      *
      * Middleware executes in registration order (first registered = outermost).
      * Each middleware receives the context, request parameters, and a
-     * continuation to call the next in the chain or the final handler.
+     * continuation to call the next in the chain or the final handler. It runs for every request
+     * that reaches an application handler: tools/call, resources/read, prompts/get,
+     * resources/subscribe, resources/unsubscribe and completion/complete. Requests the server
+     * answers itself, such as the list methods, ping and logging/setLevel, do not pass through it.
      *
      * @param mw Middleware function to register.
      */
