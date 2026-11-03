@@ -595,6 +595,11 @@ class Compiler {
         : nodes_(nodes), program_(program) {}
 
     void compile(std::size_t index) {
+        // A subtree that emits nothing is visited again for each repetition around it, so the
+        // program size alone does not bound this.
+        if (++visits_ > g_max_compile_visits) {
+            throw RegexError("regular expression takes too long to compile");
+        }
         const Node& node = nodes_[index];
         switch (node.kind) {
             case Node::Kind::eEmpty:
@@ -635,6 +640,8 @@ class Compiler {
     }
 
    private:
+    static constexpr std::size_t g_max_compile_visits = Regex::max_program_size * 8;
+
     std::uint32_t here() const { return static_cast<std::uint32_t>(program_.size()); }
 
     void compile_alternation(const Node& node) {
@@ -688,6 +695,7 @@ class Compiler {
 
     const std::vector<Node>& nodes_;
     std::vector<Instruction>& program_;
+    std::size_t visits_{0};
 };
 
 /// A set of program counters with O(1) insert, membership and clear.

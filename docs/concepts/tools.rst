@@ -207,6 +207,9 @@ naming the tool and the field when a schema cannot be used.
 - ``eUnsupportedDialect``: ``$schema`` names a dialect the SDK does not
   implement.
 - ``eUnresolvedRef``: a ``$ref`` points outside the document.
+- ``eUnsupportedPattern``: a ``pattern`` or ``patternProperties`` key is one the
+  linear-time matcher cannot run, such as a lookahead, or is not a valid regular
+  expression.
 
 **Dialects.** A schema without ``$schema`` is JSON Schema 2020-12, the default
 the specification sets. ``$schema`` may also name 2019-09, draft-07, draft-06 or
@@ -220,10 +223,11 @@ relative file name, is refused; the SDK never fetches a schema.
 **Patterns.** ``pattern`` and ``patternProperties`` use a linear-time matcher
 for the ECMA-262 subset JSON Schema recommends. Backreferences, lookaround and
 Unicode property escapes (``\p{...}``) are not supported, and a schema using
-them is refused as ``eInvalidSchema``. So is a pattern that nests groups more
+them is refused as ``eUnsupportedPattern``. So is a pattern that nests groups more
 than 64 levels deep, repeats more than 10,000 times in one ``{n,m}``, or compiles
 to more than 20,000 matcher instructions; a counted repetition compiles to one
 copy of its operand per repetition, so ``^.{1,2000}$`` is well within the limit.
+A client still lists a tool whose schema uses such a pattern.
 
 **Arguments.** Each ``tools/call`` checks the arguments against the input schema
 just before the handler would run, after any middleware. Arguments that do not
@@ -278,12 +282,17 @@ schemas are evaluated by the bundled jsoncons library, which costs several
 microseconds more per call for typical arguments. Violation messages are
 written for people and their wording may change.
 
-**On the client.** ``Client::list_tools()`` compiles the schemas of the listed
-tools, leaves out a tool whose schema cannot be used and reports it through
-``ClientOptions::on_tool_schema_error``. ``Client::call_tool()`` checks a
+**On the client.** ``Client::list_tools()`` lists every tool the server names.
+It compiles each ``outputSchema`` and reports one it cannot use through
+``ClientOptions::on_tool_schema_error``; ``inputSchema`` is the server's to
+enforce, so the client does not compile it. ``Client::call_tool()`` checks a
 successful result's ``structuredContent`` against the tool's listed
 ``outputSchema`` and throws ``mcp::StructuredContentError`` when it does not
-conform. ``ClientOptions::validate_tool_schemas = false`` turns both off.
+conform. Calling a tool whose ``outputSchema`` is invalid, in an unsupported
+dialect or has a ``$ref`` outside the document throws that ``mcp::SchemaError``
+without sending the request; an ``outputSchema`` that only uses a pattern the
+matcher cannot run leaves that tool's results unchecked.
+``ClientOptions::validate_tool_schemas = false`` turns all of this off.
 
 ``mcp::CompiledSchema`` (``mcp/protocol/schema.hpp``) is the validator behind
 all of this and can be used directly:

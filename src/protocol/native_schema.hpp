@@ -37,10 +37,11 @@ class NativeSchema {
     static std::optional<NativeSchema> compile(const nlohmann::json& schema);
 
     /// Records in @p result how @p instance fails the schema, stopping after @p max_violations.
-    /// Pattern matching may take @p pattern_steps steps (see Regex::search); a validation that
-    /// needs more reports the value invalid, as jsoncons does when it reaches a limit.
+    /// Pattern matching may take @p pattern_steps steps (see Regex::search) and comparing values
+    /// @p work units; a validation that needs more reports the value invalid, as jsoncons does when
+    /// it reaches a limit.
     void validate(const nlohmann::json& instance, std::size_t max_violations, std::size_t pattern_steps,
-                  ValidationResult& result) const;
+                  std::size_t work, ValidationResult& result) const;
 
     struct Node;
 

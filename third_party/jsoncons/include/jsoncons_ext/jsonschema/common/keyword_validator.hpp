@@ -1142,6 +1142,7 @@ namespace jsonschema {
             {
                 for (std::size_t j = i + 1; j < hashed.size() && hashed[j].first == hashed[i].first; ++j)
                 {
+                    evaluation_limits::charge(8); // hashes an attacker chose can all collide
                     if (*hashed[i].second == *hashed[j].second)
                     {
                         return false; // contains duplicates
@@ -2334,6 +2335,7 @@ namespace jsonschema {
             bool in_range = false;
             for (const auto& item : value_.array_range())
             {
+                evaluation_limits::charge(8);
                 if (item == instance) 
                 {
                     in_range = true;
@@ -2651,6 +2653,7 @@ namespace jsonschema {
 
             for (const auto& prop : instance.object_range()) 
             {
+                evaluation_limits::charge(1);
                 auto prop_it = properties_.find(prop.key().c_str());
 
                 // check if it is in "properties"
@@ -2680,6 +2683,7 @@ namespace jsonschema {
             // reverse search
             for (auto const& prop : properties_) 
             {
+                evaluation_limits::charge(1);
                 //std::cout << "   prop:" << prop.first << "\n";
                 const auto finding = instance.find(prop.first);
                 if (finding == instance.object_range().end()) 
@@ -2723,6 +2727,7 @@ namespace jsonschema {
 
             for (const auto& prop : instance.object_range()) 
             {
+                evaluation_limits::charge(1);
                 auto prop_it = properties_.find(prop.key().c_str());
 
                 if (prop_it != properties_.end()) 
@@ -3136,6 +3141,7 @@ namespace jsonschema {
 
             for (const auto& dep : dependent_required_) 
             {
+                evaluation_limits::charge(1);
                 auto prop = instance.find(dep.first);
                 if (prop != instance.object_range().end()) 
                 {
@@ -3169,6 +3175,7 @@ namespace jsonschema {
 
             for (const auto& dep : dependent_required_) 
             {
+                evaluation_limits::charge(1);
                 auto prop = instance.find(dep.first);
                 if (prop != instance.object_range().end()) 
                 {
@@ -3398,6 +3405,7 @@ namespace jsonschema {
 
             for (const auto& dep : dependent_required_) 
             {
+                evaluation_limits::charge(1);
                 auto prop = instance.find(dep.first);
                 if (prop != instance.object_range().end()) 
                 {

@@ -7,6 +7,8 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -18,11 +20,22 @@
 #include <utility>
 #include <vector>
 
+#if defined(__linux__)
+#include <sys/resource.h>
+#endif
+
 namespace {
 
 using mcp::CompiledSchema;
 using mcp::SchemaError;
 using nlohmann::json;
+
+/// @p schema with "not": false added, which constrains nothing but keeps the schema off the native
+/// evaluation, so it is evaluated by jsoncons.
+json through_jsoncons(json schema) {
+    schema["not"] = false;
+    return schema;
+}
 
 bool is_valid(const json& schema, const json& instance) {
     return CompiledSchema::compile(schema).validate(instance).valid;
@@ -142,10 +155,11 @@ TEST(SchemaDialect, BooleanSchemaAccepted) {
     EXPECT_FALSE(is_valid(false, json::object()));
 }
 
-TEST(SchemaDialect, UnsupportedPatternSyntaxIsInvalidSchema) {
-    EXPECT_EQ(compile_error({{"pattern", "(a)\\1"}}), SchemaError::Category::eInvalidSchema);
+TEST(SchemaDialect, UnsupportedPatternSyntaxHasItsOwnCategory) {
+    EXPECT_EQ(compile_error({{"pattern", "(a)\\1"}}), SchemaError::Category::eUnsupportedPattern);
+    EXPECT_EQ(compile_error({{"pattern", "^(?=x)"}}), SchemaError::Category::eUnsupportedPattern);
     EXPECT_EQ(compile_error({{"patternProperties", {{"\\p{L}", true}}}}),
-              SchemaError::Category::eInvalidSchema);
+              SchemaError::Category::eUnsupportedPattern);
 }
 
 // `$schema` names the dialect wherever it appears; an embedded resource that names one the SDK does
@@ -351,6 +365,126 @@ TEST(SchemaLimits, ExponentialEvaluationIsStopped) {
         << result.violations.front().message;
 }
 
+// Each value of the array is compared with each value of the enum. No subschema is entered for a
+// comparison, so nothing but a charge per comparison stops this.
+TEST(SchemaLimits, EnumComparisonsAreCharged) {
+    json allowed = json::array();
+    for (int i = 0; i < 20000; ++i) {
+        allowed.push_back(1000000 + i);
+    }
+    const json schema = {{"items", {{"enum", allowed}}}};
+    // The last value of the enum, so every comparison runs and no item is a violation.
+    const json value(20000, allowed.back());
+    const std::vector<json> schemas{schema, through_jsoncons(schema)};
+    for (const auto& each : schemas) {
+        const auto result = CompiledSchema::compile(each).validate(value);
+        EXPECT_FALSE(result.valid);
+        ASSERT_EQ(result.violations.size(), 1U);
+        EXPECT_NE(result.violations.front().message.find("too much work"), std::string::npos)
+            << result.violations.front().message;
+    }
+}
+
+// A long string that differs from each long enum value only at its end costs its length per value.
+TEST(SchemaLimits, EnumComparisonsOfLongStringsAreCharged) {
+    const std::string text(1U << 16U, 'x');
+    json allowed = json::array();
+    for (int i = 0; i < 2000; ++i) {
+        allowed.push_back(text + std::to_string(1000 + i));
+    }
+    const auto result =
+        CompiledSchema::compile({{"items", {{"enum", allowed}}}}).validate(json(2000, text + "----"));
+    EXPECT_FALSE(result.valid);
+    ASSERT_EQ(result.violations.size(), 1U);
+    EXPECT_NE(result.violations.front().message.find("too much work"), std::string::npos)
+        << result.violations.front().message;
+}
+
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) ||                             \
+    __has_feature(memory_sanitizer)
+#define MCP_TEST_SANITIZER_SHADOW_MEMORY 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define MCP_TEST_SANITIZER_SHADOW_MEMORY 1
+#endif
+
+#if defined(__linux__) && !defined(MCP_TEST_SANITIZER_SHADOW_MEMORY)
+// A report may quote the whole value, and every branch of an anyOf that fails keeps its report, so
+// without a cut this holds 1 MiB per branch. Reports are sanitized on their way out, so only the
+// peak shows it. A peak that an earlier test in the process set can hide this, never fail it.
+TEST(SchemaLimits, FailedBranchesDoNotKeepCopiesOfTheValue) {
+    const auto peak_kib = [] {
+        rusage usage{};
+        EXPECT_EQ(getrusage(RUSAGE_SELF, &usage), 0);
+        return usage.ru_maxrss;
+    };
+    json branches = json::array();
+    for (int i = 0; i < 2000; ++i) {
+        branches.push_back({{"enum", {i}}});
+    }
+    const auto compiled = CompiledSchema::compile({{"anyOf", branches}});
+    const std::string text(1U << 20U, 'x');
+    const auto before = peak_kib();
+    EXPECT_FALSE(compiled.validate(text).valid);
+    EXPECT_LT(peak_kib() - before, 256L * 1024L);
+}
+#endif
+
+#if defined(__GLIBCXX__) && __SIZEOF_SIZE_T__ == 8 && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+/// @p count distinct 16-byte ASCII strings with one std::hash value. libstdc++ hashes a string with
+/// Murmur64A, whose block step can be inverted, so a second block can be solved for any first one.
+std::vector<std::string> strings_with_one_hash(std::size_t count) {
+    constexpr std::uint64_t g_multiplier = 0xc6a4a7935bd1e995ULL;
+    constexpr std::uint64_t g_seed = 0xc70f6907ULL;
+    constexpr std::uint64_t g_length = 16;
+    constexpr std::uint64_t g_target = 0x1234567890abcdefULL;
+    std::uint64_t inverse = g_multiplier;
+    for (int i = 0; i < 6; ++i) {
+        inverse *= 2 - g_multiplier * inverse;
+    }
+    const auto shift_mix = [](std::uint64_t value) { return value ^ (value >> 47U); };
+
+    std::vector<std::string> strings;
+    std::mt19937_64 random(5);
+    while (strings.size() < count) {
+        std::uint64_t first = random() & 0x7f7f7f7f7f7f7f7fULL;
+        const std::uint64_t state =
+            ((g_seed ^ (g_length * g_multiplier)) ^ (shift_mix(first * g_multiplier) * g_multiplier)) *
+            g_multiplier;
+        const std::uint64_t needed = state ^ (g_target * inverse);
+        std::uint64_t second = shift_mix(needed * inverse) * inverse;
+        if ((second & 0x8080808080808080ULL) != 0) {
+            continue;
+        }
+        std::string text(16, '\0');
+        std::memcpy(text.data(), &first, sizeof first);
+        std::memcpy(text.data() + sizeof first, &second, sizeof second);
+        strings.push_back(std::move(text));
+    }
+    return strings;
+}
+
+// uniqueItems sorts by hash and compares only equal hashes, which is linear until someone chooses
+// strings that all hash alike.
+TEST(SchemaLimits, UniqueItemsOfCollidingStringsAreCharged) {
+    const auto strings = strings_with_one_hash(2000);
+    ASSERT_EQ(std::set<std::string>(strings.begin(), strings.end()).size(), strings.size());
+    const std::hash<std::string> hash;
+    for (const auto& text : strings) {
+        ASSERT_EQ(hash(text), hash(strings.front()));
+    }
+
+    const auto result =
+        CompiledSchema::compile({{"uniqueItems", true}, {"not", false}}).validate(json(strings));
+    EXPECT_FALSE(result.valid);
+    ASSERT_EQ(result.violations.size(), 1U);
+    EXPECT_NE(result.violations.front().message.find("too much work"), std::string::npos)
+        << result.violations.front().message;
+}
+#endif
+
 // A recursive schema through anyOf adds several keywords to the evaluation path per level of the
 // value, so it reaches the path bound before max_instance_depth; the value is then invalid.
 TEST(SchemaLimits, EvaluationPathIsBounded) {
@@ -547,13 +681,6 @@ TEST(SchemaValidation, TypeOnlySchemasMatchFullEvaluation) {
     }
     EXPECT_FALSE(CompiledSchema::compile({{"type", "array"}}, options).validate(deep).valid);
     EXPECT_FALSE(CompiledSchema::compile(true, options).validate(deep).valid);
-}
-
-/// @p schema with "not": false added, which constrains nothing but keeps the schema off the native
-/// evaluation, so it is evaluated by jsoncons.
-json through_jsoncons(json schema) {
-    schema["not"] = false;
-    return schema;
 }
 
 // Messages only the native evaluation produces show that a schema using just the keywords it

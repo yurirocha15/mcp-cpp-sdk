@@ -63,6 +63,7 @@ namespace jsonschema {
         walk_state do_error(const validation_message& msg, 
             mcp_detail_jsoncons::optional<Json>& /*patch*/) final
         {
+            evaluation_limits::charge(64 + 8 * msg.details().size());
             errors.push_back(msg);
             return walk_state::advance;
         }

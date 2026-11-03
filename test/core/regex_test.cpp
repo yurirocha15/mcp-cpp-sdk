@@ -155,6 +155,13 @@ TEST(Regex, BoundsNestingRepetitionAndProgramSize) {
     EXPECT_NO_THROW(Regex{"a{10000}"});
     EXPECT_THROW(Regex{"a{10001}"}, RegexError);
     EXPECT_THROW(Regex{"(a{1000}){1000}"}, RegexError);
+    // Each copy of the group costs a visit per `b{0}` and emits one instruction, so the program stays
+    // small and only a bound on the compile itself stops this.
+    std::string silent;
+    for (int i = 0; i < 20000; ++i) {
+        silent += "b{0}";
+    }
+    EXPECT_THROW(Regex{"(?:a(?:" + silent + ")){10000}"}, RegexError);
     // Length limits written as patterns stay within the program size limit.
     EXPECT_TRUE(Regex{"^.{1,2000}$"}.search(std::string(2000, 'a')));
     EXPECT_FALSE(Regex{"^.{1,2000}$"}.search(std::string(2001, 'a')));

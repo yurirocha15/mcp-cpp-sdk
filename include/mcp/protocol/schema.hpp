@@ -48,6 +48,9 @@ class MCP_API SchemaError : public std::invalid_argument {
         eUnsupportedDialect,  ///< `$schema` names a dialect this SDK does not implement.
         eUnresolvedRef,       ///< A `$ref` target is neither in the document nor a supported
                               ///< dialect's metaschema. Nothing is fetched.
+        eUnsupportedPattern,  ///< A `pattern` or `patternProperties` key is one the linear-time
+                              ///< matcher cannot run, such as a lookahead, or is not a valid
+                              ///< regular expression.
     };
 
     /// Construct with the reason @p category and the description @p message.

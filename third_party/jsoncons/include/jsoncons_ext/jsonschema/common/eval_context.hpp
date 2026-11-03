@@ -105,6 +105,18 @@ struct evaluation_limits
         return *matched;
     }
 
+    // Charges work that does not create an eval_context, such as a comparison in a loop over a
+    // keyword's values.
+    static void charge(std::size_t units)
+    {
+        std::size_t& work = work_left();
+        if (work < units)
+        {
+            throw evaluation_limit_error("schema evaluation takes too much work");
+        }
+        work -= units;
+    }
+
     static void enter(std::size_t depth)
     {
         if (depth > max_depth)

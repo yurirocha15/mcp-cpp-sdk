@@ -65,7 +65,7 @@ VERSION = "1.10.0"
 TARBALL_URL = f"https://github.com/danielaparker/jsoncons/archive/refs/tags/v{VERSION}.tar.gz"
 TARBALL_SHA256 = "c829350a2eece662beb378143e2ab1c1cbb07d703687bf168626665a8a7d8bc1"
 # Bump when the transformation below changes, so PROVENANCE records which one produced the tree.
-TRANSFORM_VERSION = 7
+TRANSFORM_VERSION = 8
 
 # Header directories, relative to the release's include/, that the extension needs.
 SUBSET = ("jsoncons", "jsoncons_ext/jsonschema", "jsoncons_ext/jsonpointer")
@@ -156,6 +156,18 @@ struct evaluation_limits
         return *matched;
     }
 
+    // Charges work that does not create an eval_context, such as a comparison in a loop over a
+    // keyword's values.
+    static void charge(std::size_t units)
+    {
+        std::size_t& work = work_left();
+        if (work < units)
+        {
+            throw evaluation_limit_error("schema evaluation takes too much work");
+        }
+        work -= units;
+    }
+
     static void enter(std::size_t depth)
     {
         if (depth > max_depth)
@@ -181,6 +193,8 @@ EVAL_PATH_CONSTRUCTOR = re.compile(
 )
 
 KEYWORD_VALIDATOR_PATH = "jsoncons_ext/jsonschema/common/keyword_validator.hpp"
+VALIDATOR_PATH = "jsoncons_ext/jsonschema/common/validator.hpp"
+VALIDATION_MESSAGE_PATH = "jsoncons_ext/jsonschema/validation_message.hpp"
 KEYWORD_FACTORY_PATH = "jsoncons_ext/jsonschema/common/keyword_validator_factory.hpp"
 DRAFT_2020_12_FACTORY_PATH = "jsoncons_ext/jsonschema/draft202012/schema_validator_factory_202012.hpp"
 DRAFT_2019_09_FACTORY_PATH = "jsoncons_ext/jsonschema/draft201909/schema_validator_factory_201909.hpp"
@@ -247,6 +261,83 @@ NUMERIC_REPLACEMENTS = (
 
 # (path, old, new, expected count), applied after NUMERIC_REPLACEMENTS.
 EVALUATION_REPLACEMENTS = (
+    # Keywords that loop over what the schema or the value holds, where one pass costs the product
+    # of the two sizes and no eval_context is created to charge it.
+    (
+        KEYWORD_VALIDATOR_PATH,
+        """            for (const auto& item : value_.array_range())
+            {
+                if (item == instance)\x20
+                {
+                    in_range = true;""",
+        """            for (const auto& item : value_.array_range())
+            {
+                evaluation_limits::charge(8);
+                if (item == instance)\x20
+                {
+                    in_range = true;""",
+        1,
+    ),
+    (
+        KEYWORD_VALIDATOR_PATH,
+        """            for (const auto& dep : dependent_required_)\x20
+            {
+                auto prop = instance.find(dep.first);""",
+        """            for (const auto& dep : dependent_required_)\x20
+            {
+                evaluation_limits::charge(1);
+                auto prop = instance.find(dep.first);""",
+        3,
+    ),
+    (
+        KEYWORD_VALIDATOR_PATH,
+        """            for (const auto& prop : instance.object_range())\x20
+            {
+                auto prop_it = properties_.find(prop.key().c_str());""",
+        """            for (const auto& prop : instance.object_range())\x20
+            {
+                evaluation_limits::charge(1);
+                auto prop_it = properties_.find(prop.key().c_str());""",
+        2,
+    ),
+    (
+        KEYWORD_VALIDATOR_PATH,
+        """            for (auto const& prop : properties_)\x20
+            {
+                //std::cout << "   prop:" << prop.first << "\\n";
+                const auto finding = instance.find(prop.first);""",
+        """            for (auto const& prop : properties_)\x20
+            {
+                evaluation_limits::charge(1);
+                //std::cout << "   prop:" << prop.first << "\\n";
+                const auto finding = instance.find(prop.first);""",
+        1,
+    ),
+    # A branching keyword keeps what each failed branch reported, and a message may quote the whole
+    # value, so memory was not bounded by the work budget. A kept message costs work and is cut.
+    (
+        VALIDATOR_PATH,
+        """            errors.push_back(msg);""",
+        """            evaluation_limits::charge(64 + 8 * msg.details().size());
+            errors.push_back(msg);""",
+        1,
+    ),
+    (
+        VALIDATION_MESSAGE_PATH,
+        """              message_(std::move(message))
+""",
+        """              message_(std::move(message).substr(0, 512))
+""",
+        1,
+    ),
+    (
+        VALIDATION_MESSAGE_PATH,
+        """              message_(message),
+""",
+        """              message_(message.substr(0, 512)),
+""",
+        1,
+    ),
     (
         KEYWORD_VALIDATOR_PATH,
         "#include <cmath>\n",
@@ -327,6 +418,7 @@ EVALUATION_REPLACEMENTS = (
             {
                 for (std::size_t j = i + 1; j < hashed.size() && hashed[j].first == hashed[i].first; ++j)
                 {
+                    evaluation_limits::charge(8); // hashes an attacker chose can all collide
                     if (*hashed[i].second == *hashed[j].second)
                     {
                         return false; // contains duplicates

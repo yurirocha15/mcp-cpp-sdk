@@ -59,9 +59,19 @@ McpError::McpError(int code, std::string message, std::optional<nlohmann::json> 
 
 namespace {
 
+/// What the client knows about the output of a tool it is about to call.
+struct OutputCheck {
+    std::optional<CompiledSchema> schema;
+    /// Set when the server declared a schema that cannot be used; the call then fails unsent.
+    std::optional<SchemaError> refusal;
+};
+
 /// Checks a tools/call result against the tool's output schema, when the client has one for it.
-Task<CallToolResult> checked_call_result(Task<nlohmann::json> request,
-                                         std::optional<CompiledSchema> output_schema) {
+Task<CallToolResult> checked_call_result(Task<nlohmann::json> request, OutputCheck check) {
+    if (check.refusal) {
+        throw *check.refusal;
+    }
+    auto& output_schema = check.schema;
     auto result_json = co_await std::move(request);
     auto result = result_json.get<CallToolResult>();
     if (output_schema && !result.isError.value_or(false) && result.structuredContent) {
@@ -601,72 +611,69 @@ struct Client::Impl {
     /// What the client knows of a listed tool's schemas. The serialized schemas let a later
     /// listing reuse the compiled output schema when nothing changed.
     struct ListedTool {
-        std::string input_text;
         std::optional<std::string> output_text;
         std::optional<CompiledSchema> output_schema;
+        /// Why output_schema is empty when the tool declares one and the client cannot use it.
+        std::optional<SchemaError> output_problem;
     };
     mutable std::mutex listed_tools_mutex;
     std::map<std::string, ListedTool, std::less<>> listed_tools;
 
     /// The output schema to check a call of @p name against, if the client has one.
-    std::optional<CompiledSchema> output_schema_for(std::string_view name) const {
+    OutputCheck output_check_for(std::string_view name) const {
         if (!options.validate_tool_schemas) {
-            return std::nullopt;
+            return {};
         }
         std::lock_guard lock(listed_tools_mutex);
         const auto found = listed_tools.find(name);
         if (found == listed_tools.end()) {
-            return std::nullopt;
+            return {};
         }
-        return found->second.output_schema;
+        // A pattern this client cannot run says nothing about the server, so such a result goes
+        // unchecked. Any other problem means the server declared a schema no client can use.
+        const auto& problem = found->second.output_problem;
+        if (problem && problem->category() != SchemaError::Category::eUnsupportedPattern) {
+            return {std::nullopt, problem};
+        }
+        return {found->second.output_schema, std::nullopt};
     }
 
-    /// Compiles @p tool's schemas and remembers its output schema; the problem when a schema cannot
-    /// be used.
+    /// Compiles @p tool's output schema and remembers it; the problem when it cannot be used. The
+    /// input schema is the server's to enforce, so nothing here depends on it.
     std::optional<SchemaError> remember_tool(const Tool& tool) {
         ListedTool listed{
-            tool.inputSchema.dump(),
             tool.outputSchema ? std::optional<std::string>(tool.outputSchema->dump()) : std::nullopt,
-            std::nullopt};
+            std::nullopt, std::nullopt};
         {
             std::lock_guard lock(listed_tools_mutex);
             const auto found = listed_tools.find(tool.name);
-            if (found != listed_tools.end() && found->second.input_text == listed.input_text &&
-                found->second.output_text == listed.output_text) {
-                return std::nullopt;
+            if (found != listed_tools.end() && found->second.output_text == listed.output_text) {
+                return found->second.output_problem;
             }
         }
-        std::string_view field = "inputSchema";
         try {
-            (void)CompiledSchema::compile(tool.inputSchema);
-            field = "outputSchema";
             if (tool.outputSchema) {
                 listed.output_schema = CompiledSchema::compile(*tool.outputSchema);
             }
         } catch (const SchemaError& error) {
-            std::lock_guard lock(listed_tools_mutex);
-            listed_tools.erase(tool.name);
-            return SchemaError(error.category(), std::string(field) + ": " + error.what());
+            listed.output_problem =
+                SchemaError(error.category(), std::string("outputSchema: ") + error.what());
         }
+        auto problem = listed.output_problem;
         std::lock_guard lock(listed_tools_mutex);
         listed_tools.insert_or_assign(tool.name, std::move(listed));
-        return std::nullopt;
+        return problem;
     }
 
-    /// Leaves out of @p result the tools whose schemas cannot be used, reporting each.
-    void accept_listed_tools(ListToolsResult& result) {
+    /// Remembers the output schemas of @p result, reporting those that cannot be used. Every tool
+    /// stays listed: whether a tool can be called is the server's to say.
+    void accept_listed_tools(const ListToolsResult& result) {
         if (!options.validate_tool_schemas) {
             return;
         }
-        std::vector<Tool> usable;
-        usable.reserve(result.tools.size());
-        for (auto& tool : result.tools) {
-            auto problem = remember_tool(tool);
-            if (!problem) {
-                usable.push_back(std::move(tool));
-                continue;
-            }
-            if (options.on_tool_schema_error) {
+        for (const auto& tool : result.tools) {
+            const auto problem = remember_tool(tool);
+            if (problem && options.on_tool_schema_error) {
                 try {
                     options.on_tool_schema_error(tool, *problem);
                 } catch (...) {
@@ -674,7 +681,6 @@ struct Client::Impl {
                 }
             }
         }
-        result.tools = std::move(usable);
     }
 
     static Task<ListToolsResult> accepted_tools(std::shared_ptr<Impl> state,
@@ -774,9 +780,9 @@ Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& curso
 
 Task<CallToolResult> Client::call_tool_with(CallToolParams params) {
     // [gcc11-sso: not-a-coroutine]
-    auto output_schema = impl_->output_schema_for(params.name);
+    auto check = impl_->output_check_for(params.name);
     return checked_call_result(send_request("tools/call", nlohmann::json(std::move(params))),
-                               std::move(output_schema));
+                               std::move(check));
 }
 
 Task<ListResourcesResult> Client::list_resources(const std::optional<std::string>& cursor) {

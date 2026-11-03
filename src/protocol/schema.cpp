@@ -1,5 +1,6 @@
 #include <mcp/protocol/schema.hpp>
 
+#include <mcp/detail/regex.hpp>
 #include "../detail/diagnostic_text.hpp"
 #include "native_schema.hpp"
 
@@ -350,6 +351,9 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
         auto evaluation =
             jcs::evaluation_options{}.default_version(std::string(supported_dialects()[0]));
         compiled.emplace(jcs::make_json_schema(std::move(converted), refuse, evaluation));
+    } catch (const detail::RegexError& error) {
+        throw SchemaError(SchemaError::Category::eUnsupportedPattern,
+                          describe("JSON Schema pattern cannot be used: ", error.what()));
     } catch (const std::exception& error) {
         if (!refused.empty()) {
             // jsoncons also asks for the metaschema of an embedded resource's `$schema`.
@@ -399,7 +403,7 @@ ValidationResult CompiledSchema::validate(const nlohmann::json& instance) const 
 
     if (impl_->native) {
         impl_->native->validate(instance, options.max_reported_violations, shape.pattern_steps(options),
-                                result);
+                                g_base_work + g_work_per_level * shape.levels, result);
         return result;
     }
 
