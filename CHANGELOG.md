@@ -90,6 +90,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   A cancel that arrives before the handler asks stops the request from being
   sent. The client is sent `notifications/cancelled` for a request the server
   gave up on.
+- Both HTTP server transports read a request's headers first and check the
+  origin and bearer token on them, so the body of a refused request is no
+  longer read. They close a connection that takes more than 60 seconds to send
+  a request, accept connections up to three quarters of the descriptor limit,
+  and handle at most 4096 requests holding at most 1 GiB at once across all
+  sessions (`set_connection_limits()`).
 - `StreamableHttpSessionManager` holds at most 10,000 sessions and ends a session
   idle for five minutes (`set_session_limits()`), and keeps no session for a
   failed initialize. An SSE replay store keeps at most 32 MiB.

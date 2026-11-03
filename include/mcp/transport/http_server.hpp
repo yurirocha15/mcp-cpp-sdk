@@ -273,6 +273,17 @@ class MCP_API HttpServerTransport final : public ITransport {
     void set_max_request_body_bytes(std::size_t max_bytes);
 
     /**
+     * @brief Set what the connections and requests of this transport may hold at once.
+     *
+     * @details The headers of a request are read first, and the Origin and bearer token checks
+     * run on them, so a request they refuse never has its body read. See HttpConnectionLimits for
+     * the defaults. Must be called before listen().
+     *
+     * @throws std::invalid_argument If `max_requests` or `max_request_bytes` is 0.
+     */
+    void set_connection_limits(const HttpConnectionLimits& limits);
+
+    /**
      * @brief Set how long a session may sit idle before a new client can take its place.
      *
      * @details This transport serves one session at a time. Without this, a client that left

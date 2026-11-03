@@ -4,6 +4,7 @@
 #include <mcp/core/export.hpp>
 
 #include <boost/beast/http.hpp>
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <string>
@@ -154,5 +155,24 @@ MCP_API std::string format_protected_resource_metadata(const ProtectedResourceMe
  * @throws std::invalid_argument If `resource` is not an absolute URL with an authority.
  */
 MCP_API std::string protected_resource_metadata_url(const ProtectedResourceMetadataConfig& metadata);
+
+/**
+ * @brief What an HTTP server transport lets its connections and requests hold at once.
+ *
+ * Every limit covers the whole listener, whatever session a request belongs to.
+ */
+struct HttpConnectionLimits {
+    /// Connections at once; one past it is closed as soon as it is accepted. Zero takes three
+    /// quarters of the process's descriptor limit where there is one, else 4096.
+    std::size_t max_connections{0};
+    /// How long reading one request may take, from waiting for its first byte to the end of its
+    /// body; a connection that takes longer is closed. Zero means no limit.
+    std::chrono::milliseconds request_read_timeout{std::chrono::seconds(60)};
+    /// Requests being handled at once. One past it is answered 503.
+    std::size_t max_requests{4096};
+    /// Memory the requests being read or handled may hold together: a body by its length while it
+    /// is read, a JSON-RPC message by what it takes parsed. A request past it is answered 503.
+    std::size_t max_request_bytes{std::size_t{1024} * 1024 * 1024};
+};
 
 }  // namespace mcp

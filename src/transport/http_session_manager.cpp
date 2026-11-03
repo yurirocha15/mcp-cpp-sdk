@@ -1,5 +1,6 @@
 #include "../detail/accept_retry.hpp"
 #include "../detail/beast_string.hpp"
+#include "../detail/http_limits.hpp"
 #include "../detail/jsonrpc_envelope.hpp"
 #include "../detail/memory_transport_read.hpp"
 #include "../detail/peer_json.hpp"
@@ -247,6 +248,9 @@ struct StreamableHttpSessionManager::Impl {
     SessionMap sessions;
     /// Guarded by configuration_mutex_.
     SessionLimits session_limits;
+    /// Guarded by configuration_mutex_.
+    HttpConnectionLimits connection_limits_;
+    detail::HttpListenerBudget budget_;
     // Answers sessionless server/discover requests. Built once on the first one, so a peer that
     // needs no session or credential cannot make the factory run per request.
     std::mutex discover_server_mutex_;
@@ -484,20 +488,9 @@ struct StreamableHttpSessionManager::Impl {
 
     // HTTP connection / request handling
 
-    /// @brief Report a body that exceeded max_request_body_bytes_, ignoring a dead peer.
-    static Task<void> write_payload_too_large(Connection& stream) {
-        StringResponse response{http::status::payload_too_large, 11};
-        response.set(http::field::server, "mcp-cpp-sdk");
-        response.set(http::field::content_type, "application/json");
-        response.keep_alive(false);
-        response.body() = nlohmann::json{{"error", "Request body too large"}}.dump();
-        response.prepare_payload();
-        try {
-            co_await http::async_write(stream, response, boost::asio::use_awaitable);
-        } catch (const boost::system::system_error&) {
-            // The peer that overran the limit may already be gone; nothing more to report to it.
-            (void)0;
-        }
+    HttpConnectionLimits current_connection_limits() const {
+        std::lock_guard lock(configuration_mutex_);
+        return connection_limits_;
     }
 
     Task<void> handle_connection(const std::shared_ptr<Connection>& connection,
@@ -507,29 +500,18 @@ struct StreamableHttpSessionManager::Impl {
         auto& stream = *connection;
         beast::flat_buffer request_buffer;
         std::unique_ptr<Server> stateless_server;
+        const detail::RefuseBeforeBody refuse =
+            [this](const StringRequest& head) -> Task<std::optional<StringResponse>> {
+            co_return co_await refuse_before_body(head);
+        };
 
         for (;;) {
+            const auto limits = current_connection_limits();
             http::request_parser<http::string_body> parser;
             parser.body_limit(max_request_body_bytes_);
-            bool body_too_large = false;
-            try {
-                co_await http::async_read(stream, request_buffer, parser, boost::asio::use_awaitable);
-            } catch (const boost::system::system_error& err) {
-                if (err.code() == boost::asio::error::eof ||
-                    err.code() == boost::asio::error::connection_reset ||
-                    err.code() == boost::asio::error::operation_aborted) {
-                    break;
-                }
-                if (err.code() != http::error::body_limit) {
-                    throw;
-                }
-                body_too_large = true;
-            }
-
-            if (body_too_large) {
-                // The parser cannot resynchronize after a truncated body, so the connection ends
-                // with this answer rather than reading another request from it.
-                co_await write_payload_too_large(stream);
+            detail::BudgetLease bytes(budget_.bytes, limits.max_request_bytes);
+            if (!co_await detail::read_request_within_limits(stream, request_buffer, parser, limits,
+                                                             max_request_body_bytes_, bytes, refuse)) {
                 break;
             }
             StringRequest request = parser.release();
@@ -538,7 +520,14 @@ struct StreamableHttpSessionManager::Impl {
                 break;
             }
 
-            auto response = co_await handle_request(request, conn_strand, stateless_server);
+            detail::BudgetLease slot(budget_.requests, limits.max_requests);
+            StringResponse response;
+            if (slot.grow_to(1)) {
+                response = co_await handle_request(request, conn_strand, stateless_server, bytes);
+            } else {
+                response = detail_session_mgr::make_error_response(
+                    request, http::status::service_unavailable, "Too many requests");
+            }
             if (closed.load(std::memory_order_acquire)) {
                 break;
             }
@@ -586,14 +575,13 @@ struct StreamableHttpSessionManager::Impl {
                                                       protected_resource_metadata_body_);
     }
 
-    Task<StringResponse> handle_request(const StringRequest& request,
-                                        boost::asio::strand<boost::asio::any_io_executor> conn_strand,
-                                        std::unique_ptr<Server>& stateless_server) {
+    /// Origin and bearer checks: they need only the headers, so a request they refuse never has its
+    /// body read.
+    Task<std::optional<StringResponse>> refuse_before_body(const StringRequest& request) {
+        // A closed transport answers nothing more, so a request is not worth a token check.
         if (closed.load(std::memory_order_acquire)) {
-            co_return detail_session_mgr::make_error_response(
-                request, http::status::service_unavailable, "Transport closed");
+            co_return std::nullopt;
         }
-
         const auto origin_it = request.find(http::field::origin);
         if (origin_it != request.end() && !allow_all_origins_ &&
             !allowed_origins_.contains(std::string(origin_it->value()))) {
@@ -601,11 +589,8 @@ struct StreamableHttpSessionManager::Impl {
                                                               "Origin not allowed");
         }
 
-        if (auto document = serve_protected_resource_metadata(request)) {
-            co_return std::move(*document);
-        }
-
-        const bool unauthenticated_path = is_unauthenticated_path(request);
+        const bool unauthenticated_path =
+            is_unauthenticated_path(request) || serve_protected_resource_metadata(request).has_value();
         if (!unauthenticated_path && (bearer_token_validator_ || async_bearer_token_validator_)) {
             const auto authorization_it = request.find(http::field::authorization);
             const auto token =
@@ -641,6 +626,22 @@ struct StreamableHttpSessionManager::Impl {
             }
         }
 
+        co_return std::nullopt;
+    }
+
+    Task<StringResponse> handle_request(const StringRequest& request,
+                                        boost::asio::strand<boost::asio::any_io_executor> conn_strand,
+                                        std::unique_ptr<Server>& stateless_server,
+                                        detail::BudgetLease& bytes) {
+        if (closed.load(std::memory_order_acquire)) {
+            co_return detail_session_mgr::make_error_response(
+                request, http::status::service_unavailable, "Transport closed");
+        }
+
+        if (auto document = serve_protected_resource_metadata(request)) {
+            co_return std::move(*document);
+        }
+
         if (custom_handler) {
             auto custom_response = custom_handler(request);
             if (custom_response.has_value()) {
@@ -648,7 +649,7 @@ struct StreamableHttpSessionManager::Impl {
             }
         }
 
-        if (unauthenticated_path) {
+        if (is_unauthenticated_path(request)) {
             // An exempt path is excluded from MCP dispatch, not merely excused from the bearer
             // check. Serving MCP here would answer it with no authentication at all, so once the
             // metadata route and the custom handler have both declined, nothing is left to answer
@@ -658,7 +659,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         if (request.method() == http::verb::post) {
-            co_return co_await handle_post(request, conn_strand, stateless_server);
+            co_return co_await handle_post(request, conn_strand, stateless_server, bytes);
         }
 
         if (stateless_json_mode_) {
@@ -856,7 +857,8 @@ struct StreamableHttpSessionManager::Impl {
 
     Task<StringResponse> handle_post(const StringRequest& request,
                                      boost::asio::strand<boost::asio::any_io_executor> conn_strand,
-                                     std::unique_ptr<Server>& stateless_server) {
+                                     std::unique_ptr<Server>& stateless_server,
+                                     detail::BudgetLease& bytes) {
         if (closed.load(std::memory_order_acquire)) {
             co_return detail_session_mgr::make_error_response(
                 request, http::status::service_unavailable, "Transport closed");
@@ -866,6 +868,11 @@ struct StreamableHttpSessionManager::Impl {
         if (request_json.is_discarded() || !request_json.is_object()) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid JSON-RPC payload");
+        }
+        // Held until the answer is written: the parsed message can be far larger than its body.
+        if (!bytes.grow_to(request.body().size() + detail::json_memory_cost(request_json))) {
+            co_return detail_session_mgr::make_error_response(
+                request, http::status::service_unavailable, "Server busy");
         }
 
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
@@ -1211,6 +1218,14 @@ void StreamableHttpSessionManager::set_allow_all_origins(bool allow_all) {
     impl_->allow_all_origins_ = allow_all;
 }
 
+void StreamableHttpSessionManager::set_connection_limits(const HttpConnectionLimits& limits) {
+    if (limits.max_requests == 0 || limits.max_request_bytes == 0) {
+        throw std::invalid_argument("HTTP connection limits must allow a request");
+    }
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->connection_limits_ = limits;
+}
+
 void StreamableHttpSessionManager::set_bearer_token_validator(BearerTokenValidator validator) {
     std::lock_guard lock(impl_->configuration_mutex_);
     impl_->ensure_configurable();
@@ -1396,12 +1411,22 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
             continue;
         }
 
+        const auto max_connections =
+            detail::resolved_max_connections(impl->current_connection_limits().max_connections);
+        if (impl->budget_.connections.fetch_add(1, std::memory_order_relaxed) >= max_connections) {
+            // Closed at once, so the descriptor is free again for a connection that can be served.
+            impl->budget_.connections.fetch_sub(1, std::memory_order_relaxed);
+            boost::system::error_code ignored;
+            (void)socket.close(ignored);
+            continue;
+        }
         auto conn_strand = boost::asio::make_strand(impl->executor);
         auto native_handle = socket.release();
         boost::asio::ip::tcp::socket conn_socket(conn_strand, boost::asio::ip::tcp::v4(),
                                                  native_handle);
         auto connection = std::make_shared<Impl::Connection>(std::move(conn_socket));
         if (!impl->register_connection(connection)) {
+            impl->budget_.connections.fetch_sub(1, std::memory_order_relaxed);
             Impl::request_connection_close(connection);
             co_return;
         }
@@ -1412,9 +1437,11 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
                     co_await impl->handle_connection(connection, conn_strand);
                 } catch (...) {
                     impl->unregister_connection(connection);
+                    impl->budget_.connections.fetch_sub(1, std::memory_order_relaxed);
                     throw;
                 }
                 impl->unregister_connection(connection);
+                impl->budget_.connections.fetch_sub(1, std::memory_order_relaxed);
             },
             [](const std::exception_ptr&) {
                 // Connection errors (EOF, client disconnect) are normal;

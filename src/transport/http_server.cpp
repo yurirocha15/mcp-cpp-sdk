@@ -1,5 +1,6 @@
 #include "../detail/accept_retry.hpp"
 #include "../detail/beast_string.hpp"
+#include "../detail/http_limits.hpp"
 #include "../detail/peer_json.hpp"
 
 #include <mcp/detail/secure_random.hpp>
@@ -513,25 +514,15 @@ struct HttpServerTransport::Impl {
         co_return std::nullopt;
     }
 
-    Task<StringResponse> handle_post(const StringRequest& request) {
-        // Origin and bearer checks come first: they need only the headers, so a request that fails
-        // them never makes the server build a JSON document from its body.
-        if (auto error = check_origin(request)) {
-            co_return std::move(*error);
-        }
-        if (auto error = check_authorization(request)) {
-            co_return std::move(*error);
-        }
-        if (async_bearer_token_validator) {
-            if (auto error = co_await check_authorization_async(request)) {
-                co_return std::move(*error);
-            }
-        }
-
+    Task<StringResponse> handle_post(const StringRequest& request, detail::BudgetLease& bytes) {
         const auto request_json = detail::parse_peer_json(request.body());
         if (request_json.is_discarded() || !request_json.is_object()) {
             co_return make_error_response(request, http::status::bad_request,
                                           "Invalid JSON-RPC payload");
+        }
+        // Held until the answer is written: the parsed message can be far larger than its body.
+        if (!bytes.grow_to(request.body().size() + detail::json_memory_cost(request_json))) {
+            co_return make_error_response(request, http::status::service_unavailable, "Server busy");
         }
         if (auto error = check_protocol_version(request, request_json)) {
             co_return std::move(*error);
@@ -683,17 +674,6 @@ struct HttpServerTransport::Impl {
     }
 
     Task<StringResponse> handle_delete(const StringRequest& request) {
-        if (auto error = check_origin(request)) {
-            co_return std::move(*error);
-        }
-        if (auto error = check_authorization(request)) {
-            co_return std::move(*error);
-        }
-        if (async_bearer_token_validator) {
-            if (auto error = co_await check_authorization_async(request)) {
-                co_return std::move(*error);
-            }
-        }
         const nlohmann::json request_json = {"method", "delete"};
         if (auto error = check_protocol_version(request, request_json)) {
             co_return std::move(*error);
@@ -710,17 +690,6 @@ struct HttpServerTransport::Impl {
     }
 
     Task<StringResponse> handle_get(const StringRequest& request) {
-        if (auto error = check_origin(request)) {
-            co_return std::move(*error);
-        }
-        if (auto error = check_authorization(request)) {
-            co_return std::move(*error);
-        }
-        if (async_bearer_token_validator) {
-            if (auto error = co_await check_authorization_async(request)) {
-                co_return std::move(*error);
-            }
-        }
         const nlohmann::json request_json = {"method", "get"};
         if (auto error = check_protocol_version(request, request_json)) {
             co_return std::move(*error);
@@ -755,7 +724,33 @@ struct HttpServerTransport::Impl {
         co_return refusal;
     }
 
-    Task<StringResponse> handle_request(const StringRequest& request) {
+    /// Origin and bearer checks for the MCP endpoint: they need only the headers, so a request they
+    /// refuse never has its body read. The metadata document and exempt paths need neither.
+    Task<std::optional<StringResponse>> refuse_before_body(const StringRequest& request) const {
+        // A closed transport answers nothing more, so a request is not worth a token check.
+        if (state->closed.load(std::memory_order_acquire)) {
+            co_return std::nullopt;
+        }
+        const auto method = request.method();
+        if (method != http::verb::post && method != http::verb::get && method != http::verb::delete_) {
+            co_return std::nullopt;
+        }
+        if (is_unauthenticated_path(request) || serve_protected_resource_metadata(request)) {
+            co_return std::nullopt;
+        }
+        if (auto error = check_origin(request)) {
+            co_return error;
+        }
+        if (auto error = check_authorization(request)) {
+            co_return error;
+        }
+        if (async_bearer_token_validator) {
+            co_return co_await check_authorization_async(request);
+        }
+        co_return std::nullopt;
+    }
+
+    Task<StringResponse> handle_request(const StringRequest& request, detail::BudgetLease& bytes) {
         if (state->closed.load(std::memory_order_acquire)) {
             co_return make_error_response(request, http::status::service_unavailable,
                                           "Transport closed");
@@ -770,7 +765,7 @@ struct HttpServerTransport::Impl {
             co_return make_error_response(request, http::status::not_found, "Not found");
         }
         if (request.method() == http::verb::post) {
-            co_return co_await handle_post(request);
+            co_return co_await handle_post(request, bytes);
         }
         if (request.method() == http::verb::get) {
             co_return co_await handle_get(request);
@@ -785,47 +780,21 @@ struct HttpServerTransport::Impl {
         co_return response;
     }
 
-    /// @brief Report a body that exceeded max_request_body_bytes, ignoring a dead peer.
-    static Task<void> write_payload_too_large(Connection& stream) {
-        StringResponse response{http::status::payload_too_large, 11};
-        set_common_headers(response, false);
-        response.set(http::field::content_type, "application/json");
-        response.body() = nlohmann::json{{"error", "Request body too large"}}.dump();
-        response.prepare_payload();
-        try {
-            co_await http::async_write(stream, response, boost::asio::use_awaitable);
-        } catch (const boost::system::system_error&) {
-            // The peer that overran the limit may already be gone; nothing more to report to it.
-            (void)0;
-        }
-    }
-
     Task<void> handle_connection(const std::shared_ptr<Connection>& connection) {
         auto& stream = *connection;
         beast::flat_buffer request_buffer;
+        const detail::RefuseBeforeBody refuse =
+            [this](const StringRequest& head) -> Task<std::optional<StringResponse>> {
+            co_return co_await refuse_before_body(head);
+        };
 
         for (;;) {
             http::request_parser<http::string_body> parser;
             parser.body_limit(max_request_body_bytes);
-            bool body_too_large = false;
-            try {
-                co_await http::async_read(stream, request_buffer, parser, boost::asio::use_awaitable);
-            } catch (const boost::system::system_error& err) {
-                if (err.code() == boost::asio::error::eof ||
-                    err.code() == boost::asio::error::connection_reset ||
-                    err.code() == boost::asio::error::operation_aborted) {
-                    break;
-                }
-                if (err.code() != http::error::body_limit) {
-                    throw;
-                }
-                body_too_large = true;
-            }
-
-            if (body_too_large) {
-                // The parser cannot resynchronize after a truncated body, so the connection ends
-                // with this answer rather than reading another request from it.
-                co_await write_payload_too_large(stream);
+            detail::BudgetLease bytes(budget.bytes, connection_limits.max_request_bytes);
+            if (!co_await detail::read_request_within_limits(stream, request_buffer, parser,
+                                                             connection_limits, max_request_body_bytes,
+                                                             bytes, refuse)) {
                 break;
             }
             StringRequest request = parser.release();
@@ -834,7 +803,14 @@ struct HttpServerTransport::Impl {
                 break;
             }
 
-            auto response = co_await handle_request(request);
+            detail::BudgetLease slot(budget.requests, connection_limits.max_requests);
+            StringResponse response;
+            if (slot.grow_to(1)) {
+                response = co_await handle_request(request, bytes);
+            } else {
+                response = make_error_response(request, http::status::service_unavailable,
+                                               "Too many requests");
+            }
             if (state->closed.load(std::memory_order_acquire)) {
                 break;
             }
@@ -987,6 +963,8 @@ struct HttpServerTransport::Impl {
     BearerTokenValidator bearer_token_validator;
     AsyncBearerTokenValidator async_bearer_token_validator;
     std::size_t max_request_body_bytes{constants::g_default_max_request_body_bytes};
+    HttpConnectionLimits connection_limits;
+    detail::HttpListenerBudget budget;
     BearerChallengeConfig bearer_challenge;
     /// Rendered once when the challenge or the metadata changes, so serving a 401 never formats.
     std::string www_authenticate_value{"Bearer"};
@@ -1066,6 +1044,15 @@ void HttpServerTransport::set_async_bearer_token_validator(AsyncBearerTokenValid
 void HttpServerTransport::set_session_idle_timeout(std::chrono::milliseconds timeout) {
     std::lock_guard lock(impl_->configuration_mutex);
     impl_->session_idle_timeout = timeout;
+}
+
+void HttpServerTransport::set_connection_limits(const HttpConnectionLimits& limits) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    if (limits.max_requests == 0 || limits.max_request_bytes == 0) {
+        throw std::invalid_argument("HTTP connection limits must allow a request");
+    }
+    impl_->connection_limits = limits;
 }
 
 void HttpServerTransport::set_max_request_body_bytes(std::size_t max_bytes) {
@@ -1198,6 +1185,13 @@ Task<void> HttpServerTransport::listen_impl(std::shared_ptr<Impl> impl) {
             co_return;
         }
 
+        if (impl->active_connections.size() >=
+            detail::resolved_max_connections(impl->connection_limits.max_connections)) {
+            // Closed at once, so the descriptor is free again for a connection that can be served.
+            boost::system::error_code ignored;
+            (void)socket.close(ignored);
+            continue;
+        }
         auto connection = std::make_shared<Impl::Connection>(std::move(socket));
         impl->active_connections.insert(connection);
 

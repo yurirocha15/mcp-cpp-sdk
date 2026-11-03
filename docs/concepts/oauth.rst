@@ -270,10 +270,17 @@ Both transports cap the HTTP request body they will read, answering
 :cpp:var:`mcp::constants::g_default_max_request_body_bytes`, 8 MiB, and
 ``set_max_request_body_bytes`` overrides it.
 
-The body is read before the bearer token is checked, so the cap also bounds
-what a client without a valid token can make the server buffer on each
-connection. The body is parsed as JSON only after the origin and bearer checks
-pass.
+The headers are read first, and the origin and bearer checks run on them, so
+the body of a request they refuse is never read and the connection is closed.
+
+``set_connection_limits()`` takes an :cpp:struct:`mcp::HttpConnectionLimits`.
+By default a transport accepts connections up to three quarters of the
+process's descriptor limit, closes a connection that takes more than
+60 seconds to send a request, and handles at most 4096 requests at once
+holding at most 1 GiB together, a body counted by its length and a JSON-RPC
+message by what it takes parsed. A request past either is answered
+``503 Service Unavailable``. These limits cover all sessions of a
+``StreamableHttpSessionManager`` together.
 
 The default is deliberately well above Boost.Beast's own 1 MB. Binary content
 reaches an MCP server as base64 inside the JSON body — ``ImageContent::data``,

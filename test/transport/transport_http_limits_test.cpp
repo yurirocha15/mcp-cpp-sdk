@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -64,6 +65,40 @@ mcp::Task<Reply> send(asio::any_io_executor executor, unsigned short port, std::
         reply.session_id = std::string(session->value());
     }
     co_return reply;
+}
+
+/// Writes @p text on a new connection and returns what comes back until the server closes it, or
+/// what came before @p wait ran out.
+mcp::Task<std::string> raw_exchange(asio::any_io_executor executor, unsigned short port,
+                                    std::string text, std::chrono::milliseconds wait) {
+    beast::tcp_stream stream(executor);
+    stream.expires_after(wait);
+    std::string received;
+    try {
+        co_await stream.async_connect(
+            asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port), asio::use_awaitable);
+        if (!text.empty()) {
+            co_await asio::async_write(stream, asio::buffer(text), asio::use_awaitable);
+        }
+        std::array<char, 4096> chunk{};
+        for (;;) {
+            const auto count =
+                co_await stream.async_read_some(asio::buffer(chunk), asio::use_awaitable);
+            received.append(chunk.data(), count);
+        }
+    } catch (const boost::system::system_error& error) {
+        if (error.code() == beast::error::timeout) {
+            received += "[timed out]";
+        }
+    }
+    co_return received;
+}
+
+/// A POST whose headers promise @p body_bytes of body, none of which is sent.
+std::string header_only_post(std::size_t body_bytes, const std::string& extra = "") {
+    return "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+           "Accept: application/json, text/event-stream\r\n" +
+           extra + "Content-Length: " + std::to_string(body_bytes) + "\r\n\r\n";
 }
 
 template <typename Condition>
@@ -217,6 +252,80 @@ TEST_F(SessionLimitsTest, RequestIdBeyondInt64IsRefused) {
     EXPECT_EQ(refused.status, 400u);
     EXPECT_EQ(json::parse(refused.body)["error"]["code"], mcp::g_INVALID_REQUEST);
     EXPECT_TRUE(ended);
+}
+
+// A request without a valid token is refused on its headers: its body is never waited for.
+TEST_F(SessionLimitsTest, UnauthorizedBodyIsNotRead) {
+    manager_.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    std::string answer;
+    run([&]() -> mcp::Task<void> {
+        answer = co_await raw_exchange(io_.get_executor(), port_, header_only_post(4 * 1024 * 1024),
+                                       std::chrono::seconds(20));
+    });
+    EXPECT_EQ(answer.rfind("HTTP/1.1 401", 0), 0u) << answer;
+    EXPECT_EQ(answer.find("[timed out]"), std::string::npos) << answer;
+}
+
+TEST_F(SessionLimitsTest, ConnectionThatSendsNothingIsClosed) {
+    manager_.set_connection_limits({0, std::chrono::milliseconds(100), 4096, 1U << 30});
+    std::string answer;
+    run([&]() -> mcp::Task<void> {
+        answer = co_await raw_exchange(io_.get_executor(), port_, "", std::chrono::seconds(20));
+    });
+    EXPECT_EQ(answer, "");
+}
+
+TEST_F(SessionLimitsTest, ConnectionsPastTheLimitAreClosed) {
+    manager_.set_connection_limits({2, std::chrono::seconds(30), 4096, 1U << 30});
+    std::string third;
+    Reply after;
+    run([&]() -> mcp::Task<void> {
+        auto executor = io_.get_executor();
+        auto idle_one = std::make_shared<beast::tcp_stream>(executor);
+        auto idle_two = std::make_shared<beast::tcp_stream>(executor);
+        const asio::ip::tcp::endpoint endpoint(asio::ip::make_address("127.0.0.1"), port_);
+        co_await idle_one->async_connect(endpoint, asio::use_awaitable);
+        co_await idle_two->async_connect(endpoint, asio::use_awaitable);
+        co_await pause(std::chrono::milliseconds(50));
+        third = co_await raw_exchange(executor, port_, header_only_post(2), std::chrono::seconds(20));
+        idle_one->close();
+        // The server frees the place once it has seen the connection end.
+        for (int attempt = 0; attempt < 3000 && after.status != 200; ++attempt) {
+            bool refused = false;
+            try {
+                after = co_await post(make_initialize_request("1"));
+            } catch (const std::exception&) {
+                refused = true;
+            }
+            if (refused) {
+                co_await pause(std::chrono::milliseconds(10));
+            }
+        }
+        idle_two->close();
+    });
+    EXPECT_EQ(third, "");
+    EXPECT_EQ(after.status, 200u);
+}
+
+TEST_F(SessionLimitsTest, RequestsPastTheBudgetAreRefused) {
+    manager_.set_connection_limits({0, std::chrono::seconds(30), 4096, 64 * 1024});
+    Reply large;
+    Reply small;
+    run([&]() -> mcp::Task<void> {
+        auto request = make_initialize_request("1");
+        request["params"]["padding"] = std::string(100 * 1024, 'x');
+        large = co_await post(request);
+        small = co_await post(make_initialize_request("2"));
+    });
+    EXPECT_EQ(large.status, 503u) << large.body;
+    EXPECT_EQ(small.status, 200u) << small.body;
+}
+
+TEST_F(SessionLimitsTest, ConnectionLimitsMustAllowARequest) {
+    EXPECT_THROW(manager_.set_connection_limits({0, std::chrono::seconds(1), 0, 1}),
+                 std::invalid_argument);
+    EXPECT_THROW(manager_.set_connection_limits({0, std::chrono::seconds(1), 1, 0}),
+                 std::invalid_argument);
 }
 
 TEST_F(SessionLimitsTest, SessionLimitMustAllowASession) {
@@ -439,6 +548,32 @@ TEST_F(ReverseBindingTest, SubscriptionsOfAnEndedSessionLeaveRoomForTheNext) {
     });
     EXPECT_NE(full.body.find("Too many resource subscriptions"), std::string::npos) << full.body;
     EXPECT_NE(json::parse(next.body).value("result", json()), json()) << next.body;
+}
+
+TEST_F(ReverseBindingTest, UnauthorizedBodyIsNotRead) {
+    transport_->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    std::string answer;
+    run([&]() -> mcp::Task<void> {
+        answer = co_await raw_exchange(io_.get_executor(), transport_->port(),
+                                       header_only_post(4 * 1024 * 1024), std::chrono::seconds(20));
+    });
+    EXPECT_EQ(answer.rfind("HTTP/1.1 401", 0), 0u) << answer;
+}
+
+TEST_F(ReverseBindingTest, ConnectionsPastTheLimitAreClosed) {
+    transport_->set_connection_limits({1, std::chrono::seconds(30), 4096, 1U << 30});
+    std::string second;
+    run([&]() -> mcp::Task<void> {
+        auto idle = std::make_shared<beast::tcp_stream>(io_.get_executor());
+        co_await idle->async_connect(
+            asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), transport_->port()),
+            asio::use_awaitable);
+        co_await pause(std::chrono::milliseconds(50));
+        second = co_await raw_exchange(io_.get_executor(), transport_->port(), header_only_post(2),
+                                       std::chrono::seconds(20));
+        idle->close();
+    });
+    EXPECT_EQ(second, "");
 }
 
 TEST_F(ReverseBindingTest, ActiveSessionKeepsNextClientOut) {

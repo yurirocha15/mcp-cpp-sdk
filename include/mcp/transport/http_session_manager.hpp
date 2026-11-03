@@ -236,6 +236,17 @@ class MCP_API StreamableHttpSessionManager {
     void set_session_limits(const SessionLimits& limits);
 
     /**
+     * @brief Set what the connections and requests of this endpoint may hold at once.
+     *
+     * @details The headers of a request are read first, and the Origin and bearer token checks
+     * run on them, so a request they refuse never has its body read. See HttpConnectionLimits for
+     * the defaults.
+     *
+     * @throws std::invalid_argument If `max_requests` or `max_request_bytes` is 0.
+     */
+    void set_connection_limits(const HttpConnectionLimits& limits);
+
+    /**
      * @brief Enable or disable JSON-only responses for managed sessions.
      *
      * When enabled, POST responses always use `application/json` and session
