@@ -57,6 +57,17 @@ TEST_F(EventStoreTest, EvictionOnOverflow) {
     EXPECT_FALSE(result.has_value());
 }
 
+// The bytes of an evicted event are given back, so the store keeps as many events as fit, however
+// many it held before.
+TEST_F(EventStoreTest, EvictedEventsLeaveRoomForNewOnes) {
+    constexpr std::size_t g_event_bytes = 1024 * 1024;
+    mcp::EventStore store(1000);
+    for (int i = 0; i < 100; ++i) {
+        store.append(std::string(g_event_bytes, 'e'));
+    }
+    EXPECT_EQ(store.size(), mcp::constants::g_event_store_max_bytes / g_event_bytes);
+}
+
 TEST_F(EventStoreTest, AllEvents) {
     mcp::EventStore store(10);
 

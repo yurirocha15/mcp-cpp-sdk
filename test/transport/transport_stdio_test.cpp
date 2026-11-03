@@ -624,6 +624,46 @@ TEST_F(StdioTransportTest, ReadAheadStopsWhenNothingTakesTheLines) {
     transport.close();
 }
 
+// Lines taken by read_message() stop counting against the read-ahead limit, so a peer that sends
+// more than the limit in all, one line at a time, is read to the end.
+TEST_F(StdioTransportTest, LinesTakenLeaveRoomForMore) {
+    const std::string payload(64 * 1024, 'x');
+    std::string text;
+    for (int i = 0; i < 300; ++i) {
+        text += R"({"jsonrpc":"2.0","method":"notifications/message","params":{"data":")" + payload +
+                "\"}}\n";
+    }
+    std::istringstream input(text);
+    std::ostringstream output;
+    mcp::StdioTransport transport(io_ctx_.get_executor(), input, output);
+
+    int read = 0;
+    // Reports a reader that stops instead of hanging the test; not a measure of speed.
+    boost::asio::steady_timer guard(io_ctx_, std::chrono::minutes(5));
+    guard.async_wait([&transport](const boost::system::error_code& error) {
+        if (!error) {
+            ADD_FAILURE() << "the reader stopped before the end of the input";
+            transport.close();
+        }
+    });
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            try {
+                for (; read < 300; ++read) {
+                    co_await transport.read_message();
+                }
+            } catch (const std::exception&) {
+                // Closed by the guard.
+            }
+            guard.cancel();
+        },
+        boost::asio::detached);
+    io_ctx_.run();
+    EXPECT_EQ(read, 300);
+    transport.close();
+}
+
 // The protocol channel on this transport is a real process stream, so the tests
 // that distinguish a shared stdout from an owned one have to work at the file
 // descriptor level. POSIX only; the Windows implementation of

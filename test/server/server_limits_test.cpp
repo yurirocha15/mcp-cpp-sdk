@@ -224,6 +224,27 @@ TEST_F(ServerLimitsTest, RefusalsPastTheByteLimitStopTheReading) {
     ASSERT_NE(answer_to(1099), nullptr);
 }
 
+// What a request holds is given back once it is answered, so a session goes on taking requests
+// one after another however much they held in all.
+TEST_F(ServerLimitsTest, RequestMemoryIsGivenBackWhenAnswered) {
+    run([&]() -> mcp::Task<void> {
+        co_await initialized();
+        server_->set_max_in_flight_bytes(1024 * 1024);
+        for (int id = 1; id <= 40; ++id) {
+            transport_->enqueue_message(json{{"jsonrpc", "2.0"},
+                                             {"id", id},
+                                             {"method", "ping"},
+                                             {"params", {{"p", json(2000, json::object())}}}}
+                                            .dump());
+            co_await wait_until([this, id] { return answer_to(id) != nullptr; });
+        }
+    });
+    for (int id = 1; id <= 40; ++id) {
+        ASSERT_NE(answer_to(id), nullptr) << id;
+        EXPECT_TRUE(answer_to(id)->contains("result")) << *answer_to(id);
+    }
+}
+
 TEST_F(ServerLimitsTest, ClientThatNeverAnswersFailsTheHandlerAtTheTimeout) {
     server_->set_reverse_request_timeout(std::chrono::milliseconds(50));
     run([&]() -> mcp::Task<void> {
@@ -544,6 +565,9 @@ class FloodingPeer final : public mcp::ITransport {
             flooding_ = true;
             co_return;
         }
+        if (take_answers) {
+            co_return;
+        }
         if (!closed_) {
             boost::system::error_code ignored;
             co_await stalled_.async_wait(
@@ -557,6 +581,8 @@ class FloodingPeer final : public mcp::ITransport {
     }
 
     int pings_read{0};
+    /// Whether answers are taken, as a peer that reads does.
+    bool take_answers{false};
     /// Empty objects each ping carries: little text, much memory once parsed.
     std::size_t padding{0};
 
@@ -618,6 +644,25 @@ TEST(ClientLimits, ServerRequestsAreLimitedByTheMemoryTheyTake) {
     // 20,000 empty objects take more than 1 MiB parsed, and about 60 KB as text.
     EXPECT_GE(settled, 3);
     EXPECT_LE(settled, 4);
+}
+
+// A request of the server stops counting once it is answered, so a client whose answers are taken
+// keeps reading past the limit.
+TEST(ClientLimits, AnsweredRequestsLeaveRoomForMore) {
+    boost::asio::io_context io;
+    auto peer = std::make_shared<FloodingPeer>(io.get_executor());
+    peer->take_answers = true;
+    mcp::Client client(peer, io.get_executor());
+    boost::asio::co_spawn(
+        io,
+        [&]() -> mcp::Task<void> {
+            co_await client.connect("limits", "1.0");
+            co_await wait_until([&] { return peer->pings_read >= 3000; });
+            client.close();
+        },
+        boost::asio::detached);
+    io.run();
+    EXPECT_GE(peer->pings_read, 3000);
 }
 
 TEST(ClientLimits, IncomingRequestMemoryLimitMustBePositive) {
