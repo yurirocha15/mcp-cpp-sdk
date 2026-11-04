@@ -24,6 +24,7 @@
 #include <thread>
 
 #if !defined(_WIN32)
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -314,7 +315,81 @@ class StdioServerProcess {
     bool reaped_{false};
 };
 
+/// Adds a tool "spin" that writes 'S' to @p marker when it starts, runs until it is cancelled, then
+/// writes 'C' and answers.
+void add_spin_tool(mcp::Server& server, int marker) {
+    server.add_tool<nlohmann::json, nlohmann::json>(
+        "spin", "Runs until cancelled", nlohmann::json{{"type", "object"}},
+        [marker](mcp::Context& ctx, nlohmann::json /*args*/) -> mcp::Task<nlohmann::json> {
+            auto written = ::write(marker, "S", 1);
+            auto executor = co_await boost::asio::this_coro::executor;
+            while (!ctx.is_cancelled()) {
+                boost::asio::steady_timer tick(executor, std::chrono::milliseconds(1));
+                co_await tick.async_wait(boost::asio::use_awaitable);
+            }
+            written = ::write(marker, "C", 1);
+            static_cast<void>(written);
+            co_return nlohmann::json{{"cancelled", true}};
+        });
+}
+
+/// The next byte written to @p marker, or 0 when the writer closes it or nothing arrives within
+/// 90 seconds: a bound for reporting a hang, not a measure of how fast it should be.
+char next_marker(int marker) {
+    pollfd ready{marker, POLLIN, 0};
+    if (::poll(&ready, 1, 90000) <= 0) {
+        return 0;
+    }
+    char byte = 0;
+    return ::read(marker, &byte, 1) == 1 ? byte : 0;
+}
+
+std::string spin_session() {
+    return make_initialize_request("1").dump() + "\n" + make_initialized_notification().dump() + "\n" +
+           make_tool_call_request("s", "spin", nlohmann::json::object()).dump() + "\n";
+}
+
 }  // namespace
+
+// The end of standard input asks the server to finish: a handler still running is told to stop,
+// its answer is written, and the server exits.
+TEST(RunStdioProcess, InputEndCancelsARunningHandler) {
+    int marker[2];
+    ASSERT_EQ(::pipe(marker), 0);
+    StdioServerProcess server([&marker](mcp::Server& child) { add_spin_tool(child, marker[1]); });
+    ::close(marker[1]);
+    server.send(spin_session());
+    ASSERT_EQ(next_marker(marker[0]), 'S');
+    server.close_stdin();
+    const auto seen = next_marker(marker[0]);
+    ::close(marker[0]);
+    ASSERT_EQ(seen, 'C');
+    const auto responses = parse_responses(server.read_to_end());
+    const auto status = server.wait_for_exit();
+    ASSERT_TRUE(status.has_value());
+    EXPECT_TRUE(WIFEXITED(*status));
+    const auto answered = std::any_of(responses.begin(), responses.end(), [](const auto& response) {
+        return response.value("id", nlohmann::json()) == "s";
+    });
+    EXPECT_TRUE(answered);
+}
+
+// A signal ends the run at once: it does not wait for a running handler, which is told to stop.
+TEST(RunStdioProcess, SignalCancelsARunningHandler) {
+    int marker[2];
+    ASSERT_EQ(::pipe(marker), 0);
+    StdioServerProcess server([&marker](mcp::Server& child) { add_spin_tool(child, marker[1]); });
+    ::close(marker[1]);
+    server.send(spin_session());
+    ASSERT_EQ(next_marker(marker[0]), 'S');
+    server.signal(SIGTERM);
+    const auto seen = next_marker(marker[0]);
+    ::close(marker[0]);
+    EXPECT_EQ(seen, 'C');
+    const auto status = server.wait_for_exit();
+    ASSERT_TRUE(status.has_value());
+    EXPECT_TRUE(WIFEXITED(*status));
+}
 
 // The parent keeps standard input open here, so nothing but the signal can end the run.
 TEST(RunStdioProcess, SignalEndsTheRunWhileStandardInputStaysOpen) {
@@ -501,6 +576,26 @@ TEST_F(ServerStdioTest, EveryRequestReadBeforeTheInputEndsIsAnswered) {
     ASSERT_EQ(responses.size(), static_cast<std::size_t>(calls) + 1);
     for (const auto& response : responses) {
         EXPECT_TRUE(response.contains("result")) << response.dump();
+    }
+}
+
+// Parse errors are answered without the read loop waiting for the write; the end of the input still
+// waits for those answers.
+TEST_F(ServerStdioTest, ParseErrorsBeforeTheInputEndsAreAnswered) {
+    constexpr int lines = 20;
+    std::string text;
+    for (int i = 0; i < lines; ++i) {
+        text += "{not json\n";
+    }
+    std::istringstream input(text);
+    std::ostringstream output;
+
+    server_->run_stdio(input, output);
+
+    const auto responses = parse_responses(output.str());
+    ASSERT_EQ(responses.size(), static_cast<std::size_t>(lines));
+    for (const auto& response : responses) {
+        EXPECT_EQ(response["error"]["code"], -32700) << response.dump();
     }
 }
 

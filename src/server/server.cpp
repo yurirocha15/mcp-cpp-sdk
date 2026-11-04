@@ -1180,11 +1180,18 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
         session->stopping.store(true, std::memory_order_release);
         if (dynamic_cast<StdioTransport*>(session->transport.get()) != nullptr) {
             // The end of standard input is how a client asks a stdio server to finish, and it may
-            // still be reading standard output: the requests already started run to their end and
-            // their answers are written before the transport closes. A signal closes it at once.
+            // still be reading standard output. The requests already started are told to stop,
+            // and the answers of those that end, with every answer already queued, are written
+            // before the transport closes. After a signal the transport is closed already, so those
+            // writes fail at once. A handler that ignores Context::is_cancelled() is waited for.
             // Answers to the server's own requests can no longer arrive.
             abandon_pending_requests(*session);
+            for (auto& [id, cancelled] : session->in_flight) {
+                static_cast<void>(id);
+                cancelled->store(true, std::memory_order_relaxed);
+            }
             co_await wait_for_dispatches(*session);
+            co_await session->writer->written();
         }
         abandon_session_work(session);
         session->transport->close();

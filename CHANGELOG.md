@@ -162,7 +162,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   stayed open, and a parent that stopped reading standard output blocked the
   server, including its signal handling. A closed standard output no longer
   raises SIGPIPE; it ends the run. When standard input ends, the requests
-  already read still run to completion and their answers are written first.
+  already read are told to stop, and the answers of those that end are written
+  first, with every answer already queued.
 - A request id that is an integer above INT64_MAX is refused as an invalid
   request. It could not be echoed back unchanged, so over HTTP its request was
   never answered and kept its session from expiring.

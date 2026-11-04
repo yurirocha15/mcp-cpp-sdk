@@ -34,6 +34,7 @@ struct SerializedTransportWriterState {
             completion.expires_at(std::chrono::steady_clock::time_point::max());
         }
 
+        /// Null for a marker that completes once everything queued before it is written.
         std::shared_ptr<const std::string> message;
         std::shared_ptr<const std::atomic<bool>> cancel_before_start;
         boost::asio::steady_timer completion;
@@ -56,6 +57,11 @@ struct SerializedTransportWriterState {
     static Task<void> drain(std::shared_ptr<SerializedTransportWriterState> state) {
         while (!state->queue.empty()) {
             auto operation = state->queue.front();
+            if (!operation->message) {
+                state->queue.pop_front();
+                complete(operation);
+                continue;
+            }
             if (operation->cancel_before_start &&
                 operation->cancel_before_start->load(std::memory_order_acquire)) {
                 state->queue.pop_front();
@@ -98,7 +104,9 @@ struct SerializedTransportWriterState {
                                        std::shared_ptr<const std::atomic<bool>> cancel_before_start) {
         auto operation = std::make_shared<Operation>(state->strand, std::move(message),
                                                      std::move(cancel_before_start));
-        state->queued_bytes.fetch_add(operation->message->size(), std::memory_order_relaxed);
+        if (operation->message) {
+            state->queued_bytes.fetch_add(operation->message->size(), std::memory_order_relaxed);
+        }
         push(state, operation);
 
         while (!operation->completed) {
@@ -150,6 +158,16 @@ Task<void> SerializedTransportWriter::write_message(std::string_view message) co
 
 Task<void> SerializedTransportWriter::write_message(std::shared_ptr<const std::string> message) const {
     return write_message(std::move(message), nullptr);
+}
+
+Task<void> SerializedTransportWriter::written() const {
+    if (!state_) {
+        throw std::logic_error("Cannot use a moved-from SerializedTransportWriter");
+    }
+    auto state = state_;
+    return boost::asio::co_spawn(
+        state->strand, SerializedTransportWriterState::enqueue_and_wait(state, nullptr, nullptr),
+        boost::asio::use_awaitable);
 }
 
 void SerializedTransportWriter::post_message(std::shared_ptr<const std::string> message) const {

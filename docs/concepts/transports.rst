@@ -58,8 +58,11 @@ method, which blocks the main thread until the connection is closed.
    }
 
 ``run_stdio()`` returns when the client closes standard input, once the requests
-already read have been answered, and when standard output is closed. SIGINT and
-SIGTERM end it at once, also while the client has stopped reading. Input lines are limited to
+already read have ended and their answers are written, and when standard output
+is closed. When standard input ends, and on SIGINT or SIGTERM, running
+handlers are told to stop, so one that checks ``Context::is_cancelled()`` ends
+early. A signal ends the run once those handlers have ended, also while the
+client has stopped reading, and after five seconds at most. Input lines are limited to
 16 MiB; a longer one ends the input. To change that, build a ``StdioTransport``,
 call ``set_max_message_bytes()`` and pass it to ``Server::run()``.
 

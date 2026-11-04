@@ -64,6 +64,13 @@ class MCP_API SerializedTransportWriter {
      */
     void post_message(std::shared_ptr<const std::string> message) const;
 
+    /**
+     * @brief Wait until every message queued before this call has been written or has failed.
+     *
+     * Messages queued after it are not waited for.
+     */
+    [[nodiscard]] Task<void> written() const;
+
     /// Bytes of the messages queued or being written: what waits on a peer that reads slowly.
     [[nodiscard]] std::size_t queued_bytes() const noexcept;
 
