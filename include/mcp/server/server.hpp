@@ -266,6 +266,10 @@ struct MrtrOptions {
     /// Handlers that may wait at once for one principal (Context::principal()); past this that
     /// principal's longest-waiting handler is given up.
     std::size_t max_parked_per_principal{64};
+    /// Memory the requests of the waiting handlers may take in all, counted as their parsed JSON
+    /// takes it (see Server::set_max_in_flight_bytes()); past this the handlers that have waited
+    /// longest are given up. The newest handler waits whatever its size.
+    std::size_t max_parked_bytes{64U * 1024U * 1024U};
     /// Called, on no particular thread, each time a waiting handler is given up.
     std::function<void(MrtrEvictionReason)> on_eviction;
 };
@@ -564,7 +568,9 @@ class MCP_API Server {
      *
      * @details A request past the limit is answered with an error instead of being queued, so a
      * peer that sends requests faster than they finish cannot grow the process without bound. The
-     * same answer goes to a request past the memory limit, set_max_in_flight_bytes().
+     * same answer goes to a request past the memory limit, set_max_in_flight_bytes(). Requests
+     * given to dispatch_request_direct(), such as 2026-07-28 requests, belong to no session and
+     * share one such limit; each counts until its handler ends, even when its client has gone.
      *
      * @param limit The limit, at least 1. The default is 1024.
      * @throws std::invalid_argument If @p limit is 0.
@@ -580,7 +586,7 @@ class MCP_API Server {
      * length until the peer has taken it, so a peer that stops reading stops the session from
      * reading more requests. A request that would go past the limit is answered with an error, as
      * one past set_max_in_flight_requests() is. The handlers' own copies of a request are not
-     * counted.
+     * counted. Requests given to dispatch_request_direct() share one such limit.
      *
      * @param bytes The limit, at least 1. The default is 256 MiB.
      * @throws std::invalid_argument If @p bytes is 0.

@@ -341,6 +341,96 @@ TEST_F(MrtrTest, RoundTripNewIdOnRetry) {
     EXPECT_EQ(stats.resume_hit, 1u);
 }
 
+// The text of the JSON library's exception describes the library and quotes the bytes it could not
+// encode; the client is told only that the result could not be encoded.
+TEST_F(MrtrTest, AResultThatCannotBeEncodedDoesNotExposeTheLibraryText) {
+    server_->add_tool<json, json>(
+        "not-text", "Returns bytes", json{{"type", "object"}},
+        [](json /*args*/) -> mcp::Task<json> { co_return json{{"bytes", std::string("\xff\xfe")}}; });
+    json answer;
+    run([&]() -> mcp::Task<void> { answer = co_await send(call_tool(1, "not-text")); });
+
+    EXPECT_EQ(answer["error"]["code"], mcp::g_INTERNAL_ERROR) << answer;
+    EXPECT_EQ(answer["error"]["message"], "The result could not be encoded as JSON") << answer;
+}
+
+// Requests that belong to no session share one in-flight limit. A parked handler does not count:
+// the limits on parked handlers bound it instead.
+TEST_F(MrtrTest, SessionlessRequestsShareTheInFlightLimit) {
+    std::atomic<int> running{0};
+    std::atomic<bool> released{false};
+    server_->add_tool<json, json>("held", "Ends once released", json{{"type", "object"}},
+                                  [&running, &released](json /*args*/) -> mcp::Task<json> {
+                                      ++running;
+                                      auto executor = co_await asio::this_coro::executor;
+                                      while (!released) {
+                                          asio::steady_timer tick(executor,
+                                                                  std::chrono::milliseconds(1));
+                                          co_await tick.async_wait(asio::use_awaitable);
+                                      }
+                                      --running;
+                                      co_return json::object();
+                                  });
+    server_->add_tool<json, json>("quick", "Answers at once", json{{"type", "object"}},
+                                  [](json /*args*/) -> mcp::Task<json> { co_return json::object(); });
+    server_->set_max_in_flight_requests(1);
+    json parked;
+    json beside_the_parked;
+    json refused;
+    json after;
+    // Gives up after 30 s, so a count that never arrives fails the test instead of hanging it.
+    const auto wait_for_running = [&running](bool (*reached)(int)) -> mcp::Task<bool> {
+        auto executor = co_await asio::this_coro::executor;
+        const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (!reached(running.load()) && std::chrono::steady_clock::now() < give_up) {
+            asio::steady_timer tick(executor, std::chrono::milliseconds(1));
+            co_await tick.async_wait(asio::use_awaitable);
+        }
+        co_return reached(running.load());
+    };
+    bool both_running = false;
+    run([&]() -> mcp::Task<void> {
+        parked = co_await send(call_tool(1, "ask"));
+        beside_the_parked = co_await send(call_tool(2, "quick"));
+        server_->set_max_in_flight_requests(2);
+        auto executor = co_await asio::this_coro::executor;
+        for (int id = 3; id <= 4; ++id) {
+            asio::co_spawn(executor, send_with(server_.get(), call_tool(id, "held"), {}),
+                           asio::detached);
+        }
+        both_running = co_await wait_for_running([](int count) { return count == 2; });
+        refused = co_await send(call_tool(5, "quick"));
+        released = true;
+        co_await wait_for_running([](int count) { return count == 0; });
+        after = co_await send(call_tool(6, "quick"));
+    });
+
+    expect_input_required(parked);
+    EXPECT_TRUE(beside_the_parked.contains("result")) << beside_the_parked;
+    EXPECT_TRUE(both_running);
+    EXPECT_EQ(refused["error"]["message"], "Too many requests in flight") << refused;
+    EXPECT_TRUE(after.contains("result")) << after;
+}
+
+// A handler keeps its own copy of the request while it waits; past the memory parked handlers may
+// take, the one that waited longest is given up.
+TEST_F(MrtrTest, ParkedHandlersAreBoundedByTheMemoryTheyHold) {
+    mcp::MrtrOptions options;
+    options.max_parked_bytes = 3U * 1024U * 1024U;
+    server_->set_mrtr_options(options);
+    const auto padded = [](int id) {
+        return call_tool(id, "ask", {{"padding", std::string(1024U * 1024U, 'p')}});
+    };
+    run([&]() -> mcp::Task<void> {
+        for (int id = 1; id <= 4; ++id) {
+            co_await send(padded(id));
+        }
+    });
+    const auto stats = server_->mrtr_stats();
+    EXPECT_EQ(stats.parked, 2u);
+    EXPECT_EQ(stats.evicted_cap, 2u);
+}
+
 TEST_F(MrtrTest, AnswerGivenWhileParkedGoesToTheRetry) {
     const auto [first, second] = retry_after_the_handler_finished("ask_then_return");
 
