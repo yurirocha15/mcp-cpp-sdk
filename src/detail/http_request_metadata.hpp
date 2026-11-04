@@ -98,6 +98,11 @@ inline std::optional<std::string> modern_header_mismatch(const StringRequest& re
         return "MCP-Protocol-Version header does not match " + std::string(g_META_PROTOCOL_VERSION) +
                " in _meta";
     }
+    // A version the server does not implement is answered with the versions it does, whatever
+    // other headers the request lacks: a later version may mirror different ones.
+    if (!is_supported_protocol_version(*protocol_header)) {
+        return std::nullopt;
+    }
 
     const auto method_header = http_header(request, "Mcp-Method");
     if (!method_header) {

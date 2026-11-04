@@ -301,6 +301,20 @@ TEST_F(HttpModernTest, HeaderNamesAreCaseInsensitive) {
     EXPECT_EQ(reply.status, 200u) << reply.body;
 }
 
+// The served versions are named even when the request lacks headers this version requires.
+TEST_F(HttpModernTest, UnsupportedVersionIsNamedBeforeMissingHeaders) {
+    auto list = make_modern_request(1, "tools/list");
+    list["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] = "2099-01-01";
+    auto call = call_tool(2, "echo");
+    call["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] = "2099-01-01";
+    const auto no_method = exchange_one(20460, list, without(modern_headers(list), "Mcp-Method"));
+    const auto no_name = exchange_one(20461, call, without(modern_headers(call), "Mcp-Name"));
+
+    expect_error(no_method, 400, mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+    EXPECT_EQ(no_method.parsed()["error"]["data"]["requested"], "2099-01-01");
+    expect_error(no_name, 400, mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+}
+
 TEST_F(HttpModernTest, UnsupportedVersionIs400WithTheServedVersions) {
     auto body = make_modern_request(1, "tools/list");
     body["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] = "1900-01-01";
