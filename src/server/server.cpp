@@ -681,6 +681,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         /// The handler's state when it serves a 2026-07-28 tools/call, prompts/get or
         /// resources/read, which may ask the client for input.
         std::shared_ptr<detail::MrtrEntry> mrtr;
+        /// The request's share of the in-flight limits, for a request that belongs to no session.
+        std::shared_ptr<void> in_flight;
     };
 
     /// Why a subscriptions/listen stream ended.
@@ -759,6 +761,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::string digest;
         std::uint64_t sequence{0};
         std::shared_ptr<boost::asio::steady_timer> expiry;
+        /// What the handler's copy of the request takes in memory.
+        std::size_t bytes{0};
     };
 
     static constexpr LoggingLevel g_default_log_level = LoggingLevel::eDebug;
@@ -794,6 +798,13 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::size_t page_size{0};
     std::atomic_size_t max_in_flight_requests{1024};
     std::atomic_size_t max_in_flight_bytes{g_default_max_in_flight_bytes};
+    /// Requests dispatched with dispatch_request_direct(), which belong to no session, and the
+    /// memory they take parsed. Together they are held to the limits of one session.
+    struct DirectCounters {
+        std::atomic_size_t requests{0};
+        std::atomic_size_t bytes{0};
+    };
+    std::shared_ptr<DirectCounters> direct_counters = std::make_shared<DirectCounters>();
     std::atomic<std::chrono::milliseconds::rep> reverse_request_timeout_ms{
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::minutes(10)).count()};
 
@@ -860,12 +871,22 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Task<void> dispatch_on_strand(nlohmann::json json_msg,
                                   std::shared_ptr<const std::string> principal = nullptr);
     Task<void> dispatch_request(nlohmann::json json_msg, std::shared_ptr<const std::string> principal);
+    /// dispatch_request_wire() for a request that belongs to no session, refused past the
+    /// in-flight limits. The request counts until its work ends, even when its client has gone:
+    /// a 2026-07-28 handler counts while it runs, and not while it is parked.
+    Task<std::string> dispatch_direct(nlohmann::json json_msg,
+                                      std::shared_ptr<std::atomic<bool>> cancelled,
+                                      std::shared_ptr<const detail::ParamHeaderValues> param_headers,
+                                      MessageSender notifications,
+                                      std::function<void(std::function<void()>)> watch_cancel,
+                                      std::shared_ptr<const std::string> principal);
     Task<std::string> dispatch_request_wire(
         nlohmann::json json_msg, bool enforce_lifecycle,
         std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
         std::shared_ptr<const detail::ParamHeaderValues> param_headers = nullptr,
         MessageSender notifications = {}, std::function<void(std::function<void()>)> watch_cancel = {},
-        std::shared_ptr<const std::string> principal = nullptr);
+        std::shared_ptr<const std::string> principal = nullptr,
+        std::shared_ptr<void> in_flight = nullptr);
     Task<std::string> dispatch_modern_wire(const nlohmann::json& json_msg, std::string_view method,
                                            RequestScope scope);
     /// Serves a 2026-07-28 tools/call, prompts/get or resources/read, whose handler may ask the
@@ -884,7 +905,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// Files @p entry under a new requestState, giving up older handlers past the limits.
     std::string park(const std::shared_ptr<detail::MrtrEntry>& entry,
                      const std::shared_ptr<const std::string>& principal, std::string_view method,
-                     std::string digest);
+                     std::string digest, std::size_t bytes);
     /// Takes the handler filed under @p token for a retry, or returns null when the retry may not
     /// resume it.
     std::shared_ptr<detail::MrtrEntry> take_parked(const std::string& token,
@@ -1628,7 +1649,44 @@ Task<void> Server::Impl::dispatch_on_strand(nlohmann::json json_msg,
 }
 
 Task<std::string> Server::dispatch_request_direct(nlohmann::json json_msg) {
-    return impl_->dispatch_request_wire(std::move(json_msg), false);
+    return impl_->dispatch_direct(std::move(json_msg), nullptr, nullptr, {}, {}, nullptr);
+}
+
+Task<std::string> Server::Impl::dispatch_direct(
+    nlohmann::json json_msg, std::shared_ptr<std::atomic<bool>> cancelled,
+    std::shared_ptr<const detail::ParamHeaderValues> param_headers, MessageSender notifications,
+    std::function<void(std::function<void()>)> watch_cancel,
+    std::shared_ptr<const std::string> principal) {
+    const auto bytes = detail::json_memory_cost(json_msg);
+    const auto& counters = *direct_counters;
+    if (is_identified_request(json_msg) &&
+        (counters.requests.load(std::memory_order_relaxed) >=
+             max_in_flight_requests.load(std::memory_order_relaxed) ||
+         counters.bytes.load(std::memory_order_relaxed) + bytes >
+             max_in_flight_bytes.load(std::memory_order_relaxed))) {
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+                                  "Too many requests in flight");
+    }
+    /// Counts the request while anything holds it.
+    struct Counted {
+        std::shared_ptr<DirectCounters> counters;
+        std::size_t bytes;
+        Counted(std::shared_ptr<DirectCounters> shared, std::size_t size)
+            : counters(std::move(shared)), bytes(size) {
+            counters->requests.fetch_add(1, std::memory_order_relaxed);
+            counters->bytes.fetch_add(bytes, std::memory_order_relaxed);
+        }
+        ~Counted() {
+            counters->bytes.fetch_sub(bytes, std::memory_order_relaxed);
+            counters->requests.fetch_sub(1, std::memory_order_relaxed);
+        }
+        Counted(const Counted&) = delete;
+        Counted& operator=(const Counted&) = delete;
+    };
+    auto in_flight = std::make_shared<Counted>(direct_counters, bytes);
+    co_return co_await dispatch_request_wire(
+        std::move(json_msg), false, std::move(cancelled), std::move(param_headers),
+        std::move(notifications), std::move(watch_cancel), std::move(principal), std::move(in_flight));
 }
 
 Task<std::string> Server::dispatch_request_direct(nlohmann::json json_msg,
@@ -1642,10 +1700,9 @@ Task<std::string> Server::dispatch_request_direct(nlohmann::json json_msg,
     if (!request_context.principal.empty()) {
         principal = std::make_shared<const std::string>(std::move(request_context.principal));
     }
-    return impl_->dispatch_request_wire(std::move(json_msg), false,
-                                        std::move(request_context.cancelled), std::move(param_headers),
-                                        std::move(request_context.notifications),
-                                        std::move(request_context.watch_cancel), std::move(principal));
+    return impl_->dispatch_direct(std::move(json_msg), std::move(request_context.cancelled),
+                                  std::move(param_headers), std::move(request_context.notifications),
+                                  std::move(request_context.watch_cancel), std::move(principal));
 }
 
 detail::ParamHeaderCheck Server::Impl::make_param_header_check() {
@@ -1820,7 +1877,7 @@ Task<std::string> Server::Impl::dispatch_request_wire(
     nlohmann::json json_msg, bool enforce_lifecycle, std::shared_ptr<std::atomic<bool>> cancelled,
     std::shared_ptr<const detail::ParamHeaderValues> param_headers, MessageSender notifications,
     std::function<void(std::function<void()>)> watch_cancel,
-    std::shared_ptr<const std::string> principal) {
+    std::shared_ptr<const std::string> principal, std::shared_ptr<void> in_flight) {
     {
         const char* validation_error = validate_request_envelope(json_msg);
         if (validation_error != nullptr) {
@@ -1848,6 +1905,7 @@ Task<std::string> Server::Impl::dispatch_request_wire(
                                std::move(notifications),
                                std::move(watch_cancel),
                                std::move(principal)};
+            scope.in_flight = std::move(in_flight);
             co_return co_await dispatch_modern_wire(json_msg, method, std::move(scope));
         }
 
@@ -2044,6 +2102,11 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
             co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
                                       "Unknown or expired requestState");
         }
+        {
+            // The resumed handler counts as this retry, until it ends or parks again.
+            std::lock_guard lock(mrtr_mutex);
+            entry->in_flight = scope.in_flight;
+        }
         // [gcc11-sso: named-aggregate-arg] DO NOT build the responses inside the co_await.
         nlohmann::json input_responses =
             responses != params.end() ? *responses : nlohmann::json::object();
@@ -2057,7 +2120,12 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
         entry->sink = std::move(route);
         entry->progress_token = std::move(progress_token);
         entry->client_capabilities = std::move(client_capabilities);
+        {
+            std::lock_guard lock(mrtr_mutex);
+            entry->in_flight = scope.in_flight;
+        }
         RequestScope handler_scope = scope;
+        handler_scope.in_flight.reset();
         handler_scope.cancelled = std::move(cancelled);
         handler_scope.mrtr = entry;
         // The handler runs apart from this request, which ends when the handler parks.
@@ -2090,7 +2158,8 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
                                   "Request cancelled");
     }
-    const auto token = park(entry, scope.principal, method, detail::mrtr_params_digest(params));
+    const auto token = park(entry, scope.principal, method, detail::mrtr_params_digest(params),
+                            detail::json_memory_cost(json_msg));
     nlohmann::json result = {{"resultType", "input_required"},
                              {"inputRequests", std::move(outcome.requests)},
                              {"requestState", token}};
@@ -2135,12 +2204,19 @@ Task<void> Server::Impl::run_mrtr_handler(std::shared_ptr<Impl> impl,
     } catch (const InvalidParamsError& error) {
         error_code = g_INVALID_PARAMS;
         error_payload = error.what();
+    } catch (const nlohmann::json::exception&) {
+        // Its text describes the library, and quotes bytes of the value that could not be encoded.
+        error_payload = "The result could not be encoded as JSON";
     } catch (const std::exception& error) {
         error_payload = detail::sanitize_for_diagnostics(error.what());
     } catch (...) {
         // This coroutine is detached, so a throw that left it would leave the entry incomplete and
         // the request waiting for an answer that never comes.
         error_payload = "Internal error";
+    }
+    {
+        std::lock_guard lock(impl->mrtr_mutex);
+        entry->in_flight.reset();
     }
     if (!error_payload.is_null()) {
         detail::mrtr_complete(entry, make_error_wire(json_msg.at("id").get<RequestId>(), error_code,
@@ -2152,7 +2228,7 @@ Task<void> Server::Impl::run_mrtr_handler(std::shared_ptr<Impl> impl,
 
 std::string Server::Impl::park(const std::shared_ptr<detail::MrtrEntry>& entry,
                                const std::shared_ptr<const std::string>& principal,
-                               std::string_view method, std::string digest) {
+                               std::string_view method, std::string digest, std::size_t bytes) {
     auto token = detail::generate_secure_session_id();
     std::vector<ParkedRequest> evicted;
     MrtrOptions options;
@@ -2194,8 +2270,19 @@ std::string Server::Impl::park(const std::shared_ptr<detail::MrtrEntry>& entry,
         while (parked_requests.size() >= std::max<std::size_t>(options.max_parked, 1)) {
             evict_oldest([](const ParkedRequest&) { return true; });
         }
+        // Each waiting handler keeps its own copy of the request, which a peer can make large.
+        std::size_t parked_bytes = 0;
+        for (const auto& [key, parked] : parked_requests) {
+            parked_bytes += parked.bytes;
+        }
+        while (!parked_requests.empty() && parked_bytes + bytes > options.max_parked_bytes) {
+            evict_oldest([](const ParkedRequest&) { return true; });
+            parked_bytes -= evicted.back().bytes;
+        }
         parked_requests.emplace(token, ParkedRequest{entry, who, std::string(method), std::move(digest),
-                                                     ++next_park_sequence, expiry});
+                                                     ++next_park_sequence, expiry, bytes});
+        // A parked handler is bounded by the limits above instead of the in-flight limits.
+        entry->in_flight.reset();
     }
     for (auto& victim : evicted) {
         finish_eviction(std::move(victim), MrtrEvictionReason::eCapacity, options);

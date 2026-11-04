@@ -96,6 +96,10 @@ class MrtrEntry {
     std::optional<nlohmann::json> progress_token;
     /// The `io.modelcontextprotocol/clientCapabilities` of that request.
     nlohmann::json client_capabilities = nlohmann::json::object();
+    /// The share of the server's in-flight limits the handler holds while it runs, taken from the
+    /// request that carries it and given up while it is parked. Guarded by the server's lock on
+    /// parked handlers.
+    std::shared_ptr<void> in_flight;
 };
 
 /// The capabilities a client must declare before a server may send it @p request, a

@@ -170,7 +170,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   request ends, when `StreamableHttpSessionManager::close()` closes the
   endpoint of its modern server, or on `Server::abandon_waiting_handlers()`.
   `Server::set_mrtr_options()` (`MrtrOptions`: time to wait, at most 1024
-  waiting handlers and 64 per principal by default, an eviction callback) and
+  waiting handlers, 64 per principal and 64 MiB of requests by default, an
+  eviction callback) and
   `Server::mrtr_stats()` (`MrtrStats`) bound and count them. A handler given
   up throws from its question and its answer is discarded. A cancelled retry
   cancels the handler, and its notifications go to the request that carries it
@@ -415,9 +416,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   (`Server::set_max_in_flight_bytes()`). A request counts as its parsed JSON
   takes memory, which for an array of empty objects is about 27 times its text.
   A request past either limit is answered with `-32603`, and reading stops
-  while the peer takes no answers. Those refusals are queued without holding up
-  reading while they fit in the byte limit, so a client that stopped reading
-  until its own answers are read does not stall the session. A
+  while the peer takes no answers. Requests that belong to no session, such as
+  2026-07-28 requests, share one such limit per `Server` and count until their
+  handler ends, even when their client has gone. Those refusals are queued
+  without holding up reading while they fit in the byte limit, so a client that
+  stopped reading until its own answers are read does not stall the session for
+  good. A
   `Client` stops reading while it answers
   1024 requests of the server or they hold 256 MiB
   (`ClientOptions::max_incoming_request_bytes`). A session holds at most 4096
