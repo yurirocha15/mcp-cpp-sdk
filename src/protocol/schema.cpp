@@ -360,8 +360,8 @@ bool same_options(const SchemaOptions& left, const SchemaOptions& right) {
 /// Whether @p left and @p right are the same document, down to how each number is written: an
 /// integer is never the same as a float, and floats are the same only bit for bit. nlohmann's
 /// operator== takes 1 and 1.0, or 0.0 and -0.0, as equal, but they are written differently and a
-/// compiled schema reports them as written. Recursive: a schema is compiled, and so compared,
-/// only once measure() has bounded its depth.
+/// compiled schema reports them as written. Recursive: one side is always the source of a compiled
+/// schema, which measure() has bounded, and the comparison goes no deeper than that side.
 bool same_document(const nlohmann::json& left, const nlohmann::json& right) {
     using value_t = nlohmann::json::value_t;
     // An integer is written by its value whether it is held signed or unsigned.
@@ -411,23 +411,33 @@ void mix(std::size_t& hash, std::size_t value) {
     hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
 }
 
-void mix_document(std::size_t& hash, const nlohmann::json& node) {
+/// Mixes @p node, found @p depth levels below the root, into @p hash. Returns false, leaving the
+/// hash unfinished, when a container nests deeper than g_max_schema_depth, the depth at which
+/// measure() refuses a schema; so the recursion is bounded.
+bool mix_document(std::size_t& hash, const nlohmann::json& node, std::size_t depth) {
     using value_t = nlohmann::json::value_t;
     const auto type = node.type();
     mix(hash,
         static_cast<std::size_t>(type == value_t::number_unsigned ? value_t::number_integer : type));
+    if (node.is_structured() && depth + 1 > g_max_schema_depth) {
+        return false;
+    }
     switch (type) {
         case value_t::object:
             mix(hash, node.size());
             for (const auto& [key, value] : node.get_ref<const nlohmann::json::object_t&>()) {
                 mix(hash, std::hash<std::string_view>{}(key));
-                mix_document(hash, value);
+                if (!mix_document(hash, value, depth + 1)) {
+                    return false;
+                }
             }
             break;
         case value_t::array:
             mix(hash, node.size());
             for (const auto& value : node.get_ref<const nlohmann::json::array_t&>()) {
-                mix_document(hash, value);
+                if (!mix_document(hash, value, depth + 1)) {
+                    return false;
+                }
             }
             break;
         case value_t::string:
@@ -448,18 +458,21 @@ void mix_document(std::size_t& hash, const nlohmann::json& node) {
         default:
             break;
     }
+    return true;
 }
 
-/// A hash of @p schema that same_document() documents share, and of @p options. Recursive, like
-/// same_document().
-std::size_t document_hash(const nlohmann::json& schema, const SchemaOptions& options) {
+/// A hash of @p schema that same_document() documents share, and of @p options, or nothing when
+/// the schema nests deeper than measure() allows.
+std::optional<std::size_t> document_hash(const nlohmann::json& schema, const SchemaOptions& options) {
     std::size_t hash = 0;
     for (const auto option : {options.max_instance_depth, options.max_reported_violations,
                               options.base_pattern_steps, options.pattern_steps_per_text_byte,
                               options.max_evaluation_work, options.max_pattern_instructions}) {
         mix(hash, option);
     }
-    mix_document(hash, schema);
+    if (!mix_document(hash, schema, 0)) {
+        return std::nullopt;
+    }
     return hash;
 }
 
@@ -573,8 +586,18 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
         throw SchemaError(SchemaError::Category::eInvalidSchema,
                           "JSON Schema must be an object or a boolean");
     }
+    // A schema the cache holds passed every check below when it was compiled, and a repeat is the
+    // same document, so a hit needs neither measuring nor checking. NaN, the one value unequal to
+    // itself, never matches, and Infinity is never in the cache.
+    const auto hash = document_hash(schema, options);
+    if (hash) {
+        if (auto cached = compiled_schema_cache().find(*hash, schema, options)) {
+            return CompiledSchema(std::move(cached));
+        }
+    }
+
     const auto schema_shape = measure(schema, g_max_schema_depth);
-    if (schema_shape.too_deep) {
+    if (!hash || schema_shape.too_deep) {
         throw SchemaError(
             SchemaError::Category::eInvalidSchema,
             "JSON Schema nests deeper than " + std::to_string(g_max_schema_depth) + " levels");
@@ -583,11 +606,6 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
         // Serialized for a peer, it would carry null in that place: not the schema checked here.
         throw SchemaError(SchemaError::Category::eInvalidSchema,
                           "JSON Schema contains NaN or Infinity, which JSON cannot represent");
-    }
-
-    const auto hash = document_hash(schema, options);
-    if (auto cached = compiled_schema_cache().find(hash, schema, options)) {
-        return CompiledSchema(std::move(cached));
     }
 
     std::string_view dialect = supported_dialects()[0];
@@ -697,7 +715,7 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
     }();
     auto result = std::make_shared<const CompiledSchemaImpl>(CompiledSchemaImpl{
         schema, options, schema_shape.nodes, std::move(*compiled), std::move(native)});
-    compiled_schema_cache().insert(hash, result);
+    compiled_schema_cache().insert(*hash, result);
     return CompiledSchema(std::move(result));
 }
 

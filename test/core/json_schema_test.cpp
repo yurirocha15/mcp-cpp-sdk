@@ -1570,6 +1570,53 @@ TEST(CompiledSchema, CacheServesALargeSchema) {
     EXPECT_FALSE(second.validate({{"property_with_a_long_name_3", 3}}).valid);
 }
 
+// A repeat is looked up before the schema is measured, so the lookup itself must refuse nothing
+// that compiling accepts and accept nothing it refuses: nesting at the limit is served from the
+// cache, one level more is refused however deep it goes, and NaN or Infinity is refused next to a
+// cached schema that differs only in that number.
+TEST(CompiledSchema, CacheLookupKeepsTheCompileChecks) {
+    const auto nested = [](int levels) {
+        json value = 1;
+        for (int i = 0; i < levels; ++i) {
+            value = json::array({std::move(value)});
+        }
+        json schema = json::object();
+        schema["const"] = std::move(value);
+        return schema;
+    };
+    const auto refusal = [](const json& schema) -> std::string {
+        try {
+            (void)CompiledSchema::compile(schema);
+        } catch (const SchemaError& error) {
+            return error.what();
+        }
+        return "";
+    };
+
+    const auto at_limit = nested(63);
+    const auto before = mcp::detail::compiled_schema_cache_live_entries();
+    const auto first = CompiledSchema::compile(at_limit);
+    const auto second = CompiledSchema::compile(at_limit);
+    EXPECT_EQ(mcp::detail::compiled_schema_cache_live_entries(), before + 1);
+    EXPECT_TRUE(second.validate(at_limit["const"]).valid);
+    for (const int levels : {64, 100'000}) {
+        SCOPED_TRACE(levels);
+        const auto too_deep = nested(levels);
+        for (int round = 0; round < 2; ++round) {
+            EXPECT_NE(refusal(too_deep).find("nests deeper than 64 levels"), std::string::npos);
+        }
+    }
+
+    const auto finite = CompiledSchema::compile({{"maximum", 1.5}});
+    EXPECT_FALSE(finite.validate(2).valid);
+    for (const double value :
+         {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+        for (int round = 0; round < 2; ++round) {
+            EXPECT_NE(refusal({{"maximum", value}}).find("NaN or Infinity"), std::string::npos);
+        }
+    }
+}
+
 // A schema that cannot be compiled is refused every time, not only the first.
 TEST(CompiledSchema, RefusalIsRepeatedAfterRecompile) {
     const json invalid = {{"type", "not-a-type"}};

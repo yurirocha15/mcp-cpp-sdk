@@ -422,7 +422,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   listing are not kept for the life of the process. A repeat is found by a
   hash of the schema and options and confirmed by comparing the schema it
   was compiled from, down to how each number is written, so finding it
-  serializes nothing, and a schema of any size is kept.
+  serializes nothing, and a schema of any size is kept. A repeat is looked up
+  before the schema is measured for its nesting depth and for NaN or Infinity,
+  since the schema it matches passed those checks when it was compiled; a
+  schema that fails them is refused as before.
 - `StreamableHttpSessionManager::set_tool_executor()` now moves only the call
   of a tool, resource or prompt handler to that executor. A session's reading,
   parsing and answering of protocol messages run on the HTTP executor, and the
