@@ -276,9 +276,9 @@ the body of a request they refuse is never read and the connection is closed.
 ``set_connection_limits()`` takes an :cpp:struct:`mcp::HttpConnectionLimits`.
 By default a transport accepts connections up to three quarters of the
 process's descriptor limit, closes a connection that takes more than
-60 seconds to send a request, and handles at most 4096 requests at once
-holding at most 1 GiB together, a body counted by its length and a JSON-RPC
-message by what it takes parsed. A request past either is answered
+60 seconds to send a request or to read its answer, and handles at most 4096
+requests at once holding at most 1 GiB together, a body counted by what has
+arrived and a JSON-RPC message by what it takes parsed. A request past either is answered
 ``503 Service Unavailable``. These limits cover all sessions of a
 ``StreamableHttpSessionManager`` together.
 

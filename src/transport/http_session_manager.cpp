@@ -513,14 +513,14 @@ struct StreamableHttpSessionManager::Impl {
 
         for (;;) {
             const auto limits = current_connection_limits();
-            http::request_parser<http::string_body> parser;
+            detail::RequestParser parser;
             parser.body_limit(max_request_body_bytes_);
             detail::BudgetLease bytes(budget_.bytes, limits.max_request_bytes);
             if (!co_await detail::read_request_within_limits(stream, request_buffer, parser, limits,
                                                              max_request_body_bytes_, bytes, refuse)) {
                 break;
             }
-            StringRequest request = parser.release();
+            StringRequest request = detail::take_request(parser);
 
             if (closed.load(std::memory_order_acquire)) {
                 break;
@@ -538,9 +538,8 @@ struct StreamableHttpSessionManager::Impl {
                 break;
             }
             const bool keep_connection_alive = response.keep_alive();
-            co_await http::async_write(stream, response, boost::asio::use_awaitable);
-
-            if (!keep_connection_alive) {
+            if (!co_await detail::write_response_within_limits(stream, response, limits) ||
+                !keep_connection_alive) {
                 break;
             }
         }

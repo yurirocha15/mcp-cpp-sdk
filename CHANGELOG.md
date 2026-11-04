@@ -116,11 +116,13 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - Both HTTP server transports read a request's headers first and check the
   origin and bearer token on them, so the body of a refused request is no
   longer read. They close a connection that takes more than 60 seconds to send
-  a request, accept connections up to three quarters of the descriptor limit,
-  and handle at most 4096 requests holding at most 1 GiB at once across all
-  sessions (`set_connection_limits()`). A replay of missed events on a GET
-  counts against that memory until it is written, so slow readers can no
-  longer each hold a copy of the whole replay store.
+  a request or to read its answer, accept connections up to three quarters of
+  the descriptor limit, and handle at most 4096 requests holding at most 1 GiB
+  at once across all sessions (`set_connection_limits()`). A body counts by
+  what has arrived, so headers that announce a large body hold nothing. A
+  replay of missed events on a GET counts against that memory until it is
+  written, so slow readers can no longer each hold a copy of the whole replay
+  store.
 - `HttpClientTransport` starts a new session when the server answers 404 for
   the current one, as the specification requires, and sends the failed request
   once more in it (`set_reinitialize_on_expired_session()`). After a session

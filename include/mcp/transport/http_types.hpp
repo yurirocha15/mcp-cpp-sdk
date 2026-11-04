@@ -166,12 +166,14 @@ struct HttpConnectionLimits {
     /// quarters of the process's descriptor limit where there is one, else 4096.
     std::size_t max_connections{0};
     /// How long reading one request may take, from waiting for its first byte to the end of its
-    /// body; a connection that takes longer is closed. Zero means no limit.
+    /// body, and how long the peer may take to read the answer; a connection that takes longer is
+    /// closed. Zero means no limit.
     std::chrono::milliseconds request_read_timeout{std::chrono::seconds(60)};
     /// Requests being handled at once. One past it is answered 503.
     std::size_t max_requests{4096};
-    /// Memory the requests being read or handled may hold together: a body by its length while it
-    /// is read, a JSON-RPC message by what it takes parsed. A request past it is answered 503.
+    /// Memory the requests being read or handled may hold together: a body by what has arrived
+    /// while it is read, a JSON-RPC message by what it takes parsed. A request past it is answered
+    /// 503.
     std::size_t max_request_bytes{std::size_t{1024} * 1024 * 1024};
 };
 

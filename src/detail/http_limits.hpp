@@ -90,6 +90,55 @@ class BudgetLease {
     std::size_t held_{0};
 };
 
+/// A string body that grows as the body arrives. Beast's string_body reserves the declared
+/// Content-Length before the first byte of the body, so a peer could hold that memory by sending
+/// headers alone; this one holds only what was sent.
+struct ArrivingStringBody {
+    using value_type = std::string;
+
+    static std::uint64_t size(const value_type& body) { return body.size(); }
+
+    class reader {
+       public:
+        template <bool isRequest, class Fields>
+        reader(boost::beast::http::header<isRequest, Fields>& /*header*/, value_type& body)
+            : body_(body) {}
+
+        void init(const boost::optional<std::uint64_t>& /*length*/, boost::beast::error_code& error) {
+            error = {};
+        }
+
+        template <class ConstBufferSequence>
+        std::size_t put(const ConstBufferSequence& buffers, boost::beast::error_code& error) {
+            const auto extra = boost::asio::buffer_size(buffers);
+            if (extra > body_.max_size() - body_.size()) {
+                error = boost::beast::http::error::buffer_overflow;
+                return 0;
+            }
+            for (auto it = boost::asio::buffer_sequence_begin(buffers);
+                 it != boost::asio::buffer_sequence_end(buffers); ++it) {
+                const boost::asio::const_buffer buffer = *it;
+                body_.append(static_cast<const char*>(buffer.data()), buffer.size());
+            }
+            error = {};
+            return extra;
+        }
+
+        void finish(boost::beast::error_code& error) { error = {}; }
+
+       private:
+        value_type& body_;
+    };
+};
+
+using RequestParser = boost::beast::http::request_parser<ArrivingStringBody>;
+
+/// The request @p parser has read, moved out of it.
+inline StringRequest take_request(RequestParser& parser) {
+    auto request = parser.release();
+    return StringRequest(std::move(request.base()), std::move(request.body()));
+}
+
 /// Starts the deadline for reading one request, or clears it when @p limits sets none.
 inline void arm_request_read_deadline(boost::beast::tcp_stream& stream,
                                       const HttpConnectionLimits& limits) {
@@ -98,6 +147,22 @@ inline void arm_request_read_deadline(boost::beast::tcp_stream& stream,
     } else {
         stream.expires_never();
     }
+}
+
+/// Writes @p response within the time @p limits gives reading a request, so a peer that does not
+/// take its answer cannot keep what its request holds. False when the peer is gone or too slow, and
+/// the connection is to end.
+inline Task<bool> write_response_within_limits(boost::beast::tcp_stream& stream,
+                                               StringResponse& response,
+                                               const HttpConnectionLimits& limits) {
+    arm_request_read_deadline(stream, limits);
+    try {
+        co_await boost::beast::http::async_write(stream, response, boost::asio::use_awaitable);
+    } catch (const boost::system::system_error&) {
+        co_return false;
+    }
+    stream.expires_never();
+    co_return true;
 }
 
 /// Writes @p response and ends the exchange on this connection, ignoring a peer that is gone.
@@ -127,13 +192,13 @@ using RefuseBeforeBody = std::function<Task<std::optional<StringResponse>>(const
 
 /// Reads one request into @p parser within @p limits. The headers are read first and given to
 /// @p refuse_before_body, so a request that is refused never has its body read or held; then the
-/// body is charged to @p bytes by its declared length, or by @p body_limit when it is chunked.
+/// body is charged to @p bytes as it arrives.
 /// Returns false when the connection is to end, after writing whatever answer is due.
-inline Task<bool> read_request_within_limits(
-    boost::beast::tcp_stream& stream, boost::beast::flat_buffer& buffer,
-    boost::beast::http::request_parser<boost::beast::http::string_body>& parser,
-    HttpConnectionLimits limits, std::size_t body_limit, BudgetLease& bytes,
-    const RefuseBeforeBody& refuse_before_body) {
+inline Task<bool> read_request_within_limits(boost::beast::tcp_stream& stream,
+                                             boost::beast::flat_buffer& buffer, RequestParser& parser,
+                                             HttpConnectionLimits limits, std::size_t body_limit,
+                                             BudgetLease& bytes,
+                                             const RefuseBeforeBody& refuse_before_body) {
     namespace http = boost::beast::http;
     const auto ends_quietly = [](const boost::system::error_code& code) {
         return code == boost::asio::error::eof || code == boost::asio::error::connection_reset ||
@@ -168,26 +233,16 @@ inline Task<bool> read_request_within_limits(
         co_await write_final_response(stream, std::move(*refusal));
         co_return false;
     }
-    // Without a Content-Length a request has a body only when it is chunked, and then its length
-    // is known only once read.
-    const auto declared = parser.content_length();
-    std::size_t body_bytes = 0;
-    if (declared) {
-        body_bytes = static_cast<std::size_t>(std::min<std::uint64_t>(*declared, body_limit));
-    } else if (parser.chunked()) {
-        body_bytes = body_limit;
-    }
-    if (!bytes.grow_to(body_bytes)) {
-        stream.expires_never();
-        // Named: GCC 11 mishandles a temporary in a co_await operand.
-        auto busy = make_limit_response(head, http::status::service_unavailable, "Server busy");
-        co_await write_final_response(stream, std::move(busy));
-        co_return false;
-    }
+    // The body is charged as it arrives, so a request holds only what its peer has sent.
     bool too_large = false;
+    bool busy = false;
     try {
-        if (!parser.is_done()) {
-            co_await http::async_read(stream, buffer, parser, boost::asio::use_awaitable);
+        while (!parser.is_done()) {
+            co_await http::async_read_some(stream, buffer, parser, boost::asio::use_awaitable);
+            if (!bytes.grow_to(parser.get().body().size())) {
+                busy = true;
+                break;
+            }
         }
     } catch (const boost::system::system_error& error) {
         if (ends_quietly(error.code())) {
@@ -199,6 +254,13 @@ inline Task<bool> read_request_within_limits(
         too_large = true;
     }
     stream.expires_never();
+    if (busy) {
+        // Named: GCC 11 mishandles a temporary in a co_await operand.
+        auto busy_response =
+            make_limit_response(head, http::status::service_unavailable, "Server busy");
+        co_await write_final_response(stream, std::move(busy_response));
+        co_return false;
+    }
     if (too_large) {
         // The parser cannot resynchronize after a truncated body, so the connection ends here.
         auto too_large_response =

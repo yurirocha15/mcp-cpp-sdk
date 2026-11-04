@@ -807,7 +807,7 @@ struct HttpServerTransport::Impl {
         };
 
         for (;;) {
-            http::request_parser<http::string_body> parser;
+            detail::RequestParser parser;
             parser.body_limit(max_request_body_bytes);
             detail::BudgetLease bytes(budget.bytes, connection_limits.max_request_bytes);
             if (!co_await detail::read_request_within_limits(stream, request_buffer, parser,
@@ -815,7 +815,7 @@ struct HttpServerTransport::Impl {
                                                              bytes, refuse)) {
                 break;
             }
-            StringRequest request = parser.release();
+            StringRequest request = detail::take_request(parser);
 
             if (state->closed.load(std::memory_order_acquire)) {
                 break;
@@ -833,9 +833,8 @@ struct HttpServerTransport::Impl {
                 break;
             }
             const bool keep_connection_alive = response.keep_alive();
-            co_await http::async_write(stream, response, boost::asio::use_awaitable);
-
-            if (!keep_connection_alive) {
+            if (!co_await detail::write_response_within_limits(stream, response, connection_limits) ||
+                !keep_connection_alive) {
                 break;
             }
         }

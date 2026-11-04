@@ -16,6 +16,7 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/write.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
@@ -492,6 +493,65 @@ TEST_F(SessionLimitsTest, ReplayCountsAgainstTheRequestBudget) {
             std::chrono::seconds(20));
     });
     EXPECT_EQ(resumed.rfind("HTTP/1.1 503", 0), 0U) << resumed.substr(0, 200);
+}
+
+// A body counts by what has arrived, so headers that announce a large body hold nothing, and the
+// requests of other clients are still served.
+TEST_F(SessionLimitsTest, AnnouncedBodyHoldsNothingUntilItArrives) {
+    manager_.set_connection_limits({0, std::chrono::seconds(30), 4096, 64 * 1024});
+    Reply initialized;
+    run([&]() -> mcp::Task<void> {
+        asio::ip::tcp::socket holder(io_);
+        co_await holder.async_connect({asio::ip::make_address("127.0.0.1"), port_},
+                                      asio::use_awaitable);
+        const auto announced = header_only_post(64 * 1024 - 16);
+        co_await asio::async_write(holder, asio::buffer(announced), asio::use_awaitable);
+        co_await pause(std::chrono::milliseconds(50));
+        initialized = co_await post(make_initialize_request("1"));
+        boost::system::error_code ignored;
+        (void)holder.close(ignored);
+    });
+    EXPECT_EQ(initialized.status, 200U) << initialized.body;
+}
+
+// The answer must be read within the time a request may take to arrive, so a peer that never reads
+// a replay gives back what it holds once that time is up.
+TEST_F(SessionLimitsTest, UnreadReplayGivesBackWhatItHolds) {
+    manager_.set_connection_limits({0, std::chrono::seconds(5), 4096, 16U * 1024 * 1024});
+    std::string second;
+    run([&]() -> mcp::Task<void> {
+        const auto initialized = co_await post(make_initialize_request("1"));
+        const auto session = session_header(initialized);
+        co_await post_only(make_initialized_notification(), session);
+        auto call = make_tool_call_request("p", "progress", json{{"pad", 3000000}});
+        call["params"]["_meta"] = {{"progressToken", "t"}};
+        const auto progressed = (co_await post(call, session)).body;
+        const auto id_at = progressed.find("id: ");
+        if (id_at == std::string::npos) {
+            ADD_FAILURE() << "the answer carries no event id: " << progressed.substr(0, 200);
+            co_return;
+        }
+        const auto event_id = progressed.substr(id_at + 4, progressed.find('\n', id_at) - id_at - 4);
+        const auto resume =
+            "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n"
+            "MCP-Session-Id: " +
+            initialized.session_id.value_or("") + "\r\nLast-Event-ID: " + event_id + "\r\n\r\n";
+        // Asks for the replay and never reads it.
+        asio::ip::tcp::socket holder(io_);
+        holder.open(asio::ip::tcp::v4());
+        holder.set_option(asio::socket_base::receive_buffer_size(4096));
+        co_await holder.async_connect({asio::ip::make_address("127.0.0.1"), port_},
+                                      asio::use_awaitable);
+        co_await asio::async_write(holder, asio::buffer(resume), asio::use_awaitable);
+        co_await pause(std::chrono::seconds(6));
+        second =
+            co_await raw_exchange(io_.get_executor(), port_,
+                                  resume.substr(0, resume.size() - 2) + "Connection: close\r\n\r\n",
+                                  std::chrono::seconds(20));
+        boost::system::error_code ignored;
+        (void)holder.close(ignored);
+    });
+    EXPECT_EQ(second.rfind("HTTP/1.1 200", 0), 0U) << second.substr(0, 200);
 }
 
 TEST_F(SessionLimitsTest, SessionLimitMustAllowASession) {
