@@ -2715,6 +2715,16 @@ TEST(ProtocolElicitation, FormRequestMayLeaveItsModeOut) {
     EXPECT_EQ(std::get<mcp::ElicitRequestFormParams>(params).mode, "form");
 }
 
+// A null mode is read as a mode left out, as other optional fields are.
+TEST(ProtocolElicitation, NullModeIsAFormRequest) {
+    const auto params =
+        nlohmann::json(
+            {{"mode", nullptr}, {"message", "Name?"}, {"requestedSchema", {{"type", "object"}}}})
+            .get<mcp::ElicitRequestParams>();
+    ASSERT_TRUE(std::holds_alternative<mcp::ElicitRequestFormParams>(params));
+    EXPECT_EQ(std::get<mcp::ElicitRequestFormParams>(params).mode, "form");
+}
+
 // Converting the double to int would be undefined behaviour, and a peer chooses the value. It is
 // still an error, so it decodes to one instead of leaving the caller waiting.
 TEST(ProtocolError, ACodeThatIsNoIntOfThisSizeDecodesToInternalError) {

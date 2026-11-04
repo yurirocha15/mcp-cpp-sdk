@@ -522,6 +522,7 @@ class FloodingPeer final : public mcp::ITransport {
     mcp::Task<std::string> read_message() override {
         for (;;) {
             if (closed_) {
+                ++reads_after_close;
                 throw std::runtime_error("transport closed");
             }
             co_await boost::asio::post(co_await boost::asio::this_coro::executor,
@@ -568,7 +569,7 @@ class FloodingPeer final : public mcp::ITransport {
         if (take_answers) {
             co_return;
         }
-        if (!closed_) {
+        if ((!closed_ || answers_outlast_close) && !held_answers_taken_) {
             boost::system::error_code ignored;
             co_await stalled_.async_wait(
                 boost::asio::redirect_error(boost::asio::use_awaitable, ignored));
@@ -577,10 +578,22 @@ class FloodingPeer final : public mcp::ITransport {
 
     void close() override {
         closed_ = true;
+        if (!answers_outlast_close) {
+            stalled_.cancel();
+        }
+    }
+
+    /// Lets the answers waiting to be written, and every later one, be written.
+    void take_held_answers() {
+        held_answers_taken_ = true;
         stalled_.cancel();
     }
 
     int pings_read{0};
+    /// Reads asked of the closed transport.
+    int reads_after_close{0};
+    /// Whether answers still wait to be written after close(), until take_held_answers().
+    bool answers_outlast_close{false};
     /// Whether answers are taken, as a peer that reads does.
     bool take_answers{false};
     /// Empty objects each ping carries: little text, much memory once parsed.
@@ -591,6 +604,7 @@ class FloodingPeer final : public mcp::ITransport {
     std::deque<std::string> replies_;
     bool flooding_{false};
     bool closed_{false};
+    bool held_answers_taken_{false};
 };
 
 }  // namespace
@@ -663,6 +677,51 @@ TEST(ClientLimits, AnsweredRequestsLeaveRoomForMore) {
         boost::asio::detached);
     io.run();
     EXPECT_GE(peer->pings_read, 3000);
+}
+
+// A client at its limit reads again once its answers are written and its requests end.
+TEST(ClientLimits, ReadingResumesWhenRequestsEnd) {
+    boost::asio::io_context io;
+    auto peer = std::make_shared<FloodingPeer>(io.get_executor());
+    mcp::Client client(peer, io.get_executor());
+    int at_the_limit = 0;
+    boost::asio::co_spawn(
+        io,
+        [&]() -> mcp::Task<void> {
+            co_await client.connect("limits", "1.0");
+            co_await wait_until([&] { return peer->pings_read >= 1024; });
+            boost::asio::steady_timer settle(io.get_executor(), std::chrono::milliseconds(20));
+            co_await settle.async_wait(boost::asio::use_awaitable);
+            at_the_limit = peer->pings_read;
+            peer->take_held_answers();
+            co_await wait_until([&] { return peer->pings_read >= 2000; });
+            client.close();
+        },
+        boost::asio::detached);
+    io.run();
+    EXPECT_EQ(at_the_limit, 1024);
+    EXPECT_GE(peer->pings_read, 2000);
+}
+
+// The client waits for its answers to be written before it reads more. Closing it ends that wait
+// at once, even while the answers are still waiting.
+TEST(ClientLimits, CloseEndsTheWaitForRoomToRead) {
+    boost::asio::io_context io;
+    auto peer = std::make_shared<FloodingPeer>(io.get_executor());
+    peer->answers_outlast_close = true;
+    mcp::Client client(peer, io.get_executor());
+    boost::asio::co_spawn(
+        io,
+        [&]() -> mcp::Task<void> {
+            co_await client.connect("limits", "1.0");
+            co_await wait_until([&] { return peer->pings_read >= 1024; });
+            client.close();
+            co_await wait_until([&] { return peer->reads_after_close > 0; });
+            peer->take_held_answers();
+        },
+        boost::asio::detached);
+    io.run();
+    EXPECT_GT(peer->reads_after_close, 0);
 }
 
 TEST(ClientLimits, IncomingRequestMemoryLimitMustBePositive) {

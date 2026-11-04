@@ -631,6 +631,24 @@ TEST_F(ClientToolSchemaTest, EveryToolStaysListedAndUnusableOutputSchemasAreRepo
     EXPECT_EQ(messages[1].rfind("outputSchema: ", 0), 0U) << messages[1];
 }
 
+// A listing that repeats a tool reuses what the client compiled for it, and reports its unusable
+// output schema again: each listing is a new answer of the server.
+TEST_F(ClientToolSchemaTest, UnusableOutputSchemaIsReportedOnEachListing) {
+    tools_ = nlohmann::json::array(
+        {tool("bad-output", {{"type", "object"}}, nlohmann::json{{"type", "objekt"}})});
+    std::vector<std::string> reported;
+    mcp::ClientOptions options;
+    options.on_tool_schema_error = [&](const mcp::Tool& tool, const mcp::SchemaError&) {
+        reported.push_back(tool.name);
+    };
+    run(std::move(options), [&](mcp::Client& client) -> mcp::Task<void> {
+        co_await client.list_tools();
+        co_await client.list_tools();
+    });
+
+    EXPECT_EQ(reported, (std::vector<std::string>{"bad-output", "bad-output"}));
+}
+
 TEST_F(ClientToolSchemaTest, CallOfToolWithInvalidOutputSchemaFailsUnsent) {
     tools_ = nlohmann::json::array(
         {tool("bad-output", {{"type", "object"}}, nlohmann::json{{"type", "objekt"}})});

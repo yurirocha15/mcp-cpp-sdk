@@ -28,10 +28,12 @@
 #include <boost/system/system_error.hpp>
 #include <boost/version.hpp>
 #include <chrono>
+#include <condition_variable>
 #include <exception>
 #include <functional>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -894,10 +896,39 @@ struct SocketPair {
 };
 
 /// Runs @p body on @p io until it finishes; its exception goes to the test.
-void run_until_done(asio::io_context& io, std::function<mcp::Task<void>()> body) {
+/// Runs @p body and everything it started. An exchange still running after 90 seconds is reported
+/// as a failure and ended with @p on_hang (or by stopping @p io), so a regression fails the test
+/// before ctest's 120-second timeout kills it. The bound reports a hang; it is not a measure of speed.
+void run_until_done(asio::io_context& io, std::function<mcp::Task<void>()> body,
+                    std::function<void()> on_hang = {}) {
     auto done = asio::co_spawn(io, std::move(body), asio::use_future);
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool finished = false;
+    std::thread watchdog([&] {
+        std::unique_lock lock(mutex);
+        if (changed.wait_for(lock, std::chrono::seconds(90), [&] { return finished; })) {
+            return;
+        }
+        ADD_FAILURE() << "the exchange did not finish";
+        if (on_hang) {
+            asio::post(io, on_hang);
+            if (changed.wait_for(lock, std::chrono::seconds(10), [&] { return finished; })) {
+                return;
+            }
+        }
+        io.stop();
+    });
     io.run();
-    done.get();
+    {
+        std::lock_guard lock(mutex);
+        finished = true;
+    }
+    changed.notify_all();
+    watchdog.join();
+    if (done.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        done.get();
+    }
 }
 
 }  // namespace
@@ -966,15 +997,18 @@ TEST(WebSocketLimitsTest, AWriteToAPeerThatStoppedReadingFails) {
 
     bool failed = false;
     const std::string message(1U << 20U, 'x');
-    run_until_done(io, [&]() -> mcp::Task<void> {
-        try {
-            for (;;) {
-                co_await transport->write_message(message);
+    run_until_done(
+        io,
+        [&]() -> mcp::Task<void> {
+            try {
+                for (;;) {
+                    co_await transport->write_message(message);
+                }
+            } catch (const std::exception&) {
+                failed = true;
             }
-        } catch (const std::exception&) {
-            failed = true;
-        }
-    });
+        },
+        [&] { transport->close(); });
 
     EXPECT_TRUE(failed);
 }
@@ -1030,32 +1064,40 @@ TEST(WebSocketLimitsTest, MessageLimitIsSettableOnBothEnds) {
     const std::string large(20U * 1024U * 1024U, 'x');
     std::optional<std::string> received;
     bool server_refused = false;
-    run_until_done(io, [&]() -> mcp::Task<void> {
-        asio::co_spawn(
-            io,
-            [&]() -> mcp::Task<void> {
-                auto socket = co_await acceptor.async_accept(asio::use_awaitable);
-                server = std::make_shared<mcp::WebSocketServerTransport>(std::move(socket));
-                server->set_max_message_bytes(1024);
-                co_await server->read_message();
-                co_await server->write_message(large);
-                try {
+    run_until_done(
+        io,
+        [&]() -> mcp::Task<void> {
+            asio::co_spawn(
+                io,
+                [&]() -> mcp::Task<void> {
+                    auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+                    server = std::make_shared<mcp::WebSocketServerTransport>(std::move(socket));
+                    server->set_max_message_bytes(1024);
                     co_await server->read_message();
-                } catch (const std::exception&) {
-                    server_refused = true;
-                }
-            },
-            asio::detached);
-        co_await client->write_message("hello");
-        received = co_await client->read_message();
-        co_await client->write_message(std::string(2048, 'y'));
-        try {
-            co_await client->read_message();
-        } catch (const std::exception&) {
-            // The server ended the connection.
-        }
-        client->close();
-    });
+                    co_await server->write_message(large);
+                    try {
+                        co_await server->read_message();
+                    } catch (const std::exception&) {
+                        server_refused = true;
+                    }
+                },
+                asio::detached);
+            co_await client->write_message("hello");
+            received = co_await client->read_message();
+            co_await client->write_message(std::string(2048, 'y'));
+            try {
+                co_await client->read_message();
+            } catch (const std::exception&) {
+                // The server ended the connection.
+            }
+            client->close();
+        },
+        [&] {
+            client->close();
+            if (server) {
+                server->close();
+            }
+        });
 
     EXPECT_EQ(received, large);
     EXPECT_TRUE(server_refused);

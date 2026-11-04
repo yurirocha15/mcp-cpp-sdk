@@ -782,6 +782,61 @@ TEST(SchemaLimits, WholeStringKeywordsAreCharged) {
               "validation stopped: schema evaluation takes too much work");
 }
 
+/// Whether validating @p value against @p schema stops for want of work, given @p work to spend.
+bool stops_for_work(const json& schema, const json& value, std::size_t work) {
+    mcp::SchemaOptions options;
+    options.max_evaluation_work = work;
+    const auto result = CompiledSchema::compile(schema, options).validate(value);
+    return !result.valid && result.violations.size() == 1U &&
+           result.violations[0].message.find("takes too much work") != std::string::npos;
+}
+
+// 40,000 enum comparisons. Both validators charge 8 units for one, so 100,000 units do not pay for
+// them, whichever validator runs.
+TEST(SchemaLimits, BothValidatorsChargeAComparisonAlike) {
+    json allowed = json::array();
+    for (int i = 0; i < 200; ++i) {
+        allowed.push_back(1000 + i);
+    }
+    const json schema = {{"items", {{"enum", allowed}}}};
+    const json value(200, allowed.back());
+    EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
+    EXPECT_TRUE(stops_for_work(schema, value, 100'000));
+    EXPECT_TRUE(stops_for_work(through_jsoncons(schema), value, 100'000));
+}
+
+// Each item is compared with a const of 200 values: 40,000 comparisons in all.
+TEST(SchemaLimits, ConstComparisonsAreCharged) {
+    const json constant(200, 7);
+    const json schema = {{"items", {{"const", constant}}}};
+    const json value(200, constant);
+    EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
+    EXPECT_TRUE(stops_for_work(schema, value, 100'000));
+}
+
+// Each of 500 objects is checked against 500 dependentRequired entries, which enters no subschema.
+TEST(SchemaLimits, DependentRequiredEntriesAreCharged) {
+    json dependencies = json::object();
+    for (int i = 0; i < 500; ++i) {
+        dependencies["d" + std::to_string(i)] = json::array();
+    }
+    const json schema = through_jsoncons({{"items", {{"dependentRequired", dependencies}}}});
+    const json value(500, json::object());
+    EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
+    EXPECT_TRUE(stops_for_work(schema, value, 100'000));
+}
+
+// Each of 200,000 properties is looked up in "properties", and none enters a subschema.
+TEST(SchemaLimits, PropertiesLookedUpAreCharged) {
+    json value = json::object();
+    for (int i = 0; i < 200000; ++i) {
+        value["p" + std::to_string(i)] = 0;
+    }
+    const json schema = through_jsoncons({{"properties", {{"q", json::object()}}}});
+    EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
+    EXPECT_TRUE(stops_for_work(schema, value, 100'000));
+}
+
 // The work allowed grows with the schema as well as the value, so a large enum or a union of many
 // object types over an ordinary array is not stopped.
 TEST(SchemaLimits, LargeSchemasOverOrdinaryArraysAreNotStopped) {

@@ -119,10 +119,26 @@ mcp::Task<void> pause(std::chrono::milliseconds time) {
     co_await timer.async_wait(asio::use_awaitable);
 }
 
+/// Set by the "hold" tool when it starts; it answers once g_hold_released is set.
+std::atomic<bool> g_hold_started{false};
+std::atomic<bool> g_hold_released{false};
+
 std::unique_ptr<mcp::Server> make_server() {
     mcp::ServerCapabilities caps;
     caps.tools = mcp::ServerCapabilities::ToolsCapability{};
-    return std::make_unique<mcp::Server>(mcp::Implementation{"limits", "1.0"}, caps);
+    auto server = std::make_unique<mcp::Server>(mcp::Implementation{"limits", "1.0"}, caps);
+    server->add_tool<json, json>("hold", "Answers once released", json{{"type", "object"}},
+                                 [](json /*args*/) -> mcp::Task<json> {
+                                     g_hold_started.store(true);
+                                     auto executor = co_await asio::this_coro::executor;
+                                     while (!g_hold_released.load()) {
+                                         asio::steady_timer tick(executor,
+                                                                 std::chrono::milliseconds(1));
+                                         co_await tick.async_wait(asio::use_awaitable);
+                                     }
+                                     co_return json::object();
+                                 });
+    return server;
 }
 
 unsigned short free_port() {
@@ -351,6 +367,65 @@ TEST_F(SessionLimitsTest, ConnectionLimitsMustAllowARequest) {
                  std::invalid_argument);
     EXPECT_THROW(manager_.set_connection_limits({0, std::chrono::seconds(1), 1, 0}),
                  std::invalid_argument);
+}
+
+// A session whose request is still being answered is in use, however long the answer takes: only
+// the session that is idle ends.
+TEST_F(SessionLimitsTest, SessionWithARequestWaitingIsNotIdle) {
+    g_hold_started = false;
+    g_hold_released = false;
+    manager_.set_session_limits({10, std::chrono::milliseconds(40)});
+    Reply held;
+    bool idle_one_ended = false;
+    std::size_t left = 0;
+    run([&]() -> mcp::Task<void> {
+        const auto busy = co_await post(make_initialize_request("busy"));
+        const auto session = session_header(busy);
+        co_await post_only(make_initialized_notification(), session);
+        asio::co_spawn(
+            io_,
+            [&, session]() -> mcp::Task<void> {
+                held = co_await post(make_tool_call_request("h", "hold", json::object()), session);
+            },
+            asio::detached);
+        co_await wait_until([] { return g_hold_started.load(); });
+        co_await post_only(make_initialize_request("idle"));
+        idle_one_ended = co_await wait_until([this] { return manager_.session_count() < 2; });
+        left = manager_.session_count();
+        g_hold_released = true;
+        co_await wait_until([&] { return held.status != 0; });
+    });
+    EXPECT_TRUE(idle_one_ended);
+    EXPECT_EQ(left, 1u);
+    EXPECT_EQ(held.status, 200u);
+    EXPECT_NE(held.body.find("\"result\""), std::string::npos) << held.body;
+}
+
+// A client that resumes a stream with nothing after its last event is answered with an empty
+// stream, not refused.
+TEST_F(SessionLimitsTest, ResumeWithNothingToReplayIsAnEmptyStream) {
+    std::string resumed;
+    std::string event_id;
+    run([&]() -> mcp::Task<void> {
+        const auto initialized = co_await post(make_initialize_request("1"));
+        const auto session = session_header(initialized);
+        co_await post_only(make_initialized_notification(), session);
+        const auto pinged = co_await post(ping(), session);
+        const auto id_at = pinged.body.find("id: ");
+        if (id_at == std::string::npos) {
+            ADD_FAILURE() << "the answer carries no event id: " << pinged.body;
+            co_return;
+        }
+        event_id = pinged.body.substr(id_at + 4, pinged.body.find('\n', id_at) - id_at - 4);
+        resumed = co_await raw_exchange(
+            io_.get_executor(), port_,
+            "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\nMCP-Session-Id: " +
+                initialized.session_id.value_or("") + "\r\nLast-Event-ID: " + event_id +
+                "\r\nConnection: close\r\n\r\n",
+            std::chrono::seconds(20));
+    });
+    EXPECT_EQ(resumed.rfind("HTTP/1.1 200", 0), 0u) << resumed;
+    EXPECT_NE(resumed.find("text/event-stream"), std::string::npos) << resumed;
 }
 
 TEST_F(SessionLimitsTest, SessionLimitMustAllowASession) {
@@ -592,17 +667,22 @@ TEST_F(ReverseBindingTest, SubscriptionsOfAnEndedSessionLeaveRoomForTheNext) {
         co_return session;
     };
     Reply full;
+    Reply held_again;
     Reply next;
     run([&]() -> mcp::Task<void> {
         const auto first = co_await open_session("a");
         for (int id = 1; id <= 8; ++id) {
             full = co_await post(subscribe(id), first);
         }
+        held_again = co_await post(subscribe(1), first);
         co_await end_session(first.front().second);
         const auto second = co_await open_session("b");
         next = co_await post(subscribe(100), second);
     });
     EXPECT_NE(full.body.find("Too many resource subscriptions"), std::string::npos) << full.body;
+    // A URI the session already holds takes nothing more, so it may be subscribed again at the
+    // limit.
+    EXPECT_NE(json::parse(held_again.body).value("result", json()), json()) << held_again.body;
     EXPECT_NE(json::parse(next.body).value("result", json()), json()) << next.body;
 }
 
@@ -630,6 +710,60 @@ TEST_F(ReverseBindingTest, ConnectionsPastTheLimitAreClosed) {
         idle->close();
     });
     EXPECT_EQ(second, "");
+}
+
+// A session waiting for the answer to a request is in use, so another client's initialize does not
+// take it over, however long the session has been quiet.
+TEST_F(ReverseBindingTest, SessionWithARequestWaitingIsNotTakenOver) {
+    server_->set_reverse_request_timeout(std::chrono::seconds(30));
+    transport_->set_session_idle_timeout(std::chrono::milliseconds(20));
+    Reply second;
+    run([&]() -> mcp::Task<void> {
+        const auto id = co_await session_waiting_for_an_answer();
+        co_await pause(std::chrono::milliseconds(40));
+        second = co_await post(make_initialize_request("second"));
+        co_await end_session(id);
+    });
+    EXPECT_EQ(second.status, 400u) << second.body;
+}
+
+// Only an initialize without a session id takes over an idle session; one that names the session
+// is a request of that session.
+TEST_F(ReverseBindingTest, InitializeNamingTheSessionDoesNotTakeItOver) {
+    transport_->set_session_idle_timeout(std::chrono::milliseconds(20));
+    Reply later;
+    run([&]() -> mcp::Task<void> {
+        const auto first = co_await post(make_initialize_request("first"));
+        const Headers session{
+            {"MCP-Session-Id", first.session_id.value_or("")},
+            {"MCP-Protocol-Version", json::parse(first.body)["result"]["protocolVersion"]}};
+        co_await post_only(make_initialized_notification(), session);
+        co_await pause(std::chrono::milliseconds(40));
+        co_await post_only(make_initialize_request("again"), session);
+        later = co_await post(ping(), session);
+    });
+    EXPECT_EQ(later.status, 200u) << later.body;
+}
+
+// Requests keep a session in use: the idle timeout counts from the last one.
+TEST_F(ReverseBindingTest, UsedSessionIsNotTakenOver) {
+    constexpr auto idle = std::chrono::milliseconds(1000);
+    transport_->set_session_idle_timeout(idle);
+    Reply second;
+    run([&]() -> mcp::Task<void> {
+        const auto first = co_await post(make_initialize_request("first"));
+        const Headers session{
+            {"MCP-Session-Id", first.session_id.value_or("")},
+            {"MCP-Protocol-Version", json::parse(first.body)["result"]["protocolVersion"]}};
+        co_await post_only(make_initialized_notification(), session);
+        for (int i = 0; i < 4; ++i) {
+            co_await pause(idle / 4);
+            co_await post_only(ping(), session);
+        }
+        co_await pause(idle / 4);
+        second = co_await post(make_initialize_request("second"));
+    });
+    EXPECT_EQ(second.status, 400u) << second.body;
 }
 
 TEST_F(ReverseBindingTest, ActiveSessionKeepsNextClientOut) {
