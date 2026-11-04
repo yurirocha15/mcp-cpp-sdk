@@ -300,6 +300,25 @@ TEST_F(SessionLimitsTest, ClientStartsANewSessionAfterAFailedStart) {
     EXPECT_TRUE(answered);
 }
 
+// A connection the server closed while it sat idle is not used again: the next request opens a
+// new one.
+TEST_F(SessionLimitsTest, ClientReconnectsAfterTheServerClosedAnIdleConnection) {
+    manager_.set_connection_limits({0, std::chrono::milliseconds(200), 4096, 1U << 30});
+    bool answered = false;
+    run([&]() -> mcp::Task<void> {
+        auto transport = std::make_shared<mcp::HttpClientTransport>(
+            io_.get_executor(), "http://127.0.0.1:" + std::to_string(port_) + "/mcp");
+        mcp::Client client(transport, io_.get_executor());
+        co_await client.connect("idle", "1.0");
+        co_await client.ping();
+        co_await pause(std::chrono::milliseconds(600));
+        co_await client.ping();
+        answered = true;
+        client.close();
+    });
+    EXPECT_TRUE(answered);
+}
+
 TEST_F(SessionLimitsTest, UsedSessionStays) {
     constexpr auto idle = std::chrono::milliseconds(300);
     manager_.set_session_limits({10, idle});

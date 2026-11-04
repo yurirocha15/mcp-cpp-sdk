@@ -130,6 +130,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   started, such as while the server is full, the next request starts one before
   it is sent. `HttpServerTransport` answers 500, not 404, to a request whose
   session ends while it runs, so the client does not send it again.
+- `HttpClientTransport` opens a new connection when the server closed the one
+  it kept while it sat idle, as both HTTP server transports do after the
+  request read timeout. The first request after such a pause failed.
 - `StreamableHttpSessionManager` holds at most 10,000 sessions and ends a session
   idle for five minutes (`set_session_limits()`), and keeps no session for a
   failed initialize. An SSE replay store keeps at most 32 MiB.

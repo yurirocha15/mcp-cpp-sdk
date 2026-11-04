@@ -128,9 +128,33 @@ struct HttpClientTransport::Impl {
         return ParsedUrl{std::move(host), std::move(port), std::move(path)};
     }
 
+    /// Whether the peer has closed @p stream, or sent something no request asked for. A server
+    /// closes a connection that sits idle between requests; a request written into it is never
+    /// read, so the connection is not used again.
+    static bool closed_by_peer(beast::tcp_stream& stream) {
+        auto& socket = stream.socket();
+        if (!socket.is_open()) {
+            return true;
+        }
+        beast::error_code error;
+        const bool was_non_blocking = socket.non_blocking();
+        (void)socket.non_blocking(true, error);
+        if (error) {
+            return false;
+        }
+        char byte = 0;
+        const auto read = socket.read_some(net::buffer(&byte, 1), error);
+        beast::error_code restore_error;
+        (void)socket.non_blocking(was_non_blocking, restore_error);
+        return read != 0 || error != net::error::would_block;
+    }
+
     Task<void> ensure_connected() {
         if (state->stream.has_value()) {
-            co_return;
+            if (!closed_by_peer(*state->stream)) {
+                co_return;
+            }
+            reset_connection();
         }
 
         auto resolved_endpoints =
