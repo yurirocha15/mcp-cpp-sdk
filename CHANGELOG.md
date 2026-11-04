@@ -480,6 +480,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   itself, which is invalid JSON, a byte order mark, text after a NUL byte, an
   integer out of the range of its type or a number read under a locale whose
   decimal point is not `.`, is passed to `nlohmann::json::parse()` as before.
+- The JSON writer keeps its place in the output string as an index and grows
+  the string ahead of what it writes, so writing a character is a store
+  rather than a call into `std::string`, and a string that needs no escape is
+  copied in one step.
 
 ### Removed
 
