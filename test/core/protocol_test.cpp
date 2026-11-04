@@ -2374,10 +2374,10 @@ TEST(ProtocolTest, TaskStatusNotificationSerialization) {
 
 TEST(ProtocolTest, ElicitationCompleteNotificationSerialization) {
     mcp::ElicitationCompleteNotification notif;
-    notif.params.requestId = "req1";
+    notif.params.elicitationId = "550e8400-e29b-41d4-a716-446655440000";
     nlohmann::json j = notif;
     EXPECT_EQ(j["method"], "notifications/elicitation/complete");
-    EXPECT_EQ(j["params"]["requestId"], "req1");
+    EXPECT_EQ(j["params"], (nlohmann::json{{"elicitationId", "550e8400-e29b-41d4-a716-446655440000"}}));
 }
 
 TEST(ProtocolTest, RejectsInvalidJsonRpcVersion) {

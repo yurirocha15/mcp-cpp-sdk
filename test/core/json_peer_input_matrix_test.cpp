@@ -573,10 +573,10 @@ TEST(JsonPeerInputMatrix, ElicitResult) {
 
 TEST(JsonPeerInputMatrix, ElicitationCompleteNotification) {
     const json baseline = json::parse(
-        R"json({"method":"notifications/elicitation/complete","params":{"requestId":1}})json");
+        R"json({"method":"notifications/elicitation/complete","params":{"elicitationId":"x"}})json");
     static const FieldExpect fields[] = {
         {"method", R"json("notifications/elicitation/complete")json", 0, true, true, true, false},
-        {"params", R"json({"requestId":1})json", 0, true, true, true, false},
+        {"params", R"json({"elicitationId":"x"})json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ElicitationCompleteNotification.") + f.key);
@@ -585,9 +585,9 @@ TEST(JsonPeerInputMatrix, ElicitationCompleteNotification) {
 }
 
 TEST(JsonPeerInputMatrix, ElicitationCompleteNotificationParams) {
-    const json baseline = json::parse(R"json({"requestId":1})json");
+    const json baseline = json::parse(R"json({"elicitationId":"x"})json");
     static const FieldExpect fields[] = {
-        {"requestId", R"json(1)json", 1, true, true, true, false},
+        {"elicitationId", R"json("x")json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ElicitationCompleteNotificationParams.") + f.key);
