@@ -133,6 +133,11 @@ class MCP_API StdioTransport final : public ITransport {
      */
     void set_max_message_bytes(std::size_t bytes);
 
+    /**
+     * @brief This transport, which Server::run() serves as a StdioTransport.
+     */
+    StdioTransport* stdio_transport() noexcept override { return this; }
+
    private:
     struct OwnStdoutTag {};
     StdioTransport(const boost::asio::any_io_executor& executor, std::istream& input, OwnStdoutTag);

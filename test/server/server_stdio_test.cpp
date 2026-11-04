@@ -1,6 +1,10 @@
 #include "mcp/detail/signal.hpp"
 #include "mcp/server/server.hpp"
+#include "mcp/transport/stdio.hpp"
 
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
+#include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -15,13 +19,16 @@
 #include <cstdlib>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <ostream>
 #include <sstream>
 #include <streambuf>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
 
 #if !defined(_WIN32)
 #include <poll.h>
@@ -549,6 +556,38 @@ TEST_F(ServerStdioTest, RunStdioHandlesToolCall) {
     EXPECT_EQ(tool_response["result"]["structuredContent"]["greeting"], "Hello, World");
 }
 
+namespace {
+
+/// Passes every message through to a StdioTransport, as a logging or tracing wrapper would.
+class PassThroughTransport final : public mcp::ITransport {
+   public:
+    explicit PassThroughTransport(std::shared_ptr<mcp::StdioTransport> inner)
+        : inner_(std::move(inner)) {}
+    mcp::Task<std::string> read_message() override { return inner_->read_message(); }
+    mcp::Task<void> write_message(std::string_view message) override {
+        return inner_->write_message(message);
+    }
+    void close() override { inner_->close(); }
+    mcp::StdioTransport* stdio_transport() noexcept override { return inner_.get(); }
+
+   private:
+    std::shared_ptr<mcp::StdioTransport> inner_;
+};
+
+/// The input of @p calls requests to the "pause" tool after the handshake.
+std::string pause_calls(int calls) {
+    std::string text =
+        make_initialize_request("1").dump() + "\n" + make_initialized_notification().dump() + "\n";
+    for (int i = 0; i < calls; ++i) {
+        text +=
+            make_tool_call_request("c" + std::to_string(i), "pause", nlohmann::json::object()).dump() +
+            "\n";
+    }
+    return text;
+}
+
+}  // namespace
+
 // The end of the input lets the requests already read finish: each still gets its answer.
 TEST_F(ServerStdioTest, EveryRequestReadBeforeTheInputEndsIsAnswered) {
     server_->add_tool<nlohmann::json, nlohmann::json>(
@@ -560,14 +599,7 @@ TEST_F(ServerStdioTest, EveryRequestReadBeforeTheInputEndsIsAnswered) {
             co_return nlohmann::json{{"done", true}};
         });
     constexpr int calls = 50;
-    std::string text =
-        make_initialize_request("1").dump() + "\n" + make_initialized_notification().dump() + "\n";
-    for (int i = 0; i < calls; ++i) {
-        text +=
-            make_tool_call_request("c" + std::to_string(i), "pause", nlohmann::json::object()).dump() +
-            "\n";
-    }
-    std::istringstream input(text);
+    std::istringstream input(pause_calls(calls));
     std::ostringstream output;
 
     server_->run_stdio(input, output);
@@ -575,6 +607,23 @@ TEST_F(ServerStdioTest, EveryRequestReadBeforeTheInputEndsIsAnswered) {
     const auto responses = parse_responses(output.str());
     ASSERT_EQ(responses.size(), static_cast<std::size_t>(calls) + 1);
     for (const auto& response : responses) {
+        EXPECT_TRUE(response.contains("result")) << response.dump();
+    }
+
+    // A wrapper that names the StdioTransport it carries is served the same way.
+    std::istringstream wrapped_input(pause_calls(calls));
+    std::ostringstream wrapped_output;
+    {
+        boost::asio::io_context io;
+        auto stdio =
+            std::make_shared<mcp::StdioTransport>(io.get_executor(), wrapped_input, wrapped_output);
+        auto wrapper = std::make_shared<PassThroughTransport>(stdio);
+        boost::asio::co_spawn(io, server_->run(wrapper, io.get_executor()), boost::asio::detached);
+        io.run();
+    }
+    const auto wrapped = parse_responses(wrapped_output.str());
+    ASSERT_EQ(wrapped.size(), static_cast<std::size_t>(calls) + 1);
+    for (const auto& response : wrapped) {
         EXPECT_TRUE(response.contains("result")) << response.dump();
     }
 }

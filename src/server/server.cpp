@@ -1185,7 +1185,7 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
     // every later run() is refused for the lifetime of this Server.
     try {
         session->stopping.store(true, std::memory_order_release);
-        if (dynamic_cast<StdioTransport*>(session->transport.get()) != nullptr) {
+        if (session->transport->stdio_transport() != nullptr) {
             // The end of standard input is how a client asks a stdio server to finish, and it may
             // still be reading standard output. The requests already started are told to stop,
             // and the answers of those that end, with every answer already queued, are written
