@@ -554,6 +554,48 @@ TEST_F(SessionLimitsTest, UnreadReplayGivesBackWhatItHolds) {
     EXPECT_EQ(second.rfind("HTTP/1.1 200", 0), 0U) << second.substr(0, 200);
 }
 
+// A read timeout too long to add to the current time sets no deadline.
+TEST_F(SessionLimitsTest, ReadTimeoutTooLongForTheClockSetsNoDeadline) {
+    manager_.set_connection_limits({0, std::chrono::milliseconds::max(), 4096, 1U << 30});
+    Reply initialized;
+    run([&]() -> mcp::Task<void> { initialized = co_await post(make_initialize_request("1")); });
+    EXPECT_EQ(initialized.status, 200U) << initialized.body;
+}
+
+// A token check that outlasts the read deadline ends that connection, and the server goes on
+// serving others.
+TEST_F(SessionLimitsTest, TokenCheckPastTheReadDeadlineEndsOnlyThatConnection) {
+    manager_.set_connection_limits({0, std::chrono::milliseconds(200), 4096, 1U << 30});
+    manager_.set_async_bearer_token_validator([](std::string token) -> mcp::Task<bool> {
+        if (token == "slow") {
+            co_await pause(std::chrono::milliseconds(400));
+        }
+        co_return true;
+    });
+    std::string late;
+    Reply initialized;
+    run([&]() -> mcp::Task<void> {
+        const auto body = make_initialize_request("1").dump();
+        const auto head =
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+            "Accept: application/json, text/event-stream\r\nAuthorization: Bearer slow\r\n"
+            "Content-Length: " +
+            std::to_string(body.size()) + "\r\n\r\n";
+        asio::ip::tcp::socket slow(io_);
+        co_await slow.async_connect({asio::ip::make_address("127.0.0.1"), port_}, asio::use_awaitable);
+        co_await asio::async_write(slow, asio::buffer(head), asio::use_awaitable);
+        // The body follows once the check has outlasted the deadline.
+        co_await pause(std::chrono::milliseconds(500));
+        boost::system::error_code ignored;
+        asio::write(slow, asio::buffer(body), ignored);
+        co_await pause(std::chrono::milliseconds(100));
+        (void)slow.close(ignored);
+        const Headers token{{"Authorization", "Bearer t"}};
+        initialized = co_await post(make_initialize_request("2"), token);
+    });
+    EXPECT_EQ(initialized.status, 200U) << initialized.body;
+}
+
 TEST_F(SessionLimitsTest, SessionLimitMustAllowASession) {
     EXPECT_THROW(manager_.set_session_limits({0, std::chrono::milliseconds::zero()}),
                  std::invalid_argument);

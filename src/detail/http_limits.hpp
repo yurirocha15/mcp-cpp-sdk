@@ -139,14 +139,27 @@ inline StringRequest take_request(RequestParser& parser) {
     return StringRequest(std::move(request.base()), std::move(request.body()));
 }
 
-/// Starts the deadline for reading one request, or clears it when @p limits sets none.
-inline void arm_request_read_deadline(boost::beast::tcp_stream& stream,
-                                      const HttpConnectionLimits& limits) {
-    if (limits.request_read_timeout > std::chrono::milliseconds::zero()) {
-        stream.expires_after(limits.request_read_timeout);
-    } else {
+/// Starts the deadline for reading one request and returns it, or clears it and returns nothing when
+/// @p limits sets none. A timeout too long to add to the current time sets none.
+inline std::optional<std::chrono::steady_clock::time_point> arm_request_read_deadline(
+    boost::beast::tcp_stream& stream, const HttpConnectionLimits& limits) {
+    const auto now = std::chrono::steady_clock::now();
+    const auto room = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::time_point::max() - now);
+    if (limits.request_read_timeout <= std::chrono::milliseconds::zero() ||
+        limits.request_read_timeout >= room) {
         stream.expires_never();
+        return std::nullopt;
     }
+    const auto deadline = now + limits.request_read_timeout;
+    stream.expires_at(deadline);
+    return deadline;
+}
+
+/// Whether @p deadline has passed. A Beast read started after its deadline fails inside Asio with
+/// bad_executor, which ends the process, so such a read is not started.
+inline bool deadline_passed(const std::optional<std::chrono::steady_clock::time_point>& deadline) {
+    return deadline && std::chrono::steady_clock::now() >= *deadline;
 }
 
 /// Writes @p response within the time @p limits gives reading a request, so a peer that does not
@@ -205,7 +218,7 @@ inline Task<bool> read_request_within_limits(boost::beast::tcp_stream& stream,
                code == boost::asio::error::operation_aborted || code == boost::beast::error::timeout ||
                code == http::error::end_of_stream;
     };
-    arm_request_read_deadline(stream, limits);
+    const auto deadline = arm_request_read_deadline(stream, limits);
     bool declared_too_large = false;
     try {
         co_await http::async_read_header(stream, buffer, parser, boost::asio::use_awaitable);
@@ -238,6 +251,11 @@ inline Task<bool> read_request_within_limits(boost::beast::tcp_stream& stream,
     bool busy = false;
     try {
         while (!parser.is_done()) {
+            // The checks before the body may have outlasted the deadline.
+            if (deadline_passed(deadline)) {
+                stream.expires_never();
+                co_return false;
+            }
             co_await http::async_read_some(stream, buffer, parser, boost::asio::use_awaitable);
             if (!bytes.grow_to(parser.get().body().size())) {
                 busy = true;
