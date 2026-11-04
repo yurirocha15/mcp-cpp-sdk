@@ -76,6 +76,15 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Fixed
 
+- `OAuthAuthorizationManager` handed the authorization endpoint named in the
+  authorization server's metadata to the consent callback as
+  `AuthorizationRequest::authorization_url` without checking it. The endpoint
+  must now be an
+  absolute `https` URL (`http` only on loopback when
+  `MetadataFetchPolicy::allow_plain_http_loopback` is set), outside
+  `denied_origins`, without a fragment and made only of characters a URI may
+  contain; otherwise the challenge fails before the callback runs. It may sit
+  on another origin than the metadata, since only the browser connects to it.
 - A GET with `Last-Event-ID` replayed every later event of the session, so a
   client resuming one POST's stream also got the answers of other POSTs and
   messages that no stream carried. The specification does not allow replaying

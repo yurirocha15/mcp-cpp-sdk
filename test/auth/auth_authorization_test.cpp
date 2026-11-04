@@ -4728,6 +4728,100 @@ TEST(AuthIssuerBindingTest, RejectsAuthServerMetadataWhoseIssuerIsNotItsDiscover
     EXPECT_FALSE(store->load(config.server_url).has_value());
 }
 
+namespace {
+
+/// Runs one challenge against a server whose metadata names `authorization_endpoint`, and reports
+/// whether the challenge threw and which authorization URL reached the consent callback.
+struct EndpointOutcome {
+    bool threw{false};
+    std::string authorization_url;
+    std::size_t requests{0};
+};
+
+EndpointOutcome challenge_with_authorization_endpoint(const std::string& authorization_endpoint) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            auto metadata = auth_server_metadata(base, true);
+            metadata["authorization_endpoint"] = authorization_endpoint;
+            return json_response(metadata);
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    EndpointOutcome outcome;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+                io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(), config,
+                echoing_callback(&outcome.authorization_url));
+            try {
+                (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                             R"(/prm")");
+            } catch (const std::exception&) {
+                outcome.threw = true;
+            }
+            server.close();
+        },
+        asio::detached);
+    io_ctx.run();
+    outcome.requests = server.targets().size();
+    return outcome;
+}
+
+}  // namespace
+
+// The application opens the authorization URL in a browser, and the server names it. A URL of
+// another scheme, with a fragment, or with characters a URI cannot hold never reaches the callback.
+TEST(AuthAuthorizationEndpointTest, RefusesAnEndpointThatIsNotAPlainHttpsUrl) {
+    const std::vector<std::string> endpoints = {
+        "file:///etc/passwd",
+        "javascript:alert(document.cookie)//",
+        R"(\\attacker.test\share\payload.exe)",
+        R"(https://x.test/a";touch${IFS}/tmp/pwned;")",
+        "https://x.test/a b",
+        "https://x.test/authorize#fragment",
+        "http://x.test/authorize",
+        "data:text/html,hello",
+    };
+    for (const auto& endpoint : endpoints) {
+        const auto outcome = challenge_with_authorization_endpoint(endpoint);
+        EXPECT_TRUE(outcome.threw) << endpoint;
+        EXPECT_TRUE(outcome.authorization_url.empty())
+            << endpoint << " -> " << outcome.authorization_url;
+        // Refused after the two metadata documents and before any token request.
+        EXPECT_EQ(outcome.requests, 2U) << endpoint;
+    }
+}
+
+// The browser, not the SDK, connects to the authorization endpoint, so it may sit on another origin
+// than the metadata, as many providers' do.
+TEST(AuthAuthorizationEndpointTest, AcceptsAnHttpsEndpointOnAnotherOrigin) {
+    const auto outcome = challenge_with_authorization_endpoint("https://login.example.com/authorize");
+    EXPECT_FALSE(outcome.threw);
+    EXPECT_EQ(outcome.authorization_url.rfind("https://login.example.com/authorize?", 0), 0U)
+        << outcome.authorization_url;
+    EXPECT_EQ(outcome.requests, 3U);
+}
+
 TEST(AuthClientIdentityBindingTest, RefusesInjectedCredentialsBoundToADifferentIssuer) {
     mcp::auth::ClientIdentityConfig config;
     mcp::auth::OAuthClientInformation injected;
