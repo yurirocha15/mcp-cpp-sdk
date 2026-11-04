@@ -193,6 +193,14 @@ class HttpStreamTest : public ::testing::Test {
                                          }
                                          co_return json{{"flooded", true}};
                                      });
+        server->add_tool<json, json>("sequence", "Logs note-0 to note-19", json{{"type", "object"}},
+                                     [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                         for (int index = 0; index < 20; ++index) {
+                                             co_await ctx.log(mcp::LoggingLevel::eError,
+                                                              "note-" + std::to_string(index));
+                                         }
+                                         co_return json{{"sequenced", true}};
+                                     });
         server->add_tool<json, json>("progress", "Reports progress", json{{"type", "object"}},
                                      [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
                                          co_await ctx.report_progress(1, 2, "halfway");
@@ -474,6 +482,29 @@ TEST_F(HttpStreamTest, NotificationsBeyondTheQueueLimitAreDroppedAndCounted) {
     ASSERT_TRUE(saw_end) << client.received();
     EXPECT_NE(client.received().find(R"("flooded":true)"), std::string::npos);
     EXPECT_GT(manager->stream_stats().dropped_notifications, 0u);
+}
+
+// Notifications reach the stream in the order the handler sent them, all before the result,
+// however many the connection takes from the queue at once.
+TEST_F(HttpStreamTest, NotificationsArriveInTheOrderTheHandlerSentThem) {
+    auto manager = make_manager(20478);
+    RawClient client(io_ctx_.get_executor());
+    bool saw_end = false;
+    run(*manager, [&]() -> mcp::Task<void> {
+        co_await client.connect(20478);
+        co_await client.send(modern_request_bytes(call_tool(1, "sequence")));
+        saw_end = co_await client.read_until("0\r\n\r\n");
+    });
+    ASSERT_TRUE(saw_end) << client.received();
+    const auto& text = client.received();
+    std::size_t previous = 0;
+    for (int index = 0; index < 20; ++index) {
+        const auto at = text.find(log_line("note-" + std::to_string(index)));
+        ASSERT_NE(at, std::string::npos) << index << "\n" << text;
+        EXPECT_GT(at, previous) << index;
+        previous = at;
+    }
+    EXPECT_GT(text.find(R"("sequenced":true)"), previous);
 }
 
 TEST_F(HttpStreamTest, ClientsSharingAnIdAreCancelledIndependently) {

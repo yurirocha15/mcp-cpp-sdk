@@ -35,7 +35,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
-#include <deque>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -184,9 +183,11 @@ struct ModernExchange : std::enable_shared_from_this<ModernExchange> {
     std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
 
     std::mutex mutex;
-    std::deque<std::string> notifications;  // guarded by mutex
-    std::optional<std::string> response;    // guarded by mutex
-    std::function<void()> on_cancel;        // guarded by mutex
+    /// Empty, it holds no memory, as for most requests, which send no notification. Guarded by
+    /// mutex.
+    std::vector<std::string> notifications;
+    std::optional<std::string> response;  // guarded by mutex
+    std::function<void()> on_cancel;      // guarded by mutex
 };
 
 struct SessionRuntime {
@@ -1263,7 +1264,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         for (;;) {
-            std::deque<std::string> notifications;
+            std::vector<std::string> notifications;
             std::optional<std::string> response;
             {
                 std::lock_guard lock(exchange->mutex);

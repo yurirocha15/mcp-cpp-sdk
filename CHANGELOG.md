@@ -461,6 +461,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   request is cancelled in place when the code that signals it already runs on
   the timer's strand. On the benchmark's 2025-03-26 workload the strand change
   took the allocation calls from 1396 to 767 per operation.
+- A 2026-07-28 request that `StreamableHttpSessionManager` serves keeps the
+  notifications it streams in a vector, which allocates nothing for a request
+  that sends none; the deque it replaces allocated on construction, once for
+  the request and once for each pass of the loop that writes its answer.
 - Registering a tool looks for `x-mcp-header` annotations without building
   the JSON Pointer of every member of its input schema; the location is built
   only along the path walked and named only in a refusal.
