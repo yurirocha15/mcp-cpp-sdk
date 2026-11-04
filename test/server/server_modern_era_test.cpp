@@ -945,6 +945,21 @@ TEST_F(ServerModernEraTest, EveryModernResultIsCompleteAndNamesTheServer) {
     }
 }
 
+TEST_F(ServerModernEraTest, ReportedServerInfoCarriesEveryFieldOfTheImplementation) {
+    mcp::Implementation info{"described-server", "2.1"};
+    info.title = "Described Server";
+    info.description = "A server with every optional field";
+    info.websiteUrl = "https://example.com";
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    mcp::Server server(info, caps);
+    for (int id = 1; id <= 2; ++id) {
+        auto response = dispatch(server, make_modern_request(id, "tools/list"));
+        ASSERT_TRUE(response.contains("result")) << response;
+        EXPECT_EQ(response["result"]["_meta"]["io.modelcontextprotocol/serverInfo"], json(info));
+    }
+}
+
 TEST_F(ServerModernEraTest, CacheableResultsCarryTheDefaultHints) {
     auto server = make_server();
     const std::set<std::string> cacheable = {"server/discover",          "tools/list",

@@ -465,6 +465,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   notifications it streams in a vector, which allocates nothing for a request
   that sends none; the deque it replaces allocated on construction, once for
   the request and once for each pass of the loop that writes its answer.
+- The server's identity that a 2026-07-28 result reports in `_meta` is
+  converted to JSON once, when the `Server` is constructed, instead of for
+  every result.
 - Registering a tool looks for `x-mcp-header` annotations without building
   the JSON Pointer of every member of its input schema; the location is built
   only along the path walked and named only in a refusal.

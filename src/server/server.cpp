@@ -862,6 +862,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     static Task<void> skip_write() { co_return; }
 
     Implementation server_info;
+    /// server_info as JSON, converted once for the answers that report it.
+    nlohmann::json server_info_json;
     ServerCapabilities capabilities;
     std::optional<std::string> instructions;
     std::array<CacheHint, 6> cache_hints{};
@@ -1219,6 +1221,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
 Server::Server(const Implementation& server_info, const ServerCapabilities& capabilities)
     : impl_(std::make_shared<Impl>()) {
     impl_->server_info = server_info;
+    impl_->server_info_json = server_info;
     impl_->capabilities = capabilities;
 }
 
@@ -3682,7 +3685,7 @@ std::string Server::Impl::make_result_wire(const RequestId& id,
             meta = nlohmann::json::object();
         }
         if (meta.is_object()) {
-            meta.emplace(g_META_SERVER_INFO, server_info);
+            meta.emplace(g_META_SERVER_INFO, server_info_json);
         }
     }
     if (target) {
