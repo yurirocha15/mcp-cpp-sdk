@@ -538,6 +538,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Server` checks the envelope of a request read from its session, and looks
   up whether the request names its protocol version in `_meta`, once each
   instead of twice.
+- `StreamableHttpSessionManager` and `HttpServerTransport` write an answer
+  that keeps its connection open and has a body of its `Content-Length` as
+  its start line and fields followed by its body, in one write, instead of
+  through Beast's serializer. The bytes sent are the same; other answers,
+  and those that close their connection, still go through Beast.
 
 ### Removed
 

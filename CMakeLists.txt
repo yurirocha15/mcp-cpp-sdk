@@ -424,6 +424,7 @@ if(BUILD_TESTING)
       test/transport/transport_accept_retry_test.cpp
       test/transport/transport_http_limits_test.cpp
       test/transport/transport_http_version_header_test.cpp
+      test/transport/http_response_write_test.cpp
       test/e2e/e2e_integration_test.cpp
       test/e2e/e2e_matrix_test.cpp
       test/e2e/e2e_features_test.cpp

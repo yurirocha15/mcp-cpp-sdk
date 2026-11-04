@@ -1353,6 +1353,8 @@ struct HttpServerTransport::Impl {
     Task<void> handle_connection(const std::shared_ptr<Connection>& connection) {
         auto& stream = *connection;
         beast::flat_buffer request_buffer;
+        // The start line and fields of the answer being written, kept for the next answer.
+        std::vector<char> response_head;
         // What the request being served is attributed to.
         std::string principal;
         const detail::RefuseBeforeBody refuse =
@@ -1395,7 +1397,8 @@ struct HttpServerTransport::Impl {
             }
             auto& response = std::get<0>(reply);
             const bool keep_connection_alive = response.keep_alive();
-            if (!co_await detail::write_response_within_limits(stream, response, connection_limits) ||
+            if (!co_await detail::write_response_within_limits(stream, response, connection_limits,
+                                                               response_head) ||
                 !keep_connection_alive) {
                 break;
             }

@@ -720,6 +720,8 @@ struct StreamableHttpSessionManager::Impl {
         // Set once a watch has read the client's end of the stream. That end is consumed: a later
         // read on this connection would wait for an event that already happened.
         bool client_finished_sending = false;
+        // The start line and fields of the answer being written, kept for the next answer.
+        std::vector<char> response_head;
         // The principal the bearer token validator named for the request being served.
         std::optional<std::string> principal_id;
         const detail::RefuseBeforeBody refuse =
@@ -810,7 +812,8 @@ struct StreamableHttpSessionManager::Impl {
             }
             auto& response = std::get<0>(reply);
             const bool keep_connection_alive = response.keep_alive();
-            if (!co_await detail::write_response_within_limits(stream, response, limits) ||
+            if (!co_await detail::write_response_within_limits(stream, response, limits,
+                                                               response_head) ||
                 !keep_connection_alive) {
                 break;
             }
