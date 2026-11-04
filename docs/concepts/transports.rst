@@ -87,8 +87,9 @@ HTTP Transport (Network)
 
 The HTTP implementation accepts MCP POST requests and returns either JSON or a
 finite SSE body. Managed sessions support session IDs, DELETE teardown, and
-bounded event replay through GET with ``Last-Event-ID``. Continuously open SSE
-polling streams are not yet implemented.
+bounded event replay through GET with ``Last-Event-ID``. A replay holds only the
+later events of the stream that the named event was sent on. Continuously open
+SSE polling streams are not yet implemented.
 
 After initialization, ``HttpClientTransport`` carries the server-selected
 protocol version on subsequent session requests and best-effort DELETE

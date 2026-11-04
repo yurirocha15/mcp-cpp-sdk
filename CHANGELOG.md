@@ -76,6 +76,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Fixed
 
+- A GET with `Last-Event-ID` replayed every later event of the session, so a
+  client resuming one POST's stream also got the answers of other POSTs and
+  messages that no stream carried. The specification does not allow replaying
+  messages of another stream. Both HTTP server transports now replay only the
+  stream the named event was sent on: `EventStore::append()` takes the stream
+  of the event, and `events_after()` returns only that stream's later events.
+  `HttpServerTransport` answers each POST with its response alone, so a resume
+  there replays nothing.
 - A session runs at
   most 1024 requests (`Server::set_max_in_flight_requests()`), and its running
   requests and the answers the peer has not taken yet may hold at most 256 MiB

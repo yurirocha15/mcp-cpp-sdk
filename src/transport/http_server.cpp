@@ -906,10 +906,13 @@ struct HttpServerTransport::Impl {
 
         // Between a DELETE and the next client's initialize result nobody holds a session, and
         // anything recorded then would become part of the next client's replay history.
+        // Only a response is sent on a stream: the answer to its POST, which ends that stream. So
+        // each response is stored as a stream of its own, and a resume never replays another.
         std::optional<std::string> event_id;
-        if (!impl->json_only_.load(std::memory_order_acquire) && !skip_event_store &&
+        if (response_id_key.has_value() && !impl->json_only_.load(std::memory_order_acquire) &&
+            !skip_event_store &&
             (!impl->session_ended_awaiting_next || is_initialize_result_response(response_json))) {
-            event_id = impl->event_store.append(message);
+            event_id = impl->event_store.append(message, std::to_string(++impl->response_streams));
         }
 
         if (!response_id_key.has_value()) {
@@ -961,6 +964,8 @@ struct HttpServerTransport::Impl {
 
     mutable std::mutex configuration_mutex;
     bool listening_started{false};
+    /// Names the stream of each stored response; see run_write.
+    std::uint64_t response_streams{0};
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
     std::chrono::steady_clock::time_point session_last_used;

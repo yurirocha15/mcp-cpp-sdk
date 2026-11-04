@@ -138,6 +138,12 @@ std::unique_ptr<mcp::Server> make_server() {
                                      }
                                      co_return json::object();
                                  });
+    server->add_tool<json, json>(
+        "progress", "Reports progress, then answers", json{{"type", "object"}},
+        [](mcp::Context& ctx, json args) -> mcp::Task<json> {
+            co_await ctx.report_progress(1);
+            co_return json{{"pad", std::string(args.value("pad", std::size_t{0}), 'r')}};
+        });
     return server;
 }
 
@@ -426,6 +432,66 @@ TEST_F(SessionLimitsTest, ResumeWithNothingToReplayIsAnEmptyStream) {
     });
     EXPECT_EQ(resumed.rfind("HTTP/1.1 200", 0), 0u) << resumed;
     EXPECT_NE(resumed.find("text/event-stream"), std::string::npos) << resumed;
+}
+
+// A resume replays the later events of the stream it names, and nothing another POST's stream
+// carried.
+TEST_F(SessionLimitsTest, ResumeReplaysOnlyTheStreamItNames) {
+    std::string progressed;
+    std::string resumed;
+    run([&]() -> mcp::Task<void> {
+        const auto initialized = co_await post(make_initialize_request("1"));
+        const auto session = session_header(initialized);
+        co_await post_only(make_initialized_notification(), session);
+        auto call = make_tool_call_request("p", "progress", json::object());
+        call["params"]["_meta"] = {{"progressToken", "t"}};
+        progressed = (co_await post(call, session)).body;
+        co_await post(ping(), session);
+        const auto id_at = progressed.find("id: ");
+        if (id_at == std::string::npos) {
+            ADD_FAILURE() << "the answer carries no event id: " << progressed;
+            co_return;
+        }
+        const auto event_id = progressed.substr(id_at + 4, progressed.find('\n', id_at) - id_at - 4);
+        resumed = co_await raw_exchange(
+            io_.get_executor(), port_,
+            "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\nMCP-Session-Id: " +
+                initialized.session_id.value_or("") + "\r\nLast-Event-ID: " + event_id +
+                "\r\nConnection: close\r\n\r\n",
+            std::chrono::seconds(20));
+    });
+    ASSERT_NE(progressed.find("notifications/progress"), std::string::npos) << progressed;
+    EXPECT_EQ(resumed.rfind("HTTP/1.1 200", 0), 0U) << resumed;
+    EXPECT_NE(resumed.find(R"("id":"p")"), std::string::npos) << resumed;
+    EXPECT_EQ(resumed.find(R"("id":2)"), std::string::npos) << resumed;
+}
+
+// A replay holds its own copy of the events until it is read, so it counts against what requests may
+// hold; slow readers cannot each take a copy of the whole store.
+TEST_F(SessionLimitsTest, ReplayCountsAgainstTheRequestBudget) {
+    manager_.set_connection_limits({0, std::chrono::seconds(30), 4096, 128 * 1024});
+    std::string resumed;
+    run([&]() -> mcp::Task<void> {
+        const auto initialized = co_await post(make_initialize_request("1"));
+        const auto session = session_header(initialized);
+        co_await post_only(make_initialized_notification(), session);
+        auto call = make_tool_call_request("p", "progress", json{{"pad", 100000}});
+        call["params"]["_meta"] = {{"progressToken", "t"}};
+        const auto progressed = (co_await post(call, session)).body;
+        const auto id_at = progressed.find("id: ");
+        if (id_at == std::string::npos) {
+            ADD_FAILURE() << "the answer carries no event id: " << progressed.substr(0, 200);
+            co_return;
+        }
+        const auto event_id = progressed.substr(id_at + 4, progressed.find('\n', id_at) - id_at - 4);
+        resumed = co_await raw_exchange(
+            io_.get_executor(), port_,
+            "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\nMCP-Session-Id: " +
+                initialized.session_id.value_or("") + "\r\nLast-Event-ID: " + event_id +
+                "\r\nConnection: close\r\n\r\n",
+            std::chrono::seconds(20));
+    });
+    EXPECT_EQ(resumed.rfind("HTTP/1.1 503", 0), 0U) << resumed.substr(0, 200);
 }
 
 TEST_F(SessionLimitsTest, SessionLimitMustAllowASession) {

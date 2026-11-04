@@ -11,6 +11,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -32,7 +34,9 @@ std::uint64_t terminated_session_count(const HttpServerTransport& transport) noe
  *
  * Stores recent SSE events with monotonically increasing IDs. When the
  * store exceeds its capacity, the oldest events are evicted. Clients can replay
- * missed events by providing the last event ID they received.
+ * missed events by providing the last event ID they received. Each event belongs
+ * to a stream, and a replay holds only the later events of the stream that the
+ * given event belongs to.
  *
  * Not thread-safe. External synchronization is required for concurrent access.
  */
@@ -51,12 +55,13 @@ class EventStore {
      * @brief Append an event to the store and return its assigned ID.
      *
      * @param data The serialized event data (JSON-RPC message).
+     * @param stream The stream the event is sent on. Events appended without one share a stream.
      * @return The monotonically increasing event ID assigned to this event.
      */
-    std::string append(std::string data) {
+    std::string append(std::string data, std::string stream = {}) {
         auto id = std::to_string(++next_id_);
         stored_bytes_ += data.size();
-        events_.push_back(StoredEvent{id, std::move(data)});
+        events_.push_back(StoredEvent{id, std::move(stream), std::move(data)});
         while (events_.size() > capacity_ ||
                (events_.size() > 1 && stored_bytes_ > constants::g_event_store_max_bytes)) {
             stored_bytes_ -= events_.front().data.size();
@@ -66,11 +71,11 @@ class EventStore {
     }
 
     /**
-     * @brief Retrieve all events after a given event ID.
+     * @brief Retrieve the events after a given event ID on that event's stream.
      *
      * @param last_event_id The ID of the last event the client received.
-     * @return A vector of (id, data) pairs for events after the given ID,
-     *         or std::nullopt if the last_event_id has been evicted.
+     * @return A vector of (id, data) pairs for the later events of the stream that
+     *         last_event_id belongs to, or std::nullopt if last_event_id has been evicted.
      */
     [[nodiscard]] std::optional<SseEventList> events_after(const std::string& last_event_id) const {
         if (events_.empty()) {
@@ -91,9 +96,12 @@ class EventStore {
             return std::nullopt;
         }
 
+        const auto& stream = std::prev(it)->stream;
         SseEventList result;
         for (; it != events_.end(); ++it) {
-            result.emplace_back(it->id, it->data);
+            if (it->stream == stream) {
+                result.emplace_back(it->id, it->data);
+            }
         }
         return result;
     }
@@ -138,6 +146,7 @@ class EventStore {
    private:
     struct StoredEvent {
         std::string id;
+        std::string stream;
         std::string data;
     };
 

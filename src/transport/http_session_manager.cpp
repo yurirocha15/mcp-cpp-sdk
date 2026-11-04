@@ -57,6 +57,8 @@ struct PendingResponse {
     std::optional<std::string> response_body;
     SseEventList stream_events;
     bool response_ready{false};
+    /// Names the stream that answers this POST in the session's event store.
+    std::string stream;
 };
 
 struct PendingResult {
@@ -76,7 +78,11 @@ struct SessionRuntime {
     EventStore event_store;
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
-    SseEventList unassigned_stream_events;
+    /// Messages sent while several POSTs wait, without an id yet: each is stored, and given its
+    /// id, once the next answer names the stream it travels on.
+    std::vector<std::string> unassigned_stream_events;
+    /// Counts the POST streams of this session, to name each one.
+    std::uint64_t streams{0};
 
     /// A response has succeeded on this session, so its initialize did.
     std::atomic<bool> established{false};
@@ -962,7 +968,8 @@ struct StreamableHttpSessionManager::Impl {
             }
             session->pending_responses.emplace(
                 request_id_key,
-                detail_session_mgr::PendingResponse{timer_signal, std::nullopt, {}, false});
+                detail_session_mgr::PendingResponse{
+                    timer_signal, std::nullopt, {}, false, std::to_string(++session->streams)});
         }
 
         co_await session->client_transport->write_json(std::move(request_json));
@@ -1091,19 +1098,20 @@ struct StreamableHttpSessionManager::Impl {
         {
             std::lock_guard lock(session->response_mutex);
 
-            std::optional<std::pair<std::string, std::string>> stream_event;
-            if (!json_only) {
-                auto event_id = session->event_store.append(message);
-                stream_event.emplace(std::move(event_id), message);
-            }
+            // An event is stored under the stream it is sent on, so a resume of one POST's stream
+            // replays nothing that another POST's stream carried.
+            const auto send_on = [session](detail_session_mgr::PendingResponse& pending,
+                                           std::string event) {
+                auto event_id = session->event_store.append(event, pending.stream);
+                pending.stream_events.emplace_back(std::move(event_id), std::move(event));
+            };
 
             if (!is_response) {
-                if (stream_event.has_value()) {
+                if (!json_only) {
                     if (session->pending_responses.size() == 1) {
-                        session->pending_responses.begin()->second.stream_events.push_back(
-                            std::move(*stream_event));
+                        send_on(session->pending_responses.begin()->second, std::move(message));
                     } else if (!session->pending_responses.empty()) {
-                        session->unassigned_stream_events.push_back(std::move(*stream_event));
+                        session->unassigned_stream_events.push_back(std::move(message));
                     }
                 }
                 return;
@@ -1116,12 +1124,11 @@ struct StreamableHttpSessionManager::Impl {
             }
 
             if (!json_only) {
-                auto& events = pending_it->second.stream_events;
-                events.insert(events.end(),
-                              std::make_move_iterator(session->unassigned_stream_events.begin()),
-                              std::make_move_iterator(session->unassigned_stream_events.end()));
+                for (auto& event : session->unassigned_stream_events) {
+                    send_on(pending_it->second, std::move(event));
+                }
                 session->unassigned_stream_events.clear();
-                events.push_back(std::move(*stream_event));
+                send_on(pending_it->second, message);
             }
 
             pending_it->second.response_body = std::move(message);
