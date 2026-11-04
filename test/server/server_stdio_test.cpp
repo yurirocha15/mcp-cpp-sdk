@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <functional>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -725,6 +726,36 @@ std::string pause_calls(int calls) {
 }
 
 }  // namespace
+
+// An open listen would never end on its own; at the end of the input it is answered with its
+// empty result, so the run ends.
+TEST_F(ServerStdioTest, InputEndAnswersAnOpenListen) {
+    const nlohmann::json listen = {
+        {"jsonrpc", "2.0"},
+        {"id", 1},
+        {"method", "subscriptions/listen"},
+        {"params",
+         {{"_meta",
+           {{"io.modelcontextprotocol/protocolVersion", "2026-07-28"},
+            {"io.modelcontextprotocol/clientCapabilities", nlohmann::json::object()}}},
+          {"notifications", {{"toolsListChanged", true}}}}}};
+    std::istringstream input(listen.dump() + "\n");
+    std::ostringstream output;
+
+    auto run = std::async(std::launch::async, [&] { server_->run_stdio(input, output); });
+    if (run.wait_for(std::chrono::seconds(90)) != std::future_status::ready) {
+        ADD_FAILURE() << "the run did not end with the input";
+        mcp::detail::trigger_shutdown_signal();
+    }
+    run.get();
+
+    const auto messages = parse_responses(output.str());
+    const auto answer = std::find_if(messages.begin(), messages.end(), [](const nlohmann::json& m) {
+        return m.contains("id") && m["id"] == 1;
+    });
+    ASSERT_NE(answer, messages.end()) << output.str();
+    EXPECT_TRUE(answer->contains("result")) << *answer;
+}
 
 // The end of the input lets the requests already read finish: each still gets its answer.
 TEST_F(ServerStdioTest, EveryRequestReadBeforeTheInputEndsIsAnswered) {

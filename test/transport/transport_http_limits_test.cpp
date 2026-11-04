@@ -98,6 +98,13 @@ mcp::Task<std::string> raw_exchange(asio::any_io_executor executor, unsigned sho
     co_return received;
 }
 
+/// A whole POST of @p body, with @p extra header lines.
+std::string full_post(const std::string& body, const std::string& extra = "") {
+    return "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+           "Accept: application/json, text/event-stream\r\n" +
+           extra + "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+}
+
 /// A POST whose headers promise @p body_bytes of body, none of which is sent.
 std::string header_only_post(std::size_t body_bytes, const std::string& extra = "") {
     return "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
@@ -405,6 +412,55 @@ TEST_F(SessionLimitsTest, UnauthorizedBodyIsNotRead) {
     });
     EXPECT_EQ(answer.rfind("HTTP/1.1 401", 0), 0u) << answer;
     EXPECT_EQ(answer.find("[timed out]"), std::string::npos) << answer;
+}
+
+/// A whole 2026-07-28 tools/call of @p tool, with @p extra header lines.
+std::string modern_call_post(int id, const std::string& tool, const std::string& extra) {
+    const auto call =
+        make_modern_request(id, "tools/call", {{"name", tool}, {"arguments", json::object()}});
+    const auto version =
+        call["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"].get<std::string>();
+    return full_post(call.dump(), "MCP-Protocol-Version: " + version +
+                                      "\r\nMcp-Method: tools/call\r\nMcp-Name: " + tool + "\r\n" +
+                                      extra);
+}
+
+// A request the connection read ahead while an earlier one ran, and that arrived before its
+// client finished sending, is checked on its headers like any other.
+TEST_F(SessionLimitsTest, RequestReadAheadBeforeTheClientFinishedIsCheckedForAToken) {
+    g_hold_started = false;
+    g_hold_released = false;
+    manager_.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    const auto pipelined =
+        modern_call_post(1, "hold", "Authorization: Bearer good\r\n") + modern_call_post(2, "hold", "");
+    std::string received;
+    run([&]() -> mcp::Task<void> {
+        beast::tcp_stream stream(io_.get_executor());
+        // A bound for reporting a server that never answers, not a measure of speed.
+        stream.expires_after(std::chrono::minutes(2));
+        const asio::ip::tcp::endpoint endpoint(asio::ip::make_address("127.0.0.1"), port_);
+        co_await stream.async_connect(endpoint, asio::use_awaitable);
+        co_await asio::async_write(stream, asio::buffer(pipelined), asio::use_awaitable);
+        // The first call is running, so the second is read ahead; then the client stops sending.
+        co_await wait_until([] { return g_hold_started.load(); });
+        co_await pause(std::chrono::milliseconds(100));
+        stream.socket().shutdown(asio::ip::tcp::socket::shutdown_send);
+        co_await pause(std::chrono::milliseconds(200));
+        g_hold_released = true;
+        std::array<char, 4096> chunk{};
+        try {
+            for (;;) {
+                const auto count =
+                    co_await stream.async_read_some(asio::buffer(chunk), asio::use_awaitable);
+                received.append(chunk.data(), count);
+            }
+        } catch (const boost::system::system_error&) {
+            // The server ends the connection after its last answer.
+        }
+    });
+    EXPECT_NE(received.find("\"id\":1"), std::string::npos) << received;
+    EXPECT_NE(received.find("HTTP/1.1 401"), std::string::npos) << received;
+    EXPECT_EQ(received.find("\"id\":2"), std::string::npos) << received;
 }
 
 TEST_F(SessionLimitsTest, ConnectionThatSendsNothingIsClosed) {

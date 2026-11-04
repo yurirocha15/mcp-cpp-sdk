@@ -356,6 +356,16 @@ TEST_F(MrtrTest, AResultThatCannotBeEncodedDoesNotExposeTheLibraryText) {
 
 // Requests that belong to no session share one in-flight limit. A parked handler does not count:
 // the limits on parked handlers bound it instead.
+// The memory of sessionless requests is bounded together, as their number is.
+TEST_F(MrtrTest, SessionlessRequestsShareTheInFlightByteLimit) {
+    server_->set_max_in_flight_bytes(64);
+    json refused;
+    // Named: GCC mishandles a temporary in a co_await operand.
+    const json padded = call_tool(1, "ask", {{"padding", std::string(4096, 'p')}});
+    run([&]() -> mcp::Task<void> { refused = co_await send(padded); });
+    EXPECT_EQ(refused["error"]["message"], "Too many requests in flight") << refused;
+}
+
 TEST_F(MrtrTest, SessionlessRequestsShareTheInFlightLimit) {
     std::atomic<int> running{0};
     std::atomic<bool> released{false};
@@ -402,7 +412,17 @@ TEST_F(MrtrTest, SessionlessRequestsShareTheInFlightLimit) {
         refused = co_await send(call_tool(5, "quick"));
         released = true;
         co_await wait_for_running([](int count) { return count == 0; });
-        after = co_await send(call_tool(6, "quick"));
+        // A request counts until its handler's frame is gone, which can be a moment after its
+        // handler returned. Room that never comes back fails the test after 30 s.
+        const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        for (int id = 6;; ++id) {
+            after = co_await send(call_tool(id, "quick"));
+            if (after.contains("result") || std::chrono::steady_clock::now() >= give_up) {
+                break;
+            }
+            asio::steady_timer tick(executor, std::chrono::milliseconds(1));
+            co_await tick.async_wait(asio::use_awaitable);
+        }
     });
 
     expect_input_required(parked);
