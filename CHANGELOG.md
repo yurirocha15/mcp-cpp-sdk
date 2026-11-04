@@ -543,6 +543,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   its start line and fields followed by its body, in one write, instead of
   through Beast's serializer. The bytes sent are the same; other answers,
   and those that close their connection, still go through Beast.
+- A message given to the serialized transport writer by a coroutine that runs
+  on the writer's strand, when no other message is queued or being written, is
+  written by that coroutine in place, without a coroutine spawned to queue it
+  and another to drain the queue. Messages still reach the transport one at a
+  time and in the order they were given, including one that a caller on the
+  strand gives after a `post_message()`.
 
 ### Removed
 
