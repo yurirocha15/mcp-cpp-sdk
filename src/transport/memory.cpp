@@ -1,3 +1,4 @@
+#include "../detail/fifo.hpp"
 #include "../detail/memory_transport_read.hpp"
 #include "../detail/spawn_awaitable.hpp"
 #include "../detail/strand_executor.hpp"
@@ -17,11 +18,9 @@
 
 #include <atomic>
 #include <chrono>
-#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <queue>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -36,6 +35,7 @@ struct MemoryTransportState {
 
     /// A message, and the id as JSON text of the request it was written as related to, if any.
     struct Message {
+        Message() = default;
         // NOLINTNEXTLINE(google-explicit-constructor)
         Message(Body content, std::shared_ptr<const std::string> related = nullptr)
             : body(std::move(content)), related_request(std::move(related)) {}
@@ -106,7 +106,7 @@ struct MemoryTransportState {
         }
         if (!state->incoming.empty()) {
             auto message = std::move(state->incoming.front());
-            state->incoming.pop();
+            state->incoming.pop_front();
             co_return message;
         }
 
@@ -147,7 +147,7 @@ struct MemoryTransportState {
             waiter->wake();
             return;
         }
-        incoming.emplace(std::move(message));
+        incoming.emplace_back(std::move(message));
     }
 
     /// Queues @p message for the peer. Runs on the peer's strand, which owns its queue and waiters.
@@ -191,8 +191,8 @@ struct MemoryTransportState {
     }
 
     boost::asio::any_io_executor strand;
-    std::queue<Message> incoming;
-    std::deque<std::weak_ptr<ReadWaiter>> read_waiters;
+    Fifo<Message> incoming;
+    Fifo<std::weak_ptr<ReadWaiter>> read_waiters;
     std::atomic<bool> closed{false};
 
    private:
@@ -302,7 +302,8 @@ Task<nlohmann::json> MemoryTransport::read_json() {
 // peer's strand, so it runs on the caller's executor instead of first hopping to this strand.
 Task<void> MemoryTransport::write_json(nlohmann::json message) {
     return detail::MemoryTransportState::write(
-        state_, detail::MemoryTransportState::Message(std::move(message)));
+        state_,
+        detail::MemoryTransportState::Message(detail::MemoryTransportState::Body(std::move(message))));
 }
 
 Task<void> MemoryTransport::write_message(std::string_view message) {

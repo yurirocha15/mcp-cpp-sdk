@@ -434,6 +434,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   given into the registered tool; the server keeps each schema only in its
   compiled form, which servers registering the same schema share, and
   `tools/list` lists the schemas from it, written as they were given.
+- An in-memory transport allocates nothing for its message and reader queues
+  until something is queued; each endpoint used to allocate about 1 KiB for
+  them when it was created. The Streamable HTTP server creates a pair per
+  session.
 - `StreamableHttpSessionManager::set_tool_executor()` now moves only the call
   of a tool, resource or prompt handler to that executor. A session's reading,
   parsing and answering of protocol messages run on the HTTP executor, and the

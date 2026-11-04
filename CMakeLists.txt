@@ -381,6 +381,7 @@ if(BUILD_TESTING)
       test/core/capabilities_extensions_test.cpp
       test/core/concepts_test.cpp
       test/core/core_test.cpp
+      test/core/fifo_test.cpp
       test/core/json_dump_test.cpp
       test/core/json_parse_test.cpp
       test/core/jsonrpc_envelope_test.cpp
