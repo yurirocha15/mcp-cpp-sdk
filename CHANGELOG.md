@@ -434,6 +434,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   given into the registered tool; the server keeps each schema only in its
   compiled form, which servers registering the same schema share, and
   `tools/list` lists the schemas from it, written as they were given.
+  Servers that list the same compiled schema while one of them holds its text
+  share that text, so a server built per session serializes each schema of
+  its `tools/list` once while sessions overlap, not once per session.
 - An in-memory transport allocates nothing for its message and reader queues
   until something is queued; each endpoint used to allocate about 1 KiB for
   them when it was created. The Streamable HTTP server creates a pair per

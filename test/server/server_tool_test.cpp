@@ -659,6 +659,31 @@ TEST(ServerToolsList, ListsTheSchemasEachServerWasGiven) {
     EXPECT_EQ(listed(second, 2), nlohmann::json(raw));
 }
 
+// The listing writes each schema from a text shared between servers, spliced in where a
+// placeholder string stands for it. A tool whose own members hold that placeholder text is still
+// listed as it serializes.
+TEST(ServerToolsList, ToolHoldingThePlaceholderTextIsListedAsItSerializes) {
+    auto server = make_tool_server();
+    auto input_text = named_tool("input_text", "\x01mcp-input-schema");
+    auto output_text = named_tool("output_text");
+    output_text.title = "\x01mcp-output-schema";
+    output_text.outputSchema = nlohmann::json{{"type", "object"}};
+    auto both = named_tool("both", "\x01mcp-input-schema");
+    both.title = "\x01mcp-output-schema";
+    both.outputSchema = nlohmann::json{{"type", "object"}, {"title", "\x01mcp-input-schema"}};
+    for (const auto* tool : {&input_text, &output_text, &both}) {
+        server.add_raw_tool(*tool, raw_result);
+    }
+    EXPECT_EQ(list_tools_directly(server)["result"]["tools"],
+              nlohmann::json::array({input_text, output_text, both}));
+
+    auto other = make_tool_server();
+    other.add_raw_tool(both, raw_result);
+    other.add_raw_tool(named_tool("plain"), raw_result);
+    EXPECT_EQ(list_tools_directly(other)["result"]["tools"],
+              nlohmann::json::array({both, named_tool("plain")}));
+}
+
 TEST(ServerToolsList, ToolThatCannotBeSerializedFailsEveryList) {
     auto server = make_tool_server();
     server.add_raw_tool(named_tool("plain"), raw_result);

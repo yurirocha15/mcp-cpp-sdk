@@ -67,8 +67,14 @@ namespace {
 /// The arguments a tool's input schema mirrors into `Mcp-Param-*` headers, with the compiled schema
 /// they were read from.
 struct ToolParamHeaders {
-    CompiledSchema input;
+    CompiledSchema schema;
     std::vector<detail::ParamHeader> headers;
+};
+
+/// A schema as tools/list writes it, with the compiled schema it was written from.
+struct ListedSchemaText {
+    CompiledSchema schema;
+    std::string text;
 };
 
 struct CompiledToolSchemas {
@@ -77,20 +83,21 @@ struct CompiledToolSchemas {
     std::shared_ptr<const ToolParamHeaders> param_headers;
 };
 
-/// The header annotations of input schemas by the identity of their compiled form. CompiledSchema
-/// returns one shared compiled form for a repeat of a schema, so a server built per session that
-/// registers the same tools reads each input schema's annotations once. An entry is held weakly:
-/// while it is alive it holds its compiled schema, so the address it is found by cannot be reused
-/// by another schema, and it goes with the last tool that holds it.
-class ToolParamHeadersCache {
+/// What is derived from a compiled schema, by the identity of its compiled form. CompiledSchema
+/// returns one shared compiled form for a repeat of a schema, so servers built per session that
+/// register the same tools derive each value once. An entry is held weakly: while it is alive it
+/// holds its compiled schema, so the address it is found by cannot be reused by another schema, and
+/// it goes with the last holder.
+template <typename Derived>
+class BySchemaCache {
    public:
-    std::shared_ptr<const ToolParamHeaders> find(const CompiledSchema& input) {
+    std::shared_ptr<const Derived> find(const CompiledSchema& schema) {
         std::lock_guard lock(mutex_);
-        const auto entry = entries_.find(&input.schema());
+        const auto entry = entries_.find(&schema.schema());
         return entry == entries_.end() ? nullptr : entry->second.lock();
     }
 
-    void insert(const std::shared_ptr<const ToolParamHeaders>& headers) {
+    void insert(const std::shared_ptr<const Derived>& derived) {
         std::lock_guard lock(mutex_);
         if (entries_.size() >= g_max_entries) {
             std::erase_if(entries_, [](const auto& entry) { return entry.second.expired(); });
@@ -98,19 +105,24 @@ class ToolParamHeadersCache {
                 return;
             }
         }
-        entries_.insert_or_assign(&headers->input.schema(), headers);
+        entries_.insert_or_assign(&derived->schema.schema(), derived);
     }
 
    private:
-    /// As many as CompiledSchema keeps, so every input schema it shares can be found.
+    /// As many as CompiledSchema keeps, so every schema it shares can be found.
     static constexpr std::size_t g_max_entries = 256;
 
     std::mutex mutex_;
-    std::unordered_map<const nlohmann::json*, std::weak_ptr<const ToolParamHeaders>> entries_;
+    std::unordered_map<const nlohmann::json*, std::weak_ptr<const Derived>> entries_;
 };
 
-ToolParamHeadersCache& tool_param_headers_cache() {
-    static ToolParamHeadersCache cache;
+BySchemaCache<ToolParamHeaders>& tool_param_headers_cache() {
+    static BySchemaCache<ToolParamHeaders> cache;
+    return cache;
+}
+
+BySchemaCache<ListedSchemaText>& listed_schema_text_cache() {
+    static BySchemaCache<ListedSchemaText> cache;
     return cache;
 }
 
@@ -1032,6 +1044,10 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
 
     void add_tool_registration(Tool&& tool, std::string name, CompiledToolSchemas schemas,
                                TypeErasedHandler handler, detail::ToolResultMode result_mode);
+    /// Appends @p listed as tools/list writes it to @p text, adding the schema texts it was written
+    /// from to @p held.
+    static void append_listed_tool(std::string& text, const ListedTool& listed,
+                                   std::vector<std::shared_ptr<const ListedSchemaText>>& held);
 
     std::vector<ListedTool> tools;
     /// The tools as JSON text, comma-separated, in registration order: what a tools/list that
@@ -1042,6 +1058,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     mutable std::mutex tools_text_mutex;
     std::shared_ptr<const std::string> tools_text;  // guarded by tools_text_mutex
     bool tools_text_built{false};                   // guarded by tools_text_mutex
+    /// The schema texts tools_text was written from, held so that servers listing the same
+    /// schemas find them; guarded by tools_text_mutex.
+    std::vector<std::shared_ptr<const ListedSchemaText>> tools_text_schemas;
     void forget_tools_text();
     [[nodiscard]] std::shared_ptr<const std::string> listed_tools_text();
     std::map<std::string, ToolRegistration, std::less<>> tool_handlers;
@@ -1326,6 +1345,67 @@ void Server::Impl::forget_tools_text() {
     std::lock_guard lock(tools_text_mutex);
     tools_text.reset();
     tools_text_built = false;
+    tools_text_schemas.clear();
+}
+
+namespace {
+
+/// The text of @p schema as tools/list writes it, shared with every server that lists the same
+/// compiled schema. The text is added to @p held, which keeps it found while the caller lists it.
+const std::string& listed_schema_text(const CompiledSchema& schema,
+                                      std::vector<std::shared_ptr<const ListedSchemaText>>& held) {
+    auto text = listed_schema_text_cache().find(schema);
+    if (!text) {
+        text = std::make_shared<const ListedSchemaText>(
+            ListedSchemaText{schema, mcp::detail::dump_json(schema.schema())});
+        listed_schema_text_cache().insert(text);
+    }
+    held.push_back(text);
+    return held.back()->text;
+}
+
+}  // namespace
+
+void Server::Impl::append_listed_tool(std::string& text, const ListedTool& listed,
+                                      std::vector<std::shared_ptr<const ListedSchemaText>>& held) {
+    // The tool is written with a placeholder string in place of each schema, and the shared schema
+    // texts are spliced in where the placeholders are. A placeholder found more than once means
+    // another member holds the same text, and the tool is written whole instead.
+    constexpr std::string_view input_mark = R"("\u0001mcp-input-schema")";
+    constexpr std::string_view output_mark = R"("\u0001mcp-output-schema")";
+    nlohmann::json shell = listed.tool;
+    shell["inputSchema"] = "\x01mcp-input-schema";
+    if (listed.output) {
+        shell["outputSchema"] = "\x01mcp-output-schema";
+    }
+    const auto shell_text = mcp::detail::dump_json(shell);
+    const auto once = [&shell_text](std::string_view mark) {
+        const auto at = shell_text.find(mark);
+        return at != std::string::npos && shell_text.rfind(mark) == at ? at : std::string::npos;
+    };
+    struct Splice {
+        std::size_t at;
+        std::string_view mark;
+        const CompiledSchema* schema;
+    };
+    std::vector<Splice> splices{{once(input_mark), input_mark, &listed.input}};
+    if (listed.output) {
+        splices.push_back({once(output_mark), output_mark, &*listed.output});
+    }
+    if (std::any_of(splices.begin(), splices.end(),
+                    [](const Splice& splice) { return splice.at == std::string::npos; })) {
+        text += mcp::detail::dump_json(listed.listed_json());
+        return;
+    }
+    std::sort(splices.begin(), splices.end(),
+              [](const Splice& a, const Splice& b) { return a.at < b.at; });
+    std::size_t copied = 0;
+    for (const auto& splice : splices) {
+        text.append(shell_text, copied, splice.at - copied);
+        text += listed_schema_text(*splice.schema, held);
+        copied = splice.at + splice.mark.size();
+    }
+    text.append(shell_text, copied, std::string::npos);
 }
 
 std::shared_ptr<const std::string> Server::Impl::listed_tools_text() {
@@ -1334,13 +1414,15 @@ std::shared_ptr<const std::string> Server::Impl::listed_tools_text() {
         tools_text_built = true;
         try {
             std::string text;
+            std::vector<std::shared_ptr<const ListedSchemaText>> held;
             for (const auto& tool : tools) {
                 if (!text.empty()) {
                     text += ',';
                 }
-                text += mcp::detail::dump_json(tool.listed_json());
+                append_listed_tool(text, tool, held);
             }
             tools_text = std::make_shared<const std::string>(std::move(text));
+            tools_text_schemas = std::move(held);
         } catch (const nlohmann::json::exception&) {
             tools_text.reset();
         }
