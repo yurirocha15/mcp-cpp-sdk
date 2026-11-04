@@ -97,6 +97,33 @@ TEST(ServerParamHeaders, RefusalNamesTheTool) {
     }
 }
 
+TEST(ServerParamHeaders, RefusalNamesTheLocationAsAJsonPointer) {
+    const std::vector<std::pair<std::string, json>> cases = {
+        {"x-mcp-header at / ", {{"type", "object"}, {"x-mcp-header", "A"}}},
+        {"x-mcp-header at /properties/a~1b/properties/c~0d ",
+         object_with({{"a/b", object_with({{"c~d", annotated("string", "Bad Name")}})}})},
+        {"x-mcp-header at /allOf/1/properties/x ",
+         {{"type", "object"},
+          {"allOf", json::array({json::object(), object_with({{"x", annotated("string", "X")}})})}}},
+        {"x-mcp-header at /properties/a/items/properties/b ",
+         object_with(
+             {{"a", {{"type", "array"}, {"items", object_with({{"b", annotated("string", "B")}})}}}})},
+        {"x-mcp-header at /properties/z ",
+         object_with({{"a", {{"type", "object"}, {"properties", json::object()}}},
+                      {"z", annotated("number", "Z")}})},
+    };
+    for (const auto& [expected, schema] : cases) {
+        mcp::Server server({"s", "1.0"}, mcp::ServerCapabilities{});
+        try {
+            add_tool_with_schema(server, schema);
+            ADD_FAILURE() << "expected a SchemaError for " << schema.dump();
+        } catch (const mcp::SchemaError& error) {
+            const std::string text = error.what();
+            EXPECT_NE(text.find(expected), std::string::npos) << text;
+        }
+    }
+}
+
 TEST(ServerParamHeaders, AddToolWithoutAnnotationNeverThrows) {
     const std::vector<json> schemas = {
         {{"type", "object"}},
