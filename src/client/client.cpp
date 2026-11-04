@@ -517,14 +517,18 @@ struct Client::Impl {
                 error_payload = "Request handler failed";
             }
 
-            if (!error_payload.is_null()) {
-                co_await state->writer.write_message(
-                    make_error_wire(json_message.at("id").get<RequestId>(), g_INTERNAL_ERROR,
-                                    error_payload.get<std::string>()));
-            } else {
-                co_await state->writer.write_message(
-                    make_result_wire(json_message.at("id").get<RequestId>(), std::move(result)));
+            // An answer whose text is not UTF-8 cannot be encoded. The server is answered anyway,
+            // or its request would wait out its whole timeout.
+            const auto id = json_message.at("id").get<RequestId>();
+            std::string wire;
+            try {
+                wire = error_payload.is_null()
+                           ? make_result_wire(id, std::move(result))
+                           : make_error_wire(id, g_INTERNAL_ERROR, error_payload.get<std::string>());
+            } catch (const nlohmann::json::exception&) {
+                wire = make_error_wire(id, g_INTERNAL_ERROR, "The answer could not be encoded as JSON");
             }
+            co_await state->writer.write_message(std::move(wire));
         } else if (method == "ping") {
             co_await state->writer.write_message(
                 make_result_wire(json_message.at("id").get<RequestId>(), nlohmann::json::object()));

@@ -139,6 +139,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   in, and an answer needs an established session.
 - Both HTTP accept loops stopped when the process ran out of file
   descriptors. They now wait and try again.
+- When a `Client` handler's answer to a server request could not be encoded as
+  JSON, such as a result or an error message holding text that is not UTF-8,
+  no answer was sent and the server's request waited out its timeout. Such an
+  answer is now an error.
 - A reply to `elicitation/create` with an unknown action decoded as `accept`. It
   now fails to decode. A form request may leave out `mode`, as the specification
   allows.
