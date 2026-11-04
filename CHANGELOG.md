@@ -419,8 +419,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   compiles their schemas once while sessions overlap, not once per session.
   The cache keeps at most 256 schemas, oldest first out, and lets go of a
   compiled schema with its last holder, so the schemas of a peer's tool
-  listing are not kept for the life of the process. A schema whose text with
-  its options is over 64 KiB is compiled every time and not kept.
+  listing are not kept for the life of the process. A repeat is found by a
+  hash of the schema and options and confirmed by comparing the schema it
+  was compiled from, down to how each number is written, so finding it
+  serializes nothing, and a schema of any size is kept.
 - `StreamableHttpSessionManager::set_tool_executor()` now moves only the call
   of a tool, resource or prompt handler to that executor. A session's reading,
   parsing and answering of protocol messages run on the HTTP executor, and the

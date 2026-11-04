@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <list>
@@ -26,6 +27,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace mcp {
 
@@ -346,39 +348,142 @@ struct CompiledSchemaImpl {
 
 namespace {
 
-/// Compiled schemas by their source text and options. A server that builds one `Server` per
-/// session registers the same tools every time; compiling is far dearer than validating, so a
-/// repeat compile of the same schema returns the one already built. The cache holds a schema only
-/// weakly: it serves a repeat while a session still holds the schema, and releases the compiled
-/// form with the last holder, so a schema taken from a peer, such as a client's tool listing, is
-/// not kept for the life of the process. What stays after the last holder is its key, a text of up
-/// to g_max_key_bytes, until a later insert drops it; the cache is bounded in entries and evicts
-/// the oldest first.
+bool same_options(const SchemaOptions& left, const SchemaOptions& right) {
+    return left.max_instance_depth == right.max_instance_depth &&
+           left.max_reported_violations == right.max_reported_violations &&
+           left.base_pattern_steps == right.base_pattern_steps &&
+           left.pattern_steps_per_text_byte == right.pattern_steps_per_text_byte &&
+           left.max_evaluation_work == right.max_evaluation_work &&
+           left.max_pattern_instructions == right.max_pattern_instructions;
+}
+
+/// Whether @p left and @p right are the same document, down to how each number is written: an
+/// integer is never the same as a float, and floats are the same only bit for bit. nlohmann's
+/// operator== takes 1 and 1.0, or 0.0 and -0.0, as equal, but they are written differently and a
+/// compiled schema reports them as written. Recursive: a schema is compiled, and so compared,
+/// only once measure() has bounded its depth.
+bool same_document(const nlohmann::json& left, const nlohmann::json& right) {
+    using value_t = nlohmann::json::value_t;
+    // An integer is written by its value whether it is held signed or unsigned.
+    const auto as_unsigned = [](const nlohmann::json& value) -> std::optional<std::uint64_t> {
+        if (value.is_number_unsigned()) {
+            return value.get<std::uint64_t>();
+        }
+        const auto number = value.get<std::int64_t>();
+        return number < 0 ? std::nullopt : std::optional<std::uint64_t>(number);
+    };
+    if (left.is_number_integer() && right.is_number_integer() && left.type() != right.type()) {
+        const auto a = as_unsigned(left);
+        return a && a == as_unsigned(right);
+    }
+    if (left.type() != right.type()) {
+        return false;
+    }
+    switch (left.type()) {
+        case value_t::object: {
+            const auto& a = left.get_ref<const nlohmann::json::object_t&>();
+            const auto& b = right.get_ref<const nlohmann::json::object_t&>();
+            return a.size() == b.size() &&
+                   std::equal(a.begin(), a.end(), b.begin(), [](const auto& x, const auto& y) {
+                       return x.first == y.first && same_document(x.second, y.second);
+                   });
+        }
+        case value_t::array: {
+            const auto& a = left.get_ref<const nlohmann::json::array_t&>();
+            const auto& b = right.get_ref<const nlohmann::json::array_t&>();
+            return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), same_document);
+        }
+        case value_t::string:
+            return left.get_ref<const std::string&>() == right.get_ref<const std::string&>();
+        case value_t::boolean:
+            return left.get<bool>() == right.get<bool>();
+        case value_t::number_float: {
+            const auto a = left.get<double>();
+            const auto b = right.get<double>();
+            return a == b && std::signbit(a) == std::signbit(b);
+        }
+        default:
+            return left == right;
+    }
+}
+
+void mix(std::size_t& hash, std::size_t value) {
+    hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+}
+
+void mix_document(std::size_t& hash, const nlohmann::json& node) {
+    using value_t = nlohmann::json::value_t;
+    const auto type = node.type();
+    mix(hash,
+        static_cast<std::size_t>(type == value_t::number_unsigned ? value_t::number_integer : type));
+    switch (type) {
+        case value_t::object:
+            mix(hash, node.size());
+            for (const auto& [key, value] : node.get_ref<const nlohmann::json::object_t&>()) {
+                mix(hash, std::hash<std::string_view>{}(key));
+                mix_document(hash, value);
+            }
+            break;
+        case value_t::array:
+            mix(hash, node.size());
+            for (const auto& value : node.get_ref<const nlohmann::json::array_t&>()) {
+                mix_document(hash, value);
+            }
+            break;
+        case value_t::string:
+            mix(hash, std::hash<std::string_view>{}(node.get_ref<const std::string&>()));
+            break;
+        case value_t::boolean:
+            mix(hash, node.get<bool>() ? 1 : 0);
+            break;
+        case value_t::number_integer:
+            mix(hash, static_cast<std::size_t>(node.get<std::int64_t>()));
+            break;
+        case value_t::number_unsigned:
+            mix(hash, static_cast<std::size_t>(node.get<std::uint64_t>()));
+            break;
+        case value_t::number_float:
+            mix(hash, std::hash<double>{}(node.get<double>()));
+            break;
+        default:
+            break;
+    }
+}
+
+/// A hash of @p schema that same_document() documents share, and of @p options. Recursive, like
+/// same_document().
+std::size_t document_hash(const nlohmann::json& schema, const SchemaOptions& options) {
+    std::size_t hash = 0;
+    for (const auto option : {options.max_instance_depth, options.max_reported_violations,
+                              options.base_pattern_steps, options.pattern_steps_per_text_byte,
+                              options.max_evaluation_work, options.max_pattern_instructions}) {
+        mix(hash, option);
+    }
+    mix_document(hash, schema);
+    return hash;
+}
+
+/// Compiled schemas by their document and options. A server that builds one `Server` per session
+/// registers the same tools every time; compiling is far dearer than validating, so a repeat
+/// compile of the same schema returns the one already built. An entry is found by a hash of the
+/// document and confirmed by comparing it with the schema the compiled form holds, so a lookup
+/// neither serializes the schema nor allocates. The cache holds a schema only weakly: it serves a
+/// repeat while a session still holds the schema, and releases the compiled form with the last
+/// holder, so a schema taken from a peer, such as a client's tool listing, is not kept for the life
+/// of the process. An entry whose schema is gone holds only its hash until a later insert drops
+/// it; the cache is bounded in entries and evicts the oldest first.
 class CompiledSchemaCache {
    public:
-    std::shared_ptr<const CompiledSchemaImpl> find(const std::string& key) {
+    std::shared_ptr<const CompiledSchemaImpl> find(std::size_t hash, const nlohmann::json& schema,
+                                                   const SchemaOptions& options) {
         std::lock_guard lock(mutex_);
-        const auto it = index_.find(std::string_view(key));
-        if (it == index_.end()) {
-            return nullptr;
-        }
-        auto compiled = it->second->compiled.lock();
-        if (!compiled) {
-            erase(it->second);
-        }
-        return compiled;
+        return find_locked(hash, schema, options);
     }
 
-    void insert(std::string key, const std::shared_ptr<const CompiledSchemaImpl>& compiled) {
-        if (key.size() > g_max_key_bytes) {
-            return;
-        }
+    void insert(std::size_t hash, const std::shared_ptr<const CompiledSchemaImpl>& compiled) {
         std::lock_guard lock(mutex_);
-        if (const auto it = index_.find(std::string_view(key)); it != index_.end()) {
-            if (!it->second->compiled.expired()) {
-                return;
-            }
-            erase(it->second);
+        if (find_locked(hash, compiled->source, compiled->options)) {
+            return;
         }
         // Every entry whose schema is gone goes first, then the oldest if the cache is still full.
         for (auto entry = order_.begin(); entry != order_.end();) {
@@ -390,9 +495,8 @@ class CompiledSchemaCache {
         while (order_.size() >= g_max_entries) {
             erase(order_.begin());
         }
-        order_.push_back(Entry{std::move(key), compiled});
-        const auto added = std::prev(order_.end());
-        index_.emplace(std::string_view(added->key), added);
+        order_.push_back(Entry{hash, compiled});
+        index_.emplace(hash, std::prev(order_.end()));
     }
 
     std::size_t live_entries() {
@@ -408,44 +512,52 @@ class CompiledSchemaCache {
 
    private:
     struct Entry {
-        std::string key;
+        std::size_t hash;
         std::weak_ptr<const CompiledSchemaImpl> compiled;
     };
     using Order = std::list<Entry>;
 
     static constexpr std::size_t g_max_entries = 256;
-    static constexpr std::size_t g_max_key_bytes = 64 * 1024;
+
+    std::shared_ptr<const CompiledSchemaImpl> find_locked(std::size_t hash,
+                                                          const nlohmann::json& schema,
+                                                          const SchemaOptions& options) {
+        auto [it, end] = index_.equal_range(hash);
+        while (it != end) {
+            const auto entry = it->second;
+            ++it;
+            auto compiled = entry->compiled.lock();
+            if (!compiled) {
+                erase(entry);
+                continue;
+            }
+            if (same_options(compiled->options, options) && same_document(compiled->source, schema)) {
+                return compiled;
+            }
+        }
+        return nullptr;
+    }
 
     void erase(Order::iterator entry) {
-        index_.erase(std::string_view(entry->key));
+        auto [it, end] = index_.equal_range(entry->hash);
+        for (; it != end; ++it) {
+            if (it->second == entry) {
+                index_.erase(it);
+                break;
+            }
+        }
         order_.erase(entry);
     }
 
     std::mutex mutex_;
-    /// Oldest first. Nodes do not move, so the views in index_ stay valid until the node goes.
+    /// Oldest first. Nodes do not move, so the iterators in index_ stay valid until the node goes.
     Order order_;
-    std::unordered_map<std::string_view, Order::iterator> index_;
+    std::unordered_multimap<std::size_t, Order::iterator> index_;
 };
 
 CompiledSchemaCache& compiled_schema_cache() {
     static CompiledSchemaCache cache;
     return cache;
-}
-
-/// The cache key, or nothing for a schema that has no faithful text (invalid UTF-8 in a string).
-std::optional<std::string> cache_key(const nlohmann::json& schema, const SchemaOptions& options) {
-    std::string key = std::to_string(options.max_instance_depth) + ',' +
-                      std::to_string(options.max_reported_violations) + ',' +
-                      std::to_string(options.base_pattern_steps) + ',' +
-                      std::to_string(options.pattern_steps_per_text_byte) + ',' +
-                      std::to_string(options.max_evaluation_work) + ',' +
-                      std::to_string(options.max_pattern_instructions) + '\n';
-    try {
-        key += mcp::detail::dump_json(schema);
-    } catch (const nlohmann::json::exception&) {
-        return std::nullopt;
-    }
-    return key;
 }
 
 }  // namespace
@@ -473,11 +585,9 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
                           "JSON Schema contains NaN or Infinity, which JSON cannot represent");
     }
 
-    auto key = cache_key(schema, options);
-    if (key) {
-        if (auto cached = compiled_schema_cache().find(*key)) {
-            return CompiledSchema(std::move(cached));
-        }
+    const auto hash = document_hash(schema, options);
+    if (auto cached = compiled_schema_cache().find(hash, schema, options)) {
+        return CompiledSchema(std::move(cached));
     }
 
     std::string_view dialect = supported_dialects()[0];
@@ -587,9 +697,7 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
     }();
     auto result = std::make_shared<const CompiledSchemaImpl>(CompiledSchemaImpl{
         schema, options, schema_shape.nodes, std::move(*compiled), std::move(native)});
-    if (key) {
-        compiled_schema_cache().insert(std::move(*key), result);
-    }
+    compiled_schema_cache().insert(hash, result);
     return CompiledSchema(std::move(result));
 }
 

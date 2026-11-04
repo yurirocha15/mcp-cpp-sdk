@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -1510,6 +1511,63 @@ TEST(CompiledSchema, RepeatedCompileKeepsEachSchemaDistinct) {
     EXPECT_TRUE(CompiledSchema::compile(nested).validate(json::array({json::array({1})})).valid);
     EXPECT_FALSE(
         CompiledSchema::compile(nested, shallow).validate(json::array({json::array({1})})).valid);
+}
+
+// A repeat is served only for the same document, number kinds included: 1 and 1.0, or 0.0 and
+// -0.0, compare equal as JSON values but are written differently, so each keeps its own schema.
+TEST(CompiledSchema, CacheKeepsNumberKindsApart) {
+    const json whole = {{"maximum", 1}};
+    const json fraction = {{"maximum", 1.0}};
+    const json positive_zero = {{"const", 0.0}};
+    const json negative_zero = {{"const", -0.0}};
+    std::vector<CompiledSchema> held;
+    for (int round = 0; round < 2; ++round) {
+        held.push_back(CompiledSchema::compile(whole));
+        held.push_back(CompiledSchema::compile(fraction));
+        held.push_back(CompiledSchema::compile(positive_zero));
+        held.push_back(CompiledSchema::compile(negative_zero));
+        EXPECT_TRUE(held[held.size() - 4].schema()["maximum"].is_number_integer());
+        EXPECT_TRUE(held[held.size() - 3].schema()["maximum"].is_number_float());
+        EXPECT_FALSE(std::signbit(held[held.size() - 2].schema()["const"].get<double>()));
+        EXPECT_TRUE(std::signbit(held[held.size() - 1].schema()["const"].get<double>()));
+    }
+    EXPECT_EQ(held[0].schema().dump(), whole.dump());
+    EXPECT_EQ(held[5].schema().dump(), fraction.dump());
+    EXPECT_EQ(held[7].schema().dump(), negative_zero.dump());
+
+    // An unsigned and a signed integer of the same value are written the same, and share one.
+    const auto before = mcp::detail::compiled_schema_cache_live_entries();
+    const auto as_signed = CompiledSchema::compile({{"maxLength", std::int64_t{7}}});
+    const auto as_unsigned = CompiledSchema::compile({{"maxLength", std::uint64_t{7}}});
+    EXPECT_EQ(mcp::detail::compiled_schema_cache_live_entries(), before + 1);
+    EXPECT_FALSE(as_unsigned.validate("12345678").valid);
+
+    // nlohmann's operator== takes -1 and 2^64 - 1 for one value; the cache does not.
+    const auto minus_one = CompiledSchema::compile({{"const", std::int64_t{-1}}});
+    const auto largest =
+        CompiledSchema::compile({{"const", std::numeric_limits<std::uint64_t>::max()}});
+    EXPECT_EQ(minus_one.schema()["const"].get<std::int64_t>(), -1);
+    EXPECT_TRUE(largest.schema()["const"].is_number_unsigned());
+    EXPECT_EQ(largest.schema().dump(), R"({"const":18446744073709551615})");
+}
+
+// A large schema is kept like a small one, so a server built per session compiles it once.
+TEST(CompiledSchema, CacheServesALargeSchema) {
+    json properties = json::object();
+    for (int index = 0; index < 1000; ++index) {
+        properties["property_with_a_long_name_" + std::to_string(index)] = {
+            {"type", "string"}, {"description", std::string(40, 'd')}};
+    }
+    const json large = {{"type", "object"}, {"properties", properties}};
+    ASSERT_GT(large.dump().size(), 64U * 1024U);
+
+    const auto before = mcp::detail::compiled_schema_cache_live_entries();
+    const auto first = CompiledSchema::compile(large);
+    const auto second = CompiledSchema::compile(large);
+    EXPECT_EQ(mcp::detail::compiled_schema_cache_live_entries(), before + 1);
+    EXPECT_EQ(first.schema(), second.schema());
+    EXPECT_TRUE(second.validate({{"property_with_a_long_name_3", "x"}}).valid);
+    EXPECT_FALSE(second.validate({{"property_with_a_long_name_3", 3}}).valid);
 }
 
 // A schema that cannot be compiled is refused every time, not only the first.
