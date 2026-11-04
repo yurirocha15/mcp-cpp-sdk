@@ -773,6 +773,43 @@ TEST(ServerToolsList, ListingIsTheToolsOwnTextForEverySchemaForm) {
     }
 }
 
+// Servers alive at once whose tools share one schema, and so its listed text, but differ in any
+// other member, a number's spelling in `_meta` included, each list their own tool.
+TEST(ServerToolsList, ToolsSharingASchemaListTheirOwnMembers) {
+    std::vector<mcp::Tool> variants;
+    for (const auto& meta : look_alike_schemas()) {
+        auto tool = named_tool("t");
+        tool.meta = meta;
+        variants.push_back(tool);
+    }
+    auto titled = named_tool("t");
+    titled.title = "T";
+    variants.push_back(titled);
+    auto annotated = named_tool("t");
+    annotated.annotations = mcp::ToolAnnotations{};
+    annotated.annotations->readOnlyHint = true;
+    variants.push_back(annotated);
+    variants.push_back(named_tool("t", "another description"));
+    variants.push_back(named_tool("t"));
+
+    std::vector<std::unique_ptr<mcp::Server>> servers;
+    for (int round = 0; round < 2; ++round) {
+        for (const auto& tool : variants) {
+            mcp::ServerCapabilities caps;
+            caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+            servers.push_back(
+                std::make_unique<mcp::Server>(mcp::Implementation{"schema-server", "1.0"}, caps));
+            servers.back()->add_raw_tool(tool, raw_result);
+        }
+    }
+    for (std::size_t index = 0; index < servers.size(); ++index) {
+        const auto& tool = variants[index % variants.size()];
+        const auto wire = list_tools_wire(*servers[index]);
+        EXPECT_NE(wire.find(R"("tools":[)" + nlohmann::json(tool).dump() + "]"), std::string::npos)
+            << wire;
+    }
+}
+
 // What servers share for a schema is held only by the servers that registered or listed it: once
 // they are gone, nothing keeps the compiled schema, its header annotations or its listed text,
 // each of which holds the compiled schema.
