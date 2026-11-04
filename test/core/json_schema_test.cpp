@@ -951,6 +951,9 @@ TEST(SchemaDialect, PatternProblemsComeAfterOtherProblems) {
         SCOPED_TRACE(text);
         EXPECT_EQ(compile_error(json::parse(text)), SchemaError::Category::eUnresolvedRef);
     }
+    // Every evaluation of this schema nests too deeply.
+    EXPECT_EQ(compile_error({{"$ref", "#"}, {"properties", {{"a", {{"pattern", "(?=x)"}}}}}}),
+              SchemaError::Category::eInvalidSchema);
 }
 
 // Each pattern is bounded on its own, and the patterns of one schema are bounded together.

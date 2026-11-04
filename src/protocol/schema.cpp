@@ -437,12 +437,9 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
         throw SchemaError(SchemaError::Category::eInvalidSchema,
                           describe("JSON Schema cannot be compiled: ", error.what()));
     }
-    if (patterns.problem()) {
-        throw pattern_error(*patterns.problem());
-    }
-
     // A reference cycle that never descends into the value exceeds the evaluation limits whatever
-    // the value is. Trying a few trivial values finds it now instead of on every validation.
+    // the value is. Trying a few trivial values finds it now instead of on every validation. A
+    // pattern that could not be compiled stands in as one that matches nothing until then.
     ValueShape trivial;
     trivial.nodes = 1;
     trivial.levels = 1;
@@ -457,6 +454,9 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
                 SchemaError::Category::eInvalidSchema,
                 describe("evaluating the JSON Schema against a trivial value: ", error.what()));
         }
+    }
+    if (patterns.problem()) {
+        throw pattern_error(*patterns.problem());
     }
 
     // NativeSchema compiles the patterns again, within a budget of its own; one it cannot compile

@@ -126,12 +126,17 @@ CompiledToolSchemas compile_tool_schemas(const Tool& tool) {
         }
     };
 
-    auto input = compile(tool.inputSchema, "inputSchema");
+    // Checked before the schema is compiled, which reports a pattern it cannot use only once it
+    // has found no other problem.
+    if (!tool.inputSchema.is_object()) {
+        throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema", "must be a JSON object");
+    }
     const auto type = tool.inputSchema.find("type");
     if (type == tool.inputSchema.end() || *type != "object") {
         throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema",
                      R"(must declare "type": "object")");
     }
+    auto input = compile(tool.inputSchema, "inputSchema");
     std::optional<CompiledSchema> output;
     if (tool.outputSchema) {
         output = compile(*tool.outputSchema, "outputSchema");
