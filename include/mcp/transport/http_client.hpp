@@ -89,8 +89,9 @@ class MCP_API HttpClientTransport final : public ITransport {
      * timeout, and answers its requests 404; the client must then start a new one. The transport
      * sends the initialize request that began the session again, then notifications/initialized,
      * and sends the failed request once more in the new session. What the server kept for the old
-     * session, such as resource subscriptions and the log level, is gone. When this is off, or
-     * the new session cannot be started, the request fails with HttpStatusError 404.
+     * session, such as resource subscriptions and the log level, is gone. When this is off, the
+     * request fails with HttpStatusError 404. When the new session cannot be started, the request
+     * fails with the error that start met, and the next request tries to start one again.
      */
     void set_reinitialize_on_expired_session(bool enabled);
 

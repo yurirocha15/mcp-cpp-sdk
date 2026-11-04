@@ -41,13 +41,13 @@ struct Reply {
 };
 
 mcp::Task<Reply> send(asio::any_io_executor executor, unsigned short port, std::string body,
-                      Headers headers) {
+                      Headers headers, http::verb verb = http::verb::post) {
     beast::tcp_stream stream(executor);
     // A bound for reporting a server that never answers, not a measure of speed.
     stream.expires_after(std::chrono::minutes(2));
     co_await stream.async_connect(asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port),
                                   asio::use_awaitable);
-    http::request<http::string_body> request{http::verb::post, "/mcp", 11};
+    http::request<http::string_body> request{verb, "/mcp", 11};
     request.set(http::field::host, "127.0.0.1");
     request.set(http::field::content_type, "application/json");
     request.set(http::field::accept, "application/json, text/event-stream");
@@ -266,6 +266,38 @@ TEST_F(SessionLimitsTest, ClientStartsANewSessionWhenTheOldOneExpired) {
     EXPECT_TRUE(answered);
     EXPECT_FALSE(second_session.empty());
     EXPECT_NE(first_session, second_session);
+}
+
+// A new session that could not start is started again before the client's next request.
+TEST_F(SessionLimitsTest, ClientStartsANewSessionAfterAFailedStart) {
+    manager_.set_session_limits({1, std::chrono::minutes(5)});
+    bool refused = false;
+    bool answered = false;
+    run([&]() -> mcp::Task<void> {
+        auto transport = std::make_shared<mcp::HttpClientTransport>(
+            io_.get_executor(), "http://127.0.0.1:" + std::to_string(port_) + "/mcp");
+        mcp::Client client(transport, io_.get_executor());
+        co_await client.connect("retry", "1.0");
+        // Named: GCC mishandles a temporary in a co_await operand.
+        const Headers own{{"Mcp-Session-Id", transport->session_id()}};
+        const auto ended = co_await send(io_.get_executor(), port_, "", own, http::verb::delete_);
+        EXPECT_EQ(ended.status, 200u);
+        // Another client takes the only session, so the new one this client starts is refused.
+        const auto other = co_await post(make_initialize_request("2"));
+        try {
+            co_await client.ping();
+        } catch (const std::exception&) {
+            refused = true;
+        }
+        const auto others = session_header(other);
+        const auto freed = co_await send(io_.get_executor(), port_, "", others, http::verb::delete_);
+        EXPECT_EQ(freed.status, 200u);
+        co_await client.ping();
+        answered = true;
+        client.close();
+    });
+    EXPECT_TRUE(refused);
+    EXPECT_TRUE(answered);
 }
 
 TEST_F(SessionLimitsTest, UsedSessionStays) {

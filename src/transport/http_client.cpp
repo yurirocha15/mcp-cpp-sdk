@@ -59,6 +59,9 @@ struct HttpClientTransport::Impl {
         /// server has forgotten it. Touched on the strand only.
         std::string initialize_request;
         bool reinitialize_on_expired_session{true};
+        /// Set while the session the server forgot has not been replaced: a new one is started
+        /// before the next request. Touched on the strand only.
+        bool session_lost{false};
         bool operation_active{false};
         bool read_active{false};
     };
@@ -409,6 +412,12 @@ struct HttpClientTransport::Impl {
         const auto retry_body = std::make_shared<const std::string>(
             had_session && !initialize_operation ? message : std::string());
         try {
+            if (state.session_lost && !initialize_operation && state.reinitialize_on_expired_session &&
+                !state.initialize_request.empty()) {
+                // The last attempt to replace a forgotten session failed, so this request tries
+                // again before it is sent.
+                co_await reinitialize(impl, bearer_token_provider);
+            }
             auto response = co_await exchange(impl, std::move(message), bearer_token_provider);
             if (response.result() == http::status::not_found && had_session && !initialize_operation &&
                 state.reinitialize_on_expired_session && !state.initialize_request.empty()) {
@@ -445,6 +454,7 @@ struct HttpClientTransport::Impl {
             state.session_id.clear();
             state.last_event_id.clear();
         }
+        state.session_lost = true;
         const auto initialize = std::make_shared<const std::string>(state.initialize_request);
         impl->capture_initialize_request(*initialize);
         const auto initialized = co_await exchange(impl, *initialize, bearer_token_provider);
@@ -460,6 +470,7 @@ struct HttpClientTransport::Impl {
             R"({"jsonrpc":"2.0","method":"notifications/initialized"})");
         const auto accepted = co_await exchange(impl, *notification, bearer_token_provider);
         impl->process_response(accepted);
+        state.session_lost = false;
     }
 
     /// Sends @p body in one POST of the current session and reads the response.
