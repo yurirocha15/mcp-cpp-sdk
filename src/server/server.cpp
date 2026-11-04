@@ -1227,7 +1227,7 @@ Task<void> Server::Impl::answer_from_read_loop(Session& session,
     // requests, which a peer at its own limit may be waiting to write before it reads again.
     // Answers are queued instead while what is queued stays within the byte limit; past it,
     // reading waits for the peer.
-    if (session.writer->queued_bytes() + answer->size() <=
+    if (session.writer->queued_bytes() + answer->size() + detail::g_queued_message_overhead <=
         max_in_flight_bytes.load(std::memory_order_relaxed)) {
         session.writer->post_message(std::move(answer));
         co_return;

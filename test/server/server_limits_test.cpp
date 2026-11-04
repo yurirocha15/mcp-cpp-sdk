@@ -219,9 +219,32 @@ TEST_F(ServerLimitsTest, RefusalsPastTheByteLimitStopTheReading) {
         transport_->hold_writes(false);
         co_await wait_until([this] { return answer_to(1099) != nullptr; });
     });
-    // About 4096 bytes of refusals, 90 bytes each, are queued; the rest wait to be read.
+    // Refusals are queued while they count within 4096 bytes, each with what it holds besides its
+    // text; the rest wait to be read.
     EXPECT_GT(unread, 800U);
     ASSERT_NE(answer_to(1099), nullptr);
+}
+
+// A queued answer counts with what the queue holds for it besides its text, so many small parse
+// errors stop the reading within the byte limit. Counted by text alone, 1 MiB would hold about
+// 14,000 of them; counted with what each holds, about 1,800.
+TEST_F(ServerLimitsTest, QueuedParseErrorsCountWhatTheyHold) {
+    std::size_t unread = 0;
+    run([&]() -> mcp::Task<void> {
+        co_await initialized();
+        server_->set_max_in_flight_bytes(1024 * 1024);
+        transport_->hold_writes(true);
+        for (int line = 0; line < 5000; ++line) {
+            transport_->enqueue_message("x");
+        }
+        co_await wait_until([this] { return transport_->unread() < 5000; });
+        boost::asio::steady_timer settle(io_.get_executor(), std::chrono::milliseconds(100));
+        co_await settle.async_wait(boost::asio::use_awaitable);
+        unread = transport_->unread();
+        transport_->hold_writes(false);
+        co_await wait_until([this] { return transport_->unread() == 0; });
+    });
+    EXPECT_GT(unread, 2500U);
 }
 
 // What a request holds is given back once it is answered, so a session goes on taking requests

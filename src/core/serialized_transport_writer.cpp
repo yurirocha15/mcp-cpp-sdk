@@ -23,6 +23,15 @@
 
 namespace mcp::detail {
 
+namespace {
+
+/// What a queued message counts in queued_bytes().
+std::size_t queued_cost(const std::string& message) {
+    return message.size() + g_queued_message_overhead;
+}
+
+}  // namespace
+
 struct SerializedTransportWriterState {
     struct Operation {
         Operation(const boost::asio::any_io_executor& executor,
@@ -65,7 +74,8 @@ struct SerializedTransportWriterState {
             if (operation->cancel_before_start &&
                 operation->cancel_before_start->load(std::memory_order_acquire)) {
                 state->queue.pop_front();
-                state->queued_bytes.fetch_sub(operation->message->size(), std::memory_order_relaxed);
+                state->queued_bytes.fetch_sub(queued_cost(*operation->message),
+                                              std::memory_order_relaxed);
                 complete(operation, std::make_exception_ptr(boost::system::system_error(
                                         boost::asio::error::operation_aborted)));
                 continue;
@@ -82,7 +92,7 @@ struct SerializedTransportWriterState {
             }
 
             state->queue.pop_front();
-            state->queued_bytes.fetch_sub(operation->message->size(), std::memory_order_relaxed);
+            state->queued_bytes.fetch_sub(queued_cost(*operation->message), std::memory_order_relaxed);
             complete(operation, std::move(error));
         }
 
@@ -105,7 +115,7 @@ struct SerializedTransportWriterState {
         auto operation = std::make_shared<Operation>(state->strand, std::move(message),
                                                      std::move(cancel_before_start));
         if (operation->message) {
-            state->queued_bytes.fetch_add(operation->message->size(), std::memory_order_relaxed);
+            state->queued_bytes.fetch_add(queued_cost(*operation->message), std::memory_order_relaxed);
         }
         push(state, operation);
 
@@ -178,7 +188,7 @@ void SerializedTransportWriter::post_message(std::shared_ptr<const std::string> 
         throw std::invalid_argument("SerializedTransportWriter message must not be null");
     }
     auto state = state_;
-    state->queued_bytes.fetch_add(message->size(), std::memory_order_relaxed);
+    state->queued_bytes.fetch_add(queued_cost(*message), std::memory_order_relaxed);
     boost::asio::post(state->strand, [state, message = std::move(message)]() mutable {
         using State = SerializedTransportWriterState;
         State::push(state,
