@@ -1126,7 +1126,9 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
                     json_msg = detail::parse_peer_json(raw);
                     parse_failed = json_msg.is_discarded();
                 }
-            } catch (const nlohmann::json::parse_error&) {
+            } catch (const nlohmann::json::exception&) {
+                // Text a MemoryTransport parses on the way in, such as a number past the range of
+                // a double, fails here; it is the peer's error, not the transport's.
                 parse_failed = true;
             }
             if (parse_failed) {

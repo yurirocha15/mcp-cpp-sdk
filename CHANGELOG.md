@@ -153,6 +153,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   JSON, such as a result or an error message holding text that is not UTF-8,
   no answer was sent and the server's request waited out its timeout. Such an
   answer is now an error.
+- A `Server` on a `MemoryTransport` ended its run when a message written as text
+  held a number past the range of a double, such as `1e400`. Such a message is
+  answered as a parse error, and the session goes on.
 - A reply to `elicitation/create` with an unknown action decoded as `accept`. It
   now fails to decode. A form request may leave out `mode`, as the specification
   allows.
