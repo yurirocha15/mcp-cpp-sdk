@@ -484,6 +484,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   the string ahead of what it writes, so writing a character is a store
   rather than a call into `std::string`, and a string that needs no escape is
   copied in one step.
+- A 2026-07-28 result that has no `_meta` of its own is written with
+  `resultType`, the server's identity in `_meta` and any cache hints added
+  as it is written, in the order `dump()` would put them, rather than by
+  inserting them into the result first; a result with its own `_meta` is
+  still built as before. A result that already holds one of these members
+  keeps its value.
 
 ### Removed
 

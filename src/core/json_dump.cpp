@@ -117,6 +117,39 @@ class Writer {
         }
     }
 
+    void object_with(const nlohmann::json::object_t& object, std::span<const JsonMemberText> extra) {
+        if (object.empty() && extra.empty()) {
+            write("{}", 2);
+            return;
+        }
+        char separator = '{';
+        auto member = object.begin();
+        auto added = extra.begin();
+        while (member != object.end() || added != extra.end()) {
+            put(separator);
+            separator = ',';
+            // Members in the order of std::map's keys, which is the order of std::string_view.
+            const bool take_added =
+                member == object.end() ||
+                (added != extra.end() && added->key < std::string_view(member->first));
+            if (take_added) {
+                string(added->key);
+                put(':');
+                write(added->value_text.data(), added->value_text.size());
+                ++added;
+                continue;
+            }
+            if (added != extra.end() && added->key == member->first) {
+                ++added;
+            }
+            string(member->first);
+            put(':');
+            value(member->second);
+            ++member;
+        }
+        put('}');
+    }
+
    private:
     static constexpr std::size_t g_INITIAL_ROOM = 256;
     /// An escape is six bytes, the most one byte of a string becomes.
@@ -153,11 +186,11 @@ class Writer {
 
     /// Writes @p text between quotes, escaped as nlohmann::json escapes it. A text that is not
     /// valid UTF-8 is handed to nlohmann::json, which throws the error dump() throws.
-    void string(const std::string& text) {
+    void string(std::string_view text) {
         const std::size_t start = length_;
         if (!quoted(text)) {
             length_ = start;
-            const auto fallback = nlohmann::json(text).dump();
+            const auto fallback = nlohmann::json(std::string(text)).dump();
             write(fallback.data(), fallback.size());
         }
     }
@@ -233,6 +266,12 @@ class Writer {
 void append_json(std::string& out, const nlohmann::json& value) {
     Writer writer(out);
     writer.value(value);
+}
+
+void append_json_object_with(std::string& out, const nlohmann::json& object,
+                             std::span<const JsonMemberText> extra) {
+    Writer writer(out);
+    writer.object_with(object.get_ref<const nlohmann::json::object_t&>(), extra);
 }
 
 std::string dump_json(const nlohmann::json& value) {

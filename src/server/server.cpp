@@ -39,6 +39,7 @@
 #include <boost/asio/use_awaitable.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -51,6 +52,7 @@
 #include <optional>
 #include <ranges>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -855,6 +857,12 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::optional<std::string> instructions;
     std::array<CacheHint, 6> cache_hints{};
     bool report_server_info{true};
+    /// The `_meta` a 2026-07-28 result carries when it has none: the server's identity under
+    /// g_META_SERVER_INFO, as JSON text. Written by the first such result, so a server that only
+    /// serves earlier revisions never writes it; empty when the identity cannot be serialized.
+    mutable std::string server_info_meta_text;  // written once, under server_info_meta_once
+    mutable std::once_flag server_info_meta_once;
+    const std::string& server_info_meta() const;
     std::atomic<LifecycleState> lifecycle{LifecycleState::eUninitialized};
     // The transport's terminated_session_count() when the current session was initialized.
     std::atomic<std::uint64_t> terminated_sessions_at_initialize{0};
@@ -3610,12 +3618,53 @@ std::string Server::Impl::make_result_wire(const RequestId& id, const RequestSco
     return make_result_wire(id, scope.meta, std::move(result), target);
 }
 
+const std::string& Server::Impl::server_info_meta() const {
+    std::call_once(server_info_meta_once, [this] {
+        try {
+            nlohmann::json meta = nlohmann::json::object();
+            meta[std::string(g_META_SERVER_INFO)] = server_info;
+            server_info_meta_text = detail::dump_json(meta);
+        } catch (const nlohmann::json::exception&) {
+            // Left empty: each result then has the identity inserted, and fails, as before.
+        }
+    });
+    return server_info_meta_text;
+}
+
 std::string Server::Impl::make_result_wire(const RequestId& id,
                                            const std::shared_ptr<const RequestMetadata>& request_meta,
                                            nlohmann::json result,
                                            std::optional<CacheTarget> target) const {
     if (request_meta == nullptr || !result.is_object()) {
         return make_result_wire(id, std::move(result));
+    }
+    if (!report_server_info || (!server_info_meta().empty() && !result.contains("_meta"))) {
+        // The members this revision adds are written around the result rather than inserted
+        // into it: each is added only when the result does not hold it, as emplace() does.
+        const CacheHint* const hint =
+            target ? &cache_hints.at(static_cast<std::size_t>(*target)) : nullptr;
+        std::string scope_text;
+        std::string ttl_text;
+        std::array<detail::JsonMemberText, 4> extra{};
+        std::size_t count = 0;
+        if (report_server_info) {
+            extra[count++] = {"_meta", server_info_meta()};
+        }
+        if (hint != nullptr) {
+            scope_text = detail::dump_json(nlohmann::json(hint->scope));
+            extra[count++] = {"cacheScope", scope_text};
+        }
+        extra[count++] = {"resultType", R"("complete")"};
+        if (hint != nullptr) {
+            ttl_text = std::to_string(hint->ttlMs);
+            extra[count++] = {"ttlMs", ttl_text};
+        }
+        std::string wire = R"({"id":)";
+        detail::append_json(wire, nlohmann::json(id));
+        wire += R"(,"jsonrpc":"2.0","result":)";
+        detail::append_json_object_with(wire, result, std::span(extra.data(), count));
+        wire += '}';
+        return wire;
     }
     result.emplace("resultType", "complete");
     if (report_server_info) {

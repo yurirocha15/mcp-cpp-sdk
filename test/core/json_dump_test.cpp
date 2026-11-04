@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <random>
@@ -268,4 +269,61 @@ TEST(JsonDumpTest, AppendsAfterExistingText) {
     append_json(out, nlohmann::json{{"text", "line\n\"quoted\""}});
     out += '}';
     EXPECT_EQ(out, R"({"id":1,"result":{"text":"line\n\"quoted\""}})");
+}
+
+TEST(JsonDumpTest, WritesAnObjectWithAddedMembersAsDumpWritesTheMergedObject) {
+    using mcp::detail::append_json_object_with;
+    using mcp::detail::JsonMemberText;
+    std::mt19937 random(5112026);
+    const std::vector<std::string> keys = {
+        "", "A", "Z", "_meta", "a", "cacheScope", "id", "resultType", "ttlMs", "z", "\xC3\xA9", "\x7F"};
+    for (int round = 0; round < 3000; ++round) {
+        nlohmann::json object = nlohmann::json::object();
+        std::vector<JsonMemberText> extra;
+        std::vector<std::string> texts;
+        texts.reserve(keys.size());
+        for (const auto& key : keys) {
+            const int pick = std::uniform_int_distribution<int>(0, 3)(random);
+            if (pick == 1 || pick == 3) {
+                object[key] = random_value(random, 2);
+            }
+            if (pick >= 2) {
+                try {
+                    texts.push_back(dump_json(random_value(random, 2)));
+                } catch (const nlohmann::json::type_error&) {
+                    // A value with invalid UTF-8 has no text to add.
+                }
+            }
+        }
+        // Keys in std::map order, then the added members that order picks.
+        std::vector<std::string> sorted = keys;
+        std::sort(sorted.begin(), sorted.end());
+        nlohmann::json expected = object;
+        std::size_t next_text = 0;
+        for (const auto& key : sorted) {
+            if (std::uniform_int_distribution<int>(0, 1)(random) == 0 || next_text == texts.size()) {
+                continue;
+            }
+            const auto& text = texts[next_text++];
+            extra.push_back({key, text});
+            expected.emplace(key, nlohmann::json::parse(text));
+        }
+        std::string out = "[";
+        const auto outcome = outcome_of([&] {
+            append_json_object_with(out, object, extra);
+            return out;
+        });
+        const auto wanted = outcome_of([&] { return "[" + expected.dump(); });
+        EXPECT_EQ(outcome.threw, wanted.threw);
+        EXPECT_EQ(outcome.text, wanted.text);
+        if (::testing::Test::HasFailure()) {
+            break;
+        }
+    }
+    std::string empty;
+    append_json_object_with(empty, nlohmann::json::object(), {});
+    EXPECT_EQ(empty, "{}");
+    const nlohmann::json bad_text = {{"text", bytes({'o', 'k', 0xC3})}};
+    EXPECT_THROW(append_json_object_with(empty, bad_text, {{{"resultType", R"("complete")"}}}),
+                 nlohmann::json::type_error);
 }
