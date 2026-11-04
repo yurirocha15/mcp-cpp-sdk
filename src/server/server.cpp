@@ -64,12 +64,55 @@ namespace mcp {
 
 namespace {
 
+/// The arguments a tool's input schema mirrors into `Mcp-Param-*` headers, with the compiled schema
+/// they were read from.
+struct ToolParamHeaders {
+    CompiledSchema input;
+    std::vector<detail::ParamHeader> headers;
+};
+
 struct CompiledToolSchemas {
     CompiledSchema input;
     std::optional<CompiledSchema> output;
-    /// The arguments the input schema mirrors into `Mcp-Param-*` headers.
-    std::vector<detail::ParamHeader> param_headers;
+    std::shared_ptr<const ToolParamHeaders> param_headers;
 };
+
+/// The header annotations of input schemas by the identity of their compiled form. CompiledSchema
+/// returns one shared compiled form for a repeat of a schema, so a server built per session that
+/// registers the same tools reads each input schema's annotations once. An entry is held weakly:
+/// while it is alive it holds its compiled schema, so the address it is found by cannot be reused
+/// by another schema, and it goes with the last tool that holds it.
+class ToolParamHeadersCache {
+   public:
+    std::shared_ptr<const ToolParamHeaders> find(const CompiledSchema& input) {
+        std::lock_guard lock(mutex_);
+        const auto entry = entries_.find(&input.schema());
+        return entry == entries_.end() ? nullptr : entry->second.lock();
+    }
+
+    void insert(const std::shared_ptr<const ToolParamHeaders>& headers) {
+        std::lock_guard lock(mutex_);
+        if (entries_.size() >= g_max_entries) {
+            std::erase_if(entries_, [](const auto& entry) { return entry.second.expired(); });
+            if (entries_.size() >= g_max_entries) {
+                return;
+            }
+        }
+        entries_.insert_or_assign(&headers->input.schema(), headers);
+    }
+
+   private:
+    /// As many as CompiledSchema keeps, so every input schema it shares can be found.
+    static constexpr std::size_t g_max_entries = 256;
+
+    std::mutex mutex_;
+    std::unordered_map<const nlohmann::json*, std::weak_ptr<const ToolParamHeaders>> entries_;
+};
+
+ToolParamHeadersCache& tool_param_headers_cache() {
+    static ToolParamHeadersCache cache;
+    return cache;
+}
 
 /// Throws when the `structuredContent` of @p result does not conform to @p schema; the dispatcher
 /// answers that with g_INTERNAL_ERROR, since the tool broke its own declared contract.
@@ -146,15 +189,20 @@ CompiledToolSchemas compile_tool_schemas(const Tool& tool) {
         throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema", "must be a JSON object");
     }
     const auto type = tool.inputSchema.find("type");
-    if (type == tool.inputSchema.end() || *type != "object") {
+    if (type == tool.inputSchema.end() || !type->is_string() ||
+        type->get_ref<const std::string&>() != "object") {
         throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema",
                      R"(must declare "type": "object")");
     }
-    std::vector<detail::ParamHeader> param_headers;
-    try {
-        param_headers = detail::collect_param_headers(tool.inputSchema);
-    } catch (const std::invalid_argument& error) {
-        throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema", error.what());
+    auto param_headers = tool_param_headers_cache().find(input);
+    if (!param_headers) {
+        try {
+            param_headers = std::make_shared<const ToolParamHeaders>(
+                ToolParamHeaders{input, detail::collect_param_headers(input.schema())});
+        } catch (const std::invalid_argument& error) {
+            throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema", error.what());
+        }
+        tool_param_headers_cache().insert(param_headers);
     }
     auto input = compile(tool.inputSchema, "inputSchema");
     std::optional<CompiledSchema> output;
@@ -1957,7 +2005,7 @@ detail::ParamHeaderCheck Server::Impl::make_param_header_check() {
         }
         const auto arguments = params->find("arguments");
         return detail::param_header_mismatch(
-            tool->second.schemas.param_headers,
+            tool->second.schemas.param_headers->headers,
             arguments == params->end() ? nlohmann::json::object() : *arguments, headers);
     };
 }
@@ -2506,7 +2554,7 @@ std::optional<std::string> Server::Impl::retry_header_mismatch(const nlohmann::j
     if (tool == tool_handlers.end()) {
         return std::nullopt;
     }
-    return detail::param_header_mismatch(tool->second.schemas.param_headers, params.arguments,
+    return detail::param_header_mismatch(tool->second.schemas.param_headers->headers, params.arguments,
                                          *scope.param_headers);
 }
 
@@ -3026,7 +3074,7 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
     // An HTTP request mirrors the arguments the tool's x-mcp-header annotations name into
     // Mcp-Param-* headers, and those must match the body it is executed from.
     if (scope.meta != nullptr && scope.param_headers != nullptr) {
-        if (auto mismatch = detail::param_header_mismatch(tool->second.schemas.param_headers,
+        if (auto mismatch = detail::param_header_mismatch(tool->second.schemas.param_headers->headers,
                                                           *call.arguments, *scope.param_headers)) {
             co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_HEADER_MISMATCH,
                                       "Header mismatch: " + *mismatch);

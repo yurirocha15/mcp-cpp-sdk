@@ -426,6 +426,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   before the schema is measured for its nesting depth and for NaN or Infinity,
   since the schema it matches passed those checks when it was compiled; a
   schema that fails them is refused as before.
+- A tool registered with an input schema that `CompiledSchema` already shares
+  with a live tool reuses the `x-mcp-header` annotations read from it, so a
+  server factory that registers the same tools for every session reads each
+  input schema's annotations once while sessions overlap.
 - `StreamableHttpSessionManager::set_tool_executor()` now moves only the call
   of a tool, resource or prompt handler to that executor. A session's reading,
   parsing and answering of protocol messages run on the HTTP executor, and the

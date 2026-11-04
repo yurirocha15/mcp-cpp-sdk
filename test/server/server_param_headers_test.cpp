@@ -342,6 +342,46 @@ TEST_F(ServerParamHeadersDispatch, RetryIsCheckedAndARefusedRetryCanBeRepeated) 
     EXPECT_EQ(served["result"]["resultType"], "complete") << served;
 }
 
+// Servers built one per session share what they read from a repeated input schema, so each must
+// still check the annotations of its own schema: a server whose schema names another header is
+// not checked by the first one's, and a server built after every holder has gone reads them again.
+TEST_F(ServerParamHeadersDispatch, EachServerChecksTheAnnotationsOfItsOwnSchema) {
+    const auto make = [](std::string_view header) {
+        mcp::ServerCapabilities caps;
+        caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+        auto server = std::make_unique<mcp::Server>(mcp::Implementation{"s", "1.0"}, caps);
+        server->add_tool<json, json>("route", "Routed by one header",
+                                     object_with({{"region", annotated("string", header)}}),
+                                     [](json args) -> mcp::Task<json> { co_return args; });
+        return server;
+    };
+    // Both headers are sent; the one named here disagrees with the "us" in the body.
+    const auto answer = [this](mcp::Server& server, const std::string& header) {
+        mcp::RequestContext context;
+        context.param_headers = {
+            {{"Region", header == "Region" ? "eu" : "us"}, {"Zone", header == "Zone" ? "eu" : "us"}}};
+        const auto response = dispatch(server, route_call("us"), std::move(context));
+        return response.contains("error") ? response["error"]["code"].get<int>() : 0;
+    };
+
+    auto first = make("Region");
+    auto second = make("Region");
+    auto other = make("Zone");
+    for (auto* server : {first.get(), second.get()}) {
+        EXPECT_EQ(answer(*server, "Region"), mcp::g_HEADER_MISMATCH);
+        EXPECT_EQ(answer(*server, "Zone"), 0);
+    }
+    EXPECT_EQ(answer(*other, "Zone"), mcp::g_HEADER_MISMATCH);
+    EXPECT_EQ(answer(*other, "Region"), 0);
+
+    first.reset();
+    second.reset();
+    other.reset();
+    auto again = make("Region");
+    EXPECT_EQ(answer(*again, "Region"), mcp::g_HEADER_MISMATCH);
+    EXPECT_EQ(answer(*again, "Zone"), 0);
+}
+
 TEST_F(ServerParamHeadersDispatch, LegacyRequestsAreNeverChecked) {
     auto server = make_server();
     mcp::RequestContext context;
