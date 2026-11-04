@@ -11,6 +11,7 @@
 #include "../detail/strand_executor.hpp"
 
 #include <mcp/core/constants.hpp>
+#include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 #include <mcp/transport/memory.hpp>
@@ -306,7 +307,7 @@ inline StringResponse make_error_response(const StringRequest& request, http::st
                                           std::string_view error_message) {
     nlohmann::json error_body = nlohmann::json::object();
     error_body["error"] = std::string(error_message);
-    return make_json_response(request, status_code, error_body.dump());
+    return make_json_response(request, status_code, mcp::detail::dump_json(error_body));
 }
 
 inline StringResponse make_jsonrpc_error_response(const StringRequest& request,
@@ -315,7 +316,7 @@ inline StringResponse make_jsonrpc_error_response(const StringRequest& request,
     // It names no request, so `id` is left out, as MCP's schema has it.
     nlohmann::json error_body = {{"jsonrpc", "2.0"},
                                  {"error", {{"code", error_code}, {"message", error_message}}}};
-    return make_json_response(request, status_code, error_body.dump());
+    return make_json_response(request, status_code, mcp::detail::dump_json(error_body));
 }
 
 /// A JSON-RPC error answering the request @p id.
@@ -325,7 +326,7 @@ inline StringResponse make_jsonrpc_error_response(const StringRequest& request,
                                                   const nlohmann::json& id) {
     nlohmann::json error_body = {
         {"jsonrpc", "2.0"}, {"error", {{"code", error_code}, {"message", error_message}}}, {"id", id}};
-    return make_json_response(request, status_code, error_body.dump());
+    return make_json_response(request, status_code, mcp::detail::dump_json(error_body));
 }
 
 inline StringResponse make_empty_json_response(const StringRequest& request, http::status status_code) {
@@ -987,7 +988,7 @@ struct StreamableHttpSessionManager::Impl {
             error_body["id"] = id;
         }
         return detail_session_mgr::make_json_response(request, http::status::not_found,
-                                                      error_body.dump());
+                                                      mcp::detail::dump_json(error_body));
     }
 
     bool has_valid_protocol_header(const StringRequest& request) const {
@@ -1121,11 +1122,10 @@ struct StreamableHttpSessionManager::Impl {
             dispatch_modern(modern_server(), std::move(request_json), std::move(request_context)),
             [exchange, request_id = std::move(request_id)](std::exception_ptr error, std::string wire) {
                 if (error) {
-                    wire = nlohmann::json{{"jsonrpc", "2.0"},
-                                          {"id", request_id},
-                                          {"error",
-                                           {{"code", g_INTERNAL_ERROR}, {"message", "Internal error"}}}}
-                               .dump();
+                    wire = mcp::detail::dump_json(nlohmann::json{
+                        {"jsonrpc", "2.0"},
+                        {"id", request_id},
+                        {"error", {{"code", g_INTERNAL_ERROR}, {"message", "Internal error"}}}});
                 }
                 exchange->finish(std::move(wire));
             });
@@ -1773,7 +1773,7 @@ struct StreamableHttpSessionManager::Impl {
             co_return response;
         }
 
-        const auto request_id_key = request_json.at("id").dump();
+        const auto request_id_key = mcp::detail::dump_json(request_json.at("id"));
 
         auto timer_signal = std::make_shared<boost::asio::steady_timer>(conn_strand);
         timer_signal->expires_at(std::chrono::steady_clock::time_point::max());
@@ -2000,7 +2000,7 @@ struct StreamableHttpSessionManager::Impl {
                 if (id.is_discarded()) {
                     return;
                 }
-                request_id_key = id.dump();
+                request_id_key = mcp::detail::dump_json(id);
             }
         } else {
             const auto message_json = nlohmann::json::parse(message, nullptr, false);
@@ -2016,7 +2016,7 @@ struct StreamableHttpSessionManager::Impl {
             is_response = message_json.contains("id") &&
                           (message_json.contains("result") || message_json.contains("error"));
             if (is_response) {
-                request_id_key = message_json.at("id").dump();
+                request_id_key = mcp::detail::dump_json(message_json.at("id"));
             }
         }
         std::shared_ptr<boost::asio::steady_timer> timer_to_signal;

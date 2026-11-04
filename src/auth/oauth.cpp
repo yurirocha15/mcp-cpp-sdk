@@ -11,6 +11,7 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
 
 #include <algorithm>
@@ -2661,7 +2662,7 @@ struct OAuthClientTransport::Impl {
     static std::string inject_token(const std::shared_ptr<Impl>& owner, JSONRPCRequest request) {
         const auto token = owner->authenticator->get_access_token();
         if (token.empty()) {
-            return nlohmann::json(request).dump();
+            return mcp::detail::dump_json(nlohmann::json(request));
         }
         if (!request.params) {
             request.params = nlohmann::json::object();
@@ -2674,7 +2675,7 @@ struct OAuthClientTransport::Impl {
             params["_meta"] = nlohmann::json::object();
         }
         params["_meta"]["auth_token"] = token;
-        return nlohmann::json(request).dump();
+        return mcp::detail::dump_json(nlohmann::json(request));
     }
 
     static std::shared_ptr<WriteOperation> prepare_write(std::shared_ptr<Impl> owner,

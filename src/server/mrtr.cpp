@@ -3,6 +3,7 @@
 #include "../detail/spawn_awaitable.hpp"
 
 #include <mcp/auth/oauth.hpp>
+#include <mcp/detail/json_dump.hpp>
 
 #include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
@@ -109,7 +110,7 @@ Task<void> notify_on_strand(std::shared_ptr<MrtrEntry> entry,
                 co_return;
             }
             notification["params"]["progressToken"] = *entry->progress_token;
-            message = std::make_shared<const std::string>(notification.dump());
+            message = std::make_shared<const std::string>(mcp::detail::dump_json(notification));
         }
     }
     co_await sink(*message);
@@ -318,7 +319,7 @@ std::string mrtr_params_digest(const nlohmann::json& params) {
     salient.erase("_meta");
     salient.erase("inputResponses");
     salient.erase("requestState");
-    const auto digest = auth::detail::sha256(salient.dump());
+    const auto digest = auth::detail::sha256(mcp::detail::dump_json(salient));
     return {reinterpret_cast<const char*>(digest.data()), digest.size()};
 }
 

@@ -6,6 +6,7 @@
 //   [scope-before-await] Build SSO-risky objects in {}, serialise to wire string, then co_await.
 
 #include <mcp/core/core.hpp>
+#include <mcp/detail/json_dump.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/protocol/request_meta.hpp>
 #include <mcp/transport/transport.hpp>
@@ -159,7 +160,8 @@ class Context {
             JSONRPCNotification notification;
             notification.method = "notifications/message";
             notification.params = nlohmann::json(std::move(params));
-            wire = std::make_shared<const std::string>(nlohmann::json(std::move(notification)).dump());
+            wire = std::make_shared<const std::string>(
+                mcp::detail::dump_json(nlohmann::json(std::move(notification))));
         }
         if (message_sender_) {
             co_await message_sender_(*wire);
@@ -213,7 +215,8 @@ class Context {
             JSONRPCNotification notification;
             notification.method = "notifications/progress";
             notification.params = nlohmann::json(std::move(params));
-            wire = std::make_shared<const std::string>(nlohmann::json(std::move(notification)).dump());
+            wire = std::make_shared<const std::string>(
+                mcp::detail::dump_json(nlohmann::json(std::move(notification))));
         }
         if (message_sender_) {
             co_await message_sender_(*wire);

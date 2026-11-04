@@ -7,6 +7,7 @@
 #include "../detail/principal.hpp"
 #include "../detail/socket_probe.hpp"
 
+#include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/http_types.hpp>
@@ -268,7 +269,7 @@ struct HttpServerTransport::Impl {
     static StringResponse make_error_response(const StringRequest& request, http::status status_code,
                                               std::string_view error_message) {
         nlohmann::json error_body = {{"error", std::string(error_message)}};
-        return make_json_response(request, status_code, error_body.dump());
+        return make_json_response(request, status_code, mcp::detail::dump_json(error_body));
     }
 
     static StringResponse make_empty_json_response(const StringRequest& request,
@@ -561,7 +562,7 @@ struct HttpServerTransport::Impl {
         if (detail::is_request_id(id)) {
             error_body["id"] = id;
         }
-        return make_json_response(request, http::status::not_found, error_body.dump());
+        return make_json_response(request, http::status::not_found, mcp::detail::dump_json(error_body));
     }
 
     /// Whether any version the Server serves is one that initialize negotiates.
@@ -718,7 +719,7 @@ struct HttpServerTransport::Impl {
         if (!id.is_null()) {
             body["id"] = std::move(id);
         }
-        return make_json_response(request, status_code, body.dump());
+        return make_json_response(request, status_code, mcp::detail::dump_json(body));
     }
 
     static StringResponse make_invalid_id_response(const StringRequest& request) {
@@ -774,7 +775,7 @@ struct HttpServerTransport::Impl {
         nlohmann::json notification = {{"jsonrpc", "2.0"},
                                        {"method", "notifications/cancelled"},
                                        {"params", {{"requestId", sentinel_id}}}};
-        enqueue_incoming_message(notification.dump(), std::move(principal));
+        enqueue_incoming_message(mcp::detail::dump_json(notification), std::move(principal));
     }
 
     /// Serves a request of protocol revision 2026-07-28. It needs no session: Mcp-Session-Id is
@@ -831,7 +832,7 @@ struct HttpServerTransport::Impl {
         // sessionless clients could not both use id 1.
         auto sentinel_json = request_json;
         sentinel_json["id"] = next_sentinel_request_id();
-        const auto request_id_key = sentinel_json.at("id").dump();
+        const auto request_id_key = mcp::detail::dump_json(sentinel_json.at("id"));
         std::optional<nlohmann::json> client_request_id(std::in_place, request_json.at("id"));
         const auto timer_signal =
             co_await register_pending_request(request_id_key, std::move(client_request_id));
@@ -842,7 +843,7 @@ struct HttpServerTransport::Impl {
         // Tracked so run_write keeps this response out of the session's replay store, and a DELETE
         // of the session leaves it waiting. Dropped again in consume_pending_response and close().
         sessionless_request_ids.insert(request_id_key);
-        enqueue_incoming_message(sentinel_json.dump(), principal);
+        enqueue_incoming_message(mcp::detail::dump_json(sentinel_json), principal);
 
         auto closed_response =
             co_await wait_for_response(request, request_id_key, *timer_signal, connection.get());
@@ -925,7 +926,7 @@ struct HttpServerTransport::Impl {
         }
 
         // Session-gated requests keep the exact bytes the peer sent.
-        const auto request_id_key = request_json.at("id").dump();
+        const auto request_id_key = mcp::detail::dump_json(request_json.at("id"));
         const auto timer_signal = co_await register_pending_request(request_id_key);
         if (!timer_signal.has_value()) {
             co_return make_error_response(request, http::status::bad_request,
@@ -1454,7 +1455,7 @@ struct HttpServerTransport::Impl {
         // a client request still waiting here; only a response answers that request.
         std::optional<std::string> response_id_key;
         if (response_json.contains("id") && !response_json.contains("method")) {
-            response_id_key = response_json.at("id").dump();
+            response_id_key = mcp::detail::dump_json(response_json.at("id"));
         }
 
         // Responses to sessionless pre-gate requests must never reach the replay store. That
@@ -1508,7 +1509,7 @@ struct HttpServerTransport::Impl {
         if (pending_it->second.client_request_id.has_value()) {
             auto restored_response = response_json;
             restored_response["id"] = *pending_it->second.client_request_id;
-            message = restored_response.dump();
+            message = mcp::detail::dump_json(restored_response);
         }
 
         pending_it->second.response_body = std::move(message);

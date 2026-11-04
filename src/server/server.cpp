@@ -9,6 +9,7 @@
 #include "../detail/strand_executor.hpp"
 #include "mrtr.hpp"
 
+#include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
 #include <mcp/protocol/schema.hpp>
@@ -493,7 +494,7 @@ nlohmann::json normalize_structured_tool_result(nlohmann::json result, bool mode
     if (result.is_string()) {
         return nlohmann::json(make_tool_text_result(result.get<std::string>()));
     }
-    return nlohmann::json(make_tool_text_result(result.dump()));
+    return nlohmann::json(make_tool_text_result(mcp::detail::dump_json(result)));
 }
 
 /// The `_meta` of a message that belongs to the subscriptions/listen request with id @p listen_id.
@@ -621,13 +622,12 @@ std::string make_invalid_request_wire(const nlohmann::json& message, std::string
     if (message.is_object() && has_valid_request_id(message)) {
         wire["id"] = message.at("id");
     }
-    return wire.dump();
+    return mcp::detail::dump_json(wire);
 }
 
 std::string make_parse_error_wire() {
-    return nlohmann::json{{"jsonrpc", "2.0"},
-                          {"error", {{"code", g_PARSE_ERROR}, {"message", "Parse error"}}}}
-        .dump();
+    return mcp::detail::dump_json(nlohmann::json{
+        {"jsonrpc", "2.0"}, {"error", {{"code", g_PARSE_ERROR}, {"message", "Parse error"}}}});
 }
 
 }  // namespace
@@ -1231,7 +1231,7 @@ std::shared_ptr<const std::string> Server::Impl::listed_tools_text() {
                 if (!text.empty()) {
                     text += ',';
                 }
-                text += nlohmann::json(tool).dump();
+                text += mcp::detail::dump_json(nlohmann::json(tool));
             }
             tools_text = std::make_shared<const std::string>(std::move(text));
         } catch (const nlohmann::json::exception&) {
@@ -1484,7 +1484,8 @@ Task<nlohmann::json> Server::Impl::send_request(std::shared_ptr<std::atomic<bool
     request.id = RequestId{std::to_string(id)};
     request.method = method;
     request.params = params;
-    auto wire = std::make_shared<const std::string>(nlohmann::json(std::move(request)).dump());
+    auto wire =
+        std::make_shared<const std::string>(mcp::detail::dump_json(nlohmann::json(std::move(request))));
     const std::chrono::milliseconds timeout(reverse_request_timeout_ms.load(std::memory_order_relaxed));
     return await_reverse_response(std::move(session), std::move(wire), id, timeout,
                                   std::move(caller_cancelled), std::move(related_request));
@@ -1593,7 +1594,7 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
             JSONRPCNotification notification;
             notification.method = "notifications/cancelled";
             notification.params = nlohmann::json(std::move(params));
-            notice = nlohmann::json(std::move(notification)).dump();
+            notice = mcp::detail::dump_json(nlohmann::json(std::move(notification)));
         }
         try {
             co_await write_to_session(*session, std::make_shared<const std::string>(std::move(notice)),
@@ -2171,7 +2172,7 @@ Task<std::string> Server::Impl::dispatch_request_wire(
                                   {},      std::move(principal)};
         if (enforce_lifecycle) {
             legacy_scope.related_request =
-                std::make_shared<const std::string>(json_msg.at("id").dump());
+                std::make_shared<const std::string>(mcp::detail::dump_json(json_msg.at("id")));
         }
 
         // A client that arrives after the previous one ended its session starts uninitialized.
@@ -2406,7 +2407,7 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
         // The handler answered with the id of the request that started it.
         auto answer = nlohmann::json::parse(outcome.wire);
         answer["id"] = json_msg.at("id");
-        co_return answer.dump();
+        co_return mcp::detail::dump_json(answer);
     }
     if (outcome.event == detail::MrtrEntry::Event::eMissingCapability) {
         detail::mrtr_abandon(entry);
@@ -3280,7 +3281,7 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
         message["jsonrpc"] = "2.0";
         message["method"] = "notifications/subscriptions/acknowledged";
         message["params"] = std::move(params);
-        acknowledgment = std::make_shared<const std::string>(message.dump());
+        acknowledgment = std::make_shared<const std::string>(mcp::detail::dump_json(message));
     }
 
     {
@@ -3347,7 +3348,7 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
         message["jsonrpc"] = "2.0";
         message["method"] = "notifications/cancelled";
         message["params"] = std::move(params);
-        cancellation = std::make_shared<const std::string>(message.dump());
+        cancellation = std::make_shared<const std::string>(mcp::detail::dump_json(message));
     }
     co_await listener->sink(*closing);
     co_await listener->sink(*cancellation);
@@ -3457,7 +3458,7 @@ Task<void> Server::Impl::notify_listeners(ListenTopic topic, std::shared_ptr<con
             message["jsonrpc"] = "2.0";
             message["method"] = std::string(method);
             message["params"] = std::move(params);
-            wire = std::make_shared<const std::string>(message.dump());
+            wire = std::make_shared<const std::string>(mcp::detail::dump_json(message));
         }
         if (!listener->deliver_or_defer(wire)) {
             continue;
@@ -3593,13 +3594,14 @@ Task<std::string> Server::Impl::handle_complete_wire(const nlohmann::json& json_
 }
 
 std::string Server::Impl::make_result_wire(const RequestId& id, nlohmann::json result) {
-    // The members JSONRPCResultResponse serializes, with the result moved in: its to_json takes the
-    // response by const reference and would copy the whole result.
-    nlohmann::json response = nlohmann::json::object();
-    response["id"] = id;
-    response["jsonrpc"] = "2.0";
-    response["result"] = std::move(result);
-    return response.dump();
+    // The text JSONRPCResultResponse serializes to, members in the order nlohmann::json sorts them,
+    // written around the result rather than moving it into a response object.
+    std::string wire = R"({"id":)";
+    detail::append_json(wire, nlohmann::json(id));
+    wire += R"(,"jsonrpc":"2.0","result":)";
+    detail::append_json(wire, result);
+    wire += '}';
+    return wire;
 }
 
 std::string Server::Impl::make_result_wire(const RequestId& id, const RequestScope& scope,
@@ -3640,7 +3642,7 @@ std::string Server::Impl::make_error_wire(const RequestId& id, int code, std::st
     JSONRPCErrorResponse response;
     response.id = id;
     response.error = std::move(error);
-    return nlohmann::json(std::move(response)).dump();
+    return mcp::detail::dump_json(nlohmann::json(std::move(response)));
 }
 
 std::string Server::Impl::make_error_wire(const RequestId& id, int code, std::string message,
@@ -3652,7 +3654,7 @@ std::string Server::Impl::make_error_wire(const RequestId& id, int code, std::st
     JSONRPCErrorResponse response;
     response.id = id;
     response.error = std::move(error);
-    return nlohmann::json(std::move(response)).dump();
+    return mcp::detail::dump_json(nlohmann::json(std::move(response)));
 }
 
 std::vector<std::string> Server::Impl::supported_versions() const {
@@ -3690,7 +3692,7 @@ Task<void> Server::Impl::send_notification(const std::string& method,
         JSONRPCNotification notification;
         notification.method = method;
         notification.params = params;
-        wire = nlohmann::json(std::move(notification)).dump();
+        wire = mcp::detail::dump_json(nlohmann::json(std::move(notification)));
     }
     co_await session->writer->write_message(wire);
 }
@@ -3770,7 +3772,7 @@ Task<void> Server::Impl::notify_resource_updated_on_strand(std::shared_ptr<Sessi
     notification.params = std::move(p);
 
     nlohmann::json json_msg = std::move(notification);
-    co_await session->writer->write_message(json_msg.dump());
+    co_await session->writer->write_message(mcp::detail::dump_json(json_msg));
 }
 
 Task<nlohmann::json> Server::Impl::call_through_middleware(const TypeErasedHandler& final_handler,

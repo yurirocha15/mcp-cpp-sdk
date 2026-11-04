@@ -2,6 +2,7 @@
 #include "../detail/spawn_awaitable.hpp"
 #include "../detail/strand_executor.hpp"
 
+#include <mcp/detail/json_dump.hpp>
 #include <mcp/transport/memory.hpp>
 
 #include <boost/asio/co_spawn.hpp>
@@ -87,7 +88,7 @@ struct MemoryTransportState {
         if (auto* raw = std::get_if<std::string>(&message.body)) {
             return std::move(*raw);
         }
-        return std::get<nlohmann::json>(message.body).dump();
+        return mcp::detail::dump_json(std::get<nlohmann::json>(message.body));
     }
 
     static nlohmann::json as_json(Message message) {

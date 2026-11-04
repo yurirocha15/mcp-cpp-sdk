@@ -1,5 +1,6 @@
 #include <mcp/protocol/schema.hpp>
 
+#include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/regex.hpp>
 #include "../detail/diagnostic_text.hpp"
 #include "native_schema.hpp"
@@ -440,7 +441,7 @@ std::optional<std::string> cache_key(const nlohmann::json& schema, const SchemaO
                       std::to_string(options.max_evaluation_work) + ',' +
                       std::to_string(options.max_pattern_instructions) + '\n';
     try {
-        key += schema.dump();
+        key += mcp::detail::dump_json(schema);
     } catch (const nlohmann::json::exception&) {
         return std::nullopt;
     }
