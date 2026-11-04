@@ -464,6 +464,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - Registering a tool looks for `x-mcp-header` annotations without building
   the JSON Pointer of every member of its input schema; the location is built
   only along the path walked and named only in a refusal.
+- `StreamableHttpSessionManager` learns that a session's `initialize`
+  succeeded from the scan that routes its answer instead of parsing the
+  answer a second time.
 
 ### Removed
 

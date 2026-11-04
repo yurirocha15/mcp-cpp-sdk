@@ -11,6 +11,7 @@ struct JsonRpcEnvelope {
     /// Raw text of the `id` value, such as `7` or `"req-1"`; empty when the member is absent.
     std::string_view id;
     bool has_result_or_error{false};
+    /// Whether the message has a `result` member, which only a successful response has.
     bool has_result{false};
 };
 
@@ -107,7 +108,10 @@ inline std::optional<JsonRpcEnvelope> scan_jsonrpc_envelope(std::string_view tex
         }
         if (key == "id") {
             envelope.id = text.substr(pos, value_end - pos);
-        } else if (key == "result" || key == "error") {
+        } else if (key == "result") {
+            envelope.has_result_or_error = true;
+            envelope.has_result = true;
+        } else if (key == "error") {
             envelope.has_result_or_error = true;
             envelope.has_result = key == "result";
         }

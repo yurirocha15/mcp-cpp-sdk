@@ -1986,9 +1986,14 @@ struct StreamableHttpSessionManager::Impl {
                                              StreamCounters& counters) {
         // Routing needs only the id and whether a result or error is present, so the message is
         // scanned rather than parsed; the id alone is parsed, to key it as its request was keyed.
+        // Until a message with a result has gone by, the session's initialize has not succeeded.
+        const bool established = session->established.load(std::memory_order_acquire);
         bool is_response = false;
         std::string request_id_key;
         if (const auto envelope = detail::scan_jsonrpc_envelope(message)) {
+            if (!established) {
+                session->established.store(envelope->has_result, std::memory_order_release);
+            }
             is_response = !envelope->id.empty() && envelope->has_result_or_error;
             if (is_response) {
                 const auto id = nlohmann::json::parse(envelope->id, nullptr, false);
@@ -1999,6 +2004,12 @@ struct StreamableHttpSessionManager::Impl {
             }
         } else {
             const auto message_json = nlohmann::json::parse(message, nullptr, false);
+            if (!established) {
+                // The scan declined this message, so it is read with the limits of peer input.
+                const auto parsed = detail::parse_peer_json(message);
+                session->established.store(parsed.is_object() && parsed.contains("result"),
+                                           std::memory_order_release);
+            }
             if (message_json.is_discarded() || !message_json.is_object()) {
                 return;
             }
@@ -2098,19 +2109,6 @@ struct StreamableHttpSessionManager::Impl {
                     *session->client_transport);
                 if (!message) {
                     break;
-                }
-                if (!session->established.load(std::memory_order_acquire)) {
-                    // The server's own message, read without the depth limit on peer input: an
-                    // initialize result nested deeper than a peer may send still establishes the
-                    // session its client was given.
-                    bool answered = false;
-                    if (const auto envelope = detail::scan_jsonrpc_envelope(message->message)) {
-                        answered = envelope->has_result;
-                    } else {
-                        const auto parsed = detail::parse_peer_json(message->message);
-                        answered = parsed.is_object() && parsed.contains("result");
-                    }
-                    session->established.store(answered, std::memory_order_release);
                 }
                 dispatch_response_to_pending(session.get(), std::move(message->message),
                                              json_only_mode->load(std::memory_order_acquire),

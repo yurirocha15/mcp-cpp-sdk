@@ -33,6 +33,7 @@ TEST(JsonRpcEnvelopeTest, ReportsNoIdForANotification) {
     ASSERT_TRUE(scan.has_value());
     EXPECT_TRUE(scan->id.empty());
     EXPECT_FALSE(scan->has_result_or_error);
+    EXPECT_FALSE(scan->has_result);
 }
 
 TEST(JsonRpcEnvelopeTest, ReportsARequestAsNotAResponse) {
