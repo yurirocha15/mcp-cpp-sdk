@@ -630,9 +630,11 @@ TEST_F(ServerCoreTest, InvalidJsonRpcEnvelopesAreRejected) {
     }
 }
 
-TEST_F(ServerCoreTest, EachEnvelopeRefusalNamesWhatIsWrong) {
-    mcp::Server server({"test-server", "1.0"}, mcp::ServerCapabilities{});
-    const std::vector<std::pair<nlohmann::json, std::string>> cases = {
+namespace {
+
+/// Request envelopes the server refuses, each with the message its -32600 answer carries.
+std::vector<std::pair<nlohmann::json, std::string>> refused_envelopes() {
+    return {
         {{{"id", 1}, {"method", "ping"}}, R"(jsonrpc must be "2.0")"},
         {{{"jsonrpc", 2.0}, {"id", 1}, {"method", "ping"}}, R"(jsonrpc must be "2.0")"},
         {{{"jsonrpc", "2.0 "}, {"id", 1}, {"method", "ping"}}, R"(jsonrpc must be "2.0")"},
@@ -649,7 +651,13 @@ TEST_F(ServerCoreTest, EachEnvelopeRefusalNamesWhatIsWrong) {
         {{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "ping"}, {"params", nlohmann::json::array()}},
          "MCP request params must be an object"},
     };
-    for (const auto& [request, message] : cases) {
+}
+
+}  // namespace
+
+TEST_F(ServerCoreTest, EachEnvelopeRefusalNamesWhatIsWrong) {
+    mcp::Server server({"test-server", "1.0"}, mcp::ServerCapabilities{});
+    for (const auto& [request, message] : refused_envelopes()) {
         std::string wire;
         boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(request),
                               [&wire](const std::exception_ptr& error, std::string answer) {
@@ -677,6 +685,65 @@ TEST_F(ServerCoreTest, EachEnvelopeRefusalNamesWhatIsWrong) {
     io_ctx_.restart();
     io_ctx_.run();
     EXPECT_TRUE(nlohmann::json::parse(wire).contains("result")) << wire;
+}
+
+TEST_F(ServerCoreTest, SessionRefusesEachInvalidEnvelopeAndServesBothEras) {
+    mcp::Server server({"test-server", "1.0"}, mcp::ServerCapabilities{});
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    const auto refused = refused_envelopes();
+    const std::size_t expected = refused.size() + 2;
+
+    std::vector<nlohmann::json> responses;
+    raw_transport->set_on_write([&responses, raw_transport, expected](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        if (responses.size() == expected) {
+            raw_transport->close();
+        }
+    });
+    for (const auto& [request, message] : refused) {
+        raw_transport->enqueue_message(request.dump());
+    }
+    // A 2026-07-28 request, served without initialize, then a legacy one.
+    const nlohmann::json discover = {
+        {"jsonrpc", "2.0"},
+        {"id", "modern"},
+        {"method", "server/discover"},
+        {"params",
+         {{"_meta",
+           {{"io.modelcontextprotocol/protocolVersion", "2026-07-28"},
+            {"io.modelcontextprotocol/clientInfo", {{"name", "probe-client"}, {"version", "0.1"}}},
+            {"io.modelcontextprotocol/clientCapabilities", nlohmann::json::object()}}}}}};
+    raw_transport->enqueue_message(discover.dump());
+    raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"}, {"id", "legacy"}, {"method", "ping"}}.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), expected);
+    // Requests of a session can be answered in any order, so the answers are matched by content.
+    std::vector<std::string> refusal_messages;
+    std::vector<std::string> expected_messages;
+    for (const auto& [request, message] : refused) {
+        expected_messages.push_back(message);
+    }
+    for (auto& response : responses) {
+        if (response["id"] == "modern") {
+            EXPECT_EQ(response["result"]["resultType"], "complete") << response.dump();
+        } else if (response["id"] == "legacy") {
+            EXPECT_EQ(response["result"], nlohmann::json::object()) << response.dump();
+        } else {
+            EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_REQUEST) << response.dump();
+            refusal_messages.push_back(response["error"]["message"].get<std::string>());
+        }
+    }
+    std::sort(refusal_messages.begin(), refusal_messages.end());
+    std::sort(expected_messages.begin(), expected_messages.end());
+    EXPECT_EQ(refusal_messages, expected_messages);
+    EXPECT_FALSE(server.is_initialized());
 }
 
 TEST_F(ServerCoreTest, MalformedAndNonObjectMessagesReturnErrorsThenAcceptValidRequest) {

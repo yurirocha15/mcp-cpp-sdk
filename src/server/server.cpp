@@ -1135,13 +1135,16 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                       MessageSender notifications,
                                       std::function<void(std::function<void()>)> watch_cancel,
                                       std::shared_ptr<const std::string> principal);
+    /// @p checked_modern, when set, says that the caller found the envelope valid and whether the
+    /// request names its protocol version in _meta.
     Task<std::string> dispatch_request_wire(
         nlohmann::json json_msg, bool enforce_lifecycle,
         std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
         std::shared_ptr<const detail::ParamHeaderValues> param_headers = nullptr,
         MessageSender notifications = {}, std::function<void(std::function<void()>)> watch_cancel = {},
         std::shared_ptr<const std::string> principal = nullptr,
-        std::shared_ptr<void> in_flight = nullptr, CountAgain count_again = {});
+        std::shared_ptr<void> in_flight = nullptr, CountAgain count_again = {},
+        std::optional<bool> checked_modern = std::nullopt);
     Task<std::string> dispatch_modern_wire(const nlohmann::json& json_msg, std::string_view method,
                                            RequestScope scope);
     /// Serves a 2026-07-28 tools/call, prompts/get or resources/read, whose handler may ask the
@@ -2274,11 +2277,15 @@ Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg,
     auto cancelled = std::make_shared<std::atomic<bool>>(false);
     std::string request_id_str;
     bool modern = false;
+    // Set for a valid envelope, which dispatch_request_wire() then neither checks nor looks up the
+    // protocol version of again.
+    std::optional<bool> checked_modern;
     if (validate_request_envelope(json_msg) == nullptr) {
         request_id_str = json_msg.at("id").get<RequestId>().correlation_key();
         session->in_flight[request_id_str] = cancelled;
         modern = detail::is_modern_request(
             json_msg, json_msg.at("method").get_ref<const nlohmann::json::string_t&>());
+        checked_modern = modern;
     }
     const auto forget = [&session, &request_id_str, &cancelled] {
         // A later request reusing the id replaced the entry; that one is not ours to remove.
@@ -2301,7 +2308,8 @@ Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg,
             return std::make_shared<CountedSessionWork>(std::move(owner), size);
         };
         wire = co_await dispatch_request_wire(std::move(json_msg), true, cancelled, nullptr, {}, {},
-                                              std::move(principal), nullptr, std::move(count_again));
+                                              std::move(principal), nullptr, std::move(count_again),
+                                              checked_modern);
     } catch (...) {
         forget();
         throw;
@@ -2328,12 +2336,12 @@ Task<std::string> Server::Impl::dispatch_request_wire(
     std::shared_ptr<const detail::ParamHeaderValues> param_headers, MessageSender notifications,
     std::function<void(std::function<void()>)> watch_cancel,
     std::shared_ptr<const std::string> principal, std::shared_ptr<void> in_flight,
-    CountAgain count_again) {
+    CountAgain count_again, std::optional<bool> checked_modern) {
     // A handler that outlives the request (a parked multi round-trip request) keeps the message
     // through this pointer; moving the message into it copies nothing.
     const auto message = std::make_shared<const nlohmann::json>(std::move(incoming));
     const nlohmann::json& json_msg = *message;
-    {
+    if (!checked_modern) {
         const char* validation_error = validate_request_envelope(json_msg);
         if (validation_error != nullptr) {
             co_return make_invalid_request_wire(json_msg, validation_error);
@@ -2351,7 +2359,7 @@ Task<std::string> Server::Impl::dispatch_request_wire(
     try {
         // A request naming its protocol version in _meta is served on its own, without
         // initialize, and leaves the lifecycle and log level of a session untouched.
-        if (detail::is_modern_request(json_msg, method)) {
+        if (checked_modern ? *checked_modern : detail::is_modern_request(json_msg, method)) {
             // [gcc11-sso: named-aggregate-arg] DO NOT pass RequestScope{...} inside the co_await.
             RequestScope scope{nullptr,
                                std::move(cancelled),

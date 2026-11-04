@@ -528,6 +528,16 @@ Versioning; a `0.x` version is a stable release unless its version has an
   tool result's text.
 - `Server` checks a request's JSON-RPC envelope looking each member up once,
   and compares `jsonrpc` with `"2.0"` without building a JSON value for it.
+- A synchronous tool, resource or prompt handler registered with
+  `add_tool()`, `add_resource()`, `add_resource_template()` or `add_prompt()`
+  is called inside the coroutine that serves its request instead of through
+  a second one, and one whose input type is `nlohmann::json` and that takes
+  it by `const` reference is given the request's arguments instead of a copy.
+  `detail::ensure_async_handler()` is removed; `detail::wrap_handler()` takes
+  all four handler signatures.
+- `Server` checks the envelope of a request read from its session, and looks
+  up whether the request names its protocol version in `_meta`, once each
+  instead of twice.
 
 ### Removed
 
