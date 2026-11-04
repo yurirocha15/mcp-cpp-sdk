@@ -66,6 +66,12 @@ Hand that header to the manager and it runs the whole exchange:
 challenge to act on, and throws when discovery is refused by the policy or the
 authorization response is rejected.
 
+A manager serves the one server its ``server_url`` names. The transport sends
+the manager's tokens to whatever server ``inner`` talks to, and does not compare
+that with ``server_url``, which may use ``https`` while an ``HttpClientTransport``
+speaks plain HTTP. Give each server its own manager, and wrap only transports
+that talk to that server with it.
+
 .. _oauth-what-the-manager-validates:
 
 What the manager validates

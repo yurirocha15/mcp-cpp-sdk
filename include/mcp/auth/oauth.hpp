@@ -861,7 +861,9 @@ class MCP_API OAuthClientTransport final : public ITransport {
      * @brief Construct an authenticated transport wrapper.
      *
      * @param inner Underlying transport used for MCP message exchange.
-     * @param authenticator Authenticator used to retrieve and refresh tokens.
+     * @param authenticator Authenticator used to retrieve and refresh tokens. Its tokens go to the
+     *        server @p inner talks to, which is not compared with any URL the authenticator holds,
+     *        so it must be the authenticator for that server alone.
      */
     OAuthClientTransport(std::shared_ptr<ITransport> inner,
                          std::shared_ptr<Authenticator> authenticator);
@@ -870,7 +872,9 @@ class MCP_API OAuthClientTransport final : public ITransport {
      * @brief Construct an authenticated transport wrapper with replay-correlation limits.
      *
      * @param inner Underlying transport used for MCP message exchange.
-     * @param authenticator Authenticator used to retrieve and refresh tokens.
+     * @param authenticator Authenticator used to retrieve and refresh tokens. Its tokens go to the
+     *        server @p inner talks to, which is not compared with any URL the authenticator holds,
+     *        so it must be the authenticator for that server alone.
      * @param options Bounds and TTL for retaining outstanding request wires.
      */
     OAuthClientTransport(std::shared_ptr<ITransport> inner,
