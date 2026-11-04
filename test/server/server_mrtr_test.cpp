@@ -17,6 +17,8 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -175,6 +177,13 @@ class MrtrTest : public ::testing::Test {
                                          co_await ctx.report_progress(1, 2);
                                          co_return json{{"done", true}};
                                      });
+        server->add_tool<json, json>(
+            "meta_across_input", "Reads its request's _meta before and after asking",
+            json{{"type", "object"}}, [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                const json before = *ctx.request_meta()->meta;
+                co_await ctx.elicit(form_elicitation("Name?"));
+                co_return json{{"before", before}, {"after", *ctx.request_meta()->meta}};
+            });
         server->add_tool<json, json>("ask_catching", "Swallows the abandonment of its question",
                                      json{{"type", "object"}},
                                      [this](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
@@ -962,6 +971,100 @@ TEST_F(MrtrTest, HandlerSeesRetryStreamForProgress) {
     ASSERT_EQ(notifications.size(), 1u);
     EXPECT_EQ(notifications[0]["method"], "notifications/progress");
     EXPECT_EQ(notifications[0]["params"]["progressToken"], "retry-token");
+}
+
+// The handler's _meta is shared with the request that carried it, and the parked handler keeps it
+// after that request is answered: the retry, which carries other _meta, does not replace it.
+TEST_F(MrtrTest, ParkedHandlerKeepsTheMetaOfItsFirstRequest) {
+    json first;
+    json second;
+    json first_meta;
+    run([&]() -> mcp::Task<void> {
+        auto request = call_tool(1, "meta_across_input");
+        request["params"]["_meta"]["example.com/trace"] = "first";
+        first_meta = request["params"]["_meta"];
+        first = co_await send(request);
+        auto again = retry(std::move(request), 2, first["result"]["requestState"],
+                           answer(only_key(first), accept("x")));
+        again["params"]["_meta"]["example.com/trace"] = "second";
+        second = co_await send(std::move(again));
+    });
+
+    expect_input_required(first);
+    ASSERT_TRUE(second.contains("result")) << second;
+    EXPECT_EQ(second["result"]["structuredContent"]["before"], first_meta) << second;
+    EXPECT_EQ(second["result"]["structuredContent"]["after"], first_meta) << second;
+}
+
+// A handler served without parking reports progress under the token of its request's _meta,
+// written as the client wrote it.
+TEST_F(MrtrTest, InlineProgressCarriesTheTokenOfTheSharedMeta) {
+    // Parsed from JSON, so the first token is UTF-8 whatever the compiler's execution charset is.
+    const std::vector<json> tokens = {json::parse(R"("t\u00f6ken-\u2603")"), json(9007199254740993ULL),
+                                      json(-7)};
+    std::vector<std::string> notifications;
+    run([&]() -> mcp::Task<void> {
+        for (std::size_t index = 0; index < tokens.size(); ++index) {
+            auto request = call_tool(static_cast<int>(index) + 1, "quiet_progress", json::object(),
+                                     json::object());
+            request["params"]["_meta"]["progressToken"] = tokens[index];
+            mcp::RequestContext context;
+            context.notifications = [&notifications](std::string_view message) -> mcp::Task<void> {
+                notifications.emplace_back(message);
+                co_return;
+            };
+            const auto response =
+                co_await send_with(server_.get(), std::move(request), std::move(context));
+            EXPECT_EQ(response["result"]["resultType"], "complete") << response;
+        }
+    });
+
+    ASSERT_EQ(notifications.size(), tokens.size());
+    for (std::size_t index = 0; index < tokens.size(); ++index) {
+        const auto notification = json::parse(notifications[index]);
+        EXPECT_EQ(notification["method"], "notifications/progress");
+        EXPECT_EQ(notification["params"]["progressToken"], tokens[index]) << notifications[index];
+        EXPECT_NE(notifications[index].find("\"progressToken\":" + tokens[index].dump()),
+                  std::string::npos)
+            << notifications[index];
+    }
+}
+
+// Middleware and handler see one _meta, the request's own, and only through a const view.
+TEST_F(MrtrTest, MiddlewareAndHandlerShareTheRequestsMeta) {
+    static_assert(std::is_const_v<
+                  std::remove_reference_t<decltype(*std::declval<mcp::RequestMetadata&>().meta)>>);
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    mcp::Server server(mcp::Implementation{"meta", "1.0"}, caps);
+    const nlohmann::json* seen_by_middleware = nullptr;
+    const nlohmann::json* seen_by_handler = nullptr;
+    json handler_copy;
+    server.use(
+        [&](mcp::Context& ctx, const json& params, mcp::TypeErasedHandler next) -> mcp::Task<json> {
+            seen_by_middleware = ctx.request_meta()->meta.get();
+            co_return co_await next(ctx, params);
+        });
+    server.add_tool<json, json>("read", "Reads _meta", json{{"type", "object"}},
+                                [&](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                    seen_by_handler = ctx.request_meta()->meta.get();
+                                    handler_copy = *ctx.request_meta()->meta;
+                                    co_return json{{"ok", true}};
+                                });
+    auto request = call_tool(1, "read", json::object(), json::object());
+    request["params"]["_meta"]["traceparent"] =
+        "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+    const auto sent_meta = request["params"]["_meta"];
+    json response;
+    run([&]() -> mcp::Task<void> {
+        mcp::RequestContext context;
+        response = co_await send_with(&server, std::move(request), std::move(context));
+    });
+
+    ASSERT_TRUE(response.contains("result")) << response;
+    ASSERT_NE(seen_by_handler, nullptr);
+    EXPECT_EQ(seen_by_middleware, seen_by_handler);
+    EXPECT_EQ(handler_copy, sent_meta);
 }
 
 TEST_F(MrtrTest, HandlerCatchingAbandonmentIsDiscardedAndCounted) {
