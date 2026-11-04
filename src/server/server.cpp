@@ -929,11 +929,15 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
 
     std::vector<Tool> tools;
     /// The tools as JSON text, comma-separated, in registration order: what a tools/list that
-    /// lists them all sends, without building the tools again. Empty when a tool could not be
-    /// serialized, in which case the list is built (and fails) per request.
-    std::string tools_text;
-    bool tools_text_valid{true};
-    void remember_tool_text(const Tool& tool);
+    /// lists them all sends, without building the tools again. Built by the first such list after
+    /// a registration, since a server built for one session may never be asked for its tools.
+    /// Null when a tool could not be serialized, in which case the list is built (and fails) per
+    /// request.
+    mutable std::mutex tools_text_mutex;
+    std::shared_ptr<const std::string> tools_text;  // guarded by tools_text_mutex
+    bool tools_text_built{false};                   // guarded by tools_text_mutex
+    void forget_tools_text();
+    [[nodiscard]] std::shared_ptr<const std::string> listed_tools_text();
     std::map<std::string, ToolRegistration, std::less<>> tool_handlers;
     ToolValidationOptions tool_validation;
     /// Where tool handlers run, when that is not the executor the server runs on.
@@ -1211,20 +1215,30 @@ Server::~Server() {
     reset_session();
 }
 
-void Server::Impl::remember_tool_text(const Tool& tool) {
-    if (!tools_text_valid) {
-        return;
-    }
-    try {
-        const auto text = nlohmann::json(tool).dump();
-        if (!tools_text.empty()) {
-            tools_text += ',';
+void Server::Impl::forget_tools_text() {
+    std::lock_guard lock(tools_text_mutex);
+    tools_text.reset();
+    tools_text_built = false;
+}
+
+std::shared_ptr<const std::string> Server::Impl::listed_tools_text() {
+    std::lock_guard lock(tools_text_mutex);
+    if (!tools_text_built) {
+        tools_text_built = true;
+        try {
+            std::string text;
+            for (const auto& tool : tools) {
+                if (!text.empty()) {
+                    text += ',';
+                }
+                text += nlohmann::json(tool).dump();
+            }
+            tools_text = std::make_shared<const std::string>(std::move(text));
+        } catch (const nlohmann::json::exception&) {
+            tools_text.reset();
         }
-        tools_text += text;
-    } catch (const nlohmann::json::exception&) {
-        tools_text_valid = false;
-        tools_text.clear();
     }
+    return tools_text;
 }
 
 void Server::register_tool(const Tool& tool, const std::string& name, TypeErasedHandler handler,
@@ -1233,7 +1247,7 @@ void Server::register_tool(const Tool& tool, const std::string& name, TypeErased
         throw std::invalid_argument("Duplicate tool registration: " + name);
     }
     auto schemas = compile_tool_schemas(tool);
-    impl_->remember_tool_text(tool);
+    impl_->forget_tools_text();
     impl_->tools.push_back(tool);
     impl_->tool_handlers.emplace(
         name, Impl::ToolRegistration{std::move(handler), result_mode, std::move(schemas)});
@@ -1245,7 +1259,7 @@ void Server::register_tool(Tool&& tool, TypeErasedHandler handler, detail::ToolR
     }
     auto schemas = compile_tool_schemas(tool);
     auto name = tool.name;
-    impl_->remember_tool_text(tool);
+    impl_->forget_tools_text();
     impl_->tools.push_back(std::move(tool));
     impl_->tool_handlers.emplace(
         std::move(name), Impl::ToolRegistration{std::move(handler), result_mode, std::move(schemas)});
@@ -3036,7 +3050,9 @@ Task<std::string> Server::Impl::handle_tools_list_wire(const nlohmann::json& jso
     }
 
     auto [begin, end, next_cursor] = *page;
-    if (tools_text_valid && begin == 0 && end == tools.size() && !next_cursor) {
+    const auto listed_text =
+        begin == 0 && end == tools.size() && !next_cursor ? listed_tools_text() : nullptr;
+    if (listed_text) {
         // Every tool is listed: the tools are spliced into the answer as the text they serialize
         // to, in place of a copy of each. The placeholder is one string no other member of the
         // result can equal, and the splice is made only if it is found exactly once.
@@ -3048,10 +3064,10 @@ Task<std::string> Server::Impl::handle_tools_list_wire(const nlohmann::json& jso
         const auto first = wire.find(placeholder);
         if (first != std::string::npos && wire.rfind(placeholder) == first) {
             std::string spliced;
-            spliced.reserve(wire.size() + tools_text.size() + 2);
+            spliced.reserve(wire.size() + listed_text->size() + 2);
             spliced.append(wire, 0, first);
             spliced += '[';
-            spliced += tools_text;
+            spliced += *listed_text;
             spliced += ']';
             spliced.append(wire, first + placeholder.size(), std::string::npos);
             co_return spliced;

@@ -579,6 +579,70 @@ TEST(ServerToolSchema, RefusedToolIsNotRegistered) {
 
 namespace {
 
+/// The answer to a tools/list sent straight to @p server, outside any session.
+nlohmann::json list_tools_directly(mcp::Server& server) {
+    boost::asio::io_context io_ctx;
+    nlohmann::json response;
+    boost::asio::co_spawn(io_ctx,
+                          server.dispatch_request_direct({{"jsonrpc", "2.0"},
+                                                          {"id", 1},
+                                                          {"method", "tools/list"},
+                                                          {"params", nlohmann::json::object()}}),
+                          [&response](std::exception_ptr error, std::string wire) {
+                              EXPECT_EQ(error, nullptr);
+                              if (!error) {
+                                  response = nlohmann::json::parse(wire);
+                              }
+                          });
+    io_ctx.run();
+    return response;
+}
+
+mcp::Tool named_tool(std::string name, std::string description = "a tool") {
+    mcp::Tool tool;
+    tool.name = std::move(name);
+    tool.description = std::move(description);
+    tool.inputSchema = {{"type", "object"}, {"properties", {{"n", {{"type", "integer"}}}}}};
+    return tool;
+}
+
+}  // namespace
+
+TEST(ServerToolsList, ListsEachRegisteredToolAsItSerializes) {
+    auto server = make_tool_server();
+    EXPECT_EQ(list_tools_directly(server)["result"]["tools"], nlohmann::json::array());
+
+    const auto first = named_tool("first");
+    server.add_raw_tool(first, raw_result);
+    EXPECT_EQ(list_tools_directly(server)["result"]["tools"], nlohmann::json::array({first}));
+
+    // A tool registered after a list is in the next one, after the tools already there.
+    auto second = named_tool("second");
+    second.outputSchema = nlohmann::json{{"type", "object"}};
+    server.add_raw_tool(second, raw_result);
+    EXPECT_EQ(list_tools_directly(server)["result"]["tools"], nlohmann::json::array({first, second}));
+    EXPECT_EQ(list_tools_directly(server)["result"]["tools"], nlohmann::json::array({first, second}));
+}
+
+TEST(ServerToolsList, ToolThatCannotBeSerializedFailsEveryList) {
+    auto server = make_tool_server();
+    server.add_raw_tool(named_tool("plain"), raw_result);
+    server.add_raw_tool(named_tool("broken", std::string("\xff\xfe")), raw_result);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto response = list_tools_directly(server);
+        ASSERT_TRUE(response.contains("error")) << response.dump();
+        EXPECT_EQ(response["error"]["code"], mcp::g_INTERNAL_ERROR);
+    }
+
+    // A later registration builds the list again, and it still holds the tool.
+    server.add_raw_tool(named_tool("later"), raw_result);
+    const auto response = list_tools_directly(server);
+    ASSERT_TRUE(response.contains("error")) << response.dump();
+    EXPECT_EQ(response["error"]["code"], mcp::g_INTERNAL_ERROR);
+}
+
+namespace {
+
 const nlohmann::json& order_schema() {
     static const nlohmann::json schema = nlohmann::json::parse(R"({
         "type": "object",

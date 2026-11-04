@@ -438,8 +438,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   Other requests keep the parked-handler path.
 - A server without middleware calls a tool with the arguments as they arrived,
   without copying the call's parameters or the registered handler, and
-  `tools/list` sends the tools it serialized at registration when it lists
-  them all. A handler's `CallToolResult` is moved into the response, and a
+  `tools/list` sends the tools as the text they serialize to when it lists
+  them all. That text is built by the first such list after a registration,
+  not by each registration, so a server built for a session that never lists
+  its tools never serializes them. A handler's `CallToolResult` is moved into the response, and a
   result of type `CallToolResult` is no longer decoded a second time to
   validate it; `to_json` has overloads that take a `CallToolResult`,
   `ContentBlock` or `TextContent` by rvalue and move what they hold.
