@@ -494,6 +494,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   session to its HTTP request passes over string values eight bytes at a
   time to the next quote or backslash, instead of testing every byte of a
   tool result's text.
+- `Server` checks a request's JSON-RPC envelope looking each member up once,
+  and compares `jsonrpc` with `"2.0"` without building a JSON value for it.
 
 ### Removed
 

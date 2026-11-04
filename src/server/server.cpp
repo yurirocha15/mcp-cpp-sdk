@@ -569,24 +569,33 @@ bool has_error_member(const nlohmann::json& message) {
     return message.contains("error") && !message.at("error").is_null();
 }
 
+/// Whether @p message, an object, has `"jsonrpc": "2.0"`.
+bool has_jsonrpc_2(const nlohmann::json& message) {
+    const auto version = message.find("jsonrpc");
+    return version != message.end() && version->is_string() &&
+           version->get_ref<const nlohmann::json::string_t&>() == "2.0";
+}
+
+// Runs on every request, twice on the way to its handler, so each member is looked up once.
 const char* validate_request_envelope(const nlohmann::json& message) {
     if (!message.is_object()) {
         return "JSON-RPC request must be an object";
     }
-    if (!message.contains("jsonrpc") || !message.at("jsonrpc").is_string() ||
-        message.at("jsonrpc") != "2.0") {
+    if (!has_jsonrpc_2(message)) {
         return "jsonrpc must be \"2.0\"";
     }
-    if (!has_valid_request_id(message)) {
+    const auto end = message.end();
+    if (const auto id = message.find("id"); id == end || !detail::is_request_id(*id)) {
         return "JSON-RPC request id must be a string or integer";
     }
-    if (!message.contains("method") || !message.at("method").is_string()) {
+    if (const auto method = message.find("method"); method == end || !method->is_string()) {
         return "JSON-RPC request method must be a string";
     }
-    if (message.contains("result") || has_error_member(message)) {
+    if (const auto error = message.find("error");
+        message.contains("result") || (error != end && !error->is_null())) {
         return "JSON-RPC request must not contain result or error";
     }
-    if (message.contains("params") && !message.at("params").is_object()) {
+    if (const auto params = message.find("params"); params != end && !params->is_object()) {
         return "MCP request params must be an object";
     }
     return nullptr;

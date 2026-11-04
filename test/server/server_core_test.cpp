@@ -32,6 +32,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -627,6 +628,55 @@ TEST_F(ServerCoreTest, InvalidJsonRpcEnvelopesAreRejected) {
     for (const auto& response : responses) {
         EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_REQUEST);
     }
+}
+
+TEST_F(ServerCoreTest, EachEnvelopeRefusalNamesWhatIsWrong) {
+    mcp::Server server({"test-server", "1.0"}, mcp::ServerCapabilities{});
+    const std::vector<std::pair<nlohmann::json, std::string>> cases = {
+        {{{"id", 1}, {"method", "ping"}}, R"(jsonrpc must be "2.0")"},
+        {{{"jsonrpc", 2.0}, {"id", 1}, {"method", "ping"}}, R"(jsonrpc must be "2.0")"},
+        {{{"jsonrpc", "2.0 "}, {"id", 1}, {"method", "ping"}}, R"(jsonrpc must be "2.0")"},
+        {{{"jsonrpc", "2.0"}, {"id", 1.5}, {"method", "ping"}},
+         "JSON-RPC request id must be a string or integer"},
+        {{{"jsonrpc", "2.0"}, {"id", nullptr}, {"method", "ping"}},
+         "JSON-RPC request id must be a string or integer"},
+        {{{"jsonrpc", "2.0"}, {"id", 1}}, "JSON-RPC request method must be a string"},
+        {{{"jsonrpc", "2.0"}, {"id", 1}, {"method", 7}}, "JSON-RPC request method must be a string"},
+        {{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "ping"}, {"result", nullptr}},
+         "JSON-RPC request must not contain result or error"},
+        {{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "ping"}, {"error", {{"code", 1}}}},
+         "JSON-RPC request must not contain result or error"},
+        {{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "ping"}, {"params", nlohmann::json::array()}},
+         "MCP request params must be an object"},
+    };
+    for (const auto& [request, message] : cases) {
+        std::string wire;
+        boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(request),
+                              [&wire](const std::exception_ptr& error, std::string answer) {
+                                  if (!error) {
+                                      wire = std::move(answer);
+                                  }
+                              });
+        io_ctx_.restart();
+        io_ctx_.run();
+        const auto response = nlohmann::json::parse(wire);
+        EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_REQUEST) << request.dump();
+        EXPECT_EQ(response["error"]["message"], message) << request.dump();
+    }
+
+    // A null error is no error, so the request is served.
+    std::string wire;
+    boost::asio::co_spawn(io_ctx_,
+                          server.dispatch_request_direct(
+                              {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "ping"}, {"error", nullptr}}),
+                          [&wire](const std::exception_ptr& error, std::string answer) {
+                              if (!error) {
+                                  wire = std::move(answer);
+                              }
+                          });
+    io_ctx_.restart();
+    io_ctx_.run();
+    EXPECT_TRUE(nlohmann::json::parse(wire).contains("result")) << wire;
 }
 
 TEST_F(ServerCoreTest, MalformedAndNonObjectMessagesReturnErrorsThenAcceptValidRequest) {
