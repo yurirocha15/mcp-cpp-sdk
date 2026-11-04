@@ -624,6 +624,41 @@ TEST(ServerToolsList, ListsEachRegisteredToolAsItSerializes) {
     EXPECT_EQ(list_tools_directly(server)["result"]["tools"], nlohmann::json::array({first, second}));
 }
 
+// Servers that register the same schema share its compiled form and list the tool from it, so each
+// must still list the schemas it was given, written as given: 1 and 1.0 are different texts. The
+// listing of a page is built apart from the listing of every tool and is checked too.
+TEST(ServerToolsList, ListsTheSchemasEachServerWasGiven) {
+    const nlohmann::json whole = {{"type", "object"}, {"maxProperties", 1}};
+    const nlohmann::json fraction = {{"type", "object"}, {"maxProperties", 1.0}};
+    const nlohmann::json output = {{"type", "object"}, {"minProperties", 0}};
+    const auto handler = [](const nlohmann::json&) { return nlohmann::json::object(); };
+    const auto listed = [](mcp::Server& server, std::size_t index) {
+        return list_tools_directly(server)["result"]["tools"].at(index);
+    };
+
+    auto first = make_tool_server();
+    auto second = make_tool_server();
+    first.add_tool<nlohmann::json, nlohmann::json>("t", "d", whole, handler);
+    second.add_tool<nlohmann::json, nlohmann::json>("t", "d", fraction, output, handler);
+    second.add_tool("plain", "d", whole, handler);
+    EXPECT_EQ(listed(first, 0)["inputSchema"].dump(), whole.dump());
+    EXPECT_FALSE(listed(first, 0).contains("outputSchema"));
+    EXPECT_EQ(listed(second, 0)["inputSchema"].dump(), fraction.dump());
+    EXPECT_EQ(listed(second, 0)["outputSchema"].dump(), output.dump());
+    EXPECT_EQ(listed(second, 1)["inputSchema"].dump(), whole.dump());
+
+    auto raw = named_tool("raw");
+    raw.outputSchema = output;
+    second.add_raw_tool(raw, raw_result);
+    second.set_page_size(2);
+    const auto page = list_tools_directly(second)["result"];
+    ASSERT_TRUE(page.contains("nextCursor")) << page.dump();
+    EXPECT_EQ(page["tools"].at(0)["outputSchema"].dump(), output.dump());
+    EXPECT_EQ(page["tools"].at(1)["inputSchema"].dump(), whole.dump());
+    second.set_page_size(0);
+    EXPECT_EQ(listed(second, 2), nlohmann::json(raw));
+}
+
 TEST(ServerToolsList, ToolThatCannotBeSerializedFailsEveryList) {
     auto server = make_tool_server();
     server.add_raw_tool(named_tool("plain"), raw_result);

@@ -430,6 +430,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   with a live tool reuses the `x-mcp-header` annotations read from it, so a
   server factory that registers the same tools for every session reads each
   input schema's annotations once while sessions overlap.
+- `Server::add_tool()` no longer copies the input and output schemas it is
+  given into the registered tool; the server keeps each schema only in its
+  compiled form, which servers registering the same schema share, and
+  `tools/list` lists the schemas from it, written as they were given.
 - `StreamableHttpSessionManager::set_tool_executor()` now moves only the call
   of a tool, resource or prompt handler to that executor. A session's reading,
   parsing and answering of protocol messages run on the HTTP executor, and the

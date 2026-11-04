@@ -162,14 +162,15 @@ std::optional<nlohmann::json> argument_rejection(const CompiledSchema& schema,
     return nlohmann::json(make_tool_error_result(std::move(text)));
 }
 
-/// Compiles @p tool's schemas, refusing the tool when either is not a JSON Schema the SDK can use.
-/// Tool arguments are always objects, so the input schema must also declare `"type": "object"`,
-/// as the 2025-11-25 and 2026-07-28 schemas require, and its `x-mcp-header` annotations must meet
-/// the constraints 2026-07-28 sets on them.
-CompiledToolSchemas compile_tool_schemas(const Tool& tool) {
-    const auto refuse = [&tool](SchemaError::Category category, std::string_view field,
+/// Compiles the schemas of the tool @p name, refusing the tool when either is not a JSON Schema the
+/// SDK can use. Tool arguments are always objects, so the input schema must also declare
+/// `"type": "object"`, as the 2025-11-25 and 2026-07-28 schemas require, and its `x-mcp-header`
+/// annotations must meet the constraints 2026-07-28 sets on them.
+CompiledToolSchemas compile_tool_schemas(const std::string& name, const nlohmann::json& input_schema,
+                                         const nlohmann::json* output_schema) {
+    const auto refuse = [&name](SchemaError::Category category, std::string_view field,
                                 std::string_view problem) {
-        return SchemaError(category, "Tool '" + detail::sanitize_for_diagnostics(tool.name) + "' " +
+        return SchemaError(category, "Tool '" + detail::sanitize_for_diagnostics(name) + "' " +
                                          std::string(field) + ": " + std::string(problem));
     };
     const auto compile = [&](const nlohmann::json& schema, std::string_view field) {
@@ -184,30 +185,47 @@ CompiledToolSchemas compile_tool_schemas(const Tool& tool) {
     };
 
     // Checked before the schema is compiled, which reports a pattern it cannot use only once it
-    // has found no other problem.
-    if (!tool.inputSchema.is_object()) {
+    // has found no other problem; the same goes for the x-mcp-header annotations.
+    if (!input_schema.is_object()) {
         throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema", "must be a JSON object");
     }
-    const auto type = tool.inputSchema.find("type");
-    if (type == tool.inputSchema.end() || !type->is_string() ||
-        type->get_ref<const std::string&>() != "object") {
+    const auto type = input_schema.find("type");
+    if (type == input_schema.end() || *type != "object") {
         throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema",
                      R"(must declare "type": "object")");
     }
-    auto param_headers = tool_param_headers_cache().find(input);
+    std::optional<CompiledSchema> compiled;
+    std::optional<SchemaError> compile_error;
+    try {
+        compiled = CompiledSchema::compile(input_schema);
+    } catch (const SchemaError& error) {
+        compile_error = refuse(error.category(), "inputSchema", error.what());
+    }
+    std::shared_ptr<const ToolParamHeaders> param_headers;
+    if (compiled) {
+        param_headers = tool_param_headers_cache().find(*compiled);
+    }
     if (!param_headers) {
         try {
-            param_headers = std::make_shared<const ToolParamHeaders>(
-                ToolParamHeaders{input, detail::collect_param_headers(input.schema())});
+            auto headers = detail::collect_param_headers(input_schema);
+            if (compiled) {
+                param_headers = std::make_shared<const ToolParamHeaders>(
+                    ToolParamHeaders{*compiled, std::move(headers)});
+            }
         } catch (const std::invalid_argument& error) {
             throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema", error.what());
         }
-        tool_param_headers_cache().insert(param_headers);
+        if (param_headers) {
+            tool_param_headers_cache().insert(param_headers);
+        }
     }
-    auto input = compile(tool.inputSchema, "inputSchema");
+    if (compile_error) {
+        throw *compile_error;
+    }
+    auto input = std::move(*compiled);
     std::optional<CompiledSchema> output;
-    if (tool.outputSchema) {
-        output = compile(*tool.outputSchema, "outputSchema");
+    if (output_schema != nullptr) {
+        output = compile(*output_schema, "outputSchema");
     }
     return {std::move(input), std::move(output), std::move(param_headers)};
 }
@@ -995,7 +1013,27 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
 
     CompletionHandler completion_handler;
 
-    std::vector<Tool> tools;
+    /// A registered tool as tools/list describes it. The tool's own schemas are unset: they are
+    /// listed from their compiled form, which servers that register the same schema share.
+    struct ListedTool {
+        Tool tool;
+        CompiledSchema input;
+        std::optional<CompiledSchema> output;
+
+        [[nodiscard]] nlohmann::json listed_json() const {
+            nlohmann::json json_tool = tool;
+            json_tool["inputSchema"] = input.schema();
+            if (output) {
+                json_tool["outputSchema"] = output->schema();
+            }
+            return json_tool;
+        }
+    };
+
+    void add_tool_registration(Tool&& tool, std::string name, CompiledToolSchemas schemas,
+                               TypeErasedHandler handler, detail::ToolResultMode result_mode);
+
+    std::vector<ListedTool> tools;
     /// The tools as JSON text, comma-separated, in registration order: what a tools/list that
     /// lists them all sends, without building the tools again. Built by the first such list after
     /// a registration, since a server built for one session may never be asked for its tools.
@@ -1300,7 +1338,7 @@ std::shared_ptr<const std::string> Server::Impl::listed_tools_text() {
                 if (!text.empty()) {
                     text += ',';
                 }
-                text += mcp::detail::dump_json(nlohmann::json(tool));
+                text += mcp::detail::dump_json(tool.listed_json());
             }
             tools_text = std::make_shared<const std::string>(std::move(text));
         } catch (const nlohmann::json::exception&) {
@@ -1310,28 +1348,48 @@ std::shared_ptr<const std::string> Server::Impl::listed_tools_text() {
     return tools_text;
 }
 
+void Server::Impl::add_tool_registration(Tool&& tool, std::string name, CompiledToolSchemas schemas,
+                                         TypeErasedHandler handler,
+                                         detail::ToolResultMode result_mode) {
+    forget_tools_text();
+    tool.inputSchema = nullptr;
+    tool.outputSchema.reset();
+    tools.push_back(ListedTool{std::move(tool), schemas.input, schemas.output});
+    tool_handlers.emplace(std::move(name),
+                          ToolRegistration{std::move(handler), result_mode, std::move(schemas)});
+}
+
 void Server::register_tool(const Tool& tool, const std::string& name, TypeErasedHandler handler,
                            detail::ToolResultMode result_mode) {
     if (impl_->tool_handlers.contains(name)) {
         throw std::invalid_argument("Duplicate tool registration: " + name);
     }
-    auto schemas = compile_tool_schemas(tool);
-    impl_->forget_tools_text();
-    impl_->tools.push_back(tool);
-    impl_->tool_handlers.emplace(
-        name, Impl::ToolRegistration{std::move(handler), result_mode, std::move(schemas)});
+    auto schemas = compile_tool_schemas(tool.name, tool.inputSchema,
+                                        tool.outputSchema ? &*tool.outputSchema : nullptr);
+    impl_->add_tool_registration(Tool(tool), name, std::move(schemas), std::move(handler), result_mode);
 }
 
 void Server::register_tool(Tool&& tool, TypeErasedHandler handler, detail::ToolResultMode result_mode) {
     if (impl_->tool_handlers.contains(tool.name)) {
         throw std::invalid_argument("Duplicate tool registration: " + tool.name);
     }
-    auto schemas = compile_tool_schemas(tool);
+    auto schemas = compile_tool_schemas(tool.name, tool.inputSchema,
+                                        tool.outputSchema ? &*tool.outputSchema : nullptr);
     auto name = tool.name;
-    impl_->forget_tools_text();
-    impl_->tools.push_back(std::move(tool));
-    impl_->tool_handlers.emplace(
-        std::move(name), Impl::ToolRegistration{std::move(handler), result_mode, std::move(schemas)});
+    impl_->add_tool_registration(std::move(tool), std::move(name), std::move(schemas),
+                                 std::move(handler), result_mode);
+}
+
+void Server::register_tool(Tool&& tool, const nlohmann::json& input_schema,
+                           const nlohmann::json* output_schema, TypeErasedHandler handler,
+                           detail::ToolResultMode result_mode) {
+    if (impl_->tool_handlers.contains(tool.name)) {
+        throw std::invalid_argument("Duplicate tool registration: " + tool.name);
+    }
+    auto schemas = compile_tool_schemas(tool.name, input_schema, output_schema);
+    auto name = tool.name;
+    impl_->add_tool_registration(std::move(tool), std::move(name), std::move(schemas),
+                                 std::move(handler), result_mode);
 }
 
 void Server::register_resource(const Resource& resource, TypeErasedHandler handler) {
@@ -3148,7 +3206,7 @@ Task<std::string> Server::Impl::handle_tools_list_wire(const nlohmann::json& jso
     // The members ListToolsResult serializes, built from the registered tools rather than a copy.
     nlohmann::json tools_json = nlohmann::json::array();
     for (auto index = begin; index < end; ++index) {
-        tools_json.push_back(tools[index]);
+        tools_json.push_back(tools[index].listed_json());
     }
     nlohmann::json list_result = nlohmann::json::object();
     list_result["tools"] = std::move(tools_json);
@@ -3945,9 +4003,9 @@ std::optional<Server::PaginationSlice> Server::Impl::paginate(std::size_t total,
 }
 
 bool Server::Impl::has_tool_output_schema(const std::string& name) const {
-    for (const auto& tool : tools) {
-        if (tool.name == name) {
-            return tool.outputSchema.has_value();
+    for (const auto& listed : tools) {
+        if (listed.tool.name == name) {
+            return listed.output.has_value();
         }
     }
     return false;
