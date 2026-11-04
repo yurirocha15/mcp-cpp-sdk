@@ -490,6 +490,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   inserting them into the result first; a result with its own `_meta` is
   still built as before. A result that already holds one of these members
   keeps its value.
+- The scan that routes each answer of a `StreamableHttpSessionManager`
+  session to its HTTP request passes over string values eight bytes at a
+  time to the next quote or backslash, instead of testing every byte of a
+  tool result's text.
 
 ### Removed
 
