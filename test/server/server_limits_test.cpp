@@ -428,10 +428,20 @@ TEST_F(ServerLimitsTest, AnswersNotTakenCountAgainstTheMemoryLimit) {
     run([&]() -> mcp::Task<void> {
         co_await initialized();
         transport_->hold_writes(true);
-        for (int id = 1; id <= 10; ++id) {
+        // One at a time, each read once the answer before it waits to be written. Each answer
+        // takes about 300 KB, so the fourth request is read with 900 KB waiting, within 1 MiB.
+        for (int id = 1; id <= 4; ++id) {
+            transport_->enqueue_message(call(id, "big").dump());
+            co_await wait_until([&answered, id] { return answered.load() >= id; });
+            boost::asio::steady_timer settle(io_.get_executor(), std::chrono::milliseconds(50));
+            co_await settle.async_wait(boost::asio::use_awaitable);
+        }
+        // The fifth finds 1.2 MB waiting: it is refused, and reading stops while that refusal
+        // waits behind the answers.
+        for (int id = 5; id <= 10; ++id) {
             transport_->enqueue_message(call(id, "big").dump());
         }
-        co_await wait_until([&answered] { return answered.load() >= 3; });
+        co_await wait_until([this] { return transport_->unread() == 5; });
         boost::asio::steady_timer settle(io_.get_executor(), std::chrono::milliseconds(50));
         co_await settle.async_wait(boost::asio::use_awaitable);
         while_held = answered.load();
@@ -445,8 +455,7 @@ TEST_F(ServerLimitsTest, AnswersNotTakenCountAgainstTheMemoryLimit) {
             return true;
         });
     });
-    EXPECT_GE(while_held, 3);
-    EXPECT_LE(while_held, 4);
+    EXPECT_EQ(while_held, 4);
 }
 
 TEST_F(ServerLimitsTest, SettersRefuseValuesThatCannotWork) {
