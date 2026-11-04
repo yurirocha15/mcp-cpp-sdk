@@ -128,7 +128,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   once more in it (`set_reinitialize_on_expired_session()`). After a session
   expired, every later call failed with 404. When the new session cannot be
   started, such as while the server is full, the next request starts one before
-  it is sent.
+  it is sent. `HttpServerTransport` answers 500, not 404, to a request whose
+  session ends while it runs, so the client does not send it again.
 - `StreamableHttpSessionManager` holds at most 10,000 sessions and ends a session
   idle for five minutes (`set_session_limits()`), and keeps no session for a
   failed initialize. An SSE replay store keeps at most 32 MiB.

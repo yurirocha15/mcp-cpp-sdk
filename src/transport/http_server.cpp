@@ -651,7 +651,10 @@ struct HttpServerTransport::Impl {
 
         const auto pending_result = co_await consume_pending_response(request_id_key);
         if (pending_result.session_ended) {
-            co_return make_error_response(request, http::status::not_found, "Session terminated");
+            // Not 404: the request was handed to the server, so a client must not send it again in
+            // a new session.
+            co_return make_error_response(request, http::status::internal_server_error,
+                                          "Session terminated");
         }
         if (!pending_result.response_body.has_value()) {
             co_return make_error_response(request, http::status::internal_server_error,

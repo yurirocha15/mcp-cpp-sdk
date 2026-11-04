@@ -786,6 +786,47 @@ TEST_F(ReverseBindingTest, NextSessionCannotAnswerForTheOneBefore) {
     EXPECT_EQ(handler_saw_->find("injected"), std::string::npos) << *handler_saw_;
 }
 
+// A request whose session ends while it runs has reached the server, so it is not answered 404,
+// which would have the client send it again in a new session.
+TEST_F(ReverseBindingTest, RequestWhoseSessionEndsWhileItRunsIsNotSentAgain) {
+    std::atomic<int> runs{0};
+    std::atomic<bool> released{false};
+    server_->add_tool<json, json>("count", "Counts its runs", json{{"type", "object"}},
+                                  [&runs, &released](json /*args*/) -> mcp::Task<json> {
+                                      ++runs;
+                                      auto executor = co_await asio::this_coro::executor;
+                                      while (!released) {
+                                          asio::steady_timer tick(executor,
+                                                                  std::chrono::milliseconds(1));
+                                          co_await tick.async_wait(asio::use_awaitable);
+                                      }
+                                      co_return json::object();
+                                  });
+    bool failed = false;
+    run([&]() -> mcp::Task<void> {
+        auto transport = std::make_shared<mcp::HttpClientTransport>(
+            io_.get_executor(), "http://127.0.0.1:" + std::to_string(transport_->port()) + "/mcp");
+        mcp::Client client(transport, io_.get_executor());
+        co_await client.connect("twice", "1.0");
+        asio::co_spawn(
+            io_,
+            [this, &runs, &released, session = transport->session_id()]() -> mcp::Task<void> {
+                co_await wait_until([&runs] { return runs.load() > 0; });
+                co_await end_session(session);
+                released = true;
+            },
+            asio::detached);
+        try {
+            co_await client.call_tool("count", json::object());
+        } catch (const std::exception&) {
+            failed = true;
+        }
+        client.close();
+    });
+    EXPECT_TRUE(failed);
+    EXPECT_EQ(runs.load(), 1);
+}
+
 TEST_F(ReverseBindingTest, ClientThatLeftIdleLetsTheNextOneIn) {
     transport_->set_session_idle_timeout(std::chrono::milliseconds(20));
     Reply first;
