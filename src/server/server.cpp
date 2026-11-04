@@ -573,6 +573,8 @@ struct Server::PendingRequest {
     std::uint64_t epoch{0};
     /// Set for a request a handler is waiting on: cancelling that handler ends the wait.
     std::shared_ptr<std::atomic<bool>> caller_cancelled;
+    /// The server stopped waiting before the client answered, so the client is told to stop.
+    bool given_up{false};
 };
 
 struct Server::Session {
@@ -1001,6 +1003,7 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
                 pending_it->second.error =
                     Error{g_REQUEST_TIMEOUT, "The client did not answer in time", std::nullopt};
                 pending_it->second.completed = true;
+                pending_it->second.given_up = true;
             }
         } catch (const boost::system::system_error& err) {
             if (err.code() != boost::asio::error::operation_aborted) {
@@ -1019,10 +1022,12 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
 
     auto json_result = std::move(it->second.result);
     auto error = std::move(it->second.error);
+    const bool given_up = it->second.given_up;
     session->pending_requests.erase(it);
 
-    if (error && (error->code == g_REQUEST_CANCELLED || error->code == g_REQUEST_TIMEOUT)) {
-        // The server gave up on its request, so the client can stop working on it.
+    if (given_up) {
+        // The server gave up on its request, so the client can stop working on it. An error the
+        // client answered with, whatever its code, ended the request on its side already.
         std::string notice;
         {
             CancelledNotificationParams params;
@@ -1476,6 +1481,7 @@ void Server::Impl::dispatch_notification(const nlohmann::json& json_msg) {
                     pending.error =
                         Error{g_REQUEST_CANCELLED, "The request was cancelled", std::nullopt};
                     pending.completed = true;
+                    pending.given_up = true;
                     pending.timer->cancel();
                 }
             }

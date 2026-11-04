@@ -289,6 +289,42 @@ TEST_F(ServerLimitsTest, ClientThatNeverAnswersFailsTheHandlerAtTheTimeout) {
     EXPECT_NE(told, written_.end());
 }
 
+// An error the client answers with ends the request on its side, whatever its code, so the client
+// is not told to cancel it.
+TEST_F(ServerLimitsTest, ClientAnsweringWithACancelOrTimeoutIsNotToldToCancel) {
+    const std::vector<int> codes{mcp::g_REQUEST_CANCELLED, mcp::g_REQUEST_TIMEOUT};
+    std::vector<json> asked;
+    run([&]() -> mcp::Task<void> {
+        co_await initialized();
+        for (std::size_t i = 0; i < codes.size(); ++i) {
+            const int id = static_cast<int>(i) + 1;
+            transport_->enqueue_message(call(id, "ask").dump());
+            co_await wait_until([this, &asked, i] {
+                asked.clear();
+                for (const auto& message : written_) {
+                    if (message.value("method", "") == "roots/list") {
+                        asked.push_back(message["id"]);
+                    }
+                }
+                return asked.size() > i;
+            });
+            transport_->enqueue_message(
+                json{{"jsonrpc", "2.0"},
+                     {"id", asked[i]},
+                     {"error", {{"code", codes[i]}, {"message", "client side"}}}}
+                    .dump());
+            co_await wait_until([this, id] { return answer_to(id) != nullptr; });
+        }
+    });
+    ASSERT_EQ(asked.size(), codes.size());
+    for (int id = 1; id <= 2; ++id) {
+        ASSERT_NE(answer_to(id), nullptr) << id;
+    }
+    for (const auto& message : written_) {
+        EXPECT_NE(message.value("method", ""), "notifications/cancelled") << message;
+    }
+}
+
 // A cancel read before the handler asks the client has no wait to end yet; the ask must not go out.
 TEST_F(ServerLimitsTest, CancelReadBeforeTheHandlerAsksEndsItsAsk) {
     std::string failure;
