@@ -155,6 +155,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - The evaluation budget now covers `enum` and `const` comparisons,
   `dependentRequired`, `properties` and `uniqueItems` on colliding hashes, and
   the text a failed branch keeps. Regular expression compilation is bounded.
+  These comparisons are charged by the values they read. A message about a
+  property that `additionalProperties` or `unevaluatedProperties` refuses quotes
+  an excerpt of its name.
 - Schema validation copied a long property name at every step under it, kept
   every message of every failed branch of a keyword such as `anyOf`, and built
   some messages from the whole value. Locations keep the first 1024 bytes of a

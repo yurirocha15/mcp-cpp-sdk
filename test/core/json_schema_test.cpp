@@ -486,6 +486,28 @@ TEST(SchemaLimits, UniqueItemsOfCollidingStringsAreCharged) {
         << result.violations.front().message;
 }
 
+// Elements that share a hash are compared in full, so a comparison costs what the elements hold.
+// 200 arrays of 201 values share one hash and differ only in their last value: about 20,000
+// comparisons of 201 values each.
+TEST(SchemaLimits, UniqueItemsComparisonsAreChargedByWhatTheyHold) {
+    const auto strings = strings_with_one_hash(200);
+    json value = json::array();
+    for (const auto& text : strings) {
+        json element(200, 0);
+        element.push_back(text);
+        value.push_back(std::move(element));
+    }
+    const auto stops = [&value](std::size_t work) {
+        mcp::SchemaOptions options;
+        options.max_evaluation_work = work;
+        const auto result = CompiledSchema::compile({{"uniqueItems", true}}, options).validate(value);
+        return !result.valid && result.violations.size() == 1U &&
+               result.violations[0].message.find("takes too much work") != std::string::npos;
+    };
+    EXPECT_FALSE(stops(100'000'000));
+    EXPECT_TRUE(stops(1'000'000));
+}
+
 // Sets of property names are ordered, so names chosen to share a hash cost no more to look up than
 // any others. Timed against the same number of ordinary names, so the bound holds in slow builds.
 TEST(SchemaLimits, PropertyNamesThatShareAHashAreLookedUpQuickly) {
@@ -810,6 +832,32 @@ TEST(SchemaLimits, ConstComparisonsAreCharged) {
     const json constant(200, 7);
     const json schema = {{"items", {{"const", constant}}}};
     const json value(200, constant);
+    EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
+    EXPECT_TRUE(stops_for_work(schema, value, 100'000));
+}
+
+// 2,500 enum comparisons of arrays of 101 values. Charged by what they compare, they cost more than
+// 100,000 units on either validator.
+TEST(SchemaLimits, EnumComparisonsAreChargedByWhatTheyHold) {
+    json allowed = json::array();
+    for (int i = 0; i < 50; ++i) {
+        json member(100, 0);
+        member.push_back(i);
+        allowed.push_back(std::move(member));
+    }
+    const json schema = {{"items", {{"enum", allowed}}}};
+    const json value(50, allowed.back());
+    EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
+    EXPECT_TRUE(stops_for_work(schema, value, 100'000));
+    EXPECT_FALSE(stops_for_work(through_jsoncons(schema), value, 10'000'000));
+    EXPECT_TRUE(stops_for_work(through_jsoncons(schema), value, 100'000));
+}
+
+// 400 const comparisons of arrays of 500 values, on the validator that "not" sends a schema to.
+TEST(SchemaLimits, ConstComparisonsAreChargedOnEitherValidator) {
+    const json constant(500, 7);
+    const json schema = through_jsoncons({{"items", {{"const", constant}}}});
+    const json value(400, constant);
     EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
     EXPECT_TRUE(stops_for_work(schema, value, 100'000));
 }

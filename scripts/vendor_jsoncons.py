@@ -197,6 +197,43 @@ struct evaluation_limits
         return name.substr(0, max_location_token);
     }
 
+    // What comparing @p value with another may cost, charged before the comparison: one per value
+    // it holds, and a string or a member name by its length, as other whole-string work is
+    // charged. Counting stops at @p limit, so a small value compared with a large one costs what
+    // the small one holds.
+    template <typename Json>
+    static std::size_t comparison_cost(const Json& value, std::size_t limit = static_cast<std::size_t>(-1))
+    {
+        std::size_t cost = 1;
+        if (value.is_string())
+        {
+            cost += value.as_string_view().size() / 16;
+        }
+        else if (value.is_array())
+        {
+            for (const auto& element : value.array_range())
+            {
+                if (cost >= limit)
+                {
+                    break;
+                }
+                cost += comparison_cost(element, limit - cost);
+            }
+        }
+        else if (value.is_object())
+        {
+            for (const auto& member : value.object_range())
+            {
+                if (cost >= limit)
+                {
+                    break;
+                }
+                cost += 1 + member.key().size() / 16 + comparison_cost(member.value(), limit - cost);
+            }
+        }
+        return (std::min)(cost, limit);
+    }
+
     // A value as a message names it: a scalar quoted in full, a string cut to an excerpt, and an
     // array or object by its size, so a message takes the same time whatever the value holds.
     template <typename Json>
@@ -347,9 +384,10 @@ EVALUATION_REPLACEMENTS = (
                 if (item == instance)\x20
                 {
                     in_range = true;""",
-        """            for (const auto& item : value_.array_range())
+        """            const std::size_t instance_cost = evaluation_limits::comparison_cost(instance);
+            for (const auto& item : value_.array_range())
             {
-                evaluation_limits::charge(8);
+                evaluation_limits::charge(8 + evaluation_limits::comparison_cost(item, instance_cost));
                 if (item == instance)\x20
                 {
                     in_range = true;""",
@@ -481,22 +519,30 @@ EVALUATION_REPLACEMENTS = (
 
         static bool array_has_unique_items(const Json& a)
         {
-            std::vector<std::pair<std::size_t, const Json*>> hashed;
+            struct hashed_element
+            {
+                std::size_t hash;
+                std::size_t cost;
+                const Json* value;
+            };
+            std::vector<hashed_element> hashed;
             hashed.reserve(a.size());
             for (const auto& element : a.array_range())
             {
-                hashed.emplace_back(unique_items_hash(element), std::addressof(element));
+                hashed.push_back({unique_items_hash(element), evaluation_limits::comparison_cost(element),
+                                  std::addressof(element)});
             }
-            std::sort(hashed.begin(), hashed.end(), [](const std::pair<std::size_t, const Json*>& lhs,
-                                                       const std::pair<std::size_t, const Json*>& rhs) {
-                return lhs.first < rhs.first;
+            std::sort(hashed.begin(), hashed.end(), [](const hashed_element& lhs, const hashed_element& rhs) {
+                return lhs.hash < rhs.hash;
             });
             for (std::size_t i = 0; i < hashed.size(); ++i)
             {
-                for (std::size_t j = i + 1; j < hashed.size() && hashed[j].first == hashed[i].first; ++j)
+                for (std::size_t j = i + 1; j < hashed.size() && hashed[j].hash == hashed[i].hash; ++j)
                 {
-                    evaluation_limits::charge(8); // hashes an attacker chose can all collide
-                    if (*hashed[i].second == *hashed[j].second)
+                    // Hashes an attacker chose can all collide, and each comparison may read the
+                    // smaller of the two values whole.
+                    evaluation_limits::charge(8 + (std::min)(hashed[i].cost, hashed[j].cost));
+                    if (*hashed[i].value == *hashed[j].value)
                     {
                         return false; // contains duplicates
                     }
@@ -805,6 +851,22 @@ EVALUATION_REPLACEMENTS = (
     # make each lookup in a hashed set scan all of them.
     (VALIDATOR_PATH, "std::unordered_set<std::string>", "std::set<std::string>", 2),
     (KEYWORD_VALIDATOR_PATH, "std::unordered_set<std::string>", "std::set<std::string>", 10),
+    # `const` compares the value whole, so it is charged by what the comparison may read.
+    (
+        KEYWORD_VALIDATOR_PATH,
+        """            if (value_ != instance)""",
+        """            evaluation_limits::charge(
+                8 + evaluation_limits::comparison_cost(value_, evaluation_limits::comparison_cost(instance)));
+            if (value_ != instance)""",
+        1,
+    ),
+    # A property name can be as long as the value. The messages naming one quote an excerpt.
+    (
+        KEYWORD_VALIDATOR_PATH,
+        """                            message.append(prop.key().c_str());""",
+        """                            message.append(evaluation_limits::excerpt(prop.key()));""",
+        2,
+    ),
 )
 
 # (pattern, replacement, expected matches across SUBSET), applied after the replacements above.

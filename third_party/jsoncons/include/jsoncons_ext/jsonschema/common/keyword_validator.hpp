@@ -1132,22 +1132,30 @@ namespace jsonschema {
 
         static bool array_has_unique_items(const Json& a)
         {
-            std::vector<std::pair<std::size_t, const Json*>> hashed;
+            struct hashed_element
+            {
+                std::size_t hash;
+                std::size_t cost;
+                const Json* value;
+            };
+            std::vector<hashed_element> hashed;
             hashed.reserve(a.size());
             for (const auto& element : a.array_range())
             {
-                hashed.emplace_back(unique_items_hash(element), std::addressof(element));
+                hashed.push_back({unique_items_hash(element), evaluation_limits::comparison_cost(element),
+                                  std::addressof(element)});
             }
-            std::sort(hashed.begin(), hashed.end(), [](const std::pair<std::size_t, const Json*>& lhs,
-                                                       const std::pair<std::size_t, const Json*>& rhs) {
-                return lhs.first < rhs.first;
+            std::sort(hashed.begin(), hashed.end(), [](const hashed_element& lhs, const hashed_element& rhs) {
+                return lhs.hash < rhs.hash;
             });
             for (std::size_t i = 0; i < hashed.size(); ++i)
             {
-                for (std::size_t j = i + 1; j < hashed.size() && hashed[j].first == hashed[i].first; ++j)
+                for (std::size_t j = i + 1; j < hashed.size() && hashed[j].hash == hashed[i].hash; ++j)
                 {
-                    evaluation_limits::charge(8); // hashes an attacker chose can all collide
-                    if (*hashed[i].second == *hashed[j].second)
+                    // Hashes an attacker chose can all collide, and each comparison may read the
+                    // smaller of the two values whole.
+                    evaluation_limits::charge(8 + (std::min)(hashed[i].cost, hashed[j].cost));
+                    if (*hashed[i].value == *hashed[j].value)
                     {
                         return false; // contains duplicates
                     }
@@ -2337,9 +2345,10 @@ namespace jsonschema {
             eval_context<Json> this_context(context, this->keyword());
 
             bool in_range = false;
+            const std::size_t instance_cost = evaluation_limits::comparison_cost(instance);
             for (const auto& item : value_.array_range())
             {
-                evaluation_limits::charge(8);
+                evaluation_limits::charge(8 + evaluation_limits::comparison_cost(item, instance_cost));
                 if (item == instance) 
                 {
                     in_range = true;
@@ -2391,6 +2400,8 @@ namespace jsonschema {
             error_reporter<Json>& reporter,
             mcp_detail_jsoncons::optional<Json>& patch) const final
         {
+            evaluation_limits::charge(
+                8 + evaluation_limits::comparison_cost(value_, evaluation_limits::comparison_cost(instance)));
             if (value_ != instance)
             {
                 eval_context<Json> this_context(context, this->keyword());
@@ -2980,7 +2991,7 @@ namespace jsonschema {
                         if (prop_it == allowed_properties.end()) 
                         {
                             std::string message{"Additional property '"};
-                            message.append(prop.key().c_str());
+                            message.append(evaluation_limits::excerpt(prop.key()));
                             message.append("' not allowed by schema.");
                             walk_state result = reporter.error(this->make_validation_message(
                                 prop_context.eval_path(),
@@ -4006,7 +4017,7 @@ namespace jsonschema {
                             jsonpointer::json_pointer prop_location = instance_location / evaluation_limits::location_token(prop.name());
 
                             std::string message{"Unevaluated property '"};
-                            message.append(prop.key().c_str());
+                            message.append(evaluation_limits::excerpt(prop.key()));
                             message.append("' but the schema does not allow unevaluated properties.");
                             walk_state result = reporter.error(this->make_validation_message(
                                 prop_context.eval_path(), 

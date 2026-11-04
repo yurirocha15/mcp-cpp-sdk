@@ -129,6 +129,43 @@ struct evaluation_limits
         return name.substr(0, max_location_token);
     }
 
+    // What comparing @p value with another may cost, charged before the comparison: one per value
+    // it holds, and a string or a member name by its length, as other whole-string work is
+    // charged. Counting stops at @p limit, so a small value compared with a large one costs what
+    // the small one holds.
+    template <typename Json>
+    static std::size_t comparison_cost(const Json& value, std::size_t limit = static_cast<std::size_t>(-1))
+    {
+        std::size_t cost = 1;
+        if (value.is_string())
+        {
+            cost += value.as_string_view().size() / 16;
+        }
+        else if (value.is_array())
+        {
+            for (const auto& element : value.array_range())
+            {
+                if (cost >= limit)
+                {
+                    break;
+                }
+                cost += comparison_cost(element, limit - cost);
+            }
+        }
+        else if (value.is_object())
+        {
+            for (const auto& member : value.object_range())
+            {
+                if (cost >= limit)
+                {
+                    break;
+                }
+                cost += 1 + member.key().size() / 16 + comparison_cost(member.value(), limit - cost);
+            }
+        }
+        return (std::min)(cost, limit);
+    }
+
     // A value as a message names it: a scalar quoted in full, a string cut to an excerpt, and an
     // array or object by its size, so a message takes the same time whatever the value holds.
     template <typename Json>
