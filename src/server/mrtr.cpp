@@ -203,9 +203,10 @@ bool client_can_answer_input(const nlohmann::json& request_meta) {
 }
 
 bool InlineInput::refuse(const nlohmann::json& request) {
-    const auto declared = request_meta_->meta.find(g_META_CLIENT_CAPABILITIES);
+    const auto& meta = *request_meta_->meta;
+    const auto declared = meta.find(g_META_CLIENT_CAPABILITIES);
     const auto missing = missing_client_capabilities(
-        declared != request_meta_->meta.end() ? *declared : nlohmann::json::object(), request);
+        declared != meta.end() ? *declared : nlohmann::json::object(), request);
     if (missing.empty()) {
         return false;
     }

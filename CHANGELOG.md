@@ -468,6 +468,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - The server's identity that a 2026-07-28 result reports in `_meta` is
   converted to JSON once, when the `Server` is constructed, instead of for
   every result.
+- `RequestMetadata::meta` is a `std::shared_ptr<const nlohmann::json>` that
+  shares the `_meta` object of the request it was read from, instead of a copy
+  of that object; write `request_meta()->meta->find(...)`. It is never null,
+  and a default-constructed `RequestMetadata` holds an empty object. Reading
+  the per-request fields of a 2026-07-28 request no longer copies its `_meta`.
 - Registering a tool looks for `x-mcp-header` annotations without building
   the JSON Pointer of every member of its input schema; the location is built
   only along the path walked and named only in a refusal.

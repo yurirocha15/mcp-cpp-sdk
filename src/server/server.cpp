@@ -757,8 +757,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         if (scope.inline_input == nullptr || scope.meta == nullptr) {
             return std::nullopt;
         }
-        const auto token = scope.meta->meta.find("progressToken");
-        if (token == scope.meta->meta.end()) {
+        const auto& meta = *scope.meta->meta;
+        const auto token = meta.find("progressToken");
+        if (token == meta.end()) {
             return std::nullopt;
         }
         try {
@@ -2306,7 +2307,8 @@ Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_
                                   "Method not found: " + std::string(method));
     }
     {
-        auto parsed = detail::parse_request_meta(json_msg);
+        auto parsed = detail::parse_request_meta(
+            scope.message ? scope.message : std::make_shared<const nlohmann::json>(json_msg));
         if (!parsed.metadata) {
             invalid_metadata_rejections.fetch_add(1, std::memory_order_relaxed);
             co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
@@ -2345,7 +2347,7 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
                                   "requestState must be a string and inputResponses an object");
     }
     const bool retry = state != params.end();
-    if (!retry && !detail::client_can_answer_input(scope.meta->meta)) {
+    if (!retry && !detail::client_can_answer_input(*scope.meta->meta)) {
         // Such a client can never be asked for input, so the handler never parks.
         co_return co_await serve_without_parking(json_msg, std::move(scope));
     }
@@ -2353,7 +2355,7 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
     std::optional<nlohmann::json> progress_token;
     nlohmann::json client_capabilities = nlohmann::json::object();
     {
-        const auto& meta = scope.meta->meta;
+        const auto& meta = *scope.meta->meta;
         if (const auto token = meta.find("progressToken"); token != meta.end()) {
             progress_token = *token;
         }

@@ -82,7 +82,7 @@ class ServerModernEraTest : public ::testing::Test {
                                {"version", meta->protocolVersion},
                                {"client", meta->clientInfo ? meta->clientInfo->name : ""},
                                {"roots", meta->clientCapabilities.roots.has_value()},
-                               {"meta", meta->meta}};
+                               {"meta", *meta->meta}};
             });
         server->add_tool<json, json>("log", "Logs one message at each of error and debug",
                                      json{{"type", "object"}},
@@ -352,6 +352,7 @@ TEST_F(ServerModernEraTest, HandlersReadTheRequestsPerRequestFields) {
     EXPECT_EQ(seen["meta"]["traceparent"], meta["traceparent"]);
     EXPECT_EQ(seen["meta"]["tracestate"], "vendor=value");
     EXPECT_EQ(seen["meta"]["baggage"], "user=alice");
+    EXPECT_EQ(seen["meta"], meta);
 
     auto resource =
         dispatch(*server, make_modern_request(2, "resources/read", {{"uri", "test://doc"}}));
@@ -958,6 +959,12 @@ TEST_F(ServerModernEraTest, ReportedServerInfoCarriesEveryFieldOfTheImplementati
         ASSERT_TRUE(response.contains("result")) << response;
         EXPECT_EQ(response["result"]["_meta"]["io.modelcontextprotocol/serverInfo"], json(info));
     }
+}
+
+TEST(RequestMetadataTest, DefaultMetaIsAnEmptyObject) {
+    const mcp::RequestMetadata metadata;
+    ASSERT_NE(metadata.meta, nullptr);
+    EXPECT_EQ(*metadata.meta, json::object());
 }
 
 TEST_F(ServerModernEraTest, CacheableResultsCarryTheDefaultHints) {
