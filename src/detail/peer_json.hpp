@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mcp/detail/json_parse.hpp>
+
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
@@ -15,6 +17,8 @@ namespace mcp::detail {
 /// made of nothing but brackets exhausts the stack of whichever thread copies it. Real MCP payloads
 /// stay far below this.
 inline constexpr std::size_t g_MAX_PEER_JSON_DEPTH = 128;
+static_assert(g_MAX_FAST_PARSE_DEPTH >= g_MAX_PEER_JSON_DEPTH,
+              "every document parse_peer_json() accepts is within the fast parser's nesting");
 
 /// Whether `text` nests arrays and objects deeper than `max_depth`. Brackets inside strings are not
 /// counted. The result is only meaningful for valid JSON, which is all the parser accepts anyway.
@@ -62,6 +66,11 @@ inline nlohmann::json parse_peer_json(std::string_view text) {
     if (exceeds_json_depth(text)) {
         return nlohmann::json(nlohmann::json::value_t::discarded);
     }
+    nlohmann::json value;
+    if (parse_json_fast(text, value)) {
+        return value;
+    }
+    // Invalid text, and the few valid inputs the fast parser leaves to nlohmann::json.
     return nlohmann::json::parse(text, nullptr, false);
 }
 

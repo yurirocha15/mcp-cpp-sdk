@@ -99,6 +99,7 @@ set(MCP_CPP_SDK_SOURCES
     src/core/regex.cpp
     src/core/secure_random.cpp
     src/core/json_dump.cpp
+    src/core/json_parse.cpp
     src/core/serialized_transport_writer.cpp
     src/protocol/native_schema.cpp
     src/protocol/schema.cpp
@@ -381,6 +382,7 @@ if(BUILD_TESTING)
       test/core/concepts_test.cpp
       test/core/core_test.cpp
       test/core/json_dump_test.cpp
+      test/core/json_parse_test.cpp
       test/core/jsonrpc_envelope_test.cpp
       test/core/json_schema_test.cpp
       test/core/protocol_test.cpp
