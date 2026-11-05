@@ -574,6 +574,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `elicitation-sep1034-defaults` and `elicitation-sep1330-enums`, and the
   client scenarios `sse-retry` and `elicitation-sep1034-client-defaults`, now
   pass.
+- A `StreamableHttpSessionManager` handler that blocks its thread, with no tool
+  executor set, no longer holds up the other sessions created over the same
+  keep-alive connection. Each session's `Server` and its in-memory endpoint
+  now share a strand of the session's own.
 - A throw that does not derive from `std::exception`, from middleware or from
   a resource or prompt handler, left the request unanswered. It is now answered
   with `-32603`. Tool handlers still report it as a tool error.

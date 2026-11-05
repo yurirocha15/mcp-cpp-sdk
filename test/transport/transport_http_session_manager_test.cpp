@@ -23,7 +23,9 @@
 #include <boost/beast/http.hpp>
 #include <chrono>
 #include <exception>
+#include <future>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <sstream>
@@ -3080,4 +3082,135 @@ TEST_F(SessionManagerTest, RequestPendingWhenItsSessionIsDeletedIsAnswered) {
     EXPECT_EQ(call_response.status, 500);
     EXPECT_FALSE(tool_finished_before_answer);
     EXPECT_EQ(manager.session_count(), 0);
+}
+
+// Two sessions created over one keep-alive connection, with no tool executor: while a tool of the
+// first session blocks its thread, the second session still answers a ping sent on another
+// connection.
+TEST_F(SessionManagerTest, BlockedHandlerDoesNotStallAnotherSessionOfItsConnection) {
+    const unsigned short port = 19166;
+    constexpr int thread_count = 4;
+    constexpr auto wait_bound = std::chrono::seconds(60);
+
+    struct Gate {
+        std::promise<void> entered;
+        std::once_flag entered_once;
+        std::promise<void> release;
+        std::shared_future<void> released = release.get_future().share();
+        std::once_flag release_once;
+        std::atomic<bool> returned{false};
+
+        void open() {
+            std::call_once(release_once, [this] { release.set_value(); });
+        }
+    };
+    auto gate = std::make_shared<Gate>();
+    auto entered = gate->entered.get_future();
+
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx_.get_executor(), "127.0.0.1", port,
+        [gate](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities caps;
+            caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+            auto server = std::make_unique<mcp::Server>(
+                mcp::Implementation{"test-blocking-server", "1.0.0"}, std::move(caps));
+            server->add_tool("wait", "Blocks its thread until the test releases it",
+                             json{{"type", "object"}}, [gate](const json&) -> json {
+                                 std::call_once(gate->entered_once,
+                                                [&gate] { gate->entered.set_value(); });
+                                 gate->released.wait();
+                                 gate->returned.store(true);
+                                 return json{{"released", true}};
+                             });
+            return server;
+        });
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    std::string first_id;
+    std::string second_id;
+    std::promise<void> sessions_ready;
+    std::promise<unsigned int> call_answered;
+    std::promise<RawResponse> ping_answered;
+
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            KeepAliveClient creator(io_ctx_.get_executor());
+            co_await creator.connect(port);
+            const json initialized = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
+            first_id = (co_await creator.post(make_initialize_request(1).dump())).session_id;
+            (void)co_await creator.post(initialized.dump(), first_id);
+            second_id = (co_await creator.post(make_initialize_request(2).dump())).session_id;
+            (void)co_await creator.post(initialized.dump(), second_id);
+            sessions_ready.set_value();
+        },
+        asio::detached);
+
+    std::vector<std::thread> threads;
+    threads.reserve(thread_count);
+    for (int index = 0; index < thread_count; ++index) {
+        threads.emplace_back([this] { io_ctx_.run(); });
+    }
+    const auto finish = [&] {
+        gate->open();
+        asio::post(io_ctx_, [&manager] { manager.close(); });
+        for (auto& thread : threads) {
+            thread.join();
+        }
+    };
+
+    if (sessions_ready.get_future().wait_for(wait_bound) != std::future_status::ready ||
+        first_id.empty() || second_id.empty()) {
+        ADD_FAILURE() << "the two sessions were not initialized";
+        finish();
+        return;
+    }
+
+    const json call = {{"jsonrpc", "2.0"},
+                       {"id", 3},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "wait"}, {"arguments", json::object()}}}};
+    asio::co_spawn(
+        io_ctx_,
+        [&, body = call.dump()]() -> mcp::Task<void> {
+            const auto answer = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                     "/mcp", body, first_id);
+            call_answered.set_value(answer.status);
+        },
+        asio::detached);
+    if (entered.wait_for(wait_bound) != std::future_status::ready) {
+        ADD_FAILURE() << "the blocking tool was not called";
+        finish();
+        return;
+    }
+
+    const json ping = {{"jsonrpc", "2.0"}, {"id", 4}, {"method", "ping"}};
+    asio::co_spawn(
+        io_ctx_,
+        [&, body = ping.dump()]() -> mcp::Task<void> {
+            auto answer = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                               body, second_id);
+            ping_answered.set_value(std::move(answer));
+        },
+        asio::detached);
+    auto ping_future = ping_answered.get_future();
+    const bool ping_ready = ping_future.wait_for(wait_bound) == std::future_status::ready;
+    const bool tool_returned = gate->returned.load();
+    gate->open();
+
+    EXPECT_TRUE(ping_ready) << "the ping waited for the other session's blocked tool";
+    EXPECT_FALSE(tool_returned);
+    if (ping_ready) {
+        const auto answer = ping_future.get();
+        EXPECT_EQ(answer.status, 200);
+        const auto body = json::parse(answer.body, nullptr, false);
+        EXPECT_TRUE(body.is_object() && body.contains("result")) << answer.body;
+    }
+    auto call_future = call_answered.get_future();
+    if (call_future.wait_for(wait_bound) == std::future_status::ready) {
+        EXPECT_EQ(call_future.get(), 200U);
+    } else {
+        ADD_FAILURE() << "the released tool call was not answered";
+    }
+    finish();
 }

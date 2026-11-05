@@ -550,8 +550,14 @@ struct StreamableHttpSessionManager::Impl {
 
         auto session_id = detail_session_mgr::generate_session_id();
 
+        // The session's Server and its endpoint share a strand of the session's own. With the
+        // endpoint on the strand of the connection that created the session, a handler that
+        // blocks would hold up every other session created on that connection. The server's read
+        // loop also waits for a request in place, not through a coroutine spawned onto another
+        // strand for every read.
+        auto session_strand = detail::make_strand_executor(executor);
         auto client_mem = std::make_shared<MemoryTransport>(conn_strand);
-        auto server_mem = std::make_shared<MemoryTransport>(conn_strand);
+        auto server_mem = std::make_shared<MemoryTransport>(session_strand);
         client_mem->set_peer(server_mem);
         server_mem->set_peer(client_mem);
         auto server = build_server(executor);
@@ -571,7 +577,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         std::shared_ptr<ITransport> server_transport = server_mem;
-        auto server_exec = executor;
+        auto server_exec = session_strand;
 
         boost::asio::co_spawn(
             conn_strand,
