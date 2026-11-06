@@ -1,3 +1,4 @@
+#include "../../src/detail/http_limits.hpp"
 #include "../test_utils.hpp"
 
 #include "mcp/client/client.hpp"
@@ -307,6 +308,50 @@ TEST(SessionTerms, NewSessionWithOtherCapabilitiesFailsTheRequest) {
     EXPECT_NE(failure.find("another protocol version"), std::string::npos) << failure;
 }
 
+// The new session is initialized before the lost request is sent again: a request other than ping
+// is refused before notifications/initialized.
+TEST_F(SessionLimitsTest, NewSessionIsInitializedBeforeTheRequestIsSentAgain) {
+    manager_.set_session_limits({10, std::chrono::milliseconds(40)});
+    std::size_t tools = 0;
+    run([&]() -> mcp::Task<void> {
+        auto transport = std::make_shared<mcp::HttpClientTransport>(
+            io_.get_executor(), "http://127.0.0.1:" + std::to_string(port_) + "/mcp");
+        mcp::Client client(transport, io_.get_executor());
+        co_await client.connect("expired", "1.0");
+        co_await wait_until([this] { return manager_.session_count() == 0; });
+        const auto listed = co_await client.list_tools();
+        tools = listed.tools.size();
+        client.close();
+    });
+    EXPECT_EQ(tools, 2u);
+}
+
+// With set_reinitialize_on_expired_session(false), a forgotten session fails the request with the
+// 404 and no new session is started.
+TEST_F(SessionLimitsTest, ForgottenSessionIsNotReplacedWhenTurnedOff) {
+    manager_.set_session_limits({10, std::chrono::milliseconds(40)});
+    std::optional<unsigned int> status;
+    std::string other;
+    run([&]() -> mcp::Task<void> {
+        auto transport = std::make_shared<mcp::HttpClientTransport>(
+            io_.get_executor(), "http://127.0.0.1:" + std::to_string(port_) + "/mcp");
+        transport->set_reinitialize_on_expired_session(false);
+        mcp::Client client(transport, io_.get_executor());
+        co_await client.connect("expired", "1.0");
+        co_await wait_until([this] { return manager_.session_count() == 0; });
+        try {
+            co_await client.ping();
+        } catch (const mcp::HttpStatusError& failure) {
+            status = failure.status();
+        } catch (const std::exception& failure) {
+            other = failure.what();
+        }
+        client.close();
+    });
+    EXPECT_EQ(status, 404u) << other;
+    EXPECT_EQ(manager_.session_count(), 0u);
+}
+
 // A new session that could not start is started again before the client's next request.
 TEST_F(SessionLimitsTest, ClientStartsANewSessionAfterAFailedStart) {
     manager_.set_session_limits({1, std::chrono::minutes(5)});
@@ -457,6 +502,79 @@ TEST_F(SessionLimitsTest, RequestsPastTheBudgetAreRefused) {
     });
     EXPECT_EQ(large.status, 503u) << large.body;
     EXPECT_EQ(small.status, 200u) << small.body;
+}
+
+namespace {
+
+/// An initialize carrying @p objects empty objects: 3 bytes of text each, far more once parsed.
+json initialize_with_empty_objects(std::size_t objects) {
+    auto request = make_initialize_request("1");
+    request["params"]["padding"] = json(objects, json::object());
+    return request;
+}
+
+}  // namespace
+
+// A request counts by the memory it takes parsed, on top of its text: 30 KB of empty objects
+// take more than 64 KiB once parsed.
+TEST_F(SessionLimitsTest, RequestCountsByTheMemoryItTakesParsed) {
+    manager_.set_connection_limits({0, std::chrono::seconds(30), 4096, 64 * 1024});
+    Reply padded;
+    run([&]() -> mcp::Task<void> { padded = co_await post(initialize_with_empty_objects(10000)); });
+    EXPECT_EQ(padded.status, 503u) << padded.body;
+}
+
+// A body counts as it arrives, so one past the budget is refused before the rest of it is sent.
+TEST_F(SessionLimitsTest, BodyPastTheBudgetIsRefusedWhileItArrives) {
+    manager_.set_connection_limits({0, std::chrono::seconds(30), 4096, 64 * 1024});
+    std::string answer;
+    run([&]() -> mcp::Task<void> {
+        // Announces 200,000 bytes and sends half; the rest never comes.
+        answer = co_await raw_exchange(io_.get_executor(), port_,
+                                       header_only_post(200000) + std::string(100000, ' '),
+                                       std::chrono::seconds(20));
+    });
+    EXPECT_EQ(answer.rfind("HTTP/1.1 503", 0), 0u) << answer.substr(0, 200);
+}
+
+// Requests past the number the listener handles at once are refused while the others run.
+TEST_F(SessionLimitsTest, RequestsPastTheCountAreRefused) {
+    g_hold_started = false;
+    g_hold_released = false;
+    manager_.set_connection_limits({0, std::chrono::seconds(30), 1, 1U << 30});
+    Reply held;
+    Reply refused;
+    run([&]() -> mcp::Task<void> {
+        const auto initialized = co_await post(make_initialize_request("1"));
+        const auto session = session_header(initialized);
+        co_await post_only(make_initialized_notification(), session);
+        asio::co_spawn(
+            io_,
+            [&, session]() -> mcp::Task<void> {
+                held = co_await post(make_tool_call_request("h", "hold", json::object()), session);
+            },
+            asio::detached);
+        co_await wait_until([] { return g_hold_started.load(); });
+        refused = co_await post(ping(), session);
+        g_hold_released = true;
+        co_await wait_until([&] { return held.status != 0; });
+    });
+    EXPECT_EQ(refused.status, 503u) << refused.body;
+    EXPECT_EQ(held.status, 200u) << held.body;
+}
+
+// Without a configured limit, a listener takes connections up to three quarters of the descriptor
+// limit, keeping the rest for everything else the process does.
+TEST(HttpListenerLimits, DefaultConnectionLimitLeavesDescriptorsFree) {
+    EXPECT_EQ(mcp::detail::resolved_max_connections(7), 7u);
+#if !defined(_WIN32)
+    rlimit descriptors{};
+    ASSERT_EQ(::getrlimit(RLIMIT_NOFILE, &descriptors), 0);
+    if (descriptors.rlim_cur != RLIM_INFINITY && descriptors.rlim_cur >= 4) {
+        EXPECT_EQ(mcp::detail::resolved_max_connections(0),
+                  static_cast<std::size_t>(descriptors.rlim_cur) / 4 * 3);
+    }
+#endif
 }
 
 TEST_F(SessionLimitsTest, ConnectionLimitsMustAllowARequest) {
@@ -931,6 +1049,17 @@ TEST_F(ReverseBindingTest, SessionTakenOverIsNotFoundForItsOldClient) {
     EXPECT_EQ(delete_reply.rfind("HTTP/1.1 404", 0), 0u) << delete_reply;
 }
 
+// A session the transport never created is not found either.
+TEST_F(ReverseBindingTest, SessionNeverCreatedIsNotFound) {
+    Reply reply;
+    run([&]() -> mcp::Task<void> {
+        const Headers made_up{{"MCP-Session-Id", "never-created"},
+                              {"MCP-Protocol-Version", "2025-11-25"}};
+        reply = co_await post(ping(), made_up);
+    });
+    EXPECT_EQ(reply.status, 404u) << reply.body;
+}
+
 TEST_F(ReverseBindingTest, RequestIdBeyondInt64IsRefused) {
     Reply refused;
     run([&]() -> mcp::Task<void> {
@@ -985,6 +1114,49 @@ TEST_F(ReverseBindingTest, SubscriptionsOfAnEndedSessionLeaveRoomForTheNext) {
     EXPECT_NE(json::parse(next.body).value("result", json()), json()) << next.body;
 }
 
+// A subscription of a session that ended is dropped when its resource is updated, and the room it
+// took is the next session's.
+TEST_F(ReverseBindingTest, LapsedSubscriptionDroppedOnUpdateLeavesRoom) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    caps.resources->subscribe = true;
+    server_ = std::make_unique<mcp::Server>(mcp::Implementation{"limits", "1.0"}, caps);
+    const auto uri = [](int id) { return "mem://" + std::to_string(id) + std::string(1048576, 'u'); };
+    const auto subscribe = [&uri](int id) {
+        return json{{"jsonrpc", "2.0"},
+                    {"id", id},
+                    {"method", "resources/subscribe"},
+                    {"params", {{"uri", uri(id)}}}};
+    };
+    const auto open_session = [this](std::string id) -> mcp::Task<Headers> {
+        const auto initialized = co_await post(make_initialize_request(std::move(id)));
+        const Headers session{
+            {"MCP-Session-Id", initialized.session_id.value_or("")},
+            {"MCP-Protocol-Version", json::parse(initialized.body)["result"]["protocolVersion"]}};
+        co_await post_only(make_initialized_notification(), session);
+        co_return session;
+    };
+    std::vector<Reply> next;
+    run([&]() -> mcp::Task<void> {
+        const auto first = co_await open_session("a");
+        for (int id = 1; id <= 7; ++id) {
+            co_await post(subscribe(id), first);
+        }
+        co_await end_session(first.front().second);
+        const auto second = co_await open_session("b");
+        for (int id = 1; id <= 7; ++id) {
+            co_await server_->notify_resource_updated(uri(id));
+        }
+        for (int id = 101; id <= 107; ++id) {
+            next.push_back(co_await post(subscribe(id), second));
+        }
+    });
+    ASSERT_EQ(next.size(), 7U);
+    for (const auto& reply : next) {
+        EXPECT_NE(json::parse(reply.body).value("result", json()), json()) << reply.body;
+    }
+}
+
 TEST_F(ReverseBindingTest, UnauthorizedBodyIsNotRead) {
     transport_->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
     std::string answer;
@@ -993,6 +1165,47 @@ TEST_F(ReverseBindingTest, UnauthorizedBodyIsNotRead) {
                                        header_only_post(4 * 1024 * 1024), std::chrono::seconds(20));
     });
     EXPECT_EQ(answer.rfind("HTTP/1.1 401", 0), 0u) << answer;
+}
+
+TEST_F(ReverseBindingTest, ConnectionLimitsMustAllowARequest) {
+    EXPECT_THROW(transport_->set_connection_limits({0, std::chrono::seconds(1), 0, 1}),
+                 std::invalid_argument);
+    EXPECT_THROW(transport_->set_connection_limits({0, std::chrono::seconds(1), 1, 0}),
+                 std::invalid_argument);
+}
+
+TEST_F(ReverseBindingTest, RequestCountsByTheMemoryItTakesParsed) {
+    transport_->set_connection_limits({0, std::chrono::seconds(30), 4096, 64 * 1024});
+    Reply padded;
+    run([&]() -> mcp::Task<void> { padded = co_await post(initialize_with_empty_objects(10000)); });
+    EXPECT_EQ(padded.status, 503u) << padded.body;
+}
+
+TEST_F(ReverseBindingTest, RequestsPastTheCountAreRefused) {
+    g_hold_started = false;
+    g_hold_released = false;
+    transport_->set_connection_limits({0, std::chrono::seconds(30), 1, 1U << 30});
+    Reply held;
+    Reply refused;
+    run([&]() -> mcp::Task<void> {
+        const auto initialized = co_await post(make_initialize_request("1"));
+        const Headers session{
+            {"MCP-Session-Id", initialized.session_id.value_or("")},
+            {"MCP-Protocol-Version", json::parse(initialized.body)["result"]["protocolVersion"]}};
+        co_await post_only(make_initialized_notification(), session);
+        asio::co_spawn(
+            io_,
+            [&, session]() -> mcp::Task<void> {
+                held = co_await post(make_tool_call_request("h", "hold", json::object()), session);
+            },
+            asio::detached);
+        co_await wait_until([] { return g_hold_started.load(); });
+        refused = co_await post(ping(), session);
+        g_hold_released = true;
+        co_await wait_until([&] { return held.status != 0; });
+    });
+    EXPECT_EQ(refused.status, 503u) << refused.body;
+    EXPECT_EQ(held.status, 200u) << held.body;
 }
 
 TEST_F(ReverseBindingTest, ConnectionsPastTheLimitAreClosed) {

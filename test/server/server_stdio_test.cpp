@@ -381,6 +381,44 @@ TEST(RunStdioProcess, InputEndCancelsARunningHandler) {
     EXPECT_TRUE(answered);
 }
 
+// The end of standard input fails the server's own requests at once: no answer to them can arrive,
+// so a handler waiting for one goes on instead of waiting out the reverse-request timeout.
+TEST(RunStdioProcess, InputEndFailsTheServersOwnRequests) {
+    int marker[2];
+    ASSERT_EQ(::pipe(marker), 0);
+    StdioServerProcess server([&marker](mcp::Server& child) {
+        child.set_reverse_request_timeout(std::chrono::hours(1));
+        const int write_end = marker[1];
+        child.add_tool<nlohmann::json, nlohmann::json>(
+            "ask", "Pings the client", nlohmann::json{{"type", "object"}},
+            [&child, write_end](nlohmann::json /*args*/) -> mcp::Task<nlohmann::json> {
+                auto written = ::write(write_end, "S", 1);
+                bool failed = false;
+                try {
+                    co_await child.send_request("ping", std::nullopt);
+                } catch (const std::exception&) {
+                    failed = true;
+                }
+                written = ::write(write_end, failed ? "F" : "A", 1);
+                static_cast<void>(written);
+                co_return nlohmann::json::object();
+            });
+    });
+    ::close(marker[1]);
+    server.send(make_initialize_request("1").dump() + "\n" + make_initialized_notification().dump() +
+                "\n" + make_tool_call_request("a", "ask", nlohmann::json::object()).dump() + "\n");
+    ASSERT_EQ(next_marker(marker[0]), 'S');
+    server.close_stdin();
+    const auto seen = next_marker(marker[0]);
+    ::close(marker[0]);
+    // Otherwise the server still waits for the answer, and the destructor ends it.
+    ASSERT_EQ(seen, 'F');
+    server.read_to_end();
+    const auto status = server.wait_for_exit();
+    ASSERT_TRUE(status.has_value());
+    EXPECT_TRUE(WIFEXITED(*status));
+}
+
 // A signal ends the run at once: it does not wait for a running handler, which is told to stop.
 TEST(RunStdioProcess, SignalCancelsARunningHandler) {
     int marker[2];

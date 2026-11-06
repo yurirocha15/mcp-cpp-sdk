@@ -197,6 +197,38 @@ TEST_F(ServerLimitsTest, AnswerFromTheClientIsReadWhileARefusalWaitsToBeWritten)
     EXPECT_EQ((*answer_to(1))["result"]["structuredContent"], (json{{"roots", json::array()}}));
 }
 
+// The answer to a message that is not JSON is queued like a refusal, so the client's answer read
+// after it reaches the handler while that answer waits to be written.
+TEST_F(ServerLimitsTest, AnswerFromTheClientIsReadWhileAParseErrorWaitsToBeWritten) {
+    std::atomic<bool> answered{false};
+    server_->add_tool<json, json>("ask_and_mark", "Asks the client", json{{"type", "object"}},
+                                  [this, &answered](json /*args*/) -> mcp::Task<json> {
+                                      auto roots =
+                                          co_await server_->send_request("roots/list", std::nullopt);
+                                      answered.store(true);
+                                      co_return roots;
+                                  });
+    run([&]() -> mcp::Task<void> {
+        co_await initialized();
+        transport_->enqueue_message(call(1, "ask_and_mark").dump());
+        co_await wait_until([this] {
+            return !written_.empty() && written_.back().value("method", "") == "roots/list";
+        });
+        const auto reverse_id = written_.back().at("id");
+        transport_->hold_writes(true);
+        transport_->enqueue_message("not json");
+        transport_->enqueue_message(
+            json{{"jsonrpc", "2.0"}, {"id", reverse_id}, {"result", {{"roots", json::array()}}}}
+                .dump());
+        co_await wait_until([&answered] { return answered.load(); });
+        transport_->hold_writes(false);
+        co_await wait_until([this] { return answer_to(1) != nullptr; });
+    });
+    EXPECT_TRUE(answered.load());
+    ASSERT_NE(answer_to(1), nullptr);
+    EXPECT_EQ((*answer_to(1))["result"]["structuredContent"], (json{{"roots", json::array()}}));
+}
+
 // Refusals the read loop makes are queued without waiting only while what is queued stays within
 // the byte limit. A client that sends requests and never reads must still stop being read.
 TEST_F(ServerLimitsTest, RefusalsPastTheByteLimitStopTheReading) {
@@ -602,7 +634,7 @@ class FloodingPeer final : public mcp::ITransport {
             }
             if (flooding_) {
                 ++pings_read;
-                json ping{{"jsonrpc", "2.0"}, {"id", pings_read}, {"method", "ping"}};
+                json ping{{"jsonrpc", "2.0"}, {"id", pings_read}, {"method", method}};
                 if (padding > 0) {
                     ping["params"]["p"] = json(padding, json::object());
                 }
@@ -635,6 +667,7 @@ class FloodingPeer final : public mcp::ITransport {
             co_return;
         }
         if (take_answers) {
+            ++answers_taken;
             co_return;
         }
         if ((!closed_ || answers_outlast_close) && !held_answers_taken_) {
@@ -642,6 +675,7 @@ class FloodingPeer final : public mcp::ITransport {
             co_await stalled_.async_wait(
                 boost::asio::redirect_error(boost::asio::use_awaitable, ignored));
         }
+        ++answers_taken;
     }
 
     void close() override {
@@ -657,7 +691,12 @@ class FloodingPeer final : public mcp::ITransport {
         stalled_.cancel();
     }
 
+    /// Holds the answers written from now on, as before take_held_answers().
+    void hold_answers_again() { held_answers_taken_ = false; }
+
     int pings_read{0};
+    /// Answers the client wrote and this peer took.
+    int answers_taken{0};
     /// Reads asked of the closed transport.
     int reads_after_close{0};
     /// Whether answers still wait to be written after close(), until take_held_answers().
@@ -666,6 +705,8 @@ class FloodingPeer final : public mcp::ITransport {
     bool take_answers{false};
     /// Empty objects each ping carries: little text, much memory once parsed.
     std::size_t padding{0};
+    /// The method of the requests sent after the handshake.
+    std::string method{"ping"};
 
    private:
     boost::asio::steady_timer stalled_;
@@ -745,6 +786,66 @@ TEST(ClientLimits, AnsweredRequestsLeaveRoomForMore) {
         boost::asio::detached);
     io.run();
     EXPECT_GE(peer->pings_read, 3000);
+}
+
+// A request gives back the memory it held once it is answered, so a client that answered many
+// still has the room to read several at once.
+TEST(ClientLimits, AnsweredRequestsGiveBackTheirMemory) {
+    boost::asio::io_context io;
+    auto peer = std::make_shared<FloodingPeer>(io.get_executor());
+    peer->padding = 20000;
+    mcp::ClientOptions options;
+    options.max_incoming_request_bytes = std::size_t{8} * 1024 * 1024;
+    mcp::Client client(peer, io.get_executor(), options);
+    int unanswered = 0;
+    boost::asio::co_spawn(
+        io,
+        [&]() -> mcp::Task<void> {
+            co_await client.connect("limits", "1.0");
+            co_await wait_until([&] { return peer->pings_read >= 3; });
+            peer->take_held_answers();
+            // Each ping takes more than 1 MiB parsed, so these hold far more than the limit in all.
+            co_await wait_until([&] { return peer->pings_read >= 40; });
+            peer->hold_answers_again();
+            // Requests read and not yet answered: with the memory given back, several at once.
+            co_await wait_until([&] { return peer->pings_read - peer->answers_taken >= 4; });
+            unanswered = peer->pings_read - peer->answers_taken;
+            client.close();
+        },
+        boost::asio::detached);
+    io.run();
+    EXPECT_GE(unanswered, 4);
+}
+
+// The client's answers count until they are written, so large answers the server does not take
+// stop the client reading, however small the requests.
+TEST(ClientLimits, UnwrittenAnswersCountAgainstTheLimit) {
+    boost::asio::io_context io;
+    auto peer = std::make_shared<FloodingPeer>(io.get_executor());
+    peer->method = "test/large";
+    mcp::ClientOptions options;
+    options.max_incoming_request_bytes = std::size_t{256} * 1024;
+    mcp::Client client(peer, io.get_executor(), options);
+    client.on_request("test/large", [](const json&) -> mcp::Task<json> {
+        co_return json{{"text", std::string(std::size_t{64} * 1024, 'x')}};
+    });
+    int settled = 0;
+    boost::asio::co_spawn(
+        io,
+        [&]() -> mcp::Task<void> {
+            co_await client.connect("limits", "1.0");
+            co_await wait_until([&] { return peer->pings_read >= 3; });
+            boost::asio::steady_timer settle(io.get_executor(), std::chrono::milliseconds(100));
+            co_await settle.async_wait(boost::asio::use_awaitable);
+            settled = peer->pings_read;
+            client.close();
+        },
+        boost::asio::detached);
+    io.run();
+    // Four answers of 64 KiB fill the limit. Requests read before their handlers queue an answer
+    // add a few; counted by the requests alone, the client would read 1024.
+    EXPECT_GE(settled, 3);
+    EXPECT_LT(settled, 64);
 }
 
 // A client at its limit reads again once its answers are written and its requests end.
