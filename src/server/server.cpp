@@ -1807,7 +1807,8 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
     }
 
     if (match == nullptr || !match->handler) {
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+        // MCP names this case with its own code.
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_RESOURCE_NOT_FOUND,
                                   "Unknown resource: " + params.uri);
     }
 

@@ -726,7 +726,8 @@ TEST_F(ServerHandlersTest, MetadataOnlyTemplateDoesNotBlockHandledTemplate) {
     EXPECT_EQ(responses[1]["result"]["contents"][0]["text"], "handled");
 }
 
-TEST_F(ServerHandlersTest, UnknownResourceReturnsInvalidParams) {
+// MCP names a resource that does not exist with -32002.
+TEST_F(ServerHandlersTest, UnknownResourceReturnsResourceNotFound) {
     mcp::ServerCapabilities caps;
     caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
     ServerSetup setup(io_ctx_, std::move(caps));
@@ -738,10 +739,10 @@ TEST_F(ServerHandlersTest, UnknownResourceReturnsInvalidParams) {
                                           {"params", {{"uri", "file:///does-not-exist.txt"}}}});
 
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_RESOURCE_NOT_FOUND);
 }
 
-TEST_F(ServerHandlersTest, UnknownResourceTemplateReturnsInvalidParams) {
+TEST_F(ServerHandlersTest, UnknownResourceTemplateReturnsResourceNotFound) {
     mcp::ServerCapabilities caps;
     caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
     ServerSetup setup(io_ctx_, std::move(caps));
@@ -759,7 +760,7 @@ TEST_F(ServerHandlersTest, UnknownResourceTemplateReturnsInvalidParams) {
                                           {"params", {{"uri", "file:///other/item.txt"}}}});
 
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_RESOURCE_NOT_FOUND);
 }
 
 TEST_F(ServerHandlersTest, OverlongUriIsRejectedWithoutReachingTemplateMatching) {
@@ -939,7 +940,7 @@ TEST_F(ServerHandlersTest, TemplateExpressionsMatchWhatTheirOperatorExpandsTo) {
             EXPECT_EQ(response["result"]["contents"][0]["text"], uri_template);
         } else {
             ASSERT_TRUE(response.contains("error")) << response.dump();
-            EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_PARAMS);
+            EXPECT_EQ(response["error"]["code"], mcp::g_RESOURCE_NOT_FOUND);
         }
     }
 }
@@ -971,7 +972,7 @@ TEST_F(ServerHandlersTest, ANearlyMatchingUriIsAnsweredInBoundedTime) {
     const auto elapsed = std::chrono::steady_clock::now() - started;
 
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_RESOURCE_NOT_FOUND);
     EXPECT_LT(elapsed, std::chrono::seconds(1));
 }
 

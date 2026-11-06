@@ -52,9 +52,18 @@ inline constexpr int g_UNAUTHORIZED = -32000;
 inline constexpr int g_REQUEST_TIMEOUT = -32001;
 
 /**
- * @brief JSON-RPC-compatible client error code used when the transport closes.
+ * @brief Error code the SDK uses locally when the transport closes.
+ *
+ * @details Outside the range JSON-RPC reserves (-32768 to -32000), as the specification asks of
+ * codes it does not define, so it cannot be mistaken for an error the peer sent. -32002 is MCP's
+ * code for a resource that does not exist.
  */
-inline constexpr int g_CONNECTION_CLOSED = -32002;
+inline constexpr int g_CONNECTION_CLOSED = -31000;
+
+/**
+ * @brief JSON-RPC error code for a resource that does not exist.
+ */
+inline constexpr int g_RESOURCE_NOT_FOUND = -32002;
 
 // Error-code allocation policy: -32000..-32019 is a grandfathered legacy band
 // (pre-existing codes above); -32020..-32099 is the spec-reserved band for

@@ -51,6 +51,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   error, leaves out `id` instead of writing `"id": null`. MCP's schema gives
   the id the type of a request id, and the TypeScript SDK 1.32.1 refuses a
   null one. A null id is still read as no id.
+- `g_CONNECTION_CLOSED`, the code the SDK uses locally when a transport
+  closes, is -31000, outside the range JSON-RPC reserves, so it cannot be
+  mistaken for an error the peer sent. It was -32002, MCP's code for a
+  resource that does not exist.
+- `resources/read` of a resource that does not exist is answered -32002
+  (`g_RESOURCE_NOT_FOUND`), as the specification asks, instead of -32602.
 - `tools/call` naming an unknown tool and `prompts/get` naming an unknown
   prompt are answered with `g_INVALID_PARAMS` (`-32602`), as the tools and
   prompts specifications list, instead of `g_METHOD_NOT_FOUND` (`-32601`).
