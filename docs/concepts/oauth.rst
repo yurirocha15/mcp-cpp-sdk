@@ -288,6 +288,14 @@ arrived and a JSON-RPC message by what it takes parsed. A request past either is
 ``503 Service Unavailable``. These limits cover all sessions of a
 ``StreamableHttpSessionManager`` together.
 
+A connection past the connection limit is closed as soon as it is accepted,
+without an answer, so its client sees the connection end. The descriptor limit
+is the soft ``RLIMIT_NOFILE`` (``ulimit -n``). systemd gives a service a soft
+limit of 1024 unless its unit sets ``LimitNOFILE=``, and three quarters of that
+is 768 connections, with each SSE stream on GET holding one. To serve more,
+raise the soft limit, up to the hard limit with ``setrlimit()`` or in the unit
+with ``LimitNOFILE=``, or set ``max_connections``.
+
 The default is deliberately well above Boost.Beast's own 1 MB. Binary content
 reaches an MCP server as base64 inside the JSON body — ``ImageContent::data``,
 ``BlobResourceContents::blob`` and ``AudioContent`` have no out-of-band or

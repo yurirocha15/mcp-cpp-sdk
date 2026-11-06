@@ -162,8 +162,10 @@ MCP_API std::string protected_resource_metadata_url(const ProtectedResourceMetad
  * Every limit covers the whole listener, whatever session a request belongs to.
  */
 struct HttpConnectionLimits {
-    /// Connections at once; one past it is closed as soon as it is accepted. Zero takes three
-    /// quarters of the process's descriptor limit where there is one, else 4096.
+    /// Connections at once; one past it is closed as soon as it is accepted, without an answer.
+    /// Zero takes three quarters of the process's soft descriptor limit (RLIMIT_NOFILE) where
+    /// there is one, else 4096. systemd gives a service a soft limit of 1024 unless its unit sets
+    /// LimitNOFILE=, which makes 768; each SSE stream on GET holds a connection too.
     std::size_t max_connections{0};
     /// How long reading one request may take, from waiting for its first byte to the end of its
     /// body, and how long the peer may take to read the answer; a connection that takes longer is
