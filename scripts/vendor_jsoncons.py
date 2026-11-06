@@ -835,6 +835,15 @@ EVALUATION_REPLACEMENTS = (
         1,
     ),
     (
+        KEYWORD_VALIDATOR_PATH,
+        """                auto s = instance.template as<jsoncons::string_view>();
+                std::string content;""",
+        """                auto s = instance.template as<jsoncons::string_view>();
+                evaluation_limits::charge(1 + s.size() / 4);
+                std::string content;""",
+        1,
+    ),
+    (
         FORMAT_VALIDATORS_PATH,
         """        JSONCONS_TRY\x20
         {

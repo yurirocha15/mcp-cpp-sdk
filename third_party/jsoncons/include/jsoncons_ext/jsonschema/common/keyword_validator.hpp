@@ -452,6 +452,7 @@ namespace jsonschema {
             if (content_encoding_ == "base64")
             {
                 auto s = instance.template as<mcp_detail_jsoncons::string_view>();
+                evaluation_limits::charge(1 + s.size() / 4);
                 std::string content;
                 auto retval = mcp_detail_jsoncons::base64_to_bytes(s.begin(), s.end(), content);
                 if (retval.ec != mcp_detail_jsoncons::conv_errc::success)

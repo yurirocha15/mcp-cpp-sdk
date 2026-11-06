@@ -177,8 +177,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   now fails to decode. A form request may leave out `mode`, as the specification
   allows.
 - The evaluation budget now covers `enum` and `const` comparisons,
-  `dependentRequired`, `properties` and `uniqueItems` on colliding hashes, and
-  the text a failed branch keeps. Regular expression compilation is bounded.
+  `dependentRequired`, `properties` and `uniqueItems` on colliding hashes, the
+  base64 decoding of a draft-07 `contentEncoding`, and the text a failed branch
+  keeps. Regular expression compilation is bounded.
   These comparisons are charged by the values they read. A message about a
   property that `additionalProperties` or `unevaluatedProperties` refuses quotes
   an excerpt of its name.

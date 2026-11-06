@@ -813,6 +813,23 @@ bool stops_for_work(const json& schema, const json& value, std::size_t work) {
            result.violations[0].message.find("takes too much work") != std::string::npos;
 }
 
+// Draft-07 evaluates contentEncoding and contentMediaType, and each reads the whole string: 100
+// branches over 1 MiB cost about 26 million units, which 10 million do not pay for.
+TEST(SchemaLimits, ContentKeywordsAreChargedByTheStringsLength) {
+    const json text = std::string(1U << 20U, 'x');
+    for (const auto& [keyword, value] :
+         {std::pair{"contentEncoding", "base64"}, std::pair{"contentMediaType", "text/plain"}}) {
+        json branches = json::array();
+        for (int i = 0; i < 100; ++i) {
+            branches.push_back({{keyword, value}});
+        }
+        const json schema = {{"$schema", "http://json-schema.org/draft-07/schema#"},
+                             {"allOf", branches}};
+        EXPECT_TRUE(CompiledSchema::compile(schema).validate(text).valid) << keyword;
+        EXPECT_TRUE(stops_for_work(schema, text, 10'000'000)) << keyword;
+    }
+}
+
 // 40,000 enum comparisons. Both validators charge 8 units for one, so 100,000 units do not pay for
 // them, whichever validator runs.
 TEST(SchemaLimits, BothValidatorsChargeAComparisonAlike) {
