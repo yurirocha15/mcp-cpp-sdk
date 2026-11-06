@@ -29,7 +29,16 @@ namespace mcp {
 namespace detail {
 
 struct MemoryTransportState {
-    using Message = std::variant<std::string, nlohmann::json>;
+    using Body = std::variant<std::string, nlohmann::json>;
+
+    /// A message, and the id as JSON text of the request it was written as related to, if any.
+    struct Message {
+        // NOLINTNEXTLINE(google-explicit-constructor)
+        Message(Body content, std::shared_ptr<const std::string> related = nullptr)
+            : body(std::move(content)), related_request(std::move(related)) {}
+        Body body;
+        std::shared_ptr<const std::string> related_request;
+    };
 
     struct ReadWaiter {
         explicit ReadWaiter(const boost::asio::any_io_executor& executor) : signal(executor) {
@@ -73,17 +82,17 @@ struct MemoryTransportState {
     }
 
     static std::string as_string(Message message) {
-        if (auto* raw = std::get_if<std::string>(&message)) {
+        if (auto* raw = std::get_if<std::string>(&message.body)) {
             return std::move(*raw);
         }
-        return std::get<nlohmann::json>(message).dump();
+        return std::get<nlohmann::json>(message.body).dump();
     }
 
     static nlohmann::json as_json(Message message) {
-        if (auto* json = std::get_if<nlohmann::json>(&message)) {
+        if (auto* json = std::get_if<nlohmann::json>(&message.body)) {
             return std::move(*json);
         }
-        return nlohmann::json::parse(std::get<std::string>(message));
+        return nlohmann::json::parse(std::get<std::string>(message.body));
     }
 
     /// @return The next message, or std::nullopt once the transport is closed.
@@ -138,20 +147,18 @@ struct MemoryTransportState {
         incoming.emplace(std::move(message));
     }
 
-    template <typename MessageValue>
     static Task<void> deliver(std::shared_ptr<MemoryTransportState> sender,
-                              std::shared_ptr<MemoryTransportState> peer, MessageValue message) {
+                              std::shared_ptr<MemoryTransportState> peer, Message message) {
         if (sender->closed.load(std::memory_order_acquire) ||
             peer->closed.load(std::memory_order_acquire)) {
             throw std::runtime_error("transport closed");
         }
 
-        peer->deliver_message(Message(std::move(message)));
+        peer->deliver_message(std::move(message));
         co_return;
     }
 
-    template <typename MessageValue>
-    static Task<void> write(std::shared_ptr<MemoryTransportState> state, MessageValue message) {
+    static Task<void> write(std::shared_ptr<MemoryTransportState> state, Message message) {
         if (state->closed.load(std::memory_order_acquire)) {
             throw std::runtime_error("transport closed");
         }
@@ -206,7 +213,24 @@ Task<std::optional<nlohmann::json>> read_json_until_closed(
     co_return detail::MemoryTransportState::as_json(std::move(*message));
 }
 
+Task<std::optional<detail::MemoryTransportAccess::RelatedMessage>> read_related_until_closed(
+    std::shared_ptr<detail::MemoryTransportState> state) {
+    auto message = co_await detail::MemoryTransportState::next_message_or_closed(std::move(state));
+    if (!message) {
+        co_return std::nullopt;
+    }
+    auto related_request = std::move(message->related_request);
+    co_return detail::MemoryTransportAccess::RelatedMessage{
+        detail::MemoryTransportState::as_string(std::move(*message)), std::move(related_request)};
+}
+
 }  // namespace
+
+Task<std::optional<detail::MemoryTransportAccess::RelatedMessage>>
+detail::MemoryTransportAccess::read_related_until_closed(MemoryTransport& transport) {
+    auto state = transport.state_;
+    return mcp::detail::spawn_awaitable(state->strand, mcp::read_related_until_closed(state));
+}
 
 Task<std::optional<std::string>> detail::MemoryTransportAccess::read_message_until_closed(
     MemoryTransport& transport) {
@@ -238,11 +262,20 @@ Task<nlohmann::json> MemoryTransport::read_json() {
 // A write reads only the closed flag and the peer pointer before it hands the message to the
 // peer's strand, so it runs on the caller's executor instead of first hopping to this strand.
 Task<void> MemoryTransport::write_json(nlohmann::json message) {
-    return detail::MemoryTransportState::write(state_, std::move(message));
+    return detail::MemoryTransportState::write(
+        state_, detail::MemoryTransportState::Message(std::move(message)));
 }
 
 Task<void> MemoryTransport::write_message(std::string_view message) {
-    return detail::MemoryTransportState::write(state_, std::string(message));
+    return detail::MemoryTransportState::write(
+        state_, detail::MemoryTransportState::Message(std::string(message)));
+}
+
+Task<void> MemoryTransport::write_related_message(std::string_view message,
+                                                  std::string_view related_request) {
+    return detail::MemoryTransportState::write(
+        state_, detail::MemoryTransportState::Message(
+                    std::string(message), std::make_shared<const std::string>(related_request)));
 }
 
 void MemoryTransport::close() {

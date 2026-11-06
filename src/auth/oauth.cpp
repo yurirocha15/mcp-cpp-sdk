@@ -2954,8 +2954,8 @@ OAuthClientTransport::OAuthClientTransport(std::shared_ptr<ITransport> inner,
 
 Task<std::string> OAuthClientTransport::read_message() { return Impl::read(impl_); }
 
-bool OAuthClientTransport::overlapping_modern_writes() const noexcept {
-    return impl_->inner->overlapping_modern_writes();
+bool OAuthClientTransport::overlapping_writes() const noexcept {
+    return impl_->inner->overlapping_writes();
 }
 
 Task<void> OAuthClientTransport::write_message(std::string_view message) {

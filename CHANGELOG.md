@@ -268,16 +268,38 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `examples/features/schema_validation.cpp`, which shows each tool schema
   check on the server and the client and exits with a failure status if one
   does not hold.
+- Sessions of protocol revision 2025-11-25 and earlier stream over HTTP. In
+  `StreamableHttpSessionManager` and `HttpServerTransport`, a POST from a
+  client that accepts SSE over HTTP/1.1 becomes a stream once the server sends
+  anything for the request before its response: the handler's notifications
+  and the server's own requests go on it as they are sent, and the response
+  ends it. A POST answered first gets its response alone, as before. A GET
+  opens the session's stream for what belongs to no request; in a 2025-11-25
+  session it starts with an event that has an id and no data. A GET with
+  `Last-Event-ID` resumes a stream that is still going on, live. A client
+  leaving a stream does not cancel its request. `Server` writes a handler's
+  messages with `ITransport::write_related_message()`, which names the request
+  they belong to, and `EventStore::stream_of()` names the stream of an event.
+- `HttpClientTransport` sends each message of a legacy session on an exchange
+  of its own, so requests overlap, and reads SSE answers as they arrive. After
+  notifications/initialized it opens the session's GET stream, opens it again
+  from its last event when it ends, and does not ask again after a 405. A
+  request's stream that ends before its response is resumed with a GET naming
+  its last event, at most three times.
 
 ### Changed
 
 - Middleware also runs for `resources/subscribe`, `resources/unsubscribe` and
   `completion/complete`, so `make_auth_middleware()` guards them too.
-- `GET` on the MCP endpoint within a session answers `405` with
-  `Allow: POST, DELETE` unless it resumes with `Last-Event-ID`; a `GET` without
-  a session is answered `400`. It used to answer `200` with an empty JSON body,
-  which the specification does not allow; a resume with nothing to replay
-  answers an empty SSE stream.
+- `GET` on the MCP endpoint within a session opens the session's SSE stream,
+  one at a time (another is answered `409`), or resumes a stream with
+  `Last-Event-ID`; a `GET` without a session is answered `400`. It used to
+  answer `200` with an empty JSON body, which the specification does not
+  allow; a resume of a stream that ended with nothing to replay answers an
+  empty SSE stream.
+- `ITransport::overlapping_modern_writes()` is now `overlapping_writes()`. On a
+  transport that returns true, `Client` writes every message beside its queue,
+  in sessions of every protocol revision.
 - `BUILD_TESTING`, `BUILD_EXAMPLES` and `BUILD_DOCS` default to `ON` only when
   the SDK is the top-level CMake project. Added with FetchContent or
   `add_subdirectory`, the SDK no longer builds its tests and examples or needs
@@ -405,8 +427,17 @@ Versioning; a `0.x` version is a stable release unless its version has an
   messages of another stream. Both HTTP server transports now replay only the
   stream the named event was sent on: `EventStore::append()` takes the stream
   of the event, and `events_after()` returns only that stream's later events.
-  `HttpServerTransport` answers each POST with its response alone, so a resume
-  there replays nothing.
+- A request the server sent while it handled a POST of a legacy session over
+  HTTP, such as `elicitation/create` or `sampling/createMessage`, reached the
+  client only with the POST's response, which the handler could not produce
+  without the client's answer, so the call waited for the server's
+  reverse-request timeout. `HttpServerTransport` dropped such requests, and
+  every notification. Both now stream them, and `HttpClientTransport` reads
+  them as they arrive (see Added). The conformance server scenarios
+  `tools-call-elicitation`, `tools-call-sampling`,
+  `elicitation-sep1034-defaults` and `elicitation-sep1330-enums`, and the
+  client scenarios `sse-retry` and `elicitation-sep1034-client-defaults`, now
+  pass.
 - A throw that does not derive from `std::exception`, from middleware or from
   a resource or prompt handler, left the request unanswered. It is now answered
   with `-32603`. Tool handlers still report it as a tool error.

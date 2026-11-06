@@ -116,6 +116,34 @@ mcp::Task<RawResponse> raw_request(
     co_return result;
 }
 
+/// A GET that resumes the stream after @p last_event_id, and its response.
+mcp::Task<RawResponse> raw_resume(const asio::any_io_executor& executor, unsigned short port,
+                                  const std::string& session_id, const std::string& protocol_version,
+                                  const std::string& last_event_id) {
+    beast::tcp_stream stream(executor);
+    auto resolver = asio::ip::tcp::resolver(executor);
+    auto endpoints =
+        co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
+    co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+    http::request<http::empty_body> request{http::verb::get, "/mcp", 11};
+    request.set(http::field::host, "127.0.0.1");
+    request.set(http::field::accept, "text/event-stream");
+    request.set("MCP-Protocol-Version", protocol_version);
+    request.set("Mcp-Session-Id", session_id);
+    request.set("Last-Event-ID", last_event_id);
+    co_await http::async_write(stream, request, asio::use_awaitable);
+    beast::flat_buffer response_buffer;
+    http::response<http::string_body> response;
+    co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
+    RawResponse result;
+    result.status = response.result_int();
+    result.body = response.body();
+    result.content_type = std::string(response[http::field::content_type]);
+    beast::error_code shutdown_error;
+    stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
+    co_return result;
+}
+
 /// POST @p body with @p headers, one per pair, and return the response.
 mcp::Task<RawResponse> raw_post(const asio::any_io_executor& executor, unsigned short port,
                                 const std::string& body,
@@ -777,9 +805,9 @@ TEST_F(SessionManagerTest, ProtocolVersionStateIsSafeAcrossConnectionStrands) {
                             const auto version =
                                 index % 4 == 1 ? std::string("2025-06-18")
                                                : std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
-                            responses[index] =
-                                co_await raw_request(io_ctx_.get_executor(), port, http::verb::get,
-                                                     "/mcp", {}, session_id, version);
+                            // A resume from an event never sent checks the version and ends.
+                            responses[index] = co_await raw_resume(io_ctx_.get_executor(), port,
+                                                                   session_id, version, "none");
                         }
                     },
                     [&, index, remaining, all_done](std::exception_ptr error) {
@@ -810,7 +838,7 @@ TEST_F(SessionManagerTest, ProtocolVersionStateIsSafeAcrossConnectionStrands) {
     for (std::size_t index = 0; index < request_count; ++index) {
         EXPECT_EQ(errors[index], nullptr) << "request " << index;
         EXPECT_TRUE(responses[index].status == 200 || responses[index].status == 400 ||
-                    responses[index].status == 405)
+                    responses[index].status == 410)
             << "request " << index << " returned " << responses[index].status;
     }
 }
@@ -1554,31 +1582,6 @@ TEST_F(SessionManagerTest, StatelessNotificationReturns202WithoutSession) {
 
     EXPECT_EQ(notification_response.status, 202);
     EXPECT_TRUE(notification_response.session_id.empty());
-}
-
-// A server either answers GET with an SSE stream or with 405, so a client can tell which it got.
-TEST_F(SessionManagerTest, GetWithoutAResumePointIsRefused) {
-    const unsigned short port = 19399;
-    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
-                                              make_echo_server_factory());
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
-
-    RawResponse response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            auto init =
-                co_await do_initialize(io_ctx_.get_executor(), port, 1, "2025-11-25", "2025-11-25");
-            response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp", {},
-                                            init.session_id, std::string("2025-11-25"));
-            manager.close();
-        },
-        asio::detached);
-
-    io_ctx_.run();
-
-    EXPECT_EQ(response.status, 405);
-    EXPECT_EQ(response.allow, "POST, DELETE");
 }
 
 TEST_F(SessionManagerTest, StatelessRejectsGetAndDeleteWithPostOnlyAllowHeader) {

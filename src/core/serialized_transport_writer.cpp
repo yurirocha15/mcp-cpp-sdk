@@ -46,6 +46,8 @@ struct SerializedTransportWriterState {
         /// Null for a marker that completes once everything queued before it is written.
         std::shared_ptr<const std::string> message;
         std::shared_ptr<const std::atomic<bool>> cancel_before_start;
+        /// The id of the client request the message belongs to, as JSON text, or null.
+        std::shared_ptr<const std::string> related_request;
         boost::asio::steady_timer completion;
         std::exception_ptr error;
         bool completed{false};
@@ -86,7 +88,12 @@ struct SerializedTransportWriterState {
             // that cannot recover fails each later call on its own.
             std::exception_ptr error;
             try {
-                co_await state->transport->write_message(*operation->message);
+                if (operation->related_request) {
+                    co_await state->transport->write_related_message(*operation->message,
+                                                                     *operation->related_request);
+                } else {
+                    co_await state->transport->write_message(*operation->message);
+                }
             } catch (...) {
                 error = std::current_exception();
             }
@@ -111,9 +118,11 @@ struct SerializedTransportWriterState {
 
     static Task<void> enqueue_and_wait(std::shared_ptr<SerializedTransportWriterState> state,
                                        std::shared_ptr<const std::string> message,
-                                       std::shared_ptr<const std::atomic<bool>> cancel_before_start) {
+                                       std::shared_ptr<const std::atomic<bool>> cancel_before_start,
+                                       std::shared_ptr<const std::string> related_request = nullptr) {
         auto operation = std::make_shared<Operation>(state->strand, std::move(message),
                                                      std::move(cancel_before_start));
+        operation->related_request = std::move(related_request);
         if (operation->message) {
             state->queued_bytes.fetch_add(queued_cost(*operation->message), std::memory_order_relaxed);
         }
@@ -173,6 +182,22 @@ Task<void> SerializedTransportWriter::write_message(std::string_view message) co
 
 Task<void> SerializedTransportWriter::write_message(std::shared_ptr<const std::string> message) const {
     return write_message(std::move(message), nullptr);
+}
+
+Task<void> SerializedTransportWriter::write_related(
+    std::shared_ptr<const std::string> message,
+    std::shared_ptr<const std::string> related_request) const {
+    if (!state_) {
+        throw std::logic_error("Cannot use a moved-from SerializedTransportWriter");
+    }
+    if (!message || !related_request) {
+        throw std::invalid_argument("SerializedTransportWriter message must not be null");
+    }
+    auto state = state_;
+    return boost::asio::co_spawn(state->strand,
+                                 SerializedTransportWriterState::enqueue_and_wait(
+                                     state, std::move(message), nullptr, std::move(related_request)),
+                                 boost::asio::use_awaitable);
 }
 
 Task<void> SerializedTransportWriter::write_overlapping(

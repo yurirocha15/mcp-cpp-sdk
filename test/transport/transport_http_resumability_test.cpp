@@ -423,8 +423,9 @@ TEST_F(HttpResumabilityTest, GetWithEvictedEventIdReturns410) {
     EXPECT_EQ(get_status_code, 410);
 }
 
-// A server either answers GET with an SSE stream or with 405, so a client can tell which it got.
-TEST_F(HttpResumabilityTest, GetAnswersWithAStreamOnlyWhenResuming) {
+// A GET opens the session's stream; with Last-Event-ID it resumes a stream from there, and a
+// stream that already ended is replayed and closed.
+TEST_F(HttpResumabilityTest, GetOpensAStreamAndResumesOneThatEnded) {
     mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18099);
     mcp::HttpClientTransport client_transport(io_ctx_.get_executor(), "http://127.0.0.1:18099/mcp");
 
@@ -475,6 +476,12 @@ TEST_F(HttpResumabilityTest, GetAnswersWithAStreamOnlyWhenResuming) {
                 }
                 co_await http::async_write(stream, get_request, asio::use_awaitable);
                 beast::flat_buffer buffer;
+                if (!last_event_id) {
+                    // The stream stays open, so only its head is read.
+                    http::response_parser<http::string_body> parser;
+                    co_await http::async_read_header(stream, buffer, parser, asio::use_awaitable);
+                    co_return parser.release();
+                }
                 http::response<http::string_body> response;
                 co_await http::async_read(stream, buffer, response, asio::use_awaitable);
                 co_return response;
@@ -489,8 +496,8 @@ TEST_F(HttpResumabilityTest, GetAnswersWithAStreamOnlyWhenResuming) {
     io_ctx_.run();
 
     ASSERT_TRUE(plain.has_value());
-    EXPECT_EQ(plain->result_int(), 405);
-    EXPECT_EQ((*plain)[http::field::allow], "POST, DELETE");
+    EXPECT_EQ(plain->result_int(), 200);
+    EXPECT_EQ((*plain)[http::field::content_type], "text/event-stream");
     ASSERT_TRUE(resumed.has_value());
     EXPECT_EQ(resumed->result_int(), 200);
     EXPECT_EQ((*resumed)[http::field::content_type], "text/event-stream");

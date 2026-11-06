@@ -46,6 +46,14 @@ class MCP_API HttpStatusError : public std::runtime_error {
  *
  * Sends JSON-RPC messages via HTTP POST to an MCP Streamable HTTP endpoint.
  * Supports both `application/json` and `text/event-stream` response content types.
+ *
+ * Each message goes on an exchange of its own, so requests overlap, and an event stream is read
+ * as it comes: a request the server sends while it handles one of the client's reaches the client
+ * at once. In a session of protocol revision 2025-11-25 or earlier, the transport opens the
+ * session's GET stream after notifications/initialized, for what the server sends outside any
+ * request, and opens it again from its last event when it ends; a server that answers that GET
+ * with 405 is not asked again. A request's stream that ends before its response is resumed with a
+ * GET that names its last event.
  */
 class MCP_API HttpClientTransport final : public ITransport {
    public:
@@ -121,11 +129,10 @@ class MCP_API HttpClientTransport final : public ITransport {
     /**
      * @brief Limit the wait for the response to a request sent to a server of an older protocol.
      *
-     * Requests to such a server go out one at a time, so a server that never answers holds up the
-     * next one for this long. The default is ten minutes; ClientOptions::request_timeout still
-     * decides how long a caller waits. Zero, a negative value, or one too long for the clock to
-     * represent disables it. Requests of protocol revision 2026-07-28 have no such limit, since
-     * each has its own connection.
+     * Past it the connection that waits is closed and the request fails. The default is ten
+     * minutes; ClientOptions::request_timeout still decides how long a caller waits. Zero, a
+     * negative value, or one too long for the clock to represent disables it. Requests of protocol
+     * revision 2026-07-28 have no such limit.
      */
     void set_response_timeout(std::chrono::milliseconds timeout);
 
@@ -150,8 +157,8 @@ class MCP_API HttpClientTransport final : public ITransport {
      */
     void close() override;
 
-    /** @brief True: each 2026-07-28 message has its own connection. */
-    [[nodiscard]] bool overlapping_modern_writes() const noexcept override { return true; }
+    /** @brief True: each message has its own exchange. */
+    [[nodiscard]] bool overlapping_writes() const noexcept override { return true; }
 
    private:
     struct Impl;

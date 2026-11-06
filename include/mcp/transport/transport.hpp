@@ -85,6 +85,27 @@ class ITransport {
     virtual Task<void> write_message(std::string_view message) = 0;
 
     /**
+     * @brief Write a message a server sends while it serves a client request of protocol revision
+     *        2025-11-25 or earlier: a notification about that request, or a request of its own.
+     *
+     * @details A transport that answers each client request on a stream of its own, such as
+     * StreamableHttpSessionManager and HttpServerTransport, sends the message on the stream of
+     * that request, as the specification asks. A transport that wraps another forwards this as
+     * well as write_message().
+     *
+     * @param message The complete JSON-RPC message to send.
+     * @param related_request The id of the client request, as JSON text, such as `7` or `"seven"`.
+     * @return A task that completes once the message has been accepted by the transport; the
+     *         default writes it with write_message().
+     * @throws std::runtime_error If the transport is closed.
+     */
+    virtual Task<void> write_related_message(std::string_view message,
+                                             std::string_view related_request) {
+        static_cast<void>(related_request);
+        co_await write_message(message);
+    }
+
+    /**
      * @brief Close the transport and release underlying resources.
      *
      * @details Implementations should wake any pending readers and make future
@@ -121,12 +142,13 @@ class ITransport {
     virtual StdioTransport* stdio_transport() noexcept { return nullptr; }
 
     /**
-     * @brief Whether write_message() calls for 2026-07-28 messages may overlap.
+     * @brief Whether write_message() calls may overlap.
      *
-     * True for a transport that gives each such message its own exchange, so one that waits for its
-     * answer holds nothing else back. Other messages are still written one at a time.
+     * True for a transport that gives each message its own exchange, so one that waits for its
+     * answer holds nothing else back. Client writes each message beside the queue of the others
+     * on such a transport.
      */
-    [[nodiscard]] virtual bool overlapping_modern_writes() const noexcept { return false; }
+    [[nodiscard]] virtual bool overlapping_writes() const noexcept { return false; }
 };
 
 }  // namespace mcp

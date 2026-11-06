@@ -9,12 +9,14 @@
 #include <mcp/transport/http_client.hpp>
 #include <mcp/transport/http_types.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -47,16 +49,33 @@ namespace {
 
 /// The most a single response body or SSE line may hold before the exchange is abandoned.
 constexpr std::size_t g_max_modern_message_bytes = 16U * 1024U * 1024U;
+/// How many times one request's event stream is resumed after it ends without the response.
+constexpr int g_max_stream_resumes = 3;
+/// The pause before a stream is opened again when the server named none.
+constexpr std::chrono::milliseconds g_default_reconnect_delay{1000};
+/// The longest pause before a stream is opened again, whatever the server asked for.
+constexpr std::chrono::milliseconds g_max_reconnect_delay{30000};
 /// Longest `Mcp-Param-*` value sent. Longer ones do not get through the servers that limit a header.
 constexpr std::size_t g_max_param_header_bytes = 4096;
 /// The most pages of tools/list one schema refresh follows.
 constexpr int g_max_refresh_pages = 64;
 
 /// Reads a text/event-stream body in the pieces the network delivers it and returns the data of each
-/// event as soon as its terminating blank line arrives. Comment lines and fields other than `data`
-/// carry nothing the client needs and are skipped.
+/// event as soon as its terminating blank line arrives. It keeps the last event id and the
+/// reconnection time the server asked for, which a resume needs; comment lines and other fields are
+/// skipped.
 class SseDecoder {
    public:
+    SseDecoder() = default;
+    /// A decoder for a stream resumed after the event @p last_id.
+    explicit SseDecoder(std::string last_id) : last_id_(std::move(last_id)) {}
+
+    /// The id of the last event that named one, which a resume sends as Last-Event-ID.
+    [[nodiscard]] const std::string& last_id() const { return last_id_; }
+
+    /// The reconnection time a `retry` field asked for, if one did.
+    [[nodiscard]] std::optional<std::chrono::milliseconds> retry() const { return retry_; }
+
     std::vector<std::string> feed(std::string_view chunk) {
         std::vector<std::string> events;
         for (const char symbol : chunk) {
@@ -95,6 +114,24 @@ class SseDecoder {
                 events.push_back(std::move(payload_));
                 payload_.clear();
             }
+        } else if (line_.compare(0, 3, "id:") == 0) {
+            std::string_view value = std::string_view(line_).substr(3);
+            if (!value.empty() && value.front() == ' ') {
+                value.remove_prefix(1);
+            }
+            // An id holding NUL is ignored, as the SSE standard has it.
+            if (value.find('\0') == std::string_view::npos) {
+                last_id_.assign(value.data(), value.size());
+            }
+        } else if (line_.compare(0, 6, "retry:") == 0) {
+            std::string_view value = std::string_view(line_).substr(6);
+            if (!value.empty() && value.front() == ' ') {
+                value.remove_prefix(1);
+            }
+            if (!value.empty() && value.size() <= g_max_retry_digits &&
+                value.find_first_not_of("0123456789") == std::string_view::npos) {
+                retry_ = std::chrono::milliseconds(std::stoll(std::string(value)));
+            }
         } else if (line_.compare(0, 5, "data:") == 0) {
             std::string_view value = std::string_view(line_).substr(5);
             if (!value.empty() && value.front() == ' ') {
@@ -111,8 +148,13 @@ class SseDecoder {
         line_.clear();
     }
 
+    /// Longest `retry` value read, in digits: past this the field is ignored.
+    static constexpr std::size_t g_max_retry_digits = 9;
+
     std::string line_;
     std::string payload_;
+    std::string last_id_;
+    std::optional<std::chrono::milliseconds> retry_;
 };
 
 /// The call cannot be sent as it stands, which is its caller's error rather than a failed write.
@@ -140,6 +182,16 @@ struct ModernCall {
     bool expects_response{true};
     bool cancelled{false};
     std::uint64_t serial{0};
+    /// Sent the way a session of protocol revision 2025-11-25 or earlier sends it: with the
+    /// session's headers rather than the mirrored ones.
+    bool legacy{false};
+    /// A GET: the session's stream for messages of no request, or the resume of a stream after
+    /// `last_event_id`.
+    bool get{false};
+    std::string last_event_id;
+    /// Sent inside a session, where an error status keeps its HTTP meaning: a 404 says the session
+    /// is gone.
+    bool in_session{false};
 
     // The current attempt.
     std::shared_ptr<beast::tcp_stream> stream;
@@ -168,12 +220,14 @@ struct HttpClientTransport::Impl {
 
     struct SharedState {
         explicit SharedState(net::strand<net::any_io_executor>& strand)
-            : timer(strand), operation_timer(strand), resolver(strand) {
+            : timer(strand), operation_timer(strand), listen_timer(strand), resolver(strand) {
             operation_timer.expires_at(std::chrono::steady_clock::time_point::max());
         }
 
         net::steady_timer timer;
         net::steady_timer operation_timer;
+        /// The pause before the session's GET stream is opened again.
+        net::steady_timer listen_timer;
         net::ip::tcp::resolver resolver;
         std::optional<beast::tcp_stream> stream;
         std::queue<std::string> queue;
@@ -204,6 +258,8 @@ struct HttpClientTransport::Impl {
         std::uint64_t next_modern_serial{0};
         /// The `x-mcp-header` annotations of the tools tools/list returned, by tool name.
         std::map<std::string, std::vector<detail::ParamHeader>> tool_params;
+        /// The session whose GET stream is read, or was refused. Touched on the strand only.
+        std::string listening_session;
 
         /// Ends the exchange of the call that @p key names, and of the calls made for it. Returns
         /// whether there was one.
@@ -211,6 +267,10 @@ struct HttpClientTransport::Impl {
             bool found = false;
             for (auto& entry : modern_calls) {
                 auto& call = *entry.second;
+                // A legacy request is cancelled by the notification itself, which is sent.
+                if (call.legacy) {
+                    continue;
+                }
                 if (call.id_key == key || call.owner_key == key) {
                     call.cancelled = true;
                     close_call_socket(call);
@@ -687,6 +747,13 @@ struct HttpClientTransport::Impl {
             co_await run_modern(impl, std::move(modern_call));
             co_return;
         }
+        // initialize starts the session, so it goes alone; every other message of the session
+        // goes on an exchange of its own.
+        if (!is_initialize(message)) {
+            co_await run_legacy(impl,
+                                legacy_call(std::move(message), std::move(bearer_token_provider)));
+            co_return;
+        }
 
         while (state.operation_active) {
             try {
@@ -780,6 +847,273 @@ struct HttpClientTransport::Impl {
         const auto accepted = co_await exchange(impl, *notification, bearer_token_provider);
         impl->process_response(accepted, *notification, in_session);
         state.session_lost = false;
+    }
+
+    static bool is_initialize(std::string_view message) {
+        const auto parsed = nlohmann::json::parse(message, nullptr, false);
+        return parsed.is_object() && parsed.contains("id") &&
+               parsed.value("method", "") == "initialize";
+    }
+
+    /// A message of the legacy session as a call: a request, which waits for its response, or a
+    /// notification or response of the client's, which waits for nothing.
+    static std::shared_ptr<ModernCall> legacy_call(std::string message,
+                                                   std::function<std::string()> bearer_token_provider) {
+        auto call = std::make_shared<ModernCall>();
+        call->legacy = true;
+        call->expects_response = false;
+        call->bearer_token_provider = std::move(bearer_token_provider);
+        const auto parsed = nlohmann::json::parse(message, nullptr, false);
+        if (parsed.is_object()) {
+            const auto method = parsed.find("method");
+            const auto id = parsed.find("id");
+            if (method != parsed.end() && method->is_string()) {
+                call->method = method->get<std::string>();
+                if (id != parsed.end() && (id->is_string() || id->is_number_integer())) {
+                    call->expects_response = true;
+                    call->id = *id;
+                    call->id_key = id->get<RequestId>().correlation_key();
+                }
+            }
+        }
+        call->body = std::move(message);
+        return call;
+    }
+
+    /// Waits while initialize, or the start of a new session, is under way.
+    static Task<void> wait_for_operation(std::shared_ptr<Impl> impl) {
+        auto& state = *impl->state;
+        while (state.operation_active) {
+            try {
+                co_await state.operation_timer.async_wait(net::use_awaitable);
+            } catch (const boost::system::system_error& error) {
+                if (error.code() != net::error::operation_aborted) {
+                    throw;
+                }
+            }
+            if (state.closed.load(std::memory_order_acquire)) {
+                throw std::runtime_error("HttpClientTransport is closed");
+            }
+        }
+    }
+
+    /// Starts a new session in place of the one the server forgot, unless another message already
+    /// did.
+    static Task<void> replace_session(std::shared_ptr<Impl> impl,
+                                      std::function<std::string()> bearer_token_provider) {
+        auto& state = *impl->state;
+        co_await wait_for_operation(impl);
+        if (!state.session_lost) {
+            co_return;
+        }
+        state.operation_timer.expires_at(std::chrono::steady_clock::time_point::max());
+        state.operation_active = true;
+        try {
+            co_await reinitialize(impl, bearer_token_provider);
+        } catch (...) {
+            impl->reset_connection();
+            complete_operation(impl->state);
+            throw;
+        }
+        complete_operation(impl->state);
+        start_listening(impl, std::move(bearer_token_provider));
+    }
+
+    /// Sends a message of the legacy session on its own exchange, and hands the reader what comes
+    /// back. An event stream is read in the background, so the write ends once the answer starts
+    /// and other messages need not wait for it. When the server has forgotten the session, a new
+    /// one is started and the message sent again in it.
+    static Task<void> run_legacy(std::shared_ptr<Impl> impl, std::shared_ptr<ModernCall> call) {
+        auto& shared = *impl->state;
+        const bool may_replace =
+            shared.reinitialize_on_expired_session && !shared.initialize_request.empty();
+        for (int attempt = 0;; ++attempt) {
+            co_await wait_for_operation(impl);
+            if (shared.session_lost && may_replace) {
+                co_await replace_session(impl, call->bearer_token_provider);
+            }
+            const auto session = std::make_shared<const std::string>(shared.session_id);
+            call->in_session = !session->empty();
+            call->serial = ++shared.next_modern_serial;
+            shared.modern_calls.emplace(call->serial, call);
+            std::exception_ptr failure;
+            bool streaming = false;
+            bool forgotten = false;
+            try {
+                co_await modern_open(impl, call);
+                forgotten = call->status == static_cast<unsigned int>(http::status::not_found) &&
+                            !session->empty() && attempt == 0 && may_replace;
+                // An event stream of known length is complete already, so it is read here.
+                streaming = !forgotten && call->event_stream && call->parser->get().chunked();
+                if (!forgotten && !streaming) {
+                    co_await modern_read(impl, call);
+                    impl->remember_last_event_id(call->decoder);
+                }
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            if (!failure && streaming) {
+                net::co_spawn(impl->strand, legacy_stream_to_end(impl, call), net::detached);
+                co_return;
+            }
+            const bool timed_out = call->deadline && call->deadline->expired();
+            end_call(shared, *call);
+            if (failure) {
+                if (shared.closed.load(std::memory_order_acquire) || call->cancelled) {
+                    throw boost::system::system_error(net::error::operation_aborted);
+                }
+                if (timed_out) {
+                    throw boost::system::system_error(beast::error::timeout);
+                }
+                std::rethrow_exception(failure);
+            }
+            if (forgotten) {
+                if (shared.session_id == *session) {
+                    shared.session_lost = true;
+                }
+                continue;
+            }
+            if (call->final_message) {
+                impl->enqueue_message(std::move(*call->final_message));
+            }
+            if (call->method == "notifications/initialized") {
+                start_listening(impl, call->bearer_token_provider);
+            }
+            co_return;
+        }
+    }
+
+    /// Reads the event stream a request of the legacy session opened, handing the reader each
+    /// message as it comes. A stream that ends before the response is resumed with a GET naming its
+    /// last event, as the specification has it, a few times at most. Whatever goes wrong is
+    /// reported to the reader as a JSON-RPC error for the request.
+    static Task<void> legacy_stream_to_end(std::shared_ptr<Impl> impl,
+                                           std::shared_ptr<ModernCall> call) {
+        auto& shared = *impl->state;
+        std::exception_ptr failure;
+        for (int resumes = 0;; ++resumes) {
+            failure = nullptr;
+            try {
+                co_await modern_read(impl, call);
+            } catch (...) {
+                failure = std::current_exception();
+            }
+            impl->remember_last_event_id(call->decoder);
+            if (call->final_message || !call->expects_response || call->cancelled ||
+                shared.closed.load(std::memory_order_acquire) || call->decoder.last_id().empty() ||
+                resumes >= g_max_stream_resumes) {
+                break;
+            }
+            call->last_event_id = call->decoder.last_id();
+            const auto delay = reconnect_delay(call->decoder);
+            end_call(shared, *call);
+            net::steady_timer pause(impl->strand, delay);
+            boost::system::error_code ignored;
+            co_await pause.async_wait(net::redirect_error(net::use_awaitable, ignored));
+            if (shared.closed.load(std::memory_order_acquire)) {
+                break;
+            }
+            call->get = true;
+            call->serial = ++shared.next_modern_serial;
+            shared.modern_calls.emplace(call->serial, call);
+            try {
+                co_await modern_open(impl, call);
+            } catch (...) {
+                failure = std::current_exception();
+                break;
+            }
+            if (!call->event_stream) {
+                failure = std::make_exception_ptr(HttpStatusError(
+                    call->status, "The server did not resume the event stream", call->challenge));
+                break;
+            }
+        }
+        end_call(shared, *call);
+        if (shared.closed.load(std::memory_order_acquire)) {
+            co_return;
+        }
+        if (call->final_message) {
+            impl->enqueue_message(std::move(*call->final_message));
+        } else if (call->expects_response) {
+            impl->enqueue_message(error_response(
+                *call, g_CONNECTION_CLOSED,
+                failure ? describe(failure) : "The server's event stream ended without a response"));
+        }
+    }
+
+    /// Keeps the id of the last event a stream carried for last_event_id().
+    void remember_last_event_id(const SseDecoder& decoder) const {
+        if (decoder.last_id().empty()) {
+            return;
+        }
+        std::lock_guard lock(state->metadata_mutex);
+        state->last_event_id = decoder.last_id();
+    }
+
+    /// How long to wait before a stream is opened again: what its `retry` field asked for, within
+    /// bounds, or a second.
+    static std::chrono::milliseconds reconnect_delay(const SseDecoder& decoder) {
+        return std::min(decoder.retry().value_or(g_default_reconnect_delay), g_max_reconnect_delay);
+    }
+
+    /// Opens the session's GET stream, once per session.
+    static void start_listening(const std::shared_ptr<Impl>& impl,
+                                std::function<std::string()> bearer_token_provider) {
+        auto& shared = *impl->state;
+        if (shared.session_id.empty() || shared.listening_session == shared.session_id ||
+            shared.closed.load(std::memory_order_acquire)) {
+            return;
+        }
+        shared.listening_session = shared.session_id;
+        net::co_spawn(impl->strand,
+                      listen(impl, std::make_shared<const std::string>(shared.session_id),
+                             std::move(bearer_token_provider)),
+                      net::detached);
+    }
+
+    /// Reads the session's GET stream, which carries what the server sends outside any request,
+    /// and opens it again from its last event after it ends, while the session lasts. A server
+    /// that offers no such stream, answering 405, is not asked again in this session.
+    static Task<void> listen(std::shared_ptr<Impl> impl, std::shared_ptr<const std::string> session,
+                             std::function<std::string()> bearer_token_provider) {
+        auto& shared = *impl->state;
+        auto last_event_id = std::make_shared<std::string>();
+        std::chrono::milliseconds delay = g_default_reconnect_delay;
+        for (;;) {
+            if (shared.closed.load(std::memory_order_acquire) || shared.session_id != *session) {
+                co_return;
+            }
+            auto call = std::make_shared<ModernCall>();
+            call->legacy = true;
+            call->get = true;
+            call->expects_response = false;
+            call->bearer_token_provider = bearer_token_provider;
+            call->last_event_id = *last_event_id;
+            call->serial = ++shared.next_modern_serial;
+            shared.modern_calls.emplace(call->serial, call);
+            bool opened = false;
+            try {
+                co_await modern_open(impl, call);
+                opened = call->event_stream;
+                if (opened) {
+                    co_await modern_read(impl, call);
+                }
+            } catch (...) {
+                // A stream that broke is opened again below; one that never opened is not.
+            }
+            if (!call->decoder.last_id().empty()) {
+                *last_event_id = call->decoder.last_id();
+                impl->remember_last_event_id(call->decoder);
+            }
+            delay = reconnect_delay(call->decoder);
+            end_call(shared, *call);
+            if (!opened || shared.closed.load(std::memory_order_acquire)) {
+                co_return;
+            }
+            shared.listen_timer.expires_after(delay);
+            boost::system::error_code ignored;
+            co_await shared.listen_timer.async_wait(net::redirect_error(net::use_awaitable, ignored));
+        }
     }
 
     /// Sends @p body in one POST of the current session and reads the response.
@@ -1115,7 +1449,7 @@ struct HttpClientTransport::Impl {
         auto& shared = *impl->state;
         call->stream.reset();
         call->final_message.reset();
-        call->decoder = SseDecoder();
+        call->decoder = SseDecoder(call->last_event_id);
         call->content_type.clear();
         call->challenge.clear();
         call->response_body.clear();
@@ -1133,23 +1467,48 @@ struct HttpClientTransport::Impl {
         beast::error_code keep_alive_error;
         (void)stream->socket().set_option(net::socket_base::keep_alive(true), keep_alive_error);
 
-        StringRequest request{http::verb::post, impl->path, constants::g_http_version_11};
+        StringRequest request{call->get ? http::verb::get : http::verb::post, impl->path,
+                              constants::g_http_version_11};
         request.set(http::field::host, impl->host);
-        request.set(http::field::content_type, "application/json");
-        request.set(http::field::accept, "application/json, text/event-stream");
+        if (call->get) {
+            request.set(http::field::accept, "text/event-stream");
+            if (!call->last_event_id.empty()) {
+                request.set("Last-Event-ID", call->last_event_id);
+            }
+        } else {
+            request.set(http::field::content_type, "application/json");
+            request.set(http::field::accept, "application/json, text/event-stream");
+        }
         if (call->bearer_token_provider) {
             const auto token = call->bearer_token_provider();
             if (!token.empty()) {
                 request.set(http::field::authorization, "Bearer " + token);
             }
         }
-        impl->apply_modern_headers(request, *call);
-        request.body() = call->body;
+        if (call->legacy) {
+            request.set("MCP-Protocol-Version", shared.protocol_version);
+            if (!shared.session_id.empty()) {
+                request.set("MCP-Session-Id", shared.session_id);
+            }
+        } else {
+            impl->apply_modern_headers(request, *call);
+        }
+        if (!call->get) {
+            request.body() = call->body;
+        }
         request.prepare_payload();
         co_await http::async_write(*stream, request, net::use_awaitable);
         // A handler takes as long as it takes. How long to wait for it is the caller's timeout, which
-        // ends the call by closing its socket; the socket's keep-alive finds a peer that vanished.
+        // ends the call by closing its socket; the socket's keep-alive finds a peer that vanished. A
+        // request of a legacy session waits at most set_response_timeout().
         call->deadline.reset();
+        if (call->legacy && !call->get) {
+            if (const auto timeout = std::chrono::milliseconds(
+                    impl->response_timeout_ms.load(std::memory_order_relaxed));
+                timeout > std::chrono::milliseconds::zero()) {
+                call->deadline.emplace(stream->get_executor(), stream->socket(), timeout);
+            }
+        }
 
         call->buffer.clear();
         call->parser = std::make_unique<http::response_parser<http::buffer_body>>();
@@ -1221,8 +1580,8 @@ struct HttpClientTransport::Impl {
         }
 
         if (status >= constants::g_http_bad_request) {
-            const bool may_carry_error =
-                call->expects_response && (status == 400 || status == 404 || status == 405);
+            const bool may_carry_error = call->expects_response && !call->in_session &&
+                                         (status == 400 || status == 404 || status == 405);
             if (may_carry_error) {
                 auto error_body = jsonrpc_error_body(*call, body);
                 if (error_body) {
@@ -1234,7 +1593,8 @@ struct HttpClientTransport::Impl {
                                   call->challenge);
         }
         if (status == static_cast<unsigned int>(http::status::accepted) || body.empty()) {
-            if (call->expects_response) {
+            // A server of an older revision may answer a request with 202 alone.
+            if (call->expects_response && !call->legacy) {
                 throw std::runtime_error("The server answered a request without a response");
             }
             co_return;
@@ -1526,6 +1886,7 @@ void HttpClientTransport::close() {
             for (auto& entry : shared_state->modern_calls) {
                 Impl::SharedState::close_call_socket(*entry.second);
             }
+            shared_state->listen_timer.cancel();
             if (shared_state->operation_active) {
                 shared_state->resolver.cancel();
                 if (shared_state->stream) {

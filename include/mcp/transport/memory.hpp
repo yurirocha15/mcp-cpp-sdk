@@ -90,6 +90,18 @@ class MCP_API MemoryTransport final : public ITransport {
     Task<void> write_message(std::string_view message) override;
 
     /**
+     * @brief Writes a message to the peer's queue as write_message() does, keeping the request it
+     *        belongs to, which StreamableHttpSessionManager reads to pick the stream it goes on.
+     *
+     * @param message The message to send.
+     * @param related_request The id of the client request, as JSON text.
+     * @return A task that completes when the peer queue has been updated.
+     * @throws std::runtime_error If either endpoint is closed or the peer is unavailable.
+     */
+    Task<void> write_related_message(std::string_view message,
+                                     std::string_view related_request) override;
+
+    /**
      * @brief Closes the transport and its peer.
      *
      * Safe to call concurrently and multiple times. Pending readers on both
