@@ -166,6 +166,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - A `Server` on a `MemoryTransport` ended its run when a message written as text
   held a number past the range of a double, such as `1e400`. Such a message is
   answered as a parse error, and the session goes on.
+- A request answered 403 `insufficient_scope` again and again drove up to
+  three consent prompts. A request now gets one step-up by default
+  (`OAuthClientTransportOptions::max_step_ups_per_request`); zero leaves the
+  403 to the caller.
 - A reply to `elicitation/create` with an unknown action decoded as `accept`. It
   now fails to decode. A form request may leave out `mode`, as the specification
   allows.

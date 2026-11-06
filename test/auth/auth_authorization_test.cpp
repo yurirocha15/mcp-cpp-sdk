@@ -45,6 +45,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #if BOOST_VERSION >= 107700
@@ -1619,7 +1620,11 @@ TEST(AuthScopeStepUpTest, UnionsTheGrantedScopeWithAForbiddenChallengeAndReplays
     EXPECT_EQ(server.authorizations().back(), "Bearer granted-access-token");
 }
 
-TEST(AuthScopeStepUpTest, StopsAfterThreeAuthorizationChallengesForOneRequest) {
+namespace {
+
+/// The consent prompts one request costs against a server that answers a 401 and then refuses
+/// every token with insufficient_scope, with @p options on the transport, and whether it failed.
+std::pair<std::size_t, bool> prompts_for_one_request(mcp::auth::OAuthClientTransportOptions options) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
     const auto base = server.base_url();
@@ -1673,7 +1678,7 @@ TEST(AuthScopeStepUpTest, StopsAfterThreeAuthorizationChallengesForOneRequest) {
                 std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
             auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
                 io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
-            mcp::auth::OAuthClientTransport transport(inner, manager);
+            mcp::auth::OAuthClientTransport transport(inner, manager, options);
             try {
                 co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
             } catch (...) {
@@ -1685,10 +1690,33 @@ TEST(AuthScopeStepUpTest, StopsAfterThreeAuthorizationChallengesForOneRequest) {
         asio::detached);
 
     io_ctx.run();
+    return {requested_scopes.size(), failure != nullptr};
+}
 
-    // The refusal is surfaced rather than retried forever, and the cap is three per request.
-    EXPECT_NE(failure, nullptr);
-    EXPECT_EQ(requested_scopes.size(), 3U);
+}  // namespace
+
+// The refusal is surfaced rather than retried forever: by default a request costs the
+// authorization its 401 asks for and one step-up.
+TEST(AuthScopeStepUpTest, AllowsOneStepUpPerRequestByDefault) {
+    const auto [prompts, failed] = prompts_for_one_request({});
+    EXPECT_TRUE(failed);
+    EXPECT_EQ(prompts, 2U);
+}
+
+// With no step-ups allowed, the 403 goes to the caller; with more, three challenges in all are
+// honoured per request.
+TEST(AuthScopeStepUpTest, StepUpsPerRequestAreConfigurable) {
+    mcp::auth::OAuthClientTransportOptions none;
+    none.max_step_ups_per_request = 0;
+    const auto [prompts_without, failed_without] = prompts_for_one_request(none);
+    EXPECT_TRUE(failed_without);
+    EXPECT_EQ(prompts_without, 1U);
+
+    mcp::auth::OAuthClientTransportOptions many;
+    many.max_step_ups_per_request = 10;
+    const auto [prompts_with, failed_with] = prompts_for_one_request(many);
+    EXPECT_TRUE(failed_with);
+    EXPECT_EQ(prompts_with, 3U);
 }
 
 // A step-up whose challenge names a different authorization server, and which that server's user

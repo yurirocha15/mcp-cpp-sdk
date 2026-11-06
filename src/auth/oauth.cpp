@@ -2547,6 +2547,7 @@ struct OAuthClientTransport::Impl {
         // user to authorize again would not change that.
         bool authorized_after_unauthorized{false};
         int authorization_attempts{0};
+        std::size_t step_ups{0};
     };
 
     /// At most three authorization challenges are honoured per logical request, so a server that
@@ -2808,6 +2809,14 @@ struct OAuthClientTransport::Impl {
                 operation->authorization_attempts >= g_max_authorization_challenges ||
                 (operation->refresh_allowed && operation->authorized_after_unauthorized)) {
                 break;
+            }
+            // A step-up asks for consent to a wider scope, which a server could ask for without
+            // end; the application sets how many one request may cost.
+            if (!operation->refresh_allowed) {
+                if (operation->step_ups >= operation->owner->options.max_step_ups_per_request) {
+                    break;
+                }
+                ++operation->step_ups;
             }
             ++operation->authorization_attempts;
 

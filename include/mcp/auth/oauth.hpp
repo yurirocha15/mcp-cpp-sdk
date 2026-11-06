@@ -841,6 +841,11 @@ struct OAuthClientTransportOptions {
     std::size_t max_pending_requests{256};                    ///< Maximum retained request count.
     std::size_t max_pending_request_bytes{16 * 1024 * 1024};  ///< Approximate retained wire/key bytes.
     std::chrono::milliseconds pending_request_ttl{std::chrono::minutes(5)};  ///< Replay eligibility.
+    /// Step-up authorizations per request: each answers a 403 whose challenge says
+    /// `insufficient_scope` by asking the authenticator, and so usually the user, to authorize the
+    /// wider scope. Past it the request fails with that 403. Zero leaves every such 403 to the
+    /// caller, as an HttpStatusError carrying the challenge.
+    std::size_t max_step_ups_per_request{1};
 };
 
 /**
