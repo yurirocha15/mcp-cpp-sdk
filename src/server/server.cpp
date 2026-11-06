@@ -689,6 +689,10 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         /// Makes a new share of the limits the request counts against (see
         /// detail::MrtrEntry::count_again).
         CountAgain count_again;
+        /// The id, as JSON text, of a request of 2025-11-25 or earlier read from the session. The
+        /// handler's notifications and requests are written as related to it, so a transport that
+        /// gives each request a stream sends them on that request's stream.
+        std::shared_ptr<const std::string> related_request;
     };
 
     /// Why a subscriptions/listen stream ended.
@@ -924,7 +928,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Task<void> dispatch_request(nlohmann::json json_msg, std::shared_ptr<const std::string> principal);
     /// dispatch_request_wire() for a request that belongs to no session, refused past the
     /// in-flight limits. The request counts until its work ends, even when its client has gone:
-    /// a 2026-07-28 handler counts while it runs, and not while it is parked.
+    /// a 2026-07-28 handler counts while it runs, not while it is parked, and again when it goes
+    /// on after being given up.
     Task<std::string> dispatch_direct(nlohmann::json json_msg,
                                       std::shared_ptr<std::atomic<bool>> cancelled,
                                       std::shared_ptr<const detail::ParamHeaderValues> param_headers,
@@ -971,7 +976,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                      const std::shared_ptr<const RequestMetadata>& request_meta,
                                      bool session_request, MessageSender notifications,
                                      const std::shared_ptr<Session>& session, ITransport** transport,
-                                     std::uint64_t* epoch);
+                                     std::uint64_t* epoch,
+                                     std::shared_ptr<const std::string> related_request = nullptr);
     void dispatch_notification(const nlohmann::json& json_msg);
     void dispatch_response(const nlohmann::json& json_msg);
 
@@ -1003,35 +1009,43 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                           std::shared_ptr<const RequestMetadata> request_meta = nullptr,
                                           bool session_request = true, MessageSender notifications = {},
                                           std::shared_ptr<const std::string> principal = nullptr,
-                                          std::shared_ptr<detail::MrtrEntry> mrtr = nullptr);
+                                          std::shared_ptr<detail::MrtrEntry> mrtr = nullptr,
+                                          std::shared_ptr<const std::string> related_request = nullptr);
     /// `session_request` says whether the request was read from the session. A 2026-07-28 request
     /// that was not has no route to the client through the session's transport. @p notifications,
     /// when set, receives the notifications of a 2026-07-28 request in place of the session's
     /// transport. @p principal is who sent the request, or null when unknown. @p mrtr, when set,
     /// routes the handler's questions to the client and its notifications through the request
-    /// that currently carries it.
+    /// that currently carries it. @p related_request is RequestScope::related_request.
     Context make_context(std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
                          std::optional<ProgressToken> progress_token = std::nullopt,
                          std::shared_ptr<const RequestMetadata> request_meta = nullptr,
                          bool session_request = true, MessageSender notifications = {},
                          std::shared_ptr<const std::string> principal = nullptr,
-                         std::shared_ptr<detail::MrtrEntry> mrtr = nullptr);
+                         std::shared_ptr<detail::MrtrEntry> mrtr = nullptr,
+                         std::shared_ptr<const std::string> related_request = nullptr);
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
     /// Checks a tools/call's Mcp-Param-* headers against the tool it names, for a transport that
     /// validates them before the request reaches the server.
     detail::ParamHeaderCheck make_param_header_check();
 
+    /// Sends a request to the client. @p related_request, when set, is the id as JSON text of the
+    /// client request whose handler asks (see RequestScope::related_request).
     Task<nlohmann::json> send_request(std::shared_ptr<std::atomic<bool>> caller_cancelled,
                                       const std::string& method,
-                                      const std::optional<nlohmann::json>& params);
-    static Task<nlohmann::json> await_reverse_response(std::shared_ptr<Session> session,
-                                                       std::shared_ptr<const std::string> wire,
-                                                       std::int64_t id,
-                                                       std::chrono::milliseconds timeout,
-                                                       std::shared_ptr<std::atomic<bool>> cancelled);
+                                      const std::optional<nlohmann::json>& params,
+                                      std::shared_ptr<const std::string> related_request = nullptr);
+    static Task<nlohmann::json> await_reverse_response(
+        std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, std::int64_t id,
+        std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled,
+        std::shared_ptr<const std::string> related_request);
     static Task<nlohmann::json> await_reverse_response_on_strand(
         std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, std::int64_t id,
-        std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled);
+        std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled,
+        std::shared_ptr<const std::string> related_request);
+    /// Writes @p wire to the session, as related to @p related_request when that is set.
+    static Task<void> write_to_session(const Session& session, std::shared_ptr<const std::string> wire,
+                                       const std::shared_ptr<const std::string>& related_request);
     Task<void> send_notification(const std::string& method,
                                  const std::optional<nlohmann::json>& params);
     /// Sends the notification for @p topic on every open subscriptions/listen stream that opted in
@@ -1306,7 +1320,8 @@ Task<nlohmann::json> Server::send_request(const std::string& method,
 // before that return completes.
 Task<nlohmann::json> Server::Impl::send_request(std::shared_ptr<std::atomic<bool>> caller_cancelled,
                                                 const std::string& method,
-                                                const std::optional<nlohmann::json>& params) {
+                                                const std::optional<nlohmann::json>& params,
+                                                std::shared_ptr<const std::string> related_request) {
     // Distinct from the two failures below: a handler still running after its Server was
     // destroyed has to be able to tell that apart from a session that is merely closing and
     // from stateless dispatch, because the right response differs in each case.
@@ -1328,23 +1343,34 @@ Task<nlohmann::json> Server::Impl::send_request(std::shared_ptr<std::atomic<bool
     auto wire = std::make_shared<const std::string>(nlohmann::json(std::move(request)).dump());
     const std::chrono::milliseconds timeout(reverse_request_timeout_ms.load(std::memory_order_relaxed));
     return await_reverse_response(std::move(session), std::move(wire), id, timeout,
-                                  std::move(caller_cancelled));
+                                  std::move(caller_cancelled), std::move(related_request));
+}
+
+Task<void> Server::Impl::write_to_session(const Session& session,
+                                          std::shared_ptr<const std::string> wire,
+                                          const std::shared_ptr<const std::string>& related_request) {
+    if (related_request) {
+        return session.writer->write_related(std::move(wire), related_request);
+    }
+    return session.writer->write_message(std::move(wire));
 }
 
 Task<nlohmann::json> Server::Impl::await_reverse_response(
     std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, int64_t id,
-    std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled) {
+    std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled,
+    std::shared_ptr<const std::string> related_request) {
     auto strand = *session->strand;
     // A caller's awaitable keeps its original executor across an awaited post. Launch the
     // complete correlation lifecycle on the session strand so map and timer state stay confined.
     return mcp::detail::spawn_awaitable(
         strand, await_reverse_response_on_strand(std::move(session), std::move(wire), id, timeout,
-                                                 std::move(cancelled)));
+                                                 std::move(cancelled), std::move(related_request)));
 }
 
 Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
     std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, int64_t id,
-    std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled) {
+    std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled,
+    std::shared_ptr<const std::string> related_request) {
     if (session->stopping.load(std::memory_order_acquire)) {
         throw std::runtime_error("server session is closing");
     }
@@ -1368,7 +1394,7 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
     }
 
     try {
-        co_await session->writer->write_message(wire);
+        co_await write_to_session(*session, wire, related_request);
     } catch (...) {
         session->pending_requests.erase(RequestId{std::to_string(id)}.correlation_key());
         throw;
@@ -1426,7 +1452,8 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
             notice = nlohmann::json(std::move(notification)).dump();
         }
         try {
-            co_await session->writer->write_message(notice);
+            co_await write_to_session(*session, std::make_shared<const std::string>(std::move(notice)),
+                                      related_request);
         } catch (const std::exception&) {
             // The session may be ending; the request is over either way.
         }
@@ -1774,7 +1801,8 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
                                    std::shared_ptr<const RequestMetadata> request_meta,
                                    bool session_request, MessageSender notifications,
                                    std::shared_ptr<const std::string> principal,
-                                   std::shared_ptr<detail::MrtrEntry> mrtr) {
+                                   std::shared_ptr<detail::MrtrEntry> mrtr,
+                                   std::shared_ptr<const std::string> related_request) {
     ITransport* transport = &null_transport();
     auto session = session_snapshot();
     std::uint64_t epoch = 0;
@@ -1789,8 +1817,9 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
             progress_token = ProgressToken{std::string("input-required")};
         }
     } else {
-        message_sender = notification_route(cancelled, request_meta, session_request,
-                                            std::move(notifications), session, &transport, &epoch);
+        message_sender =
+            notification_route(cancelled, request_meta, session_request, std::move(notifications),
+                               session, &transport, &epoch, related_request);
     }
 
     RequestSender request_sender;
@@ -1807,13 +1836,13 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
                 "server-to-client requests are unavailable for a 2026-07-28 request");
         };
     } else {
-        request_sender = [impl = shared_from_this(), session, epoch, cancelled](
+        request_sender = [impl = shared_from_this(), session, epoch, cancelled, related_request](
                              std::string method,
                              std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
             if (session && Impl::session_epoch(*session) != epoch) {
                 throw std::runtime_error("the client ended the session this request belongs to");
             }
-            return impl->send_request(cancelled, method, params);
+            return impl->send_request(cancelled, method, params, related_request);
         };
     }
 
@@ -1825,7 +1854,7 @@ MessageSender Server::Impl::notification_route(
     std::shared_ptr<std::atomic<bool>> cancelled,
     const std::shared_ptr<const RequestMetadata>& request_meta, bool session_request,
     MessageSender notifications, const std::shared_ptr<Session>& session, ITransport** transport,
-    std::uint64_t* epoch) {
+    std::uint64_t* epoch, std::shared_ptr<const std::string> related_request) {
     // HttpServerTransport answers a 2026-07-28 request with plain JSON, so it has nowhere to send
     // that request's notifications: written to it, they would join the legacy session's stream.
     const bool notifications_have_a_route =
@@ -1849,10 +1878,15 @@ MessageSender Server::Impl::notification_route(
     // its messages to the next client. 2026-07-28 also sends nothing for a request once it is
     // cancelled.
     std::shared_ptr<std::atomic<bool>> modern_cancelled = request_meta ? std::move(cancelled) : nullptr;
-    return [session, session_epoch_now, modern_cancelled](std::string_view message) {
+    return [session, session_epoch_now, modern_cancelled,
+            related_request = std::move(related_request)](std::string_view message) {
         if (Impl::session_epoch(*session) != session_epoch_now ||
             (modern_cancelled && modern_cancelled->load(std::memory_order_relaxed))) {
             return Impl::skip_write();
+        }
+        if (related_request) {
+            return session->writer->write_related(std::make_shared<const std::string>(message),
+                                                  related_request);
         }
         return session->writer->write_message(message);
     };
@@ -1971,8 +2005,12 @@ Task<std::string> Server::Impl::dispatch_request_wire(
                                       "Missing " + std::string(g_META_PROTOCOL_VERSION) + " in _meta");
         }
 
-        const RequestScope legacy_scope{nullptr, std::move(cancelled), enforce_lifecycle, nullptr, {},
-                                        {},      std::move(principal)};
+        RequestScope legacy_scope{nullptr, std::move(cancelled), enforce_lifecycle, nullptr, {},
+                                  {},      std::move(principal)};
+        if (enforce_lifecycle) {
+            legacy_scope.related_request =
+                std::make_shared<const std::string>(json_msg.at("id").dump());
+        }
 
         // A client that arrives after the previous one ended its session starts uninitialized.
         const auto session_state = !enforce_lifecycle ? LifecycleState::eReady
@@ -2603,13 +2641,11 @@ Task<std::string> Server::Impl::handle_discover_wire(const nlohmann::json& json_
                                nlohmann::json(discover_result), CacheTarget::eDiscover);
 }
 
-Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
-                                                    std::shared_ptr<std::atomic<bool>> cancelled,
-                                                    std::optional<ProgressToken> progress_token,
-                                                    std::shared_ptr<const RequestMetadata> request_meta,
-                                                    bool session_request, MessageSender notifications,
-                                                    std::shared_ptr<const std::string> principal,
-                                                    std::shared_ptr<detail::MrtrEntry> mrtr) {
+Task<nlohmann::json> Server::Impl::invoke_tool_impl(
+    CallToolParams params, std::shared_ptr<std::atomic<bool>> cancelled,
+    std::optional<ProgressToken> progress_token, std::shared_ptr<const RequestMetadata> request_meta,
+    bool session_request, MessageSender notifications, std::shared_ptr<const std::string> principal,
+    std::shared_ptr<detail::MrtrEntry> mrtr, std::shared_ptr<const std::string> related_request) {
     auto iter = tool_handlers.find(params.name);
     if (iter == tool_handlers.end()) {
         // The name is chosen by whoever called: over JSON-RPC that is the client, and through the
@@ -2618,9 +2654,9 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(CallToolParams params,
         throw std::runtime_error("Unknown tool: " + detail::sanitize_for_diagnostics(params.name));
     }
 
-    auto ctx =
-        make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
-                     session_request, std::move(notifications), std::move(principal), std::move(mrtr));
+    auto ctx = make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
+                            session_request, std::move(notifications), std::move(principal),
+                            std::move(mrtr), std::move(related_request));
     const bool modern = ctx.request_meta() != nullptr;
     nlohmann::json handler_result;
 
@@ -2738,7 +2774,7 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
     auto cancelled = scope.cancelled ? scope.cancelled : std::make_shared<std::atomic<bool>>(false);
     nlohmann::json handler_result = co_await invoke_tool_impl(
         std::move(params), std::move(cancelled), std::move(progress_token), scope.meta,
-        scope.session_request, scope.notifications, scope.principal, scope.mrtr);
+        scope.session_request, scope.notifications, scope.principal, scope.mrtr, scope.related_request);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }
 
@@ -2792,8 +2828,9 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
         auto handler = build_middleware_chain(iter->second);
 
         nlohmann::json params_json = params;
-        auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                                scope.notifications, scope.principal, scope.mrtr);
+        auto ctx =
+            make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
+                         scope.notifications, scope.principal, scope.mrtr, scope.related_request);
         nlohmann::json handler_result = co_await handler(ctx, params_json);
         co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result),
                                    CacheTarget::eResourcesRead);
@@ -2835,7 +2872,7 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
 
     nlohmann::json params_json = params;
     auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                            scope.notifications, scope.principal, scope.mrtr);
+                            scope.notifications, scope.principal, scope.mrtr, scope.related_request);
     nlohmann::json handler_result = co_await handler(ctx, params_json);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result),
                                CacheTarget::eResourcesRead);
@@ -3239,7 +3276,7 @@ Task<std::string> Server::Impl::handle_prompts_get_wire(const nlohmann::json& js
 
     nlohmann::json params_json = std::move(params);
     auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                            scope.notifications, scope.principal, scope.mrtr);
+                            scope.notifications, scope.principal, scope.mrtr, scope.related_request);
     nlohmann::json handler_result = co_await handler(ctx, params_json);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }
@@ -3265,7 +3302,7 @@ Task<std::string> Server::Impl::handle_complete_wire(const nlohmann::json& json_
             co_return nlohmann::json(std::move(complete_result));
         });
     auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                            scope.notifications, scope.principal, scope.mrtr);
+                            scope.notifications, scope.principal, scope.mrtr, scope.related_request);
     nlohmann::json handler_result = co_await handler(ctx, json_msg.at("params"));
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }

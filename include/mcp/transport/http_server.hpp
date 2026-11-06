@@ -94,6 +94,21 @@ class EventStore {
      * @return A vector of (id, data) pairs for the later events of the stream that
      *         last_event_id belongs to, or std::nullopt if last_event_id has been evicted.
      */
+    /**
+     * @brief The stream an event was sent on.
+     *
+     * @param event_id The ID of the event.
+     * @return The stream given to append(), or std::nullopt if the event is not stored.
+     */
+    [[nodiscard]] std::optional<std::string> stream_of(const std::string& event_id) const {
+        for (const auto& event : events_) {
+            if (event.id == event_id) {
+                return event.stream;
+            }
+        }
+        return std::nullopt;
+    }
+
     [[nodiscard]] std::optional<SseEventList> events_after(const std::string& last_event_id) const {
         if (events_.empty()) {
             return SseEventList{};
@@ -179,6 +194,12 @@ class EventStore {
  * Accepts HTTP connections, processes inbound JSON-RPC messages, and routes
  * outbound responses back to their matching HTTP requests. Supports SSE
  * replay via an in-memory event store.
+ *
+ * In its legacy session, a POST from a client that accepts SSE over HTTP/1.1 is answered with a
+ * stream once the server sends anything else for the request first, such as a notification or a
+ * request of its own: those go on the stream as they come, and the response ends it. A GET opens
+ * the session's stream for messages that belong to no request, and a GET with Last-Event-ID
+ * resumes a stream from there, still live when it has not ended.
  *
  * Alongside its one legacy session, it serves requests of protocol revision 2026-07-28, which
  * need no session: their mirrored headers are checked, they are answered with plain JSON and the
@@ -400,11 +421,23 @@ class MCP_API HttpServerTransport final : public ITransport {
     Task<IncomingMessage> read_incoming() override;
 
     /**
-     * @brief Send a JSON-RPC response for the pending HTTP request.
+     * @brief Send a JSON-RPC message: a response answers its pending HTTP request, and any other
+     *        message goes on the session's GET stream, or on the stream of the only request
+     *        waiting when no GET opened one.
      *
-     * @param message Serialized JSON-RPC response.
+     * @param message Serialized JSON-RPC message.
      */
     Task<void> write_message(std::string_view message) override;
+
+    /**
+     * @brief Send a message the server sends while it serves a request, on that request's stream
+     *        while it waits, or as write_message() does otherwise.
+     *
+     * @param message Serialized JSON-RPC message.
+     * @param related_request The id of the client request, as JSON text.
+     */
+    Task<void> write_related_message(std::string_view message,
+                                     std::string_view related_request) override;
 
     /**
      * @brief Close the transport and stop accepting connections.

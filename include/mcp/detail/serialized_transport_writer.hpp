@@ -63,8 +63,18 @@ class MCP_API SerializedTransportWriter {
         std::shared_ptr<const std::atomic<bool>> cancel_before_start) const;
 
     /**
+     * @brief Queue a message a server sends while it serves a client request; the transport
+     *        writes it with ITransport::write_related_message().
+     *
+     * @param message Immutable message storage retained until the write completes.
+     * @param related_request The id of the client request as JSON text, retained likewise.
+     */
+    [[nodiscard]] Task<void> write_related(std::shared_ptr<const std::string> message,
+                                           std::shared_ptr<const std::string> related_request) const;
+
+    /**
      * @brief Write a message beside the queue, for a transport whose
-     * ITransport::overlapping_modern_writes() is true.
+     * ITransport::overlapping_writes() is true.
      *
      * @param message Immutable message storage retained until the write completes.
      */

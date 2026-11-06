@@ -377,14 +377,11 @@ struct Client::Impl {
           strand(boost::asio::make_strand(executor)),
           options(std::move(client_options)),
           writer(transport, strand),
-          overlapping_writes(transport && transport->overlapping_modern_writes()) {}
+          overlapping_writes(transport && transport->overlapping_writes()) {}
 
-    /// Whether a message goes beside the writer's queue: on such a transport a 2026-07-28 write
-    /// lasts until its answer starts, and must not hold back the cancellation of a call or the next
-    /// call. @p probe says the era is still being found out, and the message is part of a probe.
-    bool writes_beside_queue(bool probe = false) const {
-        return overlapping_writes && (probe || modern_version().has_value());
-    }
+    /// Whether a message goes beside the writer's queue: on such a transport a write lasts until
+    /// its answer starts, and must not hold back the cancellation of a call or the next call.
+    bool writes_beside_queue() const { return overlapping_writes; }
 
     /// Sends a request of the session's era. A modern session adds the per-request `_meta` and checks
     /// the result type of the answer; a legacy session sends @p params as given.
@@ -1308,7 +1305,7 @@ struct Client::Impl {
 
             boost::asio::co_spawn(
                 state->strand,
-                state->writes_beside_queue(probe)
+                state->writes_beside_queue()
                     ? state->writer.write_overlapping(std::move(wire))
                     : state->writer.write_message(std::move(wire),
                                                   pending_request->cancel_write_before_start),
@@ -1353,9 +1350,9 @@ struct Client::Impl {
         // A 2026-07-28 request the client stops waiting for is cancelled, so the server stops
         // working on it and an HTTP transport closes its response stream. An era probe is given up
         // the same way where that closes a connection; elsewhere the server may predate the era.
-        const bool beside_queue = state->writes_beside_queue(probe);
-        if (timed_out && (state->modern_version() || beside_queue) &&
-            !state->closed.load(std::memory_order_acquire)) {
+        const bool cancels =
+            state->modern_version().has_value() || (probe && state->overlapping_writes);
+        if (timed_out && cancels && !state->closed.load(std::memory_order_acquire)) {
             CancelledNotificationParams cancel_params;
             cancel_params.requestId = RequestId{std::to_string(id)};
             cancel_params.reason = "Request timed out";
@@ -1364,8 +1361,7 @@ struct Client::Impl {
             notification.params = nlohmann::json(std::move(cancel_params));
             auto cancel_wire =
                 std::make_shared<const std::string>(nlohmann::json(std::move(notification)).dump());
-            boost::asio::co_spawn(state->strand,
-                                  send_notification_wire(state, std::move(cancel_wire), beside_queue),
+            boost::asio::co_spawn(state->strand, send_notification_wire(state, std::move(cancel_wire)),
                                   [](const std::exception_ptr&) {});
         }
 
@@ -1379,14 +1375,13 @@ struct Client::Impl {
     }
 
     static Task<void> send_notification_wire(std::shared_ptr<Impl> state,
-                                             std::shared_ptr<const std::string> wire,
-                                             bool beside_queue = false) {
+                                             std::shared_ptr<const std::string> wire) {
         if (state->closed.load(std::memory_order_acquire)) {
             throw McpError(g_CONNECTION_CLOSED, "Client transport is closed");
         }
 
         try {
-            if (beside_queue || state->writes_beside_queue()) {
+            if (state->writes_beside_queue()) {
                 co_await state->writer.write_overlapping(wire);
             } else {
                 co_await state->writer.write_message(wire);

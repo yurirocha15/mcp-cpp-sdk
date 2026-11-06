@@ -36,6 +36,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace mcp {
@@ -72,7 +73,42 @@ struct HttpServerTransport::Impl {
         bool response_ready{false};
         /// Set when a DELETE ended the session this request was sent in.
         bool session_ended{false};
+        /// The connection writes the request's events as they come, on the stream named `stream`
+        /// in the event store.
+        bool streams{false};
+        std::string stream;
+        /// Events of that stream the connection has not taken yet.
+        SseEventList stream_events;
+        /// Which connection serves the stream: a resume takes it over from the one before.
+        std::uint64_t generation{0};
+        /// No connection serves the stream; its events wait in the event store for a resume.
+        bool detached{false};
     };
+
+    /// A stream of the legacy session that a connection writes as its events come: the answer to
+    /// a POST, or the stream a GET opened.
+    struct LegacyStream {
+        /// The key of the POST's request, or empty for the GET stream.
+        std::string request_key;
+        /// The PendingResponse::generation or get_generation this connection serves.
+        std::uint64_t generation{0};
+        /// Woken when the stream has something new.
+        std::shared_ptr<boost::asio::steady_timer> signal;
+        /// Events to write before any other: those a resumed stream missed, or the priming event.
+        SseEventList replay;
+        /// Opens the stream at once rather than at its first event, as a GET does.
+        bool open_at_once{false};
+    };
+
+    /// A request handled by handle_request: a complete response, or a stream serve_legacy_stream
+    /// writes as its events come.
+    using Reply = std::variant<StringResponse, std::shared_ptr<LegacyStream>>;
+
+    /// Events a stream may have waiting to be written; more are dropped. Each is also in the
+    /// event store, where a resume finds it.
+    static constexpr std::size_t g_max_queued_events = 4096;
+    /// How often an open stream carries an SSE comment, so idle intermediaries keep it open.
+    static constexpr auto g_keepalive_interval = std::chrono::seconds(15);
 
     struct PendingResult {
         std::optional<std::string> response_body;
@@ -213,7 +249,8 @@ struct HttpServerTransport::Impl {
         state->timer.cancel();
     }
 
-    static void set_common_headers(StringResponse& response, bool keep_alive) {
+    template <typename Body>
+    static void set_common_headers(http::response<Body>& response, bool keep_alive) {
         response.set(http::field::server, "mcp-cpp-sdk");
         response.keep_alive(keep_alive);
     }
@@ -412,16 +449,97 @@ struct HttpServerTransport::Impl {
             // history, and not the requests still waiting for an answer, which the Server no
             // longer sends once it sees the session has ended.
             event_store.clear();
-            for (auto& [request_id_key, pending] : pending_responses) {
+            for (auto it = pending_responses.begin(); it != pending_responses.end();) {
+                auto& [request_id_key, pending] = *it;
                 if (sessionless_request_ids.contains(request_id_key)) {
+                    ++it;
                     continue;  // a 2026-07-28 request belongs to no session
+                }
+                if (pending.detached) {
+                    // Nobody waits for it, and nobody can resume its stream now.
+                    it = pending_responses.erase(it);
+                    continue;
                 }
                 pending.session_ended = true;
                 pending.response_ready = true;
                 pending.ready_timer->cancel();
+                ++it;
             }
+            end_get_stream();
         }
         co_return;
+    }
+
+    /// Ends the GET stream; the connection serving it sees it was replaced, and closes.
+    void end_get_stream() {
+        if (get_timer) {
+            get_timer->cancel();
+        }
+        get_timer.reset();
+        ++get_generation;
+        get_stream.clear();
+        get_events.clear();
+    }
+
+    /// Sends a message other than a response: on the stream of the request it relates to while
+    /// that request waits on one, else on the GET stream, else on the stream of the only request
+    /// waiting on one. With nowhere to go it is dropped, as it is when nothing streams.
+    void route_event(std::string message, const std::string* related_request) {
+        if (json_only_.load(std::memory_order_acquire) || !session_active ||
+            session_ended_awaiting_next) {
+            return;
+        }
+        PendingResponse* target = nullptr;
+        if (related_request != nullptr) {
+            const auto related = pending_responses.find(*related_request);
+            if (related != pending_responses.end() && related->second.streams) {
+                target = &related->second;
+            }
+        }
+        if (target == nullptr && get_stream.empty()) {
+            std::size_t streaming = 0;
+            for (auto& [key, pending] : pending_responses) {
+                if (pending.streams) {
+                    ++streaming;
+                    target = &pending;
+                }
+            }
+            if (streaming != 1) {
+                target = nullptr;
+            }
+        }
+        if (target != nullptr) {
+            auto event_id = event_store.append(message, target->stream);
+            if (!target->detached && target->stream_events.size() < g_max_queued_events) {
+                target->stream_events.emplace_back(std::move(event_id), std::move(message));
+                target->ready_timer->cancel();
+            }
+            return;
+        }
+        if (!get_stream.empty()) {
+            auto event_id = event_store.append(message, get_stream);
+            if (get_timer && get_events.size() < g_max_queued_events) {
+                get_events.emplace_back(std::move(event_id), std::move(message));
+                get_timer->cancel();
+            }
+        }
+    }
+
+    /// Leaves the stream of @p legacy without a connection, unless a resume took it over: its
+    /// events then wait in the event store.
+    void detach_stream(const LegacyStream& legacy) {
+        if (legacy.request_key.empty()) {
+            if (get_generation == legacy.generation) {
+                get_timer.reset();
+                get_events.clear();
+            }
+            return;
+        }
+        const auto pending = pending_responses.find(legacy.request_key);
+        if (pending != pending_responses.end() && pending->second.generation == legacy.generation) {
+            pending->second.detached = true;
+            pending->second.stream_events.clear();
+        }
     }
 
     // 2026-07-28 has no initialize; the error names the versions served, as an initialize error
@@ -743,9 +861,8 @@ struct HttpServerTransport::Impl {
     }
 
     /// @p principal is what refuse_before_body() attributed the request to.
-    Task<StringResponse> handle_post(const StringRequest& request,
-                                     std::shared_ptr<Connection> connection, detail::BudgetLease& bytes,
-                                     std::string principal) {
+    Task<Reply> handle_post(const StringRequest& request, std::shared_ptr<Connection> connection,
+                            detail::BudgetLease& bytes, std::string principal) {
         const auto request_json = detail::parse_peer_json(request.body());
         if (request_json.is_discarded() || !request_json.is_object()) {
             co_return make_error_response(request, http::status::bad_request,
@@ -811,6 +928,22 @@ struct HttpServerTransport::Impl {
             co_return make_error_response(request, http::status::bad_request,
                                           "Request id already pending");
         }
+        // A client that takes SSE over HTTP/1.1 gets the request's events as they come, so a
+        // request of the server's own reaches it while the handler waits for the answer.
+        const auto accept_it = request.find(http::field::accept);
+        if (!is_initialize_request(request_json) && request.version() >= 11 &&
+            !json_only_.load(std::memory_order_acquire) && accept_it != request.end() &&
+            detail::to_std_string_view(accept_it->value()).find("text/event-stream") !=
+                std::string_view::npos) {
+            auto& pending = pending_responses.at(request_id_key);
+            pending.streams = true;
+            pending.stream = std::to_string(++response_streams);
+            enqueue_incoming_message(request.body(), std::move(principal));
+            auto legacy = std::make_shared<LegacyStream>();
+            legacy->request_key = request_id_key;
+            legacy->signal = *timer_signal;
+            co_return legacy;
+        }
         enqueue_incoming_message(request.body(), std::move(principal));
 
         auto closed_response = co_await wait_for_response(request, request_id_key, *timer_signal);
@@ -829,7 +962,6 @@ struct HttpServerTransport::Impl {
                                           "Missing response body for request");
         }
 
-        const auto accept_it = request.find(http::field::accept);
         const bool client_accepts_sse =
             accept_it != request.end() &&
             detail::to_std_string_view(accept_it->value()).find("text/event-stream") !=
@@ -889,8 +1021,11 @@ struct HttpServerTransport::Impl {
         co_return make_json_response(request, http::status::ok, "{}");
     }
 
-    Task<StringResponse> handle_get(const StringRequest& request, const std::string& principal,
-                                    detail::BudgetLease& bytes) {
+    /// A GET opens the session's stream for messages that belong to no request, or with
+    /// Last-Event-ID resumes a stream: one still going on is served live from there, and one that
+    /// ended is replayed.
+    Task<Reply> handle_get(const StringRequest& request, const std::string& principal,
+                           detail::BudgetLease& bytes) {
         if (auto refusal = refuse_sessionless_modern_stream(request)) {
             co_return std::move(*refusal);
         }
@@ -914,6 +1049,12 @@ struct HttpServerTransport::Impl {
             co_return make_error_response(request, not_found.status, not_found.error_message);
         }
 
+        auto signal = std::make_shared<boost::asio::steady_timer>(strand);
+        signal->expires_at(std::chrono::steady_clock::time_point::max());
+        auto legacy = std::make_shared<LegacyStream>();
+        legacy->signal = signal;
+        legacy->open_at_once = true;
+
         const auto last_event_id_it = request.find("Last-Event-ID");
         if (last_event_id_it != request.end()) {
             auto last_id = std::string(last_event_id_it->value());
@@ -932,15 +1073,215 @@ struct HttpServerTransport::Impl {
                 co_return make_error_response(request, http::status::service_unavailable,
                                               "Server busy");
             }
-            // An empty stream is an answer here too: the client asked to resume one.
-            co_return make_sse_replay_response(request, *missed_events);
+            // A stream still going on is taken over from the connection that served it, which may
+            // not have noticed yet that its client left.
+            bool live = false;
+            const auto stream_name = event_store.stream_of(last_id);
+            if (stream_name.has_value() && !get_stream.empty() && *stream_name == get_stream) {
+                live = true;
+                legacy->generation = ++get_generation;
+                // The connection that served it until now wakes to see it was replaced.
+                if (get_timer) {
+                    get_timer->cancel();
+                }
+                get_timer = signal;
+                get_events.clear();
+            } else if (stream_name.has_value()) {
+                for (auto& [key, pending] : pending_responses) {
+                    if (!pending.streams || pending.stream != *stream_name || pending.response_ready) {
+                        continue;
+                    }
+                    live = true;
+                    legacy->request_key = key;
+                    legacy->generation = ++pending.generation;
+                    pending.detached = false;
+                    pending.ready_timer->cancel();
+                    pending.ready_timer = signal;
+                    pending.stream_events.clear();
+                    break;
+                }
+            }
+            if (!live) {
+                // An empty stream is an answer here too: the client asked to resume one.
+                co_return make_sse_replay_response(request, *missed_events);
+            }
+            legacy->replay = std::move(*missed_events);
+            co_return legacy;
         }
 
-        // Answers travel on the response to each POST, so there is no stream to open.
-        auto refusal = make_error_response(request, http::status::method_not_allowed,
-                                           "This server offers no SSE stream on GET");
-        refusal.set(http::field::allow, "POST, DELETE");
-        co_return refusal;
+        if (get_timer != nullptr) {
+            // Each message goes on one stream, so the session has one GET stream at a time.
+            co_return make_error_response(request, http::status::conflict,
+                                          "This session already has a GET stream");
+        }
+        if (get_stream.empty()) {
+            get_stream = std::to_string(++response_streams);
+        }
+        legacy->generation = ++get_generation;
+        get_timer = signal;
+        get_events.clear();
+        // An event with an id and no data lets a 2025-11-25 client resume a stream that has carried
+        // nothing yet.
+        if (negotiated_protocol_version >= "2025-11-25") {
+            auto id = event_store.append(std::string(), get_stream);
+            legacy->replay.emplace_back(std::move(id), std::string());
+        }
+        co_return legacy;
+    }
+
+    /// Writes a stream of the legacy session as its events come: the events of a POST and finally
+    /// its response, or the GET stream until the session ends. A POST answered before anything
+    /// else was sent gets one complete response, as when nothing streams. A client that goes away
+    /// cancels nothing, since the specification does not make a disconnect a cancellation: the
+    /// stream's events wait in the event store, where a GET with Last-Event-ID resumes it.
+    ///
+    /// @return Whether the connection may carry another request.
+    Task<bool> serve_legacy_stream(Connection& stream, const StringRequest& request,
+                                   std::shared_ptr<LegacyStream> legacy) {
+        const bool get = legacy->request_key.empty();
+        SseEventList events = std::move(legacy->replay);
+        bool stream_open = false;
+        for (;;) {
+            if (state->closed.load(std::memory_order_acquire)) {
+                co_return false;
+            }
+            bool finished = false;
+            bool session_ended = false;
+            std::optional<std::string> response_body;
+            std::optional<std::string> session_header;
+            SseEventList* waiting = nullptr;
+            if (get) {
+                if (get_generation != legacy->generation) {
+                    // A resume serves the stream now, or the session ended.
+                    if (!stream_open) {
+                        co_return false;
+                    }
+                    finished = true;
+                } else {
+                    waiting = &get_events;
+                }
+            } else {
+                const auto pending = pending_responses.find(legacy->request_key);
+                if (pending == pending_responses.end()) {
+                    finished = true;
+                } else if (pending->second.generation != legacy->generation) {
+                    co_return false;
+                } else {
+                    waiting = &pending->second.stream_events;
+                }
+            }
+            if (waiting != nullptr) {
+                for (auto& event : *waiting) {
+                    events.push_back(std::move(event));
+                }
+                waiting->clear();
+            }
+            if (!get) {
+                const auto pending = pending_responses.find(legacy->request_key);
+                if (pending != pending_responses.end() && pending->second.response_ready) {
+                    finished = true;
+                    session_ended = pending->second.session_ended;
+                    response_body = std::move(pending->second.response_body);
+                    session_header = std::move(pending->second.session_header);
+                    pending_responses.erase(pending);
+                }
+            }
+
+            if (finished && !stream_open && !get) {
+                StringResponse response;
+                if (session_ended) {
+                    // Not 404: the request was handed to the server, so a client must not send it
+                    // again in a new session.
+                    response = make_error_response(request, http::status::internal_server_error,
+                                                   "Session terminated");
+                } else if (!response_body.has_value()) {
+                    response = make_error_response(request, http::status::internal_server_error,
+                                                   "Missing response body for request");
+                } else if (!events.empty()) {
+                    response = make_sse_replay_response(request, events);
+                } else {
+                    response = make_json_response(request, http::status::ok, std::move(*response_body));
+                }
+                if (session_header.has_value()) {
+                    response.set("MCP-Session-Id", *session_header);
+                }
+                boost::system::error_code error;
+                co_await http::async_write(
+                    stream, response, boost::asio::redirect_error(boost::asio::use_awaitable, error));
+                co_return !error && response.keep_alive();
+            }
+
+            if (!stream_open && (legacy->open_at_once || !events.empty())) {
+                http::response<http::empty_body> header{http::status::ok, request.version()};
+                set_common_headers(header, request.keep_alive());
+                header.set(http::field::content_type, "text/event-stream");
+                header.set(http::field::cache_control, "no-cache");
+                header.set("X-Accel-Buffering", "no");
+                if (session_id.has_value()) {
+                    header.set("MCP-Session-Id", *session_id);
+                }
+                header.chunked(true);
+                http::response_serializer<http::empty_body> serializer{header};
+                boost::system::error_code error;
+                co_await http::async_write_header(
+                    stream, serializer, boost::asio::redirect_error(boost::asio::use_awaitable, error));
+                if (error) {
+                    detach_stream(*legacy);
+                    co_return false;
+                }
+                stream_open = true;
+            }
+
+            if (!events.empty()) {
+                std::string text;
+                for (const auto& [id, data] : events) {
+                    text += "id: ";
+                    text += id;
+                    text += "\ndata: ";
+                    text += data;
+                    text += "\n\n";
+                }
+                events.clear();
+                boost::system::error_code error;
+                co_await boost::asio::async_write(
+                    stream, http::make_chunk(boost::asio::buffer(text)),
+                    boost::asio::redirect_error(boost::asio::use_awaitable, error));
+                if (error) {
+                    detach_stream(*legacy);
+                    co_return false;
+                }
+            }
+
+            if (finished) {
+                boost::system::error_code error;
+                co_await boost::asio::async_write(
+                    stream, http::make_chunk_last(),
+                    boost::asio::redirect_error(boost::asio::use_awaitable, error));
+                co_return !error && request.keep_alive();
+            }
+
+            // An open stream carries a comment now and then, which keeps intermediaries from
+            // closing it and finds a client that left.
+            if (stream_open) {
+                legacy->signal->expires_after(g_keepalive_interval);
+            } else {
+                legacy->signal->expires_at(std::chrono::steady_clock::time_point::max());
+            }
+            boost::system::error_code wait_error;
+            co_await legacy->signal->async_wait(
+                boost::asio::redirect_error(boost::asio::use_awaitable, wait_error));
+            if (!wait_error && stream_open) {
+                static constexpr std::string_view g_keep_alive = ": keep-alive\n\n";
+                boost::system::error_code error;
+                co_await boost::asio::async_write(
+                    stream, http::make_chunk(boost::asio::buffer(g_keep_alive)),
+                    boost::asio::redirect_error(boost::asio::use_awaitable, error));
+                if (error) {
+                    detach_stream(*legacy);
+                    co_return false;
+                }
+            }
+        }
     }
 
     /// Origin and bearer checks for the MCP endpoint: they need only the headers, so a request they
@@ -970,9 +1311,8 @@ struct HttpServerTransport::Impl {
         co_return std::move(authorization.refusal);
     }
 
-    Task<StringResponse> handle_request(const StringRequest& request,
-                                        std::shared_ptr<Connection> connection,
-                                        detail::BudgetLease& bytes, std::string principal) {
+    Task<Reply> handle_request(const StringRequest& request, std::shared_ptr<Connection> connection,
+                               detail::BudgetLease& bytes, std::string principal) {
         if (state->closed.load(std::memory_order_acquire)) {
             co_return make_error_response(request, http::status::service_unavailable,
                                           "Transport closed");
@@ -1029,16 +1369,23 @@ struct HttpServerTransport::Impl {
             }
 
             detail::BudgetLease slot(budget.requests, connection_limits.max_requests);
-            StringResponse response;
+            Reply reply;
             if (slot.grow_to(1)) {
-                response = co_await handle_request(request, connection, bytes, std::move(principal));
+                reply = co_await handle_request(request, connection, bytes, std::move(principal));
             } else {
-                response = make_error_response(request, http::status::service_unavailable,
-                                               "Too many requests");
+                reply = make_error_response(request, http::status::service_unavailable,
+                                            "Too many requests");
             }
             if (state->closed.load(std::memory_order_acquire)) {
                 break;
             }
+            if (auto* legacy = std::get_if<1>(&reply)) {
+                if (!co_await serve_legacy_stream(stream, request, *legacy)) {
+                    break;
+                }
+                continue;
+            }
+            auto& response = std::get<0>(reply);
             const bool keep_connection_alive = response.keep_alive();
             if (!co_await detail::write_response_within_limits(stream, response, connection_limits) ||
                 !keep_connection_alive) {
@@ -1085,7 +1432,8 @@ struct HttpServerTransport::Impl {
         }
     }
 
-    static Task<void> run_write(std::shared_ptr<Impl> impl, std::string message) {
+    static Task<void> run_write(std::shared_ptr<Impl> impl, std::string message,
+                                std::shared_ptr<const std::string> related_request = nullptr) {
         if (impl->state->closed.load(std::memory_order_acquire)) {
             throw std::runtime_error("HttpServerTransport is closed");
         }
@@ -1111,25 +1459,40 @@ struct HttpServerTransport::Impl {
             response_id_key.has_value() && (impl->sessionless_request_ids.contains(*response_id_key) ||
                                             impl->is_sentinel_key(*response_id_key));
 
-        // Between a DELETE and the next client's initialize result nobody holds a session, and
-        // anything recorded then would become part of the next client's replay history.
-        // Only a response is sent on a stream: the answer to its POST, which ends that stream. So
-        // each response is stored as a stream of its own, and a resume never replays another.
-        std::optional<std::string> event_id;
-        if (response_id_key.has_value() && !impl->json_only_.load(std::memory_order_acquire) &&
-            !skip_event_store &&
-            (!impl->session_ended_awaiting_next || is_initialize_result_response(response_json))) {
-            event_id = impl->event_store.append(message, std::to_string(++impl->response_streams));
-        }
-
         if (!response_id_key.has_value()) {
+            impl->route_event(std::move(message), related_request.get());
             co_return;
         }
 
         const auto& request_id_key = *response_id_key;
         const auto pending_it = impl->pending_responses.find(request_id_key);
+
+        // Between a DELETE and the next client's initialize result nobody holds a session, and
+        // anything recorded then would become part of the next client's replay history. A
+        // response ends the stream of its POST; one that did not stream is stored as a stream of
+        // its own, so a resume never replays another.
+        std::optional<std::string> event_id;
+        if (!impl->json_only_.load(std::memory_order_acquire) && !skip_event_store &&
+            (!impl->session_ended_awaiting_next || is_initialize_result_response(response_json))) {
+            const bool streamed =
+                pending_it != impl->pending_responses.end() && pending_it->second.streams;
+            event_id =
+                impl->event_store.append(message, streamed ? pending_it->second.stream
+                                                           : std::to_string(++impl->response_streams));
+        }
+
         if (pending_it == impl->pending_responses.end()) {
             co_return;
+        }
+        if (pending_it->second.streams) {
+            if (pending_it->second.detached) {
+                // Nobody waits for it: a resume finds the response in the event store.
+                impl->pending_responses.erase(pending_it);
+                co_return;
+            }
+            if (event_id.has_value()) {
+                pending_it->second.stream_events.emplace_back(*event_id, message);
+            }
         }
 
         // The request was carried under a sentinel id, so the server answered the sentinel. Put
@@ -1182,6 +1545,14 @@ struct HttpServerTransport::Impl {
     std::atomic<std::uint64_t> header_mismatch_rejections{0};
     /// Names the stream of each stored response; see run_write.
     std::uint64_t response_streams{0};
+    /// The stream a GET opened, for messages that belong to no request: its name in the event
+    /// store (empty while there is none), the timer that wakes the connection serving it (null
+    /// while none does), the events that connection has not taken yet, and which connection
+    /// serves it.
+    std::string get_stream;
+    std::shared_ptr<boost::asio::steady_timer> get_timer;
+    SseEventList get_events;
+    std::uint64_t get_generation{0};
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
     std::chrono::steady_clock::time_point session_last_used;
@@ -1373,6 +1744,15 @@ Task<void> HttpServerTransport::write_message(std::string_view message) {
                                  boost::asio::use_awaitable);
 }
 
+Task<void> HttpServerTransport::write_related_message(std::string_view message,
+                                                      std::string_view related_request) {
+    auto impl = impl_;
+    return boost::asio::co_spawn(impl->strand,
+                                 Impl::run_write(impl, std::string(message),
+                                                 std::make_shared<const std::string>(related_request)),
+                                 boost::asio::use_awaitable);
+}
+
 void HttpServerTransport::close() {
     auto impl = impl_;
     {
@@ -1392,6 +1772,7 @@ void HttpServerTransport::close() {
             pending_entry.second.ready_timer->cancel();
         }
         impl->pending_responses.clear();
+        impl->end_get_stream();
         impl->sessionless_request_ids.clear();
 
         impl->session_id.reset();

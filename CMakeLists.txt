@@ -404,6 +404,7 @@ if(BUILD_TESTING)
       test/transport/transport_ws_test.cpp
       test/transport/transport_http_test.cpp
       test/transport/transport_http_resumability_test.cpp
+      test/transport/transport_http_legacy_stream_test.cpp
       test/transport/transport_http_session_manager_test.cpp
       test/transport/transport_http_modern_test.cpp
       test/transport/transport_http_server_modern_test.cpp
