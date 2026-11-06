@@ -2271,6 +2271,15 @@ std::string Server::Impl::park(const std::shared_ptr<detail::MrtrEntry>& entry,
             evict_oldest([](const ParkedRequest&) { return true; });
         }
         // Each waiting handler keeps its own copy of the request, which a peer can make large.
+        std::size_t principal_bytes = 0;
+        for (const auto& [key, parked] : parked_requests) {
+            principal_bytes += same_principal(parked) ? parked.bytes : 0;
+        }
+        while (principal_bytes > 0 &&
+               principal_bytes + bytes > options.max_parked_bytes_per_principal) {
+            evict_oldest(same_principal);
+            principal_bytes -= evicted.back().bytes;
+        }
         std::size_t parked_bytes = 0;
         for (const auto& [key, parked] : parked_requests) {
             parked_bytes += parked.bytes;

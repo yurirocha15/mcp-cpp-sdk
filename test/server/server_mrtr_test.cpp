@@ -773,6 +773,32 @@ TEST_F(MrtrTest, GlobalAndPerPrincipalCaps) {
     EXPECT_EQ(stats.parked, 2u);
 }
 
+// One principal's large requests give up that principal's own waiting handlers, not another's.
+TEST_F(MrtrTest, MemoryOfOnePrincipalsParkedHandlersIsBoundedApart) {
+    mcp::MrtrOptions options;
+    options.max_parked_bytes = 3584U * 1024U;
+    options.max_parked_bytes_per_principal = 2560U * 1024U;
+    server_->set_mrtr_options(options);
+    json alice_retry;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request, "alice");
+        for (int id = 10; id < 14; ++id) {
+            // Named: GCC mishandles a temporary in a co_await operand.
+            const json padded = call_tool(id, "ask", {{"padding", std::string(1024U * 1024U, 'p')}});
+            co_await send(padded, "mallory");
+        }
+        alice_retry = co_await send(retry(request, 2, first["result"]["requestState"],
+                                          answer(only_key(first), accept("alice"))),
+                                    "alice");
+    });
+
+    EXPECT_EQ(alice_retry["result"]["structuredContent"]["name"], "alice") << alice_retry;
+    const auto stats = server_->mrtr_stats();
+    EXPECT_EQ(stats.evicted_cap, 2u);
+    EXPECT_EQ(stats.parked, 2u);
+}
+
 TEST_F(MrtrTest, CancelOfRetryCancelsParkedHandler) {
     run([&]() -> mcp::Task<void> {
         const auto request = call_tool(1, "ask_then_wait");
