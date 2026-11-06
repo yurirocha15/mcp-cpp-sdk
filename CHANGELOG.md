@@ -170,8 +170,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   request ends, when `StreamableHttpSessionManager::close()` closes the
   endpoint of its modern server, or on `Server::abandon_waiting_handlers()`.
   `Server::set_mrtr_options()` (`MrtrOptions`: time to wait, at most 1024
-  waiting handlers, 64 per principal and 64 MiB of requests by default, an
-  eviction callback) and
+  waiting handlers, 64 per principal, 64 MiB of requests in all and 16 MiB per
+  principal by default, an eviction callback) and
   `Server::mrtr_stats()` (`MrtrStats`) bound and count them. A handler given
   up throws from its question and its answer is discarded. A cancelled retry
   cancels the handler, and its notifications go to the request that carries it

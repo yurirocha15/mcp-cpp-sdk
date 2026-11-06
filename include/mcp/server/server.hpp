@@ -245,8 +245,9 @@ struct ProtocolRejectionStats {
 /// Why a request waiting for client input was given up (see MrtrOptions::on_eviction).
 enum class MrtrEvictionReason : std::uint8_t {
     eExpired,   ///< The client did not retry within MrtrOptions::ttl.
-    eCapacity,  ///< Room was needed for a newer request (MrtrOptions::max_parked and
-                ///< max_parked_per_principal).
+    eCapacity,  ///< Room was needed for a newer request (MrtrOptions::max_parked,
+                ///< max_parked_per_principal, max_parked_bytes and
+                ///< max_parked_bytes_per_principal).
 };
 
 /**
@@ -270,6 +271,10 @@ struct MrtrOptions {
     /// takes it (see Server::set_max_in_flight_bytes()); past this the handlers that have waited
     /// longest are given up. The newest handler waits whatever its size.
     std::size_t max_parked_bytes{64U * 1024U * 1024U};
+    /// Memory the requests of one principal's waiting handlers may take, counted as for
+    /// max_parked_bytes; past this that principal's handlers that have waited longest are given
+    /// up, so one principal's large requests do not give up the handlers of others.
+    std::size_t max_parked_bytes_per_principal{16U * 1024U * 1024U};
     /// Called, on no particular thread, each time a waiting handler is given up.
     std::function<void(MrtrEvictionReason)> on_eviction;
 };
