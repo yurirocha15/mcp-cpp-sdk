@@ -418,7 +418,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   A request past either limit is answered with `-32603`, and reading stops
   while the peer takes no answers. Requests that belong to no session, such as
   2026-07-28 requests, share one such limit per `Server` and count until their
-  handler ends, even when their client has gone. Those refusals are queued
+  handler ends, even when their client has gone. A 2026-07-28 handler waiting
+  for client input is bounded by `MrtrOptions` instead, and counts as a request
+  again when it goes on after being given up. Those refusals are queued
   without holding up reading while they fit in the byte limit, so a client that
   stopped reading until its own answers are read does not stall the session for
   good. A

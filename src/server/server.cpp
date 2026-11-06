@@ -663,6 +663,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         TypeErasedHandler handler;
     };
 
+    /// Makes a new share, of the given size, of the in-flight limits a request counts against.
+    using CountAgain = std::function<std::shared_ptr<void>(std::size_t)>;
+
     /// What a request's handler needs beyond its JSON: the per-request protocol fields of a
     /// 2026-07-28 request, its cancellation flag, and whether the request came from the session,
     /// whose transport then carries its notifications.
@@ -683,6 +686,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::shared_ptr<detail::MrtrEntry> mrtr;
         /// The request's share of the in-flight limits, for a request that belongs to no session.
         std::shared_ptr<void> in_flight;
+        /// Makes a new share of the limits the request counts against (see
+        /// detail::MrtrEntry::count_again).
+        CountAgain count_again;
     };
 
     /// Why a subscriptions/listen stream ended.
@@ -805,6 +811,51 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::atomic_size_t bytes{0};
     };
     std::shared_ptr<DirectCounters> direct_counters = std::make_shared<DirectCounters>();
+    /// Counts a request that belongs to no session while anything holds it.
+    struct CountedRequest {
+        std::shared_ptr<DirectCounters> counters;
+        std::size_t bytes;
+        CountedRequest(std::shared_ptr<DirectCounters> shared, std::size_t size)
+            : counters(std::move(shared)), bytes(size) {
+            counters->requests.fetch_add(1, std::memory_order_relaxed);
+            counters->bytes.fetch_add(bytes, std::memory_order_relaxed);
+        }
+        ~CountedRequest() {
+            counters->bytes.fetch_sub(bytes, std::memory_order_relaxed);
+            counters->requests.fetch_sub(1, std::memory_order_relaxed);
+        }
+        CountedRequest(const CountedRequest&) = delete;
+        CountedRequest& operator=(const CountedRequest&) = delete;
+    };
+    /// Counts work against the in-flight limits of a session while anything holds it, as a
+    /// dispatched message counts.
+    struct CountedSessionWork {
+        std::shared_ptr<Session> session;
+        std::size_t bytes;
+        CountedSessionWork(std::shared_ptr<Session> owner, std::size_t size)
+            : session(std::move(owner)), bytes(size) {
+            session->active_dispatches.fetch_add(1, std::memory_order_relaxed);
+            session->active_dispatch_bytes.fetch_add(bytes, std::memory_order_relaxed);
+        }
+        ~CountedSessionWork() {
+            session->active_dispatch_bytes.fetch_sub(bytes, std::memory_order_relaxed);
+            const auto remaining =
+                session->active_dispatches.fetch_sub(1, std::memory_order_acq_rel) - 1;
+            if (remaining != 0 || !session->stopping.load(std::memory_order_acquire)) {
+                return;
+            }
+            // The session's end waits on its strand for its work to drain.
+            try {
+                boost::asio::post(*session->strand, [owner = session] {
+                    owner->drain_timer->expires_at(std::chrono::steady_clock::now());
+                });
+            } catch (...) {
+                // Queueing allocates, and a destructor must not throw.
+            }
+        }
+        CountedSessionWork(const CountedSessionWork&) = delete;
+        CountedSessionWork& operator=(const CountedSessionWork&) = delete;
+    };
     std::atomic<std::chrono::milliseconds::rep> reverse_request_timeout_ms{
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::minutes(10)).count()};
 
@@ -886,7 +937,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::shared_ptr<const detail::ParamHeaderValues> param_headers = nullptr,
         MessageSender notifications = {}, std::function<void(std::function<void()>)> watch_cancel = {},
         std::shared_ptr<const std::string> principal = nullptr,
-        std::shared_ptr<void> in_flight = nullptr);
+        std::shared_ptr<void> in_flight = nullptr, CountAgain count_again = {});
     Task<std::string> dispatch_modern_wire(const nlohmann::json& json_msg, std::string_view method,
                                            RequestScope scope);
     /// Serves a 2026-07-28 tools/call, prompts/get or resources/read, whose handler may ask the
@@ -1667,26 +1718,14 @@ Task<std::string> Server::Impl::dispatch_direct(
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
                                   "Too many requests in flight");
     }
-    /// Counts the request while anything holds it.
-    struct Counted {
-        std::shared_ptr<DirectCounters> counters;
-        std::size_t bytes;
-        Counted(std::shared_ptr<DirectCounters> shared, std::size_t size)
-            : counters(std::move(shared)), bytes(size) {
-            counters->requests.fetch_add(1, std::memory_order_relaxed);
-            counters->bytes.fetch_add(bytes, std::memory_order_relaxed);
-        }
-        ~Counted() {
-            counters->bytes.fetch_sub(bytes, std::memory_order_relaxed);
-            counters->requests.fetch_sub(1, std::memory_order_relaxed);
-        }
-        Counted(const Counted&) = delete;
-        Counted& operator=(const Counted&) = delete;
+    auto in_flight = std::make_shared<CountedRequest>(direct_counters, bytes);
+    CountAgain count_again = [counters = direct_counters](std::size_t size) -> std::shared_ptr<void> {
+        return std::make_shared<CountedRequest>(counters, size);
     };
-    auto in_flight = std::make_shared<Counted>(direct_counters, bytes);
-    co_return co_await dispatch_request_wire(
-        std::move(json_msg), false, std::move(cancelled), std::move(param_headers),
-        std::move(notifications), std::move(watch_cancel), std::move(principal), std::move(in_flight));
+    co_return co_await dispatch_request_wire(std::move(json_msg), false, std::move(cancelled),
+                                             std::move(param_headers), std::move(notifications),
+                                             std::move(watch_cancel), std::move(principal),
+                                             std::move(in_flight), std::move(count_again));
 }
 
 Task<std::string> Server::dispatch_request_direct(nlohmann::json json_msg,
@@ -1850,8 +1889,18 @@ Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg,
 
     std::string wire;
     try {
+        // A handler given up while it waited for client input, which then goes on, counts
+        // against this session's limits again.
+        CountAgain count_again =
+            [weak = std::weak_ptr<Session>(session)](std::size_t size) -> std::shared_ptr<void> {
+            auto owner = weak.lock();
+            if (!owner) {
+                return nullptr;
+            }
+            return std::make_shared<CountedSessionWork>(std::move(owner), size);
+        };
         wire = co_await dispatch_request_wire(std::move(json_msg), true, cancelled, nullptr, {}, {},
-                                              std::move(principal));
+                                              std::move(principal), nullptr, std::move(count_again));
     } catch (...) {
         forget();
         throw;
@@ -1877,7 +1926,8 @@ Task<std::string> Server::Impl::dispatch_request_wire(
     nlohmann::json json_msg, bool enforce_lifecycle, std::shared_ptr<std::atomic<bool>> cancelled,
     std::shared_ptr<const detail::ParamHeaderValues> param_headers, MessageSender notifications,
     std::function<void(std::function<void()>)> watch_cancel,
-    std::shared_ptr<const std::string> principal, std::shared_ptr<void> in_flight) {
+    std::shared_ptr<const std::string> principal, std::shared_ptr<void> in_flight,
+    CountAgain count_again) {
     {
         const char* validation_error = validate_request_envelope(json_msg);
         if (validation_error != nullptr) {
@@ -1906,6 +1956,7 @@ Task<std::string> Server::Impl::dispatch_request_wire(
                                std::move(watch_cancel),
                                std::move(principal)};
             scope.in_flight = std::move(in_flight);
+            scope.count_again = std::move(count_again);
             co_return co_await dispatch_modern_wire(json_msg, method, std::move(scope));
         }
 
@@ -2106,6 +2157,7 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
             // The resumed handler counts as this retry, until it ends or parks again.
             std::lock_guard lock(mrtr_mutex);
             entry->in_flight = scope.in_flight;
+            entry->count_again = scope.count_again;
         }
         // [gcc11-sso: named-aggregate-arg] DO NOT build the responses inside the co_await.
         nlohmann::json input_responses =
@@ -2123,9 +2175,11 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
         {
             std::lock_guard lock(mrtr_mutex);
             entry->in_flight = scope.in_flight;
+            entry->count_again = scope.count_again;
         }
         RequestScope handler_scope = scope;
         handler_scope.in_flight.reset();
+        handler_scope.count_again = nullptr;
         handler_scope.cancelled = std::move(cancelled);
         handler_scope.mrtr = entry;
         // The handler runs apart from this request, which ends when the handler parks.
@@ -2217,6 +2271,7 @@ Task<void> Server::Impl::run_mrtr_handler(std::shared_ptr<Impl> impl,
     {
         std::lock_guard lock(impl->mrtr_mutex);
         entry->in_flight.reset();
+        entry->ended = true;
     }
     if (!error_payload.is_null()) {
         detail::mrtr_complete(entry, make_error_wire(json_msg.at("id").get<RequestId>(), error_code,
@@ -2360,6 +2415,13 @@ void Server::Impl::finish_eviction(ParkedRequest victim, MrtrEvictionReason reas
     auto& counter = reason == MrtrEvictionReason::eExpired ? mrtr_counters->evicted_ttl
                                                            : mrtr_counters->evicted_cap;
     counter.fetch_add(1, std::memory_order_relaxed);
+    {
+        // A handler that goes on without its answers works for no request, and counts as one.
+        std::lock_guard lock(mrtr_mutex);
+        if (!victim.entry->ended && victim.entry->count_again) {
+            victim.entry->in_flight = victim.entry->count_again(victim.bytes);
+        }
+    }
     detail::mrtr_abandon(victim.entry);
     boost::asio::post(victim.entry->strand, [expiry = victim.expiry] { expiry->cancel(); });
     if (options.on_eviction) {
