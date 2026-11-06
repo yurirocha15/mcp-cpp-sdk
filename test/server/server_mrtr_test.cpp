@@ -114,6 +114,7 @@ class MrtrTest : public ::testing::Test {
     std::atomic<bool> saw_cancel_{false};
     std::atomic<int> abandoned_caught_{0};
     std::atomic<bool> release_handler_{false};
+    std::atomic<bool> working_on_{false};
 
     std::unique_ptr<mcp::Server> make_server() {
         mcp::ServerCapabilities caps;
@@ -234,6 +235,20 @@ class MrtrTest : public ::testing::Test {
                 co_await wait_until([this] { return release_handler_.load(); });
                 throw std::runtime_error("failed while parked");
             });
+        server->add_tool<json, json>(
+            "ask_then_work", "Works on once its question is given up, until released",
+            json{{"type", "object"}}, [this](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                try {
+                    co_await ctx.elicit(form_elicitation("Name?"));
+                } catch (const std::exception&) {
+                    working_on_ = true;
+                }
+                co_await wait_until([this] { return release_handler_.load(); });
+                co_return json::object();
+            });
+        server->add_tool<json, json>(
+            "at_once", "Answers at once", json{{"type", "object"}},
+            [](json /*args*/) -> mcp::Task<json> { co_return json::object(); });
         mcp::Prompt prompt;
         prompt.name = "greet";
         server->add_prompt<json, json>(prompt, [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
@@ -449,6 +464,94 @@ TEST_F(MrtrTest, ParkedHandlersAreBoundedByTheMemoryTheyHold) {
     const auto stats = server_->mrtr_stats();
     EXPECT_EQ(stats.parked, 2u);
     EXPECT_EQ(stats.evicted_cap, 2u);
+}
+
+// A handler that goes on after it was given up works for no request, and counts as one.
+TEST_F(MrtrTest, HandlerGoingOnAfterItWasGivenUpCountsInFlight) {
+    mcp::MrtrOptions options;
+    options.ttl = std::chrono::milliseconds(1);
+    server_->set_mrtr_options(options);
+    server_->set_max_in_flight_requests(1);
+    json parked;
+    bool working_on = false;
+    json refused;
+    json after;
+    run([&]() -> mcp::Task<void> {
+        parked = co_await send(call_tool(1, "ask_then_work"));
+        working_on = co_await wait_until([this] { return working_on_.load(); });
+        refused = co_await send(call_tool(2, "at_once"));
+        release_handler_ = true;
+        // A request counts until its handler's frame is gone, which can be a moment after its
+        // handler returned. Room that never comes back fails the test after 30 s.
+        auto executor = co_await asio::this_coro::executor;
+        const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        for (int id = 3;; ++id) {
+            after = co_await send(call_tool(id, "at_once"));
+            if (after.contains("result") || std::chrono::steady_clock::now() >= give_up) {
+                break;
+            }
+            asio::steady_timer tick(executor, std::chrono::milliseconds(1));
+            co_await tick.async_wait(asio::use_awaitable);
+        }
+    });
+
+    expect_input_required(parked);
+    EXPECT_TRUE(working_on);
+    EXPECT_EQ(refused["error"]["message"], "Too many requests in flight") << refused;
+    EXPECT_TRUE(after.contains("result")) << after;
+}
+
+// On a session too, a handler that goes on after it was given up counts as a request in flight,
+// and the session's end waits for it.
+TEST_F(MrtrTest, HandlerGoingOnAfterItWasGivenUpCountsOnItsSession) {
+    mcp::MrtrOptions options;
+    options.ttl = std::chrono::milliseconds(1);
+    server_->set_mrtr_options(options);
+    server_->set_max_in_flight_requests(1);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    raw_transport->enqueue_message(call_tool(1, "ask_then_work").dump());
+    // A session end that never comes stops the run after 30 s, failing the test.
+    asio::steady_timer guard(io_ctx_, std::chrono::seconds(30));
+    guard.async_wait([this](const boost::system::error_code& error) {
+        if (!error) {
+            io_ctx_.stop();
+        }
+    });
+    bool ended = false;
+    bool working_on = false;
+    bool ended_before_release = false;
+    asio::co_spawn(
+        io_ctx_,
+        [this, transport, &ended, &guard]() -> mcp::Task<void> {
+            co_await server_->run(transport, io_ctx_.get_executor());
+            ended = true;
+            guard.cancel();
+        },
+        asio::detached);
+    asio::co_spawn(
+        io_ctx_,
+        [this, raw_transport, &ended, &working_on, &ended_before_release]() -> mcp::Task<void> {
+            working_on = co_await wait_until([this] { return working_on_.load(); });
+            raw_transport->enqueue_message(call_tool(2, "at_once").dump());
+            co_await wait_until([raw_transport] { return raw_transport->written().size() == 2; });
+            raw_transport->close();
+            auto executor = co_await asio::this_coro::executor;
+            asio::steady_timer settle(executor, std::chrono::milliseconds(20));
+            co_await settle.async_wait(asio::use_awaitable);
+            ended_before_release = ended;
+            release_handler_ = true;
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_TRUE(working_on);
+    ASSERT_EQ(raw_transport->written().size(), 2u);
+    const auto refused = json::parse(raw_transport->written()[1]);
+    EXPECT_EQ(refused["id"], 2) << refused;
+    EXPECT_EQ(refused["error"]["message"], "Too many requests in flight") << refused;
+    EXPECT_FALSE(ended_before_release);
+    EXPECT_TRUE(ended);
 }
 
 TEST_F(MrtrTest, AnswerGivenWhileParkedGoesToTheRetry) {

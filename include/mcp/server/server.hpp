@@ -576,6 +576,8 @@ class MCP_API Server {
      * same answer goes to a request past the memory limit, set_max_in_flight_bytes(). Requests
      * given to dispatch_request_direct(), such as 2026-07-28 requests, belong to no session and
      * share one such limit; each counts until its handler ends, even when its client has gone.
+     * A handler waiting for client input is bounded by MrtrOptions instead, and counts here again
+     * when it goes on after being given up.
      *
      * @param limit The limit, at least 1. The default is 1024.
      * @throws std::invalid_argument If @p limit is 0.

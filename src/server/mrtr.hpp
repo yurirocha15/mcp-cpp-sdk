@@ -15,6 +15,7 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -100,6 +101,12 @@ class MrtrEntry {
     /// request that carries it and given up while it is parked. Guarded by the server's lock on
     /// parked handlers.
     std::shared_ptr<void> in_flight;
+    /// Makes a new share, of the given size, of the limits the request that carries the handler
+    /// counts against. A handler that goes on after it was given up holds one until it ends.
+    /// Guarded like `in_flight`.
+    std::function<std::shared_ptr<void>(std::size_t)> count_again;
+    /// The handler ended. Guarded like `in_flight`.
+    bool ended{false};
 };
 
 /// The capabilities a client must declare before a server may send it @p request, a
