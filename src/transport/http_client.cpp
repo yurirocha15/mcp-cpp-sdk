@@ -62,6 +62,10 @@ struct HttpClientTransport::Impl {
         /// Set while the session the server forgot has not been replaced: a new one is started
         /// before the next request. Touched on the strand only.
         bool session_lost{false};
+        /// The protocol version and capabilities the server answered initialize with. A session
+        /// started in place of a forgotten one must answer with the same, since the Client knows
+        /// the server by them. Touched on the strand only.
+        nlohmann::json session_terms;
         bool operation_active{false};
         bool read_active{false};
     };
@@ -294,9 +298,59 @@ struct HttpClientTransport::Impl {
             if (is_supported_protocol_version(protocol_version)) {
                 state->protocol_version = protocol_version;
             }
+            state->session_terms = terms_of(result);
         } catch (const std::exception&) {
             // The client protocol layer owns response validation.
         }
+    }
+
+    /// What of an initialize result the Client relies on: the protocol version and capabilities.
+    static nlohmann::json terms_of(const nlohmann::json& result) {
+        return nlohmann::json{{"protocolVersion", result.value("protocolVersion", nlohmann::json())},
+                              {"capabilities", result.value("capabilities", nlohmann::json())}};
+    }
+
+    /// The terms of the initialize result @p response carries for the initialize @p sent, as
+    /// JSON or in an event, or nullopt when it carries none.
+    static std::optional<nlohmann::json> initialize_terms(const StringResponse& response,
+                                                          const std::string& sent) {
+        const auto request = detail::parse_peer_json(sent);
+        if (!request.is_object() || !request.contains("id")) {
+            return std::nullopt;
+        }
+        const auto answers = [&request](const std::string& text) -> std::optional<nlohmann::json> {
+            const auto message = detail::parse_peer_json(text);
+            if (!message.is_object() || message.value("id", nlohmann::json()) != request.at("id") ||
+                !message.contains("result") || !message.at("result").is_object()) {
+                return std::nullopt;
+            }
+            return terms_of(message.at("result"));
+        };
+        const auto content_type = response.find(http::field::content_type);
+        if (content_type == response.end()) {
+            return std::nullopt;
+        }
+        if (starts_with(std::string(content_type->value()), "text/event-stream")) {
+            auto events = parse_sse_messages(response.body());
+            for (; !events.empty(); events.pop()) {
+                if (auto terms = answers(events.front().data)) {
+                    return terms;
+                }
+            }
+            return std::nullopt;
+        }
+        return answers(response.body());
+    }
+
+    /// Whether the initialize result @p response carries for @p sent names another protocol
+    /// version or other capabilities than the session it replaces.
+    [[nodiscard]] bool changes_session_terms(const StringResponse& response,
+                                             const std::string& sent) const {
+        if (state->session_terms.is_null()) {
+            return false;
+        }
+        const auto terms = initialize_terms(response, sent);
+        return terms && *terms != state->session_terms;
     }
 
     void process_response(const StringResponse& response) {
@@ -482,6 +536,13 @@ struct HttpClientTransport::Impl {
         const auto initialize = std::make_shared<const std::string>(state.initialize_request);
         impl->capture_initialize_request(*initialize);
         const auto initialized = co_await exchange(impl, *initialize, bearer_token_provider);
+        if (impl->changes_session_terms(initialized, *initialize)) {
+            // The Client would go on with what the old session said of the server.
+            state.initialize_request_key.reset();
+            throw std::runtime_error(
+                "The server started a new session with another protocol version or other "
+                "capabilities; connect again to use it");
+        }
         impl->capture_session_id(initialized);
         try {
             impl->process_response(initialized);

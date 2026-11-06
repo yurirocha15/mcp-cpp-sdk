@@ -268,6 +268,45 @@ TEST_F(SessionLimitsTest, ClientStartsANewSessionWhenTheOldOneExpired) {
     EXPECT_NE(first_session, second_session);
 }
 
+// A new session started in place of a forgotten one must report what the first did: the Client
+// knows the server by it. One with other capabilities fails the request instead.
+TEST(SessionTerms, NewSessionWithOtherCapabilitiesFailsTheRequest) {
+    asio::io_context io;
+    const unsigned short port = free_port();
+    int servers = 0;
+    mcp::StreamableHttpSessionManager manager(
+        io.get_executor(), "127.0.0.1", port, [&servers](const asio::any_io_executor&) {
+            ++servers;
+            mcp::ServerCapabilities caps;
+            if (servers == 1) {
+                caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+            }
+            return std::make_unique<mcp::Server>(mcp::Implementation{"terms", "1.0"}, caps);
+        });
+    manager.set_session_limits({10, std::chrono::milliseconds(40)});
+    std::string failure;
+    asio::co_spawn(io, manager.listen(), asio::detached);
+    asio::co_spawn(
+        io,
+        [&]() -> mcp::Task<void> {
+            auto transport = std::make_shared<mcp::HttpClientTransport>(
+                io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
+            mcp::Client client(transport, io.get_executor());
+            try {
+                co_await client.connect("terms", "1.0");
+                co_await wait_until([&manager] { return manager.session_count() == 0; });
+                co_await client.ping();
+            } catch (const std::exception& error) {
+                failure = error.what();
+            }
+            client.close();
+            manager.close();
+        },
+        asio::detached);
+    io.run();
+    EXPECT_NE(failure.find("another protocol version"), std::string::npos) << failure;
+}
+
 // A new session that could not start is started again before the client's next request.
 TEST_F(SessionLimitsTest, ClientStartsANewSessionAfterAFailedStart) {
     manager_.set_session_limits({1, std::chrono::minutes(5)});
