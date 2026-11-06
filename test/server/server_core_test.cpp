@@ -636,9 +636,9 @@ TEST_F(ServerCoreTest, MalformedAndNonObjectMessagesReturnErrorsThenAcceptValidR
 
     ASSERT_EQ(responses.size(), 3);
     EXPECT_EQ(responses[0]["error"]["code"], mcp::g_PARSE_ERROR);
-    EXPECT_TRUE(responses[0]["id"].is_null());
+    EXPECT_FALSE(responses[0].contains("id"));
     EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_REQUEST);
-    EXPECT_TRUE(responses[1]["id"].is_null());
+    EXPECT_FALSE(responses[1].contains("id"));
     EXPECT_EQ(responses[2]["id"], "ping");
     EXPECT_EQ(responses[2]["result"], nlohmann::json::object());
 }
@@ -694,7 +694,7 @@ TEST_F(ServerCoreTest, MemoryTransportRecoversFromMalformedJson) {
     EXPECT_EQ(client_error, nullptr);
     ASSERT_EQ(responses.size(), 2);
     EXPECT_EQ(responses[0]["error"]["code"], mcp::g_PARSE_ERROR);
-    EXPECT_TRUE(responses[0]["id"].is_null());
+    EXPECT_FALSE(responses[0].contains("id"));
     EXPECT_EQ(responses[1]["id"], 7);
     EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
 }

@@ -176,9 +176,9 @@ inline StringResponse make_error_response(const StringRequest& request, http::st
 inline StringResponse make_jsonrpc_error_response(const StringRequest& request,
                                                   http::status status_code, int error_code,
                                                   std::string_view error_message) {
+    // It names no request, so `id` is left out, as MCP's schema has it.
     nlohmann::json error_body = {{"jsonrpc", "2.0"},
-                                 {"error", {{"code", error_code}, {"message", error_message}}},
-                                 {"id", nullptr}};
+                                 {"error", {{"code", error_code}, {"message", error_message}}}};
     return make_json_response(request, status_code, error_body.dump());
 }
 
@@ -895,7 +895,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         // The Server answers a request whose id is neither a string nor an integer within int64_t
-        // with a null id, since it has none it may echo, so that answer could never be matched to
+        // without an id, since it has none it may echo, so that answer could never be matched to
         // this request.
         if (request_json.contains("id") && request_json.contains("method") &&
             !detail::is_request_id(request_json.at("id"))) {

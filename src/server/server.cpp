@@ -549,20 +549,19 @@ bool is_valid_response_envelope(const nlohmann::json& message) {
     return true;
 }
 
+/// An error that answers no request it can name leaves out `id`: MCP's schema gives an error
+/// response's id the type of a request id, which null is not.
 std::string make_invalid_request_wire(const nlohmann::json& message, std::string_view reason) {
-    nlohmann::json id = nullptr;
+    nlohmann::json wire = {{"jsonrpc", "2.0"},
+                           {"error", {{"code", g_INVALID_REQUEST}, {"message", reason}}}};
     if (message.is_object() && has_valid_request_id(message)) {
-        id = message.at("id");
+        wire["id"] = message.at("id");
     }
-    return nlohmann::json{{"jsonrpc", "2.0"},
-                          {"id", std::move(id)},
-                          {"error", {{"code", g_INVALID_REQUEST}, {"message", reason}}}}
-        .dump();
+    return wire.dump();
 }
 
 std::string make_parse_error_wire() {
     return nlohmann::json{{"jsonrpc", "2.0"},
-                          {"id", nullptr},
                           {"error", {{"code", g_PARSE_ERROR}, {"message", "Parse error"}}}}
         .dump();
 }

@@ -2188,14 +2188,16 @@ TEST_F(ServerHandlersTest, MessageNestedBeyondTheDepthLimitIsAParseError) {
 
     ASSERT_EQ(responses.size(), 2U);
     const auto with_id = [&responses](const nlohmann::json& id) {
-        const auto found = std::find_if(responses.begin(), responses.end(),
-                                        [&id](const nlohmann::json& r) { return r.at("id") == id; });
+        const auto found =
+            std::find_if(responses.begin(), responses.end(), [&id](const nlohmann::json& r) {
+                return r.contains("id") ? r.at("id") == id : id.is_null();
+            });
         return found == responses.end() ? nlohmann::json() : *found;
     };
     const auto answered = with_id("at-limit");
     ASSERT_TRUE(answered.is_object()) << "the ping at the limit got no response";
     EXPECT_TRUE(answered.contains("result")) << answered.dump();
-    // The id of a message that was never decoded is unknown, so the error carries a null id.
+    // The id of a message that was never decoded is unknown, so the error carries none.
     const auto refused = with_id(nullptr);
     ASSERT_TRUE(refused.is_object()) << "the ping over the limit got no parse error";
     EXPECT_EQ(refused.at("error").at("code"), mcp::g_PARSE_ERROR);

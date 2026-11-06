@@ -572,14 +572,13 @@ struct HttpServerTransport::Impl {
             co_return make_empty_json_response(request, http::status::accepted);
         }
         // The Server answers a request whose id is neither a string nor an integer within int64_t
-        // with a null id, since it has none it may echo, so that answer could never be matched to
+        // without an id, since it has none it may echo, so that answer could never be matched to
         // this request.
         if (!detail::is_request_id(request_json.at("id"))) {
             co_return make_json_response(
                 request, http::status::bad_request,
                 nlohmann::json{
                     {"jsonrpc", "2.0"},
-                    {"id", nullptr},
                     {"error",
                      {{"code", g_INVALID_REQUEST},
                       {"message",

@@ -47,6 +47,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   URL-mode request that completed, the field the specification gives
   `notifications/elicitation/complete`. It held a `requestId`, so the
   notification it sent or read did not match the specification.
+- An error response that answers no request it can name, such as a parse
+  error, leaves out `id` instead of writing `"id": null`. MCP's schema gives
+  the id the type of a request id, and the TypeScript SDK 1.32.1 refuses a
+  null one. A null id is still read as no id.
 - `tools/call` naming an unknown tool and `prompts/get` naming an unknown
   prompt are answered with `g_INVALID_PARAMS` (`-32602`), as the tools and
   prompts specifications list, instead of `g_METHOD_NOT_FOUND` (`-32601`).

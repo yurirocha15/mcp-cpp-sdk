@@ -1442,11 +1442,14 @@ TEST(ProtocolTest, JSONRPCErrorResponseSerialization) {
     no_id.error = {.code = mcp::g_PARSE_ERROR, .message = "Parse error"};
 
     nlohmann::json j2 = no_id;
-    EXPECT_TRUE(j2.contains("id"));
-    EXPECT_TRUE(j2["id"].is_null());
+    EXPECT_FALSE(j2.contains("id"));
 
     auto deserialized2 = j2.get<mcp::JSONRPCErrorResponse>();
     EXPECT_FALSE(deserialized2.id.has_value());
+
+    // A peer following JSON-RPC 2.0 sends a null id instead; it reads as no id.
+    j2["id"] = nullptr;
+    EXPECT_FALSE(j2.get<mcp::JSONRPCErrorResponse>().id.has_value());
 }
 
 TEST(ProtocolTest, CallToolArgumentsDefaultToObjectAndRejectOtherJsonTypes) {

@@ -412,13 +412,14 @@ inline void from_json(const nlohmann::json& json_obj, JSONRPCResultResponse& res
 struct JSONRPCErrorResponse {
     Error error;                  ///< The error object.
     std::string jsonrpc = "2.0";  ///< JSON-RPC version (always "2.0").
-    std::optional<RequestId> id;  ///< The request ID, or no value when it cannot be determined.
+    /// The request ID, or no value when it cannot be determined. Then `id` is left out, as MCP's
+    /// schema has it; a null id is read as no value.
+    std::optional<RequestId> id;
 };
 
 inline void to_json(nlohmann::json& json_obj, const JSONRPCErrorResponse& resp) {
     json_obj = nlohmann::json::object();
     json_obj["error"] = resp.error;
-    json_obj["id"] = nullptr;
     json_obj["jsonrpc"] = resp.jsonrpc;
     if (resp.id) {
         json_obj["id"] = *resp.id;
