@@ -24,6 +24,7 @@ int main() {
         using namespace mcp;
 
         asio::io_context io_ctx;
+        bool client_ok = false;
 
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
@@ -83,8 +84,17 @@ int main() {
                     client_info.version = "1.0.0";
 
                     std::cout << "Client: connecting" << '\n';
-                    auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "Connected to: " << init_result.serverInfo->name << '\n';
+                    {
+                        auto init_result = co_await client.connect(client_info, ClientCapabilities{});
+                        // serverInfo is optional: a server may leave it out.
+                        if (init_result.serverInfo) {
+                            std::cout << "Connected to: " << init_result.serverInfo->name << '\n';
+                        }
+                        // Over HTTP the default Auto() sends one POST that names 2026-07-28; a legacy
+                        // server answers it with an error status and the client falls back to
+                        // initialize.
+                        std::cout << "Protocol version: " << init_result.protocolVersion << '\n';
+                    }
 
                     auto tools = co_await client.list_tools();
                     std::cout << "Tools: " << tools.tools.size() << '\n';
@@ -99,6 +109,7 @@ int main() {
 
                     std::cout << "HTTP example complete" << '\n';
                     client.close();
+                    client_ok = true;
 
                     http_transport_ptr->close();
                 } catch (const std::exception& error) {
@@ -109,6 +120,10 @@ int main() {
             asio::detached);
 
         io_ctx.run();
+        if (!client_ok) {
+            std::cerr << "Example failed\n";
+            return EXIT_FAILURE;
+        }
         return EXIT_SUCCESS;
     } catch (const std::exception& e) {
         std::cerr << "Exception: " << e.what() << "\n";

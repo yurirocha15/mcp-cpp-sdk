@@ -76,7 +76,7 @@ You then register the tool by providing these types as template arguments to
 
 .. literalinclude:: ../../examples/servers/stdio/server_stdio.cpp
    :language: cpp
-   :lines: 70-78
+   :lines: 73-81
 
 When using typed handlers, the SDK uses the template parameters to automatically
 wrap your handler in a layer that performs the conversion between `nlohmann::json`
@@ -101,7 +101,7 @@ asynchronous operation:
 
 .. literalinclude:: ../../examples/servers/stdio/server_stdio.cpp
    :language: cpp
-   :lines: 103-118
+   :lines: 106-124
 
 Progress and Cancellation
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -111,7 +111,7 @@ report progress and periodically check for cancellation requests.
 
 .. literalinclude:: ../../examples/features/progress_cancellation.cpp
    :language: cpp
-   :lines: 50-92
+   :lines: 60-100
 
 For more details on using the context, see :doc:`context`.
 
@@ -134,7 +134,7 @@ The following example demonstrates both patterns:
 
 .. literalinclude:: ../../examples/features/error_handling.cpp
    :language: cpp
-   :lines: 45-73
+   :lines: 46-74
 
 Use ``isError: true`` when the tool completed normally but needs to report an
 application-level failure back to the client. Either way the client receives a
@@ -187,7 +187,7 @@ content blocks.
 
 .. literalinclude:: ../../examples/features/error_handling.cpp
    :language: cpp
-   :lines: 94-109
+   :lines: 95-110
 
 Schema Validation
 -----------------

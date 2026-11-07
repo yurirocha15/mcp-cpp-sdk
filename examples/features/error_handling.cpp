@@ -30,6 +30,7 @@ int main() {
         using namespace mcp;
 
         asio::io_context io_ctx;
+        bool client_ok = false;
 
         // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
@@ -137,8 +138,14 @@ int main() {
                     std::cout << "[Client] Connecting\n";
                     Client client(transport, io_ctx.get_executor());
 
-                    auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "[Client] Connected to: " << init_result.serverInfo->name << "\n\n";
+                    {
+                        auto init_result = co_await client.connect(client_info, ClientCapabilities{});
+                        // serverInfo is optional: a server may leave it out.
+                        if (init_result.serverInfo) {
+                            std::cout << "[Client] Connected to: " << init_result.serverInfo->name
+                                      << "\n\n";
+                        }
+                    }
 
                     // ========== TEST 1: Catch exception from thrown error ==========
                     std::cout << "=== TEST 1: Catch exception from thrown error ===\n";
@@ -217,6 +224,7 @@ int main() {
                     co_await wait_timer.async_wait(asio::use_awaitable);
 
                     std::cout << "[Client] Shutting down\n";
+                    client_ok = true;
                 } catch (const std::exception& e) {
                     std::cerr << "[Client] Fatal error: " << e.what() << '\n';
                 }
@@ -240,6 +248,10 @@ int main() {
         // ========== RUN IO CONTEXT ==========
         io_ctx.run();
 
+        if (!client_ok) {
+            std::cerr << "Example failed\n";
+            return EXIT_FAILURE;
+        }
         std::cout << "[Main] Exiting normally\n";
         return EXIT_SUCCESS;
 
