@@ -42,6 +42,15 @@ bool is_valid(const json& schema, const json& instance) {
     return CompiledSchema::compile(schema).validate(instance).valid;
 }
 
+/// Whether validating @p value against @p schema stops for want of work, given @p work to spend.
+bool stops_for_work(const json& schema, const json& value, std::size_t work) {
+    mcp::SchemaOptions options;
+    options.max_evaluation_work = work;
+    const auto result = CompiledSchema::compile(schema, options).validate(value);
+    return !result.valid && result.violations.size() == 1U &&
+           result.violations[0].message.find("takes too much work") != std::string::npos;
+}
+
 SchemaError::Category compile_error(const json& schema) {
     try {
         (void)CompiledSchema::compile(schema);
@@ -370,19 +379,17 @@ TEST(SchemaLimits, ExponentialEvaluationIsStopped) {
 // comparison, so nothing but a charge per comparison stops this.
 TEST(SchemaLimits, EnumComparisonsAreCharged) {
     json allowed = json::array();
-    for (int i = 0; i < 20000; ++i) {
+    for (int i = 0; i < 500; ++i) {
         allowed.push_back(1000000 + i);
     }
     const json schema = {{"items", {{"enum", allowed}}}};
-    // The last value of the enum, so every comparison runs and no item is a violation.
-    const json value(20000, allowed.back());
+    // The last value of the enum, so every comparison runs and no item is a violation: 250,000
+    // comparisons at 8 units each, which a million units do not pay for and ten million do.
+    const json value(500, allowed.back());
     const std::vector<json> schemas{schema, through_jsoncons(schema)};
     for (const auto& each : schemas) {
-        const auto result = CompiledSchema::compile(each).validate(value);
-        EXPECT_FALSE(result.valid);
-        ASSERT_EQ(result.violations.size(), 1U);
-        EXPECT_NE(result.violations.front().message.find("too much work"), std::string::npos)
-            << result.violations.front().message;
+        EXPECT_TRUE(stops_for_work(each, value, 1'000'000));
+        EXPECT_FALSE(stops_for_work(each, value, 10'000'000));
     }
 }
 
@@ -794,23 +801,17 @@ TEST(SchemaLimits, WholeStringKeywordsAreCharged) {
         branches.push_back({{"minLength", 2'000'000 + i}});
     }
     const json schema = through_jsoncons({{"anyOf", branches}});
-    const std::string text(1U << 20U, 'x');
+    // 200 branches over 32 KiB read about 6.6 million bytes, about 410,000 units at 16 bytes each.
+    // 250,000 units pay for checking the schema when it is compiled, but not for that.
+    const std::string text(std::size_t{32} * 1024, 'x');
+    EXPECT_FALSE(stops_for_work(schema, text, 10'000'000));
     EXPECT_FALSE(CompiledSchema::compile(schema).validate(text).violations.empty());
     mcp::SchemaOptions options;
-    options.max_evaluation_work = 10'000'000;
+    options.max_evaluation_work = 250'000;
     const auto result = CompiledSchema::compile(schema, options).validate(text);
     ASSERT_EQ(result.violations.size(), 1U);
     EXPECT_EQ(result.violations[0].message,
               "validation stopped: schema evaluation takes too much work");
-}
-
-/// Whether validating @p value against @p schema stops for want of work, given @p work to spend.
-bool stops_for_work(const json& schema, const json& value, std::size_t work) {
-    mcp::SchemaOptions options;
-    options.max_evaluation_work = work;
-    const auto result = CompiledSchema::compile(schema, options).validate(value);
-    return !result.valid && result.violations.size() == 1U &&
-           result.violations[0].message.find("takes too much work") != std::string::npos;
 }
 
 // Draft-07 evaluates contentEncoding and contentMediaType, and each reads the whole string: 100
@@ -928,7 +929,11 @@ TEST(SchemaLimits, LargeSchemasOverOrdinaryArraysAreNotStopped) {
         branches.push_back({{"$ref", "#/$defs/" + name}});
     }
     const json union_schema = {{"$defs", defs}, {"type", "array"}, {"items", {{"oneOf", branches}}}};
-    EXPECT_TRUE(is_valid(union_schema, json(5000, {{"kind", "t19"}, {"name", "x"}, {"n", 1}})));
+    // Each item costs the same, so 500 items within a tenth of the default budget stand for 5000
+    // within all of it.
+    const json items(500, {{"kind", "t19"}, {"name", "x"}, {"n", 1}});
+    EXPECT_TRUE(is_valid(union_schema, items));
+    EXPECT_FALSE(stops_for_work(union_schema, items, mcp::SchemaOptions{}.max_evaluation_work / 10));
 }
 
 // Property names are compared whole: a NUL inside one does not end it, in values and in schemas.

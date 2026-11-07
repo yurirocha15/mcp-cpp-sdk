@@ -24,15 +24,13 @@ namespace {
 
 using nlohmann::json;
 
+// Waits with no time limit of its own: sanitizer builds run many times slower, so a wait that never
+// ends is left to the test runner's timeout.
 mcp::Task<void> wait_until(std::function<bool()> condition) {
     auto executor = co_await boost::asio::this_coro::executor;
-    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-    while (!condition() && std::chrono::steady_clock::now() < give_up) {
+    while (!condition()) {
         boost::asio::steady_timer timer(executor, std::chrono::milliseconds(1));
         co_await timer.async_wait(boost::asio::use_awaitable);
-    }
-    if (!condition()) {
-        ADD_FAILURE() << "gave up waiting";
     }
 }
 
@@ -793,9 +791,9 @@ TEST(ClientLimits, AnsweredRequestsLeaveRoomForMore) {
 TEST(ClientLimits, AnsweredRequestsGiveBackTheirMemory) {
     boost::asio::io_context io;
     auto peer = std::make_shared<FloodingPeer>(io.get_executor());
-    peer->padding = 20000;
+    peer->padding = 2500;
     mcp::ClientOptions options;
-    options.max_incoming_request_bytes = std::size_t{8} * 1024 * 1024;
+    options.max_incoming_request_bytes = std::size_t{1024} * 1024;
     mcp::Client client(peer, io.get_executor(), options);
     int unanswered = 0;
     boost::asio::co_spawn(
@@ -804,7 +802,7 @@ TEST(ClientLimits, AnsweredRequestsGiveBackTheirMemory) {
             co_await client.connect("limits", "1.0");
             co_await wait_until([&] { return peer->pings_read >= 3; });
             peer->take_held_answers();
-            // Each ping takes more than 1 MiB parsed, so these hold far more than the limit in all.
+            // Each ping takes about 200 KB parsed, so these hold far more than the limit in all.
             co_await wait_until([&] { return peer->pings_read >= 40; });
             peer->hold_answers_again();
             // Requests read and not yet answered: with the memory given back, several at once.
