@@ -113,6 +113,15 @@ std::ptrdiff_t write_descriptor(int descriptor, const char* data, std::size_t si
 }
 #endif
 
+/// Keeps a write to a closed pipe on @p descriptor from raising SIGPIPE. macOS raises it on the whole
+/// process, not on the writing thread, so the writer's blocked signal (see write_lines()) would not
+/// stop it there. The open file is set not to raise it, which every descriptor sharing it sees.
+void suppress_pipe_signal([[maybe_unused]] int descriptor) {
+#if defined(__APPLE__)
+    ::fcntl(descriptor, F_SETNOSIGPIPE, 1);
+#endif
+}
+
 /// Writes straight through to a file descriptor. The transport flushes after
 /// every message, so a buffer here would only add a second place for half a
 /// message to sit.
@@ -180,6 +189,7 @@ class RawStdout {
     RawStdout() : buffer_(kStdoutDescriptor), stream_(&buffer_) {
         std::cout.flush();
         std::fflush(stdout);
+        suppress_pipe_signal(kStdoutDescriptor);
     }
 
     std::ostream& stream() noexcept { return stream_; }
@@ -312,12 +322,7 @@ class OwnedStdout {
             throw std::runtime_error(
                 "StdioTransport could not duplicate this process's standard output");
         }
-#if defined(__APPLE__)
-        // macOS raises SIGPIPE for a write to a closed pipe on the whole process, not on the
-        // writing thread, so the writer's blocked signal would not stop it. The open file is set
-        // not to raise it, which every descriptor sharing it sees.
-        ::fcntl(descriptor, F_SETNOSIGPIPE, 1);
-#endif
+        suppress_pipe_signal(descriptor);
 
         if (replace_descriptor(kStderrDescriptor, kStdoutDescriptor) < 0) {
             // A process started with standard error closed still needs its
@@ -655,7 +660,7 @@ struct StdioTransport::Impl {
 #if !defined(_WIN32)
         // A reader that went away is a failed write here, not a signal that ends the process. The
         // signal stays pending on this thread, so nothing else in the process changes; on macOS
-        // the standard output descriptor does not raise it at all (see acquire()).
+        // the standard output descriptor does not raise it at all (see suppress_pipe_signal()).
         sigset_t pipe_signal;
         sigemptyset(&pipe_signal);
         sigaddset(&pipe_signal, SIGPIPE);
