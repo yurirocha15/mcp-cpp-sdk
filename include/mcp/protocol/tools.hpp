@@ -213,15 +213,16 @@ MCP_API CallToolResult make_tool_error_result(std::string message);
 /**
  * @brief Create a successful tool result containing structured output.
  *
- * The structured value must be a JSON object, as required by MCP. A JSON
- * serialization is also emitted as text for clients that do not consume
- * structuredContent.
+ * The structured value may be any JSON value, as 2026-07-28 allows. A server
+ * sends a value that is not an object only in response to a 2026-07-28
+ * request; earlier revisions require an object, and the server refuses a result
+ * that holds anything else. A JSON serialization is also emitted as text for
+ * clients that do not consume structuredContent.
  *
  * @param structured_content Structured tool output.
  * @param text Optional human-readable representation. When omitted, the
  *             structured value is serialized as JSON.
  * @return A protocol-valid CallToolResult.
- * @throws std::invalid_argument If structured_content is not a JSON object.
  */
 MCP_API CallToolResult make_tool_structured_result(nlohmann::json structured_content,
                                                    std::optional<std::string> text = std::nullopt);
@@ -318,6 +319,8 @@ struct ListToolsResult {
     std::vector<Tool> tools;                ///< The list of tools in the current page.
     std::optional<std::string> nextCursor;  ///< Pagination cursor for the next page.
     std::optional<nlohmann::json> meta;     ///< Reserved for protocol use.
+    std::optional<std::int64_t> ttlMs;      ///< Caching TTL hint, in milliseconds (2026-07-28).
+    std::optional<CacheScope> cacheScope;   ///< Caching scope hint (2026-07-28).
 };
 inline void to_json(nlohmann::json& j, const ListToolsResult& r) {
     j = nlohmann::json{{"tools", r.tools}};
@@ -327,6 +330,7 @@ inline void to_json(nlohmann::json& j, const ListToolsResult& r) {
     if (r.meta) {
         j["_meta"] = *r.meta;
     }
+    detail::write_cache_hints(j, r.ttlMs, r.cacheScope);
 }
 inline void from_json(const nlohmann::json& j, ListToolsResult& r) {
     j.at("tools").get_to(r.tools);
@@ -336,6 +340,7 @@ inline void from_json(const nlohmann::json& j, ListToolsResult& r) {
     if (j.contains("_meta")) {
         r.meta = j.at("_meta");
     }
+    detail::read_cache_hints(j, r.ttlMs, r.cacheScope);
 }
 
 }  // namespace mcp

@@ -53,7 +53,8 @@ class MCP_API SchemaError : public std::invalid_argument {
         eInvalidSchema,       ///< The schema is not valid under its dialect's metaschema, holds
                               ///< NaN or Infinity, has a pattern that is not a regular
                               ///< expression, or evaluating it exceeds the evaluation limits on
-                              ///< any value.
+                              ///< any value; or a tool input schema holds an invalid
+                              ///< `x-mcp-header` annotation.
         eUnsupportedDialect,  ///< `$schema` names a dialect this SDK does not implement.
         eUnresolvedRef,       ///< A `$ref` target is neither in the document nor a supported
                               ///< dialect's metaschema. Nothing is fetched.

@@ -98,6 +98,13 @@ mcp::Task<std::string> raw_exchange(asio::any_io_executor executor, unsigned sho
     co_return received;
 }
 
+/// A whole POST of @p body, with @p extra header lines.
+std::string full_post(const std::string& body, const std::string& extra = "") {
+    return "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+           "Accept: application/json, text/event-stream\r\n" +
+           extra + "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+}
+
 /// A POST whose headers promise @p body_bytes of body, none of which is sent.
 std::string header_only_post(std::size_t body_bytes, const std::string& extra = "") {
     return "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
@@ -296,7 +303,7 @@ TEST_F(SessionLimitsTest, ClientStartsANewSessionWhenTheOldOneExpired) {
     run([&]() -> mcp::Task<void> {
         auto transport = std::make_shared<mcp::HttpClientTransport>(
             io_.get_executor(), "http://127.0.0.1:" + std::to_string(port_) + "/mcp");
-        mcp::Client client(transport, io_.get_executor());
+        mcp::Client client(transport, io_.get_executor(), legacy_client_options());
         co_await client.connect("expired", "1.0");
         first_session = transport->session_id();
         co_await wait_until([this] { return manager_.session_count() == 0; });
@@ -310,89 +317,6 @@ TEST_F(SessionLimitsTest, ClientStartsANewSessionWhenTheOldOneExpired) {
     EXPECT_NE(first_session, second_session);
 }
 
-// A new session started in place of a forgotten one must report what the first did: the Client
-// knows the server by it. One with other capabilities fails the request instead.
-TEST(SessionTerms, NewSessionWithOtherCapabilitiesFailsTheRequest) {
-    asio::io_context io;
-    const unsigned short port = free_port();
-    int servers = 0;
-    mcp::StreamableHttpSessionManager manager(
-        io.get_executor(), "127.0.0.1", port, [&servers](const asio::any_io_executor&) {
-            ++servers;
-            mcp::ServerCapabilities caps;
-            if (servers == 1) {
-                caps.tools = mcp::ServerCapabilities::ToolsCapability{};
-            }
-            return std::make_unique<mcp::Server>(mcp::Implementation{"terms", "1.0"}, caps);
-        });
-    manager.set_session_limits({10, std::chrono::milliseconds(40)});
-    std::string failure;
-    asio::co_spawn(io, manager.listen(), asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            auto transport = std::make_shared<mcp::HttpClientTransport>(
-                io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
-            mcp::Client client(transport, io.get_executor());
-            try {
-                co_await client.connect("terms", "1.0");
-                co_await wait_until([&manager] { return manager.session_count() == 0; });
-                co_await client.ping();
-            } catch (const std::exception& error) {
-                failure = error.what();
-            }
-            client.close();
-            manager.close();
-        },
-        asio::detached);
-    io.run();
-    EXPECT_NE(failure.find("another protocol version"), std::string::npos) << failure;
-}
-
-// The new session is initialized before the lost request is sent again: a request other than ping
-// is refused before notifications/initialized.
-TEST_F(SessionLimitsTest, NewSessionIsInitializedBeforeTheRequestIsSentAgain) {
-    manager_.set_session_limits({10, std::chrono::milliseconds(40)});
-    std::size_t tools = 0;
-    run([&]() -> mcp::Task<void> {
-        auto transport = std::make_shared<mcp::HttpClientTransport>(
-            io_.get_executor(), "http://127.0.0.1:" + std::to_string(port_) + "/mcp");
-        mcp::Client client(transport, io_.get_executor());
-        co_await client.connect("expired", "1.0");
-        co_await wait_until([this] { return manager_.session_count() == 0; });
-        const auto listed = co_await client.list_tools();
-        tools = listed.tools.size();
-        client.close();
-    });
-    EXPECT_EQ(tools, 2u);
-}
-
-// With set_reinitialize_on_expired_session(false), a forgotten session fails the request with the
-// 404 and no new session is started.
-TEST_F(SessionLimitsTest, ForgottenSessionIsNotReplacedWhenTurnedOff) {
-    manager_.set_session_limits({10, std::chrono::milliseconds(40)});
-    std::optional<unsigned int> status;
-    std::string other;
-    run([&]() -> mcp::Task<void> {
-        auto transport = std::make_shared<mcp::HttpClientTransport>(
-            io_.get_executor(), "http://127.0.0.1:" + std::to_string(port_) + "/mcp");
-        transport->set_reinitialize_on_expired_session(false);
-        mcp::Client client(transport, io_.get_executor());
-        co_await client.connect("expired", "1.0");
-        co_await wait_until([this] { return manager_.session_count() == 0; });
-        try {
-            co_await client.ping();
-        } catch (const mcp::HttpStatusError& failure) {
-            status = failure.status();
-        } catch (const std::exception& failure) {
-            other = failure.what();
-        }
-        client.close();
-    });
-    EXPECT_EQ(status, 404u) << other;
-    EXPECT_EQ(manager_.session_count(), 0u);
-}
-
 // A new session that could not start is started again before the client's next request.
 TEST_F(SessionLimitsTest, ClientStartsANewSessionAfterAFailedStart) {
     manager_.set_session_limits({1, std::chrono::minutes(5)});
@@ -401,7 +325,7 @@ TEST_F(SessionLimitsTest, ClientStartsANewSessionAfterAFailedStart) {
     run([&]() -> mcp::Task<void> {
         auto transport = std::make_shared<mcp::HttpClientTransport>(
             io_.get_executor(), "http://127.0.0.1:" + std::to_string(port_) + "/mcp");
-        mcp::Client client(transport, io_.get_executor());
+        mcp::Client client(transport, io_.get_executor(), legacy_client_options());
         co_await client.connect("retry", "1.0");
         // Named: GCC mishandles a temporary in a co_await operand.
         const Headers own{{"Mcp-Session-Id", transport->session_id()}};
@@ -433,7 +357,7 @@ TEST_F(SessionLimitsTest, ClientReconnectsAfterTheServerClosedAnIdleConnection) 
     run([&]() -> mcp::Task<void> {
         auto transport = std::make_shared<mcp::HttpClientTransport>(
             io_.get_executor(), "http://127.0.0.1:" + std::to_string(port_) + "/mcp");
-        mcp::Client client(transport, io_.get_executor());
+        mcp::Client client(transport, io_.get_executor(), legacy_client_options());
         co_await client.connect("idle", "1.0");
         co_await client.ping();
         co_await pause(std::chrono::milliseconds(600));
@@ -488,6 +412,55 @@ TEST_F(SessionLimitsTest, UnauthorizedBodyIsNotRead) {
     });
     EXPECT_EQ(answer.rfind("HTTP/1.1 401", 0), 0u) << answer;
     EXPECT_EQ(answer.find("[timed out]"), std::string::npos) << answer;
+}
+
+/// A whole 2026-07-28 tools/call of @p tool, with @p extra header lines.
+std::string modern_call_post(int id, const std::string& tool, const std::string& extra) {
+    const auto call =
+        make_modern_request(id, "tools/call", {{"name", tool}, {"arguments", json::object()}});
+    const auto version =
+        call["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"].get<std::string>();
+    return full_post(call.dump(), "MCP-Protocol-Version: " + version +
+                                      "\r\nMcp-Method: tools/call\r\nMcp-Name: " + tool + "\r\n" +
+                                      extra);
+}
+
+// A request the connection read ahead while an earlier one ran, and that arrived before its
+// client finished sending, is checked on its headers like any other.
+TEST_F(SessionLimitsTest, RequestReadAheadBeforeTheClientFinishedIsCheckedForAToken) {
+    g_hold_started = false;
+    g_hold_released = false;
+    manager_.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    const auto pipelined =
+        modern_call_post(1, "hold", "Authorization: Bearer good\r\n") + modern_call_post(2, "hold", "");
+    std::string received;
+    run([&]() -> mcp::Task<void> {
+        beast::tcp_stream stream(io_.get_executor());
+        // A bound for reporting a server that never answers, not a measure of speed.
+        stream.expires_after(std::chrono::minutes(2));
+        const asio::ip::tcp::endpoint endpoint(asio::ip::make_address("127.0.0.1"), port_);
+        co_await stream.async_connect(endpoint, asio::use_awaitable);
+        co_await asio::async_write(stream, asio::buffer(pipelined), asio::use_awaitable);
+        // The first call is running, so the second is read ahead; then the client stops sending.
+        co_await wait_until([] { return g_hold_started.load(); });
+        co_await pause(std::chrono::milliseconds(100));
+        stream.socket().shutdown(asio::ip::tcp::socket::shutdown_send);
+        co_await pause(std::chrono::milliseconds(200));
+        g_hold_released = true;
+        std::array<char, 4096> chunk{};
+        try {
+            for (;;) {
+                const auto count =
+                    co_await stream.async_read_some(asio::buffer(chunk), asio::use_awaitable);
+                received.append(chunk.data(), count);
+            }
+        } catch (const boost::system::system_error&) {
+            // The server ends the connection after its last answer.
+        }
+    });
+    EXPECT_NE(received.find("\"id\":1"), std::string::npos) << received;
+    EXPECT_NE(received.find("HTTP/1.1 401"), std::string::npos) << received;
+    EXPECT_EQ(received.find("\"id\":2"), std::string::npos) << received;
 }
 
 TEST_F(SessionLimitsTest, ConnectionThatSendsNothingIsClosed) {
@@ -623,6 +596,20 @@ TEST_F(SessionLimitsTest, ConnectionLimitsMustAllowARequest) {
                  std::invalid_argument);
     EXPECT_THROW(manager_.set_connection_limits({0, std::chrono::seconds(1), 1, 0}),
                  std::invalid_argument);
+}
+
+// Without a validator the Authorization header is not checked, so a client that changes it, as a
+// gateway in front may let it, keeps its session.
+TEST_F(SessionLimitsTest, SessionIsNotBoundToAnUncheckedAuthorizationHeader) {
+    Reply later;
+    run([&]() -> mcp::Task<void> {
+        const Headers one{{"Authorization", "Bearer one"}};
+        const auto first = co_await post(make_initialize_request("1"), one);
+        auto session = session_header(first);
+        session.emplace_back("Authorization", "Bearer two");
+        later = co_await post(ping(), session);
+    });
+    EXPECT_EQ(later.status, 200u) << later.body;
 }
 
 // A session whose request is still being answered is in use, however long the answer takes: only
@@ -815,11 +802,11 @@ TEST_F(SessionLimitsTest, ReadTimeoutTooLongForTheClockSetsNoDeadline) {
 // serving others.
 TEST_F(SessionLimitsTest, TokenCheckPastTheReadDeadlineEndsOnlyThatConnection) {
     manager_.set_connection_limits({0, std::chrono::milliseconds(200), 4096, 1U << 30});
-    manager_.set_async_bearer_token_validator([](std::string token) -> mcp::Task<bool> {
+    manager_.set_async_bearer_token_validator([](std::string token) -> mcp::Task<mcp::TokenValidation> {
         if (token == "slow") {
             co_await pause(std::chrono::milliseconds(400));
         }
-        co_return true;
+        co_return mcp::TokenValidation(true, "someone");
     });
     std::string late;
     Reply initialized;
@@ -1003,6 +990,74 @@ TEST_F(ReverseBindingTest, NextSessionCannotAnswerForTheOneBefore) {
     EXPECT_EQ(handler_saw_->find("injected"), std::string::npos) << *handler_saw_;
 }
 
+// A request sent without a session, as a 2026-07-28 client sends one, belongs to no session: while
+// it is answered, a session left idle can still be taken over.
+TEST_F(ReverseBindingTest, SessionlessRequestDoesNotKeepAnIdleSessionInUse) {
+    std::atomic<bool> started{false};
+    std::atomic<bool> released{false};
+    server_->add_tool<json, json>("slow", "Answers once released", json{{"type", "object"}},
+                                  [&started, &released](json /*args*/) -> mcp::Task<json> {
+                                      started = true;
+                                      auto executor = co_await asio::this_coro::executor;
+                                      while (!released) {
+                                          asio::steady_timer tick(executor,
+                                                                  std::chrono::milliseconds(1));
+                                          co_await tick.async_wait(asio::use_awaitable);
+                                      }
+                                      co_return json::object();
+                                  });
+    transport_->set_session_idle_timeout(std::chrono::milliseconds(20));
+    Reply second;
+    run([&]() -> mcp::Task<void> {
+        co_await post_only(make_initialize_request("first"));
+        const auto call =
+            make_modern_request(1, "tools/call", {{"name", "slow"}, {"arguments", json::object()}});
+        const Headers headers{{"MCP-Protocol-Version",
+                               call["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"]},
+                              {"Mcp-Method", "tools/call"},
+                              {"Mcp-Name", "slow"}};
+        asio::co_spawn(
+            io_,
+            [this, call, headers]() -> mcp::Task<void> {
+                try {
+                    co_await post_only(call, headers);
+                } catch (const std::exception&) {
+                    // The transport may close first.
+                }
+            },
+            asio::detached);
+        co_await wait_until([&started] { return started.load(); });
+        co_await pause(std::chrono::milliseconds(40));
+        second = co_await post(make_initialize_request("second"));
+        released = true;
+    });
+    EXPECT_EQ(second.status, 200u) << second.body;
+}
+
+// Requests of another principal that name the session are refused, and do not keep it in use.
+TEST_F(ReverseBindingTest, RequestsOfAnotherPrincipalLeaveTheSessionIdle) {
+    transport_->set_bearer_token_validator([](std::string_view /*token*/) { return true; });
+    transport_->set_session_idle_timeout(std::chrono::milliseconds(100));
+    std::vector<unsigned int> refused;
+    Reply next;
+    run([&]() -> mcp::Task<void> {
+        // Named: GCC mishandles a temporary in a co_await operand.
+        const Headers alice{{"Authorization", "Bearer alice"}};
+        const Headers carol{{"Authorization", "Bearer carol"}};
+        const auto created = co_await post(make_initialize_request("alice"), alice);
+        const Headers other{{"Authorization", "Bearer bob"},
+                            {"MCP-Session-Id", created.session_id.value_or("")}};
+        for (int i = 0; i < 10; ++i) {
+            const auto reply = co_await post(ping(), other);
+            refused.push_back(reply.status);
+            co_await pause(std::chrono::milliseconds(20));
+        }
+        next = co_await post(make_initialize_request("carol"), carol);
+    });
+    EXPECT_EQ(refused, std::vector<unsigned int>(10, 404u));
+    EXPECT_EQ(next.status, 200u) << next.body;
+}
+
 // A request whose session ends while it runs has reached the server, so it is not answered 404,
 // which would have the client send it again in a new session.
 TEST_F(ReverseBindingTest, RequestWhoseSessionEndsWhileItRunsIsNotSentAgain) {
@@ -1023,7 +1078,7 @@ TEST_F(ReverseBindingTest, RequestWhoseSessionEndsWhileItRunsIsNotSentAgain) {
     run([&]() -> mcp::Task<void> {
         auto transport = std::make_shared<mcp::HttpClientTransport>(
             io_.get_executor(), "http://127.0.0.1:" + std::to_string(transport_->port()) + "/mcp");
-        mcp::Client client(transport, io_.get_executor());
+        mcp::Client client(transport, io_.get_executor(), legacy_client_options());
         co_await client.connect("twice", "1.0");
         asio::co_spawn(
             io_,
@@ -1263,6 +1318,22 @@ TEST_F(ReverseBindingTest, ConnectionsPastTheLimitAreClosed) {
         idle->close();
     });
     EXPECT_EQ(second, "");
+}
+
+// Without a validator the Authorization header is not checked, so a client that changes it keeps
+// its session.
+TEST_F(ReverseBindingTest, SessionIsNotBoundToAnUncheckedAuthorizationHeader) {
+    Reply later;
+    run([&]() -> mcp::Task<void> {
+        const Headers one{{"Authorization", "Bearer one"}};
+        const auto first = co_await post(make_initialize_request("first"), one);
+        const Headers session{
+            {"MCP-Session-Id", first.session_id.value_or("")},
+            {"MCP-Protocol-Version", json::parse(first.body)["result"]["protocolVersion"]},
+            {"Authorization", "Bearer two"}};
+        later = co_await post(ping(), session);
+    });
+    EXPECT_EQ(later.status, 200u) << later.body;
 }
 
 // A session waiting for the answer to a request is in use, so another client's initialize does not

@@ -9,11 +9,14 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <chrono>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/server.hpp>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace mcp;
@@ -456,4 +459,150 @@ TEST(ServerMiddlewareTest, ToolExceptionReachesMiddlewareAsAnErrorResult) {
     EXPECT_TRUE(response["result"]["isError"].get<bool>());
     EXPECT_NE(response["result"]["content"][0]["text"].get<std::string>().find("tool broke"),
               std::string::npos);
+}
+
+namespace {
+
+struct ServedRequest {
+    std::string method;
+    json params;
+};
+
+const std::vector<ServedRequest>& handled_requests() {
+    static const std::vector<ServedRequest> requests{
+        {"resources/read", {{"uri", "test://failing"}}},
+        {"prompts/get", {{"name", "failing"}}},
+    };
+    return requests;
+}
+
+const std::vector<ServedRequest>& middleware_requests() {
+    static const std::vector<ServedRequest> requests{
+        {"tools/call", {{"name", "failing"}, {"arguments", json::object()}}},
+        {"resources/read", {{"uri", "test://failing"}}},
+        {"prompts/get", {{"name", "failing"}}},
+    };
+    return requests;
+}
+
+Server make_full_server() {
+    ServerCapabilities caps;
+    caps.tools = ServerCapabilities::ToolsCapability{};
+    caps.resources = ServerCapabilities::ResourcesCapability{};
+    caps.prompts = ServerCapabilities::PromptsCapability{};
+    Implementation info;
+    info.name = "test-server";
+    info.version = "1.0";
+    return Server(std::move(info), std::move(caps));
+}
+
+void add_handlers(Server& server, bool handlers_throw) {
+    server.add_tool<json, json>("failing", "Reached only by way of the middleware",
+                                json{{"type", "object"}},
+                                [](const json&) -> json { return json::object(); });
+    Resource resource;
+    resource.uri = "test://failing";
+    resource.name = "failing";
+    Prompt prompt;
+    prompt.name = "failing";
+    if (handlers_throw) {
+        server.add_resource<json, json>(resource, [](const json&) -> json { throw 42; });
+        server.add_prompt<json, json>(prompt, [](const json&) -> json { throw 42; });
+    } else {
+        server.add_resource<json, json>(resource, [](const json&) -> json { return json::object(); });
+        server.add_prompt<json, json>(prompt, [](const json&) -> json { return json::object(); });
+    }
+}
+
+// Feeds `messages` to `server` and returns the response carrying `id`, or null if none arrives.
+json answer_to(Server& server, const std::vector<json>& messages, const json& id) {
+    boost::asio::io_context io;
+    auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
+    auto* transport_ptr = transport.get();
+
+    // A request nobody answers keeps the server running even after its transport closes. The timer
+    // runs out only then, so that the regression fails the test instead of hanging the suite.
+    boost::asio::steady_timer watchdog(io);
+    watchdog.expires_after(std::chrono::seconds(30));
+    watchdog.async_wait([&io](const boost::system::error_code& error) {
+        if (!error) {
+            io.stop();
+        }
+    });
+
+    json answer;
+    transport_ptr->set_on_write([&](std::string_view msg) {
+        auto parsed = json::parse(msg);
+        if (parsed.contains("id") && parsed["id"] == id) {
+            answer = std::move(parsed);
+            watchdog.cancel();
+            transport_ptr->close();
+        }
+    });
+
+    for (const auto& message : messages) {
+        transport_ptr->enqueue_message(message.dump());
+    }
+
+    boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
+    io.run();
+    return answer;
+}
+
+json answer_legacy(Server& server, const ServedRequest& request) {
+    return answer_to(
+        server,
+        {make_initialize_request("1"), make_initialized_notification(),
+         json{{"jsonrpc", "2.0"}, {"id", "2"}, {"method", request.method}, {"params", request.params}}},
+        "2");
+}
+
+json answer_modern(Server& server, const ServedRequest& request) {
+    return answer_to(server, {make_modern_request("2", request.method, request.params)}, "2");
+}
+
+void expect_internal_error(const json& response) {
+    ASSERT_TRUE(response.contains("error")) << response.dump();
+    EXPECT_EQ(response["error"]["code"], g_INTERNAL_ERROR);
+    EXPECT_EQ(response["error"]["message"], "Internal error");
+}
+
+}  // namespace
+
+TEST(ServerMiddlewareTest, NonStdExceptionFromMiddlewareIsAnsweredOnLegacyRequests) {
+    for (const auto& request : middleware_requests()) {
+        SCOPED_TRACE(request.method);
+        auto server = make_full_server();
+        add_handlers(server, false);
+        server.use([](Context&, const json&, TypeErasedHandler) -> Task<json> { throw 42; });
+        expect_internal_error(answer_legacy(server, request));
+    }
+}
+
+TEST(ServerMiddlewareTest, NonStdExceptionFromMiddlewareIsAnsweredOnModernRequests) {
+    for (const auto& request : middleware_requests()) {
+        SCOPED_TRACE(request.method);
+        auto server = make_full_server();
+        add_handlers(server, false);
+        server.use([](Context&, const json&, TypeErasedHandler) -> Task<json> { throw 42; });
+        expect_internal_error(answer_modern(server, request));
+    }
+}
+
+TEST(ServerMiddlewareTest, NonStdExceptionFromHandlerIsAnsweredOnLegacyRequests) {
+    for (const auto& request : handled_requests()) {
+        SCOPED_TRACE(request.method);
+        auto server = make_full_server();
+        add_handlers(server, true);
+        expect_internal_error(answer_legacy(server, request));
+    }
+}
+
+TEST(ServerMiddlewareTest, NonStdExceptionFromHandlerIsAnsweredOnModernRequests) {
+    for (const auto& request : handled_requests()) {
+        SCOPED_TRACE(request.method);
+        auto server = make_full_server();
+        add_handlers(server, true);
+        expect_internal_error(answer_modern(server, request));
+    }
 }

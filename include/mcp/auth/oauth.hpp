@@ -917,6 +917,9 @@ class MCP_API OAuthClientTransport final : public ITransport {
      */
     void close() override;
 
+    /** @brief What the wrapped transport does. */
+    [[nodiscard]] bool overlapping_writes() const noexcept override;
+
    private:
     struct Impl;
     std::shared_ptr<Impl> impl_;

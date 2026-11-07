@@ -74,10 +74,8 @@ int main() {
                 std::cout << "Tool: Received elicitation result\n";
 
                 auto make_result = [](const std::string& text) {
-                    return nlohmann::json{
-                        {"content",
-                         nlohmann::json::array(
-                             {nlohmann::json{{"type", "text"}, {"text", text}}})}};
+                    return nlohmann::json{{"content", nlohmann::json::array({nlohmann::json{
+                                                          {"type", "text"}, {"text", text}}})}};
                 };
 
                 if (result.action == ElicitAction::eAccept) {
@@ -85,7 +83,7 @@ int main() {
                     if (result.content) {
                         std::cout << "Tool: Form data: " << result.content->dump() << "\n";
                         co_return make_result("Accepted: task=" + task +
-                                             " info=" + result.content->dump());
+                                              " info=" + result.content->dump());
                     }
                     co_return make_result("Accepted: task=" + task + " (no form data)");
                 } else if (result.action == ElicitAction::eDecline) {
@@ -130,7 +128,7 @@ int main() {
 
                     std::cout << "Client: Connecting to server\n";
                     auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "Client: Connected to " << init_result.serverInfo.name << "\n";
+                    std::cout << "Client: Connected to " << init_result.serverInfo->name << "\n";
 
                     bool elicitation_received = false;
 

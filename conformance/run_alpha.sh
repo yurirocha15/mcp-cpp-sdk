@@ -2,7 +2,7 @@
 # INFORMATIONAL-ONLY, NON-DEFAULT, NON-CI-GATING.
 #
 # Side-by-side alpha conformance harness. Runs the official MCP conformance
-# runner's alpha channel (@modelcontextprotocol/conformance@0.2.0-alpha.11,
+# runner's alpha channel (@modelcontextprotocol/conformance@0.2.0-alpha.12,
 # which defaults to spec 2026-07-28) against the SAME already-built fixtures
 # used by conformance/run.sh, but writes to a DISTINCT results directory and
 # is never invoked by CI or any phase-exit script.
@@ -27,7 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="${1:-$PROJECT_DIR/build/release}"
 OUTPUT_DIR="${2:-$PROJECT_DIR/build/conformance-results-alpha}"
-RUNNER_PACKAGE="@modelcontextprotocol/conformance@0.2.0-alpha.11"
+RUNNER_PACKAGE="@modelcontextprotocol/conformance@0.2.0-alpha.12"
 SERVER="$BUILD_DIR/conformance/mcp-conformance-everything-server"
 CLIENT="$BUILD_DIR/conformance/mcp-conformance-everything-client"
 SPEC_VERSION="2026-07-28"
@@ -42,8 +42,8 @@ fi
 
 echo "Resolving pinned alpha runner: $RUNNER_PACKAGE (network access required)..." >&2
 runner_version="$(npx --yes "$RUNNER_PACKAGE" --version)"
-if [[ "$runner_version" != "0.2.0-alpha.11" ]]; then
-    echo "Unexpected alpha conformance runner version: $runner_version (expected 0.2.0-alpha.11)" >&2
+if [[ "$runner_version" != "0.2.0-alpha.12" ]]; then
+    echo "Unexpected alpha conformance runner version: $runner_version (expected 0.2.0-alpha.12)" >&2
     exit 2
 fi
 if [[ ! -x "$SERVER" || ! -x "$CLIENT" ]]; then

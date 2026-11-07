@@ -5,6 +5,7 @@
 #include <mcp/transport/transport.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -45,6 +46,14 @@ class MCP_API HttpStatusError : public std::runtime_error {
  *
  * Sends JSON-RPC messages via HTTP POST to an MCP Streamable HTTP endpoint.
  * Supports both `application/json` and `text/event-stream` response content types.
+ *
+ * Each message goes on an exchange of its own, so requests overlap, and an event stream is read
+ * as it comes: a request the server sends while it handles one of the client's reaches the client
+ * at once. In a session of protocol revision 2025-11-25 or earlier, the transport opens the
+ * session's GET stream after notifications/initialized, for what the server sends outside any
+ * request, and opens it again from its last event when it ends; a server that answers that GET
+ * with 405 is not asked again. A request's stream that ends before its response is resumed with a
+ * GET that names its last event.
  */
 class MCP_API HttpClientTransport final : public ITransport {
    public:
@@ -108,6 +117,26 @@ class MCP_API HttpClientTransport final : public ITransport {
     void set_bearer_token_provider(std::function<std::string()> provider);
 
     /**
+     * @brief Configure a receiver for warnings about what the server sent.
+     *
+     * A tool whose `x-mcp-header` annotations break the rules of the Streamable HTTP specification
+     * is left out of the result of tools/list when the client speaks protocol revision 2026-07-28;
+     * the handler is told which tool and why. It runs on the transport's executor and must not
+     * block.
+     */
+    void set_warning_handler(std::function<void(const std::string&)> handler);
+
+    /**
+     * @brief Limit the wait for the response to a request sent to a server of an older protocol.
+     *
+     * Past it the connection that waits is closed and the request fails. The default is ten
+     * minutes; ClientOptions::request_timeout still decides how long a caller waits. Zero, a
+     * negative value, or one too long for the clock to represent disables it. Requests of protocol
+     * revision 2026-07-28 have no such limit.
+     */
+    void set_response_timeout(std::chrono::milliseconds timeout);
+
+    /**
      * @brief Dequeue the next MCP message received from the server.
      *
      * @throws std::runtime_error If the transport is closed.
@@ -127,6 +156,9 @@ class MCP_API HttpClientTransport final : public ITransport {
      * @brief Close the transport and release connection resources.
      */
     void close() override;
+
+    /** @brief True: each message has its own exchange. */
+    [[nodiscard]] bool overlapping_writes() const noexcept override { return true; }
 
    private:
     struct Impl;

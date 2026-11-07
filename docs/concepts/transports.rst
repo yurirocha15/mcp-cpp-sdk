@@ -88,15 +88,32 @@ Clients can connect to a stdio-based server by providing the executor to the
 HTTP Transport (Network)
 ------------------------
 
-The HTTP implementation accepts MCP POST requests and returns either JSON or a
-finite SSE body. Managed sessions support session IDs, DELETE teardown, and
-bounded event replay through GET with ``Last-Event-ID``. A replay holds only the
-later events of the stream that the named event was sent on. Continuously open
-SSE polling streams are not yet implemented.
+The HTTP implementation accepts MCP POST requests and answers with JSON or an
+SSE stream. In a session of protocol revision 2025-11-25 or earlier, a POST
+from a client that accepts SSE becomes a stream as soon as the server sends
+anything for the request before its response: the handler's notifications and
+the server's own requests, such as ``elicitation/create``, go on that request's
+stream as they are sent, and the response ends it. A POST answered before
+anything else was sent gets that response alone. A GET opens the session's
+stream for what the server sends outside any request, one per session, for a
+client whose ``Accept`` lists ``text/event-stream`` (any other GET is answered
+406); the transport sends a request's messages on its own stream, and anything else on
+the GET stream, or on the stream of the only POST waiting when no GET is open.
+Every event is kept in a bounded store, and a GET with ``Last-Event-ID``
+resumes a stream from there: one still going on continues live, and one that
+ended is replayed. A client leaving a stream does not cancel its request.
+Managed sessions also support session IDs and DELETE teardown.
 
-After initialization, ``HttpClientTransport`` carries the server-selected
-protocol version on subsequent session requests and best-effort DELETE
-teardown, including when the initialize response arrived in an SSE event.
+``HttpClientTransport`` sends each message on an exchange of its own, so
+requests overlap, and reads an SSE answer as it arrives: a request the server
+sends while it handles one of the client's reaches the client at once. After
+notifications/initialized it opens the session's GET stream, and opens it again
+from its last event when it ends; a server that answers that GET with 405 is
+not asked again. A request's stream that ends before the response is resumed
+with a GET naming its last event. After initialization the transport carries
+the server-selected protocol version on subsequent session requests and
+best-effort DELETE teardown, including when the initialize response arrived in
+an SSE event.
 
 The built-in HTTP transports are plaintext. Bind local development servers to
 loopback. For remote deployments, place them behind a TLS-terminating proxy or
