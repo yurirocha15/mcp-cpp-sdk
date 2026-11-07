@@ -482,11 +482,15 @@ if(BUILD_TESTING)
 
   include(GoogleTest)
   # Default per-test timeout so one deadlocked test cannot stall a ctest run for
-  # the 25-minute ctest default (or forever without --timeout).
+  # the 25-minute ctest default (or forever without --timeout). Builds that run
+  # the tests many times slower, such as MemorySanitizer, raise it.
+  set(MCP_CPP_SDK_TEST_TIMEOUT
+      120
+      CACHE STRING "Seconds each test may run before ctest stops it")
   gtest_discover_tests(
     mcp-sdk-tests
     PROPERTIES
-    TIMEOUT 120)
+    TIMEOUT ${MCP_CPP_SDK_TEST_TIMEOUT})
 
   option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
   if(ENABLE_COVERAGE)

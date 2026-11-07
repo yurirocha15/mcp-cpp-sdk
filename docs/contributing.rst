@@ -194,7 +194,8 @@ MemorySanitizer reports a read of any memory that uninstrumented code wrote,
 so ``--msan`` builds its own libc++ from a pinned LLVM commit into
 ``build/msan-libcxx`` on first use, and has Conan rebuild Boost, OpenSSL and
 GoogleTest against it. The first run is slow; later runs reuse both. It needs
-``clang-18`` and ``git``.
+``clang-18`` and ``git``. Its tests run many times slower than in a debug
+build, so each may take 600 seconds instead of 120.
 
 The ThreadSanitizer and MemorySanitizer builds run under ``setarch -R`` where
 it is available, because neither can start on kernels with a high ASLR
