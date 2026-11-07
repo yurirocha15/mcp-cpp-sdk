@@ -1865,6 +1865,11 @@ struct StreamableHttpSessionManager::Impl {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid MCP-Protocol-Version header");
         }
+        if (!detail::get_accepts_event_stream(request)) {
+            co_return detail_session_mgr::make_error_response(
+                request, http::status::not_acceptable,
+                "Not Acceptable: the client must accept text/event-stream");
+        }
 
         auto signal = std::make_shared<boost::asio::steady_timer>(conn_strand);
         signal->expires_at(std::chrono::steady_clock::time_point::max());

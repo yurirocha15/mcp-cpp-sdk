@@ -95,8 +95,9 @@ anything for the request before its response: the handler's notifications and
 the server's own requests, such as ``elicitation/create``, go on that request's
 stream as they are sent, and the response ends it. A POST answered before
 anything else was sent gets that response alone. A GET opens the session's
-stream for what the server sends outside any request, one per session; the
-transport sends a request's messages on its own stream, and anything else on
+stream for what the server sends outside any request, one per session, for a
+client whose ``Accept`` lists ``text/event-stream`` (any other GET is answered
+406); the transport sends a request's messages on its own stream, and anything else on
 the GET stream, or on the stream of the only POST waiting when no GET is open.
 Every event is kept in a bounded store, and a GET with ``Last-Event-ID``
 resumes a stream from there: one still going on continues live, and one that

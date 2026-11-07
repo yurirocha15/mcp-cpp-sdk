@@ -289,6 +289,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Changed
 
+- A GET on the MCP endpoint whose `Accept` header does not list
+  `text/event-stream` is answered `406` by both HTTP server transports, as the
+  TypeScript SDK does, instead of opening an event stream.
 - On a session, both HTTP server transports accept an `MCP-Protocol-Version`
   header naming any version `initialize` can negotiate, not only the session's
   own, as the TypeScript, Go and Rust SDKs do; another value is still answered
