@@ -100,7 +100,7 @@ void install_reverse_rpc_handlers(mcp::Client& client) {
     });
 }
 
-mcp::Task<mcp::InitializeResult> connect_conformance_client(mcp::Client& client) {
+mcp::Task<mcp::ConnectResult> connect_conformance_client(mcp::Client& client) {
     mcp::Implementation implementation;
     implementation.name = "mcp-cpp-sdk-conformance-client";
     implementation.version = "0.2.0";

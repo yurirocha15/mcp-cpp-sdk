@@ -24,7 +24,7 @@ namespace {
 // differs from the shared helper in test_utils.hpp which returns a
 // complete response envelope.  Callers here wrap it inline.
 nlohmann::json make_initialize_result() {
-    return {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+    return {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
             {"capabilities", nlohmann::json::object()},
             {"serverInfo", {{"name", "test-server"}, {"version", "1.0"}}}};
 }
@@ -40,7 +40,7 @@ TEST_F(ClientNotificationsTest, NotificationCallbackFires) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     bool callback_fired = false;
     nlohmann::json received_params;
@@ -86,7 +86,7 @@ TEST_F(ClientNotificationsTest, UnhandledNotificationSilentlyDropped) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     int write_count = 0;
     raw->set_on_write([&](std::string_view msg) {
@@ -127,7 +127,7 @@ TEST_F(ClientNotificationsTest, PingRequestHandledAutomatically) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     std::vector<std::string> written_messages;
     int write_count = 0;
@@ -169,7 +169,7 @@ TEST_F(ClientNotificationsTest, CustomRequestHandlerDispatch) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     bool handler_called = false;
     nlohmann::json handler_params;
@@ -230,7 +230,7 @@ TEST_F(ClientNotificationsTest, AnswerThatCannotBeEncodedIsAnError) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
     const std::string not_utf8 = "\xff\xfe";
     client.on_request("test/result", [&](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
         co_return nlohmann::json{{"path", not_utf8}};
@@ -287,7 +287,7 @@ TEST_F(ClientNotificationsTest, UnknownRequestReturnsMethodNotFound) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     std::vector<std::string> written_messages;
     int write_count = 0;
@@ -348,6 +348,7 @@ NotificationSessionOutcome deliver_notifications(
     // Short enough that a swallowed response surfaces as a test failure instead of a stalled run.
     options.request_timeout = std::chrono::seconds(5);
     options.on_protocol_error = [&](const mcp::Error& error) { outcome.reported.push_back(error); };
+    options.protocol = mcp::ClientProtocol::Legacy();  // the scripted peer answers initialize
     mcp::Client client(transport, io_ctx.get_executor(), options);
     register_handlers(client);
 

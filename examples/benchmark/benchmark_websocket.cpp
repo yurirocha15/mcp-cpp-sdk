@@ -89,7 +89,7 @@ int main() {
                 client_info.version = "1.0.0";
 
                 auto init = co_await client.connect(client_info, ClientCapabilities{});
-                std::cout << "[Client] Connected to: " << init.serverInfo.name << "\n";
+                std::cout << "[Client] Connected to: " << init.serverInfo->name << "\n";
 
                 nlohmann::json warmup_args = {{"message", "warmup"}};
                 nlohmann::json bench_args = {{"message", "bench"}};

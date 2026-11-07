@@ -130,6 +130,11 @@ struct SerializedTransportWriterState {
         }
     }
 
+    static Task<void> write_beside_queue(std::shared_ptr<SerializedTransportWriterState> state,
+                                         std::shared_ptr<const std::string> message) {
+        co_await state->transport->write_message(*message);
+    }
+
     std::shared_ptr<ITransport> transport;
     boost::asio::strand<boost::asio::any_io_executor> strand;
     std::deque<std::shared_ptr<Operation>> queue;
@@ -168,6 +173,20 @@ Task<void> SerializedTransportWriter::write_message(std::string_view message) co
 
 Task<void> SerializedTransportWriter::write_message(std::shared_ptr<const std::string> message) const {
     return write_message(std::move(message), nullptr);
+}
+
+Task<void> SerializedTransportWriter::write_overlapping(
+    std::shared_ptr<const std::string> message) const {
+    if (!state_) {
+        throw std::logic_error("Cannot use a moved-from SerializedTransportWriter");
+    }
+
+    auto state = state_;
+    auto executor = state->strand;
+    return boost::asio::co_spawn(
+        executor,
+        SerializedTransportWriterState::write_beside_queue(std::move(state), std::move(message)),
+        boost::asio::use_awaitable);
 }
 
 Task<void> SerializedTransportWriter::written() const {

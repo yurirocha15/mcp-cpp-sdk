@@ -161,7 +161,7 @@ TEST_F(HttpResumabilityTest, PostResponseIncludesEventIdInSse) {
             request.set(http::field::host, "127.0.0.1");
             request.set(http::field::content_type, "application/json");
             request.set(http::field::accept, "text/event-stream");
-            request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+            request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
             request.body() = R"({"jsonrpc":"2.0","method":"ping","id":1})";
             request.prepare_payload();
 
@@ -248,7 +248,7 @@ TEST_F(HttpResumabilityTest, ResumeReplaysNoOtherStream) {
             nlohmann::json init_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", init_json.at("id")}};
@@ -281,7 +281,7 @@ TEST_F(HttpResumabilityTest, ResumeReplaysNoOtherStream) {
                 {"jsonrpc", "2.0"},
                 {"method", "initialize"},
                 {"params",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", 1}};
@@ -306,7 +306,7 @@ TEST_F(HttpResumabilityTest, ResumeReplaysNoOtherStream) {
             http::request<http::empty_body> get_request{http::verb::get, "/mcp", 11};
             get_request.set(http::field::host, "127.0.0.1");
             get_request.set(http::field::accept, "text/event-stream");
-            get_request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+            get_request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
             get_request.set("MCP-Session-Id", client_transport.session_id());
             get_request.set("Last-Event-ID", first_event_id);
 
@@ -349,7 +349,7 @@ TEST_F(HttpResumabilityTest, GetWithEvictedEventIdReturns410) {
             nlohmann::json init_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", init_json.at("id")}};
@@ -377,7 +377,7 @@ TEST_F(HttpResumabilityTest, GetWithEvictedEventIdReturns410) {
                 {"jsonrpc", "2.0"},
                 {"method", "initialize"},
                 {"params",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", 1}};
@@ -398,7 +398,7 @@ TEST_F(HttpResumabilityTest, GetWithEvictedEventIdReturns410) {
             http::request<http::empty_body> get_request{http::verb::get, "/mcp", 11};
             get_request.set(http::field::host, "127.0.0.1");
             get_request.set(http::field::accept, "text/event-stream");
-            get_request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+            get_request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
             get_request.set("MCP-Session-Id", client_transport.session_id());
             get_request.set("Last-Event-ID", "1");
 

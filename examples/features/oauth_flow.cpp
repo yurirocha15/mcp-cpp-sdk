@@ -390,7 +390,7 @@ std::string make_initialize_request_wire() {
                 {"id", "1"},
                 {"method", "initialize"},
                 {"params",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"clientInfo", {{"name", "oauth-flow-example-client"}, {"version", "1.0.0"}}},
                   {"capabilities", json::object()}}}}
         .dump();

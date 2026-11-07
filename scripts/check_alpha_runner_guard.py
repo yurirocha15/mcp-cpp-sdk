@@ -2,7 +2,7 @@
 """Guard checks that keep the alpha conformance runner out of CI gating.
 
 Keeps the alpha conformance runner side-channel (
-``@modelcontextprotocol/conformance@0.2.0-alpha.11``, spec ``2026-07-28``)
+``@modelcontextprotocol/conformance@0.2.0-alpha.12``, spec ``2026-07-28``)
 permanently non-default and non-CI-gating:
 
   (i)   ``conformance/run.sh`` must stay pinned to the locked ``0.1.16``
