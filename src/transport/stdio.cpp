@@ -312,6 +312,12 @@ class OwnedStdout {
             throw std::runtime_error(
                 "StdioTransport could not duplicate this process's standard output");
         }
+#if defined(__APPLE__)
+        // macOS raises SIGPIPE for a write to a closed pipe on the whole process, not on the
+        // writing thread, so the writer's blocked signal would not stop it. The open file is set
+        // not to raise it, which every descriptor sharing it sees.
+        ::fcntl(descriptor, F_SETNOSIGPIPE, 1);
+#endif
 
         if (replace_descriptor(kStderrDescriptor, kStdoutDescriptor) < 0) {
             // A process started with standard error closed still needs its
@@ -648,7 +654,8 @@ struct StdioTransport::Impl {
     static void write_lines(std::ostream& output, const std::shared_ptr<Pump>& pump) noexcept {
 #if !defined(_WIN32)
         // A reader that went away is a failed write here, not a signal that ends the process. The
-        // signal stays pending on this thread, so nothing else in the process changes.
+        // signal stays pending on this thread, so nothing else in the process changes; on macOS
+        // the standard output descriptor does not raise it at all (see acquire()).
         sigset_t pipe_signal;
         sigemptyset(&pipe_signal);
         sigaddset(&pipe_signal, SIGPIPE);

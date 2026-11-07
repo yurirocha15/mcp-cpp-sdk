@@ -939,6 +939,10 @@ class PipedStdin {
             sigemptyset(&pipe_signal);
             sigaddset(&pipe_signal, SIGPIPE);
             pthread_sigmask(SIG_BLOCK, &pipe_signal, nullptr);
+#if defined(__APPLE__)
+            // macOS raises SIGPIPE on the whole process, so the blocked signal is not enough there.
+            ::fcntl(fd, F_SETNOSIGPIPE, 1);
+#endif
             std::size_t written = 0;
             while (written < text.size()) {
                 const auto count = ::write(fd, text.data() + written, text.size() - written);

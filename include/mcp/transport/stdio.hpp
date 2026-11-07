@@ -42,7 +42,10 @@ class MCP_API StdioTransport final : public ITransport {
      *
      * @note The output stream is written on a thread of the transport's own, so
      * a peer that stops reading cannot stop the executor. A write to a closed
-     * pipe fails instead of raising SIGPIPE.
+     * pipe fails instead of raising SIGPIPE. On macOS, which raises SIGPIPE on
+     * the whole process rather than the writing thread, that holds for the
+     * process's standard output; a custom stream writing to a pipe there can
+     * still raise it.
      *
      * @note std::cin and std::cout with their original buffers stand for the
      * process's standard descriptors, which the transport then reads and writes
