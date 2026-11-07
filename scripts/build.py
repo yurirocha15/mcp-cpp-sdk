@@ -432,6 +432,8 @@ def main():
     if args.msan:
         # The Conan toolchain file names the compiler and carries the flags.
         conan_args = msan_conan_args(build_msan_libcxx(MSAN_LIBCXX_DIR, clang, args.jobs), clang)
+        # MemorySanitizer runs the tests many times slower than a debug build.
+        extra_cmake.append("-DMCP_CPP_SDK_TEST_TIMEOUT=600")
     elif clang:
         extra_cmake += [f"-DCMAKE_C_COMPILER={clang[0]}", f"-DCMAKE_CXX_COMPILER={clang[1]}"]
     if args.sanitize:

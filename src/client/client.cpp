@@ -9,6 +9,7 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -28,6 +29,9 @@
 namespace mcp {
 
 namespace {
+
+/// Requests of the server a client answers at once before it stops reading.
+constexpr std::size_t g_max_incoming_requests = 1024;
 
 std::optional<nlohmann::json> make_paginated_params(const std::optional<std::string>& cursor) {
     if (!cursor) {
@@ -55,9 +59,19 @@ McpError::McpError(int code, std::string message, std::optional<nlohmann::json> 
 
 namespace {
 
+/// What the client knows about the output of a tool it is about to call.
+struct OutputCheck {
+    std::optional<CompiledSchema> schema;
+    /// Set when the server declared a schema that cannot be used; the call then fails unsent.
+    std::optional<SchemaError> refusal;
+};
+
 /// Checks a tools/call result against the tool's output schema, when the client has one for it.
-Task<CallToolResult> checked_call_result(Task<nlohmann::json> request,
-                                         std::optional<CompiledSchema> output_schema) {
+Task<CallToolResult> checked_call_result(Task<nlohmann::json> request, OutputCheck check) {
+    if (check.refusal) {
+        throw *check.refusal;
+    }
+    auto& output_schema = check.schema;
     auto result_json = co_await std::move(request);
     auto result = result_json.get<CallToolResult>();
     if (output_schema && !result.isError.value_or(false) && result.structuredContent) {
@@ -177,6 +191,7 @@ struct Client::Impl {
         boost::asio::post(state->strand, [state, message = std::move(message)]() mutable {
             fail_pending_requests(state, Error{g_CONNECTION_CLOSED, std::move(message), std::nullopt});
             state->transport->close();
+            state->incoming_requests_wake.cancel();
         });
     }
 
@@ -280,6 +295,19 @@ struct Client::Impl {
             for (;;) {
                 auto raw = co_await state->transport->read_message();
                 dispatch_message(state, raw);
+                // The server's requests run in the background, and each holds memory until its
+                // answer is written. Reading stops here until they are fewer.
+                while ((state->incoming_requests >= g_max_incoming_requests ||
+                        state->incoming_request_bytes + state->writer.queued_bytes() >=
+                            state->options.max_incoming_request_bytes) &&
+                       state->incoming_requests != 0 &&
+                       !state->closed.load(std::memory_order_acquire)) {
+                    state->incoming_requests_wake.expires_at(
+                        std::chrono::steady_clock::time_point::max());
+                    boost::system::error_code ignored;
+                    co_await state->incoming_requests_wake.async_wait(
+                        boost::asio::redirect_error(boost::asio::use_awaitable, ignored));
+                }
             }
         } catch (const std::exception& error) {
             state->closed.store(true, std::memory_order_release);
@@ -330,13 +358,21 @@ struct Client::Impl {
                 // swallowed and the peer never hears back. Reject an unusable id here, where the
                 // drop is reported, instead of leaving the request silently unanswered.
                 const auto& id = json_message.at("id");
-                if (!id.is_string() && !id.is_number_integer()) {
+                if (!detail::is_request_id(id)) {
                     throw McpError(g_INVALID_REQUEST,
-                                   "JSON-RPC request id must be a string or integer");
+                                   "JSON-RPC request id must be a string or an integer within "
+                                   "int64_t");
                 }
+                const auto cost = detail::json_memory_cost(json_message);
+                ++state->incoming_requests;
+                state->incoming_request_bytes += cost;
                 boost::asio::co_spawn(state->strand,
                                       dispatch_incoming_request(state, std::move(json_message)),
-                                      boost::asio::detached);
+                                      [state, cost](const std::exception_ptr&) {
+                                          --state->incoming_requests;
+                                          state->incoming_request_bytes -= cost;
+                                          state->incoming_requests_wake.cancel();
+                                      });
             } else if (!has_id && has_method) {
                 dispatch_notification(state, json_message);
             }
@@ -364,7 +400,7 @@ struct Client::Impl {
     static void dispatch_response(const std::shared_ptr<Impl>& state,
                                   const nlohmann::json& json_message) {
         const auto& id = json_message.at("id");
-        if (!id.is_string() && !id.is_number_integer()) {
+        if (!detail::is_request_id(id)) {
             return;
         }
         const auto id_key = id.get<RequestId>().correlation_key();
@@ -481,14 +517,18 @@ struct Client::Impl {
                 error_payload = "Request handler failed";
             }
 
-            if (!error_payload.is_null()) {
-                co_await state->writer.write_message(
-                    make_error_wire(json_message.at("id").get<RequestId>(), g_INTERNAL_ERROR,
-                                    error_payload.get<std::string>()));
-            } else {
-                co_await state->writer.write_message(
-                    make_result_wire(json_message.at("id").get<RequestId>(), std::move(result)));
+            // An answer whose text is not UTF-8 cannot be encoded. The server is answered anyway,
+            // or its request would wait out its whole timeout.
+            const auto id = json_message.at("id").get<RequestId>();
+            std::string wire;
+            try {
+                wire = error_payload.is_null()
+                           ? make_result_wire(id, std::move(result))
+                           : make_error_wire(id, g_INTERNAL_ERROR, error_payload.get<std::string>());
+            } catch (const nlohmann::json::exception&) {
+                wire = make_error_wire(id, g_INTERNAL_ERROR, "The answer could not be encoded as JSON");
             }
+            co_await state->writer.write_message(std::move(wire));
         } else if (method == "ping") {
             co_await state->writer.write_message(
                 make_result_wire(json_message.at("id").get<RequestId>(), nlohmann::json::object()));
@@ -561,6 +601,11 @@ struct Client::Impl {
 
     std::shared_ptr<ITransport> transport;
     boost::asio::strand<boost::asio::any_io_executor> strand;
+    /// How many requests of the server are being answered. Touched on the strand only.
+    std::size_t incoming_requests{0};
+    /// Memory those requests take, as json_memory_cost() estimates it. Touched on the strand only.
+    std::size_t incoming_request_bytes{0};
+    boost::asio::steady_timer incoming_requests_wake{strand};
     ClientOptions options;
     detail::SerializedTransportWriter writer;
 
@@ -579,72 +624,69 @@ struct Client::Impl {
     /// What the client knows of a listed tool's schemas. The serialized schemas let a later
     /// listing reuse the compiled output schema when nothing changed.
     struct ListedTool {
-        std::string input_text;
         std::optional<std::string> output_text;
         std::optional<CompiledSchema> output_schema;
+        /// Why output_schema is empty when the tool declares one and the client cannot use it.
+        std::optional<SchemaError> output_problem;
     };
     mutable std::mutex listed_tools_mutex;
     std::map<std::string, ListedTool, std::less<>> listed_tools;
 
     /// The output schema to check a call of @p name against, if the client has one.
-    std::optional<CompiledSchema> output_schema_for(std::string_view name) const {
+    OutputCheck output_check_for(std::string_view name) const {
         if (!options.validate_tool_schemas) {
-            return std::nullopt;
+            return {};
         }
         std::lock_guard lock(listed_tools_mutex);
         const auto found = listed_tools.find(name);
         if (found == listed_tools.end()) {
-            return std::nullopt;
+            return {};
         }
-        return found->second.output_schema;
+        // A pattern this client cannot run says nothing about the server, so such a result goes
+        // unchecked. Any other problem means the server declared a schema no client can use.
+        const auto& problem = found->second.output_problem;
+        if (problem && problem->category() != SchemaError::Category::eUnsupportedPattern) {
+            return {std::nullopt, problem};
+        }
+        return {found->second.output_schema, std::nullopt};
     }
 
-    /// Compiles @p tool's schemas and remembers its output schema; the problem when a schema cannot
-    /// be used.
+    /// Compiles @p tool's output schema and remembers it; the problem when it cannot be used. The
+    /// input schema is the server's to enforce, so nothing here depends on it.
     std::optional<SchemaError> remember_tool(const Tool& tool) {
         ListedTool listed{
-            tool.inputSchema.dump(),
             tool.outputSchema ? std::optional<std::string>(tool.outputSchema->dump()) : std::nullopt,
-            std::nullopt};
+            std::nullopt, std::nullopt};
         {
             std::lock_guard lock(listed_tools_mutex);
             const auto found = listed_tools.find(tool.name);
-            if (found != listed_tools.end() && found->second.input_text == listed.input_text &&
-                found->second.output_text == listed.output_text) {
-                return std::nullopt;
+            if (found != listed_tools.end() && found->second.output_text == listed.output_text) {
+                return found->second.output_problem;
             }
         }
-        std::string_view field = "inputSchema";
         try {
-            (void)CompiledSchema::compile(tool.inputSchema);
-            field = "outputSchema";
             if (tool.outputSchema) {
                 listed.output_schema = CompiledSchema::compile(*tool.outputSchema);
             }
         } catch (const SchemaError& error) {
-            std::lock_guard lock(listed_tools_mutex);
-            listed_tools.erase(tool.name);
-            return SchemaError(error.category(), std::string(field) + ": " + error.what());
+            listed.output_problem =
+                SchemaError(error.category(), std::string("outputSchema: ") + error.what());
         }
+        auto problem = listed.output_problem;
         std::lock_guard lock(listed_tools_mutex);
         listed_tools.insert_or_assign(tool.name, std::move(listed));
-        return std::nullopt;
+        return problem;
     }
 
-    /// Leaves out of @p result the tools whose schemas cannot be used, reporting each.
-    void accept_listed_tools(ListToolsResult& result) {
+    /// Remembers the output schemas of @p result, reporting those that cannot be used. Every tool
+    /// stays listed: whether a tool can be called is the server's to say.
+    void accept_listed_tools(const ListToolsResult& result) {
         if (!options.validate_tool_schemas) {
             return;
         }
-        std::vector<Tool> usable;
-        usable.reserve(result.tools.size());
-        for (auto& tool : result.tools) {
-            auto problem = remember_tool(tool);
-            if (!problem) {
-                usable.push_back(std::move(tool));
-                continue;
-            }
-            if (options.on_tool_schema_error) {
+        for (const auto& tool : result.tools) {
+            const auto problem = remember_tool(tool);
+            if (problem && options.on_tool_schema_error) {
                 try {
                     options.on_tool_schema_error(tool, *problem);
                 } catch (...) {
@@ -652,7 +694,6 @@ struct Client::Impl {
                 }
             }
         }
-        result.tools = std::move(usable);
     }
 
     static Task<ListToolsResult> accepted_tools(std::shared_ptr<Impl> state,
@@ -670,6 +711,9 @@ Client::Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_
     }
     if (options.request_timeout <= std::chrono::milliseconds::zero()) {
         throw std::invalid_argument("Client request timeout must be positive");
+    }
+    if (options.max_incoming_request_bytes == 0) {
+        throw std::invalid_argument("Client incoming request memory limit must be positive");
     }
     impl_ = std::make_shared<Impl>(std::move(transport), executor, std::move(options));
 }
@@ -752,9 +796,9 @@ Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& curso
 
 Task<CallToolResult> Client::call_tool_with(CallToolParams params) {
     // [gcc11-sso: not-a-coroutine]
-    auto output_schema = impl_->output_schema_for(params.name);
+    auto check = impl_->output_check_for(params.name);
     return checked_call_result(send_request("tools/call", nlohmann::json(std::move(params))),
-                               std::move(output_schema));
+                               std::move(check));
 }
 
 Task<ListResourcesResult> Client::list_resources(const std::optional<std::string>& cursor) {

@@ -412,7 +412,7 @@ namespace draft201909 {
             {
                 for (const auto& key_value : sch.object_range())
                 {
-                    auto factory_it = validation_factory_map_.find(key_value.key().c_str());
+                    auto factory_it = validation_factory_map_.find(key_value.key());
                     if (factory_it != validation_factory_map_.end())
                     {
                         auto validator = (*factory_it).second(context, key_value.value(), sch, anchor_dict);

@@ -66,6 +66,12 @@ Hand that header to the manager and it runs the whole exchange:
 challenge to act on, and throws when discovery is refused by the policy or the
 authorization response is rejected.
 
+A manager serves the one server its ``server_url`` names. The transport sends
+the manager's tokens to whatever server ``inner`` talks to, and does not compare
+that with ``server_url``, which may use ``https`` while an ``HttpClientTransport``
+speaks plain HTTP. Give each server its own manager, and wrap only transports
+that talk to that server with it.
+
 .. _oauth-what-the-manager-validates:
 
 What the manager validates
@@ -270,10 +276,25 @@ Both transports cap the HTTP request body they will read, answering
 :cpp:var:`mcp::constants::g_default_max_request_body_bytes`, 8 MiB, and
 ``set_max_request_body_bytes`` overrides it.
 
-The body is read before the bearer token is checked, so the cap also bounds
-what a client without a valid token can make the server buffer on each
-connection. The body is parsed as JSON only after the origin and bearer checks
-pass.
+The headers are read first, and the origin and bearer checks run on them, so
+the body of a request they refuse is never read and the connection is closed.
+
+``set_connection_limits()`` takes an :cpp:struct:`mcp::HttpConnectionLimits`.
+By default a transport accepts connections up to three quarters of the
+process's descriptor limit, closes a connection that takes more than
+60 seconds to send a request or to read its answer, and handles at most 4096
+requests at once holding at most 1 GiB together, a body counted by what has
+arrived and a JSON-RPC message by what it takes parsed. A request past either is answered
+``503 Service Unavailable``. These limits cover all sessions of a
+``StreamableHttpSessionManager`` together.
+
+A connection past the connection limit is closed as soon as it is accepted,
+without an answer, so its client sees the connection end. The descriptor limit
+is the soft ``RLIMIT_NOFILE`` (``ulimit -n``). systemd gives a service a soft
+limit of 1024 unless its unit sets ``LimitNOFILE=``, and three quarters of that
+is 768 connections, with each SSE stream on GET holding one. To serve more,
+raise the soft limit, up to the hard limit with ``setrlimit()`` or in the unit
+with ``LimitNOFILE=``, or set ``max_connections``.
 
 The default is deliberately well above Boost.Beast's own 1 MB. Binary content
 reaches an MCP server as base64 inside the JSON body — ``ImageContent::data``,
@@ -385,7 +406,12 @@ stored refresh token once and retries; if renewal is not possible, or the
 renewed token is refused too, it runs the authorization flow the challenge
 names, once per request: a 401 after that new grant fails the request. A 403
 whose challenge carries ``error="insufficient_scope"`` runs that flow
-directly. For non-HTTP transports it also understands the legacy JSON-RPC
+directly, for the scope already granted together with the one the challenge
+asks for. Each such step-up asks for consent again, so a request gets one by
+default and then fails with the 403;
+``OAuthClientTransportOptions::max_step_ups_per_request`` changes that, and
+zero leaves every such 403 to the caller. For non-HTTP transports it also
+understands the legacy JSON-RPC
 ``g_UNAUTHORIZED`` path. ``OAuthAuthorizationManager`` can renew a grant only
 after it has authorized in the same process, because the token endpoint and
 client identity it renews with are held in memory: after a restart, a refresh

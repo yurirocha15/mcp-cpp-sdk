@@ -14,8 +14,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   and draft-04 may be named, and any other `$schema` is refused with
   `SchemaError`. The schema itself is checked against its dialect's
   metaschema. `SchemaOptions` bounds the nesting of a validated value
-  (64 levels by default), the number of violations reported and the pattern
-  matching steps of one validation. JSON cannot
+  (64 levels by default), the number of violations reported, the pattern
+  matching steps and evaluation work of one validation, and the instructions
+  the patterns of one schema compile to. JSON cannot
   represent NaN or Infinity: a schema holding one is refused, and a value
   holding one is checked as the `null` it would be sent as.
   References resolve only within the document and to the supported
@@ -31,10 +32,31 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Changed
 
+- Middleware also runs for `resources/subscribe`, `resources/unsubscribe` and
+  `completion/complete`, so `make_auth_middleware()` guards them too.
+- `GET` on the MCP endpoint within a session answers `405` with
+  `Allow: POST, DELETE` unless it resumes with `Last-Event-ID`; a `GET` without
+  a session is answered `400`. It used to answer `200` with an empty JSON body,
+  which the specification does not allow; a resume with nothing to replay
+  answers an empty SSE stream.
 - `BUILD_TESTING`, `BUILD_EXAMPLES` and `BUILD_DOCS` default to `ON` only when
   the SDK is the top-level CMake project. Added with FetchContent or
   `add_subdirectory`, the SDK no longer builds its tests and examples or needs
   GTest; setting an option still overrides the default.
+- `ElicitationCompleteNotificationParams` holds the `elicitationId` of the
+  URL-mode request that completed, the field the specification gives
+  `notifications/elicitation/complete`. It held a `requestId`, so the
+  notification it sent or read did not match the specification.
+- An error response that answers no request it can name, such as a parse
+  error, leaves out `id` instead of writing `"id": null`. MCP's schema gives
+  the id the type of a request id, and the TypeScript SDK 1.32.1 refuses a
+  null one. A null id is still read as no id.
+- `g_CONNECTION_CLOSED`, the code the SDK uses locally when a transport
+  closes, is -31000, outside the range JSON-RPC reserves, so it cannot be
+  mistaken for an error the peer sent. It was -32002, MCP's code for a
+  resource that does not exist.
+- `resources/read` of a resource that does not exist is answered -32002
+  (`g_RESOURCE_NOT_FOUND`), as the specification asks, instead of -32602.
 - `tools/call` naming an unknown tool and `prompts/get` naming an unknown
   prompt are answered with `g_INVALID_PARAMS` (`-32602`), as the tools and
   prompts specifications list, instead of `g_METHOD_NOT_FOUND` (`-32601`).
@@ -55,15 +77,153 @@ Versioning; a `0.x` version is a stable release unless its version has an
   it to conform to. A result that does not conform is answered with
   `g_INTERNAL_ERROR` naming the violations
   (`ToolValidationOptions::validate_structured_content` turns the check off).
-- `Client::list_tools()` compiles each listed tool's schemas and leaves out a
-  tool whose schema cannot be used (invalid, an unsupported dialect, or a
-  `$ref` outside the document), reporting it through
-  `ClientOptions::on_tool_schema_error`. `Client::call_tool()` checks the
-  `structuredContent` of a successful result against the tool's listed
-  `outputSchema` and throws `StructuredContentError` when it does not conform.
-  `ClientOptions::validate_tool_schemas = false` turns both off.
+- `Client::list_tools()` compiles each listed tool's `outputSchema` and reports
+  one it cannot use through `ClientOptions::on_tool_schema_error`; the tool
+  stays listed. `Client::call_tool()` checks the `structuredContent` of a
+  successful result against the tool's listed `outputSchema` and throws
+  `StructuredContentError` when it does not conform. A call of a tool whose
+  `outputSchema` is invalid, in an unsupported dialect, or has a `$ref` outside
+  the document throws that `SchemaError` without sending the request; a schema
+  that only uses a pattern the matcher cannot run leaves the tool's results
+  unchecked. `ClientOptions::validate_tool_schemas = false` turns all of this
+  off.
 
 ### Fixed
+
+- `OAuthAuthorizationManager` handed the authorization endpoint named in the
+  authorization server's metadata to the consent callback as
+  `AuthorizationRequest::authorization_url` without checking it. The endpoint
+  must now be an
+  absolute `https` URL (`http` only on loopback when
+  `MetadataFetchPolicy::allow_plain_http_loopback` is set), outside
+  `denied_origins`, without a fragment and made only of characters a URI may
+  contain; otherwise the challenge fails before the callback runs. It may sit
+  on another origin than the metadata, since only the browser connects to it.
+- A GET with `Last-Event-ID` replayed every later event of the session, so a
+  client resuming one POST's stream also got the answers of other POSTs and
+  messages that no stream carried. The specification does not allow replaying
+  messages of another stream. Both HTTP server transports now replay only the
+  stream the named event was sent on: `EventStore::append()` takes the stream
+  of the event, and `events_after()` returns only that stream's later events.
+  `HttpServerTransport` answers each POST with its response alone, so a resume
+  there replays nothing.
+- A session runs at
+  most 1024 requests (`Server::set_max_in_flight_requests()`), and its running
+  requests and the answers the peer has not taken yet may hold at most 256 MiB
+  (`Server::set_max_in_flight_bytes()`). A request counts as its parsed JSON
+  takes memory, which for an array of empty objects is about 27 times its text.
+  A request past either limit is answered with `-32603`, and reading stops
+  while the peer takes no answers. Those refusals are queued without holding up
+  reading while they fit in the byte limit, so a client that stopped reading
+  until its own answers are read does not stall the session. A
+  `Client` stops reading while it answers
+  1024 requests of the server or they hold 256 MiB
+  (`ClientOptions::max_incoming_request_bytes`). A session holds at most 4096
+  resource subscriptions, with at most 8 MiB of URIs together; those of an
+  ended HTTP session no longer count against the next one.
+- A request the server sent fails in its handler after ten minutes
+  (`Server::set_reverse_request_timeout()`), and at once when the `tools/call`
+  it belongs to is cancelled, instead of holding the handler for the session.
+  A cancel that arrives before the handler asks stops the request from being
+  sent. The client is sent `notifications/cancelled` for a request the server
+  gave up on.
+- Both HTTP server transports read a request's headers first and check the
+  origin and bearer token on them, so the body of a refused request is no
+  longer read. They close a connection that takes more than 60 seconds to send
+  a request or to read its answer, accept connections up to three quarters of
+  the descriptor limit, and handle at most 4096 requests holding at most 1 GiB
+  at once across all sessions (`set_connection_limits()`). A body counts by
+  what has arrived, so headers that announce a large body hold nothing. A
+  replay of missed events on a GET counts against that memory until it is
+  written, so slow readers can no longer each hold a copy of the whole replay
+  store.
+- `HttpClientTransport` starts a new session when the server answers 404 for
+  the current one, as the specification requires, and sends the failed request
+  once more in it (`set_reinitialize_on_expired_session()`). After a session
+  expired, every later call failed with 404. When the new session cannot be
+  started, such as while the server is full, the next request starts one before
+  it is sent. When the server answers the new initialize with another protocol
+  version or other capabilities, the request fails, since `Client` still knows
+  the server by the old ones; connect again to use them. `HttpServerTransport`
+  answers 500, not 404, to a request whose session ends while it runs, so the
+  client does not send it again.
+- `HttpClientTransport` opens a new connection when the server closed the one
+  it kept while it sat idle, as both HTTP server transports do after the
+  request read timeout. The first request after such a pause failed.
+- `StreamableHttpSessionManager` holds at most 10,000 sessions and ends a session
+  idle for five minutes (`set_session_limits()`), and keeps no session for a
+  failed initialize. An SSE replay store keeps at most 32 MiB.
+- On `HttpServerTransport`, an initialize now ends a session idle for five
+  minutes (`set_session_idle_timeout()`), so a client that left without a
+  DELETE does not keep the next one out. A request naming a session the
+  transport does not hold, such as one ended this way, is answered `404`,
+  as for a session that ended, so the client starts a new session.
+- An answer to a server request is accepted only from the session it was sent
+  in, and an answer needs an established session.
+- Both HTTP accept loops stopped when the process ran out of file
+  descriptors. They now wait and try again.
+- When a `Client` handler's answer to a server request could not be encoded as
+  JSON, such as a result or an error message holding text that is not UTF-8,
+  no answer was sent and the server's request waited out its timeout. Such an
+  answer is now an error.
+- A `Server` on a `MemoryTransport` ended its run when a message written as text
+  held a number past the range of a double, such as `1e400`. Such a message is
+  answered as a parse error, and the session goes on.
+- A request answered 403 `insufficient_scope` again and again drove up to
+  three consent prompts. A request now gets one step-up by default
+  (`OAuthClientTransportOptions::max_step_ups_per_request`); zero leaves the
+  403 to the caller.
+- A reply to `elicitation/create` with an unknown action decoded as `accept`. It
+  now fails to decode. A form request may leave out `mode`, as the specification
+  allows.
+- The evaluation budget now covers `enum` and `const` comparisons,
+  `dependentRequired`, `properties` and `uniqueItems` on colliding hashes, the
+  base64 decoding of a draft-07 `contentEncoding`, and the text a failed branch
+  keeps. Regular expression compilation is bounded.
+  These comparisons are charged by the values they read. A message about a
+  property that `additionalProperties` or `unevaluatedProperties` refuses quotes
+  an excerpt of its name.
+- Schema validation copied a long property name at every step under it, kept
+  every message of every failed branch of a keyword such as `anyOf`, and built
+  some messages from the whole value. Locations keep the first 1024 bytes of a
+  name, which is more
+  than a report shows; a branching keyword keeps 16 messages, the kept messages
+  may hold 32 MiB, and messages quote an excerpt. The work allowed grows with
+  the size of the schema as well as of the value, so a large `enum` or a union
+  of object types over an ordinary array is not stopped, up to
+  `SchemaOptions::max_evaluation_work`. The patterns of one schema may compile
+  to `SchemaOptions::max_pattern_instructions` instructions in all.
+- jsoncons matched a property name or keyword containing NUL only up to the NUL,
+  and property names sharing a hash made its lookups quadratic.
+- A `pattern` that is not a regular expression, such as `(`, makes a schema
+  invalid instead of unsupported, and a pattern the matcher cannot run no
+  longer hides another problem in the schema, such as a `$ref` outside it.
+- `Server::run_stdio()` did not stop on SIGTERM or SIGINT while standard input
+  stayed open, and a parent that stopped reading standard output blocked the
+  server, including its signal handling. A closed standard output no longer
+  raises SIGPIPE; it ends the run. When standard input ends, the requests
+  already read are told to stop, and the answers of those that end are written
+  first, with every answer already queued. A transport that wraps a
+  `StdioTransport` is served the same way when it returns the wrapped one from
+  `ITransport::stdio_transport()`.
+- A request id that is an integer above INT64_MAX is refused as an invalid
+  request. It could not be echoed back unchanged, so over HTTP its request was
+  never answered and kept its session from expiring.
+- `StdioTransport` accepts input lines of at most 16 MiB
+  (`set_max_message_bytes()`) and reads at most 16 MiB ahead of `read_message()`.
+- `WebSocketServerTransport` has a 30 second deadline on the upgrade
+  (`set_handshake_timeout()`) and closes a connection whose peer has gone quiet
+  or stopped reading for five minutes (`set_idle_timeout()`), pinging it first.
+  Both WebSocket transports gained `set_max_message_bytes()`.
+- A new client on a reused `Server` starts at the default log level on every
+  transport, not only on `HttpServerTransport`.
+- A result that cannot be encoded as JSON is answered with a plain message
+  instead of the JSON library's exception text.
+- An error `code` that is not an integer in the range of `int` decodes to
+  `-32603`; converting it was undefined behaviour. A float with no fraction,
+  such as `-32601.0`, decodes to that integer. An error object that cannot be
+  decoded at all still answers the server's request it names, which fails
+  instead of waiting for its timeout.
 
 - With `BUILD_DOCS=ON` and Doxygen installed, configuring a project that adds
   the SDK as a subproject failed: the SDK looked for `docs/Doxyfile.in` in the

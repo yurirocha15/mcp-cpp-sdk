@@ -88,8 +88,9 @@ void run_server_io_on_thread_pool(boost::asio::io_context& io_context, std::size
 }
 
 mcp::Task<void> verify_memory_transport_parse_recovery(
-    std::shared_ptr<mcp::ITransport> client_transport, std::vector<nlohmann::json>* responses) {
-    const auto malformed_wire = std::make_shared<const std::string>("{");
+    std::shared_ptr<mcp::ITransport> client_transport, std::vector<nlohmann::json>* responses,
+    std::string malformed = "{") {
+    const auto malformed_wire = std::make_shared<const std::string>(std::move(malformed));
     co_await client_transport->write_message(*malformed_wire);
     {
         auto response_wire = co_await client_transport->read_message();
@@ -635,11 +636,41 @@ TEST_F(ServerCoreTest, MalformedAndNonObjectMessagesReturnErrorsThenAcceptValidR
 
     ASSERT_EQ(responses.size(), 3);
     EXPECT_EQ(responses[0]["error"]["code"], mcp::g_PARSE_ERROR);
-    EXPECT_TRUE(responses[0]["id"].is_null());
+    EXPECT_FALSE(responses[0].contains("id"));
     EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_REQUEST);
-    EXPECT_TRUE(responses[1]["id"].is_null());
+    EXPECT_FALSE(responses[1].contains("id"));
     EXPECT_EQ(responses[2]["id"], "ping");
     EXPECT_EQ(responses[2]["result"], nlohmann::json::object());
+}
+
+// A number past the range of a double cannot be parsed: it is answered as a parse error, and the
+// session goes on.
+TEST_F(ServerCoreTest, MemoryTransportRecoversFromANumberOutOfRange) {
+    mcp::Server server({"validation-server", "1.0"}, mcp::ServerCapabilities{});
+    auto [server_transport, client_transport] =
+        mcp::create_memory_transport_pair(io_ctx_.get_executor());
+
+    std::vector<nlohmann::json> responses;
+    std::exception_ptr server_error;
+    std::exception_ptr client_error;
+    boost::asio::co_spawn(
+        io_ctx_, server.run(server_transport, io_ctx_.get_executor()),
+        [&server_error](std::exception_ptr error) { server_error = std::move(error); });
+    boost::asio::co_spawn(
+        io_ctx_,
+        verify_memory_transport_parse_recovery(
+            client_transport, &responses,
+            R"({"jsonrpc":"2.0","id":3,"method":"ping","params":{"x":1e400}})"),
+        [&client_error](std::exception_ptr error) { client_error = std::move(error); });
+
+    io_ctx_.run();
+
+    EXPECT_EQ(server_error, nullptr);
+    EXPECT_EQ(client_error, nullptr);
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[0]["error"]["code"], mcp::g_PARSE_ERROR);
+    EXPECT_EQ(responses[1]["id"], 7);
+    EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
 }
 
 TEST_F(ServerCoreTest, MemoryTransportRecoversFromMalformedJson) {
@@ -663,7 +694,7 @@ TEST_F(ServerCoreTest, MemoryTransportRecoversFromMalformedJson) {
     EXPECT_EQ(client_error, nullptr);
     ASSERT_EQ(responses.size(), 2);
     EXPECT_EQ(responses[0]["error"]["code"], mcp::g_PARSE_ERROR);
-    EXPECT_TRUE(responses[0]["id"].is_null());
+    EXPECT_FALSE(responses[0].contains("id"));
     EXPECT_EQ(responses[1]["id"], 7);
     EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
 }

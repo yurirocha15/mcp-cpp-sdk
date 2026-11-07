@@ -31,6 +31,14 @@ struct SchemaOptions {
     /// Further pattern matching steps allowed for every byte of string and property name in the
     /// value. Typical patterns take a handful of steps per byte.
     std::size_t pattern_steps_per_text_byte = 64;
+    /// Most evaluation work one `validate()` call may do, and checking a schema against its
+    /// metaschema when it is compiled. The work allowed grows with the size of the value times the
+    /// size of the schema, up to this; a validation that needs more is stopped and reported as a
+    /// violation. A unit takes about 10 ns.
+    std::size_t max_evaluation_work = 256'000'000;
+    /// Most instructions, in all, that the `pattern` and `patternProperties` regular expressions of
+    /// one schema may compile to. An instruction takes about 12 bytes.
+    std::size_t max_pattern_instructions = 1'000'000;
 };
 
 /**
@@ -43,11 +51,16 @@ class MCP_API SchemaError : public std::invalid_argument {
     /// Why the schema was refused.
     enum class Category {
         eInvalidSchema,       ///< The schema is not valid under its dialect's metaschema, holds
-                              ///< NaN or Infinity, or evaluating it exceeds the evaluation limits
-                              ///< on any value.
+                              ///< NaN or Infinity, has a pattern that is not a regular
+                              ///< expression, or evaluating it exceeds the evaluation limits on
+                              ///< any value.
         eUnsupportedDialect,  ///< `$schema` names a dialect this SDK does not implement.
         eUnresolvedRef,       ///< A `$ref` target is neither in the document nor a supported
                               ///< dialect's metaschema. Nothing is fetched.
+        eUnsupportedPattern,  ///< A `pattern` or `patternProperties` key is one the linear-time
+                              ///< matcher cannot run, such as a lookahead, or the patterns exceed
+                              ///< its size limits. Patterns are checked last, so the schema has no
+                              ///< other problem.
     };
 
     /// Construct with the reason @p category and the description @p message.

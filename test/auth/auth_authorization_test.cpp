@@ -45,6 +45,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #if BOOST_VERSION >= 107700
@@ -1619,7 +1620,11 @@ TEST(AuthScopeStepUpTest, UnionsTheGrantedScopeWithAForbiddenChallengeAndReplays
     EXPECT_EQ(server.authorizations().back(), "Bearer granted-access-token");
 }
 
-TEST(AuthScopeStepUpTest, StopsAfterThreeAuthorizationChallengesForOneRequest) {
+namespace {
+
+/// The consent prompts one request costs against a server that answers a 401 and then refuses
+/// every token with insufficient_scope, with @p options on the transport, and whether it failed.
+std::pair<std::size_t, bool> prompts_for_one_request(mcp::auth::OAuthClientTransportOptions options) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
     const auto base = server.base_url();
@@ -1673,7 +1678,7 @@ TEST(AuthScopeStepUpTest, StopsAfterThreeAuthorizationChallengesForOneRequest) {
                 std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
             auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
                 io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
-            mcp::auth::OAuthClientTransport transport(inner, manager);
+            mcp::auth::OAuthClientTransport transport(inner, manager, options);
             try {
                 co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
             } catch (...) {
@@ -1685,10 +1690,33 @@ TEST(AuthScopeStepUpTest, StopsAfterThreeAuthorizationChallengesForOneRequest) {
         asio::detached);
 
     io_ctx.run();
+    return {requested_scopes.size(), failure != nullptr};
+}
 
-    // The refusal is surfaced rather than retried forever, and the cap is three per request.
-    EXPECT_NE(failure, nullptr);
-    EXPECT_EQ(requested_scopes.size(), 3U);
+}  // namespace
+
+// The refusal is surfaced rather than retried forever: by default a request costs the
+// authorization its 401 asks for and one step-up.
+TEST(AuthScopeStepUpTest, AllowsOneStepUpPerRequestByDefault) {
+    const auto [prompts, failed] = prompts_for_one_request({});
+    EXPECT_TRUE(failed);
+    EXPECT_EQ(prompts, 2U);
+}
+
+// With no step-ups allowed, the 403 goes to the caller; with more, three challenges in all are
+// honoured per request.
+TEST(AuthScopeStepUpTest, StepUpsPerRequestAreConfigurable) {
+    mcp::auth::OAuthClientTransportOptions none;
+    none.max_step_ups_per_request = 0;
+    const auto [prompts_without, failed_without] = prompts_for_one_request(none);
+    EXPECT_TRUE(failed_without);
+    EXPECT_EQ(prompts_without, 1U);
+
+    mcp::auth::OAuthClientTransportOptions many;
+    many.max_step_ups_per_request = 10;
+    const auto [prompts_with, failed_with] = prompts_for_one_request(many);
+    EXPECT_TRUE(failed_with);
+    EXPECT_EQ(prompts_with, 3U);
 }
 
 // A step-up whose challenge names a different authorization server, and which that server's user
@@ -4726,6 +4754,100 @@ TEST(AuthIssuerBindingTest, RejectsAuthServerMetadataWhoseIssuerIsNotItsDiscover
     // Refused before any consent prompt or token exchange could bind a credential to the wrong AS.
     EXPECT_TRUE(requested_scopes.empty());
     EXPECT_FALSE(store->load(config.server_url).has_value());
+}
+
+namespace {
+
+/// Runs one challenge against a server whose metadata names `authorization_endpoint`, and reports
+/// whether the challenge threw and which authorization URL reached the consent callback.
+struct EndpointOutcome {
+    bool threw{false};
+    std::string authorization_url;
+    std::size_t requests{0};
+};
+
+EndpointOutcome challenge_with_authorization_endpoint(const std::string& authorization_endpoint) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            auto metadata = auth_server_metadata(base, true);
+            metadata["authorization_endpoint"] = authorization_endpoint;
+            return json_response(metadata);
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    EndpointOutcome outcome;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+                io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(), config,
+                echoing_callback(&outcome.authorization_url));
+            try {
+                (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                             R"(/prm")");
+            } catch (const std::exception&) {
+                outcome.threw = true;
+            }
+            server.close();
+        },
+        asio::detached);
+    io_ctx.run();
+    outcome.requests = server.targets().size();
+    return outcome;
+}
+
+}  // namespace
+
+// The application opens the authorization URL in a browser, and the server names it. A URL of
+// another scheme, with a fragment, or with characters a URI cannot hold never reaches the callback.
+TEST(AuthAuthorizationEndpointTest, RefusesAnEndpointThatIsNotAPlainHttpsUrl) {
+    const std::vector<std::string> endpoints = {
+        "file:///etc/passwd",
+        "javascript:alert(document.cookie)//",
+        R"(\\attacker.test\share\payload.exe)",
+        R"(https://x.test/a";touch${IFS}/tmp/pwned;")",
+        "https://x.test/a b",
+        "https://x.test/authorize#fragment",
+        "http://x.test/authorize",
+        "data:text/html,hello",
+    };
+    for (const auto& endpoint : endpoints) {
+        const auto outcome = challenge_with_authorization_endpoint(endpoint);
+        EXPECT_TRUE(outcome.threw) << endpoint;
+        EXPECT_TRUE(outcome.authorization_url.empty())
+            << endpoint << " -> " << outcome.authorization_url;
+        // Refused after the two metadata documents and before any token request.
+        EXPECT_EQ(outcome.requests, 2U) << endpoint;
+    }
+}
+
+// The browser, not the SDK, connects to the authorization endpoint, so it may sit on another origin
+// than the metadata, as many providers' do.
+TEST(AuthAuthorizationEndpointTest, AcceptsAnHttpsEndpointOnAnotherOrigin) {
+    const auto outcome = challenge_with_authorization_endpoint("https://login.example.com/authorize");
+    EXPECT_FALSE(outcome.threw);
+    EXPECT_EQ(outcome.authorization_url.rfind("https://login.example.com/authorize?", 0), 0U)
+        << outcome.authorization_url;
+    EXPECT_EQ(outcome.requests, 3U);
 }
 
 TEST(AuthClientIdentityBindingTest, RefusesInjectedCredentialsBoundToADifferentIssuer) {

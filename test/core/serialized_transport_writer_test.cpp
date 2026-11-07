@@ -162,4 +162,28 @@ TEST(SerializedTransportWriterTest, PendingWriteRetainsStateAfterWriterDestructi
     EXPECT_EQ(transport->messages(), (std::vector<std::string>{"retained message"}));
 }
 
+// A message stops counting in queued_bytes() once it is written, and so does one called off
+// before its write started.
+TEST(SerializedTransportWriterTest, WrittenAndCanceledMessagesStopCounting) {
+    boost::asio::io_context io_context;
+    auto transport = std::make_shared<OverlapDetectingTransport>();
+    mcp::detail::SerializedTransportWriter writer(transport, io_context.get_executor());
+    auto canceled = std::make_shared<std::atomic<bool>>(true);
+
+    std::exception_ptr first_error;
+    std::exception_ptr canceled_error;
+    boost::asio::co_spawn(io_context,
+                          writer.write_message(std::make_shared<const std::string>("first")),
+                          [&](std::exception_ptr error) { first_error = std::move(error); });
+    boost::asio::co_spawn(
+        io_context, writer.write_message(std::make_shared<const std::string>("called off"), canceled),
+        [&](std::exception_ptr error) { canceled_error = std::move(error); });
+    io_context.run();
+
+    EXPECT_EQ(first_error, nullptr);
+    EXPECT_NE(canceled_error, nullptr);
+    EXPECT_EQ(transport->messages(), (std::vector<std::string>{"first"}));
+    EXPECT_EQ(writer.queued_bytes(), 0U);
+}
+
 }  // namespace

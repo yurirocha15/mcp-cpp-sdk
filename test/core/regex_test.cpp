@@ -130,19 +130,108 @@ TEST(Regex, InvalidUtf8InputReadsAsReplacementCharacter) {
                         "b"));
 }
 
+/// The kind of the RegexError that compiling @p pattern throws, or nothing when it compiles.
+std::optional<RegexError::Kind> refusal(const std::string& pattern) {
+    try {
+        (void)Regex{pattern};
+    } catch (const RegexError& error) {
+        return error.kind();
+    }
+    return std::nullopt;
+}
+
 TEST(Regex, RejectsUnsupportedSyntax) {
     for (const char* pattern : {"(?=a)", "(?!a)", "(?<=a)", "(?<!a)", "(a)\\1", "\\k<n>", "\\p{L}",
                                 "\\P{L}", "[\\p{L}]", "\\012", "[\\1]"}) {
-        EXPECT_THROW(Regex{pattern}, RegexError) << pattern;
+        EXPECT_EQ(refusal(pattern), RegexError::Kind::eUnsupported) << pattern;
     }
 }
 
+// Errors under ECMA-262 with and without Annex B are invalid. Escapes and groups that Annex B or a
+// later edition reads differently are only unsupported, since the pattern may be valid elsewhere.
 TEST(Regex, RejectsMalformedPatterns) {
-    for (const char* pattern : {"*a",   "a**",    "+",     "?",     "^*",     "\\b+",        "{1}",
-                                "(a",   "a)",     "[a",    "[z-a]", "a{3,2}", "\\",          "\\q",
-                                "(?x)", "(?<>a)", "\\xZ1", "\\u12", "\\u{}",  "\\u{110000}", "\\c1"}) {
-        EXPECT_THROW(Regex{pattern}, RegexError) << pattern;
+    for (const char* pattern :
+         {"*a", "a**", "+", "?", "^*", "\\b+", "{1}", "(a", "a)", "[a", "[z-a]", "a{3,2}", "\\"}) {
+        EXPECT_EQ(refusal(pattern), RegexError::Kind::eInvalid) << pattern;
     }
+    for (const char* pattern :
+         {"\\q", "(?x)", "(?<>a)", "\\xZ1", "\\u12", "\\u{}", "\\u{110000}", "\\c1"}) {
+        EXPECT_EQ(refusal(pattern), RegexError::Kind::eUnsupported) << pattern;
+    }
+}
+
+TEST(Regex, SizeLimitsAreTheirOwnKind) {
+    EXPECT_EQ(refusal("a{10001}"), RegexError::Kind::eTooLarge);
+    EXPECT_EQ(refusal("(a{1000}){1000}"), RegexError::Kind::eTooLarge);
+    EXPECT_EQ(refusal(std::string(Regex::max_nesting + 1, '(') + "a" +
+                      std::string(Regex::max_nesting + 1, ')')),
+              RegexError::Kind::eTooLarge);
+}
+
+// Each pattern is bounded on its own; a budget bounds all the patterns compiled while it lives.
+TEST(PatternBudget, BoundsThePatternsCompiledWhileItLives) {
+    const std::string large = "(?:a{1000}){19}";  // About 19,000 instructions.
+    {
+        mcp::detail::PatternBudget budget(50'000);
+        EXPECT_NO_THROW((void)Regex{large});
+        EXPECT_NO_THROW((void)Regex{large});
+        try {
+            (void)Regex{large};
+            ADD_FAILURE() << "a third program fit in the budget";
+        } catch (const RegexError& error) {
+            EXPECT_EQ(error.kind(), RegexError::Kind::eTooLarge);
+        }
+    }
+    // Outside the budget nothing is charged.
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_NO_THROW((void)Regex{large});
+    }
+}
+
+TEST(PatternBudget, NestedBudgetChargesTheInnermost) {
+    const std::string large = "(?:a{1000}){19}";
+    mcp::detail::PatternBudget outer(30'000);
+    {
+        mcp::detail::PatternBudget inner(1'000'000);
+        EXPECT_NO_THROW((void)Regex{large});
+        EXPECT_NO_THROW((void)Regex{large});
+    }
+    EXPECT_NO_THROW((void)Regex{large});
+    EXPECT_THROW((void)Regex{large}, RegexError);
+}
+
+// Inside a budget, compile() records what it cannot compile and returns a pattern that matches
+// nothing, so a caller can go on. An invalid pattern is reported ahead of other problems.
+TEST(PatternBudget, CompileRecordsProblemsAndGoesOn) {
+    EXPECT_THROW((void)mcp::detail::PatternBudget::compile("(?=a)"), RegexError);
+
+    mcp::detail::PatternBudget budget(1'000'000);
+    EXPECT_FALSE(budget.problem());
+    EXPECT_TRUE(mcp::detail::PatternBudget::compile("^a+$").search("aaa"));
+    EXPECT_FALSE(budget.problem());
+
+    const auto placeholder = mcp::detail::PatternBudget::compile("(?=a)");
+    EXPECT_FALSE(placeholder.search(""));
+    EXPECT_FALSE(placeholder.search("a"));
+    ASSERT_TRUE(budget.problem());
+    EXPECT_EQ(budget.problem()->kind(), RegexError::Kind::eUnsupported);
+
+    (void)mcp::detail::PatternBudget::compile("(");
+    ASSERT_TRUE(budget.problem());
+    EXPECT_EQ(budget.problem()->kind(), RegexError::Kind::eInvalid);
+
+    (void)mcp::detail::PatternBudget::compile("\\p{L}");
+    EXPECT_EQ(budget.problem()->kind(), RegexError::Kind::eInvalid);
+}
+
+// Once the budget is spent, compile() still returns a pattern in place of each one.
+TEST(PatternBudget, CompileGoesOnAfterTheBudgetIsSpent) {
+    mcp::detail::PatternBudget budget(10);
+    const auto placeholder = mcp::detail::PatternBudget::compile("abcdefghijklmnop");
+    EXPECT_FALSE(placeholder.search("abcdefghijklmnop"));
+    ASSERT_TRUE(budget.problem());
+    EXPECT_EQ(budget.problem()->kind(), RegexError::Kind::eTooLarge);
+    EXPECT_FALSE(mcp::detail::PatternBudget::compile("abcdefghijklmnop").search("x"));
 }
 
 TEST(Regex, BoundsNestingRepetitionAndProgramSize) {
@@ -155,6 +244,13 @@ TEST(Regex, BoundsNestingRepetitionAndProgramSize) {
     EXPECT_NO_THROW(Regex{"a{10000}"});
     EXPECT_THROW(Regex{"a{10001}"}, RegexError);
     EXPECT_THROW(Regex{"(a{1000}){1000}"}, RegexError);
+    // Each copy of the group costs a visit per `b{0}` and emits one instruction, so the program stays
+    // small and only a bound on the compile itself stops this.
+    std::string silent;
+    for (int i = 0; i < 20000; ++i) {
+        silent += "b{0}";
+    }
+    EXPECT_THROW(Regex{"(?:a(?:" + silent + ")){10000}"}, RegexError);
     // Length limits written as patterns stay within the program size limit.
     EXPECT_TRUE(Regex{"^.{1,2000}$"}.search(std::string(2000, 'a')));
     EXPECT_FALSE(Regex{"^.{1,2000}$"}.search(std::string(2001, 'a')));

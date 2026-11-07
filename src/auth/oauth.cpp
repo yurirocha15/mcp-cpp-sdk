@@ -344,6 +344,40 @@ bool resource_identifies_server(const std::string& resource, const std::string& 
            server_path[resource_path.size()] == '/';
 }
 
+/// Throws unless `endpoint` is fit to hand the application as the authorization URL, which it opens
+/// in a browser. The server names it, so it must be an absolute `https` URL (`http` only on loopback,
+/// when the policy allows plain HTTP there), outside the policy's denied origins, without a fragment
+/// (RFC 6749 §3.1), and made only of characters a URI may contain (RFC 3986 §2). A different origin
+/// from the other endpoints is allowed: the SDK never connects to this one, the browser does.
+void require_browser_safe_authorization_endpoint(const MetadataFetchPolicy& policy,
+                                                 const std::string& endpoint) {
+    const auto uri_character = [](unsigned char character) {
+        return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+               (character >= '0' && character <= '9') ||
+               std::string_view("-._~:/?[]@!$&'()*+,;=%").find(static_cast<char>(character)) !=
+                   std::string_view::npos;
+    };
+    bool acceptable = !endpoint.empty() && std::all_of(endpoint.begin(), endpoint.end(), uri_character);
+    if (acceptable) {
+        auto any_origin = policy;
+        any_origin.origin_allowance = [](const std::string& /*origin*/) { return true; };
+        switch (validate_metadata_url(any_origin, endpoint)) {
+            case MetadataUrlDecision::allowed:
+            case MetadataUrlDecision::address_link_local:
+            case MetadataUrlDecision::address_private:
+            case MetadataUrlDecision::address_loopback:
+                break;
+            default:
+                acceptable = false;
+        }
+    }
+    if (!acceptable) {
+        throw std::runtime_error(
+            "Authorization server metadata named an authorization endpoint that is not a plain https "
+            "URL");
+    }
+}
+
 /// Throws unless `resource` is present and identifies `server_url`.
 ///
 /// Called before the SDK contacts anything the protected-resource document names, so a document
@@ -2013,6 +2047,8 @@ struct OAuthAuthorizationManager::Impl {
             throw std::runtime_error(
                 "Authorization server metadata omitted an authorization or token endpoint");
         }
+        require_browser_safe_authorization_endpoint(owner.config.policy,
+                                                    operation->auth_metadata->authorization_endpoint);
         // MCP authorization: PKCE support is known only from the metadata, and a server that does
         // not list S256 in code_challenge_methods_supported must not receive an authorization
         // request.
@@ -2511,6 +2547,7 @@ struct OAuthClientTransport::Impl {
         // user to authorize again would not change that.
         bool authorized_after_unauthorized{false};
         int authorization_attempts{0};
+        std::size_t step_ups{0};
     };
 
     /// At most three authorization challenges are honoured per logical request, so a server that
@@ -2772,6 +2809,14 @@ struct OAuthClientTransport::Impl {
                 operation->authorization_attempts >= g_max_authorization_challenges ||
                 (operation->refresh_allowed && operation->authorized_after_unauthorized)) {
                 break;
+            }
+            // A step-up asks for consent to a wider scope, which a server could ask for without
+            // end; the application sets how many one request may cost.
+            if (!operation->refresh_allowed) {
+                if (operation->step_ups >= operation->owner->options.max_step_ups_per_request) {
+                    break;
+                }
+                ++operation->step_ups;
             }
             ++operation->authorization_attempts;
 

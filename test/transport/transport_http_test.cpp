@@ -1477,9 +1477,8 @@ TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
 
     EXPECT_FALSE(timed_out);
     EXPECT_FALSE(discover_reached_server);
-    EXPECT_EQ(discover_status, http::status::bad_request) << "body: " << discover_body;
-    EXPECT_NE(discover_body.find("Invalid MCP-Session-Id header"), std::string::npos)
-        << "body: " << discover_body;
+    EXPECT_EQ(discover_status, http::status::not_found) << "body: " << discover_body;
+    EXPECT_NE(discover_body.find("Session not found"), std::string::npos) << "body: " << discover_body;
 }
 
 TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsStillRejected) {
@@ -3752,7 +3751,9 @@ TEST_F(HttpTransportTest, OutputOfTheEndedSessionDoesNotReachTheNextSession) {
     io_ctx_.run();
 
     ASSERT_FALSE(timed_out);
-    EXPECT_EQ(first_call.status, 404U) << first_call.body;
+    // The call reached the server before its session ended, so it is not answered 404, which would
+    // have its client send it again in a new session.
+    EXPECT_EQ(first_call.status, 500U) << first_call.body;
     ASSERT_FALSE(second_init_event.empty());
     EXPECT_EQ(replay.body.find("first-session"), std::string::npos) << replay.body;
 }

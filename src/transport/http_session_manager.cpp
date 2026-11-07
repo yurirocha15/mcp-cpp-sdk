@@ -1,4 +1,6 @@
+#include "../detail/accept_retry.hpp"
 #include "../detail/beast_string.hpp"
+#include "../detail/http_limits.hpp"
 #include "../detail/jsonrpc_envelope.hpp"
 #include "../detail/memory_transport_read.hpp"
 #include "../detail/peer_json.hpp"
@@ -20,6 +22,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -54,6 +57,8 @@ struct PendingResponse {
     std::optional<std::string> response_body;
     SseEventList stream_events;
     bool response_ready{false};
+    /// Names the stream that answers this POST in the session's event store.
+    std::string stream;
 };
 
 struct PendingResult {
@@ -73,7 +78,31 @@ struct SessionRuntime {
     EventStore event_store;
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
-    SseEventList unassigned_stream_events;
+    /// Messages sent while several POSTs wait, without an id yet: each is stored, and given its
+    /// id, once the next answer names the stream it travels on.
+    std::vector<std::string> unassigned_stream_events;
+    /// Counts the POST streams of this session, to name each one.
+    std::uint64_t streams{0};
+
+    /// A response has succeeded on this session, so its initialize did.
+    std::atomic<bool> established{false};
+    /// When a request last named this session, as a steady_clock count.
+    std::atomic<std::chrono::steady_clock::rep> last_used{
+        std::chrono::steady_clock::now().time_since_epoch().count()};
+
+    void touch() {
+        last_used.store(std::chrono::steady_clock::now().time_since_epoch().count(),
+                        std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] bool idle_for(std::chrono::milliseconds timeout) {
+        const std::chrono::steady_clock::duration used{last_used.load(std::memory_order_relaxed)};
+        if (std::chrono::steady_clock::now().time_since_epoch() - used < timeout) {
+            return false;
+        }
+        std::lock_guard lock(response_mutex);
+        return pending_responses.empty();
+    }
 
     explicit SessionRuntime(
         std::string id, std::size_t event_store_capacity = constants::g_event_store_default_capacity)
@@ -147,9 +176,9 @@ inline StringResponse make_error_response(const StringRequest& request, http::st
 inline StringResponse make_jsonrpc_error_response(const StringRequest& request,
                                                   http::status status_code, int error_code,
                                                   std::string_view error_message) {
+    // It names no request, so `id` is left out, as MCP's schema has it.
     nlohmann::json error_body = {{"jsonrpc", "2.0"},
-                                 {"error", {{"code", error_code}, {"message", error_message}}},
-                                 {"id", nullptr}};
+                                 {"error", {{"code", error_code}, {"message", error_message}}}};
     return make_json_response(request, status_code, error_body.dump());
 }
 
@@ -194,6 +223,7 @@ struct StreamableHttpSessionManager::Impl {
     boost::asio::any_io_executor executor;
     boost::asio::any_io_executor tool_executor_;
     boost::asio::strand<boost::asio::any_io_executor> listener_strand;
+    boost::asio::steady_timer expiry_timer{listener_strand};
     boost::asio::ip::tcp::acceptor acceptor;
 
     StreamableHttpSessionManager::ServerFactory factory;
@@ -222,6 +252,11 @@ struct StreamableHttpSessionManager::Impl {
     std::unordered_set<std::shared_ptr<Connection>> active_connections_;
     mutable std::shared_mutex sessions_mutex_;
     SessionMap sessions;
+    /// Guarded by configuration_mutex_.
+    SessionLimits session_limits;
+    /// Guarded by configuration_mutex_.
+    HttpConnectionLimits connection_limits_;
+    detail::HttpListenerBudget budget_;
     // Answers sessionless server/discover requests. Built once on the first one, so a peer that
     // needs no session or credential cannot make the factory run per request.
     std::mutex discover_server_mutex_;
@@ -373,7 +408,58 @@ struct StreamableHttpSessionManager::Impl {
         if (it == sessions.end()) {
             return nullptr;
         }
+        it->second->touch();
         return it->second;
+    }
+
+    bool at_session_limit() const {
+        SessionLimits limits;
+        {
+            std::lock_guard lock(configuration_mutex_);
+            limits = session_limits;
+        }
+        std::shared_lock lock(sessions_mutex_);
+        return sessions.size() >= limits.max_sessions;
+    }
+
+    /// Ends the sessions nobody has used for the idle timeout, as a client may leave without a
+    /// DELETE. Runs for as long as the manager listens.
+    static Task<void> expire_idle_sessions(std::shared_ptr<Impl> impl) {
+        for (;;) {
+            SessionLimits limits;
+            {
+                std::lock_guard lock(impl->configuration_mutex_);
+                limits = impl->session_limits;
+            }
+            constexpr auto g_longest_sweep = std::chrono::seconds(30);
+            constexpr auto g_shortest_sweep = std::chrono::milliseconds(10);
+            const auto sweep = limits.idle_timeout > std::chrono::milliseconds::zero()
+                                   ? std::chrono::milliseconds(limits.idle_timeout / 4)
+                                   : std::chrono::milliseconds(g_longest_sweep);
+            impl->expiry_timer.expires_after(
+                std::clamp<std::chrono::milliseconds>(sweep, g_shortest_sweep, g_longest_sweep));
+            boost::system::error_code ignored;
+            co_await impl->expiry_timer.async_wait(
+                boost::asio::redirect_error(boost::asio::use_awaitable, ignored));
+            if (impl->closed.load(std::memory_order_acquire)) {
+                co_return;
+            }
+            if (limits.idle_timeout <= std::chrono::milliseconds::zero()) {
+                continue;
+            }
+            std::vector<std::string> idle;
+            {
+                std::shared_lock lock(impl->sessions_mutex_);
+                for (const auto& [id, session] : impl->sessions) {
+                    if (session->idle_for(limits.idle_timeout)) {
+                        idle.push_back(id);
+                    }
+                }
+            }
+            for (const auto& id : idle) {
+                impl->destroy_session(id);
+            }
+        }
     }
 
     void destroy_session(const std::string& session_id) {
@@ -408,20 +494,9 @@ struct StreamableHttpSessionManager::Impl {
 
     // HTTP connection / request handling
 
-    /// @brief Report a body that exceeded max_request_body_bytes_, ignoring a dead peer.
-    static Task<void> write_payload_too_large(Connection& stream) {
-        StringResponse response{http::status::payload_too_large, 11};
-        response.set(http::field::server, "mcp-cpp-sdk");
-        response.set(http::field::content_type, "application/json");
-        response.keep_alive(false);
-        response.body() = nlohmann::json{{"error", "Request body too large"}}.dump();
-        response.prepare_payload();
-        try {
-            co_await http::async_write(stream, response, boost::asio::use_awaitable);
-        } catch (const boost::system::system_error&) {
-            // The peer that overran the limit may already be gone; nothing more to report to it.
-            (void)0;
-        }
+    HttpConnectionLimits current_connection_limits() const {
+        std::lock_guard lock(configuration_mutex_);
+        return connection_limits_;
     }
 
     Task<void> handle_connection(const std::shared_ptr<Connection>& connection,
@@ -431,45 +506,40 @@ struct StreamableHttpSessionManager::Impl {
         auto& stream = *connection;
         beast::flat_buffer request_buffer;
         std::unique_ptr<Server> stateless_server;
+        const detail::RefuseBeforeBody refuse =
+            [this](const StringRequest& head) -> Task<std::optional<StringResponse>> {
+            co_return co_await refuse_before_body(head);
+        };
 
         for (;;) {
-            http::request_parser<http::string_body> parser;
+            const auto limits = current_connection_limits();
+            detail::RequestParser parser;
             parser.body_limit(max_request_body_bytes_);
-            bool body_too_large = false;
-            try {
-                co_await http::async_read(stream, request_buffer, parser, boost::asio::use_awaitable);
-            } catch (const boost::system::system_error& err) {
-                if (err.code() == boost::asio::error::eof ||
-                    err.code() == boost::asio::error::connection_reset ||
-                    err.code() == boost::asio::error::operation_aborted) {
-                    break;
-                }
-                if (err.code() != http::error::body_limit) {
-                    throw;
-                }
-                body_too_large = true;
-            }
-
-            if (body_too_large) {
-                // The parser cannot resynchronize after a truncated body, so the connection ends
-                // with this answer rather than reading another request from it.
-                co_await write_payload_too_large(stream);
+            detail::BudgetLease bytes(budget_.bytes, limits.max_request_bytes);
+            if (!co_await detail::read_request_within_limits(stream, request_buffer, parser, limits,
+                                                             max_request_body_bytes_, bytes, refuse)) {
                 break;
             }
-            StringRequest request = parser.release();
+            StringRequest request = detail::take_request(parser);
 
             if (closed.load(std::memory_order_acquire)) {
                 break;
             }
 
-            auto response = co_await handle_request(request, conn_strand, stateless_server);
+            detail::BudgetLease slot(budget_.requests, limits.max_requests);
+            StringResponse response;
+            if (slot.grow_to(1)) {
+                response = co_await handle_request(request, conn_strand, stateless_server, bytes);
+            } else {
+                response = detail_session_mgr::make_error_response(
+                    request, http::status::service_unavailable, "Too many requests");
+            }
             if (closed.load(std::memory_order_acquire)) {
                 break;
             }
             const bool keep_connection_alive = response.keep_alive();
-            co_await http::async_write(stream, response, boost::asio::use_awaitable);
-
-            if (!keep_connection_alive) {
+            if (!co_await detail::write_response_within_limits(stream, response, limits) ||
+                !keep_connection_alive) {
                 break;
             }
         }
@@ -510,14 +580,13 @@ struct StreamableHttpSessionManager::Impl {
                                                       protected_resource_metadata_body_);
     }
 
-    Task<StringResponse> handle_request(const StringRequest& request,
-                                        boost::asio::strand<boost::asio::any_io_executor> conn_strand,
-                                        std::unique_ptr<Server>& stateless_server) {
+    /// Origin and bearer checks: they need only the headers, so a request they refuse never has its
+    /// body read.
+    Task<std::optional<StringResponse>> refuse_before_body(const StringRequest& request) {
+        // A closed transport answers nothing more, so a request is not worth a token check.
         if (closed.load(std::memory_order_acquire)) {
-            co_return detail_session_mgr::make_error_response(
-                request, http::status::service_unavailable, "Transport closed");
+            co_return std::nullopt;
         }
-
         const auto origin_it = request.find(http::field::origin);
         if (origin_it != request.end() && !allow_all_origins_ &&
             !allowed_origins_.contains(std::string(origin_it->value()))) {
@@ -525,11 +594,8 @@ struct StreamableHttpSessionManager::Impl {
                                                               "Origin not allowed");
         }
 
-        if (auto document = serve_protected_resource_metadata(request)) {
-            co_return std::move(*document);
-        }
-
-        const bool unauthenticated_path = is_unauthenticated_path(request);
+        const bool unauthenticated_path =
+            is_unauthenticated_path(request) || serve_protected_resource_metadata(request).has_value();
         if (!unauthenticated_path && (bearer_token_validator_ || async_bearer_token_validator_)) {
             const auto authorization_it = request.find(http::field::authorization);
             const auto token =
@@ -565,6 +631,22 @@ struct StreamableHttpSessionManager::Impl {
             }
         }
 
+        co_return std::nullopt;
+    }
+
+    Task<StringResponse> handle_request(const StringRequest& request,
+                                        boost::asio::strand<boost::asio::any_io_executor> conn_strand,
+                                        std::unique_ptr<Server>& stateless_server,
+                                        detail::BudgetLease& bytes) {
+        if (closed.load(std::memory_order_acquire)) {
+            co_return detail_session_mgr::make_error_response(
+                request, http::status::service_unavailable, "Transport closed");
+        }
+
+        if (auto document = serve_protected_resource_metadata(request)) {
+            co_return std::move(*document);
+        }
+
         if (custom_handler) {
             auto custom_response = custom_handler(request);
             if (custom_response.has_value()) {
@@ -572,7 +654,7 @@ struct StreamableHttpSessionManager::Impl {
             }
         }
 
-        if (unauthenticated_path) {
+        if (is_unauthenticated_path(request)) {
             // An exempt path is excluded from MCP dispatch, not merely excused from the bearer
             // check. Serving MCP here would answer it with no authentication at all, so once the
             // metadata route and the custom handler have both declined, nothing is left to answer
@@ -582,7 +664,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         if (request.method() == http::verb::post) {
-            co_return co_await handle_post(request, conn_strand, stateless_server);
+            co_return co_await handle_post(request, conn_strand, stateless_server, bytes);
         }
 
         if (stateless_json_mode_) {
@@ -593,7 +675,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         if (request.method() == http::verb::get) {
-            co_return co_await handle_get(request);
+            co_return co_await handle_get(request, bytes);
         }
 
         if (request.method() == http::verb::delete_) {
@@ -700,6 +782,10 @@ struct StreamableHttpSessionManager::Impl {
                     request, http::status::bad_request, g_INVALID_REQUEST,
                     "Missing Mcp-Session-Id header; only initialize is allowed without a session");
             }
+            if (at_session_limit()) {
+                return detail_session_mgr::make_error_response(
+                    request, http::status::service_unavailable, "Too many sessions");
+            }
             return create_session(conn_strand);
         }
 
@@ -776,7 +862,8 @@ struct StreamableHttpSessionManager::Impl {
 
     Task<StringResponse> handle_post(const StringRequest& request,
                                      boost::asio::strand<boost::asio::any_io_executor> conn_strand,
-                                     std::unique_ptr<Server>& stateless_server) {
+                                     std::unique_ptr<Server>& stateless_server,
+                                     detail::BudgetLease& bytes) {
         if (closed.load(std::memory_order_acquire)) {
             co_return detail_session_mgr::make_error_response(
                 request, http::status::service_unavailable, "Transport closed");
@@ -786,6 +873,11 @@ struct StreamableHttpSessionManager::Impl {
         if (request_json.is_discarded() || !request_json.is_object()) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid JSON-RPC payload");
+        }
+        // Held until the answer is written: the parsed message can be far larger than its body.
+        if (!bytes.grow_to(request.body().size() + detail::json_memory_cost(request_json))) {
+            co_return detail_session_mgr::make_error_response(
+                request, http::status::service_unavailable, "Server busy");
         }
 
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
@@ -802,13 +894,14 @@ struct StreamableHttpSessionManager::Impl {
                                                      stateless_server);
         }
 
-        // The Server answers a request whose id is neither a string nor an integer with a null id,
-        // since it has none it may echo, so that answer could never be matched to this request.
+        // The Server answers a request whose id is neither a string nor an integer within int64_t
+        // without an id, since it has none it may echo, so that answer could never be matched to
+        // this request.
         if (request_json.contains("id") && request_json.contains("method") &&
-            !request_json.at("id").is_string() && !request_json.at("id").is_number_integer()) {
+            !detail::is_request_id(request_json.at("id"))) {
             co_return detail_session_mgr::make_jsonrpc_error_response(
                 request, http::status::bad_request, g_INVALID_REQUEST,
-                "JSON-RPC request id must be a string or an integer");
+                "JSON-RPC request id must be a string or an integer within int64_t");
         }
 
         if (detail_session_mgr::is_discover_request(request_json) &&
@@ -844,7 +937,16 @@ struct StreamableHttpSessionManager::Impl {
                 std::string(negotiate_protocol_version(requested_protocol_version)));
         }
 
+        // A session exists to serve the client that initialized it, so one whose initialize did
+        // not succeed is not kept: nobody will come back for it.
+        const bool created_here = is_initialize && request.find("Mcp-Session-Id") == request.end();
         if (!request_json.contains("id") || !request_json.contains("method")) {
+            if (created_here) {
+                destroy_session(session->session_id);
+                co_return detail_session_mgr::make_jsonrpc_error_response(
+                    request, http::status::bad_request, g_INVALID_REQUEST,
+                    "initialize must be a request");
+            }
             co_await session->client_transport->write_json(std::move(request_json));
             auto response =
                 detail_session_mgr::make_empty_json_response(request, http::status::accepted);
@@ -865,12 +967,18 @@ struct StreamableHttpSessionManager::Impl {
             }
             session->pending_responses.emplace(
                 request_id_key,
-                detail_session_mgr::PendingResponse{timer_signal, std::nullopt, {}, false});
+                detail_session_mgr::PendingResponse{
+                    timer_signal, std::nullopt, {}, false, std::to_string(++session->streams)});
         }
 
         co_await session->client_transport->write_json(std::move(request_json));
 
-        co_return co_await wait_for_response(session.get(), request, request_id_key, timer_signal);
+        auto response =
+            co_await wait_for_response(session.get(), request, request_id_key, timer_signal);
+        if (created_here && !session->established.load(std::memory_order_acquire)) {
+            destroy_session(session->session_id);
+        }
+        co_return response;
     }
 
     Task<StringResponse> handle_delete(const StringRequest& request) {
@@ -899,7 +1007,7 @@ struct StreamableHttpSessionManager::Impl {
         co_return detail_session_mgr::make_json_response(request, http::status::ok, "{}");
     }
 
-    Task<StringResponse> handle_get(const StringRequest& request) {
+    Task<StringResponse> handle_get(const StringRequest& request, detail::BudgetLease& bytes) {
         const auto session_header_it = request.find("Mcp-Session-Id");
         if (session_header_it == request.end()) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
@@ -933,12 +1041,25 @@ struct StreamableHttpSessionManager::Impl {
                 co_return detail_session_mgr::make_error_response(
                     request, http::status::gone, "Event ID has been evicted from store");
             }
-            if (!missed_events->empty()) {
-                co_return detail_session_mgr::make_sse_response(request, *missed_events);
+            // Each replay holds its own copy of the events until the client has read it, so the
+            // copies count against what requests may hold.
+            std::size_t replay_bytes = 0;
+            for (const auto& [id, data] : *missed_events) {
+                replay_bytes += 2 * (id.size() + data.size());
             }
+            if (!bytes.grow_to(replay_bytes)) {
+                co_return detail_session_mgr::make_error_response(
+                    request, http::status::service_unavailable, "Server busy");
+            }
+            // An empty stream is an answer here too: the client asked to resume one.
+            co_return detail_session_mgr::make_sse_response(request, *missed_events);
         }
 
-        co_return detail_session_mgr::make_empty_json_response(request, http::status::ok);
+        // Answers travel on the response to each POST, so there is no stream to open.
+        auto refusal = detail_session_mgr::make_error_response(
+            request, http::status::method_not_allowed, "This server offers no SSE stream on GET");
+        refusal.set(http::field::allow, "POST, DELETE");
+        co_return refusal;
     }
 
     static void signal_timer(const std::shared_ptr<boost::asio::steady_timer>& timer) {
@@ -976,19 +1097,20 @@ struct StreamableHttpSessionManager::Impl {
         {
             std::lock_guard lock(session->response_mutex);
 
-            std::optional<std::pair<std::string, std::string>> stream_event;
-            if (!json_only) {
-                auto event_id = session->event_store.append(message);
-                stream_event.emplace(std::move(event_id), message);
-            }
+            // An event is stored under the stream it is sent on, so a resume of one POST's stream
+            // replays nothing that another POST's stream carried.
+            const auto send_on = [session](detail_session_mgr::PendingResponse& pending,
+                                           std::string event) {
+                auto event_id = session->event_store.append(event, pending.stream);
+                pending.stream_events.emplace_back(std::move(event_id), std::move(event));
+            };
 
             if (!is_response) {
-                if (stream_event.has_value()) {
+                if (!json_only) {
                     if (session->pending_responses.size() == 1) {
-                        session->pending_responses.begin()->second.stream_events.push_back(
-                            std::move(*stream_event));
+                        send_on(session->pending_responses.begin()->second, std::move(message));
                     } else if (!session->pending_responses.empty()) {
-                        session->unassigned_stream_events.push_back(std::move(*stream_event));
+                        session->unassigned_stream_events.push_back(std::move(message));
                     }
                 }
                 return;
@@ -1001,12 +1123,11 @@ struct StreamableHttpSessionManager::Impl {
             }
 
             if (!json_only) {
-                auto& events = pending_it->second.stream_events;
-                events.insert(events.end(),
-                              std::make_move_iterator(session->unassigned_stream_events.begin()),
-                              std::make_move_iterator(session->unassigned_stream_events.end()));
+                for (auto& event : session->unassigned_stream_events) {
+                    send_on(pending_it->second, std::move(event));
+                }
                 session->unassigned_stream_events.clear();
-                events.push_back(std::move(*stream_event));
+                send_on(pending_it->second, message);
             }
 
             pending_it->second.response_body = std::move(message);
@@ -1026,6 +1147,19 @@ struct StreamableHttpSessionManager::Impl {
                     *session->client_transport);
                 if (!message) {
                     break;
+                }
+                if (!session->established.load(std::memory_order_acquire)) {
+                    // The server's own message, read without the depth limit on peer input: an
+                    // initialize result nested deeper than a peer may send still establishes the
+                    // session its client was given.
+                    bool answered = false;
+                    if (const auto envelope = detail::scan_jsonrpc_envelope(*message)) {
+                        answered = envelope->has_result;
+                    } else {
+                        const auto parsed = detail::parse_peer_json(*message);
+                        answered = parsed.is_object() && parsed.contains("result");
+                    }
+                    session->established.store(answered, std::memory_order_release);
                 }
                 dispatch_response_to_pending(session.get(), std::move(*message),
                                              json_only_mode->load(std::memory_order_acquire));
@@ -1108,6 +1242,14 @@ void StreamableHttpSessionManager::set_allow_all_origins(bool allow_all) {
     impl_->allow_all_origins_ = allow_all;
 }
 
+void StreamableHttpSessionManager::set_connection_limits(const HttpConnectionLimits& limits) {
+    if (limits.max_requests == 0 || limits.max_request_bytes == 0) {
+        throw std::invalid_argument("HTTP connection limits must allow a request");
+    }
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->connection_limits_ = limits;
+}
+
 void StreamableHttpSessionManager::set_bearer_token_validator(BearerTokenValidator validator) {
     std::lock_guard lock(impl_->configuration_mutex_);
     impl_->ensure_configurable();
@@ -1178,6 +1320,14 @@ void StreamableHttpSessionManager::set_unauthenticated_paths(std::vector<std::st
     }
 }
 
+void StreamableHttpSessionManager::set_session_limits(const SessionLimits& limits) {
+    if (limits.max_sessions == 0) {
+        throw std::invalid_argument("The session limit must be at least 1");
+    }
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->session_limits = limits;
+}
+
 std::size_t StreamableHttpSessionManager::session_count() const {
     std::shared_lock lock(impl_->sessions_mutex_);
     return impl_->sessions.size();
@@ -1215,6 +1365,7 @@ void StreamableHttpSessionManager::close() {
         boost::system::error_code ec;
         (void)impl->acceptor.cancel(ec);
         (void)impl->acceptor.close(ec);
+        impl->expiry_timer.cancel();
     });
     impl->close_active_connections();
 
@@ -1252,6 +1403,8 @@ void StreamableHttpSessionManager::close() {
 Task<void> StreamableHttpSessionManager::listen() {
     auto impl = impl_;
     (void)impl->begin_listening();
+    boost::asio::co_spawn(impl->listener_strand, Impl::expire_idle_sessions(impl),
+                          boost::asio::detached);
     return boost::asio::co_spawn(impl->listener_strand, listen_impl(impl), boost::asio::use_awaitable);
 }
 
@@ -1262,6 +1415,7 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
         }
 
         boost::asio::ip::tcp::socket socket(impl->listener_strand);
+        bool retry = false;
         try {
             socket = co_await impl->acceptor.async_accept(boost::asio::use_awaitable);
         } catch (const boost::system::system_error& err) {
@@ -1269,15 +1423,34 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
                 err.code() == boost::asio::error::operation_aborted) {
                 co_return;
             }
-            throw;
+            if (!detail::accept_failure_can_pass(err.code())) {
+                throw;
+            }
+            retry = true;
+        }
+        if (retry) {
+            boost::asio::steady_timer pause(impl->listener_strand, detail::g_accept_retry_delay);
+            boost::system::error_code ignored;
+            co_await pause.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ignored));
+            continue;
         }
 
+        const auto max_connections =
+            detail::resolved_max_connections(impl->current_connection_limits().max_connections);
+        if (impl->budget_.connections.fetch_add(1, std::memory_order_relaxed) >= max_connections) {
+            // Closed at once, so the descriptor is free again for a connection that can be served.
+            impl->budget_.connections.fetch_sub(1, std::memory_order_relaxed);
+            boost::system::error_code ignored;
+            (void)socket.close(ignored);
+            continue;
+        }
         auto conn_strand = boost::asio::make_strand(impl->executor);
         auto native_handle = socket.release();
         boost::asio::ip::tcp::socket conn_socket(conn_strand, boost::asio::ip::tcp::v4(),
                                                  native_handle);
         auto connection = std::make_shared<Impl::Connection>(std::move(conn_socket));
         if (!impl->register_connection(connection)) {
+            impl->budget_.connections.fetch_sub(1, std::memory_order_relaxed);
             Impl::request_connection_close(connection);
             co_return;
         }
@@ -1288,9 +1461,11 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
                     co_await impl->handle_connection(connection, conn_strand);
                 } catch (...) {
                     impl->unregister_connection(connection);
+                    impl->budget_.connections.fetch_sub(1, std::memory_order_relaxed);
                     throw;
                 }
                 impl->unregister_connection(connection);
+                impl->budget_.connections.fetch_sub(1, std::memory_order_relaxed);
             },
             [](const std::exception_ptr&) {
                 // Connection errors (EOF, client disconnect) are normal;

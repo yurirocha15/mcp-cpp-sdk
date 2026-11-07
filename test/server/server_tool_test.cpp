@@ -468,6 +468,18 @@ mcp::SchemaError::Category registration_error(const mcp::Tool& tool, std::string
 
 }  // namespace
 
+// A pattern that cannot be used is reported only when the input schema has no other problem.
+TEST(ServerToolSchema, InputSchemaProblemsAreReportedBeforeAPattern) {
+    const nlohmann::json lookahead = {{"type", "string"}, {"pattern", "(?=x)"}};
+    EXPECT_EQ(
+        registration_error(tool_with_input({{"type", "array"}, {"items", lookahead}}), "inputSchema"),
+        mcp::SchemaError::Category::eInvalidSchema);
+    EXPECT_EQ(
+        registration_error(tool_with_input({{"type", "object"}, {"properties", {{"a", lookahead}}}}),
+                           "inputSchema"),
+        mcp::SchemaError::Category::eUnsupportedPattern);
+}
+
 TEST(ServerToolSchema, InvalidInputSchemaIsRefused) {
     EXPECT_EQ(registration_error(tool_with_input({{"type", "object"}, {"properties", nullptr}}),
                                  "inputSchema"),

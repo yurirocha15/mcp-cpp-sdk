@@ -7,6 +7,8 @@
 
 namespace mcp {
 
+class StdioTransport;
+
 /**
  * @brief Abstract transport interface for MCP message exchange.
  *
@@ -58,6 +60,20 @@ class ITransport {
      * read/write operations fail fast.
      */
     virtual void close() = 0;
+
+    /**
+     * @brief The StdioTransport whose messages this transport carries, if any.
+     *
+     * @details When the input of a StdioTransport ends, Server::run() tells the running handlers to
+     * stop and writes their answers, and every answer already queued, before it closes the
+     * transport. A transport that wraps a StdioTransport overrides this to return the wrapped one,
+     * so it is served the same way; otherwise the transport is closed first and those answers are
+     * lost.
+     *
+     * @return This transport when it is a StdioTransport, the wrapped one for a wrapper, and null
+     *         otherwise (the default).
+     */
+    virtual StdioTransport* stdio_transport() noexcept { return nullptr; }
 };
 
 }  // namespace mcp

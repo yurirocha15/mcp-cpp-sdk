@@ -385,6 +385,7 @@ if(BUILD_TESTING)
       test/server/server_core_test.cpp
       test/server/server_cancellation_test.cpp
       test/server/server_elicitation_test.cpp
+      test/server/server_limits_test.cpp
       test/server/server_handlers_test.cpp
       test/server/server_logging_test.cpp
       test/server/server_middleware_test.cpp
@@ -398,6 +399,8 @@ if(BUILD_TESTING)
       test/transport/transport_http_session_manager_test.cpp
       test/transport/transport_memory_test.cpp
       test/transport/socket_deadline_test.cpp
+      test/transport/transport_accept_retry_test.cpp
+      test/transport/transport_http_limits_test.cpp
       test/e2e/e2e_integration_test.cpp
       test/e2e/e2e_features_test.cpp
       test/server/runtime_test.cpp
@@ -479,11 +482,15 @@ if(BUILD_TESTING)
 
   include(GoogleTest)
   # Default per-test timeout so one deadlocked test cannot stall a ctest run for
-  # the 25-minute ctest default (or forever without --timeout).
+  # the 25-minute ctest default (or forever without --timeout). Builds that run
+  # the tests many times slower, such as MemorySanitizer, raise it.
+  set(MCP_CPP_SDK_TEST_TIMEOUT
+      120
+      CACHE STRING "Seconds each test may run before ctest stops it")
   gtest_discover_tests(
     mcp-sdk-tests
     PROPERTIES
-    TIMEOUT 120)
+    TIMEOUT ${MCP_CPP_SDK_TEST_TIMEOUT})
 
   option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
   if(ENABLE_COVERAGE)

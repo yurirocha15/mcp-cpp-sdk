@@ -187,7 +187,7 @@ namespace draft6 {
                         this->insert_schema(uri, p);
                         for (const auto& item : sch.object_range())
                         {
-                            if (known_keywords().find(item.key().c_str()) == known_keywords().end())
+                            if (known_keywords().find(item.key()) == known_keywords().end())
                             {
                                 this->insert_unknown_keyword(uri, std::string(item.key()), item.value()); // save unknown keywords for later reference
                             }
@@ -229,7 +229,7 @@ namespace draft6 {
 
             for (const auto& key_value : sch.object_range())
             {
-                auto factory_it = keyword_factory_map_.find(key_value.key().c_str());
+                auto factory_it = keyword_factory_map_.find(key_value.key());
                 if (factory_it != keyword_factory_map_.end())
                 {
                     auto validator = (*factory_it).second(context, key_value.value(), sch, anchor_dict);

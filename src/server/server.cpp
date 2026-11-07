@@ -9,6 +9,7 @@
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/memory.hpp>
+#include <mcp/transport/stdio.hpp>
 
 // GCC 11 SSO Coroutine Safety — see docs/contributing.rst "Known Issues" for full details.
 // Do NOT store std::string in a coroutine frame across co_await (GCC bugs #107288/#100611).
@@ -125,12 +126,17 @@ CompiledToolSchemas compile_tool_schemas(const Tool& tool) {
         }
     };
 
-    auto input = compile(tool.inputSchema, "inputSchema");
+    // Checked before the schema is compiled, which reports a pattern it cannot use only once it
+    // has found no other problem.
+    if (!tool.inputSchema.is_object()) {
+        throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema", "must be a JSON object");
+    }
     const auto type = tool.inputSchema.find("type");
     if (type == tool.inputSchema.end() || *type != "object") {
         throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema",
                      R"(must declare "type": "object")");
     }
+    auto input = compile(tool.inputSchema, "inputSchema");
     std::optional<CompiledSchema> output;
     if (tool.outputSchema) {
         output = compile(*tool.outputSchema, "outputSchema");
@@ -164,6 +170,11 @@ struct UriTemplatePattern {
 // times the templates' size, so the length is bounded to keep one resources/read cheap whatever a
 // client sends. Real resource identifiers sit far below this.
 constexpr std::size_t g_MAX_TEMPLATE_MATCH_URI_LENGTH = 512;
+/// The default of Server::set_max_in_flight_bytes().
+constexpr std::size_t g_default_max_in_flight_bytes = 256U * 1024U * 1024U;
+/// Resources one session may subscribe to, and the bytes of their URIs together.
+constexpr std::size_t g_max_subscriptions = 4096;
+constexpr std::size_t g_max_subscription_bytes = 8U * 1024U * 1024U;
 
 /// Does `uri` match the automaton `states` from start to end? Every state the input can be in is
 /// followed at once, as in Thompson's construction, so the work is linear in the URI's length and
@@ -481,8 +492,7 @@ Params deserialize_request_params(const nlohmann::json& message, std::string_vie
 }
 
 bool has_valid_request_id(const nlohmann::json& message) {
-    return message.contains("id") &&
-           (message.at("id").is_string() || message.at("id").is_number_integer());
+    return message.contains("id") && detail::is_request_id(message.at("id"));
 }
 
 // A peer that serializes an absent optional as an explicit null means the member is not there, and
@@ -534,32 +544,24 @@ bool is_valid_response_envelope(const nlohmann::json& message) {
         return false;
     }
 
-    if (!has_error_member(message)) {
-        return true;
-    }
-
-    try {
-        static_cast<void>(message.at("error").get<Error>());
-        return true;
-    } catch (const std::exception&) {
-        return false;
-    }
+    // An error that cannot be decoded still answers the request it names: dispatch_response
+    // fails that request instead of leaving its handler waiting.
+    return true;
 }
 
+/// An error that answers no request it can name leaves out `id`: MCP's schema gives an error
+/// response's id the type of a request id, which null is not.
 std::string make_invalid_request_wire(const nlohmann::json& message, std::string_view reason) {
-    nlohmann::json id = nullptr;
+    nlohmann::json wire = {{"jsonrpc", "2.0"},
+                           {"error", {{"code", g_INVALID_REQUEST}, {"message", reason}}}};
     if (message.is_object() && has_valid_request_id(message)) {
-        id = message.at("id");
+        wire["id"] = message.at("id");
     }
-    return nlohmann::json{{"jsonrpc", "2.0"},
-                          {"id", std::move(id)},
-                          {"error", {{"code", g_INVALID_REQUEST}, {"message", reason}}}}
-        .dump();
+    return wire.dump();
 }
 
 std::string make_parse_error_wire() {
     return nlohmann::json{{"jsonrpc", "2.0"},
-                          {"id", nullptr},
                           {"error", {{"code", g_PARSE_ERROR}, {"message", "Parse error"}}}}
         .dump();
 }
@@ -571,6 +573,12 @@ struct Server::PendingRequest {
     nlohmann::json result;
     std::optional<Error> error;
     bool completed{false};
+    /// The session_epoch() it was sent in. Only that session may answer it.
+    std::uint64_t epoch{0};
+    /// Set for a request a handler is waiting on: cancelling that handler ends the wait.
+    std::shared_ptr<std::atomic<bool>> caller_cancelled;
+    /// The server stopped waiting before the client answered, so the client is told to stop.
+    bool given_up{false};
 };
 
 struct Server::Session {
@@ -584,8 +592,12 @@ struct Server::Session {
     /// Subscribed URI to the session_epoch() it was made in. A subscription from a session the
     /// client has since ended delivers nothing.
     std::map<std::string, std::uint64_t> subscriptions;
+    /// Bytes of the URIs in `subscriptions`.
+    std::size_t subscription_bytes{0};
     std::shared_ptr<boost::asio::steady_timer> drain_timer;
     std::atomic_size_t active_dispatches{0};
+    /// The size of the messages being dispatched, on transports that hand over text.
+    std::atomic_size_t active_dispatch_bytes{0};
     std::atomic_bool stopping{false};
 };
 
@@ -656,6 +668,10 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::atomic<int64_t> next_request_id{1};
     std::atomic<LoggingLevel> log_level{g_default_log_level};
     std::size_t page_size{0};
+    std::atomic_size_t max_in_flight_requests{1024};
+    std::atomic_size_t max_in_flight_bytes{g_default_max_in_flight_bytes};
+    std::atomic<std::chrono::milliseconds::rep> reverse_request_timeout_ms{
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::minutes(10)).count()};
 
     CompletionHandler completion_handler;
 
@@ -686,10 +702,19 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     [[nodiscard]] bool transport_started_new_session() const;
     void reset_session(const std::shared_ptr<Session>& session);
     static void abandon_session_work(const std::shared_ptr<Session>& session);
+    /// Fails the server's own requests that are still waiting for an answer.
+    static void abandon_pending_requests(Session& session);
+    /// Returns once no request of @p session is running.
+    static Task<void> wait_for_dispatches(Session& session);
 
     static Task<void> run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransport> transport,
                           boost::asio::any_io_executor executor);
     Task<void> run_session(std::shared_ptr<Session> session);
+    /// Whether a message of @p message_bytes must not start another dispatch in the background.
+    bool session_is_full(const Session& session, std::size_t message_bytes) const;
+    /// Writes @p answer, made by the read loop itself, without holding up reading while it can.
+    Task<void> answer_from_read_loop(Session& session, std::shared_ptr<const std::string> answer);
+    static bool is_identified_request(const nlohmann::json& json_msg);
     Task<void> dispatch(nlohmann::json json_msg);
     Task<void> notify_resource_updated(const std::string& uri);
     Task<void> dispatch_on_strand(nlohmann::json json_msg);
@@ -721,13 +746,17 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                          std::optional<ProgressToken> progress_token = std::nullopt);
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
 
-    Task<nlohmann::json> send_request(const std::string& method,
+    Task<nlohmann::json> send_request(std::shared_ptr<std::atomic<bool>> caller_cancelled,
+                                      const std::string& method,
                                       const std::optional<nlohmann::json>& params);
     static Task<nlohmann::json> await_reverse_response(std::shared_ptr<Session> session,
                                                        std::shared_ptr<const std::string> wire,
-                                                       std::int64_t id);
+                                                       std::int64_t id,
+                                                       std::chrono::milliseconds timeout,
+                                                       std::shared_ptr<std::atomic<bool>> cancelled);
     static Task<nlohmann::json> await_reverse_response_on_strand(
-        std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, std::int64_t id);
+        std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, std::int64_t id,
+        std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled);
     Task<void> send_notification(const std::string& method,
                                  const std::optional<nlohmann::json>& params);
     Task<void> notify_resource_updated_on_strand(std::shared_ptr<Session> session,
@@ -829,6 +858,27 @@ ToolValidationStats Server::tool_validation_stats() const {
 
 void Server::set_page_size(std::size_t size) { impl_->page_size = size; }
 
+void Server::set_max_in_flight_bytes(std::size_t bytes) {
+    if (bytes == 0) {
+        throw std::invalid_argument("The in-flight memory limit must be at least 1 byte");
+    }
+    impl_->max_in_flight_bytes.store(bytes, std::memory_order_relaxed);
+}
+
+void Server::set_max_in_flight_requests(std::size_t limit) {
+    if (limit == 0) {
+        throw std::invalid_argument("The in-flight request limit must be at least 1");
+    }
+    impl_->max_in_flight_requests.store(limit, std::memory_order_relaxed);
+}
+
+void Server::set_reverse_request_timeout(std::chrono::milliseconds timeout) {
+    if (timeout <= std::chrono::milliseconds::zero()) {
+        throw std::invalid_argument("The reverse request timeout must be positive");
+    }
+    impl_->reverse_request_timeout_ms.store(timeout.count(), std::memory_order_relaxed);
+}
+
 void Server::set_instructions(std::string instructions) {
     impl_->instructions = std::move(instructions);
 }
@@ -865,13 +915,14 @@ LoggingLevel Server::get_log_level() const { return impl_->log_level.load(std::m
 // with no diagnostic; change this line to co_await in the same commit if you ever do.
 Task<nlohmann::json> Server::send_request(const std::string& method,
                                           const std::optional<nlohmann::json>& params) {
-    return impl_->send_request(method, params);
+    return impl_->send_request(nullptr, method, params);
 }
 
 // Deliberately not a coroutine -- see the note on Server::send_request above. It takes both
 // parameters by reference and its caller forwards with a plain `return`, so the body must run
 // before that return completes.
-Task<nlohmann::json> Server::Impl::send_request(const std::string& method,
+Task<nlohmann::json> Server::Impl::send_request(std::shared_ptr<std::atomic<bool>> caller_cancelled,
+                                                const std::string& method,
                                                 const std::optional<nlohmann::json>& params) {
     // Distinct from the two failures below: a handler still running after its Server was
     // destroyed has to be able to tell that apart from a session that is merely closing and
@@ -892,31 +943,41 @@ Task<nlohmann::json> Server::Impl::send_request(const std::string& method,
     request.method = method;
     request.params = params;
     auto wire = std::make_shared<const std::string>(nlohmann::json(std::move(request)).dump());
-    return await_reverse_response(std::move(session), std::move(wire), id);
+    const std::chrono::milliseconds timeout(reverse_request_timeout_ms.load(std::memory_order_relaxed));
+    return await_reverse_response(std::move(session), std::move(wire), id, timeout,
+                                  std::move(caller_cancelled));
 }
 
-Task<nlohmann::json> Server::Impl::await_reverse_response(std::shared_ptr<Session> session,
-                                                          std::shared_ptr<const std::string> wire,
-                                                          int64_t id) {
+Task<nlohmann::json> Server::Impl::await_reverse_response(
+    std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, int64_t id,
+    std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled) {
     auto strand = *session->strand;
     // A caller's awaitable keeps its original executor across an awaited post. Launch the
     // complete correlation lifecycle on the session strand so map and timer state stay confined.
     return mcp::detail::spawn_awaitable(
-        strand, await_reverse_response_on_strand(std::move(session), std::move(wire), id));
+        strand, await_reverse_response_on_strand(std::move(session), std::move(wire), id, timeout,
+                                                 std::move(cancelled)));
 }
 
 Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
-    std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, int64_t id) {
+    std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, int64_t id,
+    std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled) {
     if (session->stopping.load(std::memory_order_acquire)) {
         throw std::runtime_error("server session is closing");
     }
+    // A cancel that came before the handler asked has nothing to wake, so it is checked here.
+    if (cancelled && cancelled->load(std::memory_order_relaxed)) {
+        throw std::runtime_error("JSON-RPC error " + std::to_string(g_REQUEST_CANCELLED) +
+                                 ": The request was cancelled");
+    }
 
     auto timer = std::make_shared<boost::asio::steady_timer>(*session->strand);
-    timer->expires_at(std::chrono::steady_clock::time_point::max());
+    timer->expires_after(timeout);
     {
         const auto id_key = RequestId{std::to_string(id)}.correlation_key();
         const auto [pending_it, inserted] = session->pending_requests.try_emplace(
-            id_key, PendingRequest{timer, {}, std::nullopt, false});
+            id_key, PendingRequest{
+                        timer, {}, std::nullopt, false, session_epoch(*session), std::move(cancelled)});
         static_cast<void>(pending_it);
         if (!inserted) {
             throw std::runtime_error("duplicate pending request id: " + id_key);
@@ -939,6 +1000,15 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
     if (!completed) {
         try {
             co_await timer->async_wait(boost::asio::use_awaitable);
+            // Ran to its end: the client did not answer in time.
+            const auto id_key = RequestId{std::to_string(id)}.correlation_key();
+            const auto pending_it = session->pending_requests.find(id_key);
+            if (pending_it != session->pending_requests.end() && !pending_it->second.completed) {
+                pending_it->second.error =
+                    Error{g_REQUEST_TIMEOUT, "The client did not answer in time", std::nullopt};
+                pending_it->second.completed = true;
+                pending_it->second.given_up = true;
+            }
         } catch (const boost::system::system_error& err) {
             if (err.code() != boost::asio::error::operation_aborted) {
                 session->pending_requests.erase(RequestId{std::to_string(id)}.correlation_key());
@@ -956,7 +1026,28 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
 
     auto json_result = std::move(it->second.result);
     auto error = std::move(it->second.error);
+    const bool given_up = it->second.given_up;
     session->pending_requests.erase(it);
+
+    if (given_up) {
+        // The server gave up on its request, so the client can stop working on it. An error the
+        // client answered with, whatever its code, ended the request on its side already.
+        std::string notice;
+        {
+            CancelledNotificationParams params;
+            params.requestId = RequestId{std::to_string(id)};
+            params.reason = error->message;
+            JSONRPCNotification notification;
+            notification.method = "notifications/cancelled";
+            notification.params = nlohmann::json(std::move(params));
+            notice = nlohmann::json(std::move(notification)).dump();
+        }
+        try {
+            co_await session->writer->write_message(notice);
+        } catch (const std::exception&) {
+            // The session may be ending; the request is over either way.
+        }
+    }
 
     if (error) {
         // Same defect as the peer-controlled text in the client's McpError, opposite direction:
@@ -1018,11 +1109,14 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
 
     lifecycle.store(Impl::LifecycleState::eUninitialized, std::memory_order_relaxed);
     shutdown_requested.store(false, std::memory_order_relaxed);
+    // The next client on a reused Server starts from the default, not from what the last one chose.
+    log_level.store(g_default_log_level, std::memory_order_relaxed);
 
     try {
         for (;;) {
             nlohmann::json json_msg;
             bool parse_failed = false;
+            std::size_t message_bytes = 0;
             try {
                 if (session->memory_transport) {
                     auto message = co_await detail::MemoryTransportAccess::read_json_until_closed(
@@ -1036,17 +1130,39 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
                     json_msg = detail::parse_peer_json(raw);
                     parse_failed = json_msg.is_discarded();
                 }
-            } catch (const nlohmann::json::parse_error&) {
+            } catch (const nlohmann::json::exception&) {
+                // Text a MemoryTransport parses on the way in, such as a number past the range of
+                // a double, fails here; it is the peer's error, not the transport's.
                 parse_failed = true;
             }
             if (parse_failed) {
-                co_await session->writer->write_message(make_parse_error_wire());
+                co_await answer_from_read_loop(
+                    *session, std::make_shared<const std::string>(make_parse_error_wire()));
+                continue;
+            }
+            message_bytes = detail::json_memory_cost(json_msg);
+            // Past the limit nothing is left running in the background, so reading stops when the
+            // peer stops taking answers. Answers to the server's own requests still get through.
+            if (session_is_full(*session, message_bytes)) {
+                if (is_identified_request(json_msg)) {
+                    co_await answer_from_read_loop(
+                        *session, std::make_shared<const std::string>(make_error_wire(
+                                      json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+                                      "Too many requests in flight")));
+                } else {
+                    try {
+                        co_await dispatch_on_strand(std::move(json_msg));
+                    } catch (...) {
+                        // A failed message must not end the session.
+                    }
+                }
                 continue;
             }
             session->active_dispatches.fetch_add(1, std::memory_order_relaxed);
+            session->active_dispatch_bytes.fetch_add(message_bytes, std::memory_order_relaxed);
             boost::asio::co_spawn(
                 *session->strand,
-                [impl = shared_from_this(), session,
+                [impl = shared_from_this(), session, message_bytes,
                  json_msg = std::move(json_msg)]() mutable -> Task<void> {
                     try {
                         co_await impl->dispatch_on_strand(std::move(json_msg));
@@ -1054,6 +1170,7 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
                         // A failed request must not terminate the detached dispatcher.
                     }
 
+                    session->active_dispatch_bytes.fetch_sub(message_bytes, std::memory_order_relaxed);
                     const auto remaining =
                         session->active_dispatches.fetch_sub(1, std::memory_order_acq_rel) - 1;
                     if (remaining == 0 && session->stopping.load(std::memory_order_acquire)) {
@@ -1072,28 +1189,77 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
     // every later run() is refused for the lifetime of this Server.
     try {
         session->stopping.store(true, std::memory_order_release);
+        if (session->transport->stdio_transport() != nullptr) {
+            // The end of standard input is how a client asks a stdio server to finish, and it may
+            // still be reading standard output. The requests already started are told to stop,
+            // and the answers of those that end, with every answer already queued, are written
+            // before the transport closes. After a signal the transport is closed already, so those
+            // writes fail at once. A handler that ignores Context::is_cancelled() is waited for.
+            // Answers to the server's own requests can no longer arrive.
+            abandon_pending_requests(*session);
+            for (auto& [id, cancelled] : session->in_flight) {
+                static_cast<void>(id);
+                cancelled->store(true, std::memory_order_relaxed);
+            }
+            co_await wait_for_dispatches(*session);
+            co_await session->writer->written();
+        }
         abandon_session_work(session);
         session->transport->close();
 
-        while (session->active_dispatches.load(std::memory_order_acquire) != 0) {
-            session->drain_timer->expires_at(std::chrono::steady_clock::time_point::max());
-            if (session->active_dispatches.load(std::memory_order_acquire) == 0) {
-                break;
-            }
-            try {
-                co_await session->drain_timer->async_wait(boost::asio::use_awaitable);
-            } catch (const boost::system::system_error& error) {
-                if (error.code() != boost::asio::error::operation_aborted) {
-                    throw;
-                }
-            }
-        }
+        co_await wait_for_dispatches(*session);
     } catch (...) {
         reset_session(session);
         throw;
     }
 
     reset_session(session);
+}
+
+Task<void> Server::Impl::wait_for_dispatches(Session& session) {
+    while (session.active_dispatches.load(std::memory_order_acquire) != 0) {
+        session.drain_timer->expires_at(std::chrono::steady_clock::time_point::max());
+        if (session.active_dispatches.load(std::memory_order_acquire) == 0) {
+            break;
+        }
+        try {
+            co_await session.drain_timer->async_wait(boost::asio::use_awaitable);
+        } catch (const boost::system::system_error& error) {
+            if (error.code() != boost::asio::error::operation_aborted) {
+                throw;
+            }
+        }
+    }
+}
+
+Task<void> Server::Impl::answer_from_read_loop(Session& session,
+                                               std::shared_ptr<const std::string> answer) {
+    // Waiting for the write would stop reading, and with it the answers to this server's own
+    // requests, which a peer at its own limit may be waiting to write before it reads again.
+    // Answers are queued instead while what is queued stays within the byte limit; past it,
+    // reading waits for the peer.
+    if (session.writer->queued_bytes() + answer->size() + detail::g_queued_message_overhead <=
+        max_in_flight_bytes.load(std::memory_order_relaxed)) {
+        session.writer->post_message(std::move(answer));
+        co_return;
+    }
+    co_await session.writer->write_message(std::move(answer));
+}
+
+bool Server::Impl::session_is_full(const Session& session, std::size_t message_bytes) const {
+    return session.active_dispatches.load(std::memory_order_relaxed) >=
+               max_in_flight_requests.load(std::memory_order_relaxed) ||
+           session.active_dispatch_bytes.load(std::memory_order_relaxed) +
+                   session.writer->queued_bytes() + message_bytes >
+               max_in_flight_bytes.load(std::memory_order_relaxed);
+}
+
+bool Server::Impl::is_identified_request(const nlohmann::json& json_msg) {
+    if (!json_msg.is_object() || !json_msg.contains("method")) {
+        return false;
+    }
+    const auto id = json_msg.find("id");
+    return id != json_msg.end() && detail::is_request_id(*id);
 }
 
 Task<void> Server::dispatch(nlohmann::json json_msg) { return impl_->dispatch(std::move(json_msg)); }
@@ -1155,18 +1321,17 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
         };
     }
 
-    return {*transport,
-            [impl = shared_from_this(), session, epoch](
-                std::string method, std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
-                if (session && Impl::session_epoch(*session) != epoch) {
-                    throw std::runtime_error("the client ended the session this request belongs to");
-                }
-                return impl->send_request(method, params);
-            },
-            std::move(cancelled),
-            std::move(progress_token),
-            &log_level,
-            std::move(message_sender)};
+    // Built before the list below moves `cancelled`, so the ask holds the flag whatever order the
+    // arguments are built in.
+    auto ask = [impl = shared_from_this(), session, epoch, cancelled](
+                   std::string method, std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
+        if (session && Impl::session_epoch(*session) != epoch) {
+            throw std::runtime_error("the client ended the session this request belongs to");
+        }
+        return impl->send_request(cancelled, method, params);
+    };
+    return Context(*transport, std::move(ask), std::move(cancelled), std::move(progress_token),
+                   &log_level, std::move(message_sender));
 }
 
 // Invalid parameter decoding is reported as -32602. Exceptions raised after decoding are reported
@@ -1260,6 +1425,11 @@ Task<std::string> Server::Impl::dispatch_request_wire(nlohmann::json json_msg, b
     } catch (const InvalidParamsError& error) {
         error_code = g_INVALID_PARAMS;
         error_payload = error.what();
+    } catch (const nlohmann::json::exception&) {
+        // Its text describes the library, and quotes bytes of the value that could not be encoded.
+        if (json_msg.contains("id")) {
+            error_payload = "The result could not be encoded as JSON";
+        }
     } catch (const std::exception& error) {
         if (json_msg.contains("id")) {
             // Handler text can carry build paths or third-party library detail, and reaches the
@@ -1309,6 +1479,17 @@ void Server::Impl::dispatch_notification(const nlohmann::json& json_msg) {
         auto it = session->in_flight.find(id_str);
         if (it != session->in_flight.end()) {
             it->second->store(true, std::memory_order_relaxed);
+            // A handler waiting for the client cannot look at its flag. Without this it would stay
+            // parked until the reverse request timed out, counting against the limit on requests.
+            for (auto& [pending_id, pending] : session->pending_requests) {
+                if (pending.caller_cancelled == it->second && !pending.completed) {
+                    pending.error =
+                        Error{g_REQUEST_CANCELLED, "The request was cancelled", std::nullopt};
+                    pending.completed = true;
+                    pending.given_up = true;
+                    pending.timer->cancel();
+                }
+            }
         }
     }
 }
@@ -1326,9 +1507,19 @@ void Server::Impl::dispatch_response(const nlohmann::json& json_msg) {
     if (it == session->pending_requests.end()) {
         return;
     }
+    // Ids are small numbers, so another session's client could name this one.
+    if (it->second.epoch != session_epoch(*session)) {
+        return;
+    }
 
     if (has_error_member(json_msg)) {
-        it->second.error = json_msg.at("error").get<Error>();
+        try {
+            it->second.error = json_msg.at("error").get<Error>();
+        } catch (const std::exception&) {
+            // Still an answer: the request failed, and the handler must not wait on.
+            it->second.error =
+                Error{g_INVALID_REQUEST, "Malformed JSON-RPC error object", std::nullopt};
+        }
     } else if (json_msg.contains("result")) {
         it->second.result = json_msg.at("result");
     }
@@ -1615,7 +1806,8 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
     }
 
     if (match == nullptr || !match->handler) {
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+        // MCP names this case with its own code.
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_RESOURCE_NOT_FOUND,
                                   "Unknown resource: " + params.uri);
     }
 
@@ -1648,27 +1840,62 @@ Task<std::string> Server::Impl::handle_resource_templates_list_wire(const nlohma
 
 Task<std::string> Server::Impl::handle_subscribe_wire(const nlohmann::json& json_msg) {
     auto params = deserialize_request_params<ResourceSubscribeParams>(json_msg, "resources/subscribe");
-    auto session = session_snapshot();
-    if (session) {
-        session->subscriptions[params.uri] = Impl::session_epoch(*session);
-    }
-    if (subscribe_handler) {
-        subscribe_handler(params.uri);
-    }
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object());
+    auto handler = build_middleware_chain(
+        [this, uri = std::move(params.uri)](Context&, const nlohmann::json&) -> Task<nlohmann::json> {
+            auto session = session_snapshot();
+            if (session) {
+                if (!session->subscriptions.contains(uri)) {
+                    const auto epoch = Impl::session_epoch(*session);
+                    const auto full = [&session, &uri] {
+                        return session->subscriptions.size() >= g_max_subscriptions ||
+                               session->subscription_bytes + uri.size() > g_max_subscription_bytes;
+                    };
+                    if (full()) {
+                        // Subscriptions of a session that ended are only dropped lazily.
+                        for (auto it = session->subscriptions.begin();
+                             it != session->subscriptions.end();) {
+                            if (it->second != epoch) {
+                                session->subscription_bytes -= it->first.size();
+                                it = session->subscriptions.erase(it);
+                            } else {
+                                ++it;
+                            }
+                        }
+                    }
+                    if (full()) {
+                        throw InvalidParamsError("Too many resource subscriptions");
+                    }
+                    session->subscription_bytes += uri.size();
+                }
+                session->subscriptions[uri] = Impl::session_epoch(*session);
+            }
+            if (subscribe_handler) {
+                subscribe_handler(uri);
+            }
+            co_return nlohmann::json::object();
+        });
+    auto ctx = make_context();
+    nlohmann::json handler_result = co_await handler(ctx, json_msg.at("params"));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
 }
 
 Task<std::string> Server::Impl::handle_unsubscribe_wire(const nlohmann::json& json_msg) {
     auto params =
         deserialize_request_params<ResourceUnsubscribeParams>(json_msg, "resources/unsubscribe");
-    auto session = session_snapshot();
-    if (session) {
-        session->subscriptions.erase(params.uri);
-    }
-    if (unsubscribe_handler) {
-        unsubscribe_handler(params.uri);
-    }
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object());
+    auto handler = build_middleware_chain(
+        [this, uri = std::move(params.uri)](Context&, const nlohmann::json&) -> Task<nlohmann::json> {
+            auto session = session_snapshot();
+            if (session && session->subscriptions.erase(uri) != 0) {
+                session->subscription_bytes -= uri.size();
+            }
+            if (unsubscribe_handler) {
+                unsubscribe_handler(uri);
+            }
+            co_return nlohmann::json::object();
+        });
+    auto ctx = make_context();
+    nlohmann::json handler_result = co_await handler(ctx, json_msg.at("params"));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
 }
 
 Task<std::string> Server::Impl::handle_prompts_list_wire(const nlohmann::json& json_msg) {
@@ -1719,10 +1946,14 @@ Task<std::string> Server::Impl::handle_complete_wire(const nlohmann::json& json_
                                   "No completion handler registered");
     }
 
-    auto complete_result = co_await completion_handler(params);
-
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(),
-                               nlohmann::json(std::move(complete_result)));
+    auto handler =
+        build_middleware_chain([this, params](Context&, const nlohmann::json&) -> Task<nlohmann::json> {
+            auto complete_result = co_await completion_handler(params);
+            co_return nlohmann::json(std::move(complete_result));
+        });
+    auto ctx = make_context();
+    nlohmann::json handler_result = co_await handler(ctx, json_msg.at("params"));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
 }
 
 std::string Server::Impl::make_result_wire(const RequestId& id, nlohmann::json result) {
@@ -1805,6 +2036,7 @@ Task<void> Server::Impl::notify_resource_updated_on_strand(std::shared_ptr<Sessi
         co_return;
     }
     if (it->second != Impl::session_epoch(*session)) {
+        session->subscription_bytes -= it->first.size();
         session->subscriptions.erase(it);
         co_return;
     }
@@ -1900,7 +2132,11 @@ void Server::Impl::abandon_session_work(const std::shared_ptr<Session>& session)
         static_cast<void>(id);
         cancelled->store(true, std::memory_order_relaxed);
     }
-    for (auto& [id, pending] : session->pending_requests) {
+    abandon_pending_requests(*session);
+}
+
+void Server::Impl::abandon_pending_requests(Session& session) {
+    for (auto& [id, pending] : session.pending_requests) {
         static_cast<void>(id);
         if (!pending.completed) {
             pending.error = Error{g_CONNECTION_CLOSED, "Server session closed", std::nullopt};

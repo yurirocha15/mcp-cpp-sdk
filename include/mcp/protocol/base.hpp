@@ -1,7 +1,9 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
@@ -50,9 +52,18 @@ inline constexpr int g_UNAUTHORIZED = -32000;
 inline constexpr int g_REQUEST_TIMEOUT = -32001;
 
 /**
- * @brief JSON-RPC-compatible client error code used when the transport closes.
+ * @brief Error code the SDK uses locally when the transport closes.
+ *
+ * @details Outside the range JSON-RPC reserves (-32768 to -32000), as the specification asks of
+ * codes it does not define, so it cannot be mistaken for an error the peer sent. -32002 is MCP's
+ * code for a resource that does not exist.
  */
-inline constexpr int g_CONNECTION_CLOSED = -32002;
+inline constexpr int g_CONNECTION_CLOSED = -31000;
+
+/**
+ * @brief JSON-RPC error code for a resource that does not exist.
+ */
+inline constexpr int g_RESOURCE_NOT_FOUND = -32002;
 
 // Error-code allocation policy: -32000..-32019 is a grandfathered legacy band
 // (pre-existing codes above); -32020..-32099 is the spec-reserved band for
@@ -173,13 +184,28 @@ inline void to_json(nlohmann::json& json_obj, const RequestId& id) {
     std::visit([&json_obj](auto&& val) { json_obj = val; }, id.value);
 }
 
+namespace detail {
+
+/// Whether @p value can be a request id: a string, or an integer that fits in int64_t. A larger one
+/// could not be echoed back unchanged, so its answer would never be matched to the request.
+[[nodiscard]] inline bool is_request_id(const nlohmann::json& value) {
+    if (value.is_number_unsigned()) {
+        return value.get<std::uint64_t>() <=
+               static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    }
+    return value.is_string() || value.is_number_integer();
+}
+
+}  // namespace detail
+
 inline void from_json(const nlohmann::json& json_obj, RequestId& id) {
+    if (!detail::is_request_id(json_obj)) {
+        throw std::invalid_argument("RequestId must be a string or an integer within int64_t");
+    }
     if (json_obj.is_string()) {
         id.value = json_obj.get<std::string>();
-    } else if (json_obj.is_number_integer()) {
-        id.value = json_obj.get<int64_t>();
     } else {
-        throw std::invalid_argument("RequestId must be a string or integer");
+        id.value = json_obj.get<int64_t>();
     }
 }
 
@@ -195,6 +221,29 @@ struct Error {
     std::optional<nlohmann::json> data;  ///< Additional information about the error.
 };
 
+namespace detail {
+
+/// Whether @p value is a number that is not an integer in the range of int. JSON does not tell
+/// -32601 from -32601.0, so a float with no fraction counts as an integer.
+[[nodiscard]] inline bool is_number_outside_int(const nlohmann::json& value) {
+    if (value.is_number_unsigned()) {
+        return value.get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+    }
+    if (value.is_number_integer()) {
+        const auto number = value.get<std::int64_t>();
+        return number < std::numeric_limits<int>::min() || number > std::numeric_limits<int>::max();
+    }
+    if (value.is_number_float()) {
+        const auto number = value.get<double>();
+        return !(number >= static_cast<double>(std::numeric_limits<int>::min()) &&
+                 number <= static_cast<double>(std::numeric_limits<int>::max()) &&
+                 number == std::trunc(number));
+    }
+    return false;
+}
+
+}  // namespace detail
+
 inline void to_json(nlohmann::json& json_obj, const Error& error) {
     json_obj = nlohmann::json{{"code", error.code}, {"message", error.message}};
     if (error.data) {
@@ -203,7 +252,13 @@ inline void to_json(nlohmann::json& json_obj, const Error& error) {
 }
 
 inline void from_json(const nlohmann::json& json_obj, Error& error) {
-    json_obj.at("code").get_to(error.code);
+    // A numeric code that does not fit is still an error: converting it would be undefined
+    // behaviour, and refusing it would leave the caller waiting for an answer.
+    if (detail::is_number_outside_int(json_obj.at("code"))) {
+        error.code = g_INTERNAL_ERROR;
+    } else {
+        json_obj.at("code").get_to(error.code);
+    }
     // JSON-RPC 2.0 requires `message`, but a peer that omits it or sends it as null has still
     // told us which error occurred. Decoding to an empty message keeps `code` -- the part a
     // caller acts on -- rather than discarding the whole error object.
@@ -366,13 +421,14 @@ inline void from_json(const nlohmann::json& json_obj, JSONRPCResultResponse& res
 struct JSONRPCErrorResponse {
     Error error;                  ///< The error object.
     std::string jsonrpc = "2.0";  ///< JSON-RPC version (always "2.0").
-    std::optional<RequestId> id;  ///< The request ID, or no value when it cannot be determined.
+    /// The request ID, or no value when it cannot be determined. Then `id` is left out, as MCP's
+    /// schema has it; a null id is read as no value.
+    std::optional<RequestId> id;
 };
 
 inline void to_json(nlohmann::json& json_obj, const JSONRPCErrorResponse& resp) {
     json_obj = nlohmann::json::object();
     json_obj["error"] = resp.error;
-    json_obj["id"] = nullptr;
     json_obj["jsonrpc"] = resp.jsonrpc;
     if (resp.id) {
         json_obj["id"] = *resp.id;

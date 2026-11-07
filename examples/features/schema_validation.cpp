@@ -58,6 +58,8 @@ const char* category_name(mcp::SchemaError::Category category) {
             return "eUnsupportedDialect";
         case mcp::SchemaError::Category::eUnresolvedRef:
             return "eUnresolvedRef";
+        case mcp::SchemaError::Category::eUnsupportedPattern:
+            return "eUnsupportedPattern";
     }
     return "unknown";
 }

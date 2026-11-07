@@ -18,10 +18,67 @@ namespace mcp::detail {
  */
 class MCP_API RegexError : public std::invalid_argument {
    public:
-    using std::invalid_argument::invalid_argument;
+    /// Why the pattern was refused.
+    enum class Kind {
+        eInvalid,      ///< Not a regular expression under ECMA-262, with or without Annex B.
+        eUnsupported,  ///< Uses syntax `Regex` does not implement, such as a lookahead.
+        eTooLarge,     ///< Exceeds a limit of `Regex` or of the enclosing `PatternBudget`.
+    };
+
+    /// Construct with the reason @p kind and the description @p message.
+    RegexError(Kind kind, const std::string& message);
+
+    /// Why the pattern was refused.
+    [[nodiscard]] Kind kind() const noexcept { return kind_; }
+
+   private:
+    Kind kind_;
 };
 
 struct RegexProgram;
+class Regex;
+
+/**
+ * @brief Limits the program size of all the patterns compiled on this thread while it is alive,
+ * and collects the patterns that cannot be compiled instead of stopping at the first.
+ *
+ * `Regex` bounds each program, but a schema can hold any number of patterns. Inside a budget,
+ * every `Regex` constructed on the thread is charged its instructions, and one the budget cannot
+ * hold throws a `RegexError` of kind `eTooLarge`. Budgets nest; the innermost one is charged.
+ */
+class MCP_API PatternBudget {
+   public:
+    /// Allows @p max_instructions instructions, in all, to the patterns compiled while this lives.
+    explicit PatternBudget(std::size_t max_instructions) noexcept;
+    ~PatternBudget();
+
+    PatternBudget(const PatternBudget&) = delete;
+    PatternBudget& operator=(const PatternBudget&) = delete;
+    PatternBudget(PatternBudget&&) = delete;
+    PatternBudget& operator=(PatternBudget&&) = delete;
+
+    /**
+     * @brief Compile @p pattern. Inside a budget, a pattern that cannot be compiled is recorded
+     * (see `problem()`) and a pattern that matches nothing is returned in its place, so the
+     * caller can go on to find other problems.
+     * @throws RegexError outside a budget, when the pattern cannot be compiled.
+     */
+    static Regex compile(std::string_view pattern);
+
+    /// What to report for the patterns that could not be compiled: the first invalid one if there
+    /// is one, otherwise the first other problem. Empty when every pattern compiled.
+    [[nodiscard]] const std::optional<RegexError>& problem() const noexcept { return problem_; }
+
+   private:
+    friend class Regex;
+
+    void charge(std::size_t instructions);
+    void record(const RegexError& error);
+
+    std::size_t instructions_left_;
+    std::optional<RegexError> problem_;
+    PatternBudget* outer_;
+};
 
 /**
  * @brief A regular expression for patterns taken from JSON Schema documents (`pattern`,
@@ -54,7 +111,8 @@ class MCP_API Regex {
     static constexpr std::size_t max_program_size = 20000;
 
     /**
-     * @brief Compile @p pattern (UTF-8).
+     * @brief Compile @p pattern (UTF-8), charging its program to the thread's `PatternBudget`
+     * when there is one.
      * @throws RegexError when the pattern cannot be compiled.
      */
     explicit Regex(std::string_view pattern);

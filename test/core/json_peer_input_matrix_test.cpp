@@ -527,11 +527,11 @@ TEST(JsonPeerInputMatrix, DiscoverResult) {
 }
 
 TEST(JsonPeerInputMatrix, ElicitRequestFormParams) {
-    const json baseline = json::parse(R"json({"mode":"form","message":"x","requestedSchema":{}})json");
+    const json baseline = json::parse(R"json({"message":"x","requestedSchema":{}})json");
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
         {"message", R"json("x")json", 0, true, true, true, false},
-        {"mode", R"json("form")json", 0, true, true, true, false},
+        {"mode", R"json("form")json", 0, false, false, true, false},
         {"requestedSchema", R"json({})json", 0, true, false, false, false},
         {"task", R"json({})json", 0, false, false, false, false},
     };
@@ -562,7 +562,7 @@ TEST(JsonPeerInputMatrix, ElicitResult) {
     const json baseline = json::parse(R"json({"action":"accept"})json");
     static const FieldExpect fields[] = {
         {"_meta", R"json({})json", 0, false, false, false, false},
-        {"action", R"json("accept")json", 0, true, false, false, false},
+        {"action", R"json("accept")json", 0, true, true, true, true},
         {"content", R"json({})json", 0, false, false, false, false},
     };
     for (const auto& f : fields) {
@@ -573,10 +573,10 @@ TEST(JsonPeerInputMatrix, ElicitResult) {
 
 TEST(JsonPeerInputMatrix, ElicitationCompleteNotification) {
     const json baseline = json::parse(
-        R"json({"method":"notifications/elicitation/complete","params":{"requestId":1}})json");
+        R"json({"method":"notifications/elicitation/complete","params":{"elicitationId":"x"}})json");
     static const FieldExpect fields[] = {
         {"method", R"json("notifications/elicitation/complete")json", 0, true, true, true, false},
-        {"params", R"json({"requestId":1})json", 0, true, true, true, false},
+        {"params", R"json({"elicitationId":"x"})json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ElicitationCompleteNotification.") + f.key);
@@ -585,9 +585,9 @@ TEST(JsonPeerInputMatrix, ElicitationCompleteNotification) {
 }
 
 TEST(JsonPeerInputMatrix, ElicitationCompleteNotificationParams) {
-    const json baseline = json::parse(R"json({"requestId":1})json");
+    const json baseline = json::parse(R"json({"elicitationId":"x"})json");
     static const FieldExpect fields[] = {
-        {"requestId", R"json(1)json", 1, true, true, true, false},
+        {"elicitationId", R"json("x")json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ElicitationCompleteNotificationParams.") + f.key);
@@ -1830,7 +1830,8 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   CompleteReference: std::variant; from_json dispatches on the 'type' discriminator
 //   ContentBlock: std::variant; from_json dispatches on the 'type' discriminator
 //   CreateMessageResult: no baseline document could be synthesised
-//   ElicitRequest: no baseline document could be synthesised
+//   ElicitAction: an enum; ElicitResult.action covers its decoder
+//   ElicitRequest: its params are the ElicitRequestParams variant
 //   ElicitRequestParams: std::variant; from_json dispatches on mode
 //   EmbeddedResource: no baseline document could be synthesised
 //   InitializeRequest: no baseline document could be synthesised

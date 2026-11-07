@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -515,6 +516,156 @@ TEST_F(StdioTransportTest, PolymorphicThroughBasePointer) {
     transport->close();
 }
 
+TEST_F(StdioTransportTest, LinesLongerThanTheReadChunkArriveIntact) {
+    const std::string first(200000, 'a');
+    const std::string exact_chunk(65535, 'b');
+    const std::string last(70000, 'c');
+    std::istringstream input(first + "\n\n" + exact_chunk + "\n" + last);
+    std::ostringstream output;
+    mcp::StdioTransport transport(io_ctx_.get_executor(), input, output);
+
+    std::vector<std::string> lines;
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            for (int i = 0; i < 4; ++i) {
+                lines.push_back(co_await transport.read_message());
+            }
+        },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    ASSERT_EQ(lines.size(), 4U);
+    EXPECT_EQ(lines[0], first);
+    EXPECT_EQ(lines[1], "");
+    EXPECT_EQ(lines[2], exact_chunk);
+    EXPECT_EQ(lines[3], last);
+}
+
+TEST_F(StdioTransportTest, LineOverTheLimitFailsTheRead) {
+    std::istringstream input("0123456789\n" + std::string(200000, 'x') + "\nnot reached\n");
+    std::ostringstream output;
+    mcp::StdioTransport transport(io_ctx_.get_executor(), input, output);
+    transport.set_max_message_bytes(10);
+
+    std::optional<std::string> at_the_limit;
+    std::string error;
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            at_the_limit = co_await transport.read_message();
+            try {
+                co_await transport.read_message();
+            } catch (const std::runtime_error& failure) {
+                error = failure.what();
+            }
+        },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(at_the_limit, "0123456789");
+    EXPECT_NE(error.find("exceeds 10 bytes"), std::string::npos) << error;
+}
+
+namespace {
+
+/// Input that never ends and counts what is taken from it, until told to end.
+class EndlessLines final : public std::streambuf {
+   public:
+    EndlessLines() { setg(line_.data(), line_.data(), line_.data()); }
+
+    std::size_t taken() const { return taken_.load(); }
+    void finish() { finished_.store(true); }
+
+   protected:
+    int_type underflow() override {
+        if (finished_.load()) {
+            return traits_type::eof();
+        }
+        taken_.fetch_add(line_.size());
+        setg(line_.data(), line_.data(), line_.data() + line_.size());
+        return traits_type::to_int_type(line_[0]);
+    }
+
+   private:
+    std::string line_ = std::string(1023, 'x') + "\n";
+    std::atomic<std::size_t> taken_{0};
+    std::atomic<bool> finished_{false};
+};
+
+}  // namespace
+
+// Nobody calls read_message() here, as when a server stops reading at its in-flight limit.
+TEST_F(StdioTransportTest, ReadAheadStopsWhenNothingTakesTheLines) {
+    EndlessLines lines;
+    std::istream input(&lines);
+    std::ostringstream output;
+    mcp::StdioTransport transport(io_ctx_.get_executor(), input, output);
+
+    bool first_read = false;
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            co_await transport.read_message();
+            first_read = true;
+        },
+        boost::asio::detached);
+    io_ctx_.run();
+    ASSERT_TRUE(first_read);
+
+    // The reader stopped at the limit once the count stops moving, and is past it once the count
+    // is over it.
+    std::size_t seen = 0;
+    while ((lines.taken() != seen || seen == 0) && seen < 20U * 1024U * 1024U) {
+        seen = lines.taken();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    EXPECT_LT(seen, 20U * 1024U * 1024U);
+
+    lines.finish();
+    transport.close();
+}
+
+// Lines taken by read_message() stop counting against the read-ahead limit, so a peer that sends
+// more than the limit in all, one line at a time, is read to the end.
+TEST_F(StdioTransportTest, LinesTakenLeaveRoomForMore) {
+    const std::string payload(64 * 1024, 'x');
+    std::string text;
+    for (int i = 0; i < 300; ++i) {
+        text += R"({"jsonrpc":"2.0","method":"notifications/message","params":{"data":")" + payload +
+                "\"}}\n";
+    }
+    std::istringstream input(text);
+    std::ostringstream output;
+    mcp::StdioTransport transport(io_ctx_.get_executor(), input, output);
+
+    int read = 0;
+    // Reports a reader that stops instead of hanging the test; not a measure of speed.
+    boost::asio::steady_timer guard(io_ctx_, std::chrono::seconds(90));
+    guard.async_wait([&transport](const boost::system::error_code& error) {
+        if (!error) {
+            ADD_FAILURE() << "the reader stopped before the end of the input";
+            transport.close();
+        }
+    });
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            try {
+                for (; read < 300; ++read) {
+                    co_await transport.read_message();
+                }
+            } catch (const std::exception&) {
+                // Closed by the guard.
+            }
+            guard.cancel();
+        },
+        boost::asio::detached);
+    io_ctx_.run();
+    EXPECT_EQ(read, 300);
+    transport.close();
+}
+
 // The protocol channel on this transport is a real process stream, so the tests
 // that distinguish a shared stdout from an owned one have to work at the file
 // descriptor level. POSIX only; the Windows implementation of
@@ -522,6 +673,8 @@ TEST_F(StdioTransportTest, PolymorphicThroughBasePointer) {
 #if !defined(_WIN32)
 
 #include <fcntl.h>
+#include <signal.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 namespace {
@@ -764,5 +917,266 @@ TEST_F(StdioTransportTest, OwnedStdoutStaysPrivateWhenStderrIsClosed) {
     std::filesystem::remove(out);
     std::filesystem::remove(err);
 }
+
+namespace {
+
+/// Points standard input at a pipe that a thread fills with @p text and then ends, and puts the
+/// descriptor back however the test leaves. Declared before the transport, so the transport has
+/// stopped reading by the time the descriptor is put back.
+class PipedStdin {
+   public:
+    explicit PipedStdin(std::string text) : saved_(::dup(STDIN_FILENO)) {
+        std::array<int, 2> ends{-1, -1};
+        if (::pipe(ends.data()) != 0) {
+            ADD_FAILURE() << "pipe() failed";
+            return;
+        }
+        ::dup2(ends[0], STDIN_FILENO);
+        ::close(ends[0]);
+        writer_ = std::thread([fd = ends[1], text = std::move(text)] {
+            // A reader that stopped early closes the pipe: that ends the write, not the process.
+            sigset_t pipe_signal;
+            sigemptyset(&pipe_signal);
+            sigaddset(&pipe_signal, SIGPIPE);
+            pthread_sigmask(SIG_BLOCK, &pipe_signal, nullptr);
+#if defined(__APPLE__)
+            // macOS raises SIGPIPE on the whole process, so the blocked signal is not enough there.
+            ::fcntl(fd, F_SETNOSIGPIPE, 1);
+#endif
+            std::size_t written = 0;
+            while (written < text.size()) {
+                const auto count = ::write(fd, text.data() + written, text.size() - written);
+                if (count <= 0) {
+                    break;
+                }
+                written += static_cast<std::size_t>(count);
+            }
+            ::close(fd);
+        });
+    }
+
+    ~PipedStdin() {
+        ::dup2(saved_, STDIN_FILENO);
+        ::close(saved_);
+        if (writer_.joinable()) {
+            writer_.join();
+        }
+    }
+
+    PipedStdin(const PipedStdin&) = delete;
+    PipedStdin& operator=(const PipedStdin&) = delete;
+
+   private:
+    int saved_;
+    std::thread writer_;
+};
+
+/// Reads every message from a transport on std::cin until the input ends; the error that ended it.
+std::vector<std::string> read_stdin_messages(boost::asio::io_context& io, std::size_t max_message_bytes,
+                                             std::string& ended_by) {
+    std::ostringstream output;
+    mcp::StdioTransport transport(io.get_executor(), std::cin, output);
+    if (max_message_bytes != 0) {
+        transport.set_max_message_bytes(max_message_bytes);
+    }
+    std::vector<std::string> messages;
+    boost::asio::co_spawn(
+        io,
+        [&]() -> mcp::Task<void> {
+            try {
+                for (;;) {
+                    messages.push_back(co_await transport.read_message());
+                }
+            } catch (const std::exception& error) {
+                ended_by = error.what();
+            }
+        },
+        boost::asio::detached);
+    io.run();
+    return messages;
+}
+
+/// Input that is not in its buffer until it is asked for: in_avail() is 0 before the first read.
+class UnbufferedLines final : public std::streambuf {
+   public:
+    explicit UnbufferedLines(std::string text) : text_(std::move(text)) {}
+
+   protected:
+    int_type underflow() override {
+        if (given_ || text_.empty()) {
+            return traits_type::eof();
+        }
+        given_ = true;
+        setg(text_.data(), text_.data(), text_.data() + text_.size());
+        return traits_type::to_int_type(text_[0]);
+    }
+
+   private:
+    std::string text_;
+    bool given_{false};
+};
+
+}  // namespace
+
+// Standard input is read from its descriptor, where the line limit applies as on any stream.
+TEST_F(StdioTransportTest, LineOverTheLimitOnStandardInputFailsTheRead) {
+    PipedStdin input("0123456789\n" + std::string(200000, 'x') + "\nnot reached\n");
+    std::string ended_by;
+    const auto messages = read_stdin_messages(io_ctx_, 10, ended_by);
+    EXPECT_EQ(messages, std::vector<std::string>{"0123456789"});
+    EXPECT_NE(ended_by.find("exceeds 10 bytes"), std::string::npos) << ended_by;
+}
+
+// A last line that the end of input cuts short of its newline is still a message.
+TEST_F(StdioTransportTest, LastLineOfStandardInputNeedsNoNewline) {
+    PipedStdin input("first\nlast");
+    std::string ended_by;
+    const auto messages = read_stdin_messages(io_ctx_, 0, ended_by);
+    EXPECT_EQ(messages, (std::vector<std::string>{"first", "last"}));
+}
+
+// A line longer than one read of the descriptor arrives whole.
+TEST_F(StdioTransportTest, LineLongerThanOneReadOfStandardInputArrivesWhole) {
+    const std::string long_line(200000, 'a');
+    PipedStdin input(long_line + "\nb\n");
+    std::string ended_by;
+    const auto messages = read_stdin_messages(io_ctx_, 0, ended_by);
+    ASSERT_EQ(messages.size(), 2U);
+    EXPECT_EQ(messages[0].size(), long_line.size());
+    EXPECT_EQ(messages[0], long_line);
+    EXPECT_EQ(messages[1], "b");
+}
+
+// A program that gave std::cin a buffer of its own is read through that buffer, not from the
+// descriptor, even when nothing is buffered yet.
+TEST_F(StdioTransportTest, ReplacedStdinBufferIsRead) {
+    PipedStdin descriptor("");
+    UnbufferedLines lines("{\"from\":\"buffer\"}\n");
+    std::streambuf* const original = std::cin.rdbuf(&lines);
+    std::string ended_by;
+    const auto messages = read_stdin_messages(io_ctx_, 0, ended_by);
+    std::cin.rdbuf(original);
+    std::cin.clear();
+    EXPECT_EQ(messages, std::vector<std::string>{"{\"from\":\"buffer\"}"});
+}
+
+// A program that gave std::cout a buffer of its own is written through that buffer, not to the
+// descriptor.
+TEST_F(StdioTransportTest, ReplacedStdoutBufferIsWritten) {
+    std::ostringstream sink;
+    std::streambuf* const original = std::cout.rdbuf(sink.rdbuf());
+    {
+        std::istringstream input;
+        mcp::StdioTransport transport(io_ctx_.get_executor(), input, std::cout);
+        boost::asio::co_spawn(
+            io_ctx_, [&]() -> mcp::Task<void> { co_await transport.write_message(kFramedMessage); },
+            boost::asio::detached);
+        io_ctx_.run();
+    }
+    std::cout.rdbuf(original);
+    EXPECT_EQ(sink.str(), std::string(kFramedMessage) + "\n");
+}
+
+#if defined(__linux__)
+namespace {
+
+/// Points standard output at a one-page pipe that nobody reads, until release() puts the
+/// descriptor back and closes the pipe, which fails a write still waiting on it.
+class StalledStdout {
+   public:
+    StalledStdout() : saved_(::dup(STDOUT_FILENO)) {
+        std::cout.flush();
+        std::fflush(nullptr);
+        std::array<int, 2> ends{-1, -1};
+        if (::pipe(ends.data()) != 0) {
+            ADD_FAILURE() << "pipe() failed";
+            return;
+        }
+        ::fcntl(ends[1], F_SETPIPE_SZ, 4096);
+        capacity_ = ::fcntl(ends[1], F_GETPIPE_SZ);
+        ::dup2(ends[1], STDOUT_FILENO);
+        ::close(ends[1]);
+        read_end_ = ends[0];
+    }
+
+    ~StalledStdout() { release(); }
+
+    StalledStdout(const StalledStdout&) = delete;
+    StalledStdout& operator=(const StalledStdout&) = delete;
+
+    /// Whether the pipe holds all it can.
+    [[nodiscard]] bool full() const {
+        int queued = 0;
+        return read_end_ >= 0 && ::ioctl(read_end_, FIONREAD, &queued) == 0 && queued >= capacity_;
+    }
+
+    void release() {
+        if (saved_ >= 0) {
+            ::dup2(saved_, STDOUT_FILENO);
+            ::close(saved_);
+            saved_ = -1;
+        }
+        if (read_end_ >= 0) {
+            ::close(read_end_);
+            read_end_ = -1;
+        }
+    }
+
+   private:
+    int saved_;
+    int read_end_{-1};
+    int capacity_{0};
+};
+
+}  // namespace
+
+// A write to a peer that stopped reading waits; close() ends that wait, so the handler that wrote
+// can finish. Nothing here may print while standard output is the stalled pipe.
+TEST_F(StdioTransportTest, CloseReleasesAWriteThePeerDoesNotRead) {
+    StalledStdout stalled;
+    bool write_ended = false;
+    bool released_by_guard = false;
+    {
+        std::istringstream input;
+        mcp::StdioTransport transport(io_ctx_.get_executor(), input, std::cout);
+        // Reports a write that close() did not release instead of hanging the test; not a measure
+        // of speed.
+        boost::asio::steady_timer guard(io_ctx_, std::chrono::seconds(90));
+        guard.async_wait([&](const boost::system::error_code& error) {
+            if (!error) {
+                released_by_guard = true;
+                stalled.release();
+            }
+        });
+        boost::asio::co_spawn(
+            io_ctx_,
+            [&]() -> mcp::Task<void> {
+                try {
+                    co_await transport.write_message(std::string(1U << 20U, 'x'));
+                } catch (const std::exception&) {
+                    // Closed before the peer took it.
+                }
+                write_ended = true;
+                guard.cancel();
+            },
+            boost::asio::detached);
+        boost::asio::co_spawn(
+            io_ctx_,
+            [&]() -> mcp::Task<void> {
+                auto executor = co_await boost::asio::this_coro::executor;
+                while (!stalled.full() && !released_by_guard) {
+                    boost::asio::steady_timer tick(executor, std::chrono::milliseconds(1));
+                    co_await tick.async_wait(boost::asio::use_awaitable);
+                }
+                transport.close();
+            },
+            boost::asio::detached);
+        io_ctx_.run();
+        stalled.release();
+    }
+    EXPECT_TRUE(write_ended);
+    EXPECT_FALSE(released_by_guard) << "close() left the write waiting";
+}
+#endif  // defined(__linux__)
 
 #endif  // !defined(_WIN32)

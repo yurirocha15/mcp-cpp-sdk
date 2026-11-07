@@ -745,7 +745,8 @@ TEST_F(SessionManagerTest, ProtocolVersionStateIsSafeAcrossConnectionStrands) {
 
     for (std::size_t index = 0; index < request_count; ++index) {
         EXPECT_EQ(errors[index], nullptr) << "request " << index;
-        EXPECT_TRUE(responses[index].status == 200 || responses[index].status == 400)
+        EXPECT_TRUE(responses[index].status == 200 || responses[index].status == 400 ||
+                    responses[index].status == 405)
             << "request " << index << " returned " << responses[index].status;
     }
 }
@@ -1500,6 +1501,31 @@ TEST_F(SessionManagerTest, StatelessNotificationReturns202WithoutSession) {
 
     EXPECT_EQ(notification_response.status, 202);
     EXPECT_TRUE(notification_response.session_id.empty());
+}
+
+// A server either answers GET with an SSE stream or with 405, so a client can tell which it got.
+TEST_F(SessionManagerTest, GetWithoutAResumePointIsRefused) {
+    const unsigned short port = 19399;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            auto init =
+                co_await do_initialize(io_ctx_.get_executor(), port, 1, "2025-11-25", "2025-11-25");
+            response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp", {},
+                                            init.session_id, std::string("2025-11-25"));
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(response.status, 405);
+    EXPECT_EQ(response.allow, "POST, DELETE");
 }
 
 TEST_F(SessionManagerTest, StatelessRejectsGetAndDeleteWithPostOnlyAllowHeader) {
