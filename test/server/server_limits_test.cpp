@@ -591,6 +591,9 @@ TEST_F(ServerLimitsTest, SubscriptionUrisAreLimitedInBytes) {
 TEST_F(ServerLimitsTest, SubscriptionsOfASessionAreLimited) {
     run([&]() -> mcp::Task<void> {
         co_await initialized();
+        // Each request is answered with one message. Counting them keeps the wait cheap, where
+        // looking for an answer would read every message written so far.
+        const auto written_before = written_.size();
         for (int id = 1; id <= 4097; ++id) {
             transport_->enqueue_message(json{{"jsonrpc", "2.0"},
                                              {"id", id},
@@ -598,7 +601,9 @@ TEST_F(ServerLimitsTest, SubscriptionsOfASessionAreLimited) {
                                              {"params", {{"uri", "mem://" + std::to_string(id)}}}}
                                             .dump());
             if (id % 256 == 0 || id == 4097) {
-                co_await wait_until([this, id] { return answer_to(id) != nullptr; });
+                co_await wait_until([this, written_before, id] {
+                    return written_.size() >= written_before + static_cast<std::size_t>(id);
+                });
             }
         }
     });
