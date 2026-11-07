@@ -282,6 +282,13 @@ inline std::string_view protocol_header_value(const StringRequest::const_iterato
     return {header_it->value().data(), header_it->value().size()};
 }
 
+/// Whether a request on a session may name @p version in MCP-Protocol-Version: the version the
+/// session negotiated, or any other version initialize can negotiate, as the TypeScript, Go and
+/// Rust SDKs accept.
+inline bool session_accepts_version(std::string_view version, std::string_view negotiated) {
+    return version == negotiated || is_legacy_protocol_version(version);
+}
+
 inline StringResponse make_json_response(const StringRequest& request, http::status status_code,
                                          std::string body) {
     StringResponse response{status_code, request.version()};
@@ -1727,8 +1734,9 @@ struct StreamableHttpSessionManager::Impl {
 
         if (!is_initialize) {
             if (protocol_header_it != request.end() &&
-                detail_session_mgr::protocol_header_value(protocol_header_it) !=
-                    session->protocol_version()) {
+                !detail_session_mgr::session_accepts_version(
+                    detail_session_mgr::protocol_header_value(protocol_header_it),
+                    session->protocol_version())) {
                 co_return detail_session_mgr::make_error_response(
                     request, http::status::bad_request, "Invalid MCP-Protocol-Version header");
             }
@@ -1819,8 +1827,9 @@ struct StreamableHttpSessionManager::Impl {
 
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         if (protocol_header_it != request.end() &&
-            detail_session_mgr::protocol_header_value(protocol_header_it) !=
-                session->protocol_version()) {
+            !detail_session_mgr::session_accepts_version(
+                detail_session_mgr::protocol_header_value(protocol_header_it),
+                session->protocol_version())) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid MCP-Protocol-Version header");
         }
@@ -1850,8 +1859,9 @@ struct StreamableHttpSessionManager::Impl {
 
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         if (protocol_header_it != request.end() &&
-            detail_session_mgr::protocol_header_value(protocol_header_it) !=
-                session->protocol_version()) {
+            !detail_session_mgr::session_accepts_version(
+                detail_session_mgr::protocol_header_value(protocol_header_it),
+                session->protocol_version())) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                               "Invalid MCP-Protocol-Version header");
         }
