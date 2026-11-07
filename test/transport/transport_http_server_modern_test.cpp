@@ -97,17 +97,17 @@ json call_tool(const json& id, const std::string& name, json arguments = json::o
     return make_modern_request(id, "tools/call", {{"name", name}, {"arguments", std::move(arguments)}});
 }
 
-/// Waits, a millisecond at a time, until @p condition holds. Gives up after 30 s so a broken
-/// rendezvous fails the test instead of hanging the run.
+/// Waits until @p condition holds, checking it every @p interval. It sets no time limit of its own:
+/// sanitizer builds run many times slower, so a wait that never ends is left to the test runner's
+/// timeout.
 template <typename Condition>
-mcp::Task<bool> wait_until(Condition condition) {
+mcp::Task<void> wait_until(Condition condition,
+                           std::chrono::milliseconds interval = std::chrono::milliseconds(1)) {
     auto executor = co_await asio::this_coro::executor;
-    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-    while (!condition() && std::chrono::steady_clock::now() < give_up) {
-        asio::steady_timer timer(executor, std::chrono::milliseconds(1));
+    while (!condition()) {
+        asio::steady_timer timer(executor, interval);
         co_await timer.async_wait(asio::use_awaitable);
     }
-    co_return condition();
 }
 
 /// A transport that forwards everything to an HttpServerTransport, and hands it over through
@@ -153,25 +153,27 @@ class HttpServerModernTest : public ::testing::Test {
             json{{"type", "object"},
                  {"properties", {{"region", {{"type", "string"}, {"x-mcp-header", "Region"}}}}}},
             [](json args) -> mcp::Task<json> { co_return args; });
-        server_->add_tool<json, json>("rendezvous", "Returns once two calls are in flight",
-                                      json{{"type", "object"}}, [this](json args) -> mcp::Task<json> {
-                                          rendezvous_arrivals_.fetch_add(1);
-                                          const bool met = co_await wait_until(
-                                              [this] { return rendezvous_arrivals_.load() >= 2; });
-                                          co_return json{{"met", met}, {"who", args.value("who", "")}};
-                                      });
         server_->add_tool<json, json>(
-            "held", "Returns once released", json{{"type", "object"}},
-            [this](json /*args*/) -> mcp::Task<json> {
-                held_started_.store(true);
-                const bool released = co_await wait_until([this] { return release_held_.load(); });
-                co_return json{{"released", released}};
+            "rendezvous", "Returns once two calls are in flight", json{{"type", "object"}},
+            [this](json args) -> mcp::Task<json> {
+                rendezvous_arrivals_.fetch_add(1);
+                co_await wait_until([this] { return rendezvous_arrivals_.load() >= 2; });
+                co_return json{{"met", rendezvous_arrivals_.load() >= 2},
+                               {"who", args.value("who", "")}};
             });
+        server_->add_tool<json, json>("held", "Returns once released", json{{"type", "object"}},
+                                      [this](json /*args*/) -> mcp::Task<json> {
+                                          held_started_.store(true);
+                                          co_await wait_until([this] { return release_held_.load(); });
+                                          co_return json{{"released", release_held_.load()}};
+                                      });
         server_->add_tool<json, json>("until_cancelled", "Returns once cancelled",
                                       json{{"type", "object"}},
                                       [this](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
                                           waiting_for_cancel_.fetch_add(1);
-                                          co_await wait_until([&ctx] { return ctx.is_cancelled(); });
+                                          // One test keeps 256 of these waiting at once.
+                                          co_await wait_until([&ctx] { return ctx.is_cancelled(); },
+                                                              std::chrono::milliseconds(10));
                                           if (ctx.is_cancelled()) {
                                               cancelled_.fetch_add(1);
                                           }
@@ -513,7 +515,8 @@ TEST_F(HttpServerModernTest, ClientThatLeavesCancelsItsHandler) {
         co_await wait_until([this] { return waiting_for_cancel_.load() == 1; });
         beast::error_code ignored;
         (void)client->socket().close(ignored);
-        cancelled = co_await wait_until([this] { return cancelled_.load() == 1; });
+        co_await wait_until([this] { return cancelled_.load() == 1; });
+        cancelled = cancelled_.load() == 1;
     });
     EXPECT_TRUE(cancelled);
 }
