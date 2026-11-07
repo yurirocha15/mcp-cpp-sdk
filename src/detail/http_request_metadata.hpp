@@ -33,6 +33,13 @@ inline std::optional<std::string_view> http_header(const StringRequest& request,
     return std::string_view(header->value().data(), header->value().size());
 }
 
+/// Whether a GET may open a server-sent event stream: the client must list text/event-stream in
+/// Accept. Like the TypeScript SDK, a GET that does not is answered 406.
+inline bool get_accepts_event_stream(const StringRequest& request) {
+    const auto accept = http_header(request, "Accept");
+    return accept.has_value() && accept->find("text/event-stream") != std::string_view::npos;
+}
+
 /// Whether an HTTP POST body is a request of protocol revision 2026-07-28: its method is not
 /// initialize and either its `_meta` names a protocol version, its MCP-Protocol-Version header names
 /// one that is not negotiated by initialize, or it is server/discover, which no earlier revision

@@ -217,6 +217,28 @@ mcp::Task<Reply> send(const asio::any_io_executor& executor, unsigned short port
     co_return reply;
 }
 
+/// The status of a GET on @p session_id whose Accept header is @p accept, or has none when empty.
+mcp::Task<unsigned> get_status(const asio::any_io_executor& executor, unsigned short port,
+                               std::string session_id, std::string accept) {
+    beast::tcp_stream stream(executor);
+    auto resolver = asio::ip::tcp::resolver(executor);
+    auto endpoints =
+        co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
+    co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+    http::request<http::empty_body> request{http::verb::get, "/mcp", 11};
+    request.set(http::field::host, "127.0.0.1");
+    if (!accept.empty()) {
+        request.set(http::field::accept, accept);
+    }
+    request.set("MCP-Protocol-Version", g_version);
+    request.set("Mcp-Session-Id", session_id);
+    co_await http::async_write(stream, request, asio::use_awaitable);
+    beast::flat_buffer buffer;
+    http::response<http::string_body> response;
+    co_await http::async_read(stream, buffer, response, asio::use_awaitable);
+    co_return response.result_int();
+}
+
 json initialize_request() {
     return {{"jsonrpc", "2.0"},
             {"id", 1},
@@ -596,6 +618,48 @@ TEST_F(LegacyStreamTest, ClientCallsOverlapAndGetTheServersRequestsAndNotificati
     EXPECT_EQ(first, "done-1");
     EXPECT_EQ(second, "done-2");
     EXPECT_TRUE(notified);
+}
+
+// A GET opens an event stream only for a client that accepts one; any other is answered 406.
+TEST_F(LegacyStreamTest, SessionManagerRefusesAGetThatDoesNotAcceptEventStreams) {
+    constexpr unsigned short port = 19456;
+    auto manager = make_manager(port);
+    unsigned json_only = 0;
+    unsigned no_accept = 0;
+    run(
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            const auto session = co_await start_session(executor, port);
+            json_only = co_await get_status(executor, port, session, "application/json");
+            no_accept = co_await get_status(executor, port, session, "");
+        },
+        [&] { manager->close(); });
+
+    EXPECT_EQ(json_only, 406U);
+    EXPECT_EQ(no_accept, 406U);
+}
+
+TEST_F(LegacyStreamTest, HttpServerTransportRefusesAGetThatDoesNotAcceptEventStreams) {
+    auto transport = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    const auto port = transport->port();
+    auto server = make_server(shared_);
+    asio::co_spawn(io_ctx_, transport->listen(), asio::detached);
+    asio::co_spawn(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server->run(transport, io_ctx_.get_executor()); },
+        asio::detached);
+    unsigned json_only = 0;
+    unsigned no_accept = 0;
+    run(
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            const auto session = co_await start_session(executor, port);
+            json_only = co_await get_status(executor, port, session, "application/json");
+            no_accept = co_await get_status(executor, port, session, "");
+        },
+        [&] { transport->close(); });
+
+    EXPECT_EQ(json_only, 406U);
+    EXPECT_EQ(no_accept, 406U);
 }
 
 }  // namespace

@@ -1051,6 +1051,10 @@ struct HttpServerTransport::Impl {
             const auto not_found = session_not_found();
             co_return make_error_response(request, not_found.status, not_found.error_message);
         }
+        if (!detail::get_accepts_event_stream(request)) {
+            co_return make_error_response(request, http::status::not_acceptable,
+                                          "Not Acceptable: the client must accept text/event-stream");
+        }
 
         auto signal = std::make_shared<boost::asio::steady_timer>(strand);
         signal->expires_at(std::chrono::steady_clock::time_point::max());
