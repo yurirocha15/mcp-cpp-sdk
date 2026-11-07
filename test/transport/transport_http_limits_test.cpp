@@ -229,6 +229,47 @@ TEST_F(SessionLimitsTest, InitializeThatFailsKeepsNoSession) {
     EXPECT_EQ(notification.status, 400u);
 }
 
+// The server's initialize result may nest deeper than a peer's message may: the session its
+// client was given stays.
+TEST(SessionStart, DeeplyNestedInitializeResultKeepsTheSession) {
+    asio::io_context io;
+    const unsigned short port = free_port();
+    mcp::StreamableHttpSessionManager manager(
+        io.get_executor(), "127.0.0.1", port, [](const asio::any_io_executor&) {
+            json nested = json::object();
+            for (int level = 0; level < 200; ++level) {
+                nested = json{{"n", std::move(nested)}};
+            }
+            mcp::ServerCapabilities caps;
+            caps.experimental = std::move(nested);
+            return std::make_unique<mcp::Server>(mcp::Implementation{"deep", "1.0"}, caps);
+        });
+    Reply initialized;
+    Reply pinged;
+    std::size_t sessions = 0;
+    asio::co_spawn(io, manager.listen(), asio::detached);
+    asio::co_spawn(
+        io,
+        [&]() -> mcp::Task<void> {
+            try {
+                initialized =
+                    co_await send(io.get_executor(), port, make_initialize_request("1").dump(), {});
+                sessions = manager.session_count();
+                pinged =
+                    co_await send(io.get_executor(), port, ping().dump(), session_header(initialized));
+            } catch (const std::exception& error) {
+                ADD_FAILURE() << error.what();
+            }
+            manager.close();
+        },
+        asio::detached);
+    io.run();
+    EXPECT_EQ(initialized.status, 200u);
+    ASSERT_TRUE(initialized.session_id.has_value());
+    EXPECT_EQ(sessions, 1u);
+    EXPECT_EQ(pinged.status, 200u) << pinged.body;
+}
+
 TEST_F(SessionLimitsTest, IdleSessionEnds) {
     manager_.set_session_limits({10, std::chrono::milliseconds(40)});
     std::size_t before = 0;

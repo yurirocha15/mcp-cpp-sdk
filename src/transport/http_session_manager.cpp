@@ -1149,9 +1149,17 @@ struct StreamableHttpSessionManager::Impl {
                     break;
                 }
                 if (!session->established.load(std::memory_order_acquire)) {
-                    const auto parsed = detail::parse_peer_json(*message);
-                    session->established.store(parsed.is_object() && parsed.contains("result"),
-                                               std::memory_order_release);
+                    // The server's own message, read without the depth limit on peer input: an
+                    // initialize result nested deeper than a peer may send still establishes the
+                    // session its client was given.
+                    bool answered = false;
+                    if (const auto envelope = detail::scan_jsonrpc_envelope(*message)) {
+                        answered = envelope->has_result;
+                    } else {
+                        const auto parsed = detail::parse_peer_json(*message);
+                        answered = parsed.is_object() && parsed.contains("result");
+                    }
+                    session->established.store(answered, std::memory_order_release);
                 }
                 dispatch_response_to_pending(session.get(), std::move(*message),
                                              json_only_mode->load(std::memory_order_acquire));

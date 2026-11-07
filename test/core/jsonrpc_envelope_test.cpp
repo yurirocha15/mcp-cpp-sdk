@@ -15,6 +15,7 @@ TEST(JsonRpcEnvelopeTest, FindsTheIdOfAResultResponse) {
     ASSERT_TRUE(scan.has_value());
     EXPECT_EQ(scan->id, "7");
     EXPECT_TRUE(scan->has_result_or_error);
+    EXPECT_TRUE(scan->has_result);
 }
 
 TEST(JsonRpcEnvelopeTest, FindsTheIdOfAnErrorResponse) {
@@ -23,6 +24,7 @@ TEST(JsonRpcEnvelopeTest, FindsTheIdOfAnErrorResponse) {
     ASSERT_TRUE(scan.has_value());
     EXPECT_EQ(scan->id, R"("req-1")");
     EXPECT_TRUE(scan->has_result_or_error);
+    EXPECT_FALSE(scan->has_result);
 }
 
 TEST(JsonRpcEnvelopeTest, ReportsNoIdForANotification) {
@@ -125,5 +127,6 @@ TEST(JsonRpcEnvelopeTest, AgreesWithTheFullParserOnServerMessages) {
         }
         EXPECT_EQ(scan->has_result_or_error, message.contains("result") || message.contains("error"))
             << wire;
+        EXPECT_EQ(scan->has_result, message.contains("result")) << wire;
     }
 }
