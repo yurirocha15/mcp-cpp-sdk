@@ -41,6 +41,8 @@ ALLOWED_USES: dict[tuple[str, str], int] = {
     ("include/mcp/protocol/capabilities.hpp", "is_supported_protocol_version"): 1,
     # Every version the SDK knows is a valid pin.
     ("src/client/client.cpp", "is_supported_protocol_version"): 1,
+    # A version the SDK does not implement is answered -32022 before other headers are checked.
+    ("src/detail/http_request_metadata.hpp", "is_supported_protocol_version"): 1,
     # The versions named before Server::run() says which it serves: all of them.
     ("src/transport/http_server.cpp", "g_SUPPORTED_PROTOCOL_VERSIONS"): 2,
 }
@@ -49,7 +51,7 @@ RETIRED_CODES = ("-32002", "-32042")
 
 # (path, code) -> number of literals allowed outside comments.
 ALLOWED_CODES: dict[tuple[str, str], int] = {
-    ("include/mcp/protocol/base.hpp", "-32002"): 1,  # g_CONNECTION_CLOSED
+    ("include/mcp/protocol/base.hpp", "-32002"): 1,  # g_RESOURCE_NOT_FOUND
 }
 
 _COMMENT_OR_STRING = re.compile(
