@@ -74,50 +74,85 @@ class DescriptorHog {
     std::vector<int> held_;
 };
 
-/// Connects while the server cannot accept, frees the descriptors, and returns the status the
-/// server gives the connection that waited.
-mcp::Task<unsigned int> status_after_exhaustion(asio::any_io_executor executor, unsigned short port) {
-    auto stream = std::make_shared<beast::tcp_stream>(executor);
-    {
-        DescriptorHog hog(1);
-        co_await stream->async_connect(
-            asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port), asio::use_awaitable);
-        // The accept loop runs into the limit in this time.
-        asio::steady_timer pause(executor, std::chrono::milliseconds(50));
-        co_await pause.async_wait(asio::use_awaitable);
-    }
+/// Sends a request that is not JSON on @p stream and returns the status of the answer.
+mcp::Task<unsigned int> status_of_a_request(beast::tcp_stream& stream) {
     http::request<http::string_body> request{http::verb::post, "/mcp", 11};
     request.set(http::field::host, "127.0.0.1");
     request.set(http::field::content_type, "application/json");
     request.set(http::field::accept, "application/json, text/event-stream");
     request.body() = "not json";
     request.prepare_payload();
-    co_await http::async_write(*stream, request, asio::use_awaitable);
+    co_await http::async_write(stream, request, asio::use_awaitable);
     beast::flat_buffer buffer;
     http::response<http::string_body> response;
     // Only a guard against a hang, for a server that stopped accepting.
-    stream->expires_after(std::chrono::seconds(10));
-    co_await http::async_read(*stream, buffer, response, asio::use_awaitable);
+    stream.expires_after(std::chrono::seconds(10));
+    co_await http::async_read(stream, buffer, response, asio::use_awaitable);
     co_return response.result_int();
 }
 
+/// What the server answered around a moment without descriptors: the connection that waited
+/// through it, and one made afterwards. A status of 0 means the exchange failed, and @c error
+/// says how.
+struct Answers {
+    unsigned int waited{0};
+    std::string waited_error;
+    unsigned int afterwards{0};
+    std::string afterwards_error;
+};
+
+/// Connects while the server cannot accept, frees the descriptors, then sends a request on that
+/// connection and on a new one.
+mcp::Task<Answers> exhaust_and_ask(asio::any_io_executor executor, unsigned short port) {
+    const asio::ip::tcp::endpoint endpoint(asio::ip::make_address("127.0.0.1"), port);
+    Answers answers;
+    beast::tcp_stream waiting(executor);
+    {
+        DescriptorHog hog(1);
+        co_await waiting.async_connect(endpoint, asio::use_awaitable);
+        // The accept loop runs into the limit in this time.
+        asio::steady_timer pause(executor, std::chrono::milliseconds(50));
+        co_await pause.async_wait(asio::use_awaitable);
+    }
+    try {
+        answers.waited = co_await status_of_a_request(waiting);
+    } catch (const std::exception& error) {
+        answers.waited_error = error.what();
+    }
+    try {
+        beast::tcp_stream fresh(executor);
+        co_await fresh.async_connect(endpoint, asio::use_awaitable);
+        answers.afterwards = co_await status_of_a_request(fresh);
+    } catch (const std::exception& error) {
+        answers.afterwards_error = error.what();
+    }
+    co_return answers;
+}
+
 template <typename Listener>
-unsigned int run_exhaustion(asio::io_context& io, Listener& listener, unsigned short port) {
-    unsigned int status = 0;
+void expect_accepting_after_exhaustion(asio::io_context& io, Listener& listener, unsigned short port) {
+    Answers answers;
     asio::co_spawn(io, listener.listen(), asio::detached);
     asio::co_spawn(
         io,
         [&]() -> mcp::Task<void> {
             try {
-                status = co_await status_after_exhaustion(io.get_executor(), port);
-            } catch (const std::exception&) {
-                status = 0;
+                answers = co_await exhaust_and_ask(io.get_executor(), port);
+            } catch (const std::exception& error) {
+                ADD_FAILURE() << "connecting while descriptors ran out failed: " << error.what();
             }
             listener.close();
         },
         asio::detached);
     io.run();
-    return status;
+
+    // The accept loop still runs: a connection made afterwards is served.
+    EXPECT_EQ(answers.afterwards, 400U) << answers.afterwards_error;
+#if !defined(__APPLE__)
+    // The connection that waited is served too. macOS drops a pending connection that accept()
+    // cannot give a descriptor, so there it is reset instead.
+    EXPECT_EQ(answers.waited, 400U) << answers.waited_error;
+#endif
 }
 
 unsigned short free_port() {
@@ -132,7 +167,7 @@ unsigned short free_port() {
 TEST(AcceptRetry, HttpServerTransportOutlivesRunningOutOfDescriptors) {
     asio::io_context io;
     mcp::HttpServerTransport transport(io.get_executor(), "127.0.0.1", 0);
-    EXPECT_EQ(run_exhaustion(io, transport, transport.port()), 400u);
+    expect_accepting_after_exhaustion(io, transport, transport.port());
 }
 
 TEST(AcceptRetry, SessionManagerOutlivesRunningOutOfDescriptors) {
@@ -143,7 +178,7 @@ TEST(AcceptRetry, SessionManagerOutlivesRunningOutOfDescriptors) {
             return std::make_unique<mcp::Server>(mcp::Implementation{"accept", "1.0"},
                                                  mcp::ServerCapabilities{});
         });
-    EXPECT_EQ(run_exhaustion(io, manager, port), 400u);
+    expect_accepting_after_exhaustion(io, manager, port);
 }
 
 #endif
