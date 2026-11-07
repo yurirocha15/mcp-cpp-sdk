@@ -4,5 +4,4 @@
 # Every core client scenario is still executed. Unsupported scenarios stay
 # visible here so CI catches both new regressions and stale entries after fixes.
 client: []
-server:
-  - server-sse-multiple-streams
+server: []

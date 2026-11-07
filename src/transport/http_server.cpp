@@ -591,8 +591,11 @@ struct HttpServerTransport::Impl {
                                        "Invalid MCP-Protocol-Version header");
         }
 
+        // Besides the version the session negotiated, any version initialize can negotiate is
+        // accepted, as the TypeScript, Go and Rust SDKs do; the session keeps its own version.
         if (protocol_header_it == request.end() ||
-            header_value(protocol_header_it) == negotiated_protocol_version) {
+            header_value(protocol_header_it) == negotiated_protocol_version ||
+            is_legacy_protocol_version(header_value(protocol_header_it))) {
             return std::nullopt;
         }
 

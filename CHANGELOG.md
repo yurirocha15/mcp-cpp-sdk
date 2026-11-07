@@ -289,6 +289,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Changed
 
+- On a session, both HTTP server transports accept an `MCP-Protocol-Version`
+  header naming any version `initialize` can negotiate, not only the session's
+  own, as the TypeScript, Go and Rust SDKs do; another value is still answered
+  `400`. The conformance scenario `server-sse-multiple-streams`, which sends
+  2025-03-26 on a 2025-11-25 session, now passes.
 - Middleware also runs for `resources/subscribe`, `resources/unsubscribe` and
   `completion/complete`, so `make_auth_middleware()` guards them too.
 - `GET` on the MCP endpoint within a session opens the session's SSE stream,
