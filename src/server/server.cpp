@@ -1321,18 +1321,17 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
         };
     }
 
-    return {*transport,
-            [impl = shared_from_this(), session, epoch, cancelled](
-                std::string method, std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
-                if (session && Impl::session_epoch(*session) != epoch) {
-                    throw std::runtime_error("the client ended the session this request belongs to");
-                }
-                return impl->send_request(cancelled, method, params);
-            },
-            std::move(cancelled),
-            std::move(progress_token),
-            &log_level,
-            std::move(message_sender)};
+    // Built before the list below moves `cancelled`, so the ask holds the flag whatever order the
+    // arguments are built in.
+    auto ask = [impl = shared_from_this(), session, epoch, cancelled](
+                   std::string method, std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
+        if (session && Impl::session_epoch(*session) != epoch) {
+            throw std::runtime_error("the client ended the session this request belongs to");
+        }
+        return impl->send_request(cancelled, method, params);
+    };
+    return Context(*transport, std::move(ask), std::move(cancelled), std::move(progress_token),
+                   &log_level, std::move(message_sender));
 }
 
 // Invalid parameter decoding is reported as -32602. Exceptions raised after decoding are reported
