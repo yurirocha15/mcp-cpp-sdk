@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include "../test_utils.hpp"
+
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
@@ -27,7 +29,8 @@ class E2EIntegrationTest : public ::testing::Test {
         client_info_ = std::move(client_info);
         client_caps_ = std::move(client_caps);
 
-        client_ = std::make_unique<mcp::Client>(client_transport, io_ctx_.get_executor());
+        client_ = std::make_unique<mcp::Client>(client_transport, io_ctx_.get_executor(),
+                                                legacy_client_options());
         server_transport_ = server_transport;
     }
 
@@ -58,7 +61,7 @@ TEST_F(E2EIntegrationTest, InitializeAndPingSession) {
 
             // Initialize client
             auto init_res = co_await client_->connect(client_info_, client_caps_);
-            EXPECT_EQ(init_res.serverInfo.name, "test-server");
+            EXPECT_EQ(init_res.serverInfo->name, "test-server");
 
             // Ping the server
             co_await client_->ping();

@@ -27,7 +27,7 @@
 namespace {
 
 nlohmann::json make_initialize_result() {
-    return {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+    return {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
             {"capabilities", nlohmann::json::object()},
             {"serverInfo", {{"name", "test-server"}, {"version", "1.0"}}}};
 }
@@ -300,7 +300,7 @@ TEST_F(ClientCoreTest, SendRequestAddsToMapAndReturnsResult) {
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     nlohmann::json result;
     boost::asio::co_spawn(
@@ -325,7 +325,7 @@ TEST_F(ClientCoreTest, SendRequestAddsToMapAndReturnsResult) {
 
 TEST_F(ClientCoreTest, RequestsFailImmediatelyBeforeConnect) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     EXPECT_THROW(static_cast<void>(client.send_request("ping", std::nullopt)), mcp::McpError);
     EXPECT_THROW(static_cast<void>(client.send_notification("notifications/test", std::nullopt)),
@@ -345,9 +345,9 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
-    mcp::InitializeResult init_result;
+    mcp::ConnectResult init_result;
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
@@ -367,7 +367,7 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
     EXPECT_EQ(first["method"], "initialize");
     EXPECT_TRUE(first.contains("id"));
     EXPECT_EQ(first["jsonrpc"], "2.0");
-    EXPECT_EQ(first["params"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(first["params"]["protocolVersion"], std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
     EXPECT_EQ(first["params"]["clientInfo"]["name"], "test-client");
     EXPECT_EQ(first["params"]["clientInfo"]["version"], "0.1");
 
@@ -376,9 +376,9 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
     EXPECT_FALSE(second.contains("id"));
     EXPECT_EQ(second["jsonrpc"], "2.0");
 
-    EXPECT_EQ(init_result.protocolVersion, std::string(mcp::g_LATEST_PROTOCOL_VERSION));
-    EXPECT_EQ(init_result.serverInfo.name, "test-server");
-    EXPECT_EQ(init_result.serverInfo.version, "1.0");
+    EXPECT_EQ(init_result.protocolVersion, std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+    EXPECT_EQ(init_result.serverInfo->name, "test-server");
+    EXPECT_EQ(init_result.serverInfo->version, "1.0");
 }
 
 TEST_F(ClientCoreTest, NullIdErrorDoesNotStopReadLoop) {
@@ -401,8 +401,8 @@ TEST_F(ClientCoreTest, NullIdErrorDoesNotStopReadLoop) {
                 .dump());
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
-    mcp::InitializeResult result;
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
+    mcp::ConnectResult result;
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
@@ -413,7 +413,7 @@ TEST_F(ClientCoreTest, NullIdErrorDoesNotStopReadLoop) {
 
     io_ctx_.run();
 
-    EXPECT_EQ(result.serverInfo.name, "test-server");
+    EXPECT_EQ(result.serverInfo->name, "test-server");
 }
 
 TEST_F(ClientCoreTest, SendRequestErrorResponseThrows) {
@@ -432,7 +432,7 @@ TEST_F(ClientCoreTest, SendRequestErrorResponseThrows) {
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     std::exception_ptr captured_ex;
     boost::asio::co_spawn(
@@ -476,7 +476,7 @@ TEST_F(ClientCoreTest, SendNotificationDoesNotExpectResponse) {
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     boost::asio::co_spawn(
         io_ctx_,
@@ -522,7 +522,7 @@ TEST_F(ClientCoreTest, MultipleRequestsDispatchCorrectly) {
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     nlohmann::json result_a;
     nlohmann::json result_b;
@@ -569,7 +569,7 @@ TEST_F(ClientCoreTest, ReadLoopIgnoresServerNotifications) {
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     nlohmann::json result;
     boost::asio::co_spawn(
@@ -597,7 +597,7 @@ TEST_F(ClientCoreTest, PendingRequestCountReflectsInFlightRequests) {
 
     std::size_t count_during_flight = 0;
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     raw_transport->set_on_write([raw_transport, &count_during_flight, &client](std::string_view msg) {
         auto json_msg = nlohmann::json::parse(msg);
@@ -655,9 +655,9 @@ TEST_F(ClientCoreTest, ConnectReturnsServerCapabilities) {
             }
         });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
-    mcp::InitializeResult init_result;
+    mcp::ConnectResult init_result;
     boost::asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
@@ -671,8 +671,8 @@ TEST_F(ClientCoreTest, ConnectReturnsServerCapabilities) {
 
     io_ctx_.run();
 
-    EXPECT_EQ(init_result.protocolVersion, std::string(mcp::g_LATEST_PROTOCOL_VERSION));
-    EXPECT_EQ(init_result.serverInfo.name, "test-server");
+    EXPECT_EQ(init_result.protocolVersion, std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+    EXPECT_EQ(init_result.serverInfo->name, "test-server");
     ASSERT_TRUE(init_result.instructions.has_value());
     EXPECT_EQ(*init_result.instructions, "Welcome to the test server");
     ASSERT_TRUE(init_result.capabilities.tools.has_value());
@@ -699,7 +699,7 @@ TEST_F(ClientCoreTest, PingSendsRequestAndReceivesResponse) {
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     bool ping_completed = false;
     boost::asio::co_spawn(
@@ -734,7 +734,7 @@ TEST_F(ClientCoreTest, RequestTimeoutThrowsStructuredMcpError) {
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
     std::optional<int> error_code;
 
     boost::asio::co_spawn(
@@ -761,7 +761,7 @@ TEST_F(ClientCoreTest, RequestTimeoutThrowsStructuredMcpError) {
 
 TEST_F(ClientCoreTest, RequestTimeoutIncludesTimeQueuedInTransportWrite) {
     auto transport = std::make_shared<BlockingRequestWriteTransport>(io_ctx_.get_executor());
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     std::optional<int> error_code;
     bool request_completed = false;
@@ -804,7 +804,7 @@ TEST_F(ClientCoreTest, RequestTimeoutIncludesTimeQueuedInTransportWrite) {
 
 TEST_F(ClientCoreTest, TimedOutQueuedRequestIsNotTransmittedLater) {
     auto transport = std::make_shared<QueuedWriteTransport>(io_ctx_.get_executor());
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     std::optional<int> error_code;
     std::exception_ptr notification_error;
@@ -862,7 +862,7 @@ TEST_F(ClientCoreTest, RemoteErrorPreservesJsonRpcData) {
         raw_transport->enqueue_message(response.dump());
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
     std::optional<mcp::Error> captured_error;
 
     boost::asio::co_spawn(
@@ -891,6 +891,7 @@ TEST_F(ClientCoreTest, ImmediateResponseCannotBeLostBeforeWaitStarts) {
     mcp::ClientOptions client_options;
     // Longer than the watchdog, so a lost response is reported by the watchdog.
     client_options.request_timeout = g_release_guard;
+    client_options.protocol = mcp::ClientProtocol::Legacy();  // the scripted peer answers initialize
     mcp::Client client(transport, io_ctx_.get_executor(), client_options);
 
     boost::asio::steady_timer watchdog(io_ctx_);
@@ -935,7 +936,8 @@ TEST_F(ClientCoreTest, DestructionSafelyStopsActiveReadLoop) {
         }
     });
 
-    auto client = std::make_unique<mcp::Client>(transport, io_ctx_.get_executor());
+    auto client =
+        std::make_unique<mcp::Client>(transport, io_ctx_.get_executor(), legacy_client_options());
     bool initialized = false;
     boost::asio::co_spawn(
         io_ctx_,
@@ -964,6 +966,7 @@ TEST_F(ClientCoreTest, ConcurrentRequestsRemainCorrelatedOnMultiThreadedExecutor
     // because a sanitizer can stop every thread for seconds while it prepares a report, including
     // one a suppression then discards.
     options.request_timeout = g_hang_guard;
+    options.protocol = mcp::ClientProtocol::Legacy();  // the scripted peer answers initialize
     mcp::Client client(client_transport, io_ctx_.get_executor(), options);
 
     std::atomic_size_t completed{0};
@@ -1094,7 +1097,7 @@ RejectedVersionOutcome connect_against_protocol_version(boost::asio::io_context&
                 .dump());
     });
 
-    mcp::Client client(transport, io_ctx.get_executor());
+    mcp::Client client(transport, io_ctx.get_executor(), legacy_client_options());
 
     RejectedVersionOutcome outcome;
     boost::asio::co_spawn(
@@ -1208,7 +1211,7 @@ PeerErrorOutcome send_request_against_peer_error(boost::asio::io_context& io_ctx
             make_error_response(id, mcp::g_INTERNAL_ERROR, peer_message).dump());
     });
 
-    mcp::Client client(transport, io_ctx.get_executor());
+    mcp::Client client(transport, io_ctx.get_executor(), legacy_client_options());
 
     PeerErrorOutcome outcome;
     boost::asio::co_spawn(
@@ -1343,6 +1346,7 @@ SecondRequestOutcome send_two_requests(
     // stalled run.
     options.request_timeout = g_hang_guard;
     options.on_protocol_error = [&](const mcp::Error& error) { outcome.reported.push_back(error); };
+    options.protocol = mcp::ClientProtocol::Legacy();  // the scripted peer answers initialize
     mcp::Client client(transport, io_ctx.get_executor(), options);
 
     boost::asio::co_spawn(

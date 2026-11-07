@@ -1,3 +1,5 @@
+#include "../test_utils.hpp"
+
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
@@ -44,6 +46,12 @@ namespace {
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
+
+/// Sets the headers a 2026-07-28 client sends with a request for @p method.
+void set_modern_headers(http::request<http::string_body>& request, std::string_view method) {
+    request.set("MCP-Protocol-Version", std::string(mcp::g_PROTOCOL_VERSION_2026_07_28));
+    request.set("Mcp-Method", std::string(method));
+}
 
 }  // namespace
 
@@ -239,7 +247,7 @@ TEST_F(HttpTransportTest, FullMcpHandshake) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", request_json.at("id")}};
@@ -259,7 +267,7 @@ TEST_F(HttpTransportTest, FullMcpHandshake) {
                 {"jsonrpc", "2.0"},
                 {"method", "initialize"},
                 {"params",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", 1}};
@@ -278,7 +286,7 @@ TEST_F(HttpTransportTest, FullMcpHandshake) {
     EXPECT_TRUE(response_json.contains("result"));
     EXPECT_TRUE(response_json.at("result").contains("protocolVersion"));
     EXPECT_EQ(response_json.at("result").at("protocolVersion"),
-              std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+              std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
 }
 
 TEST_F(HttpTransportTest, SessionIdPropagation) {
@@ -297,7 +305,7 @@ TEST_F(HttpTransportTest, SessionIdPropagation) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", init_json.at("id")}};
@@ -326,7 +334,7 @@ TEST_F(HttpTransportTest, SessionIdPropagation) {
                 {"jsonrpc", "2.0"},
                 {"method", "initialize"},
                 {"params",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", 1}};
@@ -453,7 +461,7 @@ class SessionPeer final {
                     if (initialize) {
                         response.set("MCP-Session-Id", "session-1");
                         reply["result"] = {
-                            {"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                            {"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                             {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                             {"capabilities", nlohmann::json::object()}};
                     }
@@ -491,7 +499,7 @@ std::string initialize_request_text() {
         {"jsonrpc", "2.0"},
         {"method", "initialize"},
         {"params",
-         {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+         {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
           {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
           {"capabilities", nlohmann::json::object()}}},
         {"id", 1}};
@@ -615,7 +623,7 @@ TEST_F(HttpTransportTest, NotificationReturns202) {
                 http::request<http::string_body> request{http::verb::post, "/mcp", 11};
                 request.set(http::field::host, "127.0.0.1");
                 request.set(http::field::content_type, "application/json");
-                request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+                request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
                 // Notification: has method but no id
                 request.body() = R"({"jsonrpc":"2.0","method":"notifications/initialized"})";
                 request.prepare_payload();
@@ -819,7 +827,7 @@ TEST_F(HttpTransportTest, ClientCloseCancelsInFlightPostAfterSessionInitializati
             const nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", initialize_request.at("id")}};
@@ -852,7 +860,7 @@ TEST_F(HttpTransportTest, ClientCloseCancelsInFlightPostAfterSessionInitializati
                 {"jsonrpc", "2.0"},
                 {"method", "initialize"},
                 {"params",
-                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
                   {"capabilities", {}}}},
                 {"id", 1}};
@@ -1178,7 +1186,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverSucceedsAfterSessionEstablished) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                 {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", nlohmann::json::object()}}},
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
@@ -1214,7 +1222,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverSucceedsAfterSessionEstablished) {
             init_request.set(http::field::content_type, "application/json");
             init_request.body() =
                 R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION) +
                 R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})";
             init_request.prepare_payload();
             co_await http::async_write(init_stream, init_request, asio::use_awaitable);
@@ -1235,7 +1243,8 @@ TEST_F(HttpTransportTest, SessionlessDiscoverSucceedsAfterSessionEstablished) {
             http::request<http::string_body> discover_request{http::verb::post, "/mcp", 11};
             discover_request.set(http::field::host, "127.0.0.1");
             discover_request.set(http::field::content_type, "application/json");
-            discover_request.body() = R"({"jsonrpc":"2.0","method":"server/discover","id":2})";
+            set_modern_headers(discover_request, "server/discover");
+            discover_request.body() = make_discover_request(2).dump();
             discover_request.prepare_payload();
             co_await http::async_write(discover_stream, discover_request, asio::use_awaitable);
 
@@ -1295,7 +1304,7 @@ TEST_F(HttpTransportTest, SessionlessNonDiscoverRequestRejectedAfterSessionEstab
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                 {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", nlohmann::json::object()}}},
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
@@ -1323,7 +1332,7 @@ TEST_F(HttpTransportTest, SessionlessNonDiscoverRequestRejectedAfterSessionEstab
             init_request.set(http::field::content_type, "application/json");
             init_request.body() =
                 R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION) +
                 R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})";
             init_request.prepare_payload();
             co_await http::async_write(init_stream, init_request, asio::use_awaitable);
@@ -1377,7 +1386,7 @@ TEST_F(HttpTransportTest, SessionlessNonDiscoverRequestRejectedAfterSessionEstab
     EXPECT_NE(tools_list_body.find("Session active"), std::string::npos) << "body: " << tools_list_body;
 }
 
-TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
+TEST_F(HttpTransportTest, ModernRequestIgnoresAWrongSessionHeader) {
     mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18203);
 
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
@@ -1394,19 +1403,25 @@ TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                 {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", nlohmann::json::object()}}},
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
             co_await server_transport.write_message(initialize_response.dump());
 
-            co_await server_transport.read_message();
+            const auto discover_request = co_await server_transport.read_message();
             discover_reached_server = true;
+            nlohmann::json discover_response = {
+                {"jsonrpc", "2.0"},
+                {"result", {{"supportedVersions", nlohmann::json::array({"2026-07-28"})}}},
+                {"id", nlohmann::json::parse(discover_request).at("id")}};
+            co_await server_transport.write_message(discover_response.dump());
         },
         [](std::exception_ptr) {});
 
     auto discover_status = http::status::unknown;
     std::string discover_body;
+    bool discover_session_header = true;
     asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
@@ -1422,7 +1437,7 @@ TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
             init_request.set(http::field::content_type, "application/json");
             init_request.body() =
                 R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION) +
                 R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})";
             init_request.prepare_payload();
             co_await http::async_write(init_stream, init_request, asio::use_awaitable);
@@ -1436,17 +1451,17 @@ TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
             beast::error_code init_shutdown_error;
             init_stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, init_shutdown_error);
 
-            // The exemption is conditional on the session header being ABSENT. A discover
-            // request that presents a header, and presents the wrong one, must keep going
-            // through validate_post_session and be rejected exactly as before.
+            // A 2026-07-28 request belongs to no session, so a session header it carries, even a
+            // wrong one, is neither checked nor answered.
             beast::tcp_stream discover_stream(io_ctx_.get_executor());
             co_await discover_stream.async_connect(*endpoints.begin(), asio::use_awaitable);
 
             http::request<http::string_body> discover_request{http::verb::post, "/mcp", 11};
             discover_request.set(http::field::host, "127.0.0.1");
             discover_request.set(http::field::content_type, "application/json");
+            set_modern_headers(discover_request, "server/discover");
             discover_request.set("MCP-Session-Id", established_session_id + "-tampered");
-            discover_request.body() = R"({"jsonrpc":"2.0","method":"server/discover","id":2})";
+            discover_request.body() = make_discover_request(2).dump();
             discover_request.prepare_payload();
             co_await http::async_write(discover_stream, discover_request, asio::use_awaitable);
 
@@ -1456,6 +1471,8 @@ TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
                                       asio::use_awaitable);
             discover_status = discover_response.result();
             discover_body = discover_response.body();
+            discover_session_header =
+                discover_response.find("MCP-Session-Id") != discover_response.end();
 
             beast::error_code discover_shutdown_error;
             discover_stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both,
@@ -1477,12 +1494,13 @@ TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
     io_ctx_.run();
 
     EXPECT_FALSE(timed_out);
-    EXPECT_FALSE(discover_reached_server);
-    EXPECT_EQ(discover_status, http::status::not_found) << "body: " << discover_body;
-    EXPECT_NE(discover_body.find("Session not found"), std::string::npos) << "body: " << discover_body;
+    EXPECT_TRUE(discover_reached_server);
+    EXPECT_EQ(discover_status, http::status::ok) << "body: " << discover_body;
+    EXPECT_EQ(nlohmann::json::parse(discover_body).at("id"), 2) << "body: " << discover_body;
+    EXPECT_FALSE(discover_session_header);
 }
 
-TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsStillRejected) {
+TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsAcceptedAndDropped) {
     mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18204);
 
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
@@ -1499,7 +1517,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsStillRejected) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                 {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", nlohmann::json::object()}}},
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
@@ -1527,7 +1545,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsStillRejected) {
             init_request.set(http::field::content_type, "application/json");
             init_request.body() =
                 R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION) +
                 R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})";
             init_request.prepare_payload();
             co_await http::async_write(init_stream, init_request, asio::use_awaitable);
@@ -1539,9 +1557,9 @@ TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsStillRejected) {
             beast::error_code init_shutdown_error;
             init_stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, init_shutdown_error);
 
-            // A sessionless server/discover with no "id" is a notification, not a request. It
-            // must NOT take the exemption, because doing so would push its body onto the
-            // unbounded incoming queue and answer 202 without the session gate ever running.
+            // A sessionless server/discover with no "id" is a notification, which 2026-07-28 does
+            // not define for a client to send over HTTP. It is accepted and dropped, never queued
+            // for the server.
             beast::tcp_stream notification_stream(io_ctx_.get_executor());
             co_await notification_stream.async_connect(*endpoints.begin(), asio::use_awaitable);
 
@@ -1580,22 +1598,20 @@ TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsStillRejected) {
 
     EXPECT_FALSE(timed_out);
     EXPECT_FALSE(notification_reached_server);
-    EXPECT_EQ(notification_status, http::status::bad_request) << "body: " << notification_body;
-    EXPECT_NE(notification_body.find("Session active"), std::string::npos)
-        << "body: " << notification_body;
+    EXPECT_EQ(notification_status, http::status::accepted) << "body: " << notification_body;
+    EXPECT_TRUE(notification_body.empty()) << "body: " << notification_body;
 }
 
-// The sessionless discover exemption replaces the caller's id with a sentinel before the server
-// sees the request, so the server's own id validation never runs on it. An id JSON-RPC does not
-// allow therefore must not take the exemption: it goes through the session gate like any other
-// request.
-TEST_F(HttpTransportTest, SessionlessDiscoverWithAnInvalidIdIsStillRejected) {
+// A sessionless request's id is replaced with a sentinel before the server sees the request, so
+// the server's own id validation never runs on it. The transport refuses an id JSON-RPC does not
+// allow itself.
+TEST_F(HttpTransportTest, SessionlessDiscoverWithAnInvalidIdIsRejected) {
     mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 0);
     const auto port = std::to_string(server_transport.port());
 
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
 
-    // If the request took the exemption it would wait for a response nobody writes.
+    // A request that reached the server would wait for a response nobody writes.
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
     deadline->expires_after(g_hang_guard);
     bool timed_out = false;
@@ -1615,7 +1631,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverWithAnInvalidIdIsStillRejected) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                 {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", nlohmann::json::object()}}},
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
@@ -1654,7 +1670,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverWithAnInvalidIdIsStillRejected) {
 
             (void)co_await post(
                 R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION) +
                 R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})");
 
             const auto response =
@@ -1671,12 +1687,14 @@ TEST_F(HttpTransportTest, SessionlessDiscoverWithAnInvalidIdIsStillRejected) {
     EXPECT_FALSE(timed_out);
     EXPECT_FALSE(discover_reached_server);
     EXPECT_EQ(discover_status, http::status::bad_request) << "body: " << discover_body;
-    EXPECT_NE(discover_body.find("Session active"), std::string::npos) << "body: " << discover_body;
+    const auto body = nlohmann::json::parse(discover_body);
+    EXPECT_EQ(body["error"]["code"], mcp::g_INVALID_REQUEST) << "body: " << discover_body;
+    EXPECT_FALSE(body.contains("id")) << "body: " << discover_body;
 }
 
-// Sessionless discovers wait in the same incoming queue as the session's own requests, so only a
+// Sessionless requests wait in the same incoming queue as the session's own requests, so only a
 // bounded number of them may be pending at once; the rest are refused with 503.
-TEST_F(HttpTransportTest, PendingSessionlessDiscoversAreBounded) {
+TEST_F(HttpTransportTest, PendingSessionlessRequestsAreBounded) {
     mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 0);
     const auto port = std::to_string(server_transport.port());
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
@@ -1700,6 +1718,7 @@ TEST_F(HttpTransportTest, PendingSessionlessDiscoversAreBounded) {
         http::request<http::string_body> request{http::verb::post, "/mcp", 11};
         request.set(http::field::host, "127.0.0.1");
         request.set(http::field::content_type, "application/json");
+        set_modern_headers(request, "server/discover");
         request.body() = std::move(body);
         request.prepare_payload();
         co_await http::async_write(stream, request, asio::use_awaitable);
@@ -1710,11 +1729,9 @@ TEST_F(HttpTransportTest, PendingSessionlessDiscoversAreBounded) {
         stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
         co_return response;
     };
-    const auto discover = [](int id) {
-        return nlohmann::json{{"jsonrpc", "2.0"}, {"id", id}, {"method", "server/discover"}}.dump();
-    };
+    const auto discover = [](int id) { return make_discover_request(id).dump(); };
 
-    constexpr int pending_limit = 16;
+    constexpr int pending_limit = 256;
     int pending_ended = 0;
     for (int id = 1; id <= pending_limit; ++id) {
         asio::co_spawn(
@@ -1734,7 +1751,7 @@ TEST_F(HttpTransportTest, PendingSessionlessDiscoversAreBounded) {
     asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
-            // Nothing answers the queued discovers; reading them shows each one is pending.
+            // Nothing answers the queued requests; reading them shows each one is pending.
             for (int read = 0; read < pending_limit; ++read) {
                 (void)co_await server_transport.read_message();
             }
@@ -1749,6 +1766,7 @@ TEST_F(HttpTransportTest, PendingSessionlessDiscoversAreBounded) {
 
     EXPECT_FALSE(timed_out);
     EXPECT_EQ(refused_status, http::status::service_unavailable);
+    EXPECT_EQ(server_transport.header_mismatch_rejections(), 0u);
     EXPECT_EQ(pending_ended, pending_limit);
 }
 
@@ -1777,7 +1795,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverDoesNotEvictSessionReplayHistory) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                 {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", nlohmann::json::object()}}},
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
@@ -1813,7 +1831,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverDoesNotEvictSessionReplayHistory) {
             init_request.set(http::field::content_type, "application/json");
             init_request.body() =
                 R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION) +
                 R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})";
             init_request.prepare_payload();
             co_await http::async_write(init_stream, init_request, asio::use_awaitable);
@@ -1834,8 +1852,8 @@ TEST_F(HttpTransportTest, SessionlessDiscoverDoesNotEvictSessionReplayHistory) {
                 http::request<http::string_body> discover_request{http::verb::post, "/mcp", 11};
                 discover_request.set(http::field::host, "127.0.0.1");
                 discover_request.set(http::field::content_type, "application/json");
-                discover_request.body() = R"({"jsonrpc":"2.0","method":"server/discover","id":)" +
-                                          std::to_string(101 + i) + "}";
+                set_modern_headers(discover_request, "server/discover");
+                discover_request.body() = make_discover_request(101 + i).dump();
                 discover_request.prepare_payload();
                 co_await http::async_write(discover_stream, discover_request, asio::use_awaitable);
 
@@ -1859,7 +1877,8 @@ TEST_F(HttpTransportTest, SessionlessDiscoverDoesNotEvictSessionReplayHistory) {
             http::request<http::empty_body> resume_request{http::verb::get, "/mcp", 11};
             resume_request.set(http::field::host, "127.0.0.1");
             resume_request.set(http::field::accept, "text/event-stream");
-            resume_request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+            resume_request.set("MCP-Protocol-Version",
+                               std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
             resume_request.set("MCP-Session-Id", established_session_id);
             resume_request.set("Last-Event-ID", "1");
             co_await http::async_write(resume_stream, resume_request, asio::use_awaitable);
@@ -1937,11 +1956,10 @@ TEST_F(HttpTransportTest, DiscoverAcceptsDiscoverableOnlyProtocolVersionHeader) 
             http::request<http::string_body> discover_request{http::verb::post, "/mcp", 11};
             discover_request.set(http::field::host, "127.0.0.1");
             discover_request.set(http::field::content_type, "application/json");
-            // 2026-07-28 is discoverable but not in g_SUPPORTED_PROTOCOL_VERSIONS, so the
-            // negotiated-version check would reject it for any non-pre-gate method.
-            discover_request.set("MCP-Protocol-Version",
-                                 std::string(mcp::g_PROTOCOL_VERSION_2026_07_28));
-            discover_request.body() = R"({"jsonrpc":"2.0","method":"server/discover","id":1})";
+            // initialize never negotiates 2026-07-28, so the negotiated-version check would refuse
+            // this header; a 2026-07-28 request is not subject to that check.
+            set_modern_headers(discover_request, "server/discover");
+            discover_request.body() = make_discover_request(1).dump();
             discover_request.prepare_payload();
             co_await http::async_write(stream, discover_request, asio::use_awaitable);
 
@@ -2001,7 +2019,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
             nlohmann::json initialize_response = {
                 {"jsonrpc", "2.0"},
                 {"result",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
+                 {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                   {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                   {"capabilities", nlohmann::json::object()}}},
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
@@ -2044,7 +2062,8 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
             http::request<http::string_body> discover_request{http::verb::post, "/mcp", 11};
             discover_request.set(http::field::host, "127.0.0.1");
             discover_request.set(http::field::content_type, "application/json");
-            discover_request.body() = R"({"jsonrpc":"2.0","method":"server/discover","id":7})";
+            set_modern_headers(discover_request, "server/discover");
+            discover_request.body() = make_discover_request(7).dump();
             discover_request.prepare_payload();
             co_await http::async_write(*probe_stream, discover_request, asio::use_awaitable);
 
@@ -2075,7 +2094,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
             init_request.set(http::field::content_type, "application/json");
             init_request.body() =
                 R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":")" +
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION) +
+                std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION) +
                 R"(","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})";
             init_request.prepare_payload();
             co_await http::async_write(session_stream, init_request, asio::use_awaitable);
@@ -2220,7 +2239,7 @@ TEST_F(HttpTransportTest, ServerAcceptsANewSessionAfterTheClientDeletesTheOldOne
         {"id", 1},
         {"method", "initialize"},
         {"params",
-         {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+         {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
           {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
           {"capabilities", nlohmann::json::object()}}}};
     const std::string initialized = R"({"jsonrpc":"2.0","method":"notifications/initialized"})";
@@ -2860,14 +2879,15 @@ TEST_F(HttpTransportTest, AnExemptPathTheMetadataRouteClaimsIsStillServed) {
 TEST_F(HttpTransportTest, AsyncBearerValidatorCanSuspendBeforeDeciding) {
     auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
     std::atomic<int> validator_calls{0};
-    server->set_async_bearer_token_validator([&validator_calls](std::string token) -> mcp::Task<bool> {
-        validator_calls.fetch_add(1, std::memory_order_relaxed);
-        // Suspend, the way a real introspection call would, before deciding.
-        asio::steady_timer timer(co_await asio::this_coro::executor);
-        timer.expires_after(std::chrono::milliseconds(1));
-        co_await timer.async_wait(asio::use_awaitable);
-        co_return token == "good";
-    });
+    server->set_async_bearer_token_validator(
+        [&validator_calls](std::string token) -> mcp::Task<mcp::TokenValidation> {
+            validator_calls.fetch_add(1, std::memory_order_relaxed);
+            // Suspend, the way a real introspection call would, before deciding.
+            asio::steady_timer timer(co_await asio::this_coro::executor);
+            timer.expires_after(std::chrono::milliseconds(1));
+            co_await timer.async_wait(asio::use_awaitable);
+            co_return token == "good";
+        });
     const auto port = server->port();
 
     asio::co_spawn(io_ctx_, server->listen(), asio::detached);
@@ -2897,7 +2917,7 @@ TEST_F(HttpTransportTest, AsyncBearerValidatorCanSuspendBeforeDeciding) {
 TEST_F(HttpTransportTest, ThrowingBearerValidatorIsAnsweredWithAServerError) {
     auto async_server =
         std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
-    async_server->set_async_bearer_token_validator([](std::string) -> mcp::Task<bool> {
+    async_server->set_async_bearer_token_validator([](std::string) -> mcp::Task<mcp::TokenValidation> {
         throw std::runtime_error("introspection endpoint unreachable");
         co_return false;
     });
@@ -2939,13 +2959,13 @@ TEST_F(HttpTransportTest, OnlyOneBearerValidatorMayBeInstalled) {
     mcp::HttpServerTransport sync_first(io_ctx_.get_executor(), "127.0.0.1", 0);
     sync_first.set_bearer_token_validator([](std::string_view) { return true; });
     EXPECT_THROW(sync_first.set_async_bearer_token_validator(
-                     [](std::string) -> mcp::Task<bool> { co_return true; }),
+                     [](std::string) -> mcp::Task<mcp::TokenValidation> { co_return true; }),
                  std::logic_error);
     sync_first.close();
 
     mcp::HttpServerTransport async_first(io_ctx_.get_executor(), "127.0.0.1", 0);
     async_first.set_async_bearer_token_validator(
-        [](std::string) -> mcp::Task<bool> { co_return true; });
+        [](std::string) -> mcp::Task<mcp::TokenValidation> { co_return true; });
     EXPECT_THROW(async_first.set_bearer_token_validator([](std::string_view) { return true; }),
                  std::logic_error);
     async_first.close();
@@ -3533,7 +3553,7 @@ std::string session_initialize_body() {
         {"id", 1},
         {"method", "initialize"},
         {"params",
-         {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+         {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
           {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
           {"capabilities", nlohmann::json::object()}}}};
     return initialize.dump();
@@ -3956,7 +3976,7 @@ mcp::Task<void> serve_one_request_per_connection(asio::ip::tcp::acceptor& accept
             if (message.contains("id")) {
                 nlohmann::json result = nlohmann::json::object();
                 if (message.value("method", "") == "initialize") {
-                    result = {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                    result = {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
                               {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
                               {"capabilities", nlohmann::json::object()}};
                 }
@@ -4016,4 +4036,32 @@ TEST_F(HttpTransportTest, ClientOpensANewConnectionAfterConnectionClose) {
     io_ctx_.run_for(g_hang_guard);
 
     EXPECT_TRUE(pinged) << "failure: " << failure << " after " << requests << " request(s)";
+}
+
+// Requests to an older server go out one at a time, so a server that never answers must not hold
+// the connection for good. The limit is the transport's; the caller's own timeout is separate.
+TEST(HttpClientResponseTimeout, AServerThatNeverAnswersFailsTheWrite) {
+    asio::io_context io;
+    StallingServer server(io);
+    server.accept_and_stall();
+    mcp::HttpClientTransport transport(io.get_executor(),
+                                       "http://127.0.0.1:" + std::to_string(server.port()) + "/mcp");
+    transport.set_response_timeout(std::chrono::milliseconds(50));
+
+    bool failed = false;
+    asio::co_spawn(
+        io,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await transport.write_message(
+                    R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})");
+            } catch (const std::exception&) {
+                failed = true;
+            }
+            transport.close();
+        },
+        asio::detached);
+    io.run_for(std::chrono::seconds(30));
+
+    EXPECT_TRUE(failed);
 }

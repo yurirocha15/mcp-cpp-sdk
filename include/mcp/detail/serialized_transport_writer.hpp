@@ -63,6 +63,14 @@ class MCP_API SerializedTransportWriter {
         std::shared_ptr<const std::atomic<bool>> cancel_before_start) const;
 
     /**
+     * @brief Write a message beside the queue, for a transport whose
+     * ITransport::overlapping_modern_writes() is true.
+     *
+     * @param message Immutable message storage retained until the write completes.
+     */
+    [[nodiscard]] Task<void> write_overlapping(std::shared_ptr<const std::string> message) const;
+
+    /**
      * @brief Queue one message without waiting for it to be written.
      *
      * Its bytes count in queued_bytes() from the moment this returns, so a caller can bound what it

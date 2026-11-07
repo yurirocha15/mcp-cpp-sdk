@@ -5,6 +5,7 @@
 #include <mcp/transport/transport.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -108,6 +109,27 @@ class MCP_API HttpClientTransport final : public ITransport {
     void set_bearer_token_provider(std::function<std::string()> provider);
 
     /**
+     * @brief Configure a receiver for warnings about what the server sent.
+     *
+     * A tool whose `x-mcp-header` annotations break the rules of the Streamable HTTP specification
+     * is left out of the result of tools/list when the client speaks protocol revision 2026-07-28;
+     * the handler is told which tool and why. It runs on the transport's executor and must not
+     * block.
+     */
+    void set_warning_handler(std::function<void(const std::string&)> handler);
+
+    /**
+     * @brief Limit the wait for the response to a request sent to a server of an older protocol.
+     *
+     * Requests to such a server go out one at a time, so a server that never answers holds up the
+     * next one for this long. The default is ten minutes; ClientOptions::request_timeout still
+     * decides how long a caller waits. Zero, a negative value, or one too long for the clock to
+     * represent disables it. Requests of protocol revision 2026-07-28 have no such limit, since
+     * each has its own connection.
+     */
+    void set_response_timeout(std::chrono::milliseconds timeout);
+
+    /**
      * @brief Dequeue the next MCP message received from the server.
      *
      * @throws std::runtime_error If the transport is closed.
@@ -127,6 +149,9 @@ class MCP_API HttpClientTransport final : public ITransport {
      * @brief Close the transport and release connection resources.
      */
     void close() override;
+
+    /** @brief True: each 2026-07-28 message has its own connection. */
+    [[nodiscard]] bool overlapping_modern_writes() const noexcept override { return true; }
 
    private:
     struct Impl;

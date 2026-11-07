@@ -7,12 +7,15 @@
 
 #include <mcp/core/core.hpp>
 #include <mcp/protocol/protocol.hpp>
+#include <mcp/protocol/request_meta.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -64,16 +67,48 @@ class Context {
      * @param log_level Pointer to the server's current log level (shared across all contexts).
      * @param message_sender Optional serialized notification sender. When omitted, Context writes
      *                       directly to the transport.
+     * @param request_meta The per-request protocol fields of a 2026-07-28 request, or null for a
+     *                     request of an earlier revision.
+     * @param principal Who sent the request, or null when unknown.
      */
     Context(ITransport& transport, RequestSender sender, std::shared_ptr<std::atomic<bool>> cancelled,
             std::optional<ProgressToken> progress_token, const std::atomic<LoggingLevel>* log_level,
-            MessageSender message_sender = {})
+            MessageSender message_sender = {},
+            std::shared_ptr<const RequestMetadata> request_meta = nullptr,
+            std::shared_ptr<const std::string> principal = nullptr)
         : transport_(transport),
           sender_(std::move(sender)),
           cancelled_(std::move(cancelled)),
           progress_token_(std::move(progress_token)),
           log_level_(log_level),
-          message_sender_(std::move(message_sender)) {}
+          message_sender_(std::move(message_sender)),
+          request_meta_(std::move(request_meta)),
+          principal_(std::move(principal)) {}
+
+    /**
+     * @brief The per-request protocol fields of this request.
+     *
+     * @return The protocol version, client capabilities, client info, log level and whole `_meta`
+     *         of a 2026-07-28 request, or null for a request of an earlier revision, which
+     *         negotiated these at initialize.
+     */
+    [[nodiscard]] const RequestMetadata* request_meta() const { return request_meta_.get(); }
+
+    /**
+     * @brief Who sent this request.
+     *
+     * @details Over HTTP with a bearer token validator, this is the principal the validator named
+     * in its TokenValidation; without one, `h:` followed by the hex SHA-256 of the request's
+     * Authorization header, which never reveals the token and changes when the token does. It is
+     * empty for a transport that does not authenticate its peer (stdio, WebSocket, memory), for a
+     * request without an Authorization header, and for the requests of a
+     * StreamableHttpSessionManager session, which are attributed to the session.
+     *
+     * @return The principal, or an empty view when it is unknown.
+     */
+    [[nodiscard]] std::string_view principal() const {
+        return principal_ ? std::string_view(*principal_) : std::string_view{};
+    }
 
     /**
      * @brief Sends an informational log message to the client.
@@ -91,6 +126,9 @@ class Context {
      * LoggingLevel ordering: Emergency(0) < Alert(1) < ... < Debug(7).
      * A message is sent only if its level <= current server log level.
      *
+     * A 2026-07-28 request has no session level: its threshold is the
+     * `io.modelcontextprotocol/logLevel` in its `_meta`, and without one nothing is sent.
+     *
      * @param level The severity level of the log message.
      * @param msg The log message to send.
      * @param logger Optional logger name.
@@ -98,7 +136,12 @@ class Context {
      */
     Task<void> log(LoggingLevel level, std::string_view msg,
                    const std::optional<std::string>& logger = std::nullopt) {
-        if (log_level_ != nullptr) {
+        if (request_meta_) {
+            if (!request_meta_->logLevel ||
+                static_cast<uint8_t>(level) > static_cast<uint8_t>(*request_meta_->logLevel)) {
+                co_return;
+            }
+        } else if (log_level_ != nullptr) {
             auto current = log_level_->load(std::memory_order_relaxed);
             if (static_cast<uint8_t>(level) > static_cast<uint8_t>(current)) {
                 co_return;
@@ -128,7 +171,10 @@ class Context {
     /**
      * @brief Check whether the current request has been cancelled.
      *
-     * @return true if a notifications/cancelled was received for this request's ID.
+     * @return true once the request has been cancelled: by notifications/cancelled for this
+     * request's ID, by the client disconnecting while a 2026-07-28 request runs on
+     * StreamableHttpSessionManager, or through the cancellation flag given to
+     * Server::dispatch_request_direct().
      */
     [[nodiscard]] bool is_cancelled() const {
         if (cancelled_) {
@@ -186,6 +232,14 @@ class Context {
      * @param request The sampling request parameters.
      * @return A task that resolves to the client's CreateMessageResult.
      * @throws std::runtime_error If no request sender is available.
+     *
+     * For a 2026-07-28 tools/call, prompts/get or resources/read, the question goes back to the
+     * client in the request's `input_required` result, and the call returns once the client
+     * retries the request with the answer; see Server::set_mrtr_options(). If the client did not
+     * declare the capability the question needs, the request is answered with
+     * `g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does when the client never
+     * retries in time; the handler's own answer then goes nowhere. Any other 2026-07-28 request
+     * cannot ask the client anything, and the call throws std::runtime_error.
      */
     Task<CreateMessageResult> sample_llm(const CreateMessageRequestParams& request) {
         if (!sender_) {
@@ -204,9 +258,20 @@ class Context {
      * Supports both form mode (ElicitRequestFormParams) and URL mode (ElicitRequestURLParams)
      * via the ElicitRequestParams variant.
      *
+     * Before 2026-07-28 a URL-mode request needs an `elicitationId`, and one is generated when
+     * the request leaves it unset; a 2026-07-28 question carries none.
+     *
      * @param params The elicitation request parameters (form or URL mode).
      * @return A task that resolves to the client's ElicitResult.
      * @throws std::runtime_error If no request sender is available.
+     *
+     * For a 2026-07-28 tools/call, prompts/get or resources/read, the question goes back to the
+     * client in the request's `input_required` result, and the call returns once the client
+     * retries the request with the answer; see Server::set_mrtr_options(). If the client did not
+     * declare the capability the question needs, the request is answered with
+     * `g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does when the client never
+     * retries in time; the handler's own answer then goes nowhere. Any other 2026-07-28 request
+     * cannot ask the client anything, and the call throws std::runtime_error.
      */
     Task<ElicitResult> elicit(const ElicitRequestParams& params) {
         if (!sender_) {
@@ -214,6 +279,10 @@ class Context {
         }
 
         nlohmann::json json_params = params;
+        if (json_params.value("mode", "") == "url" && !json_params.contains("elicitationId")) {
+            // Before 2026-07-28 the field is required on the wire.
+            json_params["elicitationId"] = generate_elicitation_id();
+        }
         auto result_json = co_await sender_("elicitation/create", std::move(json_params));
         co_return result_json.get<ElicitResult>();
     }
@@ -226,6 +295,14 @@ class Context {
      *
      * @return A task that resolves to the client's ListRootsResult.
      * @throws std::runtime_error If no request sender is available.
+     *
+     * For a 2026-07-28 tools/call, prompts/get or resources/read, the question goes back to the
+     * client in the request's `input_required` result, and the call returns once the client
+     * retries the request with the answer; see Server::set_mrtr_options(). If the client did not
+     * declare the capability the question needs, the request is answered with
+     * `g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does when the client never
+     * retries in time; the handler's own answer then goes nowhere. Any other 2026-07-28 request
+     * cannot ask the client anything, and the call throws std::runtime_error.
      */
     Task<ListRootsResult> request_roots() {
         if (!sender_) {
@@ -237,12 +314,21 @@ class Context {
     }
 
    private:
+    /// A fresh, process-unique identifier for a legacy URL-mode elicitation.
+    static std::string generate_elicitation_id() {
+        static std::atomic<std::uint64_t> counter{0};
+        static const std::uint64_t seed = std::random_device{}();
+        return "elicit-" + std::to_string(seed) + "-" + std::to_string(counter.fetch_add(1));
+    }
+
     ITransport& transport_;
     RequestSender sender_;
     std::shared_ptr<std::atomic<bool>> cancelled_;
     std::optional<ProgressToken> progress_token_;
     const std::atomic<LoggingLevel>* log_level_ = nullptr;
     MessageSender message_sender_;
+    std::shared_ptr<const RequestMetadata> request_meta_;
+    std::shared_ptr<const std::string> principal_;
 };
 
 }  // namespace mcp
