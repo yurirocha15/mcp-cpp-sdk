@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "mcp/client/client.hpp"
@@ -241,7 +242,7 @@ TEST_F(ClientNotificationsTest, AnswerThatCannotBeEncodedIsAnError) {
     });
 
     // Bounds a missing answer, which would otherwise leave the exchange open.
-    boost::asio::steady_timer guard(io_ctx_, std::chrono::seconds(90));
+    boost::asio::steady_timer guard(io_ctx_, g_hang_guard);
     guard.async_wait([raw](const boost::system::error_code& error) {
         if (!error) {
             raw->close();
@@ -345,8 +346,8 @@ NotificationSessionOutcome deliver_notifications(
     NotificationSessionOutcome outcome;
 
     mcp::ClientOptions options;
-    // Short enough that a swallowed response surfaces as a test failure instead of a stalled run.
-    options.request_timeout = std::chrono::seconds(5);
+    // Bounded, so that a swallowed response surfaces as a test failure instead of a stalled run.
+    options.request_timeout = g_hang_guard;
     options.on_protocol_error = [&](const mcp::Error& error) { outcome.reported.push_back(error); };
     mcp::Client client(transport, io_ctx.get_executor(), options);
     register_handlers(client);

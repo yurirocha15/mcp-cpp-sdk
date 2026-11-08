@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "mcp/protocol/schema.hpp"
@@ -200,7 +201,7 @@ TEST_F(ServerToolTest, NonStdExceptionFromHandlerBecomesToolError) {
     // A throw the tool guard does not catch escapes the dispatcher without writing anything, so
     // the request is never answered and nothing closes the transport. Bound the wait, or that
     // regression hangs the suite instead of failing it.
-    watchdog.expires_after(std::chrono::seconds(5));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&setup](const boost::system::error_code& error) {
         if (!error) {
             setup.raw_transport->close();

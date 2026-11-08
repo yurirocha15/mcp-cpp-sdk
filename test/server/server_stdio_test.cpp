@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "mcp/detail/signal.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/stdio.hpp"
@@ -301,10 +302,11 @@ class StdioServerProcess {
         }
     }
 
-    /// The child's wait status, or nullopt when it is still running after two minutes: a bound for
+    /// The child's wait status, or nullopt when it is still running after g_hang_guard: a bound for
     /// reporting a hang, not a measure of how fast it should be.
     std::optional<int> wait_for_exit() {
-        for (int i = 0; i < 24000; ++i) {
+        const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
+        while (std::chrono::steady_clock::now() < give_up) {
             int status = 0;
             if (::waitpid(child_, &status, WNOHANG) == child_) {
                 reaped_ = true;

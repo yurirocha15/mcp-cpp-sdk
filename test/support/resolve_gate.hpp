@@ -4,6 +4,8 @@
 // resolve_gate.cpp), which is how a test parks a real Asio resolve past its cancel check.
 #ifdef __linux__
 
+#include "hang_guard.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -47,7 +49,7 @@ class ResolveGate final {
         changed_.notify_all();
         // Longer than any wait in the test, and still bounded: a test that fails without
         // releasing cannot leave the resolver thread parked forever.
-        changed_.wait_for(lock, std::chrono::seconds(30), [this]() { return released_; });
+        changed_.wait_for(lock, g_release_guard, [this]() { return released_; });
     }
 
    private:

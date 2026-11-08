@@ -487,6 +487,17 @@ if(BUILD_TESTING)
   set(MCP_CPP_SDK_TEST_TIMEOUT
       120
       CACHE STRING "Seconds each test may run before ctest stops it")
+  if(NOT MCP_CPP_SDK_TEST_TIMEOUT MATCHES "^[0-9]+$" OR MCP_CPP_SDK_TEST_TIMEOUT
+                                                        LESS_EQUAL 20)
+    message(
+      FATAL_ERROR
+        "MCP_CPP_SDK_TEST_TIMEOUT must be a whole number of seconds above 20")
+  endif()
+  # The tests' hang guards follow it and stay below it, so that a hung test
+  # reports where it stopped before ctest stops it (see hang_guard.hpp).
+  target_compile_definitions(
+    mcp-sdk-tests
+    PRIVATE MCP_CPP_SDK_TEST_TIMEOUT_SECONDS=${MCP_CPP_SDK_TEST_TIMEOUT})
   gtest_discover_tests(
     mcp-sdk-tests
     PROPERTIES

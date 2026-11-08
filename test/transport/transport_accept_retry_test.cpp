@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
@@ -86,7 +87,7 @@ mcp::Task<unsigned int> status_of_a_request(beast::tcp_stream& stream) {
     beast::flat_buffer buffer;
     http::response<http::string_body> response;
     // Only a guard against a hang, for a server that stopped accepting.
-    stream.expires_after(std::chrono::seconds(10));
+    stream.expires_after(g_hang_guard);
     co_await http::async_read(stream, buffer, response, asio::use_awaitable);
     co_return response.result_int();
 }

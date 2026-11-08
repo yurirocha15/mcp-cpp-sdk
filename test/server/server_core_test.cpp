@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "mcp/core/context.hpp"
@@ -967,7 +968,7 @@ TEST_F(ServerCoreTest, ReverseRequestResponseCarryingNullErrorIsAccepted) {
     };
     launch();
 
-    io_ctx_.run_for(5s);
+    io_ctx_.run_for(g_hang_guard);
 
     ASSERT_TRUE(completed) << "the reverse request never correlated with its response";
     EXPECT_EQ(reverse_result["ok"], true);
@@ -1053,7 +1054,7 @@ TEST_F(ServerCoreTest, ConcurrentReverseRequestsRemainCorrelatedOnMultiThreadedE
     // Wide for the same reason as in the client's twin of this test: a sanitizer can stop every
     // thread for seconds, and the bound only ends a run that has gone wrong.
     boost::asio::steady_timer watchdog(io_ctx_);
-    watchdog.expires_after(60s);
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait(
         [&completed, &stop_poll, client_transport](const boost::system::error_code& error) {
             if (!error && completed.load(std::memory_order_acquire) != request_count) {
@@ -1580,7 +1581,7 @@ ReverseErrorOutcome reverse_request_against_peer_error(boost::asio::io_context& 
         boost::asio::detached);
 
     boost::asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(10s);
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([client_transport](const boost::system::error_code& error) {
         if (!error) {
             client_transport->close();
@@ -1591,14 +1592,15 @@ ReverseErrorOutcome reverse_request_against_peer_error(boost::asio::io_context& 
         io_ctx,
         [&io_ctx, &server, &outcome, &session_ready, &watchdog, client_transport]() -> mcp::Task<void> {
             boost::asio::steady_timer poll(io_ctx);
-            for (int attempt = 0; attempt < 5000 && !session_ready.load(std::memory_order_acquire);
-                 ++attempt) {
+            const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
+            while (!session_ready.load(std::memory_order_acquire) &&
+                   std::chrono::steady_clock::now() < give_up) {
                 poll.expires_after(1ms);
                 co_await poll.async_wait(boost::asio::use_awaitable);
             }
             co_await capture_reverse_request_error(server, outcome);
             // Cancelled rather than left pending: an armed watchdog is outstanding work, and
-            // io_context::run() would sit on it for the full ten seconds after the test is done.
+            // io_context::run() would sit on it until it ran out after the test is done.
             watchdog.cancel();
             client_transport->close();
         },

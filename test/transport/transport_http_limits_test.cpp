@@ -1,4 +1,5 @@
 #include "../../src/detail/http_limits.hpp"
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "mcp/client/client.hpp"
@@ -45,7 +46,7 @@ mcp::Task<Reply> send(asio::any_io_executor executor, unsigned short port, std::
                       Headers headers, http::verb verb = http::verb::post) {
     beast::tcp_stream stream(executor);
     // A bound for reporting a server that never answers, not a measure of speed.
-    stream.expires_after(std::chrono::minutes(2));
+    stream.expires_after(g_hang_guard);
     co_await stream.async_connect(asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port),
                                   asio::use_awaitable);
     http::request<http::string_body> request{verb, "/mcp", 11};
@@ -108,7 +109,7 @@ std::string header_only_post(std::size_t body_bytes, const std::string& extra = 
 template <typename Condition>
 mcp::Task<bool> wait_until(Condition condition) {
     auto executor = co_await asio::this_coro::executor;
-    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
     while (!condition() && std::chrono::steady_clock::now() < give_up) {
         asio::steady_timer timer(executor, std::chrono::milliseconds(1));
         co_await timer.async_wait(asio::use_awaitable);
@@ -484,7 +485,7 @@ TEST_F(SessionLimitsTest, UnauthorizedBodyIsNotRead) {
     std::string answer;
     run([&]() -> mcp::Task<void> {
         answer = co_await raw_exchange(io_.get_executor(), port_, header_only_post(4 * 1024 * 1024),
-                                       std::chrono::seconds(20));
+                                       g_hang_guard);
     });
     EXPECT_EQ(answer.rfind("HTTP/1.1 401", 0), 0u) << answer;
     EXPECT_EQ(answer.find("[timed out]"), std::string::npos) << answer;
@@ -494,13 +495,15 @@ TEST_F(SessionLimitsTest, ConnectionThatSendsNothingIsClosed) {
     manager_.set_connection_limits({0, std::chrono::milliseconds(100), 4096, 1U << 30});
     std::string answer;
     run([&]() -> mcp::Task<void> {
-        answer = co_await raw_exchange(io_.get_executor(), port_, "", std::chrono::seconds(20));
+        answer = co_await raw_exchange(io_.get_executor(), port_, "", g_hang_guard);
     });
     EXPECT_EQ(answer, "");
 }
 
 TEST_F(SessionLimitsTest, ConnectionsPastTheLimitAreClosed) {
-    manager_.set_connection_limits({2, std::chrono::seconds(30), 4096, 1U << 30});
+    // Idle connections last longer than the third one waits, so a third connection the server kept
+    // open shows as "[timed out]" instead of being closed for idling.
+    manager_.set_connection_limits({2, std::chrono::hours(1), 4096, 1U << 30});
     std::string third;
     Reply after;
     run([&]() -> mcp::Task<void> {
@@ -511,10 +514,11 @@ TEST_F(SessionLimitsTest, ConnectionsPastTheLimitAreClosed) {
         co_await idle_one->async_connect(endpoint, asio::use_awaitable);
         co_await idle_two->async_connect(endpoint, asio::use_awaitable);
         co_await pause(std::chrono::milliseconds(50));
-        third = co_await raw_exchange(executor, port_, header_only_post(2), std::chrono::seconds(20));
+        third = co_await raw_exchange(executor, port_, header_only_post(2), g_hang_guard);
         idle_one->close();
         // The server frees the place once it has seen the connection end.
-        for (int attempt = 0; attempt < 3000 && after.status != 200; ++attempt) {
+        const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
+        while (after.status != 200 && std::chrono::steady_clock::now() < give_up) {
             bool refused = false;
             try {
                 after = co_await post(make_initialize_request("1"));
@@ -571,9 +575,9 @@ TEST_F(SessionLimitsTest, BodyPastTheBudgetIsRefusedWhileItArrives) {
     std::string answer;
     run([&]() -> mcp::Task<void> {
         // Announces 200,000 bytes and sends half; the rest never comes.
-        answer = co_await raw_exchange(io_.get_executor(), port_,
-                                       header_only_post(200000) + std::string(100000, ' '),
-                                       std::chrono::seconds(20));
+        answer =
+            co_await raw_exchange(io_.get_executor(), port_,
+                                  header_only_post(200000) + std::string(100000, ' '), g_hang_guard);
     });
     EXPECT_EQ(answer.rfind("HTTP/1.1 503", 0), 0u) << answer.substr(0, 200);
 }
@@ -678,7 +682,7 @@ TEST_F(SessionLimitsTest, ResumeWithNothingToReplayIsAnEmptyStream) {
             "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\nMCP-Session-Id: " +
                 initialized.session_id.value_or("") + "\r\nLast-Event-ID: " + event_id +
                 "\r\nConnection: close\r\n\r\n",
-            std::chrono::seconds(20));
+            g_hang_guard);
     });
     EXPECT_EQ(resumed.rfind("HTTP/1.1 200", 0), 0u) << resumed;
     EXPECT_NE(resumed.find("text/event-stream"), std::string::npos) << resumed;
@@ -708,7 +712,7 @@ TEST_F(SessionLimitsTest, ResumeReplaysOnlyTheStreamItNames) {
             "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\nMCP-Session-Id: " +
                 initialized.session_id.value_or("") + "\r\nLast-Event-ID: " + event_id +
                 "\r\nConnection: close\r\n\r\n",
-            std::chrono::seconds(20));
+            g_hang_guard);
     });
     ASSERT_NE(progressed.find("notifications/progress"), std::string::npos) << progressed;
     EXPECT_EQ(resumed.rfind("HTTP/1.1 200", 0), 0U) << resumed;
@@ -739,7 +743,7 @@ TEST_F(SessionLimitsTest, ReplayCountsAgainstTheRequestBudget) {
             "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\nMCP-Session-Id: " +
                 initialized.session_id.value_or("") + "\r\nLast-Event-ID: " + event_id +
                 "\r\nConnection: close\r\n\r\n",
-            std::chrono::seconds(20));
+            g_hang_guard);
     });
     EXPECT_EQ(resumed.rfind("HTTP/1.1 503", 0), 0U) << resumed.substr(0, 200);
 }
@@ -793,10 +797,9 @@ TEST_F(SessionLimitsTest, UnreadReplayGivesBackWhatItHolds) {
                                       asio::use_awaitable);
         co_await asio::async_write(holder, asio::buffer(resume), asio::use_awaitable);
         co_await pause(std::chrono::seconds(6));
-        second =
-            co_await raw_exchange(io_.get_executor(), port_,
-                                  resume.substr(0, resume.size() - 2) + "Connection: close\r\n\r\n",
-                                  std::chrono::seconds(20));
+        second = co_await raw_exchange(
+            io_.get_executor(), port_,
+            resume.substr(0, resume.size() - 2) + "Connection: close\r\n\r\n", g_hang_guard);
         boost::system::error_code ignored;
         (void)holder.close(ignored);
     });
@@ -1081,9 +1084,9 @@ TEST_F(ReverseBindingTest, SessionTakenOverIsNotFoundForItsOldClient) {
                    "\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n";
         };
         get_reply = co_await raw_exchange(io_.get_executor(), transport_->port(), request_line("GET"),
-                                          std::chrono::seconds(20));
+                                          g_hang_guard);
         delete_reply = co_await raw_exchange(io_.get_executor(), transport_->port(),
-                                             request_line("DELETE"), std::chrono::seconds(20));
+                                             request_line("DELETE"), g_hang_guard);
     });
     EXPECT_EQ(post_reply.status, 404u) << post_reply.body;
     EXPECT_EQ(get_reply.rfind("HTTP/1.1 404", 0), 0u) << get_reply;
@@ -1203,7 +1206,7 @@ TEST_F(ReverseBindingTest, UnauthorizedBodyIsNotRead) {
     std::string answer;
     run([&]() -> mcp::Task<void> {
         answer = co_await raw_exchange(io_.get_executor(), transport_->port(),
-                                       header_only_post(4 * 1024 * 1024), std::chrono::seconds(20));
+                                       header_only_post(4 * 1024 * 1024), g_hang_guard);
     });
     EXPECT_EQ(answer.rfind("HTTP/1.1 401", 0), 0u) << answer;
 }
@@ -1250,7 +1253,9 @@ TEST_F(ReverseBindingTest, RequestsPastTheCountAreRefused) {
 }
 
 TEST_F(ReverseBindingTest, ConnectionsPastTheLimitAreClosed) {
-    transport_->set_connection_limits({1, std::chrono::seconds(30), 4096, 1U << 30});
+    // Idle connections last longer than the second one waits, so a second connection the server
+    // kept open shows as "[timed out]" instead of being closed for idling.
+    transport_->set_connection_limits({1, std::chrono::hours(1), 4096, 1U << 30});
     std::string second;
     run([&]() -> mcp::Task<void> {
         auto idle = std::make_shared<beast::tcp_stream>(io_.get_executor());
@@ -1259,7 +1264,7 @@ TEST_F(ReverseBindingTest, ConnectionsPastTheLimitAreClosed) {
             asio::use_awaitable);
         co_await pause(std::chrono::milliseconds(50));
         second = co_await raw_exchange(io_.get_executor(), transport_->port(), header_only_post(2),
-                                       std::chrono::seconds(20));
+                                       g_hang_guard);
         idle->close();
     });
     EXPECT_EQ(second, "");
@@ -1268,7 +1273,7 @@ TEST_F(ReverseBindingTest, ConnectionsPastTheLimitAreClosed) {
 // A session waiting for the answer to a request is in use, so another client's initialize does not
 // take it over, however long the session has been quiet.
 TEST_F(ReverseBindingTest, SessionWithARequestWaitingIsNotTakenOver) {
-    server_->set_reverse_request_timeout(std::chrono::seconds(30));
+    server_->set_reverse_request_timeout(g_hang_guard);
     transport_->set_session_idle_timeout(std::chrono::milliseconds(20));
     Reply second;
     run([&]() -> mcp::Task<void> {

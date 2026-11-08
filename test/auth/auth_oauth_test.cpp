@@ -30,6 +30,8 @@
 #include <thread>
 #include <vector>
 
+#include "../support/hang_guard.hpp"
+
 namespace {
 
 namespace asio = boost::asio;
@@ -1532,7 +1534,7 @@ TEST(OAuthSetterPairAtomicity, ReconfiguringAsOnePairNeverExposesTheNewResolverU
         }
     });
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    const auto deadline = std::chrono::steady_clock::now() + g_hang_guard;
     while (std::chrono::steady_clock::now() < deadline) {
         if (transitions.load() >= 25 && old_server.load() >= 25 && refused.load() >= 25) {
             break;
@@ -1573,7 +1575,7 @@ TEST(OAuthSetterPairAtomicity, ReconfiguringAsOnePairNeverExposesTheNewResolverU
 
     stop.store(true);
     writer.join();
-    const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    const auto drain_deadline = std::chrono::steady_clock::now() + g_hang_guard;
     while (in_flight.load() > 0 && std::chrono::steady_clock::now() < drain_deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }

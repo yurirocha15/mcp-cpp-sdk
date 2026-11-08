@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "mcp/auth/oauth.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/transport/http_client.hpp"
@@ -1608,7 +1609,7 @@ TEST_F(SessionManagerTest, CloseCancelsIdleKeepAliveAndCannotCreatePostCloseSess
 
     auto client = std::make_shared<beast::tcp_stream>(io_ctx_.get_executor());
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
-    deadline->expires_after(std::chrono::seconds(2));
+    deadline->expires_after(g_hang_guard);
     bool first_request_completed = false;
     bool connection_cancelled = false;
     bool post_close_response_received = false;
@@ -2381,7 +2382,7 @@ TEST_F(SessionManagerTest, RequestWithAnUnusableIdIsAnswered) {
     asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
 
     bool timed_out = false;
-    asio::steady_timer watchdog(io_ctx_.get_executor(), std::chrono::seconds(5));
+    asio::steady_timer watchdog(io_ctx_.get_executor(), g_hang_guard);
     watchdog.async_wait([&](const boost::system::error_code& error) {
         if (!error) {
             timed_out = true;

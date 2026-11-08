@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include "../support/hang_guard.hpp"
 #include "../support/resolve_gate.hpp"
 #include "../support/stalling_server.hpp"
 
@@ -583,7 +584,7 @@ TEST_F(WebSocketTransportTest, CanceledQueuedWriteDoesNotBlockSubsequentWrites) 
                 io_ctx_.get_executor(), "127.0.0.1", std::to_string(port));
             EXPECT_EQ(co_await transport->read_message(), "ready");
 
-            auto watchdog = std::make_shared<asio::steady_timer>(coordinator, 30s);
+            auto watchdog = std::make_shared<asio::steady_timer>(coordinator, g_hang_guard);
             watchdog->async_wait(
                 asio::bind_executor(coordinator, [transport](const boost::system::error_code& error) {
                     if (!error) {
@@ -663,7 +664,7 @@ TEST_F(WebSocketTransportTest, StalledHandshakeFailsAfterTheConnectTimeout) {
         asio::use_future);
 
     std::thread runner([this]() { io_ctx_.run(); });
-    const bool finished = result.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    const bool finished = result.wait_for(g_hang_guard) == std::future_status::ready;
     io_ctx_.stop();
     runner.join();
 
@@ -700,7 +701,7 @@ TEST_F(WebSocketTransportTest, ConnectTimeoutTooLongForTheClockMeansNoLimit) {
     const bool still_pending =
         result.wait_for(std::chrono::milliseconds(300)) == std::future_status::timeout;
     transport.close();
-    const bool finished = result.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    const bool finished = result.wait_for(g_hang_guard) == std::future_status::ready;
     io_ctx_.stop();
     runner.join();
 
@@ -738,7 +739,7 @@ TEST_F(WebSocketTransportTest, ConnectTimeoutPassingBetweenTwoHandshakeReadsRepo
         },
         asio::use_future);
     std::thread runner([this]() { io_ctx_.run(); });
-    const bool finished = result.wait_for(5s) == std::future_status::ready;
+    const bool finished = result.wait_for(g_hang_guard) == std::future_status::ready;
     transport.close();
     io_ctx_.stop();
     runner.join();
@@ -788,7 +789,7 @@ TEST_F(WebSocketTransportTest, CloseWhileTheResolverIsPastItsCancelCheckOpensNoC
 
     std::thread runner([this]() { io_ctx_.run(); });
 
-    const auto limit = std::chrono::seconds(10);
+    const auto limit = g_hang_guard;
     const bool lookup_held = resolve_gate().wait_until_entered(limit);
 
     // close() posts its cancelling to the transport's strand, which is one hop through the
@@ -872,7 +873,7 @@ OriginHandshakeResult handshake_with_origin(
         },
         [](const std::exception_ptr&) {});
 
-    io_ctx.run_for(5s);
+    io_ctx.run_for(g_hang_guard);
     return result;
 }
 
@@ -896,9 +897,9 @@ struct SocketPair {
 };
 
 /// Runs @p body on @p io until it finishes; its exception goes to the test.
-/// Runs @p body and everything it started. An exchange still running after 90 seconds is reported
+/// Runs @p body and everything it started. An exchange still running after g_hang_guard is reported
 /// as a failure and ended with @p on_hang (or by stopping @p io), so a regression fails the test
-/// before ctest's 120-second timeout kills it. The bound reports a hang; it is not a measure of speed.
+/// before ctest's timeout kills it. The bound reports a hang; it is not a measure of speed.
 void run_until_done(asio::io_context& io, std::function<mcp::Task<void>()> body,
                     std::function<void()> on_hang = {}) {
     auto done = asio::co_spawn(io, std::move(body), asio::use_future);
@@ -907,7 +908,7 @@ void run_until_done(asio::io_context& io, std::function<mcp::Task<void>()> body,
     bool finished = false;
     std::thread watchdog([&] {
         std::unique_lock lock(mutex);
-        if (changed.wait_for(lock, std::chrono::seconds(90), [&] { return finished; })) {
+        if (changed.wait_for(lock, g_hang_guard, [&] { return finished; })) {
             return;
         }
         ADD_FAILURE() << "the exchange did not finish";

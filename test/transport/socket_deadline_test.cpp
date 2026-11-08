@@ -1,4 +1,5 @@
 #include "../../src/detail/socket_deadline.hpp"
+#include "../support/hang_guard.hpp"
 
 #include <gtest/gtest.h>
 
@@ -91,7 +92,7 @@ TEST(SocketDeadlineTest, ADeadlinePassingBetweenTwoReadsFailsTheExchange) {
 
     auto result = asio::co_spawn(client_io, exchange(port, 200ms), asio::use_future);
     std::thread runner([&]() { client_io.run(); });
-    const bool finished = result.wait_for(5s) == std::future_status::ready;
+    const bool finished = result.wait_for(g_hang_guard) == std::future_status::ready;
     client_io.stop();
     runner.join();
     server.join();
@@ -122,7 +123,7 @@ TEST(SocketDeadlineTest, AnExchangeThatCompletesInTimeKeepsItsSocket) {
 
     auto result = asio::co_spawn(client_io, exchange(port, 200ms), asio::use_future);
     std::thread runner([&]() { client_io.run(); });
-    const bool finished = result.wait_for(5s) == std::future_status::ready;
+    const bool finished = result.wait_for(g_hang_guard) == std::future_status::ready;
     client_io.stop();
     runner.join();
     server.join();

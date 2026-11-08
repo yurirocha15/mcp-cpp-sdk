@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "mcp/transport/stdio.hpp"
 
 #include <gtest/gtest.h>
@@ -356,7 +357,7 @@ TEST_F(StdioTransportTest, RejectsASecondOutstandingRead) {
     std::thread first_runner([this]() { io_ctx_.run(); });
     std::thread second_runner([this]() { io_ctx_.run(); });
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    const auto deadline = std::chrono::steady_clock::now() + g_hang_guard;
     bool one_completed = false;
     while (std::chrono::steady_clock::now() < deadline) {
         one_completed = first.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready ||
@@ -417,7 +418,7 @@ TEST_F(StdioTransportTest, DestructionWaitsForAnActiveWrite) {
     auto completion =
         boost::asio::co_spawn(io_ctx_, transport->write_message("in flight"), boost::asio::use_future);
     std::thread runner([this]() { io_ctx_.run(); });
-    const bool write_started = output_buffer.wait_until_write_starts(std::chrono::seconds(2));
+    const bool write_started = output_buffer.wait_until_write_starts(g_hang_guard);
     if (!write_started) {
         output_buffer.release_write();
         runner.join();
@@ -641,7 +642,7 @@ TEST_F(StdioTransportTest, LinesTakenLeaveRoomForMore) {
 
     int read = 0;
     // Reports a reader that stops instead of hanging the test; not a measure of speed.
-    boost::asio::steady_timer guard(io_ctx_, std::chrono::seconds(90));
+    boost::asio::steady_timer guard(io_ctx_, g_hang_guard);
     guard.async_wait([&transport](const boost::system::error_code& error) {
         if (!error) {
             ADD_FAILURE() << "the reader stopped before the end of the input";
@@ -1141,7 +1142,7 @@ TEST_F(StdioTransportTest, CloseReleasesAWriteThePeerDoesNotRead) {
         mcp::StdioTransport transport(io_ctx_.get_executor(), input, std::cout);
         // Reports a write that close() did not release instead of hanging the test; not a measure
         // of speed.
-        boost::asio::steady_timer guard(io_ctx_, std::chrono::seconds(90));
+        boost::asio::steady_timer guard(io_ctx_, g_hang_guard);
         guard.async_wait([&](const boost::system::error_code& error) {
             if (!error) {
                 released_by_guard = true;
