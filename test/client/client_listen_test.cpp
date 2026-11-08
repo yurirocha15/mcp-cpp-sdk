@@ -1,4 +1,5 @@
 #include "../pipe_stream.hpp"
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "mcp/client/client.hpp"
@@ -35,9 +36,6 @@
 namespace {
 
 using nlohmann::json;
-
-/// Only a guard against a hang: no test asserts that anything finishes within it.
-constexpr auto g_hang_guard = std::chrono::seconds(30);
 
 constexpr std::string_view g_subscription_key = "io.modelcontextprotocol/subscriptionId";
 
@@ -150,7 +148,7 @@ class Harness {
 /// Waits, a millisecond at a time, until @p condition holds or the hang guard would fire.
 mcp::Task<bool> wait_until(std::function<bool()> condition) {
     auto executor = co_await boost::asio::this_coro::executor;
-    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
     while (!condition() && std::chrono::steady_clock::now() < give_up) {
         boost::asio::steady_timer timer(executor, std::chrono::milliseconds(1));
         co_await timer.async_wait(boost::asio::use_awaitable);

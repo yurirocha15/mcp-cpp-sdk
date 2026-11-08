@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "../../src/detail/modern_methods.hpp"
@@ -33,10 +34,11 @@ const std::vector<std::string> g_all_versions = {"2024-11-05", "2025-03-26", "20
                                                  "2026-07-28"};
 
 /// Waits on `ctx` until the request is cancelled, polling so the server's strand can deliver
-/// the notification. Gives up after 30 s so a broken cancellation fails the test, not the run.
+/// the notification. Gives up after g_hang_guard, so that a broken cancellation fails the test
+/// rather than the run.
 mcp::Task<bool> wait_for_cancel(mcp::Context& ctx) {
     auto executor = co_await boost::asio::this_coro::executor;
-    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
     while (!ctx.is_cancelled() && std::chrono::steady_clock::now() < give_up) {
         boost::asio::steady_timer timer(executor, std::chrono::milliseconds(1));
         co_await timer.async_wait(boost::asio::use_awaitable);
@@ -44,10 +46,10 @@ mcp::Task<bool> wait_for_cancel(mcp::Context& ctx) {
     co_return ctx.is_cancelled();
 }
 
-/// Waits until `flag` is set, polling like wait_for_cancel(), and gives up after 30 s.
+/// Waits until `flag` is set, polling like wait_for_cancel(), and gives up after g_hang_guard.
 mcp::Task<bool> wait_for_flag(const std::atomic<bool>& flag) {
     auto executor = co_await boost::asio::this_coro::executor;
-    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
     while (!flag.load() && std::chrono::steady_clock::now() < give_up) {
         boost::asio::steady_timer timer(executor, std::chrono::milliseconds(1));
         co_await timer.async_wait(boost::asio::use_awaitable);
@@ -149,13 +151,13 @@ class ServerModernEraTest : public ::testing::Test {
     }
 
     /// Runs `server` on a scripted session fed `messages` and returns what it writes, once
-    /// `expected` messages have been written. A server that writes fewer is stopped after 30 s,
+    /// `expected` messages have been written. A server that writes fewer is stopped after g_hang_guard,
     /// so the test fails on the count instead of hanging.
     std::vector<json> run_session(mcp::Server& server, const std::vector<json>& messages,
                                   std::size_t expected) {
         auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
         auto* raw_transport = transport.get();
-        auto deadline = std::make_shared<boost::asio::steady_timer>(io_ctx_, std::chrono::seconds(30));
+        auto deadline = std::make_shared<boost::asio::steady_timer>(io_ctx_, g_hang_guard);
         deadline->async_wait([raw_transport](const boost::system::error_code& error) {
             if (!error) {
                 raw_transport->close();

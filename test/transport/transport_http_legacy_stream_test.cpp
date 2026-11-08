@@ -3,6 +3,7 @@
 // stream for what belongs to no request, and a stream the client left is resumed with
 // Last-Event-ID. Covers StreamableHttpSessionManager, HttpServerTransport and HttpClientTransport.
 
+#include "../support/hang_guard.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
@@ -41,11 +42,11 @@ using nlohmann::json;
 
 constexpr auto g_version = "2025-11-25";
 
-/// Waits, a millisecond at a time, until @p condition holds. Gives up after 30 s so a broken
+/// Waits, a millisecond at a time, until @p condition holds. Gives up after g_hang_guard so a broken
 /// hand-off fails the test instead of hanging the run.
 mcp::Task<bool> wait_until(std::function<bool()> condition) {
     auto executor = co_await asio::this_coro::executor;
-    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
     while (!condition() && std::chrono::steady_clock::now() < give_up) {
         asio::steady_timer tick(executor, std::chrono::milliseconds(1));
         co_await tick.async_wait(asio::use_awaitable);
@@ -327,8 +328,9 @@ class LegacyStreamTest : public ::testing::Test {
    protected:
     asio::io_context io_ctx_;
     std::shared_ptr<Shared> shared_ = std::make_shared<Shared>();
-    /// Stops the run after 30 s, so a stream that never ends fails the test instead of hanging it.
-    asio::steady_timer guard_{io_ctx_, std::chrono::seconds(30)};
+    /// Stops the run after g_hang_guard, so a stream that never ends fails the test instead of
+    /// hanging it.
+    asio::steady_timer guard_{io_ctx_, g_hang_guard};
 
     void SetUp() override {
         guard_.async_wait([this](const boost::system::error_code& error) {

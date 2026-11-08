@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "mcp/client/client.hpp"
@@ -31,9 +32,6 @@
 namespace {
 
 using nlohmann::json;
-
-/// Only a guard against a hang: no test asserts that anything finishes within it.
-constexpr auto g_hang_guard = std::chrono::seconds(30);
 
 /// What the handlers of the scripted tests were asked, in order.
 std::vector<json>& handler_calls() {

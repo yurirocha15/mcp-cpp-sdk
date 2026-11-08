@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "mcp/server/server.hpp"
@@ -37,7 +38,7 @@ mcp::Task<Reply> send(asio::any_io_executor executor, unsigned short port, http:
                       std::string body, Headers headers) {
     beast::tcp_stream stream(executor);
     // A bound for reporting a server that never answers, not a measure of speed.
-    stream.expires_after(std::chrono::minutes(2));
+    stream.expires_after(g_hang_guard);
     co_await stream.async_connect(asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port),
                                   asio::use_awaitable);
     http::request<http::string_body> request{verb, "/mcp", 11};

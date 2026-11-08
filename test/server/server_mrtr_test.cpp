@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "mcp/server/server.hpp"
@@ -24,11 +25,11 @@ namespace {
 namespace asio = boost::asio;
 using nlohmann::json;
 
-/// Waits, a millisecond at a time, until @p condition holds. Gives up after 30 s so a broken
+/// Waits, a millisecond at a time, until @p condition holds. Gives up after g_hang_guard so a broken
 /// hand-off fails the test instead of hanging the run.
 mcp::Task<bool> wait_until(std::function<bool()> condition) {
     auto executor = co_await asio::this_coro::executor;
-    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
     while (!condition() && std::chrono::steady_clock::now() < give_up) {
         asio::steady_timer timer(executor, std::chrono::milliseconds(1));
         co_await timer.async_wait(asio::use_awaitable);
@@ -295,7 +296,7 @@ class MrtrTest : public ::testing::Test {
     /// The first answer to @p tool, and the answer to its retry after the handler was let finish.
     /// A retry nobody answers stops the run, so that it fails the test rather than hanging it.
     std::pair<json, json> retry_after_the_handler_finished(const std::string& tool) {
-        asio::steady_timer guard(io_ctx_, std::chrono::seconds(30));
+        asio::steady_timer guard(io_ctx_, g_hang_guard);
         guard.async_wait([this](const boost::system::error_code& error) {
             if (!error) {
                 io_ctx_.stop();
@@ -403,10 +404,10 @@ TEST_F(MrtrTest, SessionlessRequestsShareTheInFlightLimit) {
     json beside_the_parked;
     json refused;
     json after;
-    // Gives up after 30 s, so a count that never arrives fails the test instead of hanging it.
+    // Gives up after g_hang_guard, so a count that never arrives fails the test, not the run.
     const auto wait_for_running = [&running](bool (*reached)(int)) -> mcp::Task<bool> {
         auto executor = co_await asio::this_coro::executor;
-        const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
         while (!reached(running.load()) && std::chrono::steady_clock::now() < give_up) {
             asio::steady_timer tick(executor, std::chrono::milliseconds(1));
             co_await tick.async_wait(asio::use_awaitable);
@@ -428,8 +429,8 @@ TEST_F(MrtrTest, SessionlessRequestsShareTheInFlightLimit) {
         released = true;
         co_await wait_for_running([](int count) { return count == 0; });
         // A request counts until its handler's frame is gone, which can be a moment after its
-        // handler returned. Room that never comes back fails the test after 30 s.
-        const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        // handler returned. Room that never comes back fails the test after g_hang_guard.
+        const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
         for (int id = 6;; ++id) {
             after = co_await send(call_tool(id, "quick"));
             if (after.contains("result") || std::chrono::steady_clock::now() >= give_up) {
@@ -482,9 +483,9 @@ TEST_F(MrtrTest, HandlerGoingOnAfterItWasGivenUpCountsInFlight) {
         refused = co_await send(call_tool(2, "at_once"));
         release_handler_ = true;
         // A request counts until its handler's frame is gone, which can be a moment after its
-        // handler returned. Room that never comes back fails the test after 30 s.
+        // handler returned. Room that never comes back fails the test after g_hang_guard.
         auto executor = co_await asio::this_coro::executor;
-        const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
         for (int id = 3;; ++id) {
             after = co_await send(call_tool(id, "at_once"));
             if (after.contains("result") || std::chrono::steady_clock::now() >= give_up) {
@@ -511,8 +512,8 @@ TEST_F(MrtrTest, HandlerGoingOnAfterItWasGivenUpCountsOnItsSession) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw_transport = transport.get();
     raw_transport->enqueue_message(call_tool(1, "ask_then_work").dump());
-    // A session end that never comes stops the run after 30 s, failing the test.
-    asio::steady_timer guard(io_ctx_, std::chrono::seconds(30));
+    // A session end that never comes stops the run after g_hang_guard, failing the test.
+    asio::steady_timer guard(io_ctx_, g_hang_guard);
     guard.async_wait([this](const boost::system::error_code& error) {
         if (!error) {
             io_ctx_.stop();
@@ -1044,7 +1045,7 @@ TEST_F(MrtrTest, ParkedRequestDoesNotBlockSecondRequestOnASession) {
     });
     raw_transport->enqueue_message(call_tool(1, "ask").dump());
     raw_transport->enqueue_message(make_modern_request(2, "tools/list").dump());
-    asio::steady_timer guard(io_ctx_, std::chrono::seconds(30));
+    asio::steady_timer guard(io_ctx_, g_hang_guard);
     guard.async_wait([raw_transport](const boost::system::error_code& error) {
         if (!error) {
             raw_transport->close();
@@ -1086,7 +1087,7 @@ TEST_F(MrtrTest, ModernSessionNeverWritesARequest) {
     for (const auto* tool : {"ask", "ask_url", "sample", "roots"}) {
         raw_transport->enqueue_message(call_tool(++id, tool, json::object(), everything).dump());
     }
-    asio::steady_timer guard(io_ctx_, std::chrono::seconds(30));
+    asio::steady_timer guard(io_ctx_, g_hang_guard);
     guard.async_wait([raw_transport](const boost::system::error_code& error) {
         if (!error) {
             raw_transport->close();
@@ -1184,7 +1185,7 @@ TEST_F(MrtrTest, LegacyRequestsStillUseServerToClientRequests) {
     raw_transport->enqueue_message(initialize.dump());
     raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(make_tool_call_request("call", "ask").dump());
-    asio::steady_timer guard(io_ctx_, std::chrono::seconds(30));
+    asio::steady_timer guard(io_ctx_, g_hang_guard);
     guard.async_wait([raw_transport](const boost::system::error_code& error) {
         if (!error) {
             raw_transport->close();

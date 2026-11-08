@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "mcp/server/server.hpp"
@@ -48,11 +49,11 @@ json result_subscription_of(const json& message) {
     return field(message, "/result/_meta/io.modelcontextprotocol~1subscriptionId");
 }
 
-/// Waits, a millisecond at a time, until @p condition holds. Gives up after 30 s so a broken
+/// Waits, a millisecond at a time, until @p condition holds. Gives up after g_hang_guard so a broken
 /// stream fails the test instead of hanging the run.
 mcp::Task<bool> wait_until(std::function<bool()> condition) {
     auto executor = co_await asio::this_coro::executor;
-    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
     while (!condition() && std::chrono::steady_clock::now() < give_up) {
         asio::steady_timer timer(executor, std::chrono::milliseconds(1));
         co_await timer.async_wait(asio::use_awaitable);

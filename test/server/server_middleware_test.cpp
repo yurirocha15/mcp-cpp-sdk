@@ -3,6 +3,7 @@
  * @brief Tests for Server middleware functionality
  */
 
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include <gtest/gtest.h>
@@ -523,7 +524,7 @@ json answer_to(Server& server, const std::vector<json>& messages, const json& id
     // A request nobody answers keeps the server running even after its transport closes. The timer
     // runs out only then, so that the regression fails the test instead of hanging the suite.
     boost::asio::steady_timer watchdog(io);
-    watchdog.expires_after(std::chrono::seconds(30));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&io](const boost::system::error_code& error) {
         if (!error) {
             io.stop();

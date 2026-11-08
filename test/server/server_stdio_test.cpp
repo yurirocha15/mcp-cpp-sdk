@@ -745,7 +745,7 @@ TEST_F(ServerStdioTest, InputEndAnswersAnOpenListen) {
     std::ostringstream output;
 
     auto run = std::async(std::launch::async, [&] { server_->run_stdio(input, output); });
-    if (run.wait_for(std::chrono::seconds(90)) != std::future_status::ready) {
+    if (run.wait_for(g_hang_guard) != std::future_status::ready) {
         ADD_FAILURE() << "the run did not end with the input";
         mcp::detail::trigger_shutdown_signal();
     }

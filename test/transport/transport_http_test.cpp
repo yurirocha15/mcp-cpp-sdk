@@ -4061,7 +4061,7 @@ TEST(HttpClientResponseTimeout, AServerThatNeverAnswersFailsTheWrite) {
             transport.close();
         },
         asio::detached);
-    io.run_for(std::chrono::seconds(30));
+    io.run_for(g_hang_guard);
 
     EXPECT_TRUE(failed);
 }

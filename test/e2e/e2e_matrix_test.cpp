@@ -7,6 +7,7 @@
  * including the combinations that must fail with an error naming the versions the server serves.
  */
 #include "../pipe_stream.hpp"
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "mcp/client/client.hpp"
@@ -75,7 +76,6 @@ const std::vector<TransportKind> g_transports = {
     TransportKind::eMemory,        TransportKind::eStdio,   TransportKind::eSessionManager,
     TransportKind::eStatelessJson, TransportKind::eRunHttp, TransportKind::eWebSocket};
 
-constexpr auto g_hang_guard = std::chrono::seconds(30);
 constexpr unsigned short g_first_port = 20610;
 
 std::string client_name(ClientKind kind) {

@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "../../src/detail/header_value.hpp"
@@ -36,9 +37,6 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 using nlohmann::json;
 using Headers = std::vector<std::pair<std::string, std::string>>;
-
-/// Only a guard against a hang: no test asserts that anything finishes within it.
-constexpr auto g_hang_guard = std::chrono::seconds(30);
 
 std::string lower(std::string text) {
     std::transform(text.begin(), text.end(), text.begin(),
@@ -1083,7 +1081,7 @@ TEST(HttpClientModern, SilentDiscoverFallsBackAtTheProbeTimeout) {
     auto transport = make_transport(io, raw.url());
     auto options = auto_options();
     options.probe_timeout = std::chrono::milliseconds(200);
-    options.request_timeout = std::chrono::seconds(20);
+    options.request_timeout = g_hang_guard;
     mcp::Client client(transport, io.get_executor(), options);
 
     run_guarded(io, raw, [&]() -> mcp::Task<void> {

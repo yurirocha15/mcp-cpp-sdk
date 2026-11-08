@@ -497,7 +497,7 @@ TEST_F(SessionLimitsTest, RequestReadAheadBeforeTheClientFinishedIsCheckedForATo
     run([&]() -> mcp::Task<void> {
         beast::tcp_stream stream(io_.get_executor());
         // A bound for reporting a server that never answers, not a measure of speed.
-        stream.expires_after(std::chrono::minutes(2));
+        stream.expires_after(g_hang_guard);
         const asio::ip::tcp::endpoint endpoint(asio::ip::make_address("127.0.0.1"), port_);
         co_await stream.async_connect(endpoint, asio::use_awaitable);
         co_await asio::async_write(stream, asio::buffer(pipelined), asio::use_awaitable);
