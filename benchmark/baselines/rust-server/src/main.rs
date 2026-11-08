@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use axum::serve::ListenerExt;
 use axum::{Router, routing::get, Json};
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -327,7 +328,14 @@ async fn main() -> Result<()> {
         .route("/health", get(health))
         .nest_service("/mcp", service);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8095").await?;
+    // Stateful responses go out in several writes; Go and the C++ servers already disable Nagle.
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8095")
+        .await?
+        .tap_io(|tcp| {
+            if let Err(err) = tcp.set_nodelay(true) {
+                tracing::warn!("failed to set TCP_NODELAY: {err}");
+            }
+        });
     tracing::warn!("Rust MCP server (rmcp SDK) listening on 0.0.0.0:8095");
 
     axum::serve(listener, router)
