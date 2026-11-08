@@ -175,9 +175,6 @@ class MCP_API WebSocketClientTransport final : public ITransport {
     Task<void> write_message(std::string_view message) override;
 
     /**
-     * @brief Close the WebSocket connection. Safe to call multiple times.
-     */
-    /**
      * @brief Set the largest message the transport accepts, in bytes.
      *
      * A larger message ends the connection. The default is 16 MiB. Call it before the first read
@@ -185,6 +182,9 @@ class MCP_API WebSocketClientTransport final : public ITransport {
      */
     void set_max_message_bytes(std::size_t bytes);
 
+    /**
+     * @brief Close the WebSocket connection. Safe to call multiple times.
+     */
     void close() override;
 
    private:
