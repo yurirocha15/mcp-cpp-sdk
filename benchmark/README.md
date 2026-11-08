@@ -270,7 +270,7 @@ created. It reads these environment variables, which `run.sh` sets for each cell
 | `MCP_PROTOCOL_VERSION` | `2026-07-28` | Revision requested |
 | `BENCHMARK_MODE` | `measurement` | `warmup` or `measurement` |
 | `BENCHMARK_VUS` | `50` | Virtual users |
-| `BENCHMARK_SLEEP` | `0.05` | Seconds each virtual user sleeps per iteration |
+| `BENCHMARK_THINK_TIME` | `0.05` | Seconds each virtual user sleeps per iteration; a finite number of at least 0 |
 | `BENCHMARK_RAMP_DURATION` | `15s` | Warmup ramp |
 | `BENCHMARK_WARMUP_DURATION` | `60s` | Warmup load |
 | `BENCHMARK_MEASURE_DURATION` | `5m` | Measurement load |
@@ -299,8 +299,8 @@ docker run -d --name modern-server --network benchmark_mcp-network -p 8089:8095 
 On older protocol revisions the server serves no sessions unless `MCP_SESSION_MODE=stateful` is set;
 `2026-07-28` requests never have one.
 
-Compare servers at the same `BENCHMARK_SLEEP`. The API service is shared by every server and
-saturates before the servers do when `BENCHMARK_SLEEP=0`.
+Compare servers at the same `BENCHMARK_THINK_TIME`. The API service is shared by every server and
+saturates before the servers do when `BENCHMARK_THINK_TIME=0`.
 
 ## Concurrency and resource controls
 
