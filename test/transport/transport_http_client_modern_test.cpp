@@ -1969,7 +1969,10 @@ TEST(HttpClientModern, EventWithoutAnEndIsCutOffAtTheMessageLimit) {
         return reply;
     });
     auto transport = make_transport(io, raw.url());
-    mcp::Client client(transport, io.get_executor(), modern_options());
+    auto options = modern_options();
+    // The call ends at the message limit; its timeout only reports a stream that is never cut off.
+    options.request_timeout = g_hang_guard;
+    mcp::Client client(transport, io.get_executor(), options);
 
     std::string failure;
     run_guarded(io, raw, [&]() -> mcp::Task<void> {
