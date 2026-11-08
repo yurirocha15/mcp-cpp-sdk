@@ -327,6 +327,19 @@ and k6 to 4 CPUs and 2 GiB. Every measured container is constrained to the same
 host CPU-affinity set inherited by the harness. The preflight rejects a Docker
 or effective cgroup CPU set that differs from that recorded set.
 
+These are the limits of the paced load model, `BENCHMARK_LOAD_MODEL=paced`, which
+is the default. Each virtual user sleeps 50 ms per iteration of 4 operations, so
+50 virtual users cannot exceed 4,000 operations per second whatever the target
+can do. `BENCHMARK_LOAD_MODEL=capacity` removes that ceiling: the think time is 0,
+k6 gets 8 CPUs and 4 GiB, the API service 8 CPUs, and Redis 1 CPU, while the target
+keeps 2 CPUs and 2 GiB. The model is fixed per run: `BENCHMARK_THINK_TIME` and the
+limits above are not read from the environment by `run.sh`. A capacity run is
+labeled `capacity-full` when it selects `full` with the production round and
+duration settings and `capacity-smoke` otherwise; it is never labeled `production`
+or `production-full`, and never a publishable candidate. The preflight requires a
+host CPU set at least as large as the sum of all limits: 9 CPUs for the paced
+model and 19 for the capacity model.
+
 One-second collectors cover the target, Redis, API service, k6, and host for
 the measurement window. Collector audit files must show complete sampling,
 zero failed attempts, sufficient duration, and bounded gaps. The target's

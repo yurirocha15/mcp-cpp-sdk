@@ -30,10 +30,42 @@ BENCHMARK_WARMUP_DURATION="${BENCHMARK_WARMUP_DURATION:-60s}"
 BENCHMARK_MEASURE_DURATION="${BENCHMARK_MEASURE_DURATION:-5m}"
 BENCHMARK_ORDER_SEED="${BENCHMARK_ORDER_SEED:-$(date +%s)}"
 # The load-generator contract is fixed so a run cannot be labeled publishable
-# while silently using limits that differ from the recorded expectations.
-readonly BENCHMARK_K6_CPUS=4
-readonly BENCHMARK_K6_MEMORY="2g"
-readonly BENCHMARK_K6_MEMORY_BYTES=2147483648
+# while silently using limits that differ from the recorded expectations. The
+# paced model is the production load. The capacity model removes the think time
+# and gives the load generator, the API service, and Redis the cores they need
+# to keep a target busy; the target keeps its 2 CPUs and 2 GiB.
+BENCHMARK_LOAD_MODEL="${BENCHMARK_LOAD_MODEL:-paced}"
+BENCHMARK_K6_LOAD_ENV=()
+case "$BENCHMARK_LOAD_MODEL" in
+    paced)
+        readonly BENCHMARK_K6_CPUS=4
+        readonly BENCHMARK_K6_MEMORY="2g"
+        readonly BENCHMARK_K6_MEMORY_BYTES=2147483648
+        readonly BENCHMARK_API_CPUS="2.0"
+        readonly BENCHMARK_REDIS_CPUS="0.5"
+        readonly BENCHMARK_THINK_TIME_SECONDS="0.05"
+        ;;
+    capacity)
+        readonly BENCHMARK_K6_CPUS=8
+        readonly BENCHMARK_K6_MEMORY="4g"
+        readonly BENCHMARK_K6_MEMORY_BYTES=4294967296
+        readonly BENCHMARK_API_CPUS="8.0"
+        readonly BENCHMARK_REDIS_CPUS="1.0"
+        readonly BENCHMARK_THINK_TIME_SECONDS="0"
+        BENCHMARK_K6_LOAD_ENV=(-e "BENCHMARK_THINK_TIME=$BENCHMARK_THINK_TIME_SECONDS")
+        ;;
+    *)
+        printf '[ERROR] BENCHMARK_LOAD_MODEL must be "paced" or "capacity", got "%s"\n' \
+            "$BENCHMARK_LOAD_MODEL" >&2
+        exit 1
+        ;;
+esac
+# The compose file reads these limits; the same values go to the checks below.
+export BENCHMARK_API_CPUS BENCHMARK_REDIS_CPUS
+# The checks take CPU limits in their shortest form.
+API_CPUS_ARG="$(printf '%g' "$BENCHMARK_API_CPUS")"
+REDIS_CPUS_ARG="$(printf '%g' "$BENCHMARK_REDIS_CPUS")"
+readonly API_CPUS_ARG REDIS_CPUS_ARG
 readonly BENCHMARK_REQUEST_CONCURRENCY=50
 readonly BENCHMARK_LOCK_FILE="/tmp/mcp-cpp-sdk-benchmark.lock"
 RESULTS_DIR=""
@@ -289,6 +321,14 @@ Production profile: 3 rounds, 50 VUs, 15s ramp + 60s warmup, then a
 separate constant-50-VU 5m measurement. `full` with the same settings is
 labeled production-full. Any override is labeled smoke and is never a
 publishable result.
+
+BENCHMARK_LOAD_MODEL=paced (the default) is the production load: every virtual
+user sleeps 50 ms per iteration, k6 gets 4 CPUs and 2 GiB, the API service
+2 CPUs, and Redis 0.5 CPU. BENCHMARK_LOAD_MODEL=capacity removes the sleep and
+gives k6 8 CPUs and 4 GiB, the API service 8 CPUs, and Redis 1 CPU; the target
+keeps 2 CPUs and 2 GiB. A capacity run is labeled capacity-full (the `full`
+selection with the settings above) or capacity-smoke, and is never labeled
+production or production-full.
 USAGE
 }
 
@@ -703,6 +743,7 @@ run_k6_warmup() {
         -e BENCHMARK_CONTRACT="$ELIGIBILITY_CONTRACT" \
         -e BENCHMARK_MODE=warmup \
         -e BENCHMARK_VUS="$BENCHMARK_VUS" \
+        ${BENCHMARK_K6_LOAD_ENV[@]+"${BENCHMARK_K6_LOAD_ENV[@]}"} \
         -e BENCHMARK_RAMP_DURATION="$BENCHMARK_RAMP_DURATION" \
         -e BENCHMARK_WARMUP_DURATION="$BENCHMARK_WARMUP_DURATION" \
         -e OUTPUT_PATH="/results/warmup_summary_run${run_idx}.json" \
@@ -756,6 +797,7 @@ run_k6_measurement() {
         -e BENCHMARK_CONTRACT="$ELIGIBILITY_CONTRACT" \
         -e BENCHMARK_MODE=measurement \
         -e BENCHMARK_VUS="$BENCHMARK_VUS" \
+        ${BENCHMARK_K6_LOAD_ENV[@]+"${BENCHMARK_K6_LOAD_ENV[@]}"} \
         -e BENCHMARK_MEASURE_DURATION="$BENCHMARK_MEASURE_DURATION" \
         -e OUTPUT_PATH="/results/k6_summary_run${run_idx}.json" \
         "$K6_IMAGE" run --paused --address 127.0.0.1:6565 "/scripts/$(k6_script_name "$server")" \
@@ -820,9 +862,9 @@ run_k6_measurement() {
         "$server_results/resource_headroom_run${run_idx}.json" \
         --expected-duration "$BENCHMARK_MEASURE_DURATION" \
         --observed-resource "server:$server_results/stats_run${run_idx}.json:2:2147483648" \
-        --resource "redis:$server_results/redis_stats_run${run_idx}.json:0.5:536870912" \
-        --resource "api_service:$server_results/api_stats_run${run_idx}.json:2:2147483648" \
-        --resource "load_generator:$server_results/k6_stats_run${run_idx}.json:4:2147483648" \
+        --resource "redis:$server_results/redis_stats_run${run_idx}.json:${REDIS_CPUS_ARG}:536870912" \
+        --resource "api_service:$server_results/api_stats_run${run_idx}.json:${API_CPUS_ARG}:2147483648" \
+        --resource "load_generator:$server_results/k6_stats_run${run_idx}.json:${BENCHMARK_K6_CPUS}:${BENCHMARK_K6_MEMORY_BYTES}" \
         --resource "host:$server_results/host_stats_run${run_idx}.json:$HOST_CPU_LIMIT:$HOST_MEMORY_BYTES" \
         2>&1 | tee "$resource_log"
     resource_pipeline_status=("${PIPESTATUS[@]}")
@@ -903,6 +945,10 @@ write_run_manifest() {
         --argjson requested_protocols "$requested_protocols_json" \
         --argjson k6_cpus "$BENCHMARK_K6_CPUS" \
         --argjson k6_memory_bytes "$BENCHMARK_K6_MEMORY_BYTES" \
+        --arg load_model "$BENCHMARK_LOAD_MODEL" \
+        --argjson think_time_seconds "$BENCHMARK_THINK_TIME_SECONDS" \
+        --argjson api_service_cpus "$API_CPUS_ARG" \
+        --argjson redis_cpus "$REDIS_CPUS_ARG" \
         --slurpfile schedule "$RESULTS_DIR/run_order.json" \
         --slurpfile images "$RESULTS_DIR/compose_images.json" \
         '{schema_version: 2, status: "running", started_at: $started_at,
@@ -910,7 +956,9 @@ write_run_manifest() {
           parameters: {runs: $runs, vus: $vus,
             request_concurrency: $request_concurrency, ramp_duration: $ramp,
             warmup_duration: $warmup, measurement_duration: $measurement,
-            k6_cpus: $k6_cpus, k6_memory_bytes: $k6_memory_bytes},
+            k6_cpus: $k6_cpus, k6_memory_bytes: $k6_memory_bytes,
+            load_model: $load_model, think_time_seconds: $think_time_seconds,
+            api_service_cpus: $api_service_cpus, redis_cpus: $redis_cpus},
           contracts: {
             eligibility: $eligibility_contract,
             supplemental: {
@@ -1048,6 +1096,14 @@ if [[ "$BENCHMARK_RUNS" -eq 3 \
         RUN_PROFILE="baseline-diagnostic"
     fi
 fi
+if [[ "$BENCHMARK_LOAD_MODEL" == "capacity" ]]; then
+    # A capacity run is never a production run, whatever it selects.
+    if [[ "$RUN_PROFILE" == "production-full" ]]; then
+        RUN_PROFILE="capacity-full"
+    else
+        RUN_PROFILE="capacity-smoke"
+    fi
+fi
 if [[ "$RUN_PROFILE" == production* \
     && "$BENCHMARK_VUS" -ne "$BENCHMARK_REQUEST_CONCURRENCY" ]]; then
     error "Production VUs must match request concurrency ($BENCHMARK_REQUEST_CONCURRENCY)"
@@ -1078,8 +1134,11 @@ HOST_MEMORY_BYTES="$(awk '/^MemTotal:/ {printf "%.0f", $2 * 1024; exit}' /proc/m
 [[ "$HOST_MEMORY_BYTES" =~ ^[1-9][0-9]*$ ]] || { error "Could not determine host memory"; exit 1; }
 [[ -n "$HOST_CPUSET" ]] || { error "Could not determine host CPU set"; exit 1; }
 export BENCHMARK_CPUSET="$HOST_CPUSET"
-if [[ "$RUN_PROFILE" != "smoke" && "$HOST_CPU_LIMIT" -lt 9 ]]; then
-    error "Full-duration runs require at least 9 host CPUs for 8.5 CPUs of configured limits"
+configured_cpus="$(awk -v k6="$BENCHMARK_K6_CPUS" -v api="$BENCHMARK_API_CPUS" \
+    -v redis="$BENCHMARK_REDIS_CPUS" 'BEGIN {printf "%g", k6 + api + redis + 2}')"
+required_host_cpus="$(awk -v n="$configured_cpus" 'BEGIN {c = int(n); if (c < n) c++; print c}')"
+if [[ "$RUN_PROFILE" != "smoke" && "$HOST_CPU_LIMIT" -lt "$required_host_cpus" ]]; then
+    error "Full-duration runs require at least $required_host_cpus host CPUs for $configured_cpus CPUs of configured limits"
     exit 1
 fi
 compose version >/dev/null
@@ -1191,12 +1250,12 @@ done
 mkdir -p "$RESULTS_DIR/shared/redis" "$RESULTS_DIR/shared/api_service"
 python3 "$SCRIPT_DIR/capture_container.py" \
     --container mcp-redis --run 1 --output-dir "$RESULTS_DIR/shared/redis" \
-    --expected-cpus 0.5 --expected-memory-bytes 536870912 \
+    --expected-cpus "$REDIS_CPUS_ARG" --expected-memory-bytes 536870912 \
     --expected-cpuset "$HOST_CPUSET"
 python3 "$SCRIPT_DIR/capture_container.py" \
     --container mcp-api-service --run 1 \
     --output-dir "$RESULTS_DIR/shared/api_service" \
-    --expected-cpus 2 --expected-memory-bytes 2147483648 \
+    --expected-cpus "$API_CPUS_ARG" --expected-memory-bytes 2147483648 \
     --expected-cpuset "$HOST_CPUSET"
 
 sequence_index=0
