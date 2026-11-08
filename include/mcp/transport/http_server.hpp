@@ -88,13 +88,6 @@ class EventStore {
     }
 
     /**
-     * @brief Retrieve the events after a given event ID on that event's stream.
-     *
-     * @param last_event_id The ID of the last event the client received.
-     * @return A vector of (id, data) pairs for the later events of the stream that
-     *         last_event_id belongs to, or std::nullopt if last_event_id has been evicted.
-     */
-    /**
      * @brief The stream an event was sent on.
      *
      * @param event_id The ID of the event.
@@ -109,6 +102,13 @@ class EventStore {
         return std::nullopt;
     }
 
+    /**
+     * @brief Retrieve the events after a given event ID on that event's stream.
+     *
+     * @param last_event_id The ID of the last event the client received.
+     * @return A vector of (id, data) pairs for the later events of the stream that
+     *         last_event_id belongs to, or std::nullopt if last_event_id has been evicted.
+     */
     [[nodiscard]] std::optional<SseEventList> events_after(const std::string& last_event_id) const {
         if (events_.empty()) {
             return SseEventList{};

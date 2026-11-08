@@ -12,7 +12,7 @@ until it is either rewritten or added to ``ALLOWED_USES`` on purpose.
 Implementations of protocol revision 2026-07-28 must not emit ``-32002``
 (resource not found in 2025-11-25 and earlier) or ``-32042`` (URL elicitation
 required, 2025-11-25 only). The library may hold ``-32002`` only as the value
-of ``g_CONNECTION_CLOSED``, a client-local error that never goes on the wire;
+of ``g_RESOURCE_NOT_FOUND``, which answers sessions of 2025-11-25 and earlier;
 any other literal of either code under ``src/`` or ``include/`` fails.
 
 Comments are ignored. Usage: ``check_protocol_constants.py [repo-root]``.
