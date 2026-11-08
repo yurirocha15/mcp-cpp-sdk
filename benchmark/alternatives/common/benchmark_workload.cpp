@@ -103,6 +103,15 @@ class HttpClient {
         }
     }
 
+    ~HttpClient() {
+        for (CURL* handle : idle_) {
+            curl_easy_cleanup(handle);
+        }
+    }
+
+    HttpClient(const HttpClient&) = delete;
+    HttpClient& operator=(const HttpClient&) = delete;
+
     std::string get(const std::string& path) const { return request(base_url_ + path, nullptr); }
 
     std::string post(const std::string& path, const std::string& body) const {
@@ -110,39 +119,78 @@ class HttpClient {
     }
 
    private:
-    static std::string request(const std::string& url, const std::string* body) {
-        thread_local std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> curl(curl_easy_init(),
-                                                                              &curl_easy_cleanup);
-        if (!curl) {
+    // Handles, each with the keep-alive connection it caches, are pooled across threads like the
+    // Redis connections below. A handle kept per thread opens and closes a connection per call in
+    // an SDK that runs each request on a new thread, and the closed connections' TIME_WAIT
+    // entries exhaust the container's ephemeral ports within a minute at full load.
+    struct Lease {
+        Lease(const HttpClient& client, CURL* handle) : owner(client), value(handle) {}
+        const HttpClient& owner;
+        CURL* value;
+        bool failed = false;
+        ~Lease() {
+            if (failed) {
+                curl_easy_cleanup(value);
+            } else {
+                owner.release(value);
+            }
+        }
+        Lease(const Lease&) = delete;
+        Lease& operator=(const Lease&) = delete;
+    };
+
+    CURL* acquire() const {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!idle_.empty()) {
+                CURL* handle = idle_.back();
+                idle_.pop_back();
+                return handle;
+            }
+        }
+        CURL* handle = curl_easy_init();
+        if (!handle) {
             throw std::runtime_error("curl_easy_init failed");
         }
+        return handle;
+    }
+
+    void release(CURL* handle) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        idle_.push_back(handle);
+    }
+
+    std::string request(const std::string& url, const std::string* body) const {
+        Lease lease{*this, acquire()};
+        CURL* curl = lease.value;
 
         std::string output;
-        curl_easy_reset(curl.get());
-        curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION, write_body);
-        curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &output);
-        curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT_MS, 10000L);
-        curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT_MS, 2000L);
-        curl_easy_setopt(curl.get(), CURLOPT_TCP_KEEPALIVE, 1L);
-        curl_easy_setopt(curl.get(), CURLOPT_NOSIGNAL, 1L);
+        curl_easy_reset(curl);
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_body);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &output);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 10000L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 2000L);
+        curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
         curl_slist* headers = nullptr;
         if (body) {
             headers = curl_slist_append(headers, "Content-Type: application/json");
-            curl_easy_setopt(curl.get(), CURLOPT_HTTPHEADER, headers);
-            curl_easy_setopt(curl.get(), CURLOPT_POST, 1L);
-            curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDS, body->data());
-            curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDSIZE, static_cast<long>(body->size()));
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+            curl_easy_setopt(curl, CURLOPT_POST, 1L);
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body->data());
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body->size()));
         }
 
-        const CURLcode status = curl_easy_perform(curl.get());
+        const CURLcode status = curl_easy_perform(curl);
         long response_code = 0;
-        curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &response_code);
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
         if (headers) {
             curl_slist_free_all(headers);
         }
         if (status != CURLE_OK) {
+            lease.failed = true;
             throw std::runtime_error(std::string("HTTP request failed: ") + curl_easy_strerror(status));
         }
         if (response_code < 200 || response_code >= 300) {
@@ -152,6 +200,8 @@ class HttpClient {
     }
 
     std::string base_url_;
+    mutable std::mutex mutex_;
+    mutable std::vector<CURL*> idle_;
 };
 
 struct RedisEndpoint {
