@@ -328,7 +328,8 @@ user sleeps 50 ms per iteration, k6 gets 4 CPUs and 2 GiB, the API service
 gives k6 8 CPUs and 4 GiB, the API service 8 CPUs, and Redis 1 CPU; the target
 keeps 2 CPUs and 2 GiB. A capacity run is labeled capacity-full (the `full`
 selection with the settings above) or capacity-smoke, and is never labeled
-production or production-full.
+production or production-full. A complete capacity-full run is a publishable
+candidate; capacity-smoke is harness validation only.
 USAGE
 }
 
@@ -384,7 +385,7 @@ finalize_manifest() {
         --argjson exit_code "$exit_code" \
         '.status = $status | .completed_at = $completed_at
         | .publishable_candidate = ($status == "complete"
-            and (.profile == "production" or .profile == "production-full"))
+            and (.profile == "production" or .profile == "production-full" or .profile == "capacity-full"))
         | if $status == "failed" then
             .failure = {
               exit_code: $exit_code,

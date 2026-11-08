@@ -66,13 +66,15 @@ profile:
 | `./run.sh cpp-sdks` with exact defaults | `production` | Publishable candidate after every gate passes |
 | `./run.sh baseline` with exact defaults | `baseline-diagnostic` | Diagnostic only; never an equal-work ranking |
 | `./run.sh full` with exact defaults | `production-full` | Publishable candidate for the five C++ SDKs; the TCP_NODELAY builds and language baselines in it stay diagnostic |
+| `BENCHMARK_LOAD_MODEL=capacity ./run.sh full` with exact defaults | `capacity-full` | Publishable candidate after every gate passes; the target's CPU limit sets each cell's throughput |
 | Any parameter override or other server selection | `smoke` | Harness validation only |
+| `BENCHMARK_LOAD_MODEL=capacity` with any parameter override or other server selection | `capacity-smoke` | Harness validation only |
 
 `publishable_candidate` remains false while a run is in progress and after any
-failure. It becomes true only when the exact production profile reaches
-`status: "complete"`; consumers must require both fields. Generated result
-directories are ignored by default so retaining or publishing an audited bundle
-requires an explicit action.
+failure. It becomes true only when a run of the `production`, `production-full`
+or `capacity-full` profile reaches `status: "complete"`; consumers must require
+both fields. Generated result directories are ignored by default so retaining
+or publishing an audited bundle requires an explicit action.
 
 ## Comparable C++ scope
 
@@ -336,7 +338,8 @@ keeps 2 CPUs and 2 GiB. The model is fixed per run: `BENCHMARK_THINK_TIME` and t
 limits above are not read from the environment by `run.sh`. A capacity run is
 labeled `capacity-full` when it selects `full` with the production round and
 duration settings and `capacity-smoke` otherwise; it is never labeled `production`
-or `production-full`, and never a publishable candidate. The preflight requires a
+or `production-full`. A complete `capacity-full` run is a publishable candidate and
+`capacity-smoke` is harness validation only. The preflight requires a
 host CPU set at least as large as the sum of all limits: 9 CPUs for the paced
 model and 19 for the capacity model.
 
