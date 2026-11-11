@@ -73,8 +73,10 @@ profile:
 `publishable_candidate` remains false while a run is in progress and after any
 failure. It becomes true only when a run of the `production`, `production-full`
 or `capacity-full` profile reaches `status: "complete"`; consumers must require
-both fields. Generated result directories are ignored by default so retaining
-or publishing an audited bundle requires an explicit action.
+both fields and check `failed_cells`, since a capacity run whose only failures
+are cell failures still ends `complete` with exit 0. Generated result
+directories are ignored by default so retaining or publishing an audited bundle
+requires an explicit action.
 
 ## Comparable C++ scope
 
@@ -342,6 +344,18 @@ or `production-full`. A complete `capacity-full` run is a publishable candidate 
 `capacity-smoke` is harness validation only. The preflight requires a
 host CPU set at least as large as the sum of all limits: 9 CPUs for the paced
 model and 19 for the capacity model.
+
+A capacity run records a cell that crosses a k6 threshold (k6 exit code 99 in the
+warmup or the measurement) as failed and continues; a paced run still stops at the
+first failure. `run.sh` fixes this per run from the load model and records it as
+`parameters.cell_failures_allowed`. The failed cell's server is stopped, its
+`docker logs` are saved, and it is skipped in later rounds. Each failure is appended
+to `failed_cells.json` with `server`, `round`, `stage`, `reason`, `evidence_log` and
+`k6_exit`, and the manifest's `failed_cells` array carries the same entries (`[]`
+when there are none). `comparison.txt` lists a failed server with `FAILED` in the
+Ops/s column and `-` in the other numeric columns, followed by a "Failed cells"
+section. Any other failure, including any other k6 exit code, a collector, headroom
+or protocol check, startup, or capture, still stops the run.
 
 One-second collectors cover the target, Redis, API service, k6, and host for
 the measurement window. Collector audit files must show complete sampling,

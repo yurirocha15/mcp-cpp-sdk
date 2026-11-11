@@ -44,6 +44,7 @@ case "$BENCHMARK_LOAD_MODEL" in
         readonly BENCHMARK_API_CPUS="2.0"
         readonly BENCHMARK_REDIS_CPUS="0.5"
         readonly BENCHMARK_THINK_TIME_SECONDS="0.05"
+        readonly CELL_FAILURES_ALLOWED=0
         ;;
     capacity)
         readonly BENCHMARK_K6_CPUS=8
@@ -52,6 +53,9 @@ case "$BENCHMARK_LOAD_MODEL" in
         readonly BENCHMARK_API_CPUS="8.0"
         readonly BENCHMARK_REDIS_CPUS="1.0"
         readonly BENCHMARK_THINK_TIME_SECONDS="0"
+        # A capacity run records a cell that crosses a k6 threshold as failed
+        # and continues; a paced run stops at the first failure.
+        readonly CELL_FAILURES_ALLOWED=1
         BENCHMARK_K6_LOAD_ENV=(-e "BENCHMARK_THINK_TIME=$BENCHMARK_THINK_TIME_SECONDS")
         ;;
     *)
@@ -80,6 +84,8 @@ HOST_CPUSET=""
 FAILURE_STAGE=""
 FAILURE_REASON=""
 FAILURE_EVIDENCE_LOG=""
+CELL_FAILED=0
+declare -A FAILED_SERVERS=()
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -378,12 +384,18 @@ finalize_manifest() {
         status="complete"
     fi
     local temporary="$RESULTS_DIR/run_manifest.json.tmp"
+    local failed_cells_json='[]'
+    if [[ -f "$RESULTS_DIR/failed_cells.json" ]]; then
+        failed_cells_json="$(cat "$RESULTS_DIR/failed_cells.json")"
+    fi
     jq --arg status "$status" --arg completed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg failure_stage "$FAILURE_STAGE" \
         --arg failure_reason "$FAILURE_REASON" \
         --arg failure_log "$FAILURE_EVIDENCE_LOG" \
         --argjson exit_code "$exit_code" \
+        --argjson failed_cells "$failed_cells_json" \
         '.status = $status | .completed_at = $completed_at
+        | .failed_cells = $failed_cells
         | .publishable_candidate = ($status == "complete"
             and (.profile == "production" or .profile == "production-full" or .profile == "capacity-full"))
         | if $status == "failed" then
@@ -417,6 +429,29 @@ record_failure_from_log() {
         final_line="$(awk 'NF { line = $0 } END { print line }' "$log_file")"
     fi
     FAILURE_REASON="${final_line:-$fallback_reason}"
+}
+
+# Appends the failure that record_failure_from_log just captured to
+# failed_cells.json. Only a capacity run reaches this.
+record_cell_failure() {
+    local server="$1"
+    local run_idx="$2"
+    local stage="$3"
+    local k6_exit="$4"
+    local cells_file="$RESULTS_DIR/failed_cells.json"
+    local temporary="$RESULTS_DIR/failed_cells.json.tmp"
+    local current='[]'
+
+    if [[ -f "$cells_file" ]]; then
+        current="$(cat "$cells_file")"
+    fi
+    jq --arg server "$server" --argjson round "$run_idx" --arg stage "$stage" \
+        --arg reason "$FAILURE_REASON" --arg evidence_log "$FAILURE_EVIDENCE_LOG" \
+        --argjson k6_exit "$k6_exit" \
+        '. + [{server: $server, round: $round, stage: $stage, reason: $reason,
+               evidence_log: $evidence_log, k6_exit: $k6_exit}]' \
+        <<< "$current" > "$temporary"
+    mv "$temporary" "$cells_file"
 }
 
 record_collector_failure() {
@@ -755,6 +790,14 @@ run_k6_warmup() {
     CURRENT_K6_CONTAINER=""
     k6_exit="${pipeline_status[0]}"
     tee_exit="${pipeline_status[1]}"
+    if [[ "$k6_exit" -eq 99 && "$tee_exit" -eq 0 && "$CELL_FAILURES_ALLOWED" -eq 1 ]]; then
+        record_failure_from_log "warmup:$server:run$run_idx" "$log_file" \
+            "k6 warmup failed correctness or load thresholds"
+        record_cell_failure "$server" "$run_idx" warmup "$k6_exit"
+        CELL_FAILED=1
+        clear_failure_context
+        return 0
+    fi
     if [[ "$k6_exit" -ne 0 || "$tee_exit" -ne 0 ]]; then
         record_failure_from_log "warmup:$server:run$run_idx" "$log_file" \
             "k6 warmup failed correctness or load thresholds"
@@ -845,6 +888,14 @@ run_k6_measurement() {
     docker rm "$container" >/dev/null
     CURRENT_K6_CONTAINER=""
 
+    if [[ "$k6_exit" -eq 99 && "$CELL_FAILURES_ALLOWED" -eq 1 ]]; then
+        record_failure_from_log "measurement:$server:run$run_idx" "$log_file" \
+            "k6 measurement failed correctness or load thresholds"
+        record_cell_failure "$server" "$run_idx" measurement "$k6_exit"
+        CELL_FAILED=1
+        clear_failure_context
+        return 0
+    fi
     if [[ "$k6_exit" -ne 0 ]]; then
         record_failure_from_log "measurement:$server:run$run_idx" "$log_file" \
             "k6 measurement failed correctness or load thresholds"
@@ -950,6 +1001,8 @@ write_run_manifest() {
         --argjson think_time_seconds "$BENCHMARK_THINK_TIME_SECONDS" \
         --argjson api_service_cpus "$API_CPUS_ARG" \
         --argjson redis_cpus "$REDIS_CPUS_ARG" \
+        --argjson cell_failures_allowed \
+            "$([[ "$CELL_FAILURES_ALLOWED" -eq 1 ]] && echo true || echo false)" \
         --slurpfile schedule "$RESULTS_DIR/run_order.json" \
         --slurpfile images "$RESULTS_DIR/compose_images.json" \
         '{schema_version: 2, status: "running", started_at: $started_at,
@@ -959,7 +1012,8 @@ write_run_manifest() {
             warmup_duration: $warmup, measurement_duration: $measurement,
             k6_cpus: $k6_cpus, k6_memory_bytes: $k6_memory_bytes,
             load_model: $load_model, think_time_seconds: $think_time_seconds,
-            api_service_cpus: $api_service_cpus, redis_cpus: $redis_cpus},
+            api_service_cpus: $api_service_cpus, redis_cpus: $redis_cpus,
+            cell_failures_allowed: $cell_failures_allowed},
           contracts: {
             eligibility: $eligibility_contract,
             supplemental: {
@@ -992,6 +1046,11 @@ generate_comparison() {
             "------------" "------------" "------------" "------------"
         local server summary multi_stats protocol operations rps p50 p95 p99 err_rate cv_pct
         for server in "${selected_servers[@]}"; do
+            if [[ -n "${FAILED_SERVERS[$server]:-}" ]]; then
+                printf "%-28s %-12s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
+                    "$server" "${SESSION_MODE[$server]:-}" "-" "-" "FAILED" "-" "-" "-" "-" "-"
+                continue
+            fi
             summary="$RESULTS_DIR/$server/k6_summary.json"
             multi_stats="$RESULTS_DIR/$server/k6_multi_run_stats.json"
             operations="$(jq -r '.rates.operations.count' "$summary")"
@@ -1006,7 +1065,28 @@ generate_comparison() {
                 "$server" "${SESSION_MODE[$server]:-}" "$protocol" "$operations" "$rps" "$cv_pct" \
                 "$p50" "$p95" "$p99" "$err_rate"
         done
+        if [[ -f "$RESULTS_DIR/failed_cells.json" ]]; then
+            printf "\nFailed cells (server, round, stage, reason, evidence log):\n"
+            jq -r '.[] | "  \(.server) round \(.round) \(.stage): \(.reason) [\(.evidence_log)]"' \
+                "$RESULTS_DIR/failed_cells.json"
+        fi
     } | tee "$comparison_file"
+}
+
+# The main loop skips the rest of a cell that run_k6_warmup or
+# run_k6_measurement recorded as failed, then moves on to the next cell.
+abandon_failed_cell() {
+    local server="$1"
+    local run_idx="$2"
+    local stage="$3"
+
+    docker logs "${CONTAINER_NAME[$server]}" > "$RESULTS_DIR/$server/server_run${run_idx}.log" 2>&1
+    compose stop "${SERVICE_NAME[$server]}" >/dev/null
+    CURRENT_SERVER=""
+    CURRENT_SERVER_RESULTS=""
+    error "[$server] round $run_idx $stage failed; recorded in failed_cells.json, the run continues"
+    FAILED_SERVERS[$server]=1
+    CELL_FAILED=0
 }
 
 selected_servers=()
@@ -1268,6 +1348,10 @@ for run_idx in $(seq 1 "$BENCHMARK_RUNS"); do
     )
     for server in "${round_servers[@]}"; do
         sequence_index=$((sequence_index + 1))
+        if [[ -n "${FAILED_SERVERS[$server]:-}" ]]; then
+            info "[$sequence_index] $server round $run_idx: skipped, the cell failed in an earlier round"
+            continue
+        fi
         service="${SERVICE_NAME[$server]}"
         container="${CONTAINER_NAME[$server]}"
         server_url="${MCP_URL[$server]}"
@@ -1317,6 +1401,10 @@ for run_idx in $(seq 1 "$BENCHMARK_RUNS"); do
         info "[$server] separate warmup (round $run_idx)"
         run_k6_warmup "$server" "$server_url" "$server_results" "$run_idx" \
             "$negotiated_protocol_version"
+        if [[ "$CELL_FAILED" -eq 1 ]]; then
+            abandon_failed_cell "$server" "$run_idx" warmup
+            continue
+        fi
 
         # Warmup mutates checkout history and rate-limit state. Keep the process
         # alive for warm runtime caches, but restore the canonical dataset.
@@ -1325,6 +1413,10 @@ for run_idx in $(seq 1 "$BENCHMARK_RUNS"); do
         info "[$server] measured constant-VU run $run_idx/$BENCHMARK_RUNS"
         run_k6_measurement "$server" "$server_url" "$server_results" "$run_idx" \
             "$negotiated_protocol_version"
+        if [[ "$CELL_FAILED" -eq 1 ]]; then
+            abandon_failed_cell "$server" "$run_idx" measurement
+            continue
+        fi
 
         # Re-seed before the postflight so the universal workload contract and
         # supplemental diagnostics are evaluated from the same canonical state.
@@ -1348,6 +1440,7 @@ done
 python3 "$SCRIPT_DIR/capture_environment.py" \
     --verify-source "$RESULTS_DIR/environment.json" --project-dir "$PROJECT_DIR"
 for server in "${selected_servers[@]}"; do
+    [[ -z "${FAILED_SERVERS[$server]:-}" ]] || continue
     python3 "$SCRIPT_DIR/select_median_run.py" "$RESULTS_DIR/$server" "$BENCHMARK_RUNS"
 done
 
