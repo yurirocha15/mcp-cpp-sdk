@@ -552,6 +552,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Fixed
 
+- With libc++, an exception of `nlohmann_json` that the shared library
+  throws, such as the `nlohmann::json::type_error` 316 of
+  `mcp::detail::dump_json()` for text that is not valid UTF-8, could not be
+  caught by its type: the library kept its own `type_info` for each of
+  `nlohmann_json`'s exception classes. It now gives them default visibility,
+  as it does Beast's error categories.
 - `OAuthAuthorizationManager` handed the authorization endpoint named in the
   authorization server's metadata to the consent callback as
   `AuthorizationRequest::authorization_url` without checking it. The endpoint

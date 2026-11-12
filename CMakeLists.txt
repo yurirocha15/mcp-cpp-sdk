@@ -167,12 +167,16 @@ if(MCP_CPP_SDK_BUILD_SHARED)
       TARGET mcp-cpp-sdk-shared PROPERTY RUNTIME_OUTPUT_NAME
                                          "mcp-cpp-sdk-${MCP_CPP_SDK_SOVERSION}")
   elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    # Keeps Beast's error categories shared with the caller; see the header.
+    # Keeps Beast's error categories and nlohmann_json's exception types shared
+    # with the caller; see the headers.
     set(MCP_CPP_SDK_BEAST_VISIBILITY_HEADER
         "${CMAKE_CURRENT_SOURCE_DIR}/src/detail/beast_error_visibility.hpp")
+    set(MCP_CPP_SDK_JSON_VISIBILITY_HEADER
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/detail/json_error_visibility.hpp")
     target_compile_options(
       mcp-cpp-sdk-shared
-      PRIVATE "SHELL:-include ${MCP_CPP_SDK_BEAST_VISIBILITY_HEADER}")
+      PRIVATE "SHELL:-include ${MCP_CPP_SDK_BEAST_VISIBILITY_HEADER}"
+              "SHELL:-include ${MCP_CPP_SDK_JSON_VISIBILITY_HEADER}")
   endif()
   if(NOT WIN32 AND NOT APPLE)
     set(MCP_CPP_SDK_VENDORED_SYMBOLS_MAP
