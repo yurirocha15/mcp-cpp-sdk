@@ -65,7 +65,7 @@ profile:
 |---|---|---|
 | `./run.sh cpp-sdks` with exact defaults | `production` | Publishable candidate after every gate passes |
 | `./run.sh baseline` with exact defaults | `baseline-diagnostic` | Diagnostic only; never an equal-work ranking |
-| `./run.sh full` with exact defaults | `production-full` | Publishable candidate for the five C++ SDKs; the TCP_NODELAY builds and language baselines in it stay diagnostic |
+| `./run.sh full` with exact defaults | `production-full` | Publishable candidate after every gate passes; the pause per iteration caps the offered load at 4,000 operations per second |
 | `BENCHMARK_LOAD_MODEL=capacity ./run.sh full` with exact defaults | `capacity-full` | Publishable candidate after every gate passes; the target's CPU limit sets each cell's throughput |
 | Any parameter override or other server selection | `smoke` | Harness validation only |
 | `BENCHMARK_LOAD_MODEL=capacity` with any parameter override or other server selection | `capacity-smoke` | Harness validation only |
@@ -179,11 +179,12 @@ own because 2.x no longer fills it in. It also pins its dependencies and base
 image. The optimized `cpp` baseline is retained as a separate application
 implementation and must not be presented as an SDK-adapter result.
 
-Python, Go, and Rust are rerun after harness changes, but their results remain
-diagnostic. The Python, Go and Rust copies pin their dependencies (`constraints.txt`,
-`go.sum`, `Cargo.lock`) and their base images by digest. `baselines/go-server` is the upstream
-Go server built against the Go SDK release that serves `2026-07-28`; the workload is unchanged.
-Exact built image identities are retained with every run.
+Python, Go, and Rust are rerun after harness changes. The Python, Go and Rust copies pin their
+dependencies (`constraints.txt`, `go.sum`, `Cargo.lock`) and their base images by digest.
+`baselines/go-server` is the upstream Go server built against the Go SDK release that serves
+`2026-07-28`; the workload is unchanged. The Rust copy also sets `TCP_NODELAY` on the connections
+its listener accepts, as the Go server does; the upstream Rust server sets it only on its outbound
+HTTP client. Exact built image identities are retained with every run.
 
 Every target uses the same `upstream-v2-strict-mcp-v1` measurement eligibility
 contract. It preserves the pinned benchmark's observable business predicates
@@ -192,14 +193,15 @@ gates. The five C++ adapters also must pass `adapter-exact-v1` during preflight
 and postflight because their glue and shared workload are controlled here; that
 supplemental check does not execute in the measured k6 path.
 
-The supplemental diagnostics intentionally expose two upstream limitations
-without excluding otherwise working language baselines. Python accepts the
-canonical checkout call but advertises unconstrained array elements for its
-untyped `items: list` parameter. It passes the inherited observable predicates and the
-direct Redis side-effect gate, and simply records the corresponding
-`adapter-exact-v1` diagnostic as false. These interface, build, and execution
-differences are why language baselines must not appear in the publishable C++
-SDK ranking.
+The supplemental diagnostics do not exclude otherwise working language
+baselines. Python advertises unconstrained array elements for its untyped
+`items: list` parameter, and the `checkout` schema the Go SDK derives from the
+Go server's argument types differs from the adapters' exact schema. Both accept
+the canonical checkout call, pass the inherited observable predicates and the
+direct Redis side-effect gate, and record the corresponding `adapter-exact-v1`
+diagnostic as false. Because each baseline is its own application, the language
+baselines are reported in their own table next to this SDK rather than in the
+C++ SDK ranking.
 
 ## TCP_NODELAY builds
 
