@@ -403,9 +403,12 @@ TEST(JsonParseTest, ReadsRequestIdsAsNlohmannDoes) {
     EXPECT_EQ(value["id"].get<std::int64_t>(), std::numeric_limits<std::int64_t>::min());
     ASSERT_TRUE(parse_json_fast(R"({"id":1,"id":"last"})", value));
     EXPECT_EQ(value["id"], "last");
-    ASSERT_TRUE(parse_json_fast(R"({"id":"\u0000"})", value));
+    // Kept out of the macros: MSVC's preprocessor misreads a raw string with backslashes there.
+    const std::string nul_escape = R"({"id":"\u0000"})";
+    const std::string surrogate_pair = R"({"id":"\ud83d\ude00"})";
+    ASSERT_TRUE(parse_json_fast(nul_escape, value));
     EXPECT_EQ(value["id"].get<std::string>(), std::string(1, '\0'));
-    ASSERT_TRUE(parse_json_fast(R"({"id":"\ud83d\ude00"})", value));
+    ASSERT_TRUE(parse_json_fast(surrogate_pair, value));
     EXPECT_EQ(value["id"].get<std::string>(), "\xF0\x9F\x98\x80");
     EXPECT_FALSE(parse_json_fast(R"({"id":1e400})", value));
     EXPECT_TRUE(mcp::detail::parse_peer_json(R"({"id":1e400})").is_discarded());
