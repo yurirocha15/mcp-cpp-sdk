@@ -328,7 +328,7 @@ async fn main() -> Result<()> {
         .route("/health", get(health))
         .nest_service("/mcp", service);
 
-    // Stateful responses go out in several writes; Go and the C++ servers already disable Nagle.
+    // Stateful responses go out in several writes; the Go server also disables Nagle.
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8095")
         .await?
         .tap_io(|tcp| {
