@@ -8,7 +8,7 @@ The application workload is based on
 [TM Dev Lab v2](https://github.com/thiagomendes/benchmark-mcp-servers-v2), pinned
 to commit `8a9a5f8ef505f46b6079072ef4603304ca672e33`. That repository supplies the API
 service and Redis seeder. The Python, Go and Rust baselines are its servers ported
-to the current official SDKs; see
+to the official SDKs; see
 [Language baselines](#language-baselines). Load generation uses the audited
 local profile in `alternatives/benchmark.js`; it does not use the upstream k6
 script.
@@ -290,7 +290,7 @@ cd benchmark
 ```
 
 `baselines/rust-server` is the Rust server of the pinned upstream benchmark
-ported to `rmcp` 3.8.0, the release that serves `2026-07-28`. Its dependency
+ported to `rmcp` 3.8.0, a release that serves `2026-07-28`. Its dependency
 set (`Cargo.lock`), its compiler and runtime images, and `rmcp` itself are
 pinned. The workload is the upstream one, except that `checkout` returns the
 result of the `INCR` command as `rate_limit_count`, as the C++ servers do. It

@@ -54,7 +54,7 @@ are not a general-purpose application-performance claim.
 ## This SDK and the official Rust, Go and Python SDKs
 
 The Rust, Go and Python targets are the pinned upstream benchmark's server
-applications, ported to the current official SDKs: Rust SDK (`rmcp` 3.8.0), Go
+applications, ported to the official SDKs: Rust SDK (`rmcp` 3.8.0), Go
 SDK (`go-sdk` v1.8.0) and Python SDK (`mcp` 2.3.0). See [Language
 baselines](README.md#language-baselines). Each is its own application with its
 own Redis and HTTP clients, so a difference between rows includes the
