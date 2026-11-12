@@ -262,7 +262,7 @@ namespace draft201909 {
                     for (const auto& def : (*it).value().object_range())
                     {
                         mcp_detail_jsoncons::string_view sub_keys[] = { "definitions", def.key() };
-                        defs.emplace(def.key(), make_schema_validator(context, def.value(), sub_keys, anchor_dict));
+                        defs.emplace("definitions/" + def.key(), make_schema_validator(context, def.value(), sub_keys, anchor_dict));
                     }
                     known_keywords.insert("definitions");
                 }
@@ -273,7 +273,7 @@ namespace draft201909 {
                 for (const auto& def : (*it).value().object_range())
                 {
                     mcp_detail_jsoncons::string_view sub_keys[] = { "$defs", def.key() };
-                    defs.emplace(def.key(), make_schema_validator(context, def.value(), sub_keys, anchor_dict));
+                    defs.emplace("$defs/" + def.key(), make_schema_validator(context, def.value(), sub_keys, anchor_dict));
                 }
                 known_keywords.insert("$defs");
             }

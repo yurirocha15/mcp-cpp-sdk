@@ -292,6 +292,33 @@ TEST(SchemaRefPolicy, PointerIntoDefinitionsResolvesInEveryDialect) {
     }
 }
 
+// `definitions` and `$defs` are separate locations, so the same name under both is two subschemas.
+TEST(SchemaRefPolicy, SameNameUnderDefinitionsAndDefsKeepsBothSubschemas) {
+    for (const char* dialect : {"", "https://json-schema.org/draft/2020-12/schema",
+                                "https://json-schema.org/draft/2019-09/schema"}) {
+        SCOPED_TRACE(dialect);
+        json schema = {{"$defs", {{"name", {{"type", "string"}}}}},
+                       {"definitions", {{"name", {{"type", "integer"}}}}},
+                       {"properties",
+                        {{"a", {{"$ref", "#/$defs/name"}}}, {"b", {{"$ref", "#/definitions/name"}}}}}};
+        if (*dialect != '\0') {
+            schema["$schema"] = dialect;
+        }
+        try {
+            const auto compiled = CompiledSchema::compile(schema);
+            EXPECT_TRUE(compiled.validate({{"a", "x"}, {"b", 5}}).valid);
+            EXPECT_FALSE(compiled.validate({{"a", 5}}).valid);
+            EXPECT_FALSE(compiled.validate({{"b", "x"}}).valid);
+        } catch (const SchemaError& error) {
+            ADD_FAILURE() << error.what();
+        }
+    }
+    // The anchor makes the `$defs` subschema register a reference target of its own.
+    const auto anchored =
+        json::parse(R"({"$defs":{"a":{"$dynamicAnchor":"a"}},"definitions":{"a":true},"if":true})");
+    EXPECT_TRUE(CompiledSchema::compile(anchored).validate(json::object()).valid);
+}
+
 TEST(SchemaRefPolicy, EmbeddedIdResolvesWithoutFetching) {
     const json schema = json::parse(R"({
         "$id": "https://example.com/root.json",

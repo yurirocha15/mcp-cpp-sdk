@@ -40,7 +40,8 @@ needs and applies five recorded groups of transformations:
    instead of every pair of elements in time quadratic in the array's length.
    Subschemas under ``definitions`` are registered in every dialect, so a
    ``$ref`` such as ``#/definitions/name`` resolves in 2019-09 and 2020-12
-   too, not only in jsoncons's compatibility mode. A member that fails the
+   too, not only in jsoncons's compatibility mode, and a name under both
+   ``definitions`` and ``$defs`` keeps both subschemas. A member that fails the
    ``additionalProperties`` subschema is reported at the member, with what the
    subschema reported, like the other applicators, instead of as one summary
    at the object. Property names and keywords are looked up with their full
@@ -78,7 +79,7 @@ VERSION = "1.10.0"
 TARBALL_URL = f"https://github.com/danielaparker/jsoncons/archive/refs/tags/v{VERSION}.tar.gz"
 TARBALL_SHA256 = "c829350a2eece662beb378143e2ab1c1cbb07d703687bf168626665a8a7d8bc1"
 # Bump when the transformation below changes, so PROVENANCE records which one produced the tree.
-TRANSFORM_VERSION = 9
+TRANSFORM_VERSION = 10
 
 # Header directories, relative to the release's include/, that the extension needs.
 SUBSET = ("jsoncons", "jsoncons_ext/jsonschema", "jsoncons_ext/jsonpointer")
@@ -576,6 +577,22 @@ EVALUATION_REPLACEMENTS = (
                 auto it = sch.find("definitions");""",
         1,
     ),
+    # One map owns the subschemas of `definitions` and `$defs`, and both keywords can hold the same
+    # name. Keyed by the name alone, the second subschema would be destroyed when its insertion
+    # fails, after it registered itself and its subschemas as `$ref` targets, so a reference would
+    # reach freed memory. Each key starts with its keyword, so every subschema keeps its entry.
+    *[
+        (
+            path,
+            f"""{{ "{keyword}", def.key() }};
+{indent}defs.emplace(def.key(), """,
+            f"""{{ "{keyword}", def.key() }};
+{indent}defs.emplace("{keyword}/" + def.key(), """,
+            1,
+        )
+        for path in (DRAFT_2020_12_FACTORY_PATH, DRAFT_2019_09_FACTORY_PATH)
+        for keyword, indent in (("definitions", " " * 24), ("$defs", " " * 20))
+    ],
     # jsoncons reports a member that fails the `additionalProperties` subschema as one summary at
     # the object ("Additional property 'a' found but was invalid."). `properties`, `items` and the
     # other applicators report what the subschema reported, at the failing member, which is what a
@@ -1004,7 +1021,8 @@ def provenance() -> str:
         "and pattern matching limits added to eval_context, with JSON pointer copies, whole-string "
         "keywords and kept branch messages charged, and messages quoting excerpts; integer type "
         "check, size keywords and multipleOf made safe for large doubles; uniqueItems compares only "
-        "elements with equal hashes; subschemas under definitions registered in every dialect; "
+        "elements with equal hashes; subschemas under definitions registered in every dialect and "
+        "kept apart from those under $defs of the same name; "
         "additionalProperties violations reported at the member; property names looked up by full "
         "length in ordered sets; "
         "namespace jsoncons renamed "
