@@ -232,12 +232,16 @@ The measured operation rates for all rounds were:
 
 Each `-nodelay` target is the same adapter as the default build, compiled with
 `CPPHTTPLIB_TCP_NODELAY=true` (see the [README](README.md#tcp_nodelay-builds)).
-Each pair below comes from the same run.
+Each pair below comes from the same run. Each table starts with this SDK's
+threads build from that run, over the same shared workload; it has no separate
+TCP_NODELAY build.
 
 ### Paced run
 
 | SDK | Mode | Build | Protocol | Median ops/s | Sample CV | p50 ms | p95 ms | p99 ms | CPU ms/op | Target p95 CPU | Target p95 memory | Errors |
 |---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| This SDK, threads | stateful | default | 2024-11-05 | 3,541.10 | 0.88% | 0.49 | 1.79 | 2.66 | 0.306 | 113.27% | 33.27 MiB | 0 |
+| This SDK, threads | sessionless | default | 2026-07-28 | 3,743.45 | 0.03% | 0.50 | 2.42 | 3.51 | 0.188 | 75.17% | 32.92 MiB | 0 |
 | hkr04/cpp-mcp | stateful | default | 2025-03-26 | 678.75 | 0.01% | 40.77 | 41.82 | 41.92 | 0.282 | 20.62% | 31.15 MiB | 0 |
 | hkr04/cpp-mcp | stateful | TCP_NODELAY | 2025-03-26 | 3,625.09 | 0.17% | 0.33 | 1.52 | 2.31 | 0.233 | 87.51% | 26.83 MiB | 0 |
 | FastMCPP | stateful | default | 2024-11-05 | 1,122.63 | 0.03% | 0.39 | 41.79 | 42.04 | 0.333 | 39.73% | 32.46 MiB | 0 |
@@ -257,6 +261,8 @@ The measured operation rates for all rounds were:
 
 | SDK | Mode | Build | Round 1 | Round 2 | Round 3 | Selected round |
 |---|---|---|---:|---:|---:|---:|
+| This SDK, threads | stateful | default | 3,539.76 | 3,594.85 | 3,541.10 | 3 |
+| This SDK, threads | sessionless | default | 3,744.96 | 3,743.45 | 3,743.01 | 2 |
 | hkr04/cpp-mcp | stateful | TCP_NODELAY | 3,625.09 | 3,632.54 | 3,620.68 | 1 |
 | FastMCPP | stateful | TCP_NODELAY | 3,536.15 | 3,539.60 | 3,541.93 | 2 |
 | cxxmcp | stateful | TCP_NODELAY | 3,627.68 | 3,628.17 | 3,631.97 | 2 |
@@ -267,6 +273,8 @@ The measured operation rates for all rounds were:
 
 | SDK | Mode | Build | Protocol | Median ops/s | Sample CV | p50 ms | p95 ms | p99 ms | CPU ms/op | Target p95 CPU | Target p95 memory | Errors |
 |---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| This SDK, threads | stateful | default | 2024-11-05 | 6,889.48 | 0.36% | 1.76 | 3.32 | 38.86 | 0.293 | 205.82% | 34.46 MiB | 0 |
+| This SDK, threads | sessionless | default | 2026-07-28 | 10,950.57 | 0.27% | 1.84 | 52.46 | 59.63 | 0.184 | 205.55% | 34.18 MiB | 0 |
 | hkr04/cpp-mcp | stateful | default | 2025-03-26 | 704.44 | 0.08% | 40.78 | 41.83 | 41.89 | 0.285 | 21.10% | 31.45 MiB | 0 |
 | hkr04/cpp-mcp | stateful | TCP_NODELAY | 2025-03-26 | 6,754.67 | 0.30% | 0.93 | 3.41 | 60.26 | 0.297 | 205.96% | 29.71 MiB | 0 |
 | FastMCPP | stateful | default | 2024-11-05 | 1,312.39 | 0.06% | 0.36 | 41.80 | 42.06 | 0.322 | 45.41% | 29.29 MiB | 0 |
@@ -287,6 +295,8 @@ The measured operation rates for all rounds were:
 
 | SDK | Mode | Build | Round 1 | Round 2 | Round 3 | Selected round |
 |---|---|---|---:|---:|---:|---:|
+| This SDK, threads | stateful | default | 6,923.16 | 6,889.48 | 6,873.98 | 2 |
+| This SDK, threads | sessionless | default | 10,924.46 | 10,982.95 | 10,950.57 | 3 |
 | hkr04/cpp-mcp | stateful | TCP_NODELAY | 6,765.51 | 6,726.39 | 6,754.67 | 3 |
 | FastMCPP | stateful | TCP_NODELAY | 5,841.71 | 5,811.69 | failed | - |
 | cxxmcp | stateful | TCP_NODELAY | 5,059.39 | 5,023.85 | 5,071.47 | 1 |
