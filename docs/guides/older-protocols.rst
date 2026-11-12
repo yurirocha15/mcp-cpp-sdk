@@ -83,6 +83,11 @@ particular:
 * Results carry no cache hints.
 * The response of a request that the client cancelled with
   ``notifications/cancelled`` is still sent for 2025-11-25 and earlier.
+* JSON-RPC batches are not supported, although revision 2025-03-26 requires
+  implementations to accept them. A ``Server`` answers a batch (a JSON array of
+  messages) with an error and runs none of its requests, a ``Client`` drops a
+  batch it receives, and neither sends one. Revision 2025-06-18 removed
+  batching from the protocol.
 
 Methods that exist only in legacy sessions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
