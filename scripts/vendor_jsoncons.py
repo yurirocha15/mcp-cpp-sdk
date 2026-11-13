@@ -36,6 +36,9 @@ needs and applies five recorded groups of transformations:
    counted as an integer, ``multipleOf`` must also reject a quotient that
    overflows, as the JSON-Schema-Test-Suite expects: its tolerance of one
    unit in the last place of the value accepts any multiple at that size.
+   An integer and a double are compared exactly, by ``basic_json::compare`` and
+   by the bound keywords, instead of after converting the integer to a double,
+   which rounds integers beyond 2^53.
 4. Keyword fixes. ``uniqueItems`` compares only elements whose hashes match,
    instead of every pair of elements in time quadratic in the array's length.
    Subschemas under ``definitions`` are registered in every dialect, so a
@@ -79,7 +82,7 @@ VERSION = "1.10.0"
 TARBALL_URL = f"https://github.com/danielaparker/jsoncons/archive/refs/tags/v{VERSION}.tar.gz"
 TARBALL_SHA256 = "c829350a2eece662beb378143e2ab1c1cbb07d703687bf168626665a8a7d8bc1"
 # Bump when the transformation below changes, so PROVENANCE records which one produced the tree.
-TRANSFORM_VERSION = 10
+TRANSFORM_VERSION = 11
 
 # Header directories, relative to the release's include/, that the extension needs.
 SUBSET = ("jsoncons", "jsoncons_ext/jsonschema", "jsoncons_ext/jsonpointer")
@@ -311,6 +314,7 @@ KEYWORD_VALIDATOR_PATH = "jsoncons_ext/jsonschema/common/keyword_validator.hpp"
 VALIDATOR_PATH = "jsoncons_ext/jsonschema/common/validator.hpp"
 VALIDATION_MESSAGE_PATH = "jsoncons_ext/jsonschema/validation_message.hpp"
 KEYWORD_FACTORY_PATH = "jsoncons_ext/jsonschema/common/keyword_validator_factory.hpp"
+BASIC_JSON_PATH = "jsoncons/basic_json.hpp"
 DRAFT_2020_12_FACTORY_PATH = "jsoncons_ext/jsonschema/draft202012/schema_validator_factory_202012.hpp"
 DRAFT_2019_09_FACTORY_PATH = "jsoncons_ext/jsonschema/draft201909/schema_validator_factory_201909.hpp"
 
@@ -372,6 +376,94 @@ NUMERIC_REPLACEMENTS = (
         "keyword_size_value((*it).value())",
         2,
     ),
+    # basic_json::compare subtracted an integer converted to a double from a double, which rounds
+    # integers beyond 2^53, so `enum`, `const` and `uniqueItems` found 9007199254740993 equal to
+    # 9007199254740992.0. It compares them exactly instead, as the SDK's native evaluation does.
+    (BASIC_JSON_PATH, "#include <algorithm> // std::swap\n", "#include <algorithm> // std::swap\n#include <cmath>\n", 1),
+    (
+        BASIC_JSON_PATH,
+        """    template <typename CharT,typename Policy,typename Allocator>
+    class basic_json
+    {
+""",
+        """    namespace detail {
+
+    // Added by mcp-cpp-sdk (scripts/vendor_jsoncons.py): compares an integer with a double
+    // exactly, -1, 0 or 1 as the integer is less than, equal to or greater than the double. A NaN
+    // compares less than every integer, which keeps it unequal to each.
+    template <typename Integer>
+    int compare_integer_with_double(Integer integer, double number) noexcept
+    {
+        constexpr bool is_signed = std::is_signed<Integer>::value;
+        constexpr double upper = is_signed ? 9223372036854775808.0 : 18446744073709551616.0;
+        constexpr double lower = is_signed ? -9223372036854775808.0 : 0.0;
+        if (std::isnan(number) || number < lower)
+        {
+            return 1;
+        }
+        if (number >= upper)
+        {
+            return -1;
+        }
+        const double whole = std::floor(number);
+        const auto truncated = static_cast<Integer>(whole);
+        if (integer != truncated)
+        {
+            return integer < truncated ? -1 : 1;
+        }
+        return number > whole ? -1 : 0;
+    }
+
+    } // namespace detail
+
+    template <typename CharT,typename Policy,typename Allocator>
+    class basic_json
+    {
+""",
+        1,
+    ),
+    (
+        BASIC_JSON_PATH,
+        """                            double r = static_cast<double>(cast<int64_storage>().value()) - rhs.cast<double_storage>().value();
+                            return r == 0.0 ? 0 : (r < 0.0 ? -1 : 1);
+""",
+        """                            return detail::compare_integer_with_double(cast<int64_storage>().value(), rhs.cast<double_storage>().value());
+""",
+        1,
+    ),
+    (
+        BASIC_JSON_PATH,
+        """                            auto r = static_cast<double>(cast<uint64_storage>().value()) - rhs.cast<double_storage>().value();
+                            return r == 0 ? 0 : (r < 0.0 ? -1 : 1);
+""",
+        """                            return detail::compare_integer_with_double(cast<uint64_storage>().value(), rhs.cast<double_storage>().value());
+""",
+        1,
+    ),
+    *[
+        (
+            BASIC_JSON_PATH,
+            f"""                            auto r = cast<double_storage>().value() - static_cast<double>(rhs.cast<{storage}>().value());
+                            return r == 0 ? 0 : (r < 0.0 ? -1 : 1);
+""",
+            f"""                            const double number = cast<double_storage>().value();
+                            return std::isnan(number) ? 1 : -detail::compare_integer_with_double(rhs.cast<{storage}>().value(), number);
+""",
+            1,
+        )
+        for storage in ("int64_storage", "uint64_storage")
+    ],
+    # The bound keywords compared an integer with a double after converting both to doubles. They
+    # compare the two with basic_json::compare, which is exact.
+    *[
+        (
+            KEYWORD_VALIDATOR_PATH,
+            f"                if (instance.template as<double>() {operator} value_.template as<double>())\n",
+            f"                if (instance.compare(value_) {operator} 0)\n",
+            1,
+        )
+        for operator in (">", ">=", "<", "<=")
+    ],
 )
 
 # (path, old, new, expected count), applied after NUMERIC_REPLACEMENTS.
@@ -1020,7 +1112,8 @@ def provenance() -> str:
         "mcp::detail::Regex, schema patterns compiled within a PatternBudget; evaluation depth, work "
         "and pattern matching limits added to eval_context, with JSON pointer copies, whole-string "
         "keywords and kept branch messages charged, and messages quoting excerpts; integer type "
-        "check, size keywords and multipleOf made safe for large doubles; uniqueItems compares only "
+        "check, size keywords and multipleOf made safe for large doubles; integers and doubles "
+        "compared exactly; uniqueItems compares only "
         "elements with equal hashes; subschemas under definitions registered in every dialect and "
         "kept apart from those under $defs of the same name; "
         "additionalProperties violations reported at the member; property names looked up by full "

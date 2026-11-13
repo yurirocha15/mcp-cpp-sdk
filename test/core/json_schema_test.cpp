@@ -1122,32 +1122,38 @@ TEST(SchemaValidation, AdditionalPropertyViolationsNameTheMember) {
 }
 
 // JSON Schema compares numbers by value. Converting an integer beyond 2^53 to a double rounds it,
-// so the native evaluation compares an integer with a double exactly.
+// so both evaluations compare an integer with a double exactly.
 TEST(SchemaNative, IntegersAndDoublesCompareExactly) {
+    const auto expect = [](bool valid, const char* schema_text, const json& instance) {
+        SCOPED_TRACE(std::string(schema_text) + " against " + instance.dump());
+        const auto schema = json::parse(schema_text);
+        EXPECT_EQ(is_valid(schema, instance), valid);
+        EXPECT_EQ(is_valid(through_jsoncons(schema), instance), valid);
+    };
     // 18446744073709551616 (2^64) does not fit std::uint64_t and is read as a double.
     const json above_uint64_max = json::parse("18446744073709551616");
     ASSERT_TRUE(above_uint64_max.is_number_float());
-    EXPECT_FALSE(is_valid(json::parse(R"({"maximum": 18446744073709551615})"), above_uint64_max));
-    EXPECT_FALSE(
-        is_valid(json::parse(R"({"exclusiveMaximum": 18446744073709551615})"), above_uint64_max));
-    EXPECT_TRUE(is_valid(json::parse(R"({"minimum": 18446744073709551615})"), above_uint64_max));
-    EXPECT_FALSE(is_valid(json::parse(R"({"const": 18446744073709551615})"), above_uint64_max));
-    EXPECT_FALSE(is_valid(json::parse(R"({"enum": [9223372036854775807]})"),
-                          json::parse("9223372036854775808.0")));
-    EXPECT_TRUE(
-        is_valid(json::parse(R"({"maximum": 9007199254740993})"), json::parse("9007199254740992.0")));
-    EXPECT_FALSE(
-        is_valid(json::parse(R"({"maximum": 9007199254740992.0})"), json::parse("9007199254740993")));
-    EXPECT_FALSE(
-        is_valid(json::parse(R"({"const": 9007199254740993})"), json::parse("9007199254740992.0")));
-    EXPECT_FALSE(is_valid(json::parse(R"({"maximum": -2.5})"), json(-2)));
-    EXPECT_TRUE(is_valid(json::parse(R"({"minimum": -2.5})"), json(-2)));
+    expect(false, R"({"maximum": 18446744073709551615})", above_uint64_max);
+    expect(false, R"({"exclusiveMaximum": 18446744073709551615})", above_uint64_max);
+    expect(true, R"({"minimum": 18446744073709551615})", above_uint64_max);
+    expect(false, R"({"const": 18446744073709551615})", above_uint64_max);
+    expect(false, R"({"enum": [9223372036854775807]})", json::parse("9223372036854775808.0"));
+    expect(false, R"({"type": "integer", "maximum": 9223372036854775807})",
+           json::parse("9223372036854775808.0"));
+    expect(true, R"({"maximum": 9007199254740993})", json::parse("9007199254740992.0"));
+    expect(false, R"({"maximum": 9007199254740992.0})", json::parse("9007199254740993"));
+    expect(false, R"({"exclusiveMinimum": 9007199254740993})", json::parse("9007199254740992.0"));
+    expect(false, R"({"minimum": -9007199254740992.0})", json::parse("-9007199254740993"));
+    expect(false, R"({"const": 9007199254740993})", json::parse("9007199254740992.0"));
+    expect(false, R"({"const": [9007199254740993]})", json::parse("[9007199254740992.0]"));
+    expect(true, R"({"uniqueItems": true})", json::parse("[9007199254740993, 9007199254740992.0]"));
+    expect(false, R"({"maximum": -2.5})", json(-2));
+    expect(true, R"({"minimum": -2.5})", json(-2));
     // Equal values stay equal whatever their representation.
-    EXPECT_TRUE(
-        is_valid(json::parse(R"({"const": 9007199254740992})"), json::parse("9007199254740992.0")));
-    EXPECT_TRUE(is_valid(json::parse(R"({"const": -9223372036854775808})"),
-                         json::parse("-9223372036854775808.0")));
-    EXPECT_TRUE(is_valid(json::parse(R"({"const": 0})"), json(-0.0)));
+    expect(true, R"({"const": 9007199254740992})", json::parse("9007199254740992.0"));
+    expect(true, R"({"const": -9223372036854775808})", json::parse("-9223372036854775808.0"));
+    expect(true, R"({"const": 0})", json(-0.0));
+    expect(false, R"({"uniqueItems": true})", json::parse("[9007199254740992, 9007199254740992.0]"));
 }
 
 // Generated schemas over the keywords the native evaluation implements, against generated values:

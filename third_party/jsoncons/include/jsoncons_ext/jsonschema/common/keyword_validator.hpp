@@ -1662,7 +1662,7 @@ namespace jsonschema {
             }
             else if (instance.is_number())
             {
-                if (instance.template as<double>() > value_.template as<double>())
+                if (instance.compare(value_) > 0)
                 {
                     walk_state result = reporter.error(this->make_validation_message(
                         this_context.eval_path(),
@@ -1757,7 +1757,7 @@ namespace jsonschema {
             }
             else if (instance.is_number())
             {
-                if (instance.template as<double>() >= value_.template as<double>())
+                if (instance.compare(value_) >= 0)
                 {
                     walk_state result = reporter.error(this->make_validation_message(
                         this_context.eval_path(),
@@ -1852,7 +1852,7 @@ namespace jsonschema {
             }
             else if (instance.is_number())
             {
-                if (instance.template as<double>() < value_.template as<double>())
+                if (instance.compare(value_) < 0)
                 {
                     walk_state result = reporter.error(this->make_validation_message(
                         this_context.eval_path(),
@@ -1947,7 +1947,7 @@ namespace jsonschema {
             }
             else if (instance.is_number())
             {
-                if (instance.template as<double>() <= value_.template as<double>())
+                if (instance.compare(value_) <= 0)
                 {
                     walk_state result = reporter.error(this->make_validation_message(
                         this_context.eval_path(),
