@@ -1389,6 +1389,26 @@ TEST(SchemaBridge, NonFiniteNumbersAreCheckedAsNull) {
             EXPECT_TRUE(is_valid({{"items", null}}, json::array({value, value})));
         }
     }
+    // Nested in a value that `const` or `enum` compares, one is the null a peer would receive too.
+    for (const double value : {nan, infinity, -infinity}) {
+        SCOPED_TRACE(value);
+        for (const auto& schema :
+             {json::parse(R"({"const": [null]})"), json::parse(R"({"enum": [[1], [null]]})"),
+              json::parse(R"({"const": {"a": null}})")}) {
+            const json instance = schema.contains("const") && schema["const"].is_object()
+                                      ? json{{"a", value}}
+                                      : json::array({value});
+            EXPECT_TRUE(is_valid(schema, instance)) << schema.dump();
+            EXPECT_TRUE(is_valid(through_jsoncons(schema), instance)) << schema.dump();
+        }
+        for (const auto& schema : {json::parse(R"({"const": [0.5, 1.5]})"),
+                                   json::parse(R"({"const": [9223372036854775807, 1]})"),
+                                   json::parse(R"({"enum": [[1, 1], [18446744073709551615, 2]]})")}) {
+            EXPECT_FALSE(is_valid(schema, json::array({value, value}))) << schema.dump();
+            EXPECT_FALSE(is_valid(through_jsoncons(schema), json::array({value, value})))
+                << schema.dump();
+        }
+    }
     EXPECT_EQ(compile_error({{"maximum", nan}}), SchemaError::Category::eInvalidSchema);
     EXPECT_EQ(compile_error({{"properties", {{"a", {{"const", -infinity}}}}}}),
               SchemaError::Category::eInvalidSchema);

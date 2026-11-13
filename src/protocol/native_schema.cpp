@@ -335,6 +335,14 @@ bool json_equal(const nlohmann::json& left, const nlohmann::json& right, std::si
         throw WorkBudgetExceeded{};
     }
     work -= cost;
+    // JSON cannot carry NaN or Infinity; nlohmann writes them as null, which is what the peer
+    // receives, so one nested in the value compares as null, as check() treats one at the top.
+    const auto non_finite = [](const nlohmann::json& value) {
+        return value.is_number_float() && !std::isfinite(value.get<double>());
+    };
+    if (non_finite(left) || non_finite(right)) {
+        return (non_finite(left) || left.is_null()) && (non_finite(right) || right.is_null());
+    }
     if (left.is_number() && right.is_number()) {
         return compare_numbers(left, right) == 0;
     }
