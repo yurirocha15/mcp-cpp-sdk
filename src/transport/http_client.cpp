@@ -1285,6 +1285,16 @@ struct HttpClientTransport::Impl {
             }
             return std::to_string(number);
         }
+        if (value.is_number_float()) {
+            // An integral float in the safe range is the same integer the server compares with.
+            const auto number = value.get<double>();
+            constexpr auto limit = static_cast<double>(detail::g_MAX_SAFE_HEADER_INTEGER);
+            if (!(number >= -limit && number <= limit) ||
+                number != static_cast<double>(static_cast<std::int64_t>(number))) {
+                return std::nullopt;
+            }
+            return std::to_string(static_cast<std::int64_t>(number));
+        }
         return std::nullopt;
     }
 

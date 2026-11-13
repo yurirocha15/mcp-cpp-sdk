@@ -682,4 +682,68 @@ INSTANTIATE_TEST_SUITE_P(Eras, E2eModernFeatures,
                                             ::testing::ValuesIn(g_feature_transports)),
                          feature_cell_name);
 
+/// Connects @p client and lists the tools, so that it learns the tools' x-mcp-header annotations.
+mcp::Task<void> connect_and_list(mcp::Client& client, std::vector<std::string>& errors) {
+    try {
+        co_await client.connect("param-client", "1.0");
+        co_await client.list_tools();
+    } catch (const std::exception& error) {
+        errors.emplace_back(error.what());
+    }
+}
+
+/// Calls the route tool with @p count and records the count it echoes, or the error.
+mcp::Task<void> call_route(mcp::Client& client, json count, std::vector<json>& counts,
+                           std::vector<std::string>& errors) {
+    try {
+        const json arguments{{"count", count}};
+        const auto result = co_await client.call_tool("route", arguments);
+        counts.push_back(result.structuredContent.value_or(json::object()).value("count", json()));
+    } catch (const std::exception& error) {
+        errors.emplace_back(count.dump() + ": " + error.what());
+    }
+}
+
+// A 2026-07-28 client mirrors an annotated integer argument into its Mcp-Param header whether the
+// argument is held as an integer or as a float with an integral value, so the server accepts both.
+TEST(E2eParamHeaders, IntegralFloatArgumentCarriesTheIntegerHeader) {
+    boost::asio::io_context io;
+    mcp::ServerCapabilities capabilities;
+    capabilities.tools = mcp::ServerCapabilities::ToolsCapability{true};
+    mcp::Server server(mcp::Implementation{"param-server", "1.0"}, capabilities);
+    server.add_tool<json, json>(
+        "route", "Echoes its count",
+        json{{"type", "object"},
+             {"properties", {{"count", {{"type", "integer"}, {"x-mcp-header", "Count"}}}}}},
+        [](mcp::Context& /*ctx*/, json args) -> mcp::Task<json> {
+            co_return json{{"count", args.at("count")}};
+        });
+    auto server_transport =
+        std::make_shared<mcp::HttpServerTransport>(io.get_executor(), "127.0.0.1", 0);
+    const auto port = server_transport->port();
+    auto transport = std::make_shared<mcp::HttpClientTransport>(
+        io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::Version("2026-07-28");
+    mcp::Client client(transport, io.get_executor(), options);
+    boost::asio::co_spawn(io, server_transport->listen(), boost::asio::detached);
+    boost::asio::co_spawn(io, serve(&server, server_transport, io.get_executor()),
+                          boost::asio::detached);
+
+    const std::vector<json> sent = {json(5), json(5.0), json(-3.0), json(-0.0)};
+    std::vector<std::string> errors;
+    std::vector<json> counts;
+    run_guarded(io, [&]() -> mcp::Task<void> {
+        co_await connect_and_list(client, errors);
+        for (const auto& count : sent) {
+            co_await call_route(client, count, counts, errors);
+        }
+        client.close();
+        server_transport->close();
+    });
+
+    EXPECT_EQ(errors, std::vector<std::string>{});
+    EXPECT_EQ(counts, sent);
+}
+
 }  // namespace
