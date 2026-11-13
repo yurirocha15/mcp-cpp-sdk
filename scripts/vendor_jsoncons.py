@@ -44,7 +44,10 @@ needs and applies five recorded groups of transformations:
    Subschemas under ``definitions`` are registered in every dialect, so a
    ``$ref`` such as ``#/definitions/name`` resolves in 2019-09 and 2020-12
    too, not only in jsoncons's compatibility mode, and a name under both
-   ``definitions`` and ``$defs`` keeps both subschemas. A member that fails the
+   ``definitions`` and ``$defs`` keeps both subschemas. The subschemas of
+   ``patternProperties``, ``dependentSchemas`` and ``dependencies`` are
+   registered at their own locations, so a ``$ref`` such as
+   ``#/patternProperties/name`` resolves. A member that fails the
    ``additionalProperties`` subschema is reported at the member, with what the
    subschema reported, like the other applicators, instead of as one summary
    at the object. Property names and keywords are looked up with their full
@@ -82,7 +85,7 @@ VERSION = "1.10.0"
 TARBALL_URL = f"https://github.com/danielaparker/jsoncons/archive/refs/tags/v{VERSION}.tar.gz"
 TARBALL_SHA256 = "c829350a2eece662beb378143e2ab1c1cbb07d703687bf168626665a8a7d8bc1"
 # Bump when the transformation below changes, so PROVENANCE records which one produced the tree.
-TRANSFORM_VERSION = 11
+TRANSFORM_VERSION = 12
 
 # Header directories, relative to the release's include/, that the extension needs.
 SUBSET = ("jsoncons", "jsoncons_ext/jsonschema", "jsoncons_ext/jsonpointer")
@@ -685,6 +688,26 @@ EVALUATION_REPLACEMENTS = (
         for path in (DRAFT_2020_12_FACTORY_PATH, DRAFT_2019_09_FACTORY_PATH)
         for keyword, indent in (("definitions", " " * 24), ("$defs", " " * 20))
     ],
+    # The subschemas of `patternProperties`, `dependentSchemas` and `dependencies` were registered
+    # at the keyword's own location, without their member name, so a `$ref` such as
+    # "#/patternProperties/name" found no target. Each is registered at its own location.
+    (
+        KEYWORD_FACTORY_PATH,
+        """jsoncons::string_view sub_keys[] = {keyword};
+                pattern_properties.emplace_back(""",
+        """jsoncons::string_view sub_keys[] = {keyword, prop.key()};
+                pattern_properties.emplace_back(""",
+        1,
+    ),
+    *[
+        (
+            KEYWORD_FACTORY_PATH,
+            f'jsoncons::string_view sub_keys[] = {{"{keyword}"}};',
+            f'jsoncons::string_view sub_keys[] = {{"{keyword}", dep.key()}};',
+            1,
+        )
+        for keyword in ("dependencies", "dependentSchemas")
+    ],
     # jsoncons reports a member that fails the `additionalProperties` subschema as one summary at
     # the object ("Additional property 'a' found but was invalid."). `properties`, `items` and the
     # other applicators report what the subschema reported, at the failing member, which is what a
@@ -1115,7 +1138,8 @@ def provenance() -> str:
         "check, size keywords and multipleOf made safe for large doubles; integers and doubles "
         "compared exactly; uniqueItems compares only "
         "elements with equal hashes; subschemas under definitions registered in every dialect and "
-        "kept apart from those under $defs of the same name; "
+        "kept apart from those under $defs of the same name; subschemas of patternProperties, "
+        "dependentSchemas and dependencies registered at their own locations; "
         "additionalProperties violations reported at the member; property names looked up by full "
         "length in ordered sets; "
         "namespace jsoncons renamed "

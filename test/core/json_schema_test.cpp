@@ -292,6 +292,33 @@ TEST(SchemaRefPolicy, PointerIntoDefinitionsResolvesInEveryDialect) {
     }
 }
 
+// A subschema under a keyword that maps names to subschemas sits at the name's own location.
+TEST(SchemaRefPolicy, PointerIntoNamedSubschemaKeywordsResolves) {
+    const std::vector<std::pair<const char*, const char*>> cases = {
+        {"", "patternProperties"},
+        {"", "dependentSchemas"},
+        {"https://json-schema.org/draft/2019-09/schema", "patternProperties"},
+        {"https://json-schema.org/draft/2019-09/schema", "dependentSchemas"},
+        {"http://json-schema.org/draft-07/schema#", "patternProperties"},
+        {"http://json-schema.org/draft-07/schema#", "dependencies"},
+    };
+    for (const auto& [dialect, keyword] : cases) {
+        SCOPED_TRACE(std::string(dialect) + " " + keyword);
+        json schema = {{keyword, {{"name", {{"type", "string"}}}, {"other", {{"type", "integer"}}}}},
+                       {"properties", {{"a", {{"$ref", std::string("#/") + keyword + "/name"}}}}}};
+        if (*dialect != '\0') {
+            schema["$schema"] = dialect;
+        }
+        try {
+            const auto compiled = CompiledSchema::compile(schema);
+            EXPECT_TRUE(compiled.validate({{"a", "x"}}).valid);
+            EXPECT_FALSE(compiled.validate({{"a", 5}}).valid);
+        } catch (const SchemaError& error) {
+            ADD_FAILURE() << error.what();
+        }
+    }
+}
+
 // `definitions` and `$defs` are separate locations, so the same name under both is two subschemas.
 TEST(SchemaRefPolicy, SameNameUnderDefinitionsAndDefsKeepsBothSubschemas) {
     for (const char* dialect : {"", "https://json-schema.org/draft/2020-12/schema",

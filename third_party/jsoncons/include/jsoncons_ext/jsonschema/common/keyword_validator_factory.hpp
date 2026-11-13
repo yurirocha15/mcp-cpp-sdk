@@ -109,7 +109,7 @@ namespace jsonschema {
             
             for (const auto& prop : sch.object_range())
             {
-                mcp_detail_jsoncons::string_view sub_keys[] = {keyword};
+                mcp_detail_jsoncons::string_view sub_keys[] = {keyword, prop.key()};
                 pattern_properties.emplace_back(
                     std::make_pair(
                         ::mcp::detail::PatternBudget::compile(prop.key()),
@@ -664,7 +664,7 @@ namespace jsonschema {
                     case json_type::boolean:
                     case json_type::object:
                     {
-                        mcp_detail_jsoncons::string_view sub_keys[] = {"dependencies"};
+                        mcp_detail_jsoncons::string_view sub_keys[] = {"dependencies", dep.key()};
                         dependent_schemas.emplace(dep.key(),
                             factory_->make_cross_draft_schema_validator(context, dep.value(), sub_keys, anchor_dict));
                         break;
@@ -737,7 +737,7 @@ namespace jsonschema {
                     case json_type::boolean:
                     case json_type::object:
                     {
-                        mcp_detail_jsoncons::string_view sub_keys[] = {"dependentSchemas"};
+                        mcp_detail_jsoncons::string_view sub_keys[] = {"dependentSchemas", dep.key()};
                         dependent_schemas.emplace(dep.key(),
                             factory_->make_cross_draft_schema_validator(context, dep.value(), sub_keys, anchor_dict));
                         break;
