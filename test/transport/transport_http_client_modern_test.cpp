@@ -21,6 +21,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -474,6 +475,40 @@ TEST(HttpClientModern, HeadersExactPerSpecTable) {
         EXPECT_EQ(request.header("Accept"), "application/json, text/event-stream");
         EXPECT_EQ(request.parsed()["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"],
                   version);
+    }
+}
+
+// The specification limits an integer header to the JavaScript safe range, so a value beyond it
+// gets no Mcp-Param header, whether it is held as signed or as unsigned.
+TEST(HttpClientModern, IntegerOutsideTheSafeRangeGetsNoParamHeader) {
+    asio::io_context io;
+    RawServer raw(
+        io, [](const Recorded& request) { return modern_reply(request, json::array({route_tool()})); });
+    auto transport = make_transport(io, raw.url());
+    mcp::Client client(transport, io.get_executor(), modern_options());
+
+    constexpr std::int64_t largest = (std::int64_t{1} << 53) - 1;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("range", "1.0");
+        co_await client.list_tools();
+        const std::vector<json> counts = {json(largest), json(largest + 1), json(-largest),
+                                          json(-largest - 1), json(std::uint64_t{1} << 53)};
+        for (const auto& count : counts) {
+            const json arguments = {{"count", count}};
+            co_await client.call_tool("route", arguments);
+        }
+        client.close();
+    });
+
+    const std::vector<std::string> expected = {"9007199254740991", "", "-9007199254740991", "", ""};
+    ASSERT_EQ(raw.requests.size(), 2 + expected.size());
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        const auto& request = raw.requests[2 + index];
+        SCOPED_TRACE(request.body);
+        EXPECT_EQ(request.rpc_method(), "tools/call");
+        const auto headers = mcp_headers(request);
+        const auto found = headers.find("mcp-param-count");
+        EXPECT_EQ(found == headers.end() ? "" : found->second, expected[index]);
     }
 }
 
