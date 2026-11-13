@@ -34,7 +34,7 @@ struct SchemaOptions {
     /// Most evaluation work one `validate()` call may do, and checking a schema against its
     /// metaschema when it is compiled. The work allowed grows with the size of the value times the
     /// size of the schema, up to this; a validation that needs more is stopped and reported as a
-    /// violation. A unit takes about 10 ns.
+    /// violation.
     std::size_t max_evaluation_work = 256'000'000;
     /// Most instructions, in all, that the `pattern` and `patternProperties` regular expressions of
     /// one schema may compile to. An instruction takes about 12 bytes.

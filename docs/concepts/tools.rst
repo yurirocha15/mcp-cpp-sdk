@@ -267,8 +267,8 @@ evaluation path through the schema is limited to 192 keywords and array
 indexes, which a schema recursing through ``anyOf`` and ``$ref`` at every level
 reaches at about 48 levels of the value. The evaluation work allowed grows with
 the size of the value times the size of the schema, up to 256 million units
-(``SchemaOptions::max_evaluation_work``), where a unit takes a few nanoseconds;
-a value's size counts its nodes, their nesting, the property names above them
+(``SchemaOptions::max_evaluation_work``); a value's size counts its nodes,
+their nesting, the property names above them
 and its text. A keyword such as ``anyOf`` keeps at most 16 of the messages its
 failed branches report, and the messages kept during one validation may hold
 32 MiB at once. Pattern matching runs in time
