@@ -26,7 +26,7 @@ static_assert(mcp::JsonSerializable<mcp::PromptArgument>);
 static_assert(mcp::JsonSerializable<mcp::InitializeRequest>);
 static_assert(mcp::JsonSerializable<mcp::GetPromptRequest>);
 static_assert(mcp::JsonSerializable<mcp::ReadResourceResult>);
-static_assert(mcp::JsonSerializable<mcp::ToolExecution>);
+static_assert(mcp::JsonSerializable<mcp::DetailedTask>);
 static_assert(mcp::JsonSerializable<mcp::SetLevelRequest>);
 
 // --- Positive: adl_serializer specialization ---

@@ -45,6 +45,11 @@ struct InputOptions {
 /// @brief Type alias for a function that serializes outbound notification writes.
 using MessageSender = std::function<Task<void>(std::string_view)>;
 
+/// @brief Receives the progress a handler reports, without suspending the handler (see
+/// Context::report_progress_sync()).
+using ProgressSink = std::function<void(double progress, std::optional<double> total,
+                                        const std::optional<std::string>& message)>;
+
 /**
  * @brief Request-scoped context provided to server handlers.
  *
@@ -233,9 +238,16 @@ class Context {
      * @param total Optional total progress value.
      * @param message Optional human-readable progress message.
      * @return A task that completes when the notification is sent.
+     *
+     * In a task (see Server::enable_tasks()) the progress becomes the task's status message
+     * instead, and no notification is sent.
      */
     Task<void> report_progress(double progress, std::optional<double> total = std::nullopt,
                                const std::optional<std::string>& message = std::nullopt) {
+        if (progress_sink_) {
+            progress_sink_(progress, total, message);
+            co_return;
+        }
         if (!progress_token_) {
             co_return;
         }
@@ -261,6 +273,33 @@ class Context {
             co_await transport_.write_message(*wire);
         }
     }
+
+    /**
+     * @brief Report progress without suspending, for a handler that is not a coroutine.
+     *
+     * @details In a task (see Server::enable_tasks()) the progress becomes the task's status
+     * message, as report_progress() does. Elsewhere the report would need a write, which a call
+     * that does not suspend cannot make, so nothing is sent: use report_progress().
+     *
+     * @param progress The current progress value.
+     * @param total Optional total progress value.
+     * @param message Optional human-readable progress message.
+     * @return Whether the progress was reported.
+     */
+    bool report_progress_sync(double progress, std::optional<double> total = std::nullopt,
+                              const std::optional<std::string>& message = std::nullopt) {
+        if (!progress_sink_) {
+            return false;
+        }
+        progress_sink_(progress, total, message);
+        return true;
+    }
+
+    /**
+     * @brief Sets where this context's progress goes instead of the client, which the server does
+     * for the handler of a task.
+     */
+    void set_progress_sink(ProgressSink sink) { progress_sink_ = std::move(sink); }
 
     /**
      * @brief Request the client to sample an LLM (reverse RPC).
@@ -382,6 +421,7 @@ class Context {
     std::shared_ptr<const RequestMetadata> request_meta_;
     std::shared_ptr<const std::string> principal_;
     std::shared_ptr<const std::atomic<bool>> replaying_;
+    ProgressSink progress_sink_;
 };
 
 }  // namespace mcp
