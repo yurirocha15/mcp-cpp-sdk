@@ -460,6 +460,54 @@ Versioning; a `0.x` version is a stable release unless its version has an
   content against the request's schema and throws when it does not conform;
   `InputOptions::validate_content` set to `false` turns that off.
   `validate_elicitation_content()` and `describe_violations()` expose the check.
+- `Server::declare_extension()` declares an extension in the capabilities that
+  `initialize` and `server/discover` return, `Server::capabilities()` returns a
+  copy of them, and `Server::add_extension_method()` serves an extension's
+  request method to clients of protocol revision 2026-07-28. A handler reports
+  invalid parameters by throwing `std::invalid_argument`, answered with
+  `-32602`; middleware registered with `use()` wraps these handlers.
+  `TextResourceContents` and `BlobResourceContents` carry `_meta`.
+- MCP Apps (`io.modelcontextprotocol/ui`, revision 2026-01-26 of the
+  extension): `mcp/protocol/apps.hpp` has the `_meta.ui` types of views and
+  tools, `apps::declare_support()` for a host and `apps::supports_views()` for
+  a server, which reads a request's declared capabilities from its `Context`.
+  `mcp/server/apps.hpp` registers a `ui://` view with the
+  `text/html;profile=mcp-app` MIME type and the tools that link to it
+  (`apps::add_view_resource()`, `apps::add_view_tool()`), and
+  `mcp/client/apps.hpp` reads a view with its metadata (`apps::read_view()`).
+  Rendering views is left to the host. See `docs/concepts/apps.rst`.
+- Skills (`io.modelcontextprotocol/skills`, beta specification):
+  `mcp/protocol/skills.hpp` has the `Skill` entry, `skills/list`,
+  `skills/get` and `resources/directory/read` types, SHA-256 digests,
+  `skills::validate_skill()` (which also rejects listed paths with empty, `.`
+  or `..` segments, percent-encoded dot segments, backslashes or NUL) and
+  `skills::verify_content()`.
+  `skills::SkillsExtension` serves skills from a `Server`: it declares the
+  extension, registers every file as a resource, and answers `skills/list`,
+  `skills/get` and, with `directoryRead`, `resources/directory/read`.
+  `mcp/client/skills.hpp` lists skills, gets an entry, reads a directory, and
+  reads a skill file after checking it against the entry's size and digest
+  (`skills::read_skill_file()`). See `docs/concepts/skills.rst`.
+- OAuth client credentials (`io.modelcontextprotocol/oauth-client-credentials`):
+  `auth::ClientCredentialsAuthenticator` obtains an access token for
+  machine-to-machine use through the client credentials grant, with the
+  RFC 8707 `resource` indicator, from the discovery of the protected resource
+  and its authorization server. The client authenticates with a client secret
+  (`client_secret_basic` or `client_secret_post`) or a signed JWT assertion
+  (`private_key_jwt` with `RS256`, `PS256` or `ES256`; RSA keys under 2048
+  bits are refused); see
+  `auth::ClientAuthentication` and `auth::sign_client_assertion()`. It is an
+  `Authenticator`, so `OAuthClientTransport` replays a refused request with its
+  token. `OAuthHttpClient::post_form()` posts a form to a token endpoint under
+  the fetch policy.
+- Enterprise-managed authorization
+  (`io.modelcontextprotocol/enterprise-managed-authorization`):
+  `auth::EnterpriseAuthorizationAuthenticator` exchanges the identity assertion
+  an application supplies for an ID-JAG at the enterprise identity provider
+  (RFC 8693) and presents it to the authorization server as a JWT bearer grant
+  (RFC 7523), after checking that the server lists the `id-jag` grant profile.
+  A cached token is reused only for the identity assertion it was issued for.
+  See `docs/concepts/oauth.rst`.
 
 ### Changed
 
