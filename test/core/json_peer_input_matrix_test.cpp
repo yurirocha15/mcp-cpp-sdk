@@ -39,7 +39,7 @@
 // a member that tolerates being absent but throws when a peer sends it as an
 // explicit null. That is a recurring defect class, and
 // scripts/json_census_dispositions.json dispositions it "fix".
-// 0 of the 265 field entries below still carry it; there were 87 before the
+// 0 of the 274 field entries below still carry it; there were 87 before the
 // explicit-null decoding fixes. Those rows pin behaviour as it is so the
 // suite stays green. They do not endorse it. Fixing one makes the build check
 // report this file stale until it is regenerated with the fix. The check reads
@@ -208,6 +208,7 @@ TEST(JsonPeerInputMatrix, AudioContent) {
 TEST(JsonPeerInputMatrix, BlobResourceContents) {
     const json baseline = json::parse(R"json({"uri":"x","blob":"x"})json");
     static const FieldExpect fields[] = {
+        {"_meta", R"json({})json", 0, false, false, false, false},
         {"blob", R"json("x")json", 0, true, true, true, false},
         {"mimeType", R"json("x")json", 0, false, false, true, false},
         {"uri", R"json("x")json", 0, true, true, true, false},
@@ -827,6 +828,18 @@ TEST(JsonPeerInputMatrix, ListRootsResult) {
     }
 }
 
+TEST(JsonPeerInputMatrix, ListSkillsResult) {
+    const json baseline = json::parse(R"json({"skills":[]})json");
+    static const FieldExpect fields[] = {
+        {"nextCursor", R"json("x")json", 0, false, false, true, false},
+        {"skills", R"json([])json", 0, true, true, true, false},
+    };
+    for (const auto& f : fields) {
+        SCOPED_TRACE(std::string("ListSkillsResult.") + f.key);
+        check_field<mcp::ListSkillsResult>(baseline, f);
+    }
+}
+
 TEST(JsonPeerInputMatrix, ListToolsRequest) {
     const json baseline = json::parse(R"json({"method":"tools/list"})json");
     static const FieldExpect fields[] = {
@@ -1014,6 +1027,18 @@ TEST(JsonPeerInputMatrix, PromptReference) {
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("PromptReference.") + f.key);
         check_field<mcp::PromptReference>(baseline, f);
+    }
+}
+
+TEST(JsonPeerInputMatrix, ReadResourceDirectoryResult) {
+    const json baseline = json::parse(R"json({"resources":[{"uri":"x","name":"x"}]})json");
+    static const FieldExpect fields[] = {
+        {"nextCursor", R"json("x")json", 0, false, false, true, false},
+        {"resources", R"json([{"uri":"x","name":"x"}])json", 0, true, true, true, false},
+    };
+    for (const auto& f : fields) {
+        SCOPED_TRACE(std::string("ReadResourceDirectoryResult.") + f.key);
+        check_field<mcp::ReadResourceDirectoryResult>(baseline, f);
     }
 }
 
@@ -1274,6 +1299,19 @@ TEST(JsonPeerInputMatrix, SetLevelRequestParams) {
     }
 }
 
+TEST(JsonPeerInputMatrix, SkillResource) {
+    const json baseline = json::parse(R"json({"uri":"x","digest":"x","size":1})json");
+    static const FieldExpect fields[] = {
+        {"digest", R"json("x")json", 0, true, true, true, false},
+        {"size", R"json(1)json", 0, true, true, true, false},
+        {"uri", R"json("x")json", 0, true, true, true, false},
+    };
+    for (const auto& f : fields) {
+        SCOPED_TRACE(std::string("SkillResource.") + f.key);
+        check_field<mcp::SkillResource>(baseline, f);
+    }
+}
+
 TEST(JsonPeerInputMatrix, SubscribeRequest) {
     const json baseline =
         json::parse(R"json({"method":"resources/subscribe","params":{"uri":"x"}})json");
@@ -1302,6 +1340,7 @@ TEST(JsonPeerInputMatrix, TextContent) {
 TEST(JsonPeerInputMatrix, TextResourceContents) {
     const json baseline = json::parse(R"json({"uri":"x","text":"x"})json");
     static const FieldExpect fields[] = {
+        {"_meta", R"json({})json", 0, false, false, false, false},
         {"mimeType", R"json("x")json", 0, false, false, true, false},
         {"text", R"json("x")json", 0, true, true, true, false},
         {"uri", R"json("x")json", 0, true, true, true, false},
@@ -1450,10 +1489,10 @@ TEST(JsonPeerInputMatrix, UpdateTaskRequestParams) {
 // suite is worth; a hand-written suite of the same size is only worth what its
 // author thought to write down.
 TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
-    constexpr int types = 99;
-    constexpr int fields = 265;
+    constexpr int types = 102;
+    constexpr int fields = 274;
     constexpr int modes = 4;
-    constexpr int generated_cases = 1060;
+    constexpr int generated_cases = 1096;
     EXPECT_EQ(generated_cases, fields * modes);
     EXPECT_GT(types, 0);
 }
@@ -1510,6 +1549,7 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   ListResourcesResult
 //   ListRootsRequest
 //   ListRootsResult
+//   ListSkillsResult
 //   ListToolsRequest
 //   ListToolsRequestParams
 //   ListToolsResult
@@ -1525,6 +1565,7 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   PromptArgument
 //   PromptListChangedNotification
 //   PromptReference
+//   ReadResourceDirectoryResult
 //   ReadResourceRequest
 //   ReadResourceRequestParams
 //   ReadResourceResult
@@ -1545,6 +1586,7 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   ServerCapabilities::ToolsCapability
 //   SetLevelRequest
 //   SetLevelRequestParams
+//   SkillResource
 //   SubscribeRequest
 //   TextContent
 //   TextResourceContents
@@ -1571,6 +1613,7 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   ElicitRequestParams: std::variant; from_json dispatches on mode
 //   ElicitationSchema: no baseline document could be synthesised
 //   EmbeddedResource: no baseline document could be synthesised
+//   GetSkillResult: no baseline document could be synthesised
 //   InitializeRequest: no baseline document could be synthesised
 //   InitializeResult: no baseline document could be synthesised
 //   JSONRPCMessage: std::variant; from_json dispatches on which key is present
@@ -1581,10 +1624,16 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   PromptMessage: no baseline document could be synthesised
 //   RequestId: std::variant of string and integer; it has no fields to vary
 //   ResourceContents: std::variant; from_json dispatches on text vs blob
+//   ResourceCsp: no baseline document could be synthesised
+//   ResourceMeta: no baseline document could be synthesised
+//   ResourcePermissions: no baseline document could be synthesised
 //   SamplingMessage: no baseline document could be synthesised
 //   SamplingMessageContent: std::variant; from_json accepts a block or a list of blocks
+//   Skill: no baseline document could be synthesised
 //   StringSchema: no baseline document could be synthesised
 //   TaskData: covered by TasksWire.TaskDataDecodesItsMembersStrictly
 //   TaskStatus: covered by TasksWire.TaskStatusDecodesOnlyTheSpecificationsStatuses
 //   TaskStatusNotification: covered by TasksWire.StatusNotificationDecodesItsMembersStrictly
 //   TitledMultiSelectEnumSchema: its options sit inside `items`; the elicitation schema tests cover it
+//   ToolMeta: no baseline document could be synthesised
+//   Visibility: no baseline document could be synthesised

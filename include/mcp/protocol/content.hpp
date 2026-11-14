@@ -39,6 +39,7 @@ struct TextResourceContents {
     std::string uri;                      ///< The URI of this resource.
     std::string text;                     ///< The text of the item.
     std::optional<std::string> mimeType;  ///< The MIME type of this resource.
+    std::optional<nlohmann::json> meta;   ///< Reserved for protocol use (`_meta`).
 };
 
 /**
@@ -48,6 +49,7 @@ struct BlobResourceContents {
     std::string uri;                      ///< The URI of this resource.
     std::string blob;                     ///< The base64-encoded binary data.
     std::optional<std::string> mimeType;  ///< The MIME type of this resource.
+    std::optional<nlohmann::json> meta;   ///< Reserved for protocol use (`_meta`).
 };
 
 /**
@@ -60,6 +62,9 @@ inline void to_json(nlohmann::json& json_obj, const TextResourceContents& conten
     if (content.mimeType) {
         json_obj["mimeType"] = *content.mimeType;
     }
+    if (content.meta) {
+        json_obj["_meta"] = *content.meta;
+    }
 }
 
 inline void from_json(const nlohmann::json& json_obj, TextResourceContents& content) {
@@ -68,12 +73,18 @@ inline void from_json(const nlohmann::json& json_obj, TextResourceContents& cont
     if (detail::has_json_value(json_obj, "mimeType")) {
         content.mimeType = json_obj.at("mimeType").get<std::string>();
     }
+    if (detail::has_json_value(json_obj, "_meta")) {
+        content.meta = json_obj.at("_meta");
+    }
 }
 
 inline void to_json(nlohmann::json& json_obj, const BlobResourceContents& content) {
     json_obj = nlohmann::json{{"uri", content.uri}, {"blob", content.blob}};
     if (content.mimeType) {
         json_obj["mimeType"] = *content.mimeType;
+    }
+    if (content.meta) {
+        json_obj["_meta"] = *content.meta;
     }
 }
 
@@ -82,6 +93,9 @@ inline void from_json(const nlohmann::json& json_obj, BlobResourceContents& cont
     json_obj.at("blob").get_to(content.blob);
     if (detail::has_json_value(json_obj, "mimeType")) {
         content.mimeType = json_obj.at("mimeType").get<std::string>();
+    }
+    if (detail::has_json_value(json_obj, "_meta")) {
+        content.meta = json_obj.at("_meta");
     }
 }
 
