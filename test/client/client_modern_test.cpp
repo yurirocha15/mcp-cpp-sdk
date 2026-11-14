@@ -693,6 +693,31 @@ TEST(ClientEra, PinnedModernRefusalNamesTheServedVersions) {
     EXPECT_EQ(harness.peer.count("initialize"), 0u);
 }
 
+// A refusal that lists the pinned version itself must not call that version unsupported.
+TEST(ClientEra, PinnedModernRefusalListingTheRequestedVersionSaysSo) {
+    Harness harness(pinned_options("2026-07-28"));
+    harness.peer.reply = [](const json& request) -> std::optional<json> {
+        return error_to(request, mcp::g_UNSUPPORTED_PROTOCOL_VERSION, "Unsupported protocol version",
+                        json{{"supported", json::array({"2026-07-28"})}, {"requested", "2026-07-28"}});
+    };
+
+    std::optional<mcp::McpError> failure;
+    harness.run([&]() -> mcp::Task<void> {
+        try {
+            co_await harness.client->connect("test-client", "1.0");
+        } catch (const mcp::McpError& error) {
+            failure = error;
+        }
+    });
+
+    ASSERT_TRUE(failure.has_value());
+    EXPECT_EQ(failure->code(), mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+    const std::string message = failure->what();
+    EXPECT_NE(message.find("refused protocol version 2026-07-28"), std::string::npos) << message;
+    EXPECT_NE(message.find("lists it"), std::string::npos) << message;
+    EXPECT_EQ(message.find("does not support"), std::string::npos) << message;
+}
+
 // basic_index.md: "A resultType of any value unrecognized by the client MUST be considered invalid."
 TEST(ClientEra, UnknownResultTypeRejected) {
     for (const json& bad : {json("surprise"), json("input_required"), json(7), json(nullptr)}) {

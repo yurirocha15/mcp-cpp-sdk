@@ -1396,6 +1396,18 @@ struct Client::Impl {
             for (const auto& entry : advertised) {
                 listed += (listed.empty() ? "" : ", ") + detail::sanitize_for_diagnostics(entry);
             }
+            // A server can refuse a request whose version it lists, for instance when the
+            // request is otherwise unacceptable; naming the version as unsupported would then
+            // contradict the list.
+            const bool listed_by_server =
+                std::find(advertised.begin(), advertised.end(), version) != advertised.end();
+            if (listed_by_server) {
+                throw McpError(g_UNSUPPORTED_PROTOCOL_VERSION,
+                               "The server refused protocol version " + version +
+                                   " although it lists it among the versions it supports (" + listed +
+                                   ")",
+                               outcome.error->data);
+            }
             throw McpError(g_UNSUPPORTED_PROTOCOL_VERSION,
                            "The server does not support protocol version " + version +
                                "; it supports " + listed +
