@@ -357,6 +357,20 @@ enum class ToolTaskMode : std::uint8_t {
 };
 
 /**
+ * @brief What a tool's task preparation decides (see Server::set_tool_task_preparation()).
+ */
+struct TaskPreparation {
+    /// The arguments the task's handler is called with.
+    nlohmann::json arguments = nlohmann::json::object();
+    /// When set, answers the call with this result and no task is created.
+    std::optional<CallToolResult> result;
+};
+
+/// Runs inside a tools/call that would create a task, before the task exists.
+using ToolTaskPreparation =
+    std::function<Task<TaskPreparation>(Context&, const nlohmann::json& arguments)>;
+
+/**
  * @brief Settings of the tasks extension (see Server::enable_tasks()).
  *
  * @details The defaults are starting points to be set for the deployment.
@@ -814,6 +828,34 @@ class MCP_API Server {
      * @throws std::invalid_argument If no tool is registered under @p name.
      */
     void set_tool_task_mode(const std::string& name, ToolTaskMode mode);
+
+    /**
+     * @brief Let tool @p name ask the client for input before its task is created.
+     *
+     * @details The preparation runs only for a tools/call that would create a task: tasks are
+     * enabled, the tool's mode is not ToolTaskMode::eNever and the client declared the tasks
+     * extension. It runs inside that request with the Context a synchronous handler of the tool
+     * would get, so it may call Context::elicit(), Context::sample_llm() and
+     * Context::request_roots(): the client answers them through the multi round-trip flow of the
+     * request, and the call returns a task only once the preparation has returned. The
+     * preparation receives the tool's arguments. When it returns TaskPreparation::result the call
+     * is answered with that result and no task is created; otherwise the task is created and its
+     * handler is called with TaskPreparation::arguments. A preparation that throws answers the
+     * call the way a handler that throws does.
+     *
+     * Middleware sees the call twice: once around the preparation, where it may reject the call,
+     * rewrite the parameters or answer without calling the next handler (no task is created then),
+     * and later around the task's handler. When the preparation returns arguments, middleware
+     * around it sees an empty CallToolResult as the answer, since no result exists yet.
+     *
+     * The task limits of TaskOptions are checked before the preparation runs, so a principal at its
+     * limit is answered without being asked anything, and again when the task is created. A
+     * request cancelled while the preparation runs creates no task.
+     *
+     * @throws std::logic_error If the server already serves requests.
+     * @throws std::invalid_argument If no tool is registered under @p name.
+     */
+    void set_tool_task_preparation(const std::string& name, ToolTaskPreparation preparation);
 
     /**
      * @brief Give up every handler waiting for the retry of a 2026-07-28 request.
