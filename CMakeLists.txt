@@ -111,6 +111,7 @@ set(MCP_CPP_SDK_SOURCES
     src/auth/oauth.cpp
     src/client/client.cpp
     src/detail/sealed_state.cpp
+    src/client/stdio_session.cpp
     src/server/server_stdio.cpp
     src/server/server_http.cpp
     src/server/server_tool.cpp
@@ -119,6 +120,7 @@ set(MCP_CPP_SDK_SOURCES
     src/server/task_store.cpp
     src/server/server.cpp
     src/transport/stdio.cpp
+    src/transport/stdio_client.cpp
     src/transport/memory.cpp
     src/transport/http_types.cpp
     src/transport/http_server.cpp
@@ -422,6 +424,7 @@ if(BUILD_TESTING)
       test/server/server_subscriptions_test.cpp
       test/transport/transport_test.cpp
       test/transport/transport_stdio_test.cpp
+      test/transport/transport_stdio_client_test.cpp
       test/transport/transport_ws_test.cpp
       test/transport/transport_http_test.cpp
       test/transport/transport_http_resumability_test.cpp
@@ -457,6 +460,13 @@ if(BUILD_TESTING)
   # so its test builds the source itself.
   add_executable(mcp-sdk-tests ${TEST_SRCS} src/detail/sealed_state.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
+  # The server the stdio client tests launch as a child process.
+  add_executable(mcp-test-stdio-server test/support/stdio_test_server.cpp)
+  target_link_libraries(mcp-test-stdio-server PRIVATE mcp-cpp-sdk)
+  add_dependencies(mcp-sdk-tests mcp-test-stdio-server)
+  target_compile_definitions(
+    mcp-sdk-tests
+    PRIVATE MCP_TEST_STDIO_SERVER="$<TARGET_FILE:mcp-test-stdio-server>")
   target_compile_definitions(
     mcp-sdk-tests
     PRIVATE MCP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
@@ -770,6 +780,12 @@ if(BUILD_EXAMPLES)
   add_executable(example-feature-modern-client
                  examples/features/modern_client.cpp)
   target_link_libraries(example-feature-modern-client PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-stdio-launch
+                 examples/features/stdio_launch.cpp)
+  target_link_libraries(example-feature-stdio-launch PRIVATE mcp-cpp-sdk)
+  # Launches the simple stdio server that is built beside it.
+  add_dependencies(example-feature-stdio-launch example-server-simple)
 
   add_executable(example-feature-legacy-protocols
                  examples/features/legacy_protocols.cpp)

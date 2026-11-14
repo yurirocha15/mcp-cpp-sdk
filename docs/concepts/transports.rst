@@ -67,21 +67,136 @@ call ``set_max_message_bytes()`` and pass it to ``Server::run()``.
 Client Side
 ~~~~~~~~~~~
 
-Clients can connect to a stdio-based server by providing the executor to the
-`StdioTransport`.
+``StdioClientTransport`` launches the server as a child process and owns it:
+the server's standard input and output carry the messages, and the transport
+ends the process when the client is done.
 
 .. code-block:: cpp
 
    #include <mcp/client/client.hpp>
-   #include <mcp/transport/stdio.hpp>
+   #include <mcp/transport/stdio_client.hpp>
+
+   mcp::StdioProcessOptions server;
+   server.command = "my-mcp-server";
+   server.arguments = {"--root", "/data"};
+   server.environment = {{"MY_SERVER_LOG", "debug"}};
+   server.working_directory = "/data";
+   server.stderr_mode = mcp::StderrMode::eCapture;
+   server.on_stderr_line = [](std::string_view line) { /* log it */ };
 
    boost::asio::co_spawn(executor, [&]() -> mcp::Task<void> {
-       auto transport = std::make_shared<mcp::StdioTransport>(executor);
+       auto transport = std::make_shared<mcp::StdioClientTransport>(executor, server);
        mcp::Client client(transport, executor);
 
        co_await client.connect(client_info, {});
        // Interact with the server...
+
+       client.close();
+       const mcp::ProcessExit exit = co_await transport->shutdown();
    }, boost::asio::detached);
+
+The constructor starts the process and throws ``std::runtime_error`` when it
+cannot (the program is not found, the working directory is missing). A command
+without a directory is searched for in ``PATH``; a relative path is taken
+relative to the client's working directory. ``environment`` adds to the client's
+own environment, or is the whole environment with ``inherit_environment`` set to
+``false``. What the server writes to standard error is inherited
+(``StderrMode::eInherit``, the default), passed line by line to
+``on_stderr_line`` (``eCapture``), or discarded (``eDiscard``); the
+specification lets a client capture, forward or ignore it, and a line there is
+not an error.
+
+Shutdown follows the specification's stdio text. ``close()`` (which
+``Client::close()`` calls) and ``shutdown()`` close the server's standard input and wait
+``stdin_close_wait`` (two seconds by default) for it to exit. A server that is
+still running then gets SIGTERM, and after ``terminate_wait`` SIGKILL. On
+Windows, which has no signal to ask a process to exit, ``TerminateProcess``
+follows the first wait. ``shutdown()`` resolves with a ``ProcessExit``: the exit
+status, or the signal that ended the process (POSIX), and whether the
+transport asked for the end (``requested``) and had to force it (``forced``). The
+destructor ends the process the same way, so none is left behind. The server's
+output is read and discarded from the moment shutdown begins, so a server that
+writes while it exits is not held up.
+
+By default (``own_process_tree = true``) the server runs as the leader of its own
+process group on POSIX, or in a job object on Windows, and the signals above,
+or termination of the job, go to the whole group. Helper
+processes the server starts, such as the node process behind an ``npx``
+launcher, then do not outlive it: when the server has ended, whatever is left of
+its group or job is killed. On POSIX the server no longer receives the
+terminal's Ctrl-C directly. ``own_process_tree = false`` signals the server
+process alone. When the application ignores ``SIGCHLD`` the system reaps the
+server itself, ``ProcessExit::code`` is ``-1``, and the leftover helpers are not
+signalled.
+
+A command is started directly, not through a shell. On Windows that finds
+``.exe`` files only; ``npx`` and ``npm`` are ``.cmd`` scripts and do not start.
+The application launches such a script through ``cmd.exe`` itself, and the SDK
+never does it automatically:
+
+.. code-block:: cpp
+
+   mcp::StdioProcessOptions server;
+   server.command = "cmd.exe";
+   server.arguments = {"/c", "npx.cmd", "-y", "@modelcontextprotocol/server-everything"};
+
+``cmd.exe`` interprets the arguments it is given (``&``, ``|``, ``%VAR%`` and
+quotes have meaning there), so pass it only values the application controls.
+
+The destructor closes the pipe through the transport's executor. It closes the
+pipe directly only when the executor is an ``io_context`` that has stopped; with
+an executor that no longer runs handlers in any other form, the process is ended
+by the waits above instead.
+
+A process that ends on its own is an unexpected termination: ``read_message()``
+throws, the ``Client`` reports a closed connection (its pending requests fail
+with ``g_CONNECTION_CLOSED`` and its subscriptions end as
+``SubscriptionEnd::eDropped``), and ``on_exit`` runs with ``requested`` false.
+
+The specification asks a client to restart a server that exits unexpectedly,
+and to establish active ``subscriptions/listen`` streams again.
+``StdioClientSession`` does both:
+
+.. code-block:: cpp
+
+   #include <mcp/client/stdio_session.hpp>
+
+   mcp::StdioSessionOptions options;
+   options.process = server;
+   options.client_info = {"my-client", "1.0"};
+   options.restart.max_restarts = 3;
+   options.configure = [](mcp::Client& client) {
+       client.on_elicitation(handle_elicitation);  // before every connect
+   };
+   options.on_connected = [](mcp::Client& client, const mcp::ConnectResult&) -> mcp::Task<void> {
+       mcp::SubscriptionFilter filter;
+       filter.toolsListChanged = true;
+       auto subscription = co_await client.listen(filter);  // after every restart too
+       // keep the subscription for the application...
+   };
+
+   mcp::StdioClientSession session(executor, options);
+   co_await session.start();
+   co_await session.client()->call_tool("add", args);
+
+When the process ends without the session or the transport having asked it to,
+the session waits ``restart.delay`` and starts the server again, up to
+``restart.max_restarts`` times over its life (the default is not to restart).
+By default only an abnormal end restarts the server (a non-zero status or a
+signal): one that exits with status 0 is shutting down by choice. Set
+``restart.restart_after_clean_exit`` to restart after a clean exit too. A server
+that ends before its connection is set up does not trigger a restart; ``start()``
+throws and the process is shut down. At most one restart sequence runs at a
+time.
+It creates a new ``Client`` for the new process, runs ``configure`` and
+connects it (a legacy session performs ``initialize`` again), then runs
+``on_connected``, where the application opens its subscriptions. Requests in
+flight when the server ended fail with ``g_CONNECTION_CLOSED``; the
+application calls ``session.client()`` again and retries them.
+``on_restart_failed`` runs when the policy allows no further start or a start
+fails.
+
+``examples/features/stdio_launch.cpp`` launches the example server both ways.
 
 HTTP Transport (Network)
 ------------------------

@@ -407,12 +407,35 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `mcp/protocol/extensions.hpp` with `declare_extension()`,
   `declares_extension()` and `extension_settings()` for declaring and reading
   the extensions of a client's or a server's capabilities.
-
-### Changed
-
-- `RequestSender` takes the key a handler chose for a question as a third
-  argument; senders that build a `Context` from their own `RequestSender` must
-  accept it.
+- `StdioClientTransport` launches an MCP server as a child process and speaks
+  to it over the process's standard input and output
+  (`mcp/transport/stdio_client.hpp`). `StdioProcessOptions` sets the command,
+  arguments, environment (added to the client's, or alone with
+  `inherit_environment = false`) and working directory, and what happens to
+  the server's standard error: inherited, passed line by line to
+  `on_stderr_line`, or discarded (`StderrMode`). Shutdown follows the stdio
+  transport text: `close()` and `shutdown()` close the server's standard
+  input, wait `stdin_close_wait`, then send SIGTERM, wait `terminate_wait`
+  and send SIGKILL (`TerminateProcess` after the first wait on Windows), and
+  the destructor does the same, so no process is left behind. A process that
+  ends on its own fails pending reads, which a `Client` reports as a closed
+  connection, and `on_exit` reports its `ProcessExit` (exit status or signal,
+  whether the transport asked for it, whether it had to be forced).
+  The server runs in its own process group (POSIX) or job object (Windows)
+  unless `own_process_tree` is false, so helpers it starts end with it. A
+  final line without a trailing newline is delivered as the last message, and
+  `max_message_bytes` limits complete lines as well as unfinished ones. On
+  Windows a `.cmd` script such as `npx` must be launched explicitly through
+  `cmd.exe`.
+- `StdioClientSession` (`mcp/client/stdio_session.hpp`) connects a `Client` to
+  a launched server and starts the server again when it ends unexpectedly, as
+  the stdio transport text asks (`StdioRestartPolicy`: number of restarts and
+  delay; the default never restarts). Each restart creates a new `Client`,
+  calls `configure` before and `on_connected` after it connects, which is where
+  an application registers handlers and opens its `subscriptions/listen`
+  streams again. Only an abnormal end (non-zero status or signal) restarts
+  the server unless `restart_after_clean_exit` is set, and a server that ends
+  before it is connected never triggers a restart.
 - `ElicitationSchema` builds the `requestedSchema` of a form from typed
   fields: `StringSchema` (length limits, `format`, `default`), `NumberSchema`
   (`number` or `integer`, bounds, `default`), `BooleanSchema`, `EnumSchema`
@@ -435,17 +458,19 @@ Versioning; a `0.x` version is a stable release unless its version has an
   triggered a 2026-07-28 question. `ClientOptions::validate_elicitation_content`
   turns the check off. `Context::elicit()` likewise checks accepted form
   content against the request's schema and throws when it does not conform;
-  `InputOptions::validate_content` set to `false` turns that off. `validate_elicitation_content()` and
-  `describe_violations()` expose the check.
+  `InputOptions::validate_content` set to `false` turns that off.
+  `validate_elicitation_content()` and `describe_violations()` expose the check.
 
 ### Changed
 
+- `RequestSender` takes the key a handler chose for a question as a third
+  argument; senders that build a `Context` from their own `RequestSender` must
+  accept it.
 - `PrimitiveSchemaDefinition` is a `std::variant` of the typed schemas above
   instead of a struct with `type`, `title` and `description`, and `StringSchema`,
   `NumberSchema`, `BooleanSchema` and `EnumSchema` are structs of their own
   rather than aliases of it. `EnumSchema` has no `type` member and requires
   `enum` when decoded.
-
 - An unknown resource in `resources/read` is answered with its URI in the
   error's `data`, as the specification shows.
 - A GET on the MCP endpoint whose `Accept` header does not list
