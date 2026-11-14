@@ -87,13 +87,10 @@ struct OutputCheck {
     std::optional<SchemaError> refusal;
 };
 
-/// Checks a tools/call result against the tool's output schema, when the client has one for it.
-Task<CallToolResult> checked_call_result(Task<nlohmann::json> request, OutputCheck check) {
-    if (check.refusal) {
-        throw *check.refusal;
-    }
-    auto& output_schema = check.schema;
-    auto result_json = co_await std::move(request);
+/// Decodes a tools/call result and checks it against the tool's output schema, when the client has
+/// one for it.
+CallToolResult finish_call_result(const nlohmann::json& result_json, const OutputCheck& check) {
+    const auto& output_schema = check.schema;
     auto result = result_json.get<CallToolResult>();
     if (output_schema && !result.isError.value_or(false) && result.structuredContent) {
         const auto validation = output_schema->validate(*result.structuredContent);
@@ -108,7 +105,61 @@ Task<CallToolResult> checked_call_result(Task<nlohmann::json> request, OutputChe
                                          nlohmann::json{{"violations", std::move(violations)}});
         }
     }
-    co_return result;
+    return result;
+}
+
+/// Checks a tools/call result against the tool's output schema, when the client has one for it.
+Task<CallToolResult> checked_call_result(Task<nlohmann::json> request, OutputCheck check) {
+    if (check.refusal) {
+        throw *check.refusal;
+    }
+    auto result_json = co_await std::move(request);
+    co_return finish_call_result(result_json, check);
+}
+
+/// Whether @p result is the CreateTaskResult of the tasks extension.
+bool is_task_result(const nlohmann::json& result) {
+    if (!result.is_object()) {
+        return false;
+    }
+    const auto found = result.find("resultType");
+    return found != result.end() && found->is_string() &&
+           found->get_ref<const std::string&>() == g_RESULT_TYPE_TASK;
+}
+
+/// Decodes the answer of `tasks/get`, which an invalid answer turns into an McpError.
+DetailedTask decode_task_state(const nlohmann::json& reply) {
+    try {
+        return reply.get<DetailedTask>();
+    } catch (const std::exception& error) {
+        throw McpError(g_INVALID_REQUEST,
+                       "Invalid task state: " + detail::sanitize_for_diagnostics(error.what()));
+    }
+}
+
+/// The final result of a finished task, as the request it stands for would have returned it.
+/// @p task is the task's `tasks/get` answer.
+nlohmann::json task_outcome(const nlohmann::json& task) {
+    // [gcc11-sso: string-in-frame] The outcome is held as json; a failure becomes an McpError
+    // only after the decoders are done with the document.
+    DetailedTask detailed;
+    std::optional<Error> failure;
+    try {
+        detailed = task.get<DetailedTask>();
+        if (detailed.task.status == TaskStatus::eFailed) {
+            failure = detailed.error->get<Error>();
+        }
+    } catch (const std::exception& error) {
+        throw McpError(g_INVALID_REQUEST,
+                       "Invalid task state: " + detail::sanitize_for_diagnostics(error.what()));
+    }
+    if (failure) {
+        throw McpError(std::move(*failure));
+    }
+    if (detailed.task.status == TaskStatus::eCancelled) {
+        throw McpError(g_INVALID_REQUEST, "The task was cancelled");
+    }
+    return std::move(*detailed.result);
 }
 
 }  // namespace
@@ -280,6 +331,11 @@ SubscriptionFilter Subscription::unhonored() const {
             missing.resourceSubscriptions.push_back(uri);
         }
     }
+    for (const auto& id : asked.taskIds) {
+        if (std::find(honored.taskIds.begin(), honored.taskIds.end(), id) == honored.taskIds.end()) {
+            missing.taskIds.push_back(id);
+        }
+    }
     return missing;
 }
 
@@ -348,6 +404,13 @@ SubscriptionFilter honored_filter(const nlohmann::json& params) {
             }
         }
     }
+    if (const auto ids = found->find("taskIds"); ids != found->end() && ids->is_array()) {
+        for (const auto& id : *ids) {
+            if (id.is_string()) {
+                honored.taskIds.push_back(id.get<std::string>());
+            }
+        }
+    }
     return honored;
 }
 
@@ -389,21 +452,25 @@ struct Client::Impl {
 
     /// Sends a request of the session's era. A modern session adds the per-request `_meta` and checks
     /// the result type of the answer; a legacy session sends @p params as given.
+    /// @p declare_tasks makes the request declare the tasks extension, as every request of a
+    /// session with ClientOptions::tasks set does, and lets a tools/call be answered with a task.
     static Task<nlohmann::json> request(std::shared_ptr<Impl> state, std::string_view method,
                                         const std::optional<nlohmann::json>& params,
-                                        const RequestOptions& request_options) {
+                                        const RequestOptions& request_options,
+                                        bool declare_tasks = false) {
         const auto modern_version = state->modern_version();
         if (!modern_version) {
             return request_wire(std::move(state), method, params, request_options, false);
         }
         reject_removed_method(*modern_version, method);
+        declare_tasks = declare_tasks || method.starts_with("tasks/");
         if (supports_input_required(method)) {
-            return resume_input_required(std::move(state), std::make_shared<const std::string>(method),
-                                         params, request_options,
-                                         std::make_shared<const std::string>(*modern_version));
+            return resume_input_required(
+                std::move(state), std::make_shared<const std::string>(method), params, request_options,
+                std::make_shared<const std::string>(*modern_version), declare_tasks);
         }
         auto modern_params =
-            state->with_request_meta(*modern_version, params, request_options.log_level);
+            state->with_request_meta(*modern_version, params, request_options.log_level, declare_tasks);
         return checked_result(
             request_wire(std::move(state), method, modern_params, request_options, false));
     }
@@ -569,9 +636,14 @@ struct Client::Impl {
                                                       std::shared_ptr<const std::string> method,
                                                       std::optional<nlohmann::json> params,
                                                       RequestOptions request_options,
-                                                      std::shared_ptr<const std::string> version) {
+                                                      std::shared_ptr<const std::string> version,
+                                                      bool declare_tasks) {
         const auto timeout = request_options.timeout.value_or(state->options.request_timeout);
         const auto deadline = std::chrono::steady_clock::now() + timeout;
+        // A tools/call that declared the extension may be answered with a task, which the caller
+        // takes over.
+        const bool task_allowed =
+            *method == "tools/call" && (declare_tasks || state->options.tasks == ClientTaskMode::eAuto);
         std::shared_ptr<const nlohmann::json> input_responses;
         std::shared_ptr<const nlohmann::json> request_state;
         for (int round = 0;; ++round) {
@@ -581,7 +653,8 @@ struct Client::Impl {
                 throw McpError(g_REQUEST_TIMEOUT, "Request timed out");
             }
             request_options.timeout = remaining;
-            auto round_params = state->with_request_meta(*version, params, request_options.log_level);
+            auto round_params =
+                state->with_request_meta(*version, params, request_options.log_level, declare_tasks);
             if (input_responses) {
                 (*round_params)["inputResponses"] = *input_responses;
             }
@@ -592,7 +665,9 @@ struct Client::Impl {
             const auto type = reply.is_object() ? reply.find("resultType") : reply.end();
             if (!reply.is_object() || type == reply.end() || !type->is_string() ||
                 *type != "input_required") {
-                check_complete(reply);
+                if (!(task_allowed && is_task_result(reply))) {
+                    check_complete(reply);
+                }
                 co_return reply;
             }
             if (round >= request_options.max_input_rounds) {
@@ -627,6 +702,150 @@ struct Client::Impl {
         }
     }
 
+    /// The request of one task method; the answer is the task's state for tasks/get and an
+    /// acknowledgment for the others.
+    static Task<nlohmann::json> task_request(std::shared_ptr<Impl> state, std::string_view method,
+                                             nlohmann::json params, RequestOptions request_options) {
+        co_return co_await request(state, method, params, request_options, true);
+    }
+
+    /// Fetches the task's state and checks that it has the shape its status calls for.
+    static Task<DetailedTask> task_state(std::shared_ptr<Impl> state, nlohmann::json params,
+                                         RequestOptions request_options) {
+        auto reply =
+            co_await task_request(std::move(state), "tasks/get", std::move(params), request_options);
+        co_return decode_task_state(reply);
+    }
+
+    static Task<void> task_ack(std::shared_ptr<Impl> state, std::string_view method,
+                               nlohmann::json params, RequestOptions request_options) {
+        co_await task_request(std::move(state), method, std::move(params), request_options);
+    }
+
+    /// Polls the task named by @p params (`{"taskId"}`) until it finishes and returns its final
+    /// `tasks/get` answer. The questions of an `input_required` task are answered once each with
+    /// the registered handlers. The task's `pollIntervalMs` paces the polls.
+    static Task<nlohmann::json> wait_for_task(std::shared_ptr<Impl> state, nlohmann::json params,
+                                              RequestOptions request_options) {
+        const auto deadline = std::chrono::steady_clock::now() + state->options.task_timeout;
+        const auto limit = static_cast<std::size_t>(request_options.max_input_requests);
+        // The keys already answered, as an object so that no string is held across a suspension.
+        nlohmann::json answered = nlohmann::json::object();
+        for (;;) {
+            nlohmann::json current = co_await task_request(state, "tasks/get", params, request_options);
+            TaskStatus status = TaskStatus::eWorking;
+            std::int64_t poll_ms = state->options.task_poll_interval.count();
+            nlohmann::json pending = nlohmann::json::object();
+            {
+                const auto detailed = decode_task_state(current);
+                status = detailed.task.status;
+                if (detailed.task.pollIntervalMs && *detailed.task.pollIntervalMs > 0) {
+                    poll_ms = *detailed.task.pollIntervalMs;
+                }
+                if (detailed.inputRequests) {
+                    pending = *detailed.inputRequests;
+                }
+            }
+            if (status == TaskStatus::eCompleted || status == TaskStatus::eFailed ||
+                status == TaskStatus::eCancelled) {
+                co_return current;
+            }
+
+            if (status == TaskStatus::eInputRequired) {
+                auto fresh = std::make_shared<nlohmann::json>(nlohmann::json::object());
+                for (const auto& entry : pending.items()) {
+                    if (!answered.contains(entry.key())) {
+                        (*fresh)[entry.key()] = entry.value();
+                        answered[entry.key()] = true;
+                    }
+                }
+                if (!fresh->empty()) {
+                    std::shared_ptr<const nlohmann::json> questions = std::move(fresh);
+                    auto responses = co_await answer_input_requests(state, std::move(questions), limit);
+                    nlohmann::json update = {{"taskId", params.at("taskId")},
+                                             {"inputResponses", std::move(responses)}};
+                    co_await task_request(state, "tasks/update", std::move(update), request_options);
+                }
+            }
+
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+            if (remaining <= std::chrono::milliseconds::zero()) {
+                throw McpError(g_REQUEST_TIMEOUT, "Timed out waiting for the task to finish");
+            }
+            auto executor = co_await boost::asio::this_coro::executor;
+            boost::asio::steady_timer pause(executor);
+            pause.expires_after(std::min(std::chrono::milliseconds(poll_ms), remaining));
+            co_await pause.async_wait(boost::asio::use_awaitable);
+        }
+    }
+
+    /// Sends a tools/call that declares the tasks extension and follows the task the server starts,
+    /// if it starts one, to its result.
+    static Task<CallToolResult> call_tool_following(std::shared_ptr<Impl> state, nlohmann::json params,
+                                                    OutputCheck check) {
+        if (check.refusal) {
+            throw *check.refusal;
+        }
+        // call_tool() takes no per-request options, so the call and the follow use the defaults.
+        const RequestOptions request_options;
+        nlohmann::json reply = co_await request(state, "tools/call", params, request_options, true);
+        if (is_task_result(reply)) {
+            nlohmann::json task_params = {{"taskId", nlohmann::json()}};
+            try {
+                task_params["taskId"] = reply.get<CreateTaskResult>().task.taskId;
+            } catch (const std::exception& error) {
+                throw McpError(g_INVALID_REQUEST,
+                               "Invalid task: " + detail::sanitize_for_diagnostics(error.what()));
+            }
+            // Nobody else holds this task, so a call that gives up on it asks the server to stop it.
+            std::exception_ptr gave_up;
+            nlohmann::json finished;
+            try {
+                finished = co_await wait_for_task(state, task_params, request_options);
+            } catch (...) {
+                gave_up = std::current_exception();
+            }
+            if (gave_up) {
+                try {
+                    co_await task_request(state, "tasks/cancel", task_params, request_options);
+                } catch (...) {
+                    // The caller gets the error that ended the wait; a cancel that fails changes
+                    // nothing.
+                }
+                std::rethrow_exception(gave_up);
+            }
+            reply = task_outcome(finished);
+        }
+        co_return finish_call_result(reply, check);
+    }
+
+    /// Sends a tools/call that declares the tasks extension, and hands the task the server starts
+    /// to the caller.
+    static Task<std::variant<CallToolResult, TaskHandle>> start_tool(std::shared_ptr<Impl> state,
+                                                                     nlohmann::json params,
+                                                                     OutputCheck check) {
+        if (check.refusal) {
+            throw *check.refusal;
+        }
+        std::optional<std::string> tool;
+        if (params.contains("name") && params["name"].is_string()) {
+            tool = params["name"].get<std::string>();
+        }
+        const RequestOptions request_options;
+        nlohmann::json reply = co_await request(state, "tools/call", params, request_options, true);
+        if (is_task_result(reply)) {
+            try {
+                co_return std::variant<CallToolResult, TaskHandle>(
+                    TaskHandle(state, reply.get<CreateTaskResult>().task, std::move(tool)));
+            } catch (const std::exception& error) {
+                throw McpError(g_INVALID_REQUEST,
+                               "Invalid task: " + detail::sanitize_for_diagnostics(error.what()));
+            }
+        }
+        co_return std::variant<CallToolResult, TaskHandle>(finish_call_result(reply, check));
+    }
+
     /// Opens a subscriptions/listen stream. The request is never answered while the stream is open,
     /// so it bypasses the table of pending requests (and their deadline): the stream has its own
     /// entry, and `timeout` limits only the wait for the acknowledgment.
@@ -645,8 +864,8 @@ struct Client::Impl {
 
         nlohmann::json params = nlohmann::json::object();
         params["notifications"] = filter;
-        const auto wire_params =
-            state->with_request_meta(*modern_version, params, request_options.log_level);
+        const auto wire_params = state->with_request_meta(
+            *modern_version, params, request_options.log_level, !filter.taskIds.empty());
 
         const int64_t id = state->next_request_id.fetch_add(1, std::memory_order_relaxed);
         JSONRPCRequest request;
@@ -1846,9 +2065,12 @@ struct Client::Impl {
     /// @p params with the per-request `_meta` of a modern request merged in. The caller's own
     /// `_meta` entries (progressToken, traceparent, ...) stay as they are; the four protocol keys
     /// are the client's to set.
+    /// @p declare_tasks adds the tasks extension to the declared capabilities, which the client does
+    /// for every request when ClientOptions::tasks is set.
     std::optional<nlohmann::json> with_request_meta(const std::string& version,
                                                     const std::optional<nlohmann::json>& params,
-                                                    const std::optional<LoggingLevel>& level) const {
+                                                    const std::optional<LoggingLevel>& level,
+                                                    bool declare_tasks = false) const {
         nlohmann::json merged = params ? *params : nlohmann::json::object();
         if (merged.is_null()) {
             merged = nlohmann::json::object();
@@ -1865,6 +2087,15 @@ struct Client::Impl {
         }
         meta[std::string(g_META_PROTOCOL_VERSION)] = version;
         meta[std::string(g_META_CLIENT_CAPABILITIES)] = effective_capabilities();
+        if (declare_tasks || options.tasks == ClientTaskMode::eAuto) {
+            auto& extensions = meta[std::string(g_META_CLIENT_CAPABILITIES)]["extensions"];
+            if (!extensions.is_object()) {
+                extensions = nlohmann::json::object();
+            }
+            if (!extensions.contains(std::string(g_TASKS_EXTENSION))) {
+                extensions[std::string(g_TASKS_EXTENSION)] = nlohmann::json::object();
+            }
+        }
         {
             std::lock_guard lock(handlers_mutex);
             meta[std::string(g_META_CLIENT_INFO)] = client_info;
@@ -1973,6 +2204,10 @@ Client::Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_
     if (options.subscription_queue_limit == 0) {
         throw std::invalid_argument("Client subscription queue limit must be positive");
     }
+    if (options.task_poll_interval <= std::chrono::milliseconds::zero() ||
+        options.task_timeout <= std::chrono::milliseconds::zero()) {
+        throw std::invalid_argument("Client task poll interval and task timeout must be positive");
+    }
     if (options.max_incoming_request_bytes == 0) {
         throw std::invalid_argument("Client incoming request memory limit must be positive");
     }
@@ -2071,8 +2306,91 @@ Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& curso
 Task<CallToolResult> Client::call_tool_with(CallToolParams params) {
     // [gcc11-sso: not-a-coroutine]
     auto check = impl_->output_check_for(params.name);
+    if (impl_->options.tasks == ClientTaskMode::eAuto && impl_->modern_version()) {
+        if (!impl_->read_loop_started.load(std::memory_order_acquire)) {
+            throw McpError(g_INVALID_REQUEST, "Client must connect before sending requests");
+        }
+        return Impl::call_tool_following(impl_, nlohmann::json(std::move(params)), std::move(check));
+    }
     return checked_call_result(send_request("tools/call", nlohmann::json(std::move(params))),
                                std::move(check));
+}
+
+Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool_with(CallToolParams params) {
+    // [gcc11-sso: not-a-coroutine]
+    auto check = impl_->output_check_for(params.name);
+    if (!impl_->read_loop_started.load(std::memory_order_acquire)) {
+        throw McpError(g_INVALID_REQUEST, "Client must connect before sending requests");
+    }
+    return Impl::start_tool(impl_, nlohmann::json(std::move(params)), std::move(check));
+}
+
+TaskHandle Client::task_handle(std::string id) {
+    TaskData created;
+    created.taskId = std::move(id);
+    return TaskHandle(impl_, std::move(created), std::nullopt);
+}
+
+TaskHandle::TaskHandle(std::shared_ptr<void> client, TaskData created, std::optional<std::string> tool)
+    : client_(std::move(client)), created_(std::move(created)), tool_(std::move(tool)) {}
+
+namespace {
+
+std::shared_ptr<void> attached_client(const std::shared_ptr<void>& client) {
+    if (!client) {
+        throw McpError(g_INVALID_REQUEST, "The task handle is not attached to a task");
+    }
+    return client;
+}
+
+Task<DetailedTask> detailed_task(Task<nlohmann::json> finished) {
+    auto reply = co_await std::move(finished);
+    co_return decode_task_state(reply);
+}
+
+Task<CallToolResult> task_result(Task<nlohmann::json> finished, OutputCheck check) {
+    auto reply = co_await std::move(finished);
+    co_return finish_call_result(task_outcome(reply), check);
+}
+
+}  // namespace
+
+Task<DetailedTask> TaskHandle::get(const RequestOptions& request_options) const {
+    // [gcc11-sso: not-a-coroutine]
+    auto state = std::static_pointer_cast<Client::Impl>(attached_client(client_));
+    nlohmann::json params{{"taskId", created_.taskId}};
+    return Client::Impl::task_state(std::move(state), std::move(params), request_options);
+}
+
+Task<void> TaskHandle::update(const nlohmann::json& input_responses,
+                              const RequestOptions& request_options) const {
+    auto state = std::static_pointer_cast<Client::Impl>(attached_client(client_));
+    nlohmann::json params{{"taskId", created_.taskId}, {"inputResponses", input_responses}};
+    return Client::Impl::task_ack(std::move(state), "tasks/update", std::move(params), request_options);
+}
+
+Task<void> TaskHandle::cancel(const RequestOptions& request_options) const {
+    auto state = std::static_pointer_cast<Client::Impl>(attached_client(client_));
+    nlohmann::json params{{"taskId", created_.taskId}};
+    return Client::Impl::task_ack(std::move(state), "tasks/cancel", std::move(params), request_options);
+}
+
+Task<DetailedTask> TaskHandle::wait(const RequestOptions& request_options) const {
+    auto state = std::static_pointer_cast<Client::Impl>(attached_client(client_));
+    nlohmann::json params{{"taskId", created_.taskId}};
+    auto finished = Client::Impl::wait_for_task(std::move(state), std::move(params), request_options);
+    return detailed_task(std::move(finished));
+}
+
+Task<CallToolResult> TaskHandle::result(const RequestOptions& request_options) const {
+    auto state = std::static_pointer_cast<Client::Impl>(attached_client(client_));
+    auto check = tool_ ? state->output_check_for(*tool_) : OutputCheck{};
+    if (check.refusal) {
+        throw *check.refusal;
+    }
+    nlohmann::json params{{"taskId", created_.taskId}};
+    auto finished = Client::Impl::wait_for_task(std::move(state), std::move(params), request_options);
+    return task_result(std::move(finished), std::move(check));
 }
 
 Task<ListResourcesResult> Client::list_resources(const std::optional<std::string>& cursor) {

@@ -14,6 +14,7 @@
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/request_context.hpp>
+#include <mcp/server/task_store.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <atomic>
@@ -339,6 +340,47 @@ struct MrtrStats {
     /// Retries refused because they are not the request that parked the handler: another method,
     /// or other parameters.
     std::uint64_t resume_params_mismatch = 0;
+};
+
+/**
+ * @brief Whether a tool call may become a task (see Server::set_tool_task_mode()).
+ */
+enum class ToolTaskMode : std::uint8_t {
+    /// The call always runs inside its request and answers with the tool's result.
+    eNever,
+    /// A client that declared the tasks extension gets a task handle in place of the result, and
+    /// any other client waits for the result as usual.
+    eAuto,
+    /// Like eAuto, except that a client that did not declare the tasks extension is answered with
+    /// `g_MISSING_REQUIRED_CLIENT_CAPABILITY` naming it.
+    eRequired,
+};
+
+/**
+ * @brief Settings of the tasks extension (see Server::enable_tasks()).
+ *
+ * @details The defaults are starting points to be set for the deployment.
+ */
+struct TaskOptions {
+    /// Where tasks are kept. When unset, the server keeps them in an InMemoryTaskStore with
+    /// `max_tasks_per_principal` as its per-principal limit.
+    std::shared_ptr<TaskStore> store;
+    /// How long a new task is kept after its creation. Unset keeps it without limit.
+    std::optional<std::chrono::milliseconds> ttl{std::chrono::hours(1)};
+    /// The polling interval suggested to clients in the state of a task.
+    std::chrono::milliseconds poll_interval{std::chrono::seconds(2)};
+    /// Handlers one principal may have running at once. A task counts until its handler returns,
+    /// whatever its status: a cancelled or expired task whose handler has not returned still
+    /// counts, and a new task is refused while the principal is at the limit. The default store
+    /// also holds at most this many tasks of one principal, finished ones included until they
+    /// expire.
+    std::size_t max_tasks_per_principal{100};
+    /// Handlers that may run at once for all principals, counted like `max_tasks_per_principal`.
+    /// The default store also holds at most this many tasks.
+    std::size_t max_tasks{10000};
+    /// Receives a warning about a configuration that works but is likely not what was meant.
+    /// When unset, warnings are written to standard error.
+    std::function<void(const std::string&)> warning_handler;
 };
 
 /**
@@ -725,6 +767,53 @@ class MCP_API Server {
 
     /// Counters of the 2026-07-28 requests that wait, or waited, for client input.
     [[nodiscard]] MrtrStats mrtr_stats() const;
+
+    /**
+     * @brief Serve the tasks extension (`io.modelcontextprotocol/tasks`) of protocol revision
+     * 2026-07-28.
+     *
+     * @details A tool whose mode is not ToolTaskMode::eNever answers a client that declared the
+     * extension with a task handle at once, runs the tool apart from the request, and keeps its
+     * outcome in the task store for the client to fetch with `tasks/get`. The server then also
+     * answers `tasks/get`, `tasks/update` and `tasks/cancel`, advertises the extension in
+     * `server/discover`, and sends `notifications/tasks` to a `subscriptions/listen` stream that
+     * asks for a task's id. Clients of earlier protocol revisions never see tasks.
+     *
+     * The task's handler runs on the executor set with set_handler_executor(), or else on the
+     * executor of the request. A handler that blocks stalls whatever else runs there, so a
+     * server that serves task tools needs a handler executor with threads of its own. Inside a
+     * task, Context::report_progress() sets the task's status message, and
+     * Context::elicit(), sample_llm() and request_roots() put the question in the task's
+     * `inputRequests` and wait until the client answers with `tasks/update`.
+     *
+     * A task is bound to the principal (Context::principal()) that started it, and only that
+     * principal can fetch, answer or cancel it. When the transport authenticates no principal,
+     * every caller shares one anonymous scope, and the task id, which is random and not
+     * guessable, is all that protects a task: serve tasks to anonymous callers only when that is
+     * acceptable.
+     *
+     * Tasks last as long as their time to live, and with the default store only as long as the
+     * process: a task does not survive a restart, and the store's other limits apply. The handler
+     * of a task whose time to live passes is asked to stop, like one whose task is cancelled
+     * (Context::is_cancelled()), but a handler that ignores that keeps running, and keeps
+     * counting against TaskOptions::max_tasks_per_principal and TaskOptions::max_tasks until it
+     * returns.
+     *
+     * @param options The store and the limits.
+     * @throws std::logic_error If the server already serves requests.
+     */
+    void enable_tasks(TaskOptions options = {});
+
+    /**
+     * @brief Set whether calls of tool @p name may become tasks.
+     *
+     * @details A tool's mode is ToolTaskMode::eNever until set. The mode may be set before
+     * enable_tasks(); it takes effect once tasks are enabled.
+     *
+     * @throws std::logic_error If the server already serves requests.
+     * @throws std::invalid_argument If no tool is registered under @p name.
+     */
+    void set_tool_task_mode(const std::string& name, ToolTaskMode mode);
 
     /**
      * @brief Give up every handler waiting for the retry of a 2026-07-28 request.

@@ -69,15 +69,6 @@ inline void from_json(const nlohmann::json& json_obj, ToolAnnotations& annotatio
 }
 
 /**
- * @brief Describes the execution support of a tool.
- */
-struct ToolExecution {
-    std::string taskSupport;  ///< "forbidden" | "optional" | "required"
-};
-
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ToolExecution, taskSupport)
-
-/**
  * @brief Represents a tool definition.
  */
 struct Tool {
@@ -90,7 +81,6 @@ struct Tool {
     std::optional<nlohmann::json> outputSchema;  ///< Optional JSON Schema object for the output.
     std::optional<std::string> title;            ///< Human-readable title for the tool.
     std::optional<std::vector<Icon>> icons;      ///< Icons for the tool.
-    std::optional<ToolExecution> execution;      ///< Tool execution requirements.
 };
 
 /**
@@ -118,9 +108,6 @@ inline void to_json(nlohmann::json& json_obj, const Tool& tool) {
     }
     if (tool.icons) {
         json_obj["icons"] = *tool.icons;
-    }
-    if (tool.execution) {
-        json_obj["execution"] = *tool.execution;
     }
 }
 
@@ -150,9 +137,6 @@ inline void from_json(const nlohmann::json& json_obj, Tool& tool) {
     }
     if (detail::has_json_value(json_obj, "icons")) {
         tool.icons = json_obj.at("icons").get<std::vector<Icon>>();
-    }
-    if (detail::has_json_value(json_obj, "execution")) {
-        tool.execution = json_obj.at("execution").get<ToolExecution>();
     }
 }
 

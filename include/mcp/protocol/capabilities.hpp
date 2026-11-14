@@ -325,42 +325,10 @@ struct ClientCapabilities {
         std::optional<nlohmann::json> tools;    ///< Whether the client supports tool use.
     };
 
-    /**
-     * @brief Client support for task-augmented reverse-RPC request types.
-     */
-    struct TaskRequestsCapability {
-        /**
-         * @brief Task support for elicitation request creation.
-         */
-        struct ElicitationTaskCapability {
-            std::optional<nlohmann::json> create;  ///< Support for creating elicitation tasks.
-        };
-        /**
-         * @brief Task support for sampling request creation.
-         */
-        struct SamplingTaskCapability {
-            std::optional<nlohmann::json> createMessage;  ///< Support for creating sampling tasks.
-        };
-
-        std::optional<ElicitationTaskCapability>
-            elicitation;                                 ///< Task support for elicitation requests.
-        std::optional<SamplingTaskCapability> sampling;  ///< Task support for sampling requests.
-    };
-
-    /**
-     * @brief Client support for task lifecycle endpoints.
-     */
-    struct TasksCapability {
-        std::optional<nlohmann::json> cancel;            ///< Whether the client supports tasks/cancel.
-        std::optional<nlohmann::json> list;              ///< Whether the client supports tasks/list.
-        std::optional<TaskRequestsCapability> requests;  ///< Which request types support tasks.
-    };
-
     std::optional<ElicitationCapability> elicitation;  ///< Support for elicitation requests.
     std::optional<nlohmann::json> experimental;  ///< Implementation-defined experimental capabilities.
     std::optional<RootsCapability> roots;        ///< Support for roots/list requests.
     std::optional<SamplingCapability> sampling;  ///< Support for sampling/createMessage requests.
-    std::optional<TasksCapability> tasks;        ///< Support for task lifecycle endpoints.
     std::optional<std::map<std::string, nlohmann::json>>
         extensions;  ///< Extension capability negotiation, keyed by extension name.
 };
@@ -416,83 +384,6 @@ inline void from_json(const nlohmann::json& j, ClientCapabilities::SamplingCapab
     }
 }
 
-inline void to_json(nlohmann::json& j,
-                    const ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.create) {
-        j["create"] = *cap.create;
-    }
-}
-
-inline void from_json(const nlohmann::json& j,
-                      ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability& cap) {
-    if (j.contains("create")) {
-        cap.create = j.at("create");
-    }
-}
-
-inline void to_json(nlohmann::json& j,
-                    const ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.createMessage) {
-        j["createMessage"] = *cap.createMessage;
-    }
-}
-
-inline void from_json(const nlohmann::json& j,
-                      ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability& cap) {
-    if (j.contains("createMessage")) {
-        cap.createMessage = j.at("createMessage");
-    }
-}
-
-inline void to_json(nlohmann::json& j, const ClientCapabilities::TaskRequestsCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.elicitation) {
-        j["elicitation"] = *cap.elicitation;
-    }
-    if (cap.sampling) {
-        j["sampling"] = *cap.sampling;
-    }
-}
-
-inline void from_json(const nlohmann::json& j, ClientCapabilities::TaskRequestsCapability& cap) {
-    if (j.contains("elicitation")) {
-        cap.elicitation =
-            j.at("elicitation")
-                .get<ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability>();
-    }
-    if (j.contains("sampling")) {
-        cap.sampling =
-            j.at("sampling").get<ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability>();
-    }
-}
-
-inline void to_json(nlohmann::json& j, const ClientCapabilities::TasksCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.cancel) {
-        j["cancel"] = *cap.cancel;
-    }
-    if (cap.list) {
-        j["list"] = *cap.list;
-    }
-    if (cap.requests) {
-        j["requests"] = *cap.requests;
-    }
-}
-
-inline void from_json(const nlohmann::json& j, ClientCapabilities::TasksCapability& cap) {
-    if (j.contains("cancel")) {
-        cap.cancel = j.at("cancel");
-    }
-    if (j.contains("list")) {
-        cap.list = j.at("list");
-    }
-    if (j.contains("requests")) {
-        cap.requests = j.at("requests").get<ClientCapabilities::TaskRequestsCapability>();
-    }
-}
-
 inline void to_json(nlohmann::json& j, const ClientCapabilities& cap) {
     j = nlohmann::json::object();
     if (cap.elicitation) {
@@ -506,9 +397,6 @@ inline void to_json(nlohmann::json& j, const ClientCapabilities& cap) {
     }
     if (cap.sampling) {
         j["sampling"] = *cap.sampling;
-    }
-    if (cap.tasks) {
-        j["tasks"] = *cap.tasks;
     }
     if (cap.extensions) {
         j["extensions"] = *cap.extensions;
@@ -527,9 +415,6 @@ inline void from_json(const nlohmann::json& j, ClientCapabilities& cap) {
     }
     if (j.contains("sampling")) {
         cap.sampling = j.at("sampling").get<ClientCapabilities::SamplingCapability>();
-    }
-    if (j.contains("tasks")) {
-        cap.tasks = j.at("tasks").get<ClientCapabilities::TasksCapability>();
     }
     if (detail::has_json_value(j, "extensions")) {
         cap.extensions = j.at("extensions").get<std::map<std::string, nlohmann::json>>();
@@ -562,29 +447,6 @@ struct ServerCapabilities {
     };
 
     /**
-     * @brief Server support for task-augmented request types.
-     */
-    struct TaskRequestsCapability {
-        /**
-         * @brief Task support for tool invocation requests.
-         */
-        struct ToolsTaskCapability {
-            std::optional<nlohmann::json> call;  ///< Support for task-augmented tool calls.
-        };
-
-        std::optional<ToolsTaskCapability> tools;  ///< Task support for tool-related requests.
-    };
-
-    /**
-     * @brief Server support for task lifecycle endpoints.
-     */
-    struct TasksCapability {
-        std::optional<nlohmann::json> cancel;            ///< Whether the server supports tasks/cancel.
-        std::optional<nlohmann::json> list;              ///< Whether the server supports tasks/list.
-        std::optional<TaskRequestsCapability> requests;  ///< Which request types support tasks.
-    };
-
-    /**
      * @brief Server support for tool listing change notifications.
      */
     struct ToolsCapability {
@@ -597,7 +459,6 @@ struct ServerCapabilities {
     std::optional<nlohmann::json> logging;       ///< Support for logging/setLevel.
     std::optional<PromptsCapability> prompts;    ///< Support for prompt endpoints.
     std::optional<ResourcesCapability> resources;  ///< Support for resource endpoints.
-    std::optional<TasksCapability> tasks;          ///< Support for task lifecycle endpoints.
     std::optional<ToolsCapability> tools;          ///< Support for tool endpoints.
     std::optional<std::map<std::string, nlohmann::json>>
         extensions;  ///< Extension capability negotiation, keyed by extension name.
@@ -635,60 +496,6 @@ inline void from_json(const nlohmann::json& j, ServerCapabilities::ResourcesCapa
     }
 }
 
-inline void to_json(nlohmann::json& j,
-                    const ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.call) {
-        j["call"] = *cap.call;
-    }
-}
-
-inline void from_json(const nlohmann::json& j,
-                      ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability& cap) {
-    if (j.contains("call")) {
-        cap.call = j.at("call");
-    }
-}
-
-inline void to_json(nlohmann::json& j, const ServerCapabilities::TaskRequestsCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.tools) {
-        j["tools"] = *cap.tools;
-    }
-}
-
-inline void from_json(const nlohmann::json& j, ServerCapabilities::TaskRequestsCapability& cap) {
-    if (j.contains("tools")) {
-        cap.tools =
-            j.at("tools").get<ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability>();
-    }
-}
-
-inline void to_json(nlohmann::json& j, const ServerCapabilities::TasksCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.cancel) {
-        j["cancel"] = *cap.cancel;
-    }
-    if (cap.list) {
-        j["list"] = *cap.list;
-    }
-    if (cap.requests) {
-        j["requests"] = *cap.requests;
-    }
-}
-
-inline void from_json(const nlohmann::json& j, ServerCapabilities::TasksCapability& cap) {
-    if (j.contains("cancel")) {
-        cap.cancel = j.at("cancel");
-    }
-    if (j.contains("list")) {
-        cap.list = j.at("list");
-    }
-    if (j.contains("requests")) {
-        cap.requests = j.at("requests").get<ServerCapabilities::TaskRequestsCapability>();
-    }
-}
-
 inline void to_json(nlohmann::json& j, const ServerCapabilities::ToolsCapability& cap) {
     j = nlohmann::json::object();
     if (cap.listChanged) {
@@ -719,9 +526,6 @@ inline void to_json(nlohmann::json& j, const ServerCapabilities& cap) {
     if (cap.resources) {
         j["resources"] = *cap.resources;
     }
-    if (cap.tasks) {
-        j["tasks"] = *cap.tasks;
-    }
     if (cap.tools) {
         j["tools"] = *cap.tools;
     }
@@ -745,9 +549,6 @@ inline void from_json(const nlohmann::json& j, ServerCapabilities& cap) {
     }
     if (j.contains("resources")) {
         cap.resources = j.at("resources").get<ServerCapabilities::ResourcesCapability>();
-    }
-    if (j.contains("tasks")) {
-        cap.tasks = j.at("tasks").get<ServerCapabilities::TasksCapability>();
     }
     if (j.contains("tools")) {
         cap.tools = j.at("tools").get<ServerCapabilities::ToolsCapability>();
