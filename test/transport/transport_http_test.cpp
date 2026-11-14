@@ -2323,6 +2323,15 @@ TEST_F(HttpTransportTest, WriteMessagePinsBearerProviderAtRequestStart) {
 // WWW-Authenticate challenge rendering
 // ===========================================================================
 
+// RFC 6750 allows more than one space after the scheme; the token is what follows them.
+TEST(HttpBearerToken, SpacesAfterTheSchemeAreSkipped) {
+    EXPECT_EQ(mcp::http_bearer_token("Bearer tok"), "tok");
+    EXPECT_EQ(mcp::http_bearer_token("Bearer   tok"), "tok");
+    EXPECT_EQ(mcp::http_bearer_token("bearer tok"), "tok");
+    EXPECT_EQ(mcp::http_bearer_token("Bearer    "), "");
+    EXPECT_EQ(mcp::http_bearer_token("Basic tok"), "");
+}
+
 TEST(BearerChallengeTest, EmptyConfigRendersBareBearer) {
     EXPECT_EQ(mcp::format_www_authenticate(mcp::BearerChallengeConfig{}), "Bearer");
 }

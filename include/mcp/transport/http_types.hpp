@@ -65,8 +65,8 @@ using AsyncBearerTokenValidator = std::function<Task<bool>(std::string)>;
 /**
  * @brief Extract a bearer token from an HTTP Authorization header.
  * @param authorization_header Complete Authorization header value.
- * @return The characters after the Bearer scheme, or an empty view when the
- *         scheme is absent or no characters follow it.
+ * @return The characters after the Bearer scheme and the spaces that follow it,
+ *         or an empty view when the scheme is absent or nothing follows it.
  */
 MCP_API std::string_view http_bearer_token(std::string_view authorization_header);
 

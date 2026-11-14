@@ -263,6 +263,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `Expect: 100-continue` with `100 Continue` before reading its body, so a
   client that waits for it, as curl does for a large body, no longer waits for
   its timeout first. A request refused on its headers gets only the refusal.
+- `http_bearer_token()` skips every space after `Bearer`, as RFC 6750 allows,
+  so a validator is no longer handed a token with leading spaces.
 
 ## [0.2.0] - 2026-10-21
 

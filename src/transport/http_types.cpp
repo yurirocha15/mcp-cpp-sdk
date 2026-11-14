@@ -1,6 +1,8 @@
 #include <mcp/transport/http_types.hpp>
 
 #include <nlohmann/json.hpp>
+
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -117,7 +119,10 @@ std::string_view http_bearer_token(std::string_view authorization_header) {
             return {};
         }
     }
-    return authorization_header.substr(scheme.size());
+    // RFC 6750 allows more than one space after the scheme.
+    auto token = authorization_header.substr(scheme.size());
+    token.remove_prefix(std::min(token.find_first_not_of(' '), token.size()));
+    return token;
 }
 
 std::string_view http_request_path(std::string_view target) {
