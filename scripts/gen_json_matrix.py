@@ -85,6 +85,14 @@ UNSYNTHESISABLE = {
     "SamplingMessageContent": "std::variant; from_json accepts a block or a list of blocks",
     "PrimitiveSchemaDefinition": "base of EnumSchema; exercised through its derived type",
     "RequestId": "std::variant of string and integer; it has no fields to vary",
+    # The decoders of the tasks extension are written by hand and read their members through
+    # helpers the census does not follow; test/core/tasks_test.cpp varies every member of each
+    # (absent, null, wrong type, unknown status) in the TasksWire tests named here.
+    "TaskStatus": "covered by TasksWire.TaskStatusDecodesOnlyTheSpecificationsStatuses",
+    "TaskData": "covered by TasksWire.TaskDataDecodesItsMembersStrictly",
+    "CreateTaskResult": "covered by TasksWire.CreateTaskResultDecodesItsMembersStrictly",
+    "DetailedTask": "covered by TasksWire.DetailedTaskDecodesItsMembersAndPayloadStrictly",
+    "TaskStatusNotification": "covered by TasksWire.StatusNotificationDecodesItsMembersStrictly",
 }
 
 

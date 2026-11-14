@@ -60,13 +60,16 @@ inline bool is_modern_http_request(const nlohmann::json& body,
     return protocol_header.has_value() && !is_legacy_protocol_version(*protocol_header);
 }
 
-/// The body value an Mcp-Name header mirrors, or null for a method that has none.
+/// The body value an Mcp-Name header mirrors, or null for a method that has none: the name of a
+/// tool or prompt, the URI of a resource, or the id of a task.
 inline const nlohmann::json* mirrored_name(const nlohmann::json& body, std::string_view method) {
     const char* member = nullptr;
     if (method == "tools/call" || method == "prompts/get") {
         member = "name";
     } else if (method == "resources/read") {
         member = "uri";
+    } else if (method == "tasks/get" || method == "tasks/update" || method == "tasks/cancel") {
+        member = "taskId";
     } else {
         return nullptr;
     }
@@ -79,9 +82,9 @@ inline const nlohmann::json* mirrored_name(const nlohmann::json& body, std::stri
 }
 
 /// Checks the headers a 2026-07-28 request mirrors from its body (MCP-Protocol-Version, Mcp-Method
-/// and, for tools/call, prompts/get and resources/read, Mcp-Name) and returns why they do not match,
-/// or nullopt when they do. A body value that is missing or malformed is left to the server, which
-/// answers it as invalid params.
+/// and, for tools/call, prompts/get, resources/read and the tasks methods, Mcp-Name) and returns why
+/// they do not match, or nullopt when they do. A body value that is missing or malformed is left to the
+/// server, which answers it as invalid params.
 inline std::optional<std::string> modern_header_mismatch(const StringRequest& request,
                                                          const nlohmann::json& body) {
     const auto& method = body.at("method").get_ref<const std::string&>();

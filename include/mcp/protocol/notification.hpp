@@ -220,44 +220,6 @@ struct ResourceUpdatedNotification {
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ResourceUpdatedNotification, method, params)
 
 /**
- * @brief Parameters for task status notifications.
- */
-struct TaskStatusNotificationParams {
-    std::string id;                        ///< Task identifier whose status changed.
-    TaskStatus status;                     ///< Updated task status.
-    std::optional<TaskMetadata> metadata;  ///< Optional task metadata snapshot.
-    std::optional<std::string> message;    ///< Optional human-readable status message.
-};
-inline void to_json(nlohmann::json& j, const TaskStatusNotificationParams& p) {
-    j = nlohmann::json{{"id", p.id}, {"status", p.status}};
-    if (p.metadata) {
-        j["metadata"] = *p.metadata;
-    }
-    if (p.message) {
-        j["message"] = *p.message;
-    }
-}
-inline void from_json(const nlohmann::json& j, TaskStatusNotificationParams& p) {
-    j.at("id").get_to(p.id);
-    j.at("status").get_to(p.status);
-    if (detail::has_json_value(j, "metadata")) {
-        p.metadata = j.at("metadata").get<TaskMetadata>();
-    }
-    if (detail::has_json_value(j, "message")) {
-        p.message = j.at("message").get<std::string>();
-    }
-}
-
-/**
- * @brief A notification about a task's status change.
- */
-struct TaskStatusNotification {
-    std::string method = "notifications/tasks/status";  ///< The method name.
-    TaskStatusNotificationParams params;                ///< The notification parameters.
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TaskStatusNotification, method, params)
-
-/**
  * @brief Parameters for elicitation completion notifications.
  */
 struct ElicitationCompleteNotificationParams {

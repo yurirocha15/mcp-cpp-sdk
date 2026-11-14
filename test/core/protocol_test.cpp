@@ -863,224 +863,11 @@ TEST(ProtocolTest, TaskStatusSerialization) {
     EXPECT_EQ(j.get<mcp::TaskStatus>(), mcp::TaskStatus::eWorking);
 }
 
-TEST(ProtocolTest, TaskMetadataSerialization) {
-    // With ttl
-    mcp::TaskMetadata meta;
-    meta.ttl = 60000;
-
-    nlohmann::json j = meta;
-    EXPECT_EQ(j["ttl"], 60000);
-
-    auto deserialized = j.get<mcp::TaskMetadata>();
-    ASSERT_TRUE(deserialized.ttl.has_value());
-    EXPECT_EQ(*deserialized.ttl, 60000);
-
-    // Without ttl (empty object)
-    mcp::TaskMetadata empty_meta;
-    nlohmann::json j_empty = empty_meta;
-    EXPECT_FALSE(j_empty.contains("ttl"));
-
-    auto deserialized_empty = j_empty.get<mcp::TaskMetadata>();
-    EXPECT_FALSE(deserialized_empty.ttl.has_value());
-}
-
-TEST(ProtocolTest, TaskDataSerialization) {
-    // Full TaskData with all optional fields
-    mcp::TaskData task;
-    task.taskId = "task-123";
-    task.status = mcp::TaskStatus::eWorking;
-    task.createdAt = "2025-01-15T10:30:00Z";
-    task.lastUpdatedAt = "2025-01-15T10:35:00Z";
-    task.ttl = 300000;
-    task.pollInterval = 5000;
-    task.statusMessage = "Processing step 2 of 5";
-
-    nlohmann::json j = task;
-    EXPECT_EQ(j["taskId"], "task-123");
-    EXPECT_EQ(j["status"], "working");
-    EXPECT_EQ(j["createdAt"], "2025-01-15T10:30:00Z");
-    EXPECT_EQ(j["lastUpdatedAt"], "2025-01-15T10:35:00Z");
-    EXPECT_EQ(j["ttl"], 300000);
-    EXPECT_EQ(j["pollInterval"], 5000);
-    EXPECT_EQ(j["statusMessage"], "Processing step 2 of 5");
-
-    auto deserialized = j.get<mcp::TaskData>();
-    EXPECT_EQ(deserialized.taskId, "task-123");
-    EXPECT_EQ(deserialized.status, mcp::TaskStatus::eWorking);
-    EXPECT_EQ(deserialized.createdAt, "2025-01-15T10:30:00Z");
-    EXPECT_EQ(deserialized.lastUpdatedAt, "2025-01-15T10:35:00Z");
-    EXPECT_EQ(deserialized.ttl, 300000);
-    ASSERT_TRUE(deserialized.pollInterval.has_value());
-    EXPECT_EQ(*deserialized.pollInterval, 5000);
-    ASSERT_TRUE(deserialized.statusMessage.has_value());
-    EXPECT_EQ(*deserialized.statusMessage, "Processing step 2 of 5");
-
-    // Minimal TaskData (required fields only)
-    mcp::TaskData minimal;
-    minimal.taskId = "task-min";
-    minimal.status = mcp::TaskStatus::eCompleted;
-    minimal.createdAt = "2025-01-15T10:30:00Z";
-    minimal.lastUpdatedAt = "2025-01-15T10:30:00Z";
-    minimal.ttl = 0;
-
-    nlohmann::json j_min = minimal;
-    EXPECT_EQ(j_min["taskId"], "task-min");
-    EXPECT_EQ(j_min["status"], "completed");
-    EXPECT_FALSE(j_min.contains("pollInterval"));
-    EXPECT_FALSE(j_min.contains("statusMessage"));
-
-    auto deserialized_min = j_min.get<mcp::TaskData>();
-    EXPECT_EQ(deserialized_min.taskId, "task-min");
-    EXPECT_FALSE(deserialized_min.pollInterval.has_value());
-    EXPECT_FALSE(deserialized_min.statusMessage.has_value());
-}
-
-TEST(ProtocolTest, CreateTaskResultSerialization) {
-    mcp::TaskData task;
-    task.taskId = "task-456";
-    task.status = mcp::TaskStatus::eInputRequired;
-    task.createdAt = "2025-01-15T10:30:00Z";
-    task.lastUpdatedAt = "2025-01-15T10:31:00Z";
-    task.ttl = 60000;
-
-    mcp::CreateTaskResult result;
-    result.task = std::move(task);
-    result.meta = nlohmann::json{{"requestId", "req-1"}};
-
-    nlohmann::json j = result;
-    EXPECT_EQ(j["task"]["taskId"], "task-456");
-    EXPECT_EQ(j["task"]["status"], "input_required");
-    EXPECT_EQ(j["_meta"]["requestId"], "req-1");
-
-    auto deserialized = j.get<mcp::CreateTaskResult>();
-    EXPECT_EQ(deserialized.task.taskId, "task-456");
-    EXPECT_EQ(deserialized.task.status, mcp::TaskStatus::eInputRequired);
-    ASSERT_TRUE(deserialized.meta.has_value());
-    EXPECT_EQ((*deserialized.meta)["requestId"], "req-1");
-
-    // Without _meta
-    mcp::CreateTaskResult no_meta;
-    no_meta.task.taskId = "task-789";
-    no_meta.task.status = mcp::TaskStatus::eCompleted;
-    no_meta.task.createdAt = "2025-01-15T10:30:00Z";
-    no_meta.task.lastUpdatedAt = "2025-01-15T10:30:00Z";
-    no_meta.task.ttl = 0;
-
-    nlohmann::json j2 = no_meta;
-    EXPECT_FALSE(j2.contains("_meta"));
-
-    auto deserialized2 = j2.get<mcp::CreateTaskResult>();
-    EXPECT_FALSE(deserialized2.meta.has_value());
-}
-
-TEST(ProtocolTest, GetTaskResultSerialization) {
-    mcp::GetTaskResult result;
-    result.taskId = "task-get-1";
-    result.status = mcp::TaskStatus::eFailed;
-    result.createdAt = "2025-01-15T10:30:00Z";
-    result.lastUpdatedAt = "2025-01-15T10:32:00Z";
-    result.ttl = 120000;
-    result.pollInterval = 10000;
-    result.statusMessage = "Timeout exceeded";
-    result.meta = nlohmann::json{{"trace", "abc"}};
-
-    nlohmann::json j = result;
-    EXPECT_EQ(j["taskId"], "task-get-1");
-    EXPECT_EQ(j["status"], "failed");
-    EXPECT_EQ(j["createdAt"], "2025-01-15T10:30:00Z");
-    EXPECT_EQ(j["lastUpdatedAt"], "2025-01-15T10:32:00Z");
-    EXPECT_EQ(j["ttl"], 120000);
-    EXPECT_EQ(j["pollInterval"], 10000);
-    EXPECT_EQ(j["statusMessage"], "Timeout exceeded");
-    EXPECT_EQ(j["_meta"]["trace"], "abc");
-
-    auto deserialized = j.get<mcp::GetTaskResult>();
-    EXPECT_EQ(deserialized.taskId, "task-get-1");
-    EXPECT_EQ(deserialized.status, mcp::TaskStatus::eFailed);
-    EXPECT_EQ(deserialized.ttl, 120000);
-    ASSERT_TRUE(deserialized.pollInterval.has_value());
-    EXPECT_EQ(*deserialized.pollInterval, 10000);
-    ASSERT_TRUE(deserialized.statusMessage.has_value());
-    EXPECT_EQ(*deserialized.statusMessage, "Timeout exceeded");
-    ASSERT_TRUE(deserialized.meta.has_value());
-    EXPECT_EQ((*deserialized.meta)["trace"], "abc");
-
-    // Minimal GetTaskResult
-    mcp::GetTaskResult minimal;
-    minimal.taskId = "task-get-min";
-    minimal.status = mcp::TaskStatus::eCancelled;
-    minimal.createdAt = "2025-01-15T10:30:00Z";
-    minimal.lastUpdatedAt = "2025-01-15T10:30:00Z";
-    minimal.ttl = 0;
-
-    nlohmann::json j_min = minimal;
-    EXPECT_FALSE(j_min.contains("pollInterval"));
-    EXPECT_FALSE(j_min.contains("statusMessage"));
-    EXPECT_FALSE(j_min.contains("_meta"));
-
-    auto deserialized_min = j_min.get<mcp::GetTaskResult>();
-    EXPECT_FALSE(deserialized_min.pollInterval.has_value());
-    EXPECT_FALSE(deserialized_min.statusMessage.has_value());
-    EXPECT_FALSE(deserialized_min.meta.has_value());
-}
-
-TEST(ProtocolTest, ListTasksResultSerialization) {
-    mcp::TaskData task1;
-    task1.taskId = "t1";
-    task1.status = mcp::TaskStatus::eCompleted;
-    task1.createdAt = "2025-01-15T10:00:00Z";
-    task1.lastUpdatedAt = "2025-01-15T10:01:00Z";
-    task1.ttl = 60000;
-
-    mcp::TaskData task2;
-    task2.taskId = "t2";
-    task2.status = mcp::TaskStatus::eWorking;
-    task2.createdAt = "2025-01-15T10:02:00Z";
-    task2.lastUpdatedAt = "2025-01-15T10:03:00Z";
-    task2.ttl = 120000;
-
-    mcp::ListTasksResult result;
-    result.tasks = {task1, task2};
-    result.nextCursor = "cursor-abc";
-    result.meta = nlohmann::json{{"page", 1}};
-
-    nlohmann::json j = result;
-    EXPECT_EQ(j["tasks"].size(), 2);
-    EXPECT_EQ(j["tasks"][0]["taskId"], "t1");
-    EXPECT_EQ(j["tasks"][1]["taskId"], "t2");
-    EXPECT_EQ(j["nextCursor"], "cursor-abc");
-    EXPECT_EQ(j["_meta"]["page"], 1);
-
-    auto deserialized = j.get<mcp::ListTasksResult>();
-    EXPECT_EQ(deserialized.tasks.size(), 2);
-    EXPECT_EQ(deserialized.tasks[0].taskId, "t1");
-    EXPECT_EQ(deserialized.tasks[0].status, mcp::TaskStatus::eCompleted);
-    EXPECT_EQ(deserialized.tasks[1].taskId, "t2");
-    EXPECT_EQ(deserialized.tasks[1].status, mcp::TaskStatus::eWorking);
-    ASSERT_TRUE(deserialized.nextCursor.has_value());
-    EXPECT_EQ(*deserialized.nextCursor, "cursor-abc");
-    ASSERT_TRUE(deserialized.meta.has_value());
-
-    // Without pagination and meta
-    mcp::ListTasksResult no_cursor;
-    no_cursor.tasks = {task1};
-
-    nlohmann::json j2 = no_cursor;
-    EXPECT_FALSE(j2.contains("nextCursor"));
-    EXPECT_FALSE(j2.contains("_meta"));
-
-    auto deserialized2 = j2.get<mcp::ListTasksResult>();
-    EXPECT_EQ(deserialized2.tasks.size(), 1);
-    EXPECT_FALSE(deserialized2.nextCursor.has_value());
-    EXPECT_FALSE(deserialized2.meta.has_value());
-}
-
 TEST(ProtocolTest, ElicitRequestURLParamsSerialization) {
     mcp::ElicitRequestURLParams params;
     params.message = "Please authenticate";
     params.url = "https://auth.example.com/login";
     params.elicitationId = "elicit-url-1";
-    params.task = mcp::TaskMetadata{.ttl = 30000};
     params.meta = nlohmann::json{{"source", "server"}};
 
     nlohmann::json j = params;
@@ -1088,7 +875,6 @@ TEST(ProtocolTest, ElicitRequestURLParamsSerialization) {
     EXPECT_EQ(j["message"], "Please authenticate");
     EXPECT_EQ(j["url"], "https://auth.example.com/login");
     EXPECT_EQ(j["elicitationId"], "elicit-url-1");
-    EXPECT_EQ(j["task"]["ttl"], 30000);
     EXPECT_EQ(j["_meta"]["source"], "server");
 
     auto deserialized = j.get<mcp::ElicitRequestURLParams>();
@@ -1096,12 +882,9 @@ TEST(ProtocolTest, ElicitRequestURLParamsSerialization) {
     EXPECT_EQ(deserialized.message, "Please authenticate");
     EXPECT_EQ(deserialized.url, "https://auth.example.com/login");
     EXPECT_EQ(deserialized.elicitationId, "elicit-url-1");
-    ASSERT_TRUE(deserialized.task.has_value());
-    ASSERT_TRUE(deserialized.task->ttl.has_value());
-    EXPECT_EQ(*deserialized.task->ttl, 30000);
     ASSERT_TRUE(deserialized.meta.has_value());
 
-    // Minimal (no task, no _meta)
+    // Minimal (no _meta)
     mcp::ElicitRequestURLParams minimal;
     minimal.message = "Go here";
     minimal.url = "https://example.com";
@@ -1109,11 +892,9 @@ TEST(ProtocolTest, ElicitRequestURLParamsSerialization) {
 
     nlohmann::json j_min = minimal;
     EXPECT_EQ(j_min["mode"], "url");
-    EXPECT_FALSE(j_min.contains("task"));
     EXPECT_FALSE(j_min.contains("_meta"));
 
     auto deserialized_min = j_min.get<mcp::ElicitRequestURLParams>();
-    EXPECT_FALSE(deserialized_min.task.has_value());
     EXPECT_FALSE(deserialized_min.meta.has_value());
 }
 
@@ -1126,23 +907,18 @@ TEST(ProtocolTest, ElicitRequestFormParamsSerialization) {
     mcp::ElicitRequestFormParams params;
     params.message = "Please provide your details";
     params.requestedSchema = schema;
-    params.task = mcp::TaskMetadata{.ttl = 60000};
 
     nlohmann::json j = params;
     EXPECT_EQ(j["mode"], "form");
     EXPECT_EQ(j["message"], "Please provide your details");
     EXPECT_EQ(j["requestedSchema"]["type"], "object");
     EXPECT_EQ(j["requestedSchema"]["required"][0], "name");
-    EXPECT_EQ(j["task"]["ttl"], 60000);
     EXPECT_FALSE(j.contains("_meta"));
 
     auto deserialized = j.get<mcp::ElicitRequestFormParams>();
     EXPECT_EQ(deserialized.mode, "form");
     EXPECT_EQ(deserialized.message, "Please provide your details");
     EXPECT_EQ(deserialized.requestedSchema["type"], "object");
-    ASSERT_TRUE(deserialized.task.has_value());
-    ASSERT_TRUE(deserialized.task->ttl.has_value());
-    EXPECT_EQ(*deserialized.task->ttl, 60000);
     EXPECT_FALSE(deserialized.meta.has_value());
 }
 
@@ -1680,7 +1456,7 @@ TEST(ProtocolTest, ClientCapabilitiesEmptySerialization) {
     EXPECT_FALSE(rt.experimental.has_value());
     EXPECT_FALSE(rt.roots.has_value());
     EXPECT_FALSE(rt.sampling.has_value());
-    EXPECT_FALSE(rt.tasks.has_value());
+    EXPECT_FALSE(rt.extensions.has_value());
 }
 
 TEST(ProtocolTest, ClientCapabilitiesFullSerialization) {
@@ -1694,21 +1470,6 @@ TEST(ProtocolTest, ClientCapabilitiesFullSerialization) {
     caps.sampling = mcp::ClientCapabilities::SamplingCapability{
         .context = json::object(),
         .tools = json::object(),
-    };
-
-    mcp::ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability elicit_task;
-    elicit_task.create = json::object();
-    mcp::ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability sampling_task;
-    sampling_task.createMessage = json::object();
-
-    mcp::ClientCapabilities::TaskRequestsCapability task_reqs;
-    task_reqs.elicitation = elicit_task;
-    task_reqs.sampling = sampling_task;
-
-    caps.tasks = mcp::ClientCapabilities::TasksCapability{
-        .cancel = json::object(),
-        .list = json::object(),
-        .requests = task_reqs,
     };
 
     json j = caps;
@@ -1727,15 +1488,6 @@ TEST(ProtocolTest, ClientCapabilitiesFullSerialization) {
     EXPECT_TRUE(j["sampling"].contains("context"));
     EXPECT_TRUE(j["sampling"].contains("tools"));
 
-    EXPECT_TRUE(j.contains("tasks"));
-    EXPECT_TRUE(j["tasks"].contains("cancel"));
-    EXPECT_TRUE(j["tasks"].contains("list"));
-    EXPECT_TRUE(j["tasks"].contains("requests"));
-    EXPECT_TRUE(j["tasks"]["requests"].contains("elicitation"));
-    EXPECT_TRUE(j["tasks"]["requests"]["elicitation"].contains("create"));
-    EXPECT_TRUE(j["tasks"]["requests"].contains("sampling"));
-    EXPECT_TRUE(j["tasks"]["requests"]["sampling"].contains("createMessage"));
-
     auto rt = j.get<mcp::ClientCapabilities>();
     ASSERT_TRUE(rt.elicitation.has_value());
     ASSERT_TRUE(rt.elicitation->form.has_value());
@@ -1745,14 +1497,6 @@ TEST(ProtocolTest, ClientCapabilitiesFullSerialization) {
     ASSERT_TRUE(rt.sampling.has_value());
     ASSERT_TRUE(rt.sampling->context.has_value());
     ASSERT_TRUE(rt.sampling->tools.has_value());
-    ASSERT_TRUE(rt.tasks.has_value());
-    ASSERT_TRUE(rt.tasks->cancel.has_value());
-    ASSERT_TRUE(rt.tasks->list.has_value());
-    ASSERT_TRUE(rt.tasks->requests.has_value());
-    ASSERT_TRUE(rt.tasks->requests->elicitation.has_value());
-    ASSERT_TRUE(rt.tasks->requests->elicitation->create.has_value());
-    ASSERT_TRUE(rt.tasks->requests->sampling.has_value());
-    ASSERT_TRUE(rt.tasks->requests->sampling->createMessage.has_value());
 }
 
 TEST(ProtocolTest, ClientCapabilitiesPartialSerialization) {
@@ -1790,7 +1534,7 @@ TEST(ProtocolTest, ServerCapabilitiesEmptySerialization) {
     EXPECT_FALSE(rt.logging.has_value());
     EXPECT_FALSE(rt.prompts.has_value());
     EXPECT_FALSE(rt.resources.has_value());
-    EXPECT_FALSE(rt.tasks.has_value());
+    EXPECT_FALSE(rt.extensions.has_value());
     EXPECT_FALSE(rt.tools.has_value());
 }
 
@@ -1805,17 +1549,6 @@ TEST(ProtocolTest, ServerCapabilitiesFullSerialization) {
         .subscribe = true,
     };
 
-    mcp::ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability tools_task;
-    tools_task.call = json::object();
-
-    mcp::ServerCapabilities::TaskRequestsCapability task_reqs;
-    task_reqs.tools = tools_task;
-
-    caps.tasks = mcp::ServerCapabilities::TasksCapability{
-        .cancel = json::object(),
-        .list = json::object(),
-        .requests = task_reqs,
-    };
     caps.tools = mcp::ServerCapabilities::ToolsCapability{.listChanged = true};
 
     json j = caps;
@@ -1828,10 +1561,6 @@ TEST(ProtocolTest, ServerCapabilitiesFullSerialization) {
     EXPECT_TRUE(j.contains("resources"));
     EXPECT_EQ(j["resources"]["listChanged"], true);
     EXPECT_EQ(j["resources"]["subscribe"], true);
-    EXPECT_TRUE(j.contains("tasks"));
-    EXPECT_TRUE(j["tasks"].contains("cancel"));
-    EXPECT_TRUE(j["tasks"].contains("list"));
-    EXPECT_TRUE(j["tasks"]["requests"]["tools"]["call"].is_object());
     EXPECT_TRUE(j.contains("tools"));
     EXPECT_EQ(j["tools"]["listChanged"], true);
 
@@ -1843,12 +1572,6 @@ TEST(ProtocolTest, ServerCapabilitiesFullSerialization) {
     ASSERT_TRUE(rt.resources.has_value());
     EXPECT_EQ(*rt.resources->listChanged, true);
     EXPECT_EQ(*rt.resources->subscribe, true);
-    ASSERT_TRUE(rt.tasks.has_value());
-    ASSERT_TRUE(rt.tasks->cancel.has_value());
-    ASSERT_TRUE(rt.tasks->list.has_value());
-    ASSERT_TRUE(rt.tasks->requests.has_value());
-    ASSERT_TRUE(rt.tasks->requests->tools.has_value());
-    ASSERT_TRUE(rt.tasks->requests->tools->call.has_value());
     ASSERT_TRUE(rt.tools.has_value());
     EXPECT_EQ(*rt.tools->listChanged, true);
 }
@@ -1955,6 +1678,7 @@ TEST(ProtocolTest, ClientCapabilitiesFromRawJson) {
         }
     })"_json;
 
+    // A peer of 2025-11-25 declares a `tasks` capability; it parses and is not kept.
     auto caps = raw.get<mcp::ClientCapabilities>();
     ASSERT_TRUE(caps.elicitation.has_value());
     ASSERT_TRUE(caps.elicitation->form.has_value());
@@ -1962,15 +1686,11 @@ TEST(ProtocolTest, ClientCapabilitiesFromRawJson) {
     ASSERT_TRUE(caps.roots.has_value());
     EXPECT_EQ(*caps.roots->listChanged, true);
     ASSERT_TRUE(caps.sampling.has_value());
-    ASSERT_TRUE(caps.tasks.has_value());
-    ASSERT_TRUE(caps.tasks->requests.has_value());
-    ASSERT_TRUE(caps.tasks->requests->elicitation.has_value());
-    ASSERT_TRUE(caps.tasks->requests->elicitation->create.has_value());
-    ASSERT_TRUE(caps.tasks->requests->sampling.has_value());
-    ASSERT_TRUE(caps.tasks->requests->sampling->createMessage.has_value());
 
     json j2 = caps;
-    EXPECT_EQ(j2, raw);
+    json expected = raw;
+    expected.erase("tasks");
+    EXPECT_EQ(j2, expected);
 }
 
 TEST(ProtocolTest, ServerCapabilitiesFromRawJson) {
@@ -1989,6 +1709,7 @@ TEST(ProtocolTest, ServerCapabilitiesFromRawJson) {
         "tools": {"listChanged": false}
     })"_json;
 
+    // A peer of 2025-11-25 declares a `tasks` capability; it parses and is not kept.
     auto caps = raw.get<mcp::ServerCapabilities>();
     ASSERT_TRUE(caps.completions.has_value());
     ASSERT_TRUE(caps.logging.has_value());
@@ -1997,15 +1718,13 @@ TEST(ProtocolTest, ServerCapabilitiesFromRawJson) {
     ASSERT_TRUE(caps.resources.has_value());
     EXPECT_EQ(*caps.resources->listChanged, true);
     EXPECT_EQ(*caps.resources->subscribe, false);
-    ASSERT_TRUE(caps.tasks.has_value());
-    ASSERT_TRUE(caps.tasks->requests.has_value());
-    ASSERT_TRUE(caps.tasks->requests->tools.has_value());
-    ASSERT_TRUE(caps.tasks->requests->tools->call.has_value());
     ASSERT_TRUE(caps.tools.has_value());
     EXPECT_EQ(*caps.tools->listChanged, false);
 
     json j2 = caps;
-    EXPECT_EQ(j2, raw);
+    json expected = raw;
+    expected.erase("tasks");
+    EXPECT_EQ(j2, expected);
 }
 
 TEST(ProtocolTest, PingRequestSerialization) {
@@ -2316,27 +2035,6 @@ TEST(ProtocolTest, UnsubscribeRequestSerialization) {
     EXPECT_EQ(deserialized.params.uri, "file:///unsub.txt");
 }
 
-TEST(ProtocolTest, ToolExecutionSerialization) {
-    mcp::ToolExecution exec;
-    exec.taskSupport = "optional";
-    nlohmann::json j = exec;
-    EXPECT_EQ(j["taskSupport"], "optional");
-    auto rt = j.get<mcp::ToolExecution>();
-    EXPECT_EQ(rt.taskSupport, "optional");
-}
-
-TEST(ProtocolTest, RelatedTaskMetadataSerialization) {
-    mcp::RelatedTaskMetadata meta;
-    meta.id = "task-123";
-    meta.title = "Related task";
-    nlohmann::json j = meta;
-    EXPECT_EQ(j["id"], "task-123");
-    EXPECT_EQ(j["title"], "Related task");
-    auto rt = j.get<mcp::RelatedTaskMetadata>();
-    EXPECT_EQ(rt.id, "task-123");
-    EXPECT_EQ(rt.title.value_or(""), "Related task");
-}
-
 TEST(ProtocolTest, PrimitiveSchemaDefinitionSerialization) {
     mcp::PrimitiveSchemaDefinition def;
     def.type = "string";
@@ -2419,64 +2117,6 @@ TEST(ProtocolTest, ReadResourceRequestSerialization) {
     EXPECT_EQ(j["params"]["uri"], "file:///a.txt");
     auto rt = j.get<mcp::ReadResourceRequest>();
     EXPECT_EQ(rt.params.uri, "file:///a.txt");
-}
-
-TEST(ProtocolTest, GetTaskRequestSerialization) {
-    mcp::GetTaskRequest req;
-    req.params.id = "task1";
-    nlohmann::json j = req;
-    EXPECT_EQ(j["method"], "tasks/get");
-    EXPECT_EQ(j["params"]["id"], "task1");
-}
-
-TEST(ProtocolTest, CancelTaskRequestSerialization) {
-    mcp::CancelTaskRequest req;
-    req.params.id = "task1";
-    nlohmann::json j = req;
-    EXPECT_EQ(j["method"], "tasks/cancel");
-    EXPECT_EQ(j["params"]["id"], "task1");
-}
-
-TEST(ProtocolTest, CancelTaskResultSerialization) {
-    mcp::CancelTaskResult res;
-    res.meta = nlohmann::json::object();
-    nlohmann::json j = res;
-    EXPECT_TRUE(j.contains("_meta"));
-}
-
-TEST(ProtocolTest, ListTasksRequestSerialization) {
-    mcp::ListTasksRequest req;
-    mcp::ListTasksRequestParams params;
-    params.cursor = "abc";
-    req.params = params;
-    nlohmann::json j = req;
-    EXPECT_EQ(j["method"], "tasks/list");
-    EXPECT_EQ(j["params"]["cursor"], "abc");
-}
-
-TEST(ProtocolTest, GetTaskPayloadRequestResultSerialization) {
-    mcp::GetTaskPayloadRequest req;
-    req.params.id = "task1";
-    nlohmann::json j = req;
-    EXPECT_EQ(j["method"], "tasks/getPayload");
-    EXPECT_EQ(j["params"]["id"], "task1");
-
-    mcp::GetTaskPayloadResult res;
-    res.payload = nlohmann::json::object();
-    nlohmann::json j_res = res;
-    EXPECT_TRUE(j_res.contains("payload"));
-}
-
-TEST(ProtocolTest, TaskStatusNotificationSerialization) {
-    mcp::TaskStatusNotification notif;
-    notif.params.id = "task1";
-    notif.params.status = mcp::TaskStatus::eWorking;
-    notif.params.message = "Working";
-    nlohmann::json j = notif;
-    EXPECT_EQ(j["method"], "notifications/tasks/status");
-    EXPECT_EQ(j["params"]["id"], "task1");
-    EXPECT_EQ(j["params"]["status"], "working");
-    EXPECT_EQ(j["params"]["message"], "Working");
 }
 
 TEST(ProtocolTest, ElicitationCompleteNotificationSerialization) {
@@ -2612,7 +2252,6 @@ TEST(ProtocolTest, ToolDecodesExplicitNullOptionals) {
     EXPECT_FALSE(tool.description.has_value());
     EXPECT_FALSE(tool.title.has_value());
     EXPECT_FALSE(tool.icons.has_value());
-    EXPECT_FALSE(tool.execution.has_value());
 }
 
 TEST(ProtocolTest, CallToolResultDecodesExplicitNullIsError) {

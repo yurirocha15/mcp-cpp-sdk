@@ -8,11 +8,13 @@
 #include "../detail/spawn_awaitable.hpp"
 #include "../detail/strand_executor.hpp"
 #include "mrtr.hpp"
+#include "task_run.hpp"
 
 #include <mcp/auth/oauth.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
+#include <mcp/protocol/extensions.hpp>
 #include <mcp/protocol/schema.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_server.hpp>
@@ -47,6 +49,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -785,6 +788,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         TypeErasedHandler handler;
         detail::ToolResultMode result_mode;
         CompiledToolSchemas schemas;
+        ToolTaskMode task_mode{ToolTaskMode::eNever};
     };
 
     struct ResourceTemplateRegistration {
@@ -888,6 +892,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         bool prompts_list_changed{false};
         bool resources_list_changed{false};
         std::set<std::string> resource_uris;
+        /// The tasks whose notifications/tasks the stream carries.
+        std::set<std::string> task_ids;
         MessageSender sink;
         boost::asio::strand<boost::asio::any_io_executor> strand;
         boost::asio::steady_timer timer;
@@ -1089,6 +1095,14 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::uint64_t next_park_sequence{0};
     std::shared_ptr<detail::MrtrCounters> mrtr_counters = std::make_shared<detail::MrtrCounters>();
 
+    // The tasks extension; configured before the server serves its first request.
+    std::atomic_bool tasks_enabled{false};
+    TaskOptions task_options;
+    std::shared_ptr<TaskStore> task_store;
+    /// The handlers of tasks that run in this process, by task id.
+    mutable std::mutex task_runs_mutex;
+    std::map<std::string, std::shared_ptr<detail::TaskRun>> task_runs;  // guarded by task_runs_mutex
+
     std::vector<Resource> resources;
     std::map<std::string, TypeErasedHandler, std::less<>> resource_handlers;
 
@@ -1226,6 +1240,34 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                               const RequestScope& scope);
     Task<std::string> handle_set_level_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_complete_wire(const nlohmann::json& json_msg, const RequestScope& scope);
+    /// Serves tasks/get, tasks/update and tasks/cancel.
+    Task<std::string> handle_task_wire(const nlohmann::json& json_msg, std::string_view method,
+                                       const RequestScope& scope);
+    /// The answer to a task request; sets @p changed to the task's new state when the request
+    /// changed it.
+    std::string serve_task_request(const nlohmann::json& json_msg, std::string_view method,
+                                   const RequestScope& scope,
+                                   std::shared_ptr<const TaskRecord>& changed);
+    /// Creates the task for a tools/call of a client that declared the tasks extension, starts its
+    /// handler apart from the request, and returns the answer carrying the task's handle.
+    std::string start_task(const nlohmann::json& json_msg, const RequestScope& scope,
+                           const CallToolView& call, const boost::asio::any_io_executor& executor);
+    /// Runs the handler of a task and records its outcome.
+    static Task<void> run_task_worker(std::shared_ptr<Impl> impl, std::shared_ptr<detail::TaskRun> run,
+                                      CallToolParams params,
+                                      std::shared_ptr<const RequestMetadata> request_meta,
+                                      std::shared_ptr<const std::string> principal,
+                                      std::optional<std::chrono::milliseconds> ttl);
+    /// The notifications/tasks message that tells @p listener the state of @p record.
+    static std::shared_ptr<const std::string> task_notification_wire(const TaskRecord& record,
+                                                                     const Listener& listener);
+    /// Sends the state of a task to the subscriptions/listen streams that asked for it.
+    static Task<void> notify_task(std::shared_ptr<Impl> impl, std::shared_ptr<const TaskRecord> record);
+    static Task<void> notify_task_if_alive(std::weak_ptr<Impl> impl,
+                                           std::shared_ptr<const TaskRecord> record);
+    /// Cancels the handlers of the tasks that run in this process.
+    void abandon_tasks();
+    [[nodiscard]] static std::string missing_tasks_extension_wire(const RequestId& id);
 
     Task<nlohmann::json> invoke_tool_impl(CallToolParams params,
                                           std::shared_ptr<std::atomic<bool>> cancelled,
@@ -1235,7 +1277,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                           std::shared_ptr<const std::string> principal = nullptr,
                                           std::shared_ptr<detail::MrtrEntry> mrtr = nullptr,
                                           std::shared_ptr<const std::string> related_request = nullptr,
-                                          std::shared_ptr<detail::InlineInput> inline_input = nullptr);
+                                          std::shared_ptr<detail::InlineInput> inline_input = nullptr,
+                                          std::shared_ptr<detail::TaskRun> task_run = nullptr);
     /// invoke_tool_impl for a server without middleware, which needs neither the parameters
     /// object nor a handler of its own: the tool is called with @p arguments as they are.
     Task<nlohmann::json> invoke_tool_direct(const std::string& name, const nlohmann::json& arguments,
@@ -1246,7 +1289,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                             std::shared_ptr<const std::string> principal,
                                             std::shared_ptr<detail::MrtrEntry> mrtr,
                                             std::shared_ptr<const std::string> related_request,
-                                            std::shared_ptr<detail::InlineInput> inline_input);
+                                            std::shared_ptr<detail::InlineInput> inline_input,
+                                            std::shared_ptr<detail::TaskRun> task_run = nullptr);
     /// Calls @p handler on a strand of its own, over the handler executor when one is set, and
     /// otherwise over the executor the caller runs on unless that is a strand already. A handler
     /// may fan out with `co_await (a || b)` or `co_await (a && b)`, which Boost.Asio makes safe
@@ -1265,7 +1309,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// when set, receives the notifications of a 2026-07-28 request in place of the session's
     /// transport. @p principal is who sent the request, or null when unknown. @p mrtr, when set,
     /// routes the handler's questions to the client and its notifications through the request
-    /// that currently carries it. @p related_request is RequestScope::related_request.
+    /// that currently carries it. @p related_request is RequestScope::related_request. @p task_run,
+    /// when set, makes the context that of a task's handler: its questions go to the task's
+    /// inputRequests, its progress to the task's status message, and it sends no notifications.
     Context make_context(std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
                          std::optional<ProgressToken> progress_token = std::nullopt,
                          std::shared_ptr<const RequestMetadata> request_meta = nullptr,
@@ -1273,7 +1319,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                          std::shared_ptr<const std::string> principal = nullptr,
                          std::shared_ptr<detail::MrtrEntry> mrtr = nullptr,
                          std::shared_ptr<const std::string> related_request = nullptr,
-                         std::shared_ptr<detail::InlineInput> inline_input = nullptr);
+                         std::shared_ptr<detail::InlineInput> inline_input = nullptr,
+                         std::shared_ptr<detail::TaskRun> task_run = nullptr);
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
     /// Calls @p final_handler through the middleware, which without any is a plain call. The
     /// handler must stay where it is until the call ends: one in a node of a std::map does.
@@ -1357,6 +1404,7 @@ Server::~Server() {
         impl_->end_listeners(Impl::ListenEnd::eCancelled);
         // Nothing can resume these handlers now; they unwind.
         impl_->abandon_all_parked();
+        impl_->abandon_tasks();
     }
     reset_session();
 }
@@ -2205,19 +2253,21 @@ detail::ParamHeaderCheck Server::Impl::make_param_header_check() {
     };
 }
 
-Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
-                                   std::optional<ProgressToken> progress_token,
-                                   std::shared_ptr<const RequestMetadata> request_meta,
-                                   bool session_request, MessageSender notifications,
-                                   std::shared_ptr<const std::string> principal,
-                                   std::shared_ptr<detail::MrtrEntry> mrtr,
-                                   std::shared_ptr<const std::string> related_request,
-                                   std::shared_ptr<detail::InlineInput> inline_input) {
+Context Server::Impl::make_context(
+    std::shared_ptr<std::atomic<bool>> cancelled, std::optional<ProgressToken> progress_token,
+    std::shared_ptr<const RequestMetadata> request_meta, bool session_request,
+    MessageSender notifications, std::shared_ptr<const std::string> principal,
+    std::shared_ptr<detail::MrtrEntry> mrtr, std::shared_ptr<const std::string> related_request,
+    std::shared_ptr<detail::InlineInput> inline_input, std::shared_ptr<detail::TaskRun> task_run) {
     ITransport* transport = &null_transport();
     auto session = session_snapshot();
     std::uint64_t epoch = 0;
     MessageSender message_sender;
-    if (mrtr) {
+    if (task_run) {
+        // A task's handler has no request to carry its notifications: log messages are dropped
+        // and its progress goes to the task's status message.
+        message_sender = [](std::string_view) { return Impl::skip_write(); };
+    } else if (mrtr) {
         // The handler may outlive the request that started it; its notifications go to whichever
         // request carries it now, with that request's progress token.
         message_sender = [mrtr](std::string_view message) {
@@ -2233,7 +2283,14 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
     }
 
     RequestSender request_sender;
-    if (mrtr) {
+    if (task_run) {
+        request_sender = [task_run](std::string method, std::optional<nlohmann::json> params,
+                                    std::optional<std::string> key) -> Task<nlohmann::json> {
+            return detail::task_request_input(task_run, nlohmann::json(std::move(method)),
+                                              std::move(params),
+                                              key ? nlohmann::json(std::move(*key)) : nlohmann::json());
+        };
+    } else if (mrtr) {
         request_sender = [mrtr](std::string method, std::optional<nlohmann::json> params,
                                 std::optional<std::string> key) -> Task<nlohmann::json> {
             return detail::mrtr_request_input(mrtr, nlohmann::json(std::move(method)),
@@ -2270,15 +2327,25 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
         };
     }
 
-    return {*transport,
-            std::move(request_sender),
-            std::move(cancelled),
-            std::move(progress_token),
-            &log_level,
-            std::move(message_sender),
-            std::move(request_meta),
-            std::move(principal),
-            mrtr ? mrtr->replaying : nullptr};
+    Context context{*transport,
+                    std::move(request_sender),
+                    std::move(cancelled),
+                    std::move(progress_token),
+                    &log_level,
+                    std::move(message_sender),
+                    std::move(request_meta),
+                    std::move(principal),
+                    mrtr ? mrtr->replaying : nullptr};
+    if (task_run) {
+        context.set_progress_sink([task_run](double progress, std::optional<double> total,
+                                             const std::optional<std::string>& message) {
+            if (auto updated = task_run->store->set_status_message(
+                    task_run->id, detail::task_progress_message(progress, total, message))) {
+                task_run->publish_detached(std::make_shared<const TaskRecord>(std::move(*updated)));
+            }
+        });
+    }
+    return context;
 }
 
 MessageSender Server::Impl::notification_route(
@@ -2559,7 +2626,10 @@ Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_
         unsupported_version_rejections.fetch_add(1, std::memory_order_relaxed);
         co_return unsupported_version_wire(json_msg.at("id").get<RequestId>(), *version);
     }
-    if (!detail::is_modern_method(method)) {
+    const bool task_method =
+        tasks_enabled.load(std::memory_order_acquire) &&
+        (method == "tasks/get" || method == "tasks/update" || method == "tasks/cancel");
+    if (!task_method && !detail::is_modern_method(method)) {
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_METHOD_NOT_FOUND,
                                   "Method not found: " + std::string(method));
     }
@@ -2574,6 +2644,9 @@ Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_
         scope.meta = std::move(parsed.metadata);
     }
 
+    if (task_method) {
+        co_return co_await handle_task_wire(json_msg, method, scope);
+    }
     if (method == "tools/call" || method == "resources/read" || method == "prompts/get") {
         co_return co_await dispatch_mrtr(json_msg, method, std::move(scope));
     }
@@ -3085,6 +3158,48 @@ void Server::Impl::abandon_all_parked() {
 
 void Server::abandon_waiting_handlers() { impl_->abandon_all_parked(); }
 
+void Server::enable_tasks(TaskOptions options) {
+    if (impl_->serving.load(std::memory_order_acquire)) {
+        throw std::logic_error("Tasks cannot be enabled once the server serves requests");
+    }
+    if (options.poll_interval < std::chrono::milliseconds::zero() ||
+        (options.ttl && *options.ttl <= std::chrono::milliseconds::zero())) {
+        throw std::invalid_argument(
+            "The task time to live must be longer than zero and the polling interval not negative");
+    }
+    if (!options.store) {
+        InMemoryTaskStoreOptions store_options;
+        store_options.max_tasks_per_owner = options.max_tasks_per_principal;
+        store_options.max_tasks = options.max_tasks;
+        options.store = std::make_shared<InMemoryTaskStore>(std::move(store_options));
+    }
+    impl_->task_store = options.store;
+    impl_->task_options = std::move(options);
+    impl_->tasks_enabled.store(true, std::memory_order_release);
+}
+
+void Server::set_tool_task_mode(const std::string& name, ToolTaskMode mode) {
+    if (impl_->serving.load(std::memory_order_acquire)) {
+        throw std::logic_error("A tool's task mode cannot change once the server serves requests");
+    }
+    const auto tool = impl_->tool_handlers.find(name);
+    if (tool == impl_->tool_handlers.end()) {
+        throw std::invalid_argument("Unknown tool: " + name);
+    }
+    tool->second.task_mode = mode;
+    if (mode != ToolTaskMode::eNever && !impl_->handler_executor) {
+        const std::string warning =
+            "Tool \"" + name +
+            "\" runs as a task without a handler executor: a handler that blocks stalls the "
+            "executor the server runs on. See Server::set_handler_executor().";
+        if (impl_->task_options.warning_handler) {
+            impl_->task_options.warning_handler(warning);
+        } else {
+            std::cerr << warning << '\n';
+        }
+    }
+}
+
 void Server::set_mrtr_options(MrtrOptions options) {
     // The secrets of the caller's list are overwritten once the key ring is built, or on a throw.
     const auto wipe = [](std::vector<std::string>& secrets) {
@@ -3283,6 +3398,9 @@ Task<std::string> Server::Impl::handle_discover_wire(const nlohmann::json& json_
     DiscoverResult discover_result;
     discover_result.supportedVersions = supported_versions();
     discover_result.capabilities = capabilities;
+    if (tasks_enabled.load(std::memory_order_acquire)) {
+        declare_extension(discover_result.capabilities, g_TASKS_EXTENSION);
+    }
     discover_result.instructions = instructions;
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope,
                                nlohmann::json(discover_result), CacheTarget::eDiscover);
@@ -3368,14 +3486,15 @@ Task<nlohmann::json> Server::Impl::invoke_tool_direct(
     std::shared_ptr<const RequestMetadata> request_meta, bool session_request,
     MessageSender notifications, std::shared_ptr<const std::string> principal,
     std::shared_ptr<detail::MrtrEntry> mrtr, std::shared_ptr<const std::string> related_request,
-    std::shared_ptr<detail::InlineInput> inline_input) {
+    std::shared_ptr<detail::InlineInput> inline_input, std::shared_ptr<detail::TaskRun> task_run) {
     const auto iter = tool_handlers.find(name);
     if (iter == tool_handlers.end()) {
         throw std::runtime_error("Unknown tool: " + detail::sanitize_for_diagnostics(name));
     }
-    auto ctx = make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
-                            session_request, std::move(notifications), std::move(principal),
-                            std::move(mrtr), std::move(related_request), std::move(inline_input));
+    auto ctx =
+        make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
+                     session_request, std::move(notifications), std::move(principal), std::move(mrtr),
+                     std::move(related_request), std::move(inline_input), std::move(task_run));
     const bool modern = ctx.request_meta() != nullptr;
     nlohmann::json handler_result = co_await call_tool_handler(iter->second, ctx, arguments);
     finish_tool_result(iter->second, name, handler_result, modern);
@@ -3387,12 +3506,12 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(
     std::optional<ProgressToken> progress_token, std::shared_ptr<const RequestMetadata> request_meta,
     bool session_request, MessageSender notifications, std::shared_ptr<const std::string> principal,
     std::shared_ptr<detail::MrtrEntry> mrtr, std::shared_ptr<const std::string> related_request,
-    std::shared_ptr<detail::InlineInput> inline_input) {
+    std::shared_ptr<detail::InlineInput> inline_input, std::shared_ptr<detail::TaskRun> task_run) {
     if (middlewares.empty()) {
         co_return co_await invoke_tool_direct(
             params.name, params.arguments, std::move(cancelled), std::move(progress_token),
             std::move(request_meta), session_request, std::move(notifications), std::move(principal),
-            std::move(mrtr), std::move(related_request), std::move(inline_input));
+            std::move(mrtr), std::move(related_request), std::move(inline_input), std::move(task_run));
     }
 
     auto iter = tool_handlers.find(params.name);
@@ -3403,9 +3522,10 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(
         throw std::runtime_error("Unknown tool: " + detail::sanitize_for_diagnostics(params.name));
     }
 
-    auto ctx = make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
-                            session_request, std::move(notifications), std::move(principal),
-                            std::move(mrtr), std::move(related_request), std::move(inline_input));
+    auto ctx =
+        make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
+                     session_request, std::move(notifications), std::move(principal), std::move(mrtr),
+                     std::move(related_request), std::move(inline_input), std::move(task_run));
     const bool modern = ctx.request_meta() != nullptr;
     nlohmann::json handler_result;
 
@@ -3449,6 +3569,17 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
                                                           *call.arguments, *scope.param_headers)) {
             co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_HEADER_MISMATCH,
                                       "Header mismatch: " + *mismatch);
+        }
+    }
+
+    if (tasks_enabled.load(std::memory_order_acquire) &&
+        tool->second.task_mode != ToolTaskMode::eNever) {
+        if (declares_extension(scope.meta.get(), g_TASKS_EXTENSION)) {
+            auto executor = co_await boost::asio::this_coro::executor;
+            co_return start_task(json_msg, scope, call, executor);
+        }
+        if (tool->second.task_mode == ToolTaskMode::eRequired) {
+            co_return missing_tasks_extension_wire(json_msg.at("id").get<RequestId>());
         }
     }
 
@@ -3656,6 +3787,23 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
         throw InvalidParamsError(
             "Invalid subscriptions/listen params: notifications must be an object");
     }
+    const auto requested_task_ids = notifications->find("taskIds");
+    const std::string_view task_owner =
+        scope.principal ? std::string_view(*scope.principal) : std::string_view();
+    if (requested_task_ids != notifications->end()) {
+        constexpr std::size_t g_max_task_ids = 1024;
+        if (!requested_task_ids->is_array() || requested_task_ids->size() > g_max_task_ids ||
+            !std::all_of(requested_task_ids->begin(), requested_task_ids->end(),
+                         [](const nlohmann::json& id) { return id.is_string(); })) {
+            throw InvalidParamsError(
+                "Invalid subscriptions/listen params: notifications.taskIds must be an array of at "
+                "most 1024 strings");
+        }
+        if (tasks_enabled.load(std::memory_order_acquire) && !requested_task_ids->empty() &&
+            !declares_extension(scope.meta.get(), g_TASKS_EXTENSION)) {
+            co_return missing_tasks_extension_wire(json_msg.at("id").get<RequestId>());
+        }
+    }
     const auto flag = [&notifications](const char* name) {
         const auto it = notifications->find(name);
         if (it == notifications->end()) {
@@ -3712,6 +3860,20 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
         }
     }
 
+    if (requested_task_ids != notifications->end() && tasks_enabled.load(std::memory_order_acquire)) {
+        // Only the tasks the caller created are honored, as only they may be fetched.
+        nlohmann::json honored_ids = nlohmann::json::array();
+        for (const auto& id : *requested_task_ids) {
+            if (task_store->get(task_owner, id.get_ref<const std::string&>())) {
+                honored_ids.push_back(id);
+                listener->task_ids.insert(id.get<std::string>());
+            }
+        }
+        if (!honored_ids.empty()) {
+            honored["taskIds"] = std::move(honored_ids);
+        }
+    }
+
     // [gcc11-sso: scope-before-await] The strings that outlive a suspension are owned by shared state.
     std::shared_ptr<const std::string> acknowledgment;
     {
@@ -3728,6 +3890,14 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
     {
         std::lock_guard lock(listeners_mutex);
         listeners.push_back(listener);
+    }
+    // The state of each listed task as it is now follows the acknowledgment, so that a task that
+    // finished before the stream was registered is not missed; what changes later is sent as it
+    // happens. The stream holds these messages back until the acknowledgment is written.
+    for (const auto& task_id : listener->task_ids) {
+        if (const auto current = task_store->get(task_owner, task_id)) {
+            listener->deliver_or_defer(task_notification_wire(*current, *listener));
+        }
     }
     if (owner) {
         owner->modern_listeners.fetch_add(1, std::memory_order_relaxed);
@@ -3909,6 +4079,251 @@ Task<void> Server::Impl::notify_listeners(ListenTopic topic, std::shared_ptr<con
         } catch (const std::exception&) {
             // A stream whose transport cannot take the message ends through that transport.
         }
+    }
+}
+
+std::string Server::Impl::missing_tasks_extension_wire(const RequestId& id) {
+    nlohmann::json required = {
+        {"extensions", {{std::string(g_TASKS_EXTENSION), nlohmann::json::object()}}}};
+    return make_error_wire(id, g_MISSING_REQUIRED_CLIENT_CAPABILITY,
+                           "Missing required client capability",
+                           {{"requiredCapabilities", std::move(required)}});
+}
+
+Task<std::string> Server::Impl::handle_task_wire(const nlohmann::json& json_msg,
+                                                 std::string_view method, const RequestScope& scope) {
+    std::shared_ptr<const TaskRecord> changed;
+    // [gcc11-sso: string-in-frame] The answer is held as json until no suspension is left.
+    nlohmann::json answer = serve_task_request(json_msg, method, scope, changed);
+    if (changed) {
+        auto self = shared_from_this();
+        co_await notify_task(std::move(self), std::move(changed));
+    }
+    co_return std::move(answer.get_ref<nlohmann::json::string_t&>());
+}
+
+std::string Server::Impl::serve_task_request(const nlohmann::json& json_msg, std::string_view method,
+                                             const RequestScope& scope,
+                                             std::shared_ptr<const TaskRecord>& changed) {
+    const auto& id = json_msg.at("id");
+    if (!declares_extension(scope.meta.get(), g_TASKS_EXTENSION)) {
+        return missing_tasks_extension_wire(id.get<RequestId>());
+    }
+    const auto params_member = json_msg.find("params");
+    const nlohmann::json* params =
+        params_member != json_msg.end() && params_member->is_object() ? &*params_member : nullptr;
+    const nlohmann::json* task_id = nullptr;
+    if (params != nullptr) {
+        const auto found = params->find("taskId");
+        task_id = found != params->end() && found->is_string() ? &*found : nullptr;
+    }
+    if (task_id == nullptr) {
+        throw InvalidParamsError("Invalid " + std::string(method) + " params: taskId must be a string");
+    }
+    const std::string_view id_text = task_id->get_ref<const std::string&>();
+    const std::string_view owner =
+        scope.principal ? std::string_view(*scope.principal) : std::string_view();
+    const auto record = task_store->get(owner, id_text);
+    if (!record) {
+        return make_error_wire(id.get<RequestId>(), g_INVALID_PARAMS,
+                               "Failed to retrieve task: Task not found");
+    }
+    if (method == "tasks/get") {
+        return make_result_wire(id.get<RequestId>(), scope, nlohmann::json(record->to_detailed()));
+    }
+
+    std::shared_ptr<detail::TaskRun> run;
+    {
+        std::lock_guard lock(task_runs_mutex);
+        const auto found = task_runs.find(record->id);
+        if (found != task_runs.end()) {
+            run = found->second;
+        }
+    }
+    std::optional<TaskRecord> stored;
+    if (method == "tasks/update") {
+        const auto responses = params->find("inputResponses");
+        if (responses == params->end() || !responses->is_object()) {
+            throw InvalidParamsError("Invalid tasks/update params: inputResponses must be an object");
+        }
+        stored = task_store->submit_input_responses(id_text, *responses);
+        if (stored && run) {
+            run->signal();
+        }
+    } else {
+        // The task is cancelled before its handler is told to stop, so that a handler that
+        // unwinds at once finds the task finished and records nothing over the cancellation.
+        stored = task_store->cancel(id_text, "The client cancelled the task");
+        if (run) {
+            run->abandon();
+        }
+    }
+    if (stored) {
+        changed = std::make_shared<const TaskRecord>(std::move(*stored));
+    }
+    return make_result_wire(id.get<RequestId>(), scope, nlohmann::json::object());
+}
+
+std::string Server::Impl::start_task(const nlohmann::json& json_msg, const RequestScope& scope,
+                                     const CallToolView& call,
+                                     const boost::asio::any_io_executor& executor) {
+    const std::string owner = scope.principal ? *scope.principal : std::string();
+    // The limits count handlers that have not returned, not stored tasks: a cancelled or expired
+    // task keeps its slot until its handler ends. The check, the creation and the registration
+    // happen under one lock, so concurrent requests cannot pass the limit together.
+    std::unique_lock runs_lock(task_runs_mutex);
+    const auto owned = static_cast<std::size_t>(
+        std::count_if(task_runs.begin(), task_runs.end(),
+                      [&owner](const auto& entry) { return entry.second->owner == owner; }));
+    if (owned >= task_options.max_tasks_per_principal || task_runs.size() >= task_options.max_tasks) {
+        return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+                               "Too many tasks for this principal");
+    }
+    auto record = task_store->create(owner, task_options.ttl, task_options.poll_interval);
+    if (!record) {
+        return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+                               "Too many tasks for this principal");
+    }
+
+    nlohmann::json client_capabilities = nlohmann::json::object();
+    {
+        const auto& meta = *scope.meta->meta;
+        const auto declared = meta.find(std::string(g_META_CLIENT_CAPABILITIES));
+        if (declared != meta.end() && declared->is_object()) {
+            client_capabilities = *declared;
+        }
+    }
+    // The handler runs on the handler executor when one is set, and the task's waits on the same
+    // strand.
+    auto run = std::make_shared<detail::TaskRun>(
+        boost::asio::make_strand(handler_executor ? *handler_executor : executor), task_store,
+        record->id, owner, std::move(client_capabilities));
+    // The task runs hold the server's implementation only while a handler needs it.
+    run->publish = [weak = weak_from_this()](std::shared_ptr<const TaskRecord> changed) {
+        return Impl::notify_task_if_alive(weak, std::move(changed));
+    };
+    task_runs.emplace(record->id, run);
+    runs_lock.unlock();
+
+    CallToolParams params{
+        *call.name, *call.arguments,
+        call.meta != nullptr ? std::optional<nlohmann::json>(*call.meta) : std::nullopt};
+    // The answer is complete before the handler can start, so it always describes a task that has
+    // not run.
+    auto answer = make_result_wire(json_msg.at("id").get<RequestId>(), scope,
+                                   nlohmann::json(CreateTaskResult{record->to_detailed().task}));
+    boost::asio::co_spawn(run->strand,
+                          run_task_worker(shared_from_this(), run, std::move(params), scope.meta,
+                                          scope.principal, record->ttl),
+                          boost::asio::detached);
+    return answer;
+}
+
+Task<void> Server::Impl::run_task_worker(std::shared_ptr<Impl> impl,
+                                         std::shared_ptr<detail::TaskRun> run, CallToolParams params,
+                                         std::shared_ptr<const RequestMetadata> request_meta,
+                                         std::shared_ptr<const std::string> principal,
+                                         std::optional<std::chrono::milliseconds> ttl) {
+    // [gcc11-sso: string-in-frame] The outcome is held as json until no suspension is left.
+    nlohmann::json result;
+    nlohmann::json error;
+    bool abandoned = false;
+    const MessageSender no_notifications;
+    if (ttl) {
+        boost::asio::co_spawn(run->strand, detail::TaskRun::abandon_after(run, *ttl),
+                              boost::asio::detached);
+    }
+    try {
+        result = co_await impl->invoke_tool_impl(std::move(params), run->cancelled, std::nullopt,
+                                                 std::move(request_meta), false, no_notifications,
+                                                 std::move(principal), nullptr, nullptr, nullptr, run);
+    } catch (const detail::TaskAbandoned&) {
+        // The task was cancelled, expired or its server went away: the store holds its outcome.
+        abandoned = true;
+    } catch (const InvalidParamsError& failure) {
+        error = {{"code", g_INVALID_PARAMS}, {"message", failure.what()}};
+    } catch (const nlohmann::json::exception&) {
+        error = {{"code", g_INTERNAL_ERROR}, {"message", "The result could not be encoded as JSON"}};
+    } catch (const std::exception& failure) {
+        error = {{"code", g_INTERNAL_ERROR},
+                 {"message", detail::sanitize_for_diagnostics(failure.what())}};
+    } catch (...) {
+        error = {{"code", g_INTERNAL_ERROR}, {"message", "Internal error"}};
+    }
+    run->stop_expiry();
+    {
+        std::lock_guard lock(impl->task_runs_mutex);
+        impl->task_runs.erase(run->id);
+    }
+    std::shared_ptr<const TaskRecord> finished;
+    if (!abandoned) {
+        std::optional<TaskRecord> stored;
+        if (error.is_null()) {
+            stored = run->store->complete(run->id, std::move(result));
+        } else {
+            std::string message = "The request failed: " + error.at("message").get<std::string>();
+            stored = run->store->fail(run->id, std::move(error), std::move(message));
+        }
+        if (stored) {
+            finished = std::make_shared<const TaskRecord>(std::move(*stored));
+        }
+    }
+    if (finished) {
+        co_await notify_task(std::move(impl), std::move(finished));
+    }
+}
+
+Task<void> Server::Impl::notify_task_if_alive(std::weak_ptr<Impl> weak,
+                                              std::shared_ptr<const TaskRecord> record) {
+    auto impl = weak.lock();
+    if (impl) {
+        co_await notify_task(std::move(impl), std::move(record));
+    }
+}
+
+Task<void> Server::Impl::notify_task(std::shared_ptr<Impl> impl,
+                                     std::shared_ptr<const TaskRecord> record) {
+    std::vector<std::shared_ptr<Listener>> targets;
+    {
+        std::lock_guard lock(impl->listeners_mutex);
+        for (const auto& listener : impl->listeners) {
+            if (listener->open() && listener->task_ids.contains(record->id)) {
+                targets.push_back(listener);
+            }
+        }
+    }
+    for (const auto& listener : targets) {
+        const auto wire = task_notification_wire(*record, *listener);
+        if (!listener->deliver_or_defer(wire)) {
+            continue;
+        }
+        try {
+            co_await listener->sink(*wire);
+        } catch (const std::exception&) {
+            // A stream whose transport cannot take the message ends through that transport.
+        }
+    }
+}
+
+std::shared_ptr<const std::string> Server::Impl::task_notification_wire(const TaskRecord& record,
+                                                                        const Listener& listener) {
+    nlohmann::json params = record.to_detailed();
+    params["_meta"] = subscription_meta(listener.id);
+    nlohmann::json message = nlohmann::json::object();
+    message["jsonrpc"] = "2.0";
+    message["method"] = "notifications/tasks";
+    message["params"] = std::move(params);
+    return std::make_shared<const std::string>(mcp::detail::dump_json(message));
+}
+
+void Server::Impl::abandon_tasks() {
+    std::map<std::string, std::shared_ptr<detail::TaskRun>> running;
+    {
+        std::lock_guard lock(task_runs_mutex);
+        running.swap(task_runs);
+    }
+    for (const auto& [id, run] : running) {
+        run->abandon();
     }
 }
 
