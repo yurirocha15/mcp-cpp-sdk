@@ -336,8 +336,8 @@ TEST(Regex, LongInputOnTheDefaultStack) {
     EXPECT_FALSE(regex.search(std::string(200'000, 'a') + "c"));
 }
 
-// The counted search takes the program's size plus, at each input position, one step and one per
-// thread; it gives up, leaving no steps, when the budget cannot pay for the search.
+// The counted search takes one step at each input position and one for each instruction it
+// reaches; it gives up, leaving no steps, when the budget cannot pay for the search.
 TEST(Regex, CountedSearchStopsWhenTheBudgetRunsOut) {
     const Regex unanchored(".{1,1000}x");
     const std::string input(600, 'a');  // several hundred thousand steps for the unanchored pattern
@@ -371,6 +371,26 @@ TEST(Regex, PatternLongerThanTheLimitIsRefused) {
     EXPECT_TRUE(Regex(at_limit).search("a"));
     EXPECT_EQ(refusal("[" + std::string(Regex::max_pattern_size - 1, 'a') + "]"),
               RegexError::Kind::eTooLarge);
+}
+
+// A search pays for the instructions it reaches, not for the whole program: a short input costs a
+// few steps against a pattern of 10,000 instructions. The instructions reached after the last
+// character are paid for too.
+TEST(Regex, CountedSearchPaysForTheInstructionsItReaches) {
+    const Regex bounded("^[\\s\\S]{0,5000}$");
+    std::size_t steps = 1'000'000;
+    EXPECT_EQ(bounded.search("hi", steps), std::optional<bool>(true));
+    EXPECT_GT(steps, 1'000'000U - 100U);
+
+    // After one character, the matcher reaches every branch of the alternation.
+    std::string alternatives;
+    for (int branch = 0; branch < 2000; ++branch) {
+        alternatives += (branch == 0 ? "b" : "|b") + std::to_string(branch);
+    }
+    const Regex wide("^.(?:" + alternatives + ")");
+    steps = 1'000'000;
+    EXPECT_EQ(wide.search("a", steps), std::optional<bool>(false));
+    EXPECT_LT(steps, 1'000'000U - 2000U);
 }
 
 }  // namespace

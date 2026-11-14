@@ -126,10 +126,10 @@ class MCP_API Regex {
     [[nodiscard]] bool search(std::string_view input) const;
 
     /**
-     * @brief `search()` that counts its work against @p steps_left: setting up costs the
-     * program's size, and each input position costs one step plus one for each thread the VM
-     * runs there. Returns nothing, with @p steps_left at zero, when the search needs more steps
-     * than @p steps_left holds; otherwise subtracts the steps it took.
+     * @brief `search()` that counts its work against @p steps_left: each input position costs one
+     * step, and each instruction the VM reaches costs one more. Returns nothing, with @p steps_left
+     * at zero, when the search needs more steps than @p steps_left holds; otherwise subtracts the
+     * steps it took.
      */
     [[nodiscard]] std::optional<bool> search(std::string_view input, std::size_t& steps_left) const;
 

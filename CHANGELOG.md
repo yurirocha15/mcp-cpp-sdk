@@ -246,6 +246,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   program applied, so a long pattern took memory in proportion to its length
   while it was refused. A pattern longer than 65,536 bytes is now refused
   (`eUnsupportedPattern`) before it is read.
+- Each string checked against a `pattern` was charged the pattern's whole
+  program before matching, so a value with many short strings could fail with
+  "pattern matching takes too many steps" though it conforms. A string is now
+  charged for the matcher instructions it reaches.
 
 ## [0.2.0] - 2026-10-21
 

@@ -704,10 +704,18 @@ class Compiler {
     std::size_t visits_{0};
 };
 
-/// A set of program counters with O(1) insert, membership and clear.
+/// A set of program counters with O(1) insert, membership and clear. What a cleared list still
+/// holds is never read as a member, so a list can be cleared and reused for another program.
 class ThreadList {
    public:
-    explicit ThreadList(std::size_t size) : dense_(size), sparse_(size) {}
+    /// Empties the list and makes room for program counters below @p size.
+    void reset(std::size_t size) {
+        if (dense_.size() < size) {
+            dense_.resize(size);
+            sparse_.resize(size);
+        }
+        count_ = 0;
+    }
 
     bool contains(std::uint32_t pc) const {
         const auto slot = sparse_[pc];
@@ -726,6 +734,16 @@ class ThreadList {
     std::vector<std::uint32_t> sparse_;
     std::size_t count_ = 0;
 };
+
+/// The thread lists and stack of the searches on one thread. They are kept between searches, so a
+/// search does not allocate and clear room for every instruction of its program.
+struct SearchSpace {
+    ThreadList current;
+    ThreadList next;
+    std::vector<std::uint32_t> stack;
+};
+
+thread_local SearchSpace g_search_space;
 
 /// What the zero-width instructions can see at one input position.
 struct Position {
@@ -835,10 +853,12 @@ std::optional<bool> Regex::search(std::string_view input, std::size_t& steps_lef
     const auto& classes = program_->classes;
     const bool anchored = program_->anchored;
     const std::size_t size = instructions.size();
-    ThreadList current(size);
-    ThreadList next(size);
-    std::vector<std::uint32_t> stack;
-    stack.reserve(size);
+    auto& current = g_search_space.current;
+    auto& next = g_search_space.next;
+    auto& stack = g_search_space.stack;
+    current.reset(size);
+    next.reset(size);
+    stack.clear();
     // Takes @p steps from the budget, or reports that the budget cannot pay for them.
     const auto charge = [&steps_left](std::size_t steps) {
         if (steps > steps_left) {
@@ -848,9 +868,6 @@ std::optional<bool> Regex::search(std::string_view input, std::size_t& steps_lef
         steps_left -= steps;
         return true;
     };
-    if (!charge(size)) {
-        return std::nullopt;
-    }
 
     // Follows the zero-width instructions reachable from `start` at `where` and records every
     // instruction visited in `list`. Returns true once a match is reachable.
@@ -913,8 +930,12 @@ std::optional<bool> Regex::search(std::string_view input, std::size_t& steps_lef
     if (add_thread(current, 0, where)) {
         return true;
     }
+    // Every instruction a list holds was reached once, and is paid for once.
+    if (!charge(current.size())) {
+        return std::nullopt;
+    }
     while (current_char) {
-        if (!charge(current.size() + 1)) {
+        if (!charge(1)) {
             return std::nullopt;
         }
         const char32_t c = *current_char;
@@ -949,6 +970,9 @@ std::optional<bool> Regex::search(std::string_view input, std::size_t& steps_lef
         // Unanchored search: a match may also start at the next position.
         if (!anchored && add_thread(next, 0, after)) {
             return true;
+        }
+        if (!charge(next.size())) {
+            return std::nullopt;
         }
         if (anchored && next.size() == 0) {
             return false;

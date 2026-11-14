@@ -686,6 +686,21 @@ TEST(SchemaLimits, SchemaNestingWithinTheMetaschemaBoundCompiles) {
 // an unanchored ".{1,1000}x", costs thousands of steps per character. A validation's matching is
 // budgeted in proportion to the text in the value; past the budget the value is reported invalid.
 // A small budget keeps the test fast in sanitizer builds.
+// A string pays for the matcher instructions it reaches, so many short strings against a pattern
+// of 10,000 instructions conform, on both evaluation paths.
+TEST(SchemaLimits, ManyShortStringsAgainstALargePatternConform) {
+    const json schema = {{"type", "array"},
+                         {"items", {{"type", "string"}, {"pattern", "^[\\s\\S]{0,5000}$"}}}};
+    json value = json::array();
+    for (int index = 0; index < 2000; ++index) {
+        value.push_back("hi");
+    }
+    for (const auto& each : {schema, through_jsoncons(schema)}) {
+        const auto result = CompiledSchema::compile(each).validate(value);
+        EXPECT_TRUE(result.valid) << (result.violations.empty() ? "" : result.violations[0].message);
+    }
+}
+
 // A pattern longer than mcp::detail::Regex::max_pattern_size is refused like any pattern the
 // matcher cannot run.
 TEST(SchemaDialect, OverlongPatternIsUnsupported) {
