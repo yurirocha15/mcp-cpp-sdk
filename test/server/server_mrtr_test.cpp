@@ -140,6 +140,60 @@ class MrtrTest : public ::testing::Test {
                 const auto answer = co_await ctx.elicit(form_elicitation("Your name?"));
                 co_return json{{"name", answer.content.value_or(json::object()).value("name", "")}};
             });
+        server->add_tool<json, json>(
+            "ask_named", "Names its question", json{{"type", "object"}},
+            [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                const mcp::InputOptions options{.key = "user_name"};
+                const auto answer = co_await ctx.elicit(form_elicitation("Your name?"), options);
+                co_return json{{"name", answer.content.value_or(json::object()).value("name", "")}};
+            });
+        server->add_tool<json, json>(
+            "ask_mixed", "Names its first and last question, not the one between",
+            json{{"type", "object"}}, [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                const mcp::InputOptions city_key{.key = "city"};
+                const mcp::InputOptions zip_key{.key = "zip"};
+                const auto city = co_await ctx.elicit(form_elicitation("City?"), city_key);
+                const auto street = co_await ctx.elicit(form_elicitation("Street?"));
+                const auto zip = co_await ctx.elicit(form_elicitation("Zip?"), zip_key);
+                co_return json{{"city", city.content->value("name", "")},
+                               {"street", street.content->value("name", "")},
+                               {"zip", zip.content->value("name", "")}};
+            });
+        server->add_tool<json, json>(
+            "ask_named_all", "Names a sampling and a roots question", json{{"type", "object"}},
+            [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                mcp::CreateMessageRequestParams params;
+                params.maxTokens = 10;
+                const mcp::InputOptions sample_key{.key = "pick_model"};
+                const mcp::InputOptions roots_key{.key = "workspace"};
+                const auto sampled = co_await ctx.sample_llm(params, sample_key);
+                const auto roots = co_await ctx.request_roots(roots_key);
+                co_return json{{"model", sampled.model}, {"roots", roots.roots.size()}};
+            });
+        server->add_tool<json, json>(
+            "ask_key", "Asks under the key it is given", json{{"type", "object"}},
+            [](mcp::Context& ctx, json args) -> mcp::Task<json> {
+                const mcp::InputOptions options{.key = args.at("key").get<std::string>()};
+                try {
+                    co_await ctx.elicit(form_elicitation("Name?"), options);
+                } catch (const std::invalid_argument& error) {
+                    co_return json{{"refused", error.what()}};
+                }
+                co_return json{{"refused", nullptr}};
+            });
+        server->add_tool<json, json>(
+            "ask_twice_named", "Reuses the key of its first question", json{{"type", "object"}},
+            [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                const mcp::InputOptions options{.key = "same"};
+                const auto first = co_await ctx.elicit(form_elicitation("First?"), options);
+                try {
+                    co_await ctx.elicit(form_elicitation("Second?"), options);
+                } catch (const std::invalid_argument& error) {
+                    co_return json{{"first", first.content->value("name", "")},
+                                   {"refused", error.what()}};
+                }
+                co_return json{{"refused", nullptr}};
+            });
         server->add_tool<json, json>("quiet", "Never asks", json{{"type", "object"}},
                                      [](mcp::Context& /*ctx*/, json args) -> mcp::Task<json> {
                                          co_return json{{"ok", true}, {"echo", std::move(args)}};
@@ -401,6 +455,118 @@ class MrtrTest : public ::testing::Test {
         ASSERT_TRUE(response["result"]["requestState"].is_string()) << response;
         ASSERT_TRUE(response["result"]["inputRequests"].is_object()) << response;
         EXPECT_FALSE(response["result"]["inputRequests"].empty()) << response;
+    }
+
+    /// A question the handler names is asked and answered under the name it chose.
+    void check_named_question() {
+        json first;
+        json second;
+        run([&]() -> mcp::Task<void> {
+            const auto request = call_tool(1, "ask_named");
+            first = co_await send(request);
+            second = co_await send(
+                retry(request, 2, first["result"]["requestState"], answer("user_name", accept("Ada"))));
+        });
+
+        expect_input_required(first);
+        EXPECT_EQ(only_key(first), "user_name");
+        EXPECT_EQ(first["result"]["inputRequests"]["user_name"]["method"], "elicitation/create");
+        EXPECT_EQ(first["result"]["inputRequests"]["user_name"]["params"]["message"], "Your name?");
+        EXPECT_EQ(second["result"]["structuredContent"]["name"], "Ada") << second;
+    }
+
+    /// Named and generated keys alternate across rounds; a generated key counts only generated ones.
+    void check_mixed_keys() {
+        std::vector<std::string> keys;
+        json last;
+        run([&]() -> mcp::Task<void> {
+            const auto request = call_tool(1, "ask_mixed");
+            auto response = co_await send(request);
+            int id = 2;
+            while (response.contains("result") &&
+                   response["result"]["resultType"] == "input_required") {
+                keys.push_back(only_key(response));
+                const auto message =
+                    response["result"]["inputRequests"].begin().value()["params"]["message"];
+                response =
+                    co_await send(retry(request, id++, response["result"]["requestState"],
+                                        answer(keys.back(), accept(message.get<std::string>()))));
+            }
+            last = response;
+        });
+
+        EXPECT_EQ(keys, (std::vector<std::string>{"city", "elicitation-1", "zip"}));
+        EXPECT_EQ(last["result"]["structuredContent"],
+                  (json{{"city", "City?"}, {"street", "Street?"}, {"zip", "Zip?"}}))
+            << last;
+    }
+
+    /// Sampling and roots questions take caller-chosen keys too.
+    void check_named_sampling_and_roots() {
+        json first;
+        json second;
+        json third;
+        const json sampled = {
+            {"role", "assistant"}, {"content", {{"type", "text"}, {"text", "ok"}}}, {"model", "m"}};
+        const json roots = {{"roots", json::array({{{"uri", "file:///a"}}})}};
+        const auto capabilities = json{{"sampling", json::object()}, {"roots", json::object()}};
+        run([&]() -> mcp::Task<void> {
+            const auto request = call_tool(1, "ask_named_all", json::object(), capabilities);
+            first = co_await send(request);
+            second = co_await send(
+                retry(request, 2, first["result"]["requestState"], answer("pick_model", sampled)));
+            third = co_await send(
+                retry(request, 3, second["result"]["requestState"], answer("workspace", roots)));
+        });
+
+        EXPECT_EQ(only_key(first), "pick_model");
+        EXPECT_EQ(first["result"]["inputRequests"]["pick_model"]["method"], "sampling/createMessage");
+        EXPECT_EQ(only_key(second), "workspace");
+        EXPECT_EQ(second["result"]["inputRequests"]["workspace"]["method"], "roots/list");
+        EXPECT_EQ(third["result"]["structuredContent"], (json{{"model", "m"}, {"roots", 1}})) << third;
+    }
+
+    /// A key that is empty or looks like a generated one is refused before anything is asked.
+    void check_invalid_keys_are_refused() {
+        std::vector<json> responses;
+        run([&]() -> mcp::Task<void> {
+            int id = 1;
+            for (const char* key : {"", "elicitation-3", "sampling-1", "roots-12"}) {
+                const auto request = call_tool(id++, "ask_key", {{"key", key}});
+                responses.push_back(co_await send(request));
+            }
+            for (const char* key : {"elicitation", "roots-x"}) {
+                const auto request = call_tool(id++, "ask_key", {{"key", key}});
+                responses.push_back(co_await send(request));
+            }
+        });
+
+        ASSERT_EQ(responses.size(), 6u);
+        for (std::size_t i = 0; i < 4; ++i) {
+            ASSERT_TRUE(responses[i].contains("result")) << responses[i];
+            EXPECT_TRUE(responses[i]["result"]["structuredContent"]["refused"].is_string())
+                << responses[i];
+        }
+        // Names that only resemble the generated ones are fine.
+        EXPECT_EQ(only_key(responses[4]), "elicitation");
+        EXPECT_EQ(only_key(responses[5]), "roots-x");
+    }
+
+    /// A key a question of the request already uses is refused; the first question keeps its answer.
+    void check_repeated_key_is_refused() {
+        json first;
+        json second;
+        run([&]() -> mcp::Task<void> {
+            const auto request = call_tool(1, "ask_twice_named");
+            first = co_await send(request);
+            second = co_await send(
+                retry(request, 2, first["result"]["requestState"], answer("same", accept("one"))));
+        });
+
+        EXPECT_EQ(only_key(first), "same");
+        ASSERT_TRUE(second.contains("result")) << second;
+        EXPECT_EQ(second["result"]["structuredContent"]["first"], "one") << second;
+        EXPECT_TRUE(second["result"]["structuredContent"]["refused"].is_string()) << second;
     }
 
     static void expect_unknown_state(const json& response) {
@@ -824,6 +990,16 @@ TEST_F(MrtrTest, ParallelElicitationsShareOneRoundUnderUniqueKeys) {
     EXPECT_EQ(keys.size(), 2u);
     EXPECT_EQ(last["result"]["structuredContent"], (json{{"a", "A?"}, {"b", "B?"}})) << last;
 }
+
+TEST_F(MrtrTest, HandlerNamesItsQuestion) { check_named_question(); }
+
+TEST_F(MrtrTest, NamedAndGeneratedKeysMixAcrossRounds) { check_mixed_keys(); }
+
+TEST_F(MrtrTest, SamplingAndRootsQuestionsCanBeNamed) { check_named_sampling_and_roots(); }
+
+TEST_F(MrtrTest, EmptyAndGeneratedLookingKeysAreRefused) { check_invalid_keys_are_refused(); }
+
+TEST_F(MrtrTest, KeyOfAnEarlierQuestionIsRefused) { check_repeated_key_is_refused(); }
 
 TEST_F(MrtrTest, UndeclaredCapabilityIs32021WithData) {
     json response;
@@ -1261,6 +1437,81 @@ TEST_F(MrtrSealedTest, ParallelQuestionsShareOneRound) {
     EXPECT_NE(a, b);
     EXPECT_EQ(a.rfind("x-elicitation-", 0), 0u) << a;
     EXPECT_EQ(b.rfind("x-elicitation-", 0), 0u) << b;
+}
+
+TEST_F(MrtrSealedTest, HandlerNamesItsQuestion) { check_named_question(); }
+
+TEST_F(MrtrSealedTest, NamedAndGeneratedKeysMixAcrossRounds) { check_mixed_keys(); }
+
+TEST_F(MrtrSealedTest, SamplingAndRootsQuestionsCanBeNamed) { check_named_sampling_and_roots(); }
+
+TEST_F(MrtrSealedTest, EmptyAndGeneratedLookingKeysAreRefused) { check_invalid_keys_are_refused(); }
+
+TEST_F(MrtrSealedTest, KeyOfAnEarlierQuestionIsRefused) { check_repeated_key_is_refused(); }
+
+TEST_F(MrtrSealedTest, NamedAnswersAreServedByAnotherInstance) {
+    auto other = instance(sealed_options({key('a')}));
+    json first;
+    json second;
+    json third;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_mixed");
+        first = co_await send(request);
+        second = co_await send_to(
+            *other, retry(request, 2, first["result"]["requestState"], answer("city", accept("Oslo"))));
+        third = co_await send(retry(request, 3, second["result"]["requestState"],
+                                    answer("elicitation-1", accept("Main"))));
+    });
+
+    EXPECT_EQ(only_key(first), "city");
+    EXPECT_EQ(only_key(second), "elicitation-1");
+    EXPECT_EQ(only_key(third), "zip");
+}
+
+TEST_F(MrtrSealedTest, ReplayedNamedQuestionGetsItsEarlierAnswer) {
+    json first;
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_twice_named");
+        first = co_await send(request);
+        second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer("same", accept("one"))));
+    });
+
+    // The retry runs the handler again; its first question is answered from the state.
+    EXPECT_EQ(second["result"]["structuredContent"]["first"], "one") << second;
+}
+
+// A name that answered an elicitation in one round does not answer a sampling question under the
+// same name in the next: the question is new and is sent to the client.
+TEST_F(MrtrSealedTest, ReplayedNameOfAnotherKindIsAskedAgain) {
+    auto runs = std::make_shared<std::atomic<int>>(0);
+    server_->add_tool<json, json>("switch_kind", "Reuses a name for another kind of question",
+                                  json{{"type", "object"}},
+                                  [runs](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                      const mcp::InputOptions options{.key = "q"};
+                                      if (runs->fetch_add(1) == 0) {
+                                          co_await ctx.elicit(form_elicitation("Name?"), options);
+                                      } else {
+                                          mcp::CreateMessageRequestParams params;
+                                          params.maxTokens = 10;
+                                          co_await ctx.sample_llm(params, options);
+                                      }
+                                      co_return json{{"done", true}};
+                                  });
+    json first;
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto caps = json{{"elicitation", json::object()}, {"sampling", json::object()}};
+        const auto request = call_tool(1, "switch_kind", json::object(), caps);
+        first = co_await send(request);
+        second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer("q", accept("Ada"))));
+    });
+
+    EXPECT_EQ(first["result"]["inputRequests"]["q"]["method"], "elicitation/create") << first;
+    expect_input_required(second);
+    EXPECT_EQ(second["result"]["inputRequests"]["q"]["method"], "sampling/createMessage") << second;
 }
 
 TEST_F(MrtrSealedTest, MissingAnswerIsAskedAgainUnderTheSameKey) {
@@ -1926,6 +2177,43 @@ TEST_F(MrtrTest, LegacyRequestsStillUseServerToClientRequests) {
 
     ASSERT_GE(written.size(), 2u);
     EXPECT_EQ(written[1]["method"], "elicitation/create") << written[1];
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+}
+
+TEST_F(MrtrTest, LegacyRequestsIgnoreTheKeyOfAQuestion) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    std::vector<json> written;
+    raw_transport->set_on_write([&written, raw_transport](std::string_view message) {
+        written.push_back(json::parse(message));
+        if (written.size() == 2) {
+            raw_transport->close();
+        }
+    });
+    auto initialize = make_initialize_request("init");
+    initialize["params"]["capabilities"] = {{"elicitation", json::object()}};
+    raw_transport->enqueue_message(initialize.dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
+    raw_transport->enqueue_message(make_tool_call_request("call", "ask_named").dump());
+    asio::steady_timer guard(io_ctx_, g_hang_guard);
+    guard.async_wait([raw_transport](const boost::system::error_code& error) {
+        if (!error) {
+            raw_transport->close();
+        }
+    });
+    asio::co_spawn(
+        io_ctx_,
+        [this, transport, &guard]() -> mcp::Task<void> {
+            co_await server_->run(transport, io_ctx_.get_executor());
+            guard.cancel();
+            io_ctx_.stop();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    ASSERT_GE(written.size(), 2u);
+    EXPECT_EQ(written[1]["method"], "elicitation/create") << written[1];
+    EXPECT_EQ(written[1].dump().find("user_name"), std::string::npos) << written[1];
     EXPECT_EQ(server_->mrtr_stats().parked, 0u);
 }
 

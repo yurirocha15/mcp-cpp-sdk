@@ -24,7 +24,23 @@
 namespace mcp {
 
 /// @brief Type alias for a function that sends a JSON-RPC request and returns the result.
-using RequestSender = std::function<Task<nlohmann::json>(std::string, std::optional<nlohmann::json>)>;
+///
+/// The third argument is the key a handler chose for a question of a multi round-trip request, or
+/// empty when the SDK names it; senders of other requests ignore it.
+using RequestSender = std::function<Task<nlohmann::json>(std::string, std::optional<nlohmann::json>,
+                                                         std::optional<std::string>)>;
+
+/// @brief How a handler's question to the client is named in a multi round-trip request.
+struct InputOptions {
+    /// The key of the question in the result's `inputRequests` and in the client's
+    /// `inputResponses`. When unset, the SDK names it `elicitation-N`, `sampling-N` or `roots-N`,
+    /// counting the questions it names. A key must not be empty, must not look like one of those
+    /// names and must be unused by any other question of the request, or the call throws
+    /// std::invalid_argument. Requests before 2026-07-28 send each question as a request of its
+    /// own and ignore the key. Pass the options as a named variable, not a braced temporary, to a
+    /// co_await expression: GCC 11 mishandles the temporary.
+    std::optional<std::string> key;
+};
 
 /// @brief Type alias for a function that serializes outbound notification writes.
 using MessageSender = std::function<Task<void>(std::string_view)>;
@@ -254,8 +270,11 @@ class Context {
      * with a RequestSender.
      *
      * @param request The sampling request parameters.
+     * @param options How the question is named in a multi round-trip request; see InputOptions.
      * @return A task that resolves to the client's CreateMessageResult.
      * @throws std::runtime_error If no request sender is available.
+     * @throws std::invalid_argument If `options.key` is empty, reserved or already used, in a
+     *         2026-07-28 request (other requests ignore the key).
      *
      * For a 2026-07-28 tools/call, prompts/get or resources/read, the question goes back to the
      * client in the request's `input_required` result, and the call returns once the client
@@ -265,13 +284,15 @@ class Context {
      * retries in time; the handler's own answer then goes nowhere. Any other 2026-07-28 request
      * cannot ask the client anything, and the call throws std::runtime_error.
      */
-    Task<CreateMessageResult> sample_llm(const CreateMessageRequestParams& request) {
+    Task<CreateMessageResult> sample_llm(const CreateMessageRequestParams& request,
+                                         InputOptions options = {}) {
         if (!sender_) {
             throw std::runtime_error("Context has no request sender for reverse RPC");
         }
 
         nlohmann::json params = request;
-        auto result_json = co_await sender_("sampling/createMessage", std::move(params));
+        auto result_json =
+            co_await sender_("sampling/createMessage", std::move(params), std::move(options.key));
         co_return result_json.get<CreateMessageResult>();
     }
 
@@ -286,7 +307,10 @@ class Context {
      * the request leaves it unset; a 2026-07-28 question carries none.
      *
      * @param params The elicitation request parameters (form or URL mode).
+     * @param options How the question is named in a multi round-trip request; see InputOptions.
      * @return A task that resolves to the client's ElicitResult.
+     * @throws std::invalid_argument If `options.key` is empty, reserved or already used, in a
+     *         2026-07-28 request (other requests ignore the key).
      * @throws std::runtime_error If no request sender is available.
      *
      * For a 2026-07-28 tools/call, prompts/get or resources/read, the question goes back to the
@@ -297,7 +321,7 @@ class Context {
      * retries in time; the handler's own answer then goes nowhere. Any other 2026-07-28 request
      * cannot ask the client anything, and the call throws std::runtime_error.
      */
-    Task<ElicitResult> elicit(const ElicitRequestParams& params) {
+    Task<ElicitResult> elicit(const ElicitRequestParams& params, InputOptions options = {}) {
         if (!sender_) {
             throw std::runtime_error("Context has no request sender for reverse RPC");
         }
@@ -307,7 +331,8 @@ class Context {
             // Before 2026-07-28 the field is required on the wire.
             json_params["elicitationId"] = generate_elicitation_id();
         }
-        auto result_json = co_await sender_("elicitation/create", std::move(json_params));
+        auto result_json =
+            co_await sender_("elicitation/create", std::move(json_params), std::move(options.key));
         co_return result_json.get<ElicitResult>();
     }
 
@@ -317,8 +342,11 @@ class Context {
      * @details Sends a "roots/list" request to the client and awaits
      * the response. The client provides its configured root URIs.
      *
+     * @param options How the question is named in a multi round-trip request; see InputOptions.
      * @return A task that resolves to the client's ListRootsResult.
      * @throws std::runtime_error If no request sender is available.
+     * @throws std::invalid_argument If `options.key` is empty, reserved or already used, in a
+     *         2026-07-28 request (other requests ignore the key).
      *
      * For a 2026-07-28 tools/call, prompts/get or resources/read, the question goes back to the
      * client in the request's `input_required` result, and the call returns once the client
@@ -328,12 +356,12 @@ class Context {
      * retries in time; the handler's own answer then goes nowhere. Any other 2026-07-28 request
      * cannot ask the client anything, and the call throws std::runtime_error.
      */
-    Task<ListRootsResult> request_roots() {
+    Task<ListRootsResult> request_roots(InputOptions options = {}) {
         if (!sender_) {
             throw std::runtime_error("Context has no request sender for reverse RPC");
         }
 
-        auto result_json = co_await sender_("roots/list", std::nullopt);
+        auto result_json = co_await sender_("roots/list", std::nullopt, std::move(options.key));
         co_return result_json.get<ListRootsResult>();
     }
 

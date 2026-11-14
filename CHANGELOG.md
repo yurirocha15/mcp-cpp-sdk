@@ -354,9 +354,20 @@ Versioning; a `0.x` version is a stable release unless its version has an
   validator, since no token could then hold a scope.
 - `OAuthDiscoveryClient::forget_protected_resource()` drops the cached
   protected-resource metadata of one resource.
+- `Context::elicit()`, `Context::sample_llm()` and `Context::request_roots()`
+  take an optional `InputOptions` whose `key` names the question in the
+  `inputRequests` of a multi round-trip request, and so in the client's
+  `inputResponses`. Without one the SDK names it `elicitation-N`,
+  `sampling-N` or `roots-N` as before. A key that is empty, has the form of a
+  generated name or is already used by another question of the request makes
+  the call throw `std::invalid_argument`. Stored and sealed request state both
+  honor the key; requests before 2026-07-28 ignore it.
 
 ### Changed
 
+- `RequestSender` takes the key a handler chose for a question as a third
+  argument; senders that build a `Context` from their own `RequestSender` must
+  accept it.
 - An unknown resource in `resources/read` is answered with its URI in the
   error's `data`, as the specification shows.
 - A GET on the MCP endpoint whose `Accept` header does not list
