@@ -290,6 +290,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Changed
 
+- An unknown resource in `resources/read` is answered with its URI in the
+  error's `data`, as the specification shows.
 - A GET on the MCP endpoint whose `Accept` header does not list
   `text/event-stream` is answered `406` by both HTTP server transports, as the
   TypeScript SDK does, instead of opening an event stream.

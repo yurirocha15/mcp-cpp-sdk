@@ -488,6 +488,14 @@ TEST_F(ServerModernEraTest, UnknownToolAndResourceAreInvalidParams) {
     EXPECT_EQ(server->protocol_rejection_stats().invalid_metadata, 0u);
 }
 
+// The error for a resource that does not exist names its URI in data.
+TEST_F(ServerModernEraTest, UnknownResourceErrorNamesTheUri) {
+    auto server = make_server();
+    const auto response =
+        dispatch(*server, make_modern_request(2, "resources/read", {{"uri", "test://missing"}}));
+    EXPECT_EQ(response["error"]["data"], nlohmann::json({{"uri", "test://missing"}})) << response;
+}
+
 TEST_F(ServerModernEraTest, DiscoverListsEveryServedVersion) {
     auto server = make_server();
     auto response = dispatch(*server, make_discover_request("d"));

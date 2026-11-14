@@ -2862,10 +2862,11 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
     }
 
     if (match == nullptr || !match->handler) {
-        // 2025-11-25 and earlier name this case with its own code, which 2026-07-28 retired.
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
-                                  scope.meta ? g_INVALID_PARAMS : g_RESOURCE_NOT_FOUND,
-                                  "Unknown resource: " + params.uri);
+        // 2025-11-25 and earlier name this case with its own code, which 2026-07-28 retired. Both
+        // name the URI in data.
+        co_return make_error_wire(
+            json_msg.at("id").get<RequestId>(), scope.meta ? g_INVALID_PARAMS : g_RESOURCE_NOT_FOUND,
+            "Unknown resource: " + params.uri, nlohmann::json{{"uri", params.uri}});
     }
 
     auto handler = build_middleware_chain(match->handler);
