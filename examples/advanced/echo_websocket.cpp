@@ -69,8 +69,14 @@ int main() {
                 client_info.name = "ws-echo-client";
                 client_info.version = "1.0.0";
 
-                auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                std::cout << "Connected to: " << init_result.serverInfo->name << "\n";
+                {
+                    auto init_result = co_await client.connect(client_info, ClientCapabilities{});
+                    // serverInfo is optional: a server may leave it out.
+                    if (init_result.serverInfo) {
+                        std::cout << "Connected to: " << init_result.serverInfo->name << "\n";
+                    }
+                    std::cout << "Protocol version: " << init_result.protocolVersion << "\n";
+                }
 
                 auto tools = co_await client.list_tools();
                 std::cout << "Tools: " << tools.tools.size() << "\n";

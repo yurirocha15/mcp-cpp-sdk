@@ -4,6 +4,11 @@ Installation
 Requirements
 ------------
 
+The SDK serves MCP protocol revision 2026-07-28 and the revisions 2025-11-25,
+2025-06-18, 2025-03-26 and 2024-11-05.  By default a server serves all of
+them and a client detects the revision the server speaks; see
+:doc:`guides/older-protocols` for pinning a revision.
+
 The SDK requires CMake 3.20 or newer, C++20, Boost 1.74 or newer,
 nlohmann_json 3.10.5 or newer, and OpenSSL 3.0 or newer.  The minimum compilers
 are GCC 11, Clang 14, AppleClang 15, and MSVC 2022 with the v143 toolset.  Both

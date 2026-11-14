@@ -61,6 +61,9 @@ int main() {
         caps.prompts = ServerCapabilities::PromptsCapability{.listChanged = true};
         caps.logging = nlohmann::json::object();
 
+        // By default the server serves clients of every revision the SDK supports: 2026-07-28
+        // requests, which need no initialize, and sessions that start with initialize.
+        // Server::set_protocol_policy() narrows that.
         Implementation info;
         info.name = "example-server";
         info.version = "1.0.0";
@@ -101,6 +104,9 @@ int main() {
             });
 
         // Tool: log_and_upper — async handler, with context (demonstrates ctx.log_info)
+        // In a session of 2025-11-25 or earlier the log message reaches the client unless
+        // logging/setLevel raised the session's level above info. A 2026-07-28 request gets it
+        // only when the request names info or a less severe level (RequestOptions::log_level).
         nlohmann::json upper_schema = {{"type", "object"},
                                        {"properties", {{"text", {{"type", "string"}}}}},
                                        {"required", nlohmann::json::array({"text"})}};

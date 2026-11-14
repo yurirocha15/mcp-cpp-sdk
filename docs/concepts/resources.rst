@@ -43,7 +43,7 @@ For more complex resources, you can use the structured protocol types:
 
 .. literalinclude:: ../../examples/servers/stdio/server_stdio.cpp
    :language: cpp
-   :lines: 120-136
+   :lines: 126-142
    :linenos:
    :caption: Example of a structured static resource registration.
 
@@ -104,9 +104,9 @@ documents.
 The server can track these subscriptions and perform actions (like starting a
 polling loop or opening a file watch) when a client expresses interest.
 
-.. literalinclude:: ../../examples/features/notifications_subscriptions.cpp
+.. literalinclude:: ../../examples/features/legacy_protocols.cpp
    :language: cpp
-   :lines: 64-73
+   :lines: 164-165
    :linenos:
    :caption: Handling resource subscriptions and unsubscriptions.
 
@@ -117,7 +117,9 @@ Resource Change Notifications
 
 When a resource's content changes, call ``notify_resource_updated`` on the
 ``Server`` instance for the relevant session. The method sends only when that
-session subscribed to the exact URI. In a multi-session deployment, the
+session subscribed to the exact URI, with ``resources/subscribe`` in a session
+of an older revision or in the filter of a ``subscriptions/listen`` stream in a
+2026-07-28 session (see :doc:`subscriptions`). In a multi-session deployment, the
 application is responsible for invoking the notification on each relevant
 per-session server instance.
 
@@ -131,7 +133,7 @@ again; delivery and refresh timing still depend on the connection and client.
 
 .. literalinclude:: ../../examples/features/notifications_subscriptions.cpp
    :language: cpp
-   :lines: 148-150
+   :lines: 165-166
    :linenos:
    :caption: Triggering a resource update notification.
 
