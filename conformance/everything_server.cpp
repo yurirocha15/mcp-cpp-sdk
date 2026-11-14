@@ -1,6 +1,7 @@
 // Project fixture for the official MCP conformance runner's 2025-11-25 baseline.
 
 #include <mcp/server/server.hpp>
+#include <mcp/server/skills.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 
 #include <boost/asio/co_spawn.hpp>
@@ -415,7 +416,59 @@ void register_completion(mcp::Server& server) {
         });
 }
 
+/// Serves a few skills of the Skills extension, for the alpha runner's skills scenarios. Off unless
+/// MCP_CONFORMANCE_SKILLS is set, so the pinned suites see the server they always have.
+void register_skills(mcp::Server& server) {
+    const auto* enabled = std::getenv("MCP_CONFORMANCE_SKILLS");
+    if (enabled == nullptr || *enabled == '\0') {
+        return;
+    }
+    mcp::skills::SkillsOptions options;
+    options.page_size = 2;
+    // The registered handlers hold the skills, so this object can go out of scope.
+    mcp::skills::SkillsExtension skills(server, options);
+
+    mcp::skills::SkillDefinition git;
+    git.path = "git-workflow";
+    git.frontmatter = {{"name", "git-workflow"},
+                       {"description", "Follow this team's Git conventions for branching and commits"}};
+    git.files.push_back({"SKILL.md",
+                         "---\nname: git-workflow\ndescription: Follow this team's Git conventions for "
+                         "branching and commits\n---\n\nUse short-lived branches.\n",
+                         std::nullopt,
+                         {}});
+    git.files.push_back({"references/branching.md", "# Branching\n", std::nullopt, {}});
+    skills.add_skill(std::move(git));
+
+    mcp::skills::SkillDefinition refunds;
+    refunds.path = "acme/billing/refunds";
+    refunds.frontmatter = {{"name", "refunds"},
+                           {"description", "Process customer refund requests per company policy"},
+                           {"license", "Apache-2.0"}};
+    refunds.files.push_back({"SKILL.md",
+                             "---\nname: refunds\ndescription: Process customer refund requests per "
+                             "company policy\nlicense: Apache-2.0\n---\n\nSee examples/email.md.\n",
+                             std::nullopt,
+                             {}});
+    refunds.files.push_back({"examples/email.md", "Dear customer,\n", std::nullopt, {}});
+    refunds.files.push_back({"templates/regional/uk.md", "# UK refunds\n", std::nullopt, {}});
+    skills.add_skill(std::move(refunds));
+
+    mcp::skills::SkillDefinition pdf;
+    pdf.path = "pdf-processing";
+    pdf.frontmatter = {{"name", "pdf-processing"},
+                       {"description", "Extract, fill, and assemble PDF documents"}};
+    pdf.files.push_back({"SKILL.md",
+                         "---\nname: pdf-processing\ndescription: Extract, fill, and assemble PDF "
+                         "documents\n---\n\nUse the forms reference.\n",
+                         std::nullopt,
+                         {}});
+    pdf.files.push_back({"references/FORMS.md", "# Forms\n", std::nullopt, {}});
+    skills.add_skill(std::move(pdf));
+}
+
 void configure_server(mcp::Server& server) {
+    register_skills(server);
     register_content_tools(server);
     register_context_tools(server);
     register_schema_tools(server);

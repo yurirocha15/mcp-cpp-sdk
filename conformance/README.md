@@ -20,3 +20,16 @@ baseline did not drift; it does not mean that an SDK tier has been achieved.
 
 The baseline must be regenerated only after reviewing the complete runner
 output. Updating it to hide an uninvestigated regression is not acceptable.
+
+## Skills scenarios
+
+The alpha runner's skills scenarios need a server that serves skills. The
+everything server serves three of them (`git-workflow`, `acme/billing/refunds`
+and `pdf-processing`) only when the environment variable
+`MCP_CONFORMANCE_SKILLS` is set to a non-empty value; without it the server
+declares no Skills extension, so the pinned suites run against the server they
+always have.
+
+```bash
+MCP_CONFORMANCE_SKILLS=1 build/release/mcp-conformance-everything-server
+```
