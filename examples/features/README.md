@@ -331,6 +331,24 @@ done
 
 ---
 
+### 16. Stdio Launch (`stdio_launch.cpp`)
+
+**What it demonstrates:**
+- `StdioClientTransport` launching an MCP server as a child process (the `example-server-simple` executable beside it, or the program named by the first argument)
+- `StdioProcessOptions`: command, arguments, environment, working directory, and standard error captured to a callback
+- Shutdown as the specification describes it: standard input closed first, then SIGTERM and SIGKILL (`TerminateProcess` on Windows) only for a server that does not exit
+- `StdioClientSession`, which connects a `Client` to the launched server and starts the server again when it ends on its own
+
+**Key APIs:**
+- `StdioClientTransport` / `StdioProcessOptions` / `ProcessExit`
+- `StdioClientSession` / `StdioSessionOptions`
+
+**Run:** `./build/release/example-feature-stdio-launch`
+
+**Expected output:** the tool's answer over each connection, the server process ending with code 0, and a success line
+
+---
+
 ## Common Patterns
 
 ### Loopback Pattern (Non-Interactive Testing)
