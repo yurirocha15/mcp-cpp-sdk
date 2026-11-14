@@ -169,14 +169,15 @@ method.
 
 Some details to know:
 
-* The ``requestState`` is a random token. It works once, for the same principal,
+* The ``requestState`` of stored state is a random token. It works once, for the same principal,
   method and parameters, and an unknown, expired or reused one is answered with
   ``g_INVALID_PARAMS`` ("Unknown or expired requestState").
 * A question that needs a capability the client did not declare in the request
   is answered with ``g_MISSING_REQUIRED_CLIENT_CAPABILITY`` (-32021), whose
   ``data.requiredCapabilities`` names it. The ``ctx`` call throws.
-* A waiting handler lives in the ``Server`` instance. The retry must reach the
-  same instance.
+* By default a waiting handler lives in the ``Server`` instance, and the retry
+  must reach the same instance. Sealed request state removes that rule; see
+  below.
 * ``Server::set_mrtr_options()`` bounds waiting handlers: how long they wait (5
   minutes by default), and how many may wait (1024 in all and 64 per principal
   by default). ``Server::mrtr_stats()`` counts them. A handler that is given up
@@ -184,6 +185,70 @@ Some details to know:
 * Only ``tools/call``, ``resources/read`` and ``prompts/get`` can ask the client
   anything. In any other 2026-07-28 request these ``ctx`` calls throw
   ``std::runtime_error``.
+
+Sealed request state
+~~~~~~~~~~~~~~~~~~~~
+
+With ``MrtrOptions::state_mode`` set to ``MrtrStateMode::eSealed``, nothing
+waits in the server. The ``requestState`` carries the state, encrypted and
+authenticated with AES-256-GCM under a key derived (HKDF-SHA256) from
+``MrtrOptions::sealing_keys``, and the retry may reach any ``Server`` instance
+that has the key:
+
+.. code-block:: cpp
+
+   mcp::MrtrOptions options;
+   options.state_mode = mcp::MrtrStateMode::eSealed;
+   options.sealing_keys = {current_secret, previous_secret};  // 32 bytes or more each
+   server.set_mrtr_options(std::move(options));
+
+The state holds a digest of the principal, an expiry, the method, a digest of
+the request's parameters, the round count, the keys of the open questions and
+the answers of the earlier rounds. A retry whose state does not open, is expired, or belongs to another principal,
+method or parameters is answered with ``g_INVALID_PARAMS`` ("Unknown or expired
+requestState"). Callers that are not authenticated can use sealed state; their
+principal is empty.
+
+On a retry the server runs the handler again from the start. The questions the
+earlier rounds answered return their answers at once, and the handler goes on
+until it reaches the question that is still open, or finishes. This has
+consequences for handlers:
+
+* A handler must ask the same questions in the same order when given the same
+  answers.
+* Code before the open question runs once per round. ``Context::is_replay()`` is
+  true from the start of a run until the handler has taken the last answer of
+  the earlier rounds or asks a question they do not answer, so
+  ``if (!ctx.is_replay()) { ... }`` runs a side effect once. A handler that
+  never asks again after the earlier rounds sees ``is_replay()`` true until it
+  ends.
+* A handler is released at its first unanswered question without running any more
+  of its code: its locals are destroyed, and no ``catch`` of the handler sees the
+  release. The question is carried in the ``requestState`` instead.
+* Progress and log notifications the handler sends while replaying are sent
+  again.
+
+The other options of sealed state:
+
+* The first key of ``sealing_keys`` seals; every key opens. To rotate, put the
+  new key first and drop the old one after ``state_ttl`` has passed.
+* ``state_ttl`` (5 minutes by default) is how long a state is accepted after the
+  round that sealed it. ``max_rounds`` (16) bounds the rounds of one request,
+  and ``max_state_bytes`` (32 KiB) the length of the ``requestState``. A request
+  that outgrows either is answered with ``g_INTERNAL_ERROR``.
+* **A sealed state is not single-use.** Until it expires it can be sent again,
+  and each time the handler runs again from the start with the same answers, so
+  the steps after its last question run once more. Make those steps idempotent,
+  or set ``MrtrOptions::consume``, which is called with the unique id of each
+  state before its retry is served; return false for an id that was used already
+  to refuse it. The hook is optional.
+* The expiry is a wall-clock time. Server instances that share keys need
+  reasonably synchronized clocks.
+* ``max_rounds`` must be at least 1 and ``max_state_bytes`` at least 512;
+  ``set_mrtr_options()`` throws ``std::invalid_argument`` otherwise, and when two
+  keys are the same secret or share a 4-byte key id.
+* The limits on waiting handlers (``max_parked`` and the others) apply to stored
+  state only, since sealed state keeps no handler waiting.
 
 Subscriptions
 -------------
