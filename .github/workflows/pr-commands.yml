@@ -1,0 +1,186 @@
+name: PR commands
+
+# A repository admin comments on a pull request:
+#   /approve [sha]                       approve the head commit
+#   /merge [merge|squash|rebase] [sha]   approve, then merge now or when the required checks pass
+# The sha (7-40 hex characters) names the commit the admin reviewed; it is required for pull
+# requests from forks. The bot is a GitHub App, so its approval counts as a second person's and
+# its merge triggers the workflows that run on the base branch.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+concurrency:
+  group: pr-commands-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  command:
+    # A cheap filter so most comments start no runner; the job checks the admin role itself.
+    if: >-
+      github.event.issue.pull_request &&
+      github.event.issue.state == 'open' &&
+      (startsWith(github.event.comment.body, '/approve') ||
+       startsWith(github.event.comment.body, '/merge')) &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: pr-commands
+    steps:
+      - name: Create the bot token
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.PR_COMMANDS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PR_COMMANDS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      - name: Run the command
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          BOT_LOGIN: ${{ steps.token.outputs.app-slug }}[bot]
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          BODY: ${{ github.event.comment.body }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          react() {
+            gh api --silent -X POST "repos/$REPO/issues/comments/$COMMENT_ID/reactions" \
+              -f content="$1" || true
+          }
+          reply() {
+            gh api --silent -X POST "repos/$REPO/issues/$PR/comments" \
+              -f body="@$ACTOR $1 ([run]($RUN_URL))" || true
+          }
+          refuse() {
+            reply "$1"
+            react -1
+            exit 1
+          }
+
+          # The first line must be exactly a command and its arguments.
+          line=$(printf '%s\n' "$BODY" | head -n 1 | tr -d '\r' | tr '[:upper:]' '[:lower:]')
+          read -r -a words <<< "$line"
+          command=${words[0]:-}
+          if [[ "$command" != /approve && "$command" != /merge ]]; then
+            echo "Not a command: $command"
+            exit 0
+          fi
+          method=""
+          sha_arg=""
+          for word in "${words[@]:1}"; do
+            if [[ "$command" == /merge && "$word" =~ ^(merge|squash|rebase)$ && -z "$method" ]]; then
+              method=$word
+            elif [[ "$word" =~ ^[0-9a-f]{7,40}$ && -z "$sha_arg" ]]; then
+              sha_arg=$word
+            else
+              refuse "usage: \`/approve [sha]\` or \`/merge [merge|squash|rebase] [sha]\`."
+            fi
+          done
+
+          role=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission)
+          if [[ "$role" != admin ]]; then
+            refuse "only repository admins can use \`$command\`."
+          fi
+
+          pr_json=$(gh api "repos/$REPO/pulls/$PR")
+          state=$(jq -r .state <<< "$pr_json")
+          draft=$(jq -r .draft <<< "$pr_json")
+          head_sha=$(jq -r .head.sha <<< "$pr_json")
+          head_repo=$(jq -r '.head.repo.full_name // ""' <<< "$pr_json")
+          base_ref=$(jq -r .base.ref <<< "$pr_json")
+          [[ "$state" == open ]] || refuse "the pull request is not open."
+          [[ "$draft" == false ]] || refuse "the pull request is a draft."
+          if [[ -n "$sha_arg" && "$head_sha" != "$sha_arg"* ]]; then
+            refuse "the head commit is now \`${head_sha:0:12}\`, not \`$sha_arg\`; review it and comment again."
+          fi
+          if [[ "$head_repo" != "$REPO" && -z "$sha_arg" ]]; then
+            refuse "this pull request comes from a fork; name the commit you reviewed: \`$command ${head_sha:0:12}\`."
+          fi
+
+          if [[ "$command" == /merge ]]; then
+            # The merge methods both the repository and the base branch's rules allow.
+            repo_json=$(gh api "repos/$REPO")
+            base_path=$(jq -rn --arg ref "$base_ref" '$ref | @uri')
+            rule_methods=$(gh api "repos/$REPO/rules/branches/$base_path" \
+              --jq '[.[] | select(.type == "pull_request") | .parameters.allowed_merge_methods // empty] | flatten | unique | join(" ")')
+            allowed=()
+            for candidate in merge squash rebase; do
+              key=$([[ $candidate == merge ]] && echo allow_merge_commit || echo "allow_${candidate}_merge")
+              # A setting the token is not shown is left to GitHub to enforce.
+              [[ $(jq -r ".$key" <<< "$repo_json") != false ]] || continue
+              [[ -z "$rule_methods" || " $rule_methods " == *" $candidate "* ]] || continue
+              allowed+=("$candidate")
+            done
+            [[ ${#allowed[@]} -gt 0 ]] || refuse "no merge method is allowed into \`$base_ref\`."
+            if [[ -z "$method" ]]; then
+              method=${allowed[0]}
+            elif [[ " ${allowed[*]} " != *" $method "* ]]; then
+              refuse "\`$method\` is not allowed into \`$base_ref\`; allowed: ${allowed[*]}."
+            fi
+          fi
+
+          # Approve the head commit once.
+          approved=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+            --jq ".[] | select(.user.login == \"$BOT_LOGIN\" and .commit_id == \"$head_sha\" and .state == \"APPROVED\") | .id" \
+            | wc -l)
+          if [[ "$approved" -eq 0 ]]; then
+            gh api --silent -X POST "repos/$REPO/pulls/$PR/reviews" \
+              -f commit_id="$head_sha" -f event=APPROVE \
+              -f body="Approved at @$ACTOR's request." \
+              || refuse "the approval was refused."
+          fi
+          if [[ "$command" == /approve ]]; then
+            react +1
+            exit 0
+          fi
+
+          # GitHub computes mergeability in the background; wait for it.
+          merge_state=unknown
+          for _ in $(seq 1 20); do
+            merge_state=$(gh api "repos/$REPO/pulls/$PR" --jq '.mergeable_state')
+            [[ "$merge_state" != unknown ]] && break
+            sleep 3
+          done
+          case "$merge_state" in
+            clean | unstable | has_hooks)
+              gh api --silent -X PUT "repos/$REPO/pulls/$PR/merge" \
+                -f sha="$head_sha" -f merge_method="$method" \
+                || refuse "GitHub refused the merge."
+              react +1
+              ;;
+            blocked)
+              node_id=$(jq -r .node_id <<< "$pr_json")
+              if [[ $(jq -r .allow_auto_merge <<< "$repo_json") == false ]]; then
+                refuse "the merge is blocked (required checks or reviews) and auto-merge is off in this repository; comment again once the checks pass."
+              fi
+              # shellcheck disable=SC2016 # GraphQL variables, not shell ones
+              gh api graphql \
+                -f query='mutation($id: ID!, $method: PullRequestMergeMethod!, $oid: GitObjectID!) {
+                  enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: $method, expectedHeadOid: $oid}) { clientMutationId } }' \
+                -f id="$node_id" -f method="${method^^}" -f oid="$head_sha" > /dev/null \
+                || refuse "the merge is blocked and GitHub refused to turn on auto-merge."
+              reply "auto-merge is on; \`${head_sha:0:12}\` merges by $method when the required checks pass."
+              react +1
+              ;;
+            behind)
+              refuse "the branch is behind \`$base_ref\`; update it, then comment again."
+              ;;
+            dirty)
+              refuse "the branch conflicts with \`$base_ref\`."
+              ;;
+            *)
+              refuse "GitHub reports the pull request as \`$merge_state\`; it cannot be merged now."
+              ;;
+          esac
