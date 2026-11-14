@@ -255,6 +255,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   is literal text, as `a{5` is, instead of being refused for its count; and a
   NUL character written after `-` in a class ends a range, as any other
   character does, instead of making the `-` literal.
+- A value built in C++ may hold malformed UTF-8. `minLength`, `maxLength` and
+  `pattern` now count each byte that is not part of a well-formed sequence as
+  one character on both evaluation paths; the jsoncons path counted a string
+  holding one as empty, and the native path skipped stray continuation bytes.
 
 ## [0.2.0] - 2026-10-21
 

@@ -145,4 +145,8 @@ class MCP_API Regex {
     std::shared_ptr<const RegexProgram> program_;
 };
 
+/// Number of code points in @p text (UTF-8) as `Regex` reads them: a byte that is not part of a
+/// well-formed sequence counts as one U+FFFD.
+[[nodiscard]] MCP_API std::size_t code_point_count(std::string_view text) noexcept;
+
 }  // namespace mcp::detail

@@ -736,7 +736,7 @@ namespace jsonschema {
 
             auto sv = instance.as_string_view();
             evaluation_limits::charge(1 + sv.size() / 16);
-            std::size_t length = unicode_traits::count_codepoints(sv.data(), sv.size());
+            std::size_t length = ::mcp::detail::code_point_count(std::string_view(sv.data(), sv.size()));
             if (length > max_length_)
             {
                 walk_state result = reporter.error(this->make_validation_message(
@@ -790,7 +790,7 @@ namespace jsonschema {
 
             auto sv = instance.as_string_view();
             evaluation_limits::charge(1 + sv.size() / 16);
-            std::size_t length = unicode_traits::count_codepoints(sv.data(), sv.size());
+            std::size_t length = ::mcp::detail::code_point_count(std::string_view(sv.data(), sv.size()));
             if (length < min_length_) 
             {
                 walk_state result = reporter.error(this->make_validation_message(

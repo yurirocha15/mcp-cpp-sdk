@@ -710,6 +710,23 @@ TEST(SchemaDialect, OverlongPatternIsUnsupported) {
     EXPECT_EQ(compile_error(schema), SchemaError::Category::eUnsupportedPattern);
 }
 
+// A value built in C++ may hold malformed UTF-8. Both evaluation paths count each byte that is not
+// part of a well-formed sequence as one character, as pattern matching reads it.
+TEST(SchemaBridge, MalformedUtf8CountsOneCharacterPerByte) {
+    const json value = std::string("\xC3\xA9\xFF\x80", 4);  // e-acute, then two stray bytes
+    for (const bool jsoncons : {false, true}) {
+        SCOPED_TRACE(jsoncons ? "jsoncons" : "native");
+        const auto check = [&](const json& schema) {
+            return is_valid(jsoncons ? through_jsoncons(schema) : schema, value);
+        };
+        EXPECT_TRUE(check({{"maxLength", 3}}));
+        EXPECT_FALSE(check({{"maxLength", 2}}));
+        EXPECT_TRUE(check({{"minLength", 3}}));
+        EXPECT_FALSE(check({{"minLength", 4}}));
+        EXPECT_TRUE(check({{"pattern", "^.{3}$"}}));
+    }
+}
+
 TEST(SchemaLimits, PatternMatchingIsBounded) {
     mcp::SchemaOptions options;
     options.base_pattern_steps = 100'000;

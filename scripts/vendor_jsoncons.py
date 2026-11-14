@@ -53,7 +53,10 @@ needs and applies five recorded groups of transformations:
    at the object. Property names and keywords are looked up with their full
    length instead of as C strings, which end at a NUL, and sets of property
    names are ordered instead of hashed, so names chosen to share a hash cannot
-   make lookups scan them all.
+   make lookups scan them all. ``minLength`` and ``maxLength`` count characters
+   with ``mcp::detail::code_point_count``, as the SDK's own evaluator and pattern
+   matching do: a byte of malformed UTF-8 counts as one character, where
+   jsoncons counted a string holding one as empty.
 5. The ``jsoncons`` namespace becomes ``mcp_detail_jsoncons`` and the
    ``JSONCONS_`` macro prefix becomes ``MCP_DETAIL_JSONCONS_``, so the copy
    compiled into the SDK (a static archive included) cannot collide with a
@@ -85,7 +88,7 @@ VERSION = "1.10.0"
 TARBALL_URL = f"https://github.com/danielaparker/jsoncons/archive/refs/tags/v{VERSION}.tar.gz"
 TARBALL_SHA256 = "c829350a2eece662beb378143e2ab1c1cbb07d703687bf168626665a8a7d8bc1"
 # Bump when the transformation below changes, so PROVENANCE records which one produced the tree.
-TRANSFORM_VERSION = 12
+TRANSFORM_VERSION = 13
 
 # Header directories, relative to the release's include/, that the extension needs.
 SUBSET = ("jsoncons", "jsoncons_ext/jsonschema", "jsoncons_ext/jsonpointer")
@@ -1008,6 +1011,14 @@ EVALUATION_REPLACEMENTS = (
         """                            message.append(evaluation_limits::excerpt(prop.key()));""",
         2,
     ),
+    # minLength and maxLength count characters as the SDK's own evaluator and pattern matching do.
+    # jsoncons counted a string holding malformed UTF-8 as empty.
+    (
+        KEYWORD_VALIDATOR_PATH,
+        """std::size_t length = unicode_traits::count_codepoints(sv.data(), sv.size());""",
+        """std::size_t length = ::mcp::detail::code_point_count(std::string_view(sv.data(), sv.size()));""",
+        2,
+    ),
 )
 
 # (pattern, replacement, expected matches across SUBSET), applied after the replacements above.
@@ -1141,7 +1152,7 @@ def provenance() -> str:
         "kept apart from those under $defs of the same name; subschemas of patternProperties, "
         "dependentSchemas and dependencies registered at their own locations; "
         "additionalProperties violations reported at the member; property names looked up by full "
-        "length in ordered sets; "
+        "length in ordered sets; minLength and maxLength counted with mcp::detail::code_point_count; "
         "namespace jsoncons renamed "
         "mcp_detail_jsoncons; macro prefix JSONCONS_ renamed MCP_DETAIL_JSONCONS_)\n"
     )

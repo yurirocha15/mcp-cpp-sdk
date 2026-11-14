@@ -1034,4 +1034,12 @@ std::optional<bool> Regex::search(std::string_view input, std::size_t& steps_lef
     return false;
 }
 
+std::size_t code_point_count(std::string_view text) noexcept {
+    std::size_t count = 0;
+    for (std::size_t pos = 0; pos < text.size(); ++count) {
+        (void)decode_utf8(text, pos);
+    }
+    return count;
+}
+
 }  // namespace mcp::detail

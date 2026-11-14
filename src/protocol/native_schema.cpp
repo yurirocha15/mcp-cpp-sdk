@@ -370,13 +370,6 @@ bool json_equal(const nlohmann::json& left, const nlohmann::json& right, std::si
     return left == right;
 }
 
-/// Number of code points in UTF-8 @p text.
-std::size_t code_points(std::string_view text) {
-    return static_cast<std::size_t>(std::count_if(text.begin(), text.end(), [](char byte) {
-        return (static_cast<unsigned char>(byte) & 0xC0U) != 0x80U;
-    }));
-}
-
 /// One evaluation of a value against a NativeSchema.
 /// Thrown when pattern matching needs more steps than the validation's budget holds.
 struct PatternBudgetExceeded {};
@@ -476,7 +469,7 @@ class Evaluation {
 
     bool check_string(const Node& node, const std::string& text) {
         if (node.min_length || node.max_length) {
-            const auto length = code_points(text);
+            const auto length = code_point_count(text);
             if (node.min_length && length < *node.min_length &&
                 !report("Number of characters must be at least " + std::to_string(*node.min_length))) {
                 return false;
