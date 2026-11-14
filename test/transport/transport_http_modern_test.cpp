@@ -198,6 +198,28 @@ TEST(HttpModernStatus, ErrorCodesMapToTheSpecifiedStatuses) {
     EXPECT_EQ(http_status_for_error(mcp::g_INVALID_REQUEST), http::status::ok);
 }
 
+TEST(HttpModernStatus, SerializedResponseErrorCodeMatchesTheParsedCode) {
+    using mcp::detail::response_error_code;
+    using mcp::detail::serialized_response_error_code;
+    const std::string error = json{{"jsonrpc", "2.0"},
+                                   {"id", 3},
+                                   {"error", {{"code", mcp::g_HEADER_MISMATCH}, {"message", "m"}}}}
+                                  .dump();
+    const std::string result = json{{"jsonrpc", "2.0"}, {"id", 3}, {"result", {{"ok", true}}}}.dump();
+    // A result whose text mentions the key still goes through the parse and yields no code.
+    const std::string mentions_key =
+        json{{"jsonrpc", "2.0"},
+             {"id", 3},
+             {"result", {{"content", {{{"type", "text"}, {"text", "\"error\""}}}}}}}
+            .dump();
+    for (const auto* response : {&error, &result, &mentions_key}) {
+        EXPECT_EQ(serialized_response_error_code(*response), response_error_code(*response));
+    }
+    EXPECT_EQ(serialized_response_error_code(error), mcp::g_HEADER_MISMATCH);
+    EXPECT_EQ(serialized_response_error_code(result), std::nullopt);
+    EXPECT_EQ(serialized_response_error_code(mentions_key), std::nullopt);
+}
+
 TEST(HttpModernHeaderValue, Base64SentinelIsDecoded) {
     using mcp::detail::decode_header_value;
     EXPECT_EQ(decode_header_value("us-west1"), "us-west1");

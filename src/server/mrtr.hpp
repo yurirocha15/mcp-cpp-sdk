@@ -10,6 +10,8 @@
 #include <mcp/core/context.hpp>
 #include <mcp/core/core.hpp>
 
+#include <mcp/protocol/request_meta.hpp>
+
 #include <atomic>
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -18,6 +20,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
@@ -107,6 +110,35 @@ class MrtrEntry {
     std::function<std::shared_ptr<void>(std::size_t)> count_again;
     /// The handler ended. Guarded like `in_flight`.
     bool ended{false};
+};
+
+/// Whether the client declared a capability that lets it answer a request for input: elicitation,
+/// sampling or roots, each as an object. @p request_meta is the `_meta` object of the request.
+/// Without one, every request for input ends in a missing-capability answer, so the handler can
+/// never park.
+bool client_can_answer_input(const nlohmann::json& request_meta);
+
+/// The state of a request whose handler runs inside the request, because the client declared
+/// nothing that lets it answer a request for input. The handler's questions are refused the way a
+/// parked handler's are: what the client would have had to declare is recorded here, and the
+/// request is answered with it.
+class InlineInput {
+   public:
+    explicit InlineInput(std::shared_ptr<const RequestMetadata> request_meta)
+        : request_meta_(std::move(request_meta)) {}
+
+    /// Records what the client must declare before @p request, a `{"method", "params"}` input
+    /// request, may be sent. Returns false when the client declared it, which cannot happen for a
+    /// request this class serves.
+    bool refuse(const nlohmann::json& request);
+
+    /// What the refused requests needed, or an empty object when none was refused.
+    [[nodiscard]] nlohmann::json missing_capabilities() const;
+
+   private:
+    std::shared_ptr<const RequestMetadata> request_meta_;
+    mutable std::mutex mutex_;
+    nlohmann::json missing_ = nlohmann::json::object();
 };
 
 /// The capabilities a client must declare before a server may send it @p request, a

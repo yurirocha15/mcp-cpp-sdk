@@ -3,6 +3,7 @@
 #include "../detail/spawn_awaitable.hpp"
 
 #include <mcp/auth/oauth.hpp>
+#include <mcp/detail/json_dump.hpp>
 
 #include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
@@ -109,7 +110,7 @@ Task<void> notify_on_strand(std::shared_ptr<MrtrEntry> entry,
                 co_return;
             }
             notification["params"]["progressToken"] = *entry->progress_token;
-            message = std::make_shared<const std::string>(notification.dump());
+            message = std::make_shared<const std::string>(mcp::detail::dump_json(notification));
         }
     }
     co_await sink(*message);
@@ -185,6 +186,38 @@ MrtrEntry::MrtrEntry(const boost::asio::any_io_executor& executor,
       resume_signal(strand) {
     // Never changed again: changing it would cancel the waits of every request for input.
     resume_signal.expires_at(std::chrono::steady_clock::time_point::max());
+}
+
+bool client_can_answer_input(const nlohmann::json& request_meta) {
+    const auto declared = request_meta.find(g_META_CLIENT_CAPABILITIES);
+    if (declared == request_meta.end() || !declared->is_object()) {
+        return false;
+    }
+    for (const char* name : {"elicitation", "sampling", "roots"}) {
+        const auto capability = declared->find(name);
+        if (capability != declared->end() && capability->is_object()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool InlineInput::refuse(const nlohmann::json& request) {
+    const auto& meta = *request_meta_->meta;
+    const auto declared = meta.find(g_META_CLIENT_CAPABILITIES);
+    const auto missing = missing_client_capabilities(
+        declared != meta.end() ? *declared : nlohmann::json::object(), request);
+    if (missing.empty()) {
+        return false;
+    }
+    std::lock_guard lock(mutex_);
+    missing_.merge_patch(missing);
+    return true;
+}
+
+nlohmann::json InlineInput::missing_capabilities() const {
+    std::lock_guard lock(mutex_);
+    return missing_;
 }
 
 nlohmann::json missing_client_capabilities(const nlohmann::json& client_capabilities,
@@ -287,7 +320,7 @@ std::string mrtr_params_digest(const nlohmann::json& params) {
     salient.erase("_meta");
     salient.erase("inputResponses");
     salient.erase("requestState");
-    const auto digest = auth::detail::sha256(salient.dump());
+    const auto digest = auth::detail::sha256(mcp::detail::dump_json(salient));
     return {reinterpret_cast<const char*>(digest.data()), digest.size()};
 }
 

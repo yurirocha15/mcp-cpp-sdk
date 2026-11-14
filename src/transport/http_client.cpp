@@ -6,6 +6,7 @@
 #include "../detail/socket_deadline.hpp"
 
 #include <mcp/core/constants.hpp>
+#include <mcp/detail/json_dump.hpp>
 #include <mcp/transport/http_client.hpp>
 #include <mcp/transport/http_types.hpp>
 
@@ -624,7 +625,7 @@ struct HttpClientTransport::Impl {
             return std::nullopt;
         }
         parsed["jsonrpc"] = "2.0";
-        return parsed.dump();
+        return mcp::detail::dump_json(parsed);
     }
 
     void process_response(const StringResponse& response, const std::string& sent, bool in_session) {
@@ -1419,7 +1420,7 @@ struct HttpClientTransport::Impl {
             return text;
         }
         (*result)["tools"] = std::move(kept);
-        return answer.dump();
+        return mcp::detail::dump_json(answer);
     }
 
     static bool starts_with_ignoring_case(std::string_view value, std::string_view prefix) {
@@ -1465,7 +1466,7 @@ struct HttpClientTransport::Impl {
         if (!parsed.contains("jsonrpc")) {
             parsed["jsonrpc"] = "2.0";
         }
-        return parsed.dump();
+        return mcp::detail::dump_json(parsed);
     }
 
     static void throw_if_unavailable(const SharedState& shared, const ModernCall& call) {
@@ -1667,7 +1668,7 @@ struct HttpClientTransport::Impl {
             }
             refresh->message = nlohmann::json{
                 {"jsonrpc", "2.0"}, {"id", refresh->id}, {"method", "tools/list"}, {"params", params}};
-            refresh->body = refresh->message.dump();
+            refresh->body = mcp::detail::dump_json(refresh->message);
             co_await run_exchange(impl, refresh, false);
             if (!refresh->final_message) {
                 co_return;
@@ -1718,9 +1719,8 @@ struct HttpClientTransport::Impl {
     }
 
     static std::string error_response(const ModernCall& call, int code, const std::string& message) {
-        return nlohmann::json{
-            {"jsonrpc", "2.0"}, {"id", call.id}, {"error", {{"code", code}, {"message", message}}}}
-            .dump();
+        return mcp::detail::dump_json(nlohmann::json{
+            {"jsonrpc", "2.0"}, {"id", call.id}, {"error", {{"code", code}, {"message", message}}}});
     }
 
     /// Reads an event stream to its end after the request that opened it has been sent. Whatever

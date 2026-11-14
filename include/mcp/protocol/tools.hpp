@@ -247,6 +247,34 @@ inline void to_json(nlohmann::json& json_obj, const CallToolResult& result) {
 }
 
 /**
+ * @brief Serializes CallToolResult to JSON, moving what it holds into the result.
+ *
+ * The output is that of the overload above; the result is not copied.
+ *
+ * @param json_obj The JSON object to populate.
+ * @param result The CallToolResult object to serialize; left in an unspecified state.
+ */
+inline void to_json(nlohmann::json& json_obj, CallToolResult&& result) {
+    nlohmann::json content = nlohmann::json::array();
+    for (auto& block : result.content) {
+        nlohmann::json serialized;
+        to_json(serialized, std::move(block));
+        content.push_back(std::move(serialized));
+    }
+    json_obj = nlohmann::json::object();
+    json_obj["content"] = std::move(content);
+    if (result.isError) {
+        json_obj["isError"] = *result.isError;
+    }
+    if (result.meta) {
+        json_obj["_meta"] = std::move(*result.meta);
+    }
+    if (result.structuredContent) {
+        json_obj["structuredContent"] = std::move(*result.structuredContent);
+    }
+}
+
+/**
  * @brief Deserializes CallToolResult from JSON.
  *
  * @param json_obj The JSON object to read from.

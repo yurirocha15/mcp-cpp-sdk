@@ -80,12 +80,13 @@ struct RequestMetaParse {
 };
 
 /// Reads the per-request protocol fields of a request that is_modern_request() accepted and whose
-/// version requested_protocol_version() returned.
-inline RequestMetaParse parse_request_meta(const nlohmann::json& message) {
-    const auto& meta = *request_meta_object(message);
+/// version requested_protocol_version() returned. The metadata shares the `_meta` object of
+/// @p message, and so keeps the message.
+inline RequestMetaParse parse_request_meta(const std::shared_ptr<const nlohmann::json>& message) {
+    const auto& meta = *request_meta_object(*message);
     auto metadata = std::make_shared<RequestMetadata>();
-    metadata->protocolVersion = meta.at(std::string(g_META_PROTOCOL_VERSION)).get<std::string>();
-    metadata->meta = meta;
+    metadata->protocolVersion = *requested_protocol_version(*message);
+    metadata->meta = std::shared_ptr<const nlohmann::json>(message, &meta);
 
     const auto capabilities = meta.find(g_META_CLIENT_CAPABILITIES);
     if (capabilities == meta.end()) {

@@ -3,6 +3,7 @@
 #include <mcp/protocol/capabilities.hpp>
 #include <mcp/protocol/notification.hpp>
 
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -44,8 +45,15 @@ struct RequestMetadata {
     std::optional<Implementation> clientInfo;  ///< Client name and version, when sent.
     std::optional<LoggingLevel> logLevel;      ///< Minimum level to log for this request, when sent.
     /// The request's whole `_meta` object, including keys such as `progressToken`,
-    /// `traceparent`, `tracestate` and `baggage`.
-    nlohmann::json meta = nlohmann::json::object();
+    /// `traceparent`, `tracestate` and `baggage`. The server shares it with the request it read
+    /// it from rather than copying it; it is never null, and an empty object by default.
+    std::shared_ptr<const nlohmann::json> meta = empty_meta();
+
+    /// The empty `_meta` object that a default-constructed RequestMetadata holds.
+    static std::shared_ptr<const nlohmann::json> empty_meta() {
+        static const auto empty = std::make_shared<const nlohmann::json>(nlohmann::json::object());
+        return empty;
+    }
 };
 
 /**

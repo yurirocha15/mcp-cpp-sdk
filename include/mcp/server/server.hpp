@@ -46,6 +46,9 @@ namespace detail {
 enum class ToolResultMode : std::uint8_t {
     eNormalize,
     eValidated,
+    /// The handler returns a CallToolResult value, which serializes to a result the protocol can
+    /// decode: only the checks that depend on the protocol revision remain.
+    eTyped,
 };
 
 /// @brief Detects whether Fn is invocable with (In) returning Task<Out>.
@@ -377,13 +380,12 @@ class MCP_API Server {
         Tool tool;
         tool.name = name;
         tool.description = description;
-        tool.inputSchema = input_schema;
         auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
         constexpr auto result_mode = std::same_as<Out, CallToolResult>
-                                         ? detail::ToolResultMode::eValidated
+                                         ? detail::ToolResultMode::eTyped
                                          : detail::ToolResultMode::eNormalize;
-        register_tool(std::move(tool), detail::wrap_handler<In, Out>(std::move(async_handler)),
-                      result_mode);
+        register_tool(std::move(tool), input_schema, nullptr,
+                      detail::wrap_handler<In, Out>(std::move(async_handler)), result_mode);
     }
 
     /**
@@ -406,14 +408,12 @@ class MCP_API Server {
         Tool tool;
         tool.name = name;
         tool.description = description;
-        tool.inputSchema = input_schema;
-        tool.outputSchema = output_schema;
         auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
         constexpr auto result_mode = std::same_as<Out, CallToolResult>
-                                         ? detail::ToolResultMode::eValidated
+                                         ? detail::ToolResultMode::eTyped
                                          : detail::ToolResultMode::eNormalize;
-        register_tool(std::move(tool), detail::wrap_handler<In, Out>(std::move(async_handler)),
-                      result_mode);
+        register_tool(std::move(tool), input_schema, &output_schema,
+                      detail::wrap_handler<In, Out>(std::move(async_handler)), result_mode);
     }
 
     /**
@@ -557,6 +557,17 @@ class MCP_API Server {
      * @details Read unsynchronized by request handlers; must be called before run().
      */
     void set_tool_validation(const ToolValidationOptions& options);
+
+    /**
+     * @brief Run tool handlers on @p executor instead of the executor the server runs on.
+     *
+     * @details The server's own work (reading, parsing and answering protocol messages) stays on
+     * the executor passed to run(); only the call of a tool handler moves to @p executor, and the
+     * server resumes on its own executor when it returns. A handler that blocks then ties up a
+     * thread of @p executor rather than one the transport needs. Read unsynchronized by request
+     * handlers; must be called before run().
+     */
+    void set_handler_executor(const boost::asio::any_io_executor& executor);
 
     /// Tool calls refused by validation since this server was created.
     [[nodiscard]] ToolValidationStats tool_validation_stats() const;
@@ -908,6 +919,12 @@ class MCP_API Server {
     void register_tool(const Tool& tool, const std::string& name, TypeErasedHandler handler,
                        detail::ToolResultMode result_mode);
     void register_tool(Tool&& tool, TypeErasedHandler handler, detail::ToolResultMode result_mode);
+    /// Registers @p tool, whose own schemas are unset, with @p input_schema and, unless it is null,
+    /// @p output_schema. The server keeps the schemas in their compiled form, which servers that
+    /// register the same schema share, so the schemas are not copied for each registration.
+    void register_tool(Tool&& tool, const nlohmann::json& input_schema,
+                       const nlohmann::json* output_schema, TypeErasedHandler handler,
+                       detail::ToolResultMode result_mode);
     void register_resource(const Resource& resource, TypeErasedHandler handler);
     void register_resource_template(const ResourceTemplate& tmpl, TypeErasedHandler handler);
     void register_prompt(const Prompt& prompt, TypeErasedHandler handler);

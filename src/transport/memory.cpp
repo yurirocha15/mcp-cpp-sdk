@@ -1,6 +1,9 @@
+#include "../detail/fifo.hpp"
 #include "../detail/memory_transport_read.hpp"
 #include "../detail/spawn_awaitable.hpp"
+#include "../detail/strand_executor.hpp"
 
+#include <mcp/detail/json_dump.hpp>
 #include <mcp/transport/memory.hpp>
 
 #include <boost/asio/co_spawn.hpp>
@@ -8,17 +11,16 @@
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/system/system_error.hpp>
 #include <nlohmann/json.hpp>
 
 #include <atomic>
 #include <chrono>
-#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <queue>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -33,6 +35,7 @@ struct MemoryTransportState {
 
     /// A message, and the id as JSON text of the request it was written as related to, if any.
     struct Message {
+        Message() = default;
         // NOLINTNEXTLINE(google-explicit-constructor)
         Message(Body content, std::shared_ptr<const std::string> related = nullptr)
             : body(std::move(content)), related_request(std::move(related)) {}
@@ -52,7 +55,7 @@ struct MemoryTransportState {
     };
 
     explicit MemoryTransportState(const boost::asio::any_io_executor& executor)
-        : strand(boost::asio::make_strand(executor)) {}
+        : strand(mcp::detail::make_strand_executor(executor)) {}
 
     ~MemoryTransportState() { close_endpoint(lock_peer()); }
 
@@ -85,7 +88,7 @@ struct MemoryTransportState {
         if (auto* raw = std::get_if<std::string>(&message.body)) {
             return std::move(*raw);
         }
-        return std::get<nlohmann::json>(message.body).dump();
+        return mcp::detail::dump_json(std::get<nlohmann::json>(message.body));
     }
 
     static nlohmann::json as_json(Message message) {
@@ -103,7 +106,7 @@ struct MemoryTransportState {
         }
         if (!state->incoming.empty()) {
             auto message = std::move(state->incoming.front());
-            state->incoming.pop();
+            state->incoming.pop_front();
             co_return message;
         }
 
@@ -144,17 +147,25 @@ struct MemoryTransportState {
             waiter->wake();
             return;
         }
-        incoming.emplace(std::move(message));
+        incoming.emplace_back(std::move(message));
     }
 
-    static Task<void> deliver(std::shared_ptr<MemoryTransportState> sender,
-                              std::shared_ptr<MemoryTransportState> peer, Message message) {
-        if (sender->closed.load(std::memory_order_acquire) ||
-            peer->closed.load(std::memory_order_acquire)) {
+    /// Queues @p message for the peer. Runs on the peer's strand, which owns its queue and waiters.
+    template <typename MessageValue>
+    static void deliver_now(const MemoryTransportState& sender, MemoryTransportState& peer,
+                            MessageValue message) {
+        if (sender.closed.load(std::memory_order_acquire) ||
+            peer.closed.load(std::memory_order_acquire)) {
             throw std::runtime_error("transport closed");
         }
 
-        peer->deliver_message(std::move(message));
+        peer.deliver_message(Message(std::move(message)));
+    }
+
+    template <typename MessageValue>
+    static Task<void> deliver(std::shared_ptr<MemoryTransportState> sender,
+                              std::shared_ptr<MemoryTransportState> peer, MessageValue message) {
+        deliver_now(*sender, *peer, std::move(message));
         co_return;
     }
 
@@ -168,12 +179,20 @@ struct MemoryTransportState {
             throw std::runtime_error("peer transport not set");
         }
 
+        // A writer whose own executor is the peer's strand runs inside it already, which is all a
+        // delivery needs, so it delivers here instead of spawning a coroutine onto that strand.
+        const auto caller = co_await boost::asio::this_coro::executor;
+        if (caller == peer->strand) {
+            deliver_now(*state, *peer, std::move(message));
+            co_return;
+        }
+
         co_await mcp::detail::spawn_awaitable(peer->strand, deliver(state, peer, std::move(message)));
     }
 
-    boost::asio::strand<boost::asio::any_io_executor> strand;
-    std::queue<Message> incoming;
-    std::deque<std::weak_ptr<ReadWaiter>> read_waiters;
+    boost::asio::any_io_executor strand;
+    Fifo<Message> incoming;
+    Fifo<std::weak_ptr<ReadWaiter>> read_waiters;
     std::atomic<bool> closed{false};
 
    private:
@@ -224,6 +243,28 @@ Task<std::optional<detail::MemoryTransportAccess::RelatedMessage>> read_related_
         detail::MemoryTransportState::as_string(std::move(*message)), std::move(related_request)};
 }
 
+// A read touches the queue and the waiters, which belong to the endpoint's strand. A reader whose
+// own executor is that strand runs on it already, so it reads in place; any other is spawned onto
+// the strand, where it also stays after each suspension.
+Task<std::optional<std::string>> read_message_until_closed_on_strand(
+    std::shared_ptr<detail::MemoryTransportState> state) {
+    const auto caller = co_await boost::asio::this_coro::executor;
+    if (caller == state->strand) {
+        co_return co_await mcp::read_message_until_closed(std::move(state));
+    }
+    co_return co_await mcp::detail::spawn_awaitable(state->strand,
+                                                    mcp::read_message_until_closed(state));
+}
+
+Task<std::optional<nlohmann::json>> read_json_until_closed_on_strand(
+    std::shared_ptr<detail::MemoryTransportState> state) {
+    const auto caller = co_await boost::asio::this_coro::executor;
+    if (caller == state->strand) {
+        co_return co_await mcp::read_json_until_closed(std::move(state));
+    }
+    co_return co_await mcp::detail::spawn_awaitable(state->strand, mcp::read_json_until_closed(state));
+}
+
 }  // namespace
 
 Task<std::optional<detail::MemoryTransportAccess::RelatedMessage>>
@@ -234,14 +275,12 @@ detail::MemoryTransportAccess::read_related_until_closed(MemoryTransport& transp
 
 Task<std::optional<std::string>> detail::MemoryTransportAccess::read_message_until_closed(
     MemoryTransport& transport) {
-    auto state = transport.state_;
-    return mcp::detail::spawn_awaitable(state->strand, mcp::read_message_until_closed(state));
+    return mcp::read_message_until_closed_on_strand(transport.state_);
 }
 
 Task<std::optional<nlohmann::json>> detail::MemoryTransportAccess::read_json_until_closed(
     MemoryTransport& transport) {
-    auto state = transport.state_;
-    return mcp::detail::spawn_awaitable(state->strand, mcp::read_json_until_closed(state));
+    return mcp::read_json_until_closed_on_strand(transport.state_);
 }
 
 MemoryTransport::MemoryTransport(const boost::asio::any_io_executor& executor)
@@ -263,7 +302,8 @@ Task<nlohmann::json> MemoryTransport::read_json() {
 // peer's strand, so it runs on the caller's executor instead of first hopping to this strand.
 Task<void> MemoryTransport::write_json(nlohmann::json message) {
     return detail::MemoryTransportState::write(
-        state_, detail::MemoryTransportState::Message(std::move(message)));
+        state_,
+        detail::MemoryTransportState::Message(detail::MemoryTransportState::Body(std::move(message))));
 }
 
 Task<void> MemoryTransport::write_message(std::string_view message) {

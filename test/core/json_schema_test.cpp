@@ -2,6 +2,8 @@
 #include <mcp/detail/regex.hpp>
 #include <mcp/protocol/schema.hpp>
 
+#include "../../src/protocol/schema_cache.hpp"
+
 #include <gtest/gtest.h>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -9,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -1461,6 +1464,164 @@ TEST(CompiledSchema, CopiesShareTheSchema) {
     const CompiledSchema copy = original;  // NOLINT(performance-unnecessary-copy-initialization)
     EXPECT_EQ(copy.schema(), json({{"type", "string"}}));
     EXPECT_TRUE(copy.validate("x").valid);
+}
+
+// Compiling the same schema again returns a schema that behaves identically, and a different
+// schema, or the same one under different options, is never answered with another's.
+// The cache serves a repeat while something holds the schema and lets the compiled form go with the
+// last holder, so schemas taken from a peer are not kept for the life of the process.
+TEST(CompiledSchema, CacheLetsGoOfASchemaWithItsLastHolder) {
+    const auto before = mcp::detail::compiled_schema_cache_live_entries();
+    std::vector<mcp::CompiledSchema> held;
+    for (int index = 0; index < 20; ++index) {
+        held.push_back(mcp::CompiledSchema::compile(
+            nlohmann::json{{"type", "object"},
+                           {"properties", {{"field" + std::to_string(index), {{"type", "string"}}}}}}));
+    }
+    EXPECT_EQ(mcp::detail::compiled_schema_cache_live_entries(), before + 20);
+
+    held.clear();
+    EXPECT_EQ(mcp::detail::compiled_schema_cache_live_entries(), before);
+}
+
+TEST(CompiledSchema, RepeatedCompileKeepsEachSchemaDistinct) {
+    const json integer = {{"type", "integer"}};
+    const json text = {{"type", "string"}};
+    for (int round = 0; round < 3; ++round) {
+        const auto first = CompiledSchema::compile(integer);
+        const auto second = CompiledSchema::compile(text);
+        EXPECT_TRUE(first.validate(1).valid);
+        EXPECT_FALSE(first.validate("x").valid);
+        EXPECT_TRUE(second.validate("x").valid);
+        EXPECT_FALSE(second.validate(1).valid);
+        EXPECT_EQ(first.schema(), integer);
+        EXPECT_EQ(second.schema(), text);
+    }
+
+    // An integer and a float with the same value are different schema texts.
+    const auto whole = CompiledSchema::compile({{"const", 1}});
+    const auto fraction = CompiledSchema::compile({{"const", 1.5}});
+    EXPECT_TRUE(whole.validate(1).valid);
+    EXPECT_FALSE(whole.validate(1.5).valid);
+    EXPECT_TRUE(fraction.validate(1.5).valid);
+
+    mcp::SchemaOptions shallow;
+    shallow.max_instance_depth = 1;
+    const json nested = {{"type", "array"}};
+    EXPECT_TRUE(CompiledSchema::compile(nested).validate(json::array({json::array({1})})).valid);
+    EXPECT_FALSE(
+        CompiledSchema::compile(nested, shallow).validate(json::array({json::array({1})})).valid);
+}
+
+// A repeat is served only for the same document, number kinds included: 1 and 1.0, or 0.0 and
+// -0.0, compare equal as JSON values but are written differently, so each keeps its own schema.
+TEST(CompiledSchema, CacheKeepsNumberKindsApart) {
+    const json whole = {{"maximum", 1}};
+    const json fraction = {{"maximum", 1.0}};
+    const json positive_zero = {{"const", 0.0}};
+    const json negative_zero = {{"const", -0.0}};
+    std::vector<CompiledSchema> held;
+    for (int round = 0; round < 2; ++round) {
+        held.push_back(CompiledSchema::compile(whole));
+        held.push_back(CompiledSchema::compile(fraction));
+        held.push_back(CompiledSchema::compile(positive_zero));
+        held.push_back(CompiledSchema::compile(negative_zero));
+        EXPECT_TRUE(held[held.size() - 4].schema()["maximum"].is_number_integer());
+        EXPECT_TRUE(held[held.size() - 3].schema()["maximum"].is_number_float());
+        EXPECT_FALSE(std::signbit(held[held.size() - 2].schema()["const"].get<double>()));
+        EXPECT_TRUE(std::signbit(held[held.size() - 1].schema()["const"].get<double>()));
+    }
+    EXPECT_EQ(held[0].schema().dump(), whole.dump());
+    EXPECT_EQ(held[5].schema().dump(), fraction.dump());
+    EXPECT_EQ(held[7].schema().dump(), negative_zero.dump());
+
+    // An unsigned and a signed integer of the same value are written the same, and share one.
+    const auto before = mcp::detail::compiled_schema_cache_live_entries();
+    const auto as_signed = CompiledSchema::compile({{"maxLength", std::int64_t{7}}});
+    const auto as_unsigned = CompiledSchema::compile({{"maxLength", std::uint64_t{7}}});
+    EXPECT_EQ(mcp::detail::compiled_schema_cache_live_entries(), before + 1);
+    EXPECT_FALSE(as_unsigned.validate("12345678").valid);
+
+    // nlohmann's operator== takes -1 and 2^64 - 1 for one value; the cache does not.
+    const auto minus_one = CompiledSchema::compile({{"const", std::int64_t{-1}}});
+    const auto largest =
+        CompiledSchema::compile({{"const", std::numeric_limits<std::uint64_t>::max()}});
+    EXPECT_EQ(minus_one.schema()["const"].get<std::int64_t>(), -1);
+    EXPECT_TRUE(largest.schema()["const"].is_number_unsigned());
+    EXPECT_EQ(largest.schema().dump(), R"({"const":18446744073709551615})");
+}
+
+// A large schema is kept like a small one, so a server built per session compiles it once.
+TEST(CompiledSchema, CacheServesALargeSchema) {
+    json properties = json::object();
+    for (int index = 0; index < 1000; ++index) {
+        properties["property_with_a_long_name_" + std::to_string(index)] = {
+            {"type", "string"}, {"description", std::string(40, 'd')}};
+    }
+    const json large = {{"type", "object"}, {"properties", properties}};
+    ASSERT_GT(large.dump().size(), 64U * 1024U);
+
+    const auto before = mcp::detail::compiled_schema_cache_live_entries();
+    const auto first = CompiledSchema::compile(large);
+    const auto second = CompiledSchema::compile(large);
+    EXPECT_EQ(mcp::detail::compiled_schema_cache_live_entries(), before + 1);
+    EXPECT_EQ(first.schema(), second.schema());
+    EXPECT_TRUE(second.validate({{"property_with_a_long_name_3", "x"}}).valid);
+    EXPECT_FALSE(second.validate({{"property_with_a_long_name_3", 3}}).valid);
+}
+
+// A repeat is looked up before the schema is measured, so the lookup itself must refuse nothing
+// that compiling accepts and accept nothing it refuses: nesting at the limit is served from the
+// cache, one level more is refused however deep it goes, and NaN or Infinity is refused next to a
+// cached schema that differs only in that number.
+TEST(CompiledSchema, CacheLookupKeepsTheCompileChecks) {
+    const auto nested = [](int levels) {
+        json value = 1;
+        for (int i = 0; i < levels; ++i) {
+            value = json::array({std::move(value)});
+        }
+        json schema = json::object();
+        schema["const"] = std::move(value);
+        return schema;
+    };
+    const auto refusal = [](const json& schema) -> std::string {
+        try {
+            (void)CompiledSchema::compile(schema);
+        } catch (const SchemaError& error) {
+            return error.what();
+        }
+        return "";
+    };
+
+    const auto at_limit = nested(63);
+    const auto before = mcp::detail::compiled_schema_cache_live_entries();
+    const auto first = CompiledSchema::compile(at_limit);
+    const auto second = CompiledSchema::compile(at_limit);
+    EXPECT_EQ(mcp::detail::compiled_schema_cache_live_entries(), before + 1);
+    EXPECT_TRUE(second.validate(at_limit["const"]).valid);
+    for (const int levels : {64, 100'000}) {
+        SCOPED_TRACE(levels);
+        const auto too_deep = nested(levels);
+        for (int round = 0; round < 2; ++round) {
+            EXPECT_NE(refusal(too_deep).find("nests deeper than 64 levels"), std::string::npos);
+        }
+    }
+
+    const auto finite = CompiledSchema::compile({{"maximum", 1.5}});
+    EXPECT_FALSE(finite.validate(2).valid);
+    for (const double value :
+         {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+        for (int round = 0; round < 2; ++round) {
+            EXPECT_NE(refusal({{"maximum", value}}).find("NaN or Infinity"), std::string::npos);
+        }
+    }
+}
+
+// A schema that cannot be compiled is refused every time, not only the first.
+TEST(CompiledSchema, RefusalIsRepeatedAfterRecompile) {
+    const json invalid = {{"type", "not-a-type"}};
+    EXPECT_EQ(compile_error(invalid), SchemaError::Category::eInvalidSchema);
+    EXPECT_EQ(compile_error(invalid), SchemaError::Category::eInvalidSchema);
 }
 
 // One compiled schema validated from several threads at once must give the same answers as

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "http_response_write.hpp"
+
 #include <mcp/core/core.hpp>
 #include <mcp/transport/http_types.hpp>
 
@@ -21,6 +23,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #if !defined(_WIN32)
 #include <sys/resource.h>
@@ -167,14 +170,16 @@ inline bool deadline_passed(const std::optional<std::chrono::steady_clock::time_
 }
 
 /// Writes @p response within the time @p limits gives reading a request, so a peer that does not
-/// take its answer cannot keep what its request holds. False when the peer is gone or too slow, and
-/// the connection is to end.
+/// take its answer cannot keep what its request holds. The write goes through
+/// async_write_response(), which builds the head in @p head. False when the peer is gone or too
+/// slow, and the connection is to end.
 inline Task<bool> write_response_within_limits(boost::beast::tcp_stream& stream,
                                                StringResponse& response,
-                                               const HttpConnectionLimits& limits) {
+                                               const HttpConnectionLimits& limits,
+                                               std::vector<char>& head) {
     arm_request_read_deadline(stream, limits);
     try {
-        co_await boost::beast::http::async_write(stream, response, boost::asio::use_awaitable);
+        co_await async_write_response(stream, response, head);
     } catch (const boost::system::system_error&) {
         co_return false;
     }

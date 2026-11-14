@@ -1,3 +1,4 @@
+#include <mcp/detail/json_dump.hpp>
 #include <mcp/protocol/tools.hpp>
 
 #include <utility>
@@ -20,7 +21,8 @@ CallToolResult make_tool_error_result(std::string message) {
 
 CallToolResult make_tool_structured_result(nlohmann::json structured_content,
                                            std::optional<std::string> text) {
-    auto result = make_tool_text_result(text ? std::move(*text) : structured_content.dump());
+    auto result =
+        make_tool_text_result(text ? std::move(*text) : mcp::detail::dump_json(structured_content));
     result.structuredContent = std::move(structured_content);
     return result;
 }

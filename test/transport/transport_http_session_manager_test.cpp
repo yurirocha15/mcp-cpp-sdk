@@ -23,7 +23,9 @@
 #include <boost/beast/http.hpp>
 #include <chrono>
 #include <exception>
+#include <future>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <sstream>
@@ -289,6 +291,69 @@ mcp::Task<RawResponse> send_initialized(const asio::any_io_executor& executor, u
 
     co_return co_await raw_request(executor, port, http::verb::post, "/mcp", notification.dump(),
                                    session_id, std::move(header_protocol_version));
+}
+
+/// One TCP connection that stays open across requests, carrying the requests of every session
+/// that is posted to it.
+class KeepAliveClient {
+   public:
+    explicit KeepAliveClient(const asio::any_io_executor& executor)
+        : executor_(executor), stream_(executor) {}
+
+    mcp::Task<void> connect(unsigned short port) {
+        auto resolver = asio::ip::tcp::resolver(executor_);
+        auto endpoints =
+            co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
+        co_await stream_.async_connect(*endpoints.begin(), asio::use_awaitable);
+    }
+
+    /// POST @p body to /mcp for @p session_id (none when empty) and read the answer.
+    mcp::Task<RawResponse> post(std::string body, std::string session_id = {}) {
+        http::request<http::string_body> request{http::verb::post, "/mcp", 11};
+        request.set(http::field::host, "127.0.0.1");
+        request.set(http::field::content_type, "application/json");
+        request.set(http::field::accept, "application/json");
+        request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+        if (!session_id.empty()) {
+            request.set("Mcp-Session-Id", session_id);
+        }
+        request.body() = std::move(body);
+        request.prepare_payload();
+        co_await http::async_write(stream_, request, asio::use_awaitable);
+
+        http::response<http::string_body> response;
+        co_await http::async_read(stream_, buffer_, response, asio::use_awaitable);
+
+        RawResponse result;
+        result.status = response.result_int();
+        result.body = response.body();
+        if (auto session_it = response.find("Mcp-Session-Id"); session_it != response.end()) {
+            result.session_id = std::string(session_it->value());
+        }
+        co_return result;
+    }
+
+   private:
+    asio::any_io_executor executor_;
+    beast::tcp_stream stream_;
+    beast::flat_buffer buffer_;
+};
+
+json make_initialize_request(int id) {
+    return {{"jsonrpc", "2.0"},
+            {"method", "initialize"},
+            {"params",
+             {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
+              {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
+              {"capabilities", json::object()}}},
+            {"id", id}};
+}
+
+json make_echo_request(int id, const std::string& message) {
+    return {{"jsonrpc", "2.0"},
+            {"method", "tools/call"},
+            {"params", {{"name", "echo"}, {"arguments", {{"message", message}}}}},
+            {"id", id}};
 }
 
 }  // namespace
@@ -1051,6 +1116,127 @@ TEST_F(SessionManagerTest, MultipleConcurrentSessionsSameIds) {
 
     EXPECT_EQ(body_a["result"]["content"][0]["text"], "from-A");
     EXPECT_EQ(body_b["result"]["content"][0]["text"], "from-B");
+}
+
+// Both sessions are created over the one connection, so their transports share that connection's
+// strand; each request still reaches its own session, in turn.
+TEST_F(SessionManagerTest, TwoSessionsOnOneConnectionAreAnsweredEachByItsOwnServer) {
+    const unsigned short port = 19160;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    std::vector<std::string> session_ids;
+    std::vector<std::string> expected;
+    std::vector<std::string> echoed;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            KeepAliveClient client(io_ctx_.get_executor());
+            co_await client.connect(port);
+
+            for (int index = 0; index < 2; ++index) {
+                auto init = co_await client.post(make_initialize_request(index + 1).dump());
+                EXPECT_EQ(init.status, 200);
+                session_ids.push_back(init.session_id);
+                json initialized = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
+                auto accepted = co_await client.post(initialized.dump(), init.session_id);
+                EXPECT_EQ(accepted.status, 202);
+            }
+            EXPECT_EQ(manager.session_count(), 2);
+
+            for (int round = 0; round < 3; ++round) {
+                for (int session = 0; session < 2; ++session) {
+                    auto message =
+                        "session-" + std::to_string(session) + "-round-" + std::to_string(round);
+                    expected.push_back(message);
+                    auto answer = co_await client.post(make_echo_request(10 + round, message).dump(),
+                                                       session_ids[static_cast<std::size_t>(session)]);
+                    EXPECT_EQ(answer.status, 200);
+                    echoed.push_back(
+                        json::parse(answer.body)["result"]["content"][0]["text"].get<std::string>());
+                }
+            }
+
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(session_ids.size(), 2U);
+    EXPECT_NE(session_ids[0], session_ids[1]);
+    EXPECT_EQ(echoed, expected);
+}
+
+// Sessions are served from keep-alive connections and from fresh ones, on several threads: a
+// request from a connection other than the one that created its session reaches the session's
+// strand from outside it.
+TEST_F(SessionManagerTest, ManySessionsAreAnsweredCorrectlyOnManyThreads) {
+    constexpr int session_count = 8;
+    constexpr int calls_per_session = 20;
+    constexpr int thread_count = 4;
+    const unsigned short port = 19161;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    std::atomic<int> correct{0};
+    std::atomic<int> wrong{0};
+    std::atomic<int> finished{0};
+    for (int worker = 0; worker < session_count; ++worker) {
+        asio::co_spawn(
+            io_ctx_,
+            [&, worker]() -> mcp::Task<void> {
+                try {
+                    KeepAliveClient client(io_ctx_.get_executor());
+                    co_await client.connect(port);
+                    auto init = co_await client.post(make_initialize_request(1).dump());
+                    const auto session_id = init.session_id;
+                    json initialized = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
+                    (void)co_await client.post(initialized.dump(), session_id);
+
+                    for (int call = 0; call < calls_per_session; ++call) {
+                        const auto message =
+                            "worker-" + std::to_string(worker) + "-call-" + std::to_string(call);
+                        const auto request = make_echo_request(call + 2, message).dump();
+                        RawResponse answer;
+                        if (call % 2 == 0) {
+                            answer = co_await client.post(request, session_id);
+                        } else {
+                            answer =
+                                co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                     "/mcp", request, session_id);
+                        }
+                        const auto body = json::parse(answer.body, nullptr, false);
+                        if (answer.status == 200 && body.is_object() && body.contains("result") &&
+                            body["result"]["content"][0]["text"] == message) {
+                            correct.fetch_add(1, std::memory_order_relaxed);
+                        } else {
+                            wrong.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    }
+                } catch (const std::exception&) {
+                    wrong.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (finished.fetch_add(1, std::memory_order_acq_rel) + 1 == session_count) {
+                    manager.close();
+                }
+            },
+            asio::detached);
+    }
+
+    std::vector<std::thread> threads;
+    threads.reserve(thread_count);
+    for (int index = 0; index < thread_count; ++index) {
+        threads.emplace_back([this] { io_ctx_.run(); });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    EXPECT_EQ(wrong.load(), 0);
+    EXPECT_EQ(correct.load(), session_count * calls_per_session);
 }
 
 // ---------------------------------------------------------------------------
@@ -1818,6 +2004,361 @@ TEST_F(SessionManagerTest, StatelessDispatchUsesConfiguredToolExecutor) {
     EXPECT_EQ(json::parse(response.body)["result"]["content"][0]["text"], "tool executor");
 }
 
+// A session keeps its protocol work on the HTTP executor and moves only the tool handler to the
+// tool executor, and what the handler sends through its Context still arrives in order.
+TEST_F(SessionManagerTest, SessionWithToolExecutorRunsHandlersOffTheHttpThread) {
+    const unsigned short port = 19118;
+    const auto http_thread = std::this_thread::get_id();
+    std::atomic<bool> sync_handler_on_http_thread{true};
+    std::atomic<bool> coroutine_handler_on_http_thread{true};
+    asio::thread_pool tool_pool(2);
+
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx_.get_executor(), "127.0.0.1", port,
+        [&](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities capabilities;
+            capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
+            capabilities.logging = json::object();
+            auto server = std::make_unique<mcp::Server>(
+                mcp::Implementation{"executor-session-server", "1.0.0"}, std::move(capabilities));
+            server->add_tool<json, mcp::CallToolResult>(
+                "sync", "Blocks its thread", json{{"type", "object"}},
+                [&](json) -> mcp::CallToolResult {
+                    sync_handler_on_http_thread.store(std::this_thread::get_id() == http_thread);
+                    return mcp::make_tool_text_result("sync done");
+                });
+            server->add_tool<json, mcp::CallToolResult>(
+                "notify", "Reports through its context", json{{"type", "object"}},
+                [&](mcp::Context& ctx, json) -> mcp::Task<mcp::CallToolResult> {
+                    coroutine_handler_on_http_thread.store(std::this_thread::get_id() == http_thread);
+                    co_await ctx.log_info("tool started");
+                    co_await ctx.report_progress(0.5, 1.0, "halfway");
+                    co_return mcp::make_tool_text_result("coroutine done");
+                });
+            return server;
+        });
+    manager.set_tool_executor(tool_pool.get_executor());
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    RawResponse listed;
+    RawResponse sync_response;
+    RawResponse notify_response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            auto init = co_await do_initialize(io_ctx_.get_executor(), port);
+            EXPECT_EQ(init.status, 200);
+            auto initialized = co_await send_initialized(io_ctx_.get_executor(), port, init.session_id);
+            EXPECT_EQ(initialized.status, 202);
+
+            const std::string version(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
+            const json list_request = {{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 2}};
+            listed = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                          list_request.dump(), init.session_id, version, std::nullopt,
+                                          std::nullopt, "application/json");
+            const json sync_request = {{"jsonrpc", "2.0"},
+                                       {"method", "tools/call"},
+                                       {"params", {{"name", "sync"}, {"arguments", json::object()}}},
+                                       {"id", 3}};
+            sync_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                                 sync_request.dump(), init.session_id, version,
+                                                 std::nullopt, std::nullopt, "application/json");
+            const json notify_request = {{"jsonrpc", "2.0"},
+                                         {"method", "tools/call"},
+                                         {"params",
+                                          {{"name", "notify"},
+                                           {"arguments", json::object()},
+                                           {"_meta", {{"progressToken", "progress-1"}}}}},
+                                         {"id", 4}};
+            notify_response =
+                co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                     notify_request.dump(), init.session_id, version, std::nullopt,
+                                     std::nullopt, "application/json, text/event-stream");
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+    tool_pool.join();
+
+    ASSERT_EQ(listed.status, 200);
+    EXPECT_EQ(json::parse(listed.body)["result"]["tools"].size(), 2);
+    ASSERT_EQ(sync_response.status, 200);
+    EXPECT_EQ(json::parse(sync_response.body)["result"]["content"][0]["text"], "sync done");
+    EXPECT_FALSE(sync_handler_on_http_thread.load());
+
+    ASSERT_EQ(notify_response.status, 200);
+    EXPECT_FALSE(coroutine_handler_on_http_thread.load());
+    const auto events = parse_sse_events(notify_response.body);
+    ASSERT_EQ(events.size(), 3);
+    EXPECT_EQ(events[0].second.at("method"), "notifications/message");
+    EXPECT_EQ(events[1].second.at("method"), "notifications/progress");
+    EXPECT_EQ(events[2].second.at("result").at("content").at(0).at("text"), "coroutine done");
+}
+
+// A 2026-07-28 client that declares no capabilities is served without parking the handler, and
+// the progress that a resource or prompt handler reports still reaches it.
+TEST_F(SessionManagerTest, ResourceAndPromptProgressReachesAClientWithoutCapabilities) {
+    const unsigned short port = 19165;
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx_.get_executor(), "127.0.0.1", port,
+        [](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities capabilities;
+            capabilities.resources = mcp::ServerCapabilities::ResourcesCapability{};
+            capabilities.prompts = mcp::ServerCapabilities::PromptsCapability{};
+            auto server = std::make_unique<mcp::Server>(mcp::Implementation{"progress-server", "1.0.0"},
+                                                        std::move(capabilities));
+            mcp::Resource resource;
+            resource.uri = "res://progress";
+            resource.name = "progress";
+            server->add_resource<json, mcp::ReadResourceResult>(
+                resource, [](mcp::Context& ctx, json) -> mcp::Task<mcp::ReadResourceResult> {
+                    co_await ctx.report_progress(1, 2);
+                    mcp::ReadResourceResult result;
+                    mcp::TextResourceContents contents;
+                    contents.uri = "res://progress";
+                    contents.text = "read";
+                    result.contents.emplace_back(std::move(contents));
+                    co_return result;
+                });
+            mcp::Prompt prompt;
+            prompt.name = "progress";
+            server->add_prompt<json, mcp::GetPromptResult>(
+                prompt, [](mcp::Context& ctx, json) -> mcp::Task<mcp::GetPromptResult> {
+                    co_await ctx.report_progress(1, 2);
+                    mcp::GetPromptResult result;
+                    result.description = "got";
+                    co_return result;
+                });
+            return server;
+        });
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    const auto meta = json{{"io.modelcontextprotocol/protocolVersion", "2026-07-28"},
+                           {"io.modelcontextprotocol/clientCapabilities", json::object()},
+                           {"progressToken", "token-1"}};
+    RawResponse read_response;
+    RawResponse prompt_response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const json read_request = {{"jsonrpc", "2.0"},
+                                       {"method", "resources/read"},
+                                       {"params", {{"uri", "res://progress"}, {"_meta", meta}}},
+                                       {"id", 1}};
+            read_response = co_await modern_post(io_ctx_.get_executor(), port, read_request);
+            const json prompt_request = {{"jsonrpc", "2.0"},
+                                         {"method", "prompts/get"},
+                                         {"params", {{"name", "progress"}, {"_meta", meta}}},
+                                         {"id", 2}};
+            prompt_response = co_await modern_post(io_ctx_.get_executor(), port, prompt_request);
+            manager.close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    for (const auto* response : {&read_response, &prompt_response}) {
+        ASSERT_EQ(response->status, 200) << response->body;
+        const auto events = parse_sse_events(response->body);
+        ASSERT_EQ(events.size(), 2U) << response->body;
+        EXPECT_EQ(events[0].second.at("method"), "notifications/progress");
+        EXPECT_EQ(events[0].second.at("params").at("progressToken"), "token-1");
+        EXPECT_TRUE(events[1].second.contains("result"));
+    }
+}
+
+// A resource or prompt handler, like a tool handler, runs on the tool executor and not on the
+// HTTP thread that a blocking one would hold.
+TEST_F(SessionManagerTest, ResourceAndPromptHandlersRunOnTheToolExecutor) {
+    const unsigned short port = 19164;
+    const auto http_thread = std::this_thread::get_id();
+    std::atomic<bool> resource_on_http_thread{true};
+    std::atomic<bool> prompt_on_http_thread{true};
+    asio::thread_pool tool_pool(1);
+
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx_.get_executor(), "127.0.0.1", port,
+        [&](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities capabilities;
+            capabilities.resources = mcp::ServerCapabilities::ResourcesCapability{};
+            capabilities.prompts = mcp::ServerCapabilities::PromptsCapability{};
+            auto server = std::make_unique<mcp::Server>(
+                mcp::Implementation{"executor-resource-server", "1.0.0"}, std::move(capabilities));
+            mcp::Resource resource;
+            resource.uri = "res://where";
+            resource.name = "where";
+            server->add_resource<json, mcp::ReadResourceResult>(
+                resource, [&](json) -> mcp::ReadResourceResult {
+                    resource_on_http_thread.store(std::this_thread::get_id() == http_thread);
+                    mcp::ReadResourceResult result;
+                    mcp::TextResourceContents contents;
+                    contents.uri = "res://where";
+                    contents.text = "read";
+                    result.contents.emplace_back(std::move(contents));
+                    return result;
+                });
+            mcp::Prompt prompt;
+            prompt.name = "where";
+            server->add_prompt<json, mcp::GetPromptResult>(prompt, [&](json) -> mcp::GetPromptResult {
+                prompt_on_http_thread.store(std::this_thread::get_id() == http_thread);
+                mcp::GetPromptResult result;
+                result.description = "got";
+                return result;
+            });
+            return server;
+        });
+    manager.set_stateless_json_mode(true);
+    manager.set_tool_executor(tool_pool.get_executor());
+
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    RawResponse read_response;
+    RawResponse prompt_response;
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            const json read_request = {{"jsonrpc", "2.0"},
+                                       {"method", "resources/read"},
+                                       {"params", {{"uri", "res://where"}}},
+                                       {"id", 1}};
+            read_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                                 read_request.dump());
+            const json prompt_request = {{"jsonrpc", "2.0"},
+                                         {"method", "prompts/get"},
+                                         {"params", {{"name", "where"}}},
+                                         {"id", 2}};
+            prompt_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                   "/mcp", prompt_request.dump());
+            manager.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+    tool_pool.join();
+
+    EXPECT_EQ(read_response.status, 200);
+    EXPECT_EQ(json::parse(read_response.body)["result"]["contents"][0]["text"], "read");
+    EXPECT_FALSE(resource_on_http_thread.load());
+    EXPECT_EQ(prompt_response.status, 200);
+    EXPECT_EQ(json::parse(prompt_response.body)["result"]["description"], "got");
+    EXPECT_FALSE(prompt_on_http_thread.load());
+}
+
+// A handler that runs two branches at once, as `co_await (a && b)` does, is safe only when the
+// branches run one at a time, so a server on several threads, with or without a tool executor,
+// must run the handler on a strand. The branches are started by hand because Boost 1.74 has no
+// awaitable operators.
+struct FanOutProbe {
+    std::atomic<int> inside{0};
+    std::atomic<int> overlaps{0};
+    std::atomic<int> finished{0};
+};
+
+/// Keeps the thread busy for @p duration. A sleep this short can last a whole clock tick on Windows.
+void spin_for(std::chrono::microseconds duration) {
+    const auto until = std::chrono::steady_clock::now() + duration;
+    while (std::chrono::steady_clock::now() < until) {
+    }
+}
+
+mcp::Task<void> fan_out_branch(std::shared_ptr<FanOutProbe> probe, int rounds) {
+    const auto executor = co_await asio::this_coro::executor;
+    for (int round = 0; round < rounds; ++round) {
+        if (probe->inside.fetch_add(1) != 0) {
+            probe->overlaps.fetch_add(1);
+        }
+        spin_for(std::chrono::microseconds(50));
+        probe->inside.fetch_sub(1);
+        co_await asio::post(executor, asio::use_awaitable);
+    }
+}
+
+/// Runs two branches at once and returns when both have finished.
+mcp::Task<void> fan_out(std::shared_ptr<FanOutProbe> probe, int rounds) {
+    const auto executor = co_await asio::this_coro::executor;
+    auto remaining = std::make_shared<std::atomic<int>>(2);
+    for (int branch = 0; branch < 2; ++branch) {
+        asio::co_spawn(executor, fan_out_branch(probe, rounds),
+                       [remaining](std::exception_ptr) { remaining->fetch_sub(1); });
+    }
+    while (remaining->load() != 0) {
+        co_await asio::post(executor, asio::use_awaitable);
+    }
+}
+
+void run_fan_out_case(asio::io_context& io_ctx, unsigned short port, bool with_tool_pool,
+                      FanOutProbe& probe) {
+    constexpr int g_requests = 4;
+    constexpr int g_rounds = 200;
+    asio::thread_pool tool_pool(4);
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx.get_executor(), "127.0.0.1", port,
+        [&probe](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities capabilities;
+            capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
+            auto server = std::make_unique<mcp::Server>(mcp::Implementation{"fan-out-server", "1.0.0"},
+                                                        std::move(capabilities));
+            server->add_tool<json, mcp::CallToolResult>(
+                "fan_out", "Runs two branches at once", json{{"type", "object"}},
+                [&probe](mcp::Context&, json) -> mcp::Task<mcp::CallToolResult> {
+                    // Branches of one call must not overlap; two calls may.
+                    auto call = std::make_shared<FanOutProbe>();
+                    co_await fan_out(call, g_rounds);
+                    probe.overlaps.fetch_add(call->overlaps.load());
+                    probe.finished.fetch_add(1);
+                    co_return mcp::make_tool_text_result("done");
+                });
+            return server;
+        });
+    manager.set_stateless_json_mode(true);
+    if (with_tool_pool) {
+        manager.set_tool_executor(tool_pool.get_executor());
+    }
+    asio::co_spawn(io_ctx, manager.listen(), asio::detached);
+
+    auto pending = std::make_shared<std::atomic<int>>(g_requests);
+    for (int index = 0; index < g_requests; ++index) {
+        asio::co_spawn(
+            io_ctx,
+            [&io_ctx, &manager, port, pending, index]() -> mcp::Task<void> {
+                const json request = {{"jsonrpc", "2.0"},
+                                      {"method", "tools/call"},
+                                      {"params", {{"name", "fan_out"}, {"arguments", json::object()}}},
+                                      {"id", index + 1}};
+                co_await raw_request(io_ctx.get_executor(), port, http::verb::post, "/mcp",
+                                     request.dump());
+                if (pending->fetch_sub(1) == 1) {
+                    manager.close();
+                }
+            },
+            asio::detached);
+    }
+
+    std::vector<std::thread> workers;
+    for (int index = 0; index < 3; ++index) {
+        workers.emplace_back([&io_ctx] { io_ctx.run(); });
+    }
+    io_ctx.run();
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    tool_pool.join();
+}
+
+TEST_F(SessionManagerTest, HandlerBranchesNeverOverlapOnSeveralHttpThreads) {
+    FanOutProbe probe;
+    run_fan_out_case(io_ctx_, 19162, false, probe);
+    EXPECT_EQ(probe.finished.load(), 4);
+    EXPECT_EQ(probe.overlaps.load(), 0);
+}
+
+TEST_F(SessionManagerTest, HandlerBranchesNeverOverlapOnAToolPool) {
+    FanOutProbe probe;
+    run_fan_out_case(io_ctx_, 19163, true, probe);
+    EXPECT_EQ(probe.finished.load(), 4);
+    EXPECT_EQ(probe.overlaps.load(), 0);
+}
+
 // ===========================================================================
 // Server-side OAuth challenge, metadata route and unauthenticated paths
 // ===========================================================================
@@ -2541,4 +3082,135 @@ TEST_F(SessionManagerTest, RequestPendingWhenItsSessionIsDeletedIsAnswered) {
     EXPECT_EQ(call_response.status, 500);
     EXPECT_FALSE(tool_finished_before_answer);
     EXPECT_EQ(manager.session_count(), 0);
+}
+
+// Two sessions created over one keep-alive connection, with no tool executor: while a tool of the
+// first session blocks its thread, the second session still answers a ping sent on another
+// connection.
+TEST_F(SessionManagerTest, BlockedHandlerDoesNotStallAnotherSessionOfItsConnection) {
+    const unsigned short port = 19166;
+    constexpr int thread_count = 4;
+    constexpr auto wait_bound = std::chrono::seconds(60);
+
+    struct Gate {
+        std::promise<void> entered;
+        std::once_flag entered_once;
+        std::promise<void> release;
+        std::shared_future<void> released = release.get_future().share();
+        std::once_flag release_once;
+        std::atomic<bool> returned{false};
+
+        void open() {
+            std::call_once(release_once, [this] { release.set_value(); });
+        }
+    };
+    auto gate = std::make_shared<Gate>();
+    auto entered = gate->entered.get_future();
+
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx_.get_executor(), "127.0.0.1", port,
+        [gate](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities caps;
+            caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+            auto server = std::make_unique<mcp::Server>(
+                mcp::Implementation{"test-blocking-server", "1.0.0"}, std::move(caps));
+            server->add_tool("wait", "Blocks its thread until the test releases it",
+                             json{{"type", "object"}}, [gate](const json&) -> json {
+                                 std::call_once(gate->entered_once,
+                                                [&gate] { gate->entered.set_value(); });
+                                 gate->released.wait();
+                                 gate->returned.store(true);
+                                 return json{{"released", true}};
+                             });
+            return server;
+        });
+    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+
+    std::string first_id;
+    std::string second_id;
+    std::promise<void> sessions_ready;
+    std::promise<unsigned int> call_answered;
+    std::promise<RawResponse> ping_answered;
+
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            KeepAliveClient creator(io_ctx_.get_executor());
+            co_await creator.connect(port);
+            const json initialized = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
+            first_id = (co_await creator.post(make_initialize_request(1).dump())).session_id;
+            (void)co_await creator.post(initialized.dump(), first_id);
+            second_id = (co_await creator.post(make_initialize_request(2).dump())).session_id;
+            (void)co_await creator.post(initialized.dump(), second_id);
+            sessions_ready.set_value();
+        },
+        asio::detached);
+
+    std::vector<std::thread> threads;
+    threads.reserve(thread_count);
+    for (int index = 0; index < thread_count; ++index) {
+        threads.emplace_back([this] { io_ctx_.run(); });
+    }
+    const auto finish = [&] {
+        gate->open();
+        asio::post(io_ctx_, [&manager] { manager.close(); });
+        for (auto& thread : threads) {
+            thread.join();
+        }
+    };
+
+    if (sessions_ready.get_future().wait_for(wait_bound) != std::future_status::ready ||
+        first_id.empty() || second_id.empty()) {
+        ADD_FAILURE() << "the two sessions were not initialized";
+        finish();
+        return;
+    }
+
+    const json call = {{"jsonrpc", "2.0"},
+                       {"id", 3},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "wait"}, {"arguments", json::object()}}}};
+    asio::co_spawn(
+        io_ctx_,
+        [&, body = call.dump()]() -> mcp::Task<void> {
+            const auto answer = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                     "/mcp", body, first_id);
+            call_answered.set_value(answer.status);
+        },
+        asio::detached);
+    if (entered.wait_for(wait_bound) != std::future_status::ready) {
+        ADD_FAILURE() << "the blocking tool was not called";
+        finish();
+        return;
+    }
+
+    const json ping = {{"jsonrpc", "2.0"}, {"id", 4}, {"method", "ping"}};
+    asio::co_spawn(
+        io_ctx_,
+        [&, body = ping.dump()]() -> mcp::Task<void> {
+            auto answer = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                               body, second_id);
+            ping_answered.set_value(std::move(answer));
+        },
+        asio::detached);
+    auto ping_future = ping_answered.get_future();
+    const bool ping_ready = ping_future.wait_for(wait_bound) == std::future_status::ready;
+    const bool tool_returned = gate->returned.load();
+    gate->open();
+
+    EXPECT_TRUE(ping_ready) << "the ping waited for the other session's blocked tool";
+    EXPECT_FALSE(tool_returned);
+    if (ping_ready) {
+        const auto answer = ping_future.get();
+        EXPECT_EQ(answer.status, 200);
+        const auto body = json::parse(answer.body, nullptr, false);
+        EXPECT_TRUE(body.is_object() && body.contains("result")) << answer.body;
+    }
+    auto call_future = call_answered.get_future();
+    if (call_future.wait_for(wait_bound) == std::future_status::ready) {
+        EXPECT_EQ(call_future.get(), 200U);
+    } else {
+        ADD_FAILURE() << "the released tool call was not answered";
+    }
+    finish();
 }

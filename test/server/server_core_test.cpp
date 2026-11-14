@@ -1,3 +1,4 @@
+#include "../../src/detail/strand_executor.hpp"
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
@@ -31,6 +32,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -105,6 +107,21 @@ mcp::Task<void> verify_memory_transport_parse_recovery(
     {
         auto response_wire = co_await client_transport->read_message();
         responses->push_back(nlohmann::json::parse(response_wire));
+    }
+    client_transport->close();
+}
+
+/// Sends @p request_count pings, one after the answer to the last, then closes the transport.
+mcp::Task<void> ping_memory_transport(std::shared_ptr<mcp::ITransport> client_transport,
+                                      int request_count, std::vector<nlohmann::json>* responses) {
+    for (int id = 1; id <= request_count; ++id) {
+        const auto ping_wire = std::make_shared<const std::string>(
+            nlohmann::json{{"jsonrpc", "2.0"}, {"id", id}, {"method", "ping"}}.dump());
+        co_await client_transport->write_message(*ping_wire);
+        {
+            auto response_wire = co_await client_transport->read_message();
+            responses->push_back(nlohmann::json::parse(response_wire));
+        }
     }
     client_transport->close();
 }
@@ -613,6 +630,122 @@ TEST_F(ServerCoreTest, InvalidJsonRpcEnvelopesAreRejected) {
     }
 }
 
+namespace {
+
+/// Request envelopes the server refuses, each with the message its -32600 answer carries.
+std::vector<std::pair<nlohmann::json, std::string>> refused_envelopes() {
+    return {
+        {{{"id", 1}, {"method", "ping"}}, R"(jsonrpc must be "2.0")"},
+        {{{"jsonrpc", 2.0}, {"id", 1}, {"method", "ping"}}, R"(jsonrpc must be "2.0")"},
+        {{{"jsonrpc", "2.0 "}, {"id", 1}, {"method", "ping"}}, R"(jsonrpc must be "2.0")"},
+        {{{"jsonrpc", "2.0"}, {"id", 1.5}, {"method", "ping"}},
+         "JSON-RPC request id must be a string or integer"},
+        {{{"jsonrpc", "2.0"}, {"id", nullptr}, {"method", "ping"}},
+         "JSON-RPC request id must be a string or integer"},
+        {{{"jsonrpc", "2.0"}, {"id", 1}}, "JSON-RPC request method must be a string"},
+        {{{"jsonrpc", "2.0"}, {"id", 1}, {"method", 7}}, "JSON-RPC request method must be a string"},
+        {{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "ping"}, {"result", nullptr}},
+         "JSON-RPC request must not contain result or error"},
+        {{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "ping"}, {"error", {{"code", 1}}}},
+         "JSON-RPC request must not contain result or error"},
+        {{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "ping"}, {"params", nlohmann::json::array()}},
+         "MCP request params must be an object"},
+    };
+}
+
+}  // namespace
+
+TEST_F(ServerCoreTest, EachEnvelopeRefusalNamesWhatIsWrong) {
+    mcp::Server server({"test-server", "1.0"}, mcp::ServerCapabilities{});
+    for (const auto& [request, message] : refused_envelopes()) {
+        std::string wire;
+        boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(request),
+                              [&wire](const std::exception_ptr& error, std::string answer) {
+                                  if (!error) {
+                                      wire = std::move(answer);
+                                  }
+                              });
+        io_ctx_.restart();
+        io_ctx_.run();
+        const auto response = nlohmann::json::parse(wire);
+        EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_REQUEST) << request.dump();
+        EXPECT_EQ(response["error"]["message"], message) << request.dump();
+    }
+
+    // A null error is no error, so the request is served.
+    std::string wire;
+    boost::asio::co_spawn(io_ctx_,
+                          server.dispatch_request_direct(
+                              {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "ping"}, {"error", nullptr}}),
+                          [&wire](const std::exception_ptr& error, std::string answer) {
+                              if (!error) {
+                                  wire = std::move(answer);
+                              }
+                          });
+    io_ctx_.restart();
+    io_ctx_.run();
+    EXPECT_TRUE(nlohmann::json::parse(wire).contains("result")) << wire;
+}
+
+TEST_F(ServerCoreTest, SessionRefusesEachInvalidEnvelopeAndServesBothEras) {
+    mcp::Server server({"test-server", "1.0"}, mcp::ServerCapabilities{});
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    const auto refused = refused_envelopes();
+    const std::size_t expected = refused.size() + 2;
+
+    std::vector<nlohmann::json> responses;
+    raw_transport->set_on_write([&responses, raw_transport, expected](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        if (responses.size() == expected) {
+            raw_transport->close();
+        }
+    });
+    for (const auto& [request, message] : refused) {
+        raw_transport->enqueue_message(request.dump());
+    }
+    // A 2026-07-28 request, served without initialize, then a legacy one.
+    const nlohmann::json discover = {
+        {"jsonrpc", "2.0"},
+        {"id", "modern"},
+        {"method", "server/discover"},
+        {"params",
+         {{"_meta",
+           {{"io.modelcontextprotocol/protocolVersion", "2026-07-28"},
+            {"io.modelcontextprotocol/clientInfo", {{"name", "probe-client"}, {"version", "0.1"}}},
+            {"io.modelcontextprotocol/clientCapabilities", nlohmann::json::object()}}}}}};
+    raw_transport->enqueue_message(discover.dump());
+    raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"}, {"id", "legacy"}, {"method", "ping"}}.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), expected);
+    // Requests of a session can be answered in any order, so the answers are matched by content.
+    std::vector<std::string> refusal_messages;
+    std::vector<std::string> expected_messages;
+    for (const auto& [request, message] : refused) {
+        expected_messages.push_back(message);
+    }
+    for (auto& response : responses) {
+        if (response["id"] == "modern") {
+            EXPECT_EQ(response["result"]["resultType"], "complete") << response.dump();
+        } else if (response["id"] == "legacy") {
+            EXPECT_EQ(response["result"], nlohmann::json::object()) << response.dump();
+        } else {
+            EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_REQUEST) << response.dump();
+            refusal_messages.push_back(response["error"]["message"].get<std::string>());
+        }
+    }
+    std::sort(refusal_messages.begin(), refusal_messages.end());
+    std::sort(expected_messages.begin(), expected_messages.end());
+    EXPECT_EQ(refusal_messages, expected_messages);
+    EXPECT_FALSE(server.is_initialized());
+}
+
 TEST_F(ServerCoreTest, MalformedAndNonObjectMessagesReturnErrorsThenAcceptValidRequest) {
     mcp::Server server({"validation-server", "1.0"}, mcp::ServerCapabilities{});
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
@@ -699,6 +832,37 @@ TEST_F(ServerCoreTest, MemoryTransportRecoversFromMalformedJson) {
     EXPECT_FALSE(responses[0].contains("id"));
     EXPECT_EQ(responses[1]["id"], 7);
     EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
+}
+
+// A Server given a strand to run on, over memory transports on that same strand, reads, writes
+// and answers without any of those crossing to another strand.
+TEST_F(ServerCoreTest, ServesMemoryTransportsThatShareTheStrandItRunsOn) {
+    constexpr int request_count = 25;
+
+    mcp::Server server({"shared-strand-server", "1.0"}, mcp::ServerCapabilities{});
+    const auto strand = mcp::detail::make_strand_executor(io_ctx_.get_executor());
+    auto [server_transport, client_transport] = mcp::create_memory_transport_pair(strand);
+
+    std::vector<nlohmann::json> responses;
+    std::exception_ptr server_error;
+    std::exception_ptr client_error;
+    boost::asio::co_spawn(
+        io_ctx_, server.run(server_transport, strand),
+        [&server_error](std::exception_ptr error) { server_error = std::move(error); });
+    boost::asio::co_spawn(
+        strand, ping_memory_transport(client_transport, request_count, &responses),
+        [&client_error](std::exception_ptr error) { client_error = std::move(error); });
+
+    io_ctx_.run();
+
+    EXPECT_EQ(server_error, nullptr);
+    EXPECT_EQ(client_error, nullptr);
+    ASSERT_EQ(responses.size(), static_cast<std::size_t>(request_count));
+    for (int id = 1; id <= request_count; ++id) {
+        const auto& response = responses[static_cast<std::size_t>(id - 1)];
+        EXPECT_EQ(response["id"], id);
+        EXPECT_EQ(response["result"], nlohmann::json::object());
+    }
 }
 
 TEST_F(ServerCoreTest, ParameterDecodingErrorsRemainDistinctFromHandlerFailures) {

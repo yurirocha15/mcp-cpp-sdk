@@ -1,5 +1,7 @@
 #include "benchmark_workload.hpp"
 
+#include "benchmark_schemas.hpp"
+
 #include <curl/curl.h>
 #include <hiredis/hiredis.h>
 #include <nlohmann/json.hpp>
@@ -101,6 +103,15 @@ class HttpClient {
         }
     }
 
+    ~HttpClient() {
+        for (CURL* handle : idle_) {
+            curl_easy_cleanup(handle);
+        }
+    }
+
+    HttpClient(const HttpClient&) = delete;
+    HttpClient& operator=(const HttpClient&) = delete;
+
     std::string get(const std::string& path) const { return request(base_url_ + path, nullptr); }
 
     std::string post(const std::string& path, const std::string& body) const {
@@ -108,39 +119,78 @@ class HttpClient {
     }
 
    private:
-    static std::string request(const std::string& url, const std::string* body) {
-        thread_local std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> curl(curl_easy_init(),
-                                                                              &curl_easy_cleanup);
-        if (!curl) {
+    // Handles, each with the keep-alive connection it caches, are pooled across threads like the
+    // Redis connections below. A handle kept per thread opens and closes a connection per call in
+    // an SDK that runs each request on a new thread, and the closed connections' TIME_WAIT
+    // entries exhaust the container's ephemeral ports within a minute at full load.
+    struct Lease {
+        Lease(const HttpClient& client, CURL* handle) : owner(client), value(handle) {}
+        const HttpClient& owner;
+        CURL* value;
+        bool failed = false;
+        ~Lease() {
+            if (failed) {
+                curl_easy_cleanup(value);
+            } else {
+                owner.release(value);
+            }
+        }
+        Lease(const Lease&) = delete;
+        Lease& operator=(const Lease&) = delete;
+    };
+
+    CURL* acquire() const {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!idle_.empty()) {
+                CURL* handle = idle_.back();
+                idle_.pop_back();
+                return handle;
+            }
+        }
+        CURL* handle = curl_easy_init();
+        if (!handle) {
             throw std::runtime_error("curl_easy_init failed");
         }
+        return handle;
+    }
+
+    void release(CURL* handle) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        idle_.push_back(handle);
+    }
+
+    std::string request(const std::string& url, const std::string* body) const {
+        Lease lease{*this, acquire()};
+        CURL* curl = lease.value;
 
         std::string output;
-        curl_easy_reset(curl.get());
-        curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION, write_body);
-        curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &output);
-        curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT_MS, 10000L);
-        curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT_MS, 2000L);
-        curl_easy_setopt(curl.get(), CURLOPT_TCP_KEEPALIVE, 1L);
-        curl_easy_setopt(curl.get(), CURLOPT_NOSIGNAL, 1L);
+        curl_easy_reset(curl);
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_body);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &output);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 10000L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 2000L);
+        curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
         curl_slist* headers = nullptr;
         if (body) {
             headers = curl_slist_append(headers, "Content-Type: application/json");
-            curl_easy_setopt(curl.get(), CURLOPT_HTTPHEADER, headers);
-            curl_easy_setopt(curl.get(), CURLOPT_POST, 1L);
-            curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDS, body->data());
-            curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDSIZE, static_cast<long>(body->size()));
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+            curl_easy_setopt(curl, CURLOPT_POST, 1L);
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body->data());
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body->size()));
         }
 
-        const CURLcode status = curl_easy_perform(curl.get());
+        const CURLcode status = curl_easy_perform(curl);
         long response_code = 0;
-        curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &response_code);
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
         if (headers) {
             curl_slist_free_all(headers);
         }
         if (status != CURLE_OK) {
+            lease.failed = true;
             throw std::runtime_error(std::string("HTTP request failed: ") + curl_easy_strerror(status));
         }
         if (response_code < 200 || response_code >= 300) {
@@ -150,6 +200,8 @@ class HttpClient {
     }
 
     std::string base_url_;
+    mutable std::mutex mutex_;
+    mutable std::vector<CURL*> idle_;
 };
 
 struct RedisEndpoint {
@@ -206,6 +258,39 @@ class RedisClient {
     }
 
     void discard(const std::vector<std::string>& args) const { (void)command(args); }
+
+    /// Sends @p commands in one round trip and returns the integer reply of the first.
+    std::int64_t pipeline_first_integer(const std::vector<std::vector<std::string>>& commands) const {
+        Lease connection{*this, acquire()};
+        for (const auto& args : commands) {
+            std::vector<const char*> argv;
+            std::vector<std::size_t> lengths;
+            for (const auto& arg : args) {
+                argv.push_back(arg.data());
+                lengths.push_back(arg.size());
+            }
+            if (redisAppendCommandArgv(connection.value, static_cast<int>(argv.size()), argv.data(),
+                                       lengths.data()) != REDIS_OK) {
+                redisFree(connection.value);
+                connection.value = nullptr;
+                throw std::runtime_error("Redis command failed");
+            }
+        }
+        std::int64_t first = 0;
+        for (std::size_t i = 0; i < commands.size(); ++i) {
+            void* raw = nullptr;
+            if (redisGetReply(connection.value, &raw) != REDIS_OK) {
+                redisFree(connection.value);
+                connection.value = nullptr;
+                throw std::runtime_error("Redis command failed");
+            }
+            Reply reply(static_cast<redisReply*>(raw));
+            if (i == 0 && reply.value && reply.value->type == REDIS_REPLY_INTEGER) {
+                first = reply.value->integer;
+            }
+        }
+        return first;
+    }
 
    private:
     struct Reply {
@@ -348,10 +433,9 @@ class Workload::Impl {
                                  "&min_price=" + number(min_price) + "&max_price=" + number(max_price) +
                                  "&limit=" + std::to_string(limit);
 
-        auto search = pool_.submit([this, path] { return http_.get(path); });
         auto popular = pool_.submit(
             [this] { return redis_.string_array({"ZREVRANGE", "bench:popular", "0", "9"}); });
-        Json search_data = Json::parse(search.get());
+        Json search_data = Json::parse(http_.get(path));
         const auto popular_raw = popular.get();
 
         Json ids = Json::array();
@@ -405,12 +489,10 @@ class Workload::Impl {
 
         auto product = pool_.submit(
             [this, product_id] { return http_.get("/products/" + std::to_string(product_id)); });
-        auto history = pool_.submit([this, user_id] {
-            return redis_.string_array({"LRANGE", "bench:history:" + user_id, "0", "4"});
-        });
+        const auto history = redis_.string_array({"LRANGE", "bench:history:" + user_id, "0", "4"});
         (void)product.get();
         Json recent = Json::array();
-        for (const auto& entry : history.get()) {
+        for (const auto& entry : history) {
             Json parsed = Json::parse(entry, nullptr, false);
             recent.push_back(parsed.is_discarded() ? Json{{"raw", entry}} : std::move(parsed));
         }
@@ -439,18 +521,11 @@ class Workload::Impl {
 
         auto calculated = pool_.submit(
             [this, body = calculate.dump()] { return http_.post("/cart/calculate", body); });
-        auto rate =
-            pool_.submit([this, key = rate_key.str()] { return redis_.integer({"INCR", key}); });
-        auto history = pool_.submit([this, history_key, value = order_entry.dump()] {
-            redis_.discard({"RPUSH", history_key, value});
-        });
-        auto popularity = pool_.submit([this, product_id] {
-            redis_.discard({"ZINCRBY", "bench:popular", "1", "product:" + std::to_string(product_id)});
-        });
+        const auto rate_count = redis_.pipeline_first_integer(
+            {{"INCR", rate_key.str()},
+             {"RPUSH", history_key, order_entry.dump()},
+             {"ZINCRBY", "bench:popular", "1", "product:" + std::to_string(product_id)}});
         Json calc = Json::parse(calculated.get());
-        const auto rate_count = rate.get();
-        history.get();
-        popularity.get();
         return {{"order_id", calc.value("order_id", order_entry["order_id"].get<std::string>())},
                 {"user_id", user_id},
                 {"total", calc.value("total", 0.0)},
@@ -474,16 +549,7 @@ std::string Workload::invoke(const std::string& tool_name, const std::string& ar
 }
 
 std::string Workload::input_schema(const std::string& tool_name) {
-    if (tool_name == "search_products") {
-        return R"({"type":"object","properties":{"category":{"type":"string"},"min_price":{"type":"number"},"max_price":{"type":"number"},"limit":{"type":"integer"}}})";
-    }
-    if (tool_name == "get_user_cart") {
-        return R"({"type":"object","properties":{"user_id":{"type":"string"}}})";
-    }
-    if (tool_name == "checkout") {
-        return R"({"type":"object","properties":{"user_id":{"type":"string"},"items":{"type":"array","items":{"type":"object","properties":{"product_id":{"type":"integer"},"quantity":{"type":"integer"}},"required":["product_id","quantity"]}}}})";
-    }
-    throw std::invalid_argument("unknown benchmark tool: " + tool_name);
+    return tool_input_schema(tool_name);
 }
 
 }  // namespace mcp_benchmark

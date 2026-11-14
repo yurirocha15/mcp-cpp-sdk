@@ -82,7 +82,7 @@ class ServerModernEraTest : public ::testing::Test {
                                {"version", meta->protocolVersion},
                                {"client", meta->clientInfo ? meta->clientInfo->name : ""},
                                {"roots", meta->clientCapabilities.roots.has_value()},
-                               {"meta", meta->meta}};
+                               {"meta", *meta->meta}};
             });
         server->add_tool<json, json>("log", "Logs one message at each of error and debug",
                                      json{{"type", "object"}},
@@ -220,6 +220,91 @@ TEST_F(ServerModernEraTest, ToolsListWithoutInitialize) {
     EXPECT_FALSE(server->is_initialized());
 }
 
+// The members 2026-07-28 adds to a result are written around a result that has no `_meta` and
+// inserted into one that has: either way the text is what dump() writes for the result holding
+// them, and members the result already has keep their values.
+TEST_F(ServerModernEraTest, ResultMembersOfTheRevisionAreAddedOnlyWhereAbsent) {
+    const auto wire_of = [this](mcp::Server& server, json request) {
+        std::string wire;
+        boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(std::move(request)),
+                              [&wire](std::exception_ptr error, std::string text) {
+                                  EXPECT_EQ(error, nullptr);
+                                  wire = std::move(text);
+                              });
+        io_ctx_.restart();
+        io_ctx_.run();
+        return wire;
+    };
+    const auto call = [](int id, std::string_view name) {
+        return make_modern_request(id, "tools/call",
+                                   json{{"name", name}, {"arguments", json::object()}});
+    };
+    const json server_info = {{"name", "modern-server"}, {"version", "1.0"}};
+    for (const bool report : {true, false}) {
+        auto server = make_server();
+        server->set_report_server_info(report);
+        server->set_cache_hints(mcp::CacheTarget::eToolsList,
+                                mcp::CacheHint{1500, mcp::CacheScope::ePublic});
+        mcp::Tool bare;
+        bare.name = "bare";
+        bare.inputSchema = json{{"type", "object"}};
+        server->add_raw_tool(bare,
+                             [](const json&) -> json { return mcp::make_tool_text_result("text"); });
+        mcp::Tool own_members = bare;
+        own_members.name = "own-members";
+        server->add_raw_tool(own_members, [](const json&) -> json {
+            json result = mcp::make_tool_text_result("text");
+            result["_meta"] = {{"a", 1}, {"z", "last"}};
+            result["resultType"] = "complete";
+            return result;
+        });
+
+        for (const auto& [id, name] :
+             std::vector<std::pair<int, std::string>>{{1, "bare"}, {2, "own-members"}}) {
+            const auto wire = wire_of(*server, call(id, name));
+            const auto parsed = json::parse(wire);
+            EXPECT_EQ(wire, parsed.dump()) << wire;
+            const auto& result = parsed.at("result");
+            EXPECT_EQ(result.at("resultType"), "complete") << wire;
+            EXPECT_EQ(result.at("content").at(0).at("text"), "text") << wire;
+            if (name == "own-members") {
+                EXPECT_EQ(result.at("_meta").at("a"), 1) << wire;
+                EXPECT_EQ(result.at("_meta").at("z"), "last") << wire;
+            }
+            if (report) {
+                EXPECT_EQ(result.at("_meta").at("io.modelcontextprotocol/serverInfo"), server_info)
+                    << wire;
+            } else {
+                EXPECT_EQ(result.contains("_meta"), name == "own-members") << wire;
+            }
+        }
+        const auto list = wire_of(*server, make_modern_request(3, "tools/list"));
+        const auto parsed = json::parse(list);
+        EXPECT_EQ(list, parsed.dump()) << list;
+        EXPECT_EQ(parsed.at("result").at("ttlMs"), 1500) << list;
+        EXPECT_EQ(parsed.at("result").at("cacheScope"), "public") << list;
+        EXPECT_EQ(parsed.at("result").at("resultType"), "complete") << list;
+        EXPECT_EQ(parsed.at("result").contains("_meta"), report) << list;
+
+        // Text that is not UTF-8 cannot be written, with or without a `_meta` of its own.
+        for (const bool own_meta : {false, true}) {
+            mcp::Tool broken = bare;
+            broken.name = own_meta ? "broken-with-meta" : "broken";
+            server->add_raw_tool(broken, [own_meta](const json&) -> json {
+                json result = mcp::make_tool_text_result(std::string("ok\xC3"));
+                if (own_meta) {
+                    result["_meta"] = json::object();
+                }
+                return result;
+            });
+            const auto answer = json::parse(wire_of(*server, call(4, broken.name)));
+            EXPECT_EQ(answer.at("error").at("code"), mcp::g_INTERNAL_ERROR) << answer;
+            EXPECT_EQ(answer.at("error").at("message"), "The result could not be encoded as JSON")
+                << answer;
+        }
+    }
+}
+
 TEST_F(ServerModernEraTest, EveryModernMethodIsServedWithoutInitialize) {
     auto server = make_server();
     std::vector<json> requests = {
@@ -267,6 +352,7 @@ TEST_F(ServerModernEraTest, HandlersReadTheRequestsPerRequestFields) {
     EXPECT_EQ(seen["meta"]["traceparent"], meta["traceparent"]);
     EXPECT_EQ(seen["meta"]["tracestate"], "vendor=value");
     EXPECT_EQ(seen["meta"]["baggage"], "user=alice");
+    EXPECT_EQ(seen["meta"], meta);
 
     auto resource =
         dispatch(*server, make_modern_request(2, "resources/read", {{"uri", "test://doc"}}));
@@ -858,6 +944,27 @@ TEST_F(ServerModernEraTest, EveryModernResultIsCompleteAndNamesTheServer) {
                   (json{{"name", "modern-server"}, {"version", "1.0"}}))
             << request["method"];
     }
+}
+
+TEST_F(ServerModernEraTest, ReportedServerInfoCarriesEveryFieldOfTheImplementation) {
+    mcp::Implementation info{"described-server", "2.1"};
+    info.title = "Described Server";
+    info.description = "A server with every optional field";
+    info.websiteUrl = "https://example.com";
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    mcp::Server server(info, caps);
+    for (int id = 1; id <= 2; ++id) {
+        auto response = dispatch(server, make_modern_request(id, "tools/list"));
+        ASSERT_TRUE(response.contains("result")) << response;
+        EXPECT_EQ(response["result"]["_meta"]["io.modelcontextprotocol/serverInfo"], json(info));
+    }
+}
+
+TEST(RequestMetadataTest, DefaultMetaIsAnEmptyObject) {
+    const mcp::RequestMetadata metadata;
+    ASSERT_NE(metadata.meta, nullptr);
+    EXPECT_EQ(*metadata.meta, json::object());
 }
 
 TEST_F(ServerModernEraTest, CacheableResultsCarryTheDefaultHints) {

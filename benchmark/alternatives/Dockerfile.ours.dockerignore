@@ -8,6 +8,8 @@
 !include/**
 !src/
 !src/**
+!third_party/
+!third_party/**
 !benchmark/
 benchmark/*
 !benchmark/alternatives/

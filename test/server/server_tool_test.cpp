@@ -1,6 +1,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../../src/protocol/schema_cache.hpp"
 #include "mcp/protocol/schema.hpp"
 #include "mcp/server/server.hpp"
 
@@ -11,6 +12,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -575,6 +577,299 @@ TEST(ServerToolSchema, RefusedToolIsNotRegistered) {
     EXPECT_NO_THROW(server.add_raw_tool(tool_with_input({{"type", "object"}}), raw_result));
     EXPECT_THROW(server.add_raw_tool(tool_with_input({{"type", "object"}}), raw_result),
                  std::invalid_argument);
+}
+
+namespace {
+
+/// The answer to a tools/list sent straight to @p server, outside any session.
+nlohmann::json list_tools_directly(mcp::Server& server) {
+    boost::asio::io_context io_ctx;
+    nlohmann::json response;
+    boost::asio::co_spawn(io_ctx,
+                          server.dispatch_request_direct({{"jsonrpc", "2.0"},
+                                                          {"id", 1},
+                                                          {"method", "tools/list"},
+                                                          {"params", nlohmann::json::object()}}),
+                          [&response](std::exception_ptr error, std::string wire) {
+                              EXPECT_EQ(error, nullptr);
+                              if (!error) {
+                                  response = nlohmann::json::parse(wire);
+                              }
+                          });
+    io_ctx.run();
+    return response;
+}
+
+mcp::Tool named_tool(std::string name, std::string description = "a tool") {
+    mcp::Tool tool;
+    tool.name = std::move(name);
+    tool.description = std::move(description);
+    tool.inputSchema = {{"type", "object"}, {"properties", {{"n", {{"type", "integer"}}}}}};
+    return tool;
+}
+
+}  // namespace
+
+TEST(ServerToolsList, ListsEachRegisteredToolAsItSerializes) {
+    auto server = make_tool_server();
+    EXPECT_EQ(list_tools_directly(server)["result"]["tools"], nlohmann::json::array());
+
+    const auto first = named_tool("first");
+    server.add_raw_tool(first, raw_result);
+    EXPECT_EQ(list_tools_directly(server)["result"]["tools"], nlohmann::json::array({first}));
+
+    // A tool registered after a list is in the next one, after the tools already there.
+    auto second = named_tool("second");
+    second.outputSchema = nlohmann::json{{"type", "object"}};
+    server.add_raw_tool(second, raw_result);
+    EXPECT_EQ(list_tools_directly(server)["result"]["tools"], nlohmann::json::array({first, second}));
+    EXPECT_EQ(list_tools_directly(server)["result"]["tools"], nlohmann::json::array({first, second}));
+}
+
+// Servers that register the same schema share its compiled form and list the tool from it, so each
+// must still list the schemas it was given, written as given: 1 and 1.0 are different texts. The
+// listing of a page is built apart from the listing of every tool and is checked too.
+TEST(ServerToolsList, ListsTheSchemasEachServerWasGiven) {
+    const nlohmann::json whole = {{"type", "object"}, {"maxProperties", 1}};
+    const nlohmann::json fraction = {{"type", "object"}, {"maxProperties", 1.0}};
+    const nlohmann::json output = {{"type", "object"}, {"minProperties", 0}};
+    const auto handler = [](const nlohmann::json&) { return nlohmann::json::object(); };
+    const auto listed = [](mcp::Server& server, std::size_t index) {
+        return list_tools_directly(server)["result"]["tools"].at(index);
+    };
+
+    auto first = make_tool_server();
+    auto second = make_tool_server();
+    first.add_tool<nlohmann::json, nlohmann::json>("t", "d", whole, handler);
+    second.add_tool<nlohmann::json, nlohmann::json>("t", "d", fraction, output, handler);
+    second.add_tool("plain", "d", whole, handler);
+    EXPECT_EQ(listed(first, 0)["inputSchema"].dump(), whole.dump());
+    EXPECT_FALSE(listed(first, 0).contains("outputSchema"));
+    EXPECT_EQ(listed(second, 0)["inputSchema"].dump(), fraction.dump());
+    EXPECT_EQ(listed(second, 0)["outputSchema"].dump(), output.dump());
+    EXPECT_EQ(listed(second, 1)["inputSchema"].dump(), whole.dump());
+
+    auto raw = named_tool("raw");
+    raw.outputSchema = output;
+    second.add_raw_tool(raw, raw_result);
+    second.set_page_size(2);
+    const auto page = list_tools_directly(second)["result"];
+    ASSERT_TRUE(page.contains("nextCursor")) << page.dump();
+    EXPECT_EQ(page["tools"].at(0)["outputSchema"].dump(), output.dump());
+    EXPECT_EQ(page["tools"].at(1)["inputSchema"].dump(), whole.dump());
+    second.set_page_size(0);
+    EXPECT_EQ(listed(second, 2), nlohmann::json(raw));
+}
+
+// The listing writes each schema from a text shared between servers, spliced in where a
+// placeholder string stands for it. A tool whose own members hold that placeholder text is still
+// listed as it serializes.
+TEST(ServerToolsList, ToolHoldingThePlaceholderTextIsListedAsItSerializes) {
+    auto server = make_tool_server();
+    auto input_text = named_tool("input_text", "\x01mcp-input-schema");
+    auto output_text = named_tool("output_text");
+    output_text.title = "\x01mcp-output-schema";
+    output_text.outputSchema = nlohmann::json{{"type", "object"}};
+    auto both = named_tool("both", "\x01mcp-input-schema");
+    both.title = "\x01mcp-output-schema";
+    both.outputSchema = nlohmann::json{{"type", "object"}, {"title", "\x01mcp-input-schema"}};
+    for (const auto* tool : {&input_text, &output_text, &both}) {
+        server.add_raw_tool(*tool, raw_result);
+    }
+    EXPECT_EQ(list_tools_directly(server)["result"]["tools"],
+              nlohmann::json::array({input_text, output_text, both}));
+
+    auto other = make_tool_server();
+    other.add_raw_tool(both, raw_result);
+    other.add_raw_tool(named_tool("plain"), raw_result);
+    EXPECT_EQ(list_tools_directly(other)["result"]["tools"],
+              nlohmann::json::array({both, named_tool("plain")}));
+}
+
+namespace {
+
+/// The text of a tools/list answer sent straight to @p server.
+std::string list_tools_wire(mcp::Server& server, nlohmann::json params = nlohmann::json::object()) {
+    boost::asio::io_context io_ctx;
+    std::string answer;
+    boost::asio::co_spawn(
+        io_ctx,
+        server.dispatch_request_direct(
+            {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/list"}, {"params", std::move(params)}}),
+        [&answer](std::exception_ptr error, std::string wire) {
+            EXPECT_EQ(error, nullptr);
+            answer = std::move(wire);
+        });
+    io_ctx.run();
+    return answer;
+}
+
+/// Schemas whose documents differ only in how a number or a string is written, or in the order
+/// their keys were given: each is its own text.
+std::vector<nlohmann::json> look_alike_schemas() {
+    const auto with = [](const char* key, nlohmann::json value) {
+        nlohmann::json schema = {{"type", "object"}};
+        schema[key] = std::move(value);
+        return schema;
+    };
+    return {
+        with("maxProperties", 1),
+        with("maxProperties", 1.0),
+        with("maxProperties", std::uint64_t{1}),
+        with("const", 0.0),
+        with("const", -0.0),
+        with("const", -1),
+        with("const", std::numeric_limits<std::uint64_t>::max()),
+        with("const", 1e300),
+        with("title", "h\xc3\xa9llo \xf0\x9f\x98\x80 \"q\" \\ \x01"),
+        with("title", "h\\u00e9llo"),
+        nlohmann::json::parse(
+            R"({"type": "object", "properties": {"z": {"minimum": 2.50}, "é": {}, "a": {}}})"),
+    };
+}
+
+}  // namespace
+
+// Servers alive at the same time, each with one of several schemas that a looser comparison would
+// take for one another, list every tool exactly as the tool serializes, byte for byte, both in a
+// listing of every tool and in a listing of one page; no schema text is taken from another server.
+TEST(ServerToolsList, ListingIsTheToolsOwnTextForEverySchemaForm) {
+    const auto schemas = look_alike_schemas();
+    std::vector<std::unique_ptr<mcp::Server>> servers;
+    std::vector<std::vector<mcp::Tool>> registered;
+    for (int round = 0; round < 2; ++round) {
+        for (std::size_t index = 0; index < schemas.size(); ++index) {
+            mcp::ServerCapabilities caps;
+            caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+            auto server =
+                std::make_unique<mcp::Server>(mcp::Implementation{"schema-server", "1.0"}, caps);
+            auto tool = named_tool("t", "d\xc3\xa9");
+            tool.inputSchema = schemas[index];
+            auto with_output = named_tool("with_output");
+            with_output.outputSchema = schemas[(index + 1) % schemas.size()];
+            server->add_raw_tool(tool, raw_result);
+            server->add_raw_tool(with_output, raw_result);
+            servers.push_back(std::move(server));
+            registered.push_back({tool, with_output});
+        }
+    }
+    for (std::size_t index = 0; index < servers.size(); ++index) {
+        const auto& tools = registered[index];
+        SCOPED_TRACE(tools[0].inputSchema.dump());
+        const auto all = list_tools_wire(*servers[index]);
+        EXPECT_NE(all.find(R"("tools":[)" + nlohmann::json(tools[0]).dump() + "," +
+                           nlohmann::json(tools[1]).dump() + "]"),
+                  std::string::npos)
+            << all;
+        servers[index]->set_page_size(1);
+        const auto first_page = list_tools_wire(*servers[index]);
+        EXPECT_NE(first_page.find(R"("tools":[)" + nlohmann::json(tools[0]).dump() + "]"),
+                  std::string::npos)
+            << first_page;
+        const auto second_page = list_tools_wire(*servers[index], {{"cursor", "1"}});
+        EXPECT_NE(second_page.find(R"("tools":[)" + nlohmann::json(tools[1]).dump() + "]"),
+                  std::string::npos)
+            << second_page;
+    }
+}
+
+// Servers alive at once whose tools share one schema, and so its listed text, but differ in any
+// other member, a number's spelling in `_meta` included, each list their own tool.
+TEST(ServerToolsList, ToolsSharingASchemaListTheirOwnMembers) {
+    std::vector<mcp::Tool> variants;
+    for (const auto& meta : look_alike_schemas()) {
+        auto tool = named_tool("t");
+        tool.meta = meta;
+        variants.push_back(tool);
+    }
+    auto titled = named_tool("t");
+    titled.title = "T";
+    variants.push_back(titled);
+    auto annotated = named_tool("t");
+    annotated.annotations = mcp::ToolAnnotations{};
+    annotated.annotations->readOnlyHint = true;
+    variants.push_back(annotated);
+    variants.push_back(named_tool("t", "another description"));
+    variants.push_back(named_tool("t"));
+
+    std::vector<std::unique_ptr<mcp::Server>> servers;
+    for (int round = 0; round < 2; ++round) {
+        for (const auto& tool : variants) {
+            mcp::ServerCapabilities caps;
+            caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+            servers.push_back(
+                std::make_unique<mcp::Server>(mcp::Implementation{"schema-server", "1.0"}, caps));
+            servers.back()->add_raw_tool(tool, raw_result);
+        }
+    }
+    for (std::size_t index = 0; index < servers.size(); ++index) {
+        const auto& tool = variants[index % variants.size()];
+        const auto wire = list_tools_wire(*servers[index]);
+        EXPECT_NE(wire.find(R"("tools":[)" + nlohmann::json(tool).dump() + "]"), std::string::npos)
+            << wire;
+    }
+}
+
+// What servers share for a schema is held only by the servers that registered or listed it: once
+// they are gone, nothing keeps the compiled schema, its header annotations or its listed text,
+// each of which holds the compiled schema.
+TEST(ServerToolsList, SharedSchemaFormsGoWithTheirLastServer) {
+    const nlohmann::json schema = {
+        {"type", "object"},
+        {"properties", {{"region", {{"type", "string"}, {"x-mcp-header", "Region"}}}}},
+        {"title", "held only by its servers"}};
+    const auto handler = [](const nlohmann::json&) { return nlohmann::json::object(); };
+    const auto before = mcp::detail::compiled_schema_cache_live_entries();
+    {
+        auto first = make_tool_server();
+        auto second = make_tool_server();
+        for (auto* server : {&first, &second}) {
+            server->add_tool<nlohmann::json, nlohmann::json>("t", "d", schema, schema, handler);
+            EXPECT_NE(list_tools_wire(*server).find(schema.dump()), std::string::npos);
+        }
+        EXPECT_EQ(mcp::detail::compiled_schema_cache_live_entries(), before + 1);
+    }
+    EXPECT_EQ(mcp::detail::compiled_schema_cache_live_entries(), before);
+
+    // A server built after the others are gone compiles, reads and writes the schema again.
+    auto again = make_tool_server();
+    again.add_tool<nlohmann::json, nlohmann::json>("t", "d", schema, handler);
+    EXPECT_NE(list_tools_wire(again).find(schema.dump()), std::string::npos);
+    EXPECT_EQ(mcp::detail::compiled_schema_cache_live_entries(), before + 1);
+}
+
+// A schema that cannot be written as JSON text fails the listing of its own server every time, and
+// never the listing of a server whose schema differs from it.
+TEST(ServerToolsList, UnwritableSchemaFailsOnlyItsOwnServer) {
+    const nlohmann::json unwritable = {{"type", "object"}, {"title", std::string("bad \xff text")}};
+    const nlohmann::json writable = {{"type", "object"}, {"title", "bad text"}};
+    auto broken = make_tool_server();
+    auto fine = make_tool_server();
+    broken.add_raw_tool(tool_with_input(unwritable), raw_result);
+    fine.add_raw_tool(tool_with_input(writable), raw_result);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto failed = nlohmann::json::parse(list_tools_wire(broken));
+        ASSERT_TRUE(failed.contains("error")) << failed.dump();
+        EXPECT_EQ(failed["error"]["code"], mcp::g_INTERNAL_ERROR);
+        EXPECT_NE(list_tools_wire(fine).find(writable.dump()), std::string::npos);
+    }
+}
+
+TEST(ServerToolsList, ToolThatCannotBeSerializedFailsEveryList) {
+    auto server = make_tool_server();
+    server.add_raw_tool(named_tool("plain"), raw_result);
+    server.add_raw_tool(named_tool("broken", std::string("\xff\xfe")), raw_result);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto response = list_tools_directly(server);
+        ASSERT_TRUE(response.contains("error")) << response.dump();
+        EXPECT_EQ(response["error"]["code"], mcp::g_INTERNAL_ERROR);
+    }
+
+    // A later registration builds the list again, and it still holds the tool.
+    server.add_raw_tool(named_tool("later"), raw_result);
+    const auto response = list_tools_directly(server);
+    ASSERT_TRUE(response.contains("error")) << response.dump();
+    EXPECT_EQ(response["error"]["code"], mcp::g_INTERNAL_ERROR);
 }
 
 namespace {

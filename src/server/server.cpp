@@ -6,8 +6,10 @@
 #include "../detail/peer_json.hpp"
 #include "../detail/request_meta.hpp"
 #include "../detail/spawn_awaitable.hpp"
+#include "../detail/strand_executor.hpp"
 #include "mrtr.hpp"
 
+#include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
 #include <mcp/protocol/schema.hpp>
@@ -37,10 +39,12 @@
 #include <boost/asio/use_awaitable.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <map>
 #include <memory>
@@ -48,6 +52,7 @@
 #include <optional>
 #include <ranges>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -59,12 +64,67 @@ namespace mcp {
 
 namespace {
 
+/// The arguments a tool's input schema mirrors into `Mcp-Param-*` headers, with the compiled schema
+/// they were read from.
+struct ToolParamHeaders {
+    CompiledSchema schema;
+    std::vector<detail::ParamHeader> headers;
+};
+
+/// A schema as tools/list writes it, with the compiled schema it was written from.
+struct ListedSchemaText {
+    CompiledSchema schema;
+    std::string text;
+};
+
 struct CompiledToolSchemas {
     CompiledSchema input;
     std::optional<CompiledSchema> output;
-    /// The arguments the input schema mirrors into `Mcp-Param-*` headers.
-    std::vector<detail::ParamHeader> param_headers;
+    std::shared_ptr<const ToolParamHeaders> param_headers;
 };
+
+/// What is derived from a compiled schema, by the identity of its compiled form. CompiledSchema
+/// returns one shared compiled form for a repeat of a schema, so servers built per session that
+/// register the same tools derive each value once. An entry is held weakly: while it is alive it
+/// holds its compiled schema, so the address it is found by cannot be reused by another schema, and
+/// it goes with the last holder.
+template <typename Derived>
+class BySchemaCache {
+   public:
+    std::shared_ptr<const Derived> find(const CompiledSchema& schema) {
+        std::lock_guard lock(mutex_);
+        const auto entry = entries_.find(&schema.schema());
+        return entry == entries_.end() ? nullptr : entry->second.lock();
+    }
+
+    void insert(const std::shared_ptr<const Derived>& derived) {
+        std::lock_guard lock(mutex_);
+        if (entries_.size() >= g_max_entries) {
+            std::erase_if(entries_, [](const auto& entry) { return entry.second.expired(); });
+            if (entries_.size() >= g_max_entries) {
+                return;
+            }
+        }
+        entries_.insert_or_assign(&derived->schema.schema(), derived);
+    }
+
+   private:
+    /// As many as CompiledSchema keeps, so every schema it shares can be found.
+    static constexpr std::size_t g_max_entries = 256;
+
+    std::mutex mutex_;
+    std::unordered_map<const nlohmann::json*, std::weak_ptr<const Derived>> entries_;
+};
+
+BySchemaCache<ToolParamHeaders>& tool_param_headers_cache() {
+    static BySchemaCache<ToolParamHeaders> cache;
+    return cache;
+}
+
+BySchemaCache<ListedSchemaText>& listed_schema_text_cache() {
+    static BySchemaCache<ListedSchemaText> cache;
+    return cache;
+}
 
 /// Throws when the `structuredContent` of @p result does not conform to @p schema; the dispatcher
 /// answers that with g_INTERNAL_ERROR, since the tool broke its own declared contract.
@@ -114,14 +174,15 @@ std::optional<nlohmann::json> argument_rejection(const CompiledSchema& schema,
     return nlohmann::json(make_tool_error_result(std::move(text)));
 }
 
-/// Compiles @p tool's schemas, refusing the tool when either is not a JSON Schema the SDK can use.
-/// Tool arguments are always objects, so the input schema must also declare `"type": "object"`,
-/// as the 2025-11-25 and 2026-07-28 schemas require, and its `x-mcp-header` annotations must meet
-/// the constraints 2026-07-28 sets on them.
-CompiledToolSchemas compile_tool_schemas(const Tool& tool) {
-    const auto refuse = [&tool](SchemaError::Category category, std::string_view field,
+/// Compiles the schemas of the tool @p name, refusing the tool when either is not a JSON Schema the
+/// SDK can use. Tool arguments are always objects, so the input schema must also declare
+/// `"type": "object"`, as the 2025-11-25 and 2026-07-28 schemas require, and its `x-mcp-header`
+/// annotations must meet the constraints 2026-07-28 sets on them.
+CompiledToolSchemas compile_tool_schemas(const std::string& name, const nlohmann::json& input_schema,
+                                         const nlohmann::json* output_schema) {
+    const auto refuse = [&name](SchemaError::Category category, std::string_view field,
                                 std::string_view problem) {
-        return SchemaError(category, "Tool '" + detail::sanitize_for_diagnostics(tool.name) + "' " +
+        return SchemaError(category, "Tool '" + detail::sanitize_for_diagnostics(name) + "' " +
                                          std::string(field) + ": " + std::string(problem));
     };
     const auto compile = [&](const nlohmann::json& schema, std::string_view field) {
@@ -136,25 +197,47 @@ CompiledToolSchemas compile_tool_schemas(const Tool& tool) {
     };
 
     // Checked before the schema is compiled, which reports a pattern it cannot use only once it
-    // has found no other problem.
-    if (!tool.inputSchema.is_object()) {
+    // has found no other problem; the same goes for the x-mcp-header annotations.
+    if (!input_schema.is_object()) {
         throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema", "must be a JSON object");
     }
-    const auto type = tool.inputSchema.find("type");
-    if (type == tool.inputSchema.end() || *type != "object") {
+    const auto type = input_schema.find("type");
+    if (type == input_schema.end() || *type != "object") {
         throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema",
                      R"(must declare "type": "object")");
     }
-    std::vector<detail::ParamHeader> param_headers;
+    std::optional<CompiledSchema> compiled;
+    std::optional<SchemaError> compile_error;
     try {
-        param_headers = detail::collect_param_headers(tool.inputSchema);
-    } catch (const std::invalid_argument& error) {
-        throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema", error.what());
+        compiled = CompiledSchema::compile(input_schema);
+    } catch (const SchemaError& error) {
+        compile_error = refuse(error.category(), "inputSchema", error.what());
     }
-    auto input = compile(tool.inputSchema, "inputSchema");
+    std::shared_ptr<const ToolParamHeaders> param_headers;
+    if (compiled) {
+        param_headers = tool_param_headers_cache().find(*compiled);
+    }
+    if (!param_headers) {
+        try {
+            auto headers = detail::collect_param_headers(input_schema);
+            if (compiled) {
+                param_headers = std::make_shared<const ToolParamHeaders>(
+                    ToolParamHeaders{*compiled, std::move(headers)});
+            }
+        } catch (const std::invalid_argument& error) {
+            throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema", error.what());
+        }
+        if (param_headers) {
+            tool_param_headers_cache().insert(param_headers);
+        }
+    }
+    if (compile_error) {
+        throw *compile_error;
+    }
+    auto input = std::move(*compiled);
     std::optional<CompiledSchema> output;
-    if (tool.outputSchema) {
-        output = compile(*tool.outputSchema, "outputSchema");
+    if (output_schema != nullptr) {
+        output = compile(*output_schema, "outputSchema");
     }
     return {std::move(input), std::move(output), std::move(param_headers)};
 }
@@ -438,7 +521,7 @@ UriTemplatePattern compile_uri_template(std::string_view uri_template) {
 }
 
 // Before 2026-07-28 structuredContent is an object; a 2026-07-28 response may hold any JSON value.
-void validate_call_tool_result(const nlohmann::json& result, bool modern) {
+void validate_call_tool_result(const nlohmann::json& result, bool modern, bool decode = true) {
     if (!result.is_object() || !result.contains("content")) {
         throw std::invalid_argument("Raw tool result must be a CallToolResult object with content");
     }
@@ -450,7 +533,9 @@ void validate_call_tool_result(const nlohmann::json& result, bool modern) {
         throw std::invalid_argument("CallToolResult _meta must be a JSON object");
     }
 
-    static_cast<void>(result.get<CallToolResult>());
+    if (decode) {
+        static_cast<void>(result.get<CallToolResult>());
+    }
 }
 
 // Whether a handler's value is already a serialized CallToolResult: an object made only of
@@ -489,7 +574,7 @@ nlohmann::json normalize_structured_tool_result(nlohmann::json result, bool mode
     if (result.is_string()) {
         return nlohmann::json(make_tool_text_result(result.get<std::string>()));
     }
-    return nlohmann::json(make_tool_text_result(result.dump()));
+    return nlohmann::json(make_tool_text_result(mcp::detail::dump_json(result)));
 }
 
 /// The `_meta` of a message that belongs to the subscriptions/listen request with id @p listen_id.
@@ -515,6 +600,42 @@ Params deserialize_request_params(const nlohmann::json& message, std::string_vie
     }
 }
 
+/// The members of a tools/call's params, read in place. The checks, and the exceptions they throw,
+/// are those of decoding the params into a CallToolParams.
+struct CallToolView {
+    const std::string* name;
+    const nlohmann::json* arguments;
+    const nlohmann::json* meta;
+};
+
+CallToolView view_call_tool_params(const nlohmann::json& message) {
+    static const nlohmann::json no_arguments = nlohmann::json::object();
+    try {
+        const auto& params = message.at("params");
+        const auto& name = params.at("name");
+        if (!name.is_string()) {
+            // Throws the type error that decoding the name does.
+            static_cast<void>(name.get<std::string>());
+        }
+        const nlohmann::json* arguments = &no_arguments;
+        if (params.contains("arguments")) {
+            if (!params.at("arguments").is_object()) {
+                throw std::invalid_argument("CallToolParams arguments must be a JSON object");
+            }
+            arguments = &params.at("arguments");
+        }
+        const nlohmann::json* meta = nullptr;
+        if (detail::has_json_value(params, "_meta")) {
+            meta = &params.at("_meta");
+        }
+        return {&name.get_ref<const std::string&>(), arguments, meta};
+    } catch (const nlohmann::json::exception& error) {
+        throw InvalidParamsError("Invalid tools/call params: " + std::string(error.what()));
+    } catch (const std::invalid_argument& error) {
+        throw InvalidParamsError("Invalid tools/call params: " + std::string(error.what()));
+    }
+}
+
 bool has_valid_request_id(const nlohmann::json& message) {
     return message.contains("id") && detail::is_request_id(message.at("id"));
 }
@@ -526,24 +647,33 @@ bool has_error_member(const nlohmann::json& message) {
     return message.contains("error") && !message.at("error").is_null();
 }
 
+/// Whether @p message, an object, has `"jsonrpc": "2.0"`.
+bool has_jsonrpc_2(const nlohmann::json& message) {
+    const auto version = message.find("jsonrpc");
+    return version != message.end() && version->is_string() &&
+           version->get_ref<const nlohmann::json::string_t&>() == "2.0";
+}
+
+// Runs on every request, twice on the way to its handler, so each member is looked up once.
 const char* validate_request_envelope(const nlohmann::json& message) {
     if (!message.is_object()) {
         return "JSON-RPC request must be an object";
     }
-    if (!message.contains("jsonrpc") || !message.at("jsonrpc").is_string() ||
-        message.at("jsonrpc") != "2.0") {
+    if (!has_jsonrpc_2(message)) {
         return "jsonrpc must be \"2.0\"";
     }
-    if (!has_valid_request_id(message)) {
+    const auto end = message.end();
+    if (const auto id = message.find("id"); id == end || !detail::is_request_id(*id)) {
         return "JSON-RPC request id must be a string or integer";
     }
-    if (!message.contains("method") || !message.at("method").is_string()) {
+    if (const auto method = message.find("method"); method == end || !method->is_string()) {
         return "JSON-RPC request method must be a string";
     }
-    if (message.contains("result") || has_error_member(message)) {
+    if (const auto error = message.find("error");
+        message.contains("result") || (error != end && !error->is_null())) {
         return "JSON-RPC request must not contain result or error";
     }
-    if (message.contains("params") && !message.at("params").is_object()) {
+    if (const auto params = message.find("params"); params != end && !params->is_object()) {
         return "MCP request params must be an object";
     }
     return nullptr;
@@ -581,13 +711,12 @@ std::string make_invalid_request_wire(const nlohmann::json& message, std::string
     if (message.is_object() && has_valid_request_id(message)) {
         wire["id"] = message.at("id");
     }
-    return wire.dump();
+    return mcp::detail::dump_json(wire);
 }
 
 std::string make_parse_error_wire() {
-    return nlohmann::json{{"jsonrpc", "2.0"},
-                          {"error", {{"code", g_PARSE_ERROR}, {"message", "Parse error"}}}}
-        .dump();
+    return mcp::detail::dump_json(nlohmann::json{
+        {"jsonrpc", "2.0"}, {"error", {{"code", g_PARSE_ERROR}, {"message", "Parse error"}}}});
 }
 
 }  // namespace
@@ -609,7 +738,7 @@ struct Server::Session {
     std::shared_ptr<ITransport> transport;
     MemoryTransport* memory_transport = nullptr;
     const HttpServerTransport* http_transport = nullptr;
-    std::unique_ptr<boost::asio::strand<boost::asio::any_io_executor>> strand;
+    std::unique_ptr<boost::asio::any_io_executor> strand;
     std::shared_ptr<detail::SerializedTransportWriter> writer;
     std::map<std::string, PendingRequest> pending_requests;
     std::map<std::string, std::shared_ptr<std::atomic<bool>>> in_flight;
@@ -693,7 +822,30 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         /// handler's notifications and requests are written as related to it, so a transport that
         /// gives each request a stream sends them on that request's stream.
         std::shared_ptr<const std::string> related_request;
+        /// Set instead of `mrtr` when such a request is served inside the request itself, because
+        /// the client declared nothing that lets it answer a request for input.
+        std::shared_ptr<detail::InlineInput> inline_input;
+        /// The request, when a handler that outlives it must keep it.
+        std::shared_ptr<const nlohmann::json> message;
     };
+
+    /// The progress token of a request served inside the request itself, or none. A request that
+    /// was parked reports through its own state, which carries the token.
+    static std::optional<ProgressToken> inline_progress_token(const RequestScope& scope) {
+        if (scope.inline_input == nullptr || scope.meta == nullptr) {
+            return std::nullopt;
+        }
+        const auto& meta = *scope.meta->meta;
+        const auto token = meta.find("progressToken");
+        if (token == meta.end()) {
+            return std::nullopt;
+        }
+        try {
+            return token->get<ProgressToken>();
+        } catch (const nlohmann::json::exception&) {
+            return std::nullopt;
+        }
+    }
 
     /// Why a subscriptions/listen stream ended.
     enum class ListenEnd : std::uint8_t {
@@ -789,10 +941,18 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     static Task<void> skip_write() { co_return; }
 
     Implementation server_info;
+    /// server_info as JSON, converted once for the answers that report it.
+    nlohmann::json server_info_json;
     ServerCapabilities capabilities;
     std::optional<std::string> instructions;
     std::array<CacheHint, 6> cache_hints{};
     bool report_server_info{true};
+    /// The `_meta` a 2026-07-28 result carries when it has none: the server's identity under
+    /// g_META_SERVER_INFO, as JSON text. Written by the first such result, so a server that only
+    /// serves earlier revisions never writes it; empty when the identity cannot be serialized.
+    mutable std::string server_info_meta_text;  // written once, under server_info_meta_once
+    mutable std::once_flag server_info_meta_once;
+    const std::string& server_info_meta() const;
     std::atomic<LifecycleState> lifecycle{LifecycleState::eUninitialized};
     // The transport's terminated_session_count() when the current session was initialized.
     std::atomic<std::uint64_t> terminated_sessions_at_initialize{0};
@@ -865,9 +1025,48 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
 
     CompletionHandler completion_handler;
 
-    std::vector<Tool> tools;
+    /// A registered tool as tools/list describes it. The tool's own schemas are unset: they are
+    /// listed from their compiled form, which servers that register the same schema share.
+    struct ListedTool {
+        Tool tool;
+        CompiledSchema input;
+        std::optional<CompiledSchema> output;
+
+        [[nodiscard]] nlohmann::json listed_json() const {
+            nlohmann::json json_tool = tool;
+            json_tool["inputSchema"] = input.schema();
+            if (output) {
+                json_tool["outputSchema"] = output->schema();
+            }
+            return json_tool;
+        }
+    };
+
+    void add_tool_registration(Tool&& tool, std::string name, CompiledToolSchemas schemas,
+                               TypeErasedHandler handler, detail::ToolResultMode result_mode);
+    /// Appends @p listed as tools/list writes it to @p text, adding the schema texts it was written
+    /// from to @p held.
+    static void append_listed_tool(std::string& text, const ListedTool& listed,
+                                   std::vector<std::shared_ptr<const ListedSchemaText>>& held);
+
+    std::vector<ListedTool> tools;
+    /// The tools as JSON text, comma-separated, in registration order: what a tools/list that
+    /// lists them all sends, without building the tools again. Built by the first such list after
+    /// a registration, since a server built for one session may never be asked for its tools.
+    /// Null when a tool could not be serialized, in which case the list is built (and fails) per
+    /// request.
+    mutable std::mutex tools_text_mutex;
+    std::shared_ptr<const std::string> tools_text;  // guarded by tools_text_mutex
+    bool tools_text_built{false};                   // guarded by tools_text_mutex
+    /// The schema texts tools_text was written from, held so that servers listing the same
+    /// schemas find them; guarded by tools_text_mutex.
+    std::vector<std::shared_ptr<const ListedSchemaText>> tools_text_schemas;
+    void forget_tools_text();
+    [[nodiscard]] std::shared_ptr<const std::string> listed_tools_text();
     std::map<std::string, ToolRegistration, std::less<>> tool_handlers;
     ToolValidationOptions tool_validation;
+    /// Where tool handlers run, when that is not the executor the server runs on.
+    std::optional<boost::asio::any_io_executor> handler_executor;
     std::atomic<std::uint64_t> argument_rejections{0};
     std::atomic<std::uint64_t> structured_content_rejections{0};
 
@@ -936,13 +1135,16 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                       MessageSender notifications,
                                       std::function<void(std::function<void()>)> watch_cancel,
                                       std::shared_ptr<const std::string> principal);
+    /// @p checked_modern, when set, says that the caller found the envelope valid and whether the
+    /// request names its protocol version in _meta.
     Task<std::string> dispatch_request_wire(
         nlohmann::json json_msg, bool enforce_lifecycle,
         std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
         std::shared_ptr<const detail::ParamHeaderValues> param_headers = nullptr,
         MessageSender notifications = {}, std::function<void(std::function<void()>)> watch_cancel = {},
         std::shared_ptr<const std::string> principal = nullptr,
-        std::shared_ptr<void> in_flight = nullptr, CountAgain count_again = {});
+        std::shared_ptr<void> in_flight = nullptr, CountAgain count_again = {},
+        std::optional<bool> checked_modern = std::nullopt);
     Task<std::string> dispatch_modern_wire(const nlohmann::json& json_msg, std::string_view method,
                                            RequestScope scope);
     /// Serves a 2026-07-28 tools/call, prompts/get or resources/read, whose handler may ask the
@@ -950,14 +1152,19 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// requestState resumes the handler.
     Task<std::string> dispatch_mrtr(const nlohmann::json& json_msg, std::string_view method,
                                     RequestScope scope);
-    Task<std::string> serve_mrtr_method(const nlohmann::json& json_msg, RequestScope scope);
+    Task<std::string> serve_mrtr_method(const nlohmann::json& json_msg, const RequestScope& scope);
     /// What a retry's `Mcp-Param-*` headers disagree with, for the method that mirrors arguments.
     std::optional<std::string> retry_header_mismatch(const nlohmann::json& json_msg,
                                                      std::string_view method,
                                                      const RequestScope& scope) const;
+    /// Serves a request of that kind for a client that declared no capability for answering a
+    /// request for input: the handler runs in the request, and a question it asks is refused as a
+    /// parked handler's would be.
+    Task<std::string> serve_without_parking(const nlohmann::json& json_msg, RequestScope scope);
     static Task<void> run_mrtr_handler(std::shared_ptr<Impl> impl,
                                        std::shared_ptr<detail::MrtrEntry> entry,
-                                       nlohmann::json json_msg, RequestScope scope);
+                                       std::shared_ptr<const nlohmann::json> message,
+                                       RequestScope scope);
     /// Files @p entry under a new requestState, giving up older handlers past the limits.
     std::string park(const std::shared_ptr<detail::MrtrEntry>& entry,
                      const std::shared_ptr<const std::string>& principal, std::string_view method,
@@ -1010,7 +1217,32 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                           bool session_request = true, MessageSender notifications = {},
                                           std::shared_ptr<const std::string> principal = nullptr,
                                           std::shared_ptr<detail::MrtrEntry> mrtr = nullptr,
-                                          std::shared_ptr<const std::string> related_request = nullptr);
+                                          std::shared_ptr<const std::string> related_request = nullptr,
+                                          std::shared_ptr<detail::InlineInput> inline_input = nullptr);
+    /// invoke_tool_impl for a server without middleware, which needs neither the parameters
+    /// object nor a handler of its own: the tool is called with @p arguments as they are.
+    Task<nlohmann::json> invoke_tool_direct(const std::string& name, const nlohmann::json& arguments,
+                                            std::shared_ptr<std::atomic<bool>> cancelled,
+                                            std::optional<ProgressToken> progress_token,
+                                            std::shared_ptr<const RequestMetadata> request_meta,
+                                            bool session_request, MessageSender notifications,
+                                            std::shared_ptr<const std::string> principal,
+                                            std::shared_ptr<detail::MrtrEntry> mrtr,
+                                            std::shared_ptr<const std::string> related_request,
+                                            std::shared_ptr<detail::InlineInput> inline_input);
+    /// Calls @p handler on a strand of its own, over the handler executor when one is set, and
+    /// otherwise over the executor the caller runs on unless that is a strand already. A handler
+    /// may fan out with `co_await (a || b)` or `co_await (a && b)`, which Boost.Asio makes safe
+    /// only when every branch runs one at a time.
+    Task<nlohmann::json> call_on_handler_strand(const TypeErasedHandler& handler, Context& ctx,
+                                                const nlohmann::json& arguments);
+    /// Checks @p arguments against the tool's input schema and runs its handler. A tool that
+    /// throws has failed at its own job, which the protocol reports inside the result as isError.
+    Task<nlohmann::json> call_tool_handler(const ToolRegistration& tool, Context& ctx,
+                                           const nlohmann::json& arguments);
+    /// Validates or normalizes the result of tool @p name and checks it against its outputSchema.
+    void finish_tool_result(const ToolRegistration& tool, const std::string& name,
+                            nlohmann::json& handler_result, bool modern);
     /// `session_request` says whether the request was read from the session. A 2026-07-28 request
     /// that was not has no route to the client through the session's transport. @p notifications,
     /// when set, receives the notifications of a 2026-07-28 request in place of the session's
@@ -1023,8 +1255,13 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                          bool session_request = true, MessageSender notifications = {},
                          std::shared_ptr<const std::string> principal = nullptr,
                          std::shared_ptr<detail::MrtrEntry> mrtr = nullptr,
-                         std::shared_ptr<const std::string> related_request = nullptr);
+                         std::shared_ptr<const std::string> related_request = nullptr,
+                         std::shared_ptr<detail::InlineInput> inline_input = nullptr);
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
+    /// Calls @p final_handler through the middleware, which without any is a plain call. The
+    /// handler must stay where it is until the call ends: one in a node of a std::map does.
+    Task<nlohmann::json> call_through_middleware(const TypeErasedHandler& final_handler, Context& ctx,
+                                                 const nlohmann::json& params);
     /// Checks a tools/call's Mcp-Param-* headers against the tool it names, for a transport that
     /// validates them before the request reaches the server.
     detail::ParamHeaderCheck make_param_header_check();
@@ -1071,6 +1308,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// A result of an earlier revision is sent as it is.
     std::string make_result_wire(const RequestId& id, const RequestScope& scope, nlohmann::json result,
                                  std::optional<CacheTarget> target = std::nullopt) const;
+    std::string make_result_wire(const RequestId& id,
+                                 const std::shared_ptr<const RequestMetadata>& request_meta,
+                                 nlohmann::json result, std::optional<CacheTarget> target) const;
     static std::string make_error_wire(const RequestId& id, int code, std::string message);
     static std::string make_error_wire(const RequestId& id, int code, std::string message,
                                        nlohmann::json data);
@@ -1090,6 +1330,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
 Server::Server(const Implementation& server_info, const ServerCapabilities& capabilities)
     : impl_(std::make_shared<Impl>()) {
     impl_->server_info = server_info;
+    impl_->server_info_json = server_info;
     impl_->capabilities = capabilities;
 }
 
@@ -1103,26 +1344,137 @@ Server::~Server() {
     reset_session();
 }
 
+void Server::Impl::forget_tools_text() {
+    std::lock_guard lock(tools_text_mutex);
+    tools_text.reset();
+    tools_text_built = false;
+    tools_text_schemas.clear();
+}
+
+namespace {
+
+/// The text of @p schema as tools/list writes it, shared with every server that lists the same
+/// compiled schema. The text is added to @p held, which keeps it found while the caller lists it.
+const std::string& listed_schema_text(const CompiledSchema& schema,
+                                      std::vector<std::shared_ptr<const ListedSchemaText>>& held) {
+    auto text = listed_schema_text_cache().find(schema);
+    if (!text) {
+        text = std::make_shared<const ListedSchemaText>(
+            ListedSchemaText{schema, mcp::detail::dump_json(schema.schema())});
+        listed_schema_text_cache().insert(text);
+    }
+    held.push_back(text);
+    return held.back()->text;
+}
+
+}  // namespace
+
+void Server::Impl::append_listed_tool(std::string& text, const ListedTool& listed,
+                                      std::vector<std::shared_ptr<const ListedSchemaText>>& held) {
+    // The tool is written with a placeholder string in place of each schema, and the shared schema
+    // texts are spliced in where the placeholders are. A placeholder found more than once means
+    // another member holds the same text, and the tool is written whole instead.
+    constexpr std::string_view input_mark = R"("\u0001mcp-input-schema")";
+    constexpr std::string_view output_mark = R"("\u0001mcp-output-schema")";
+    nlohmann::json shell = listed.tool;
+    shell["inputSchema"] = "\x01mcp-input-schema";
+    if (listed.output) {
+        shell["outputSchema"] = "\x01mcp-output-schema";
+    }
+    const auto shell_text = mcp::detail::dump_json(shell);
+    const auto once = [&shell_text](std::string_view mark) {
+        const auto at = shell_text.find(mark);
+        return at != std::string::npos && shell_text.rfind(mark) == at ? at : std::string::npos;
+    };
+    struct Splice {
+        std::size_t at;
+        std::string_view mark;
+        const CompiledSchema* schema;
+    };
+    std::vector<Splice> splices{{once(input_mark), input_mark, &listed.input}};
+    if (listed.output) {
+        splices.push_back({once(output_mark), output_mark, &*listed.output});
+    }
+    if (std::any_of(splices.begin(), splices.end(),
+                    [](const Splice& splice) { return splice.at == std::string::npos; })) {
+        text += mcp::detail::dump_json(listed.listed_json());
+        return;
+    }
+    std::sort(splices.begin(), splices.end(),
+              [](const Splice& a, const Splice& b) { return a.at < b.at; });
+    std::size_t copied = 0;
+    for (const auto& splice : splices) {
+        text.append(shell_text, copied, splice.at - copied);
+        text += listed_schema_text(*splice.schema, held);
+        copied = splice.at + splice.mark.size();
+    }
+    text.append(shell_text, copied, std::string::npos);
+}
+
+std::shared_ptr<const std::string> Server::Impl::listed_tools_text() {
+    std::lock_guard lock(tools_text_mutex);
+    if (!tools_text_built) {
+        tools_text_built = true;
+        try {
+            std::string text;
+            std::vector<std::shared_ptr<const ListedSchemaText>> held;
+            for (const auto& tool : tools) {
+                if (!text.empty()) {
+                    text += ',';
+                }
+                append_listed_tool(text, tool, held);
+            }
+            tools_text = std::make_shared<const std::string>(std::move(text));
+            tools_text_schemas = std::move(held);
+        } catch (const nlohmann::json::exception&) {
+            tools_text.reset();
+        }
+    }
+    return tools_text;
+}
+
+void Server::Impl::add_tool_registration(Tool&& tool, std::string name, CompiledToolSchemas schemas,
+                                         TypeErasedHandler handler,
+                                         detail::ToolResultMode result_mode) {
+    forget_tools_text();
+    tool.inputSchema = nullptr;
+    tool.outputSchema.reset();
+    tools.push_back(ListedTool{std::move(tool), schemas.input, schemas.output});
+    tool_handlers.emplace(std::move(name),
+                          ToolRegistration{std::move(handler), result_mode, std::move(schemas)});
+}
+
 void Server::register_tool(const Tool& tool, const std::string& name, TypeErasedHandler handler,
                            detail::ToolResultMode result_mode) {
     if (impl_->tool_handlers.contains(name)) {
         throw std::invalid_argument("Duplicate tool registration: " + name);
     }
-    auto schemas = compile_tool_schemas(tool);
-    impl_->tools.push_back(tool);
-    impl_->tool_handlers.emplace(
-        name, Impl::ToolRegistration{std::move(handler), result_mode, std::move(schemas)});
+    auto schemas = compile_tool_schemas(tool.name, tool.inputSchema,
+                                        tool.outputSchema ? &*tool.outputSchema : nullptr);
+    impl_->add_tool_registration(Tool(tool), name, std::move(schemas), std::move(handler), result_mode);
 }
 
 void Server::register_tool(Tool&& tool, TypeErasedHandler handler, detail::ToolResultMode result_mode) {
     if (impl_->tool_handlers.contains(tool.name)) {
         throw std::invalid_argument("Duplicate tool registration: " + tool.name);
     }
-    auto schemas = compile_tool_schemas(tool);
+    auto schemas = compile_tool_schemas(tool.name, tool.inputSchema,
+                                        tool.outputSchema ? &*tool.outputSchema : nullptr);
     auto name = tool.name;
-    impl_->tools.push_back(std::move(tool));
-    impl_->tool_handlers.emplace(
-        std::move(name), Impl::ToolRegistration{std::move(handler), result_mode, std::move(schemas)});
+    impl_->add_tool_registration(std::move(tool), std::move(name), std::move(schemas),
+                                 std::move(handler), result_mode);
+}
+
+void Server::register_tool(Tool&& tool, const nlohmann::json& input_schema,
+                           const nlohmann::json* output_schema, TypeErasedHandler handler,
+                           detail::ToolResultMode result_mode) {
+    if (impl_->tool_handlers.contains(tool.name)) {
+        throw std::invalid_argument("Duplicate tool registration: " + tool.name);
+    }
+    auto schemas = compile_tool_schemas(tool.name, input_schema, output_schema);
+    auto name = tool.name;
+    impl_->add_tool_registration(std::move(tool), std::move(name), std::move(schemas),
+                                 std::move(handler), result_mode);
 }
 
 void Server::register_resource(const Resource& resource, TypeErasedHandler handler) {
@@ -1166,6 +1518,10 @@ void Server::use(Middleware mw) { impl_->middlewares.push_back(std::move(mw)); }
 
 void Server::set_completion_provider(CompletionHandler handler) {
     impl_->completion_handler = std::move(handler);
+}
+
+void Server::set_handler_executor(const boost::asio::any_io_executor& executor) {
+    impl_->handler_executor = executor;
 }
 
 void Server::set_tool_validation(const ToolValidationOptions& options) {
@@ -1340,7 +1696,8 @@ Task<nlohmann::json> Server::Impl::send_request(std::shared_ptr<std::atomic<bool
     request.id = RequestId{std::to_string(id)};
     request.method = method;
     request.params = params;
-    auto wire = std::make_shared<const std::string>(nlohmann::json(std::move(request)).dump());
+    auto wire =
+        std::make_shared<const std::string>(mcp::detail::dump_json(nlohmann::json(std::move(request))));
     const std::chrono::milliseconds timeout(reverse_request_timeout_ms.load(std::memory_order_relaxed));
     return await_reverse_response(std::move(session), std::move(wire), id, timeout,
                                   std::move(caller_cancelled), std::move(related_request));
@@ -1449,7 +1806,7 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
             JSONRPCNotification notification;
             notification.method = "notifications/cancelled";
             notification.params = nlohmann::json(std::move(params));
-            notice = nlohmann::json(std::move(notification)).dump();
+            notice = mcp::detail::dump_json(nlohmann::json(std::move(notification)));
         }
         try {
             co_await write_to_session(*session, std::make_shared<const std::string>(std::move(notice)),
@@ -1502,8 +1859,8 @@ Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransp
         detail::bind_server(*http_transport,
                             {impl->make_param_header_check(), impl->supported_versions()});
     }
-    session->strand = std::make_unique<boost::asio::strand<boost::asio::any_io_executor>>(
-        boost::asio::make_strand(executor));
+    session->strand =
+        std::make_unique<boost::asio::any_io_executor>(detail::make_strand_executor(executor));
     session->writer =
         std::make_shared<detail::SerializedTransportWriter>(session->transport, *session->strand);
     session->drain_timer = std::make_shared<boost::asio::steady_timer>(*session->strand);
@@ -1791,7 +2148,7 @@ detail::ParamHeaderCheck Server::Impl::make_param_header_check() {
         }
         const auto arguments = params->find("arguments");
         return detail::param_header_mismatch(
-            tool->second.schemas.param_headers,
+            tool->second.schemas.param_headers->headers,
             arguments == params->end() ? nlohmann::json::object() : *arguments, headers);
     };
 }
@@ -1802,7 +2159,8 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
                                    bool session_request, MessageSender notifications,
                                    std::shared_ptr<const std::string> principal,
                                    std::shared_ptr<detail::MrtrEntry> mrtr,
-                                   std::shared_ptr<const std::string> related_request) {
+                                   std::shared_ptr<const std::string> related_request,
+                                   std::shared_ptr<detail::InlineInput> inline_input) {
     ITransport* transport = &null_transport();
     auto session = session_snapshot();
     std::uint64_t epoch = 0;
@@ -1828,6 +2186,18 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
                                 std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
             return detail::mrtr_request_input(mrtr, nlohmann::json(std::move(method)),
                                               std::move(params));
+        };
+    } else if (inline_input) {
+        request_sender = [inline_input](std::string method,
+                                        std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
+            nlohmann::json request = {{"method", std::move(method)}};
+            if (params) {
+                request["params"] = std::move(*params);
+            }
+            if (!inline_input->refuse(request)) {
+                throw std::runtime_error("the client can answer this request for input");
+            }
+            throw detail::MrtrAbandoned{};
         };
     } else if (request_meta) {
         // A server never sends a request of its own to a 2026-07-28 client.
@@ -1907,11 +2277,15 @@ Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg,
     auto cancelled = std::make_shared<std::atomic<bool>>(false);
     std::string request_id_str;
     bool modern = false;
+    // Set for a valid envelope, which dispatch_request_wire() then neither checks nor looks up the
+    // protocol version of again.
+    std::optional<bool> checked_modern;
     if (validate_request_envelope(json_msg) == nullptr) {
         request_id_str = json_msg.at("id").get<RequestId>().correlation_key();
         session->in_flight[request_id_str] = cancelled;
         modern = detail::is_modern_request(
             json_msg, json_msg.at("method").get_ref<const nlohmann::json::string_t&>());
+        checked_modern = modern;
     }
     const auto forget = [&session, &request_id_str, &cancelled] {
         // A later request reusing the id replaced the entry; that one is not ours to remove.
@@ -1934,7 +2308,8 @@ Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg,
             return std::make_shared<CountedSessionWork>(std::move(owner), size);
         };
         wire = co_await dispatch_request_wire(std::move(json_msg), true, cancelled, nullptr, {}, {},
-                                              std::move(principal), nullptr, std::move(count_again));
+                                              std::move(principal), nullptr, std::move(count_again),
+                                              checked_modern);
     } catch (...) {
         forget();
         throw;
@@ -1957,12 +2332,16 @@ Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg,
 }
 
 Task<std::string> Server::Impl::dispatch_request_wire(
-    nlohmann::json json_msg, bool enforce_lifecycle, std::shared_ptr<std::atomic<bool>> cancelled,
+    nlohmann::json incoming, bool enforce_lifecycle, std::shared_ptr<std::atomic<bool>> cancelled,
     std::shared_ptr<const detail::ParamHeaderValues> param_headers, MessageSender notifications,
     std::function<void(std::function<void()>)> watch_cancel,
     std::shared_ptr<const std::string> principal, std::shared_ptr<void> in_flight,
-    CountAgain count_again) {
-    {
+    CountAgain count_again, std::optional<bool> checked_modern) {
+    // A handler that outlives the request (a parked multi round-trip request) keeps the message
+    // through this pointer; moving the message into it copies nothing.
+    const auto message = std::make_shared<const nlohmann::json>(std::move(incoming));
+    const nlohmann::json& json_msg = *message;
+    if (!checked_modern) {
         const char* validation_error = validate_request_envelope(json_msg);
         if (validation_error != nullptr) {
             co_return make_invalid_request_wire(json_msg, validation_error);
@@ -1980,7 +2359,7 @@ Task<std::string> Server::Impl::dispatch_request_wire(
     try {
         // A request naming its protocol version in _meta is served on its own, without
         // initialize, and leaves the lifecycle and log level of a session untouched.
-        if (detail::is_modern_request(json_msg, method)) {
+        if (checked_modern ? *checked_modern : detail::is_modern_request(json_msg, method)) {
             // [gcc11-sso: named-aggregate-arg] DO NOT pass RequestScope{...} inside the co_await.
             RequestScope scope{nullptr,
                                std::move(cancelled),
@@ -1991,6 +2370,7 @@ Task<std::string> Server::Impl::dispatch_request_wire(
                                std::move(principal)};
             scope.in_flight = std::move(in_flight);
             scope.count_again = std::move(count_again);
+            scope.message = message;
             co_return co_await dispatch_modern_wire(json_msg, method, std::move(scope));
         }
 
@@ -2009,7 +2389,7 @@ Task<std::string> Server::Impl::dispatch_request_wire(
                                   {},      std::move(principal)};
         if (enforce_lifecycle) {
             legacy_scope.related_request =
-                std::make_shared<const std::string>(json_msg.at("id").dump());
+                std::make_shared<const std::string>(mcp::detail::dump_json(json_msg.at("id")));
         }
 
         // A client that arrives after the previous one ended its session starts uninitialized.
@@ -2123,7 +2503,8 @@ Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_
                                   "Method not found: " + std::string(method));
     }
     {
-        auto parsed = detail::parse_request_meta(json_msg);
+        auto parsed = detail::parse_request_meta(
+            scope.message ? scope.message : std::make_shared<const nlohmann::json>(json_msg));
         if (!parsed.metadata) {
             invalid_metadata_rejections.fetch_add(1, std::memory_order_relaxed);
             co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
@@ -2161,10 +2542,16 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
                                   "requestState must be a string and inputResponses an object");
     }
+    const bool retry = state != params.end();
+    if (!retry && !detail::client_can_answer_input(*scope.meta->meta)) {
+        // Such a client can never be asked for input, so the handler never parks.
+        co_return co_await serve_without_parking(json_msg, std::move(scope));
+    }
+
     std::optional<nlohmann::json> progress_token;
     nlohmann::json client_capabilities = nlohmann::json::object();
     {
-        const auto& meta = scope.meta->meta;
+        const auto& meta = *scope.meta->meta;
         if (const auto token = meta.find("progressToken"); token != meta.end()) {
             progress_token = *token;
         }
@@ -2177,7 +2564,9 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
     auto route = notification_route(request_cancelled, scope.meta, scope.session_request,
                                     scope.notifications, session_snapshot(), nullptr, nullptr);
 
-    const bool retry = state != params.end();
+    // What the answer still needs from the request once the handler has taken it over.
+    const auto principal = scope.principal;
+    const auto request_meta = scope.meta;
     std::shared_ptr<detail::MrtrEntry> entry;
     if (retry) {
         // Checked before the state is taken, so that a refused retry can be sent again.
@@ -2185,7 +2574,7 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
             co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_HEADER_MISMATCH,
                                       "Header mismatch: " + *mismatch);
         }
-        entry = take_parked(state->get_ref<const std::string&>(), scope.principal, method,
+        entry = take_parked(state->get_ref<const std::string&>(), principal, method,
                             detail::mrtr_params_digest(params));
         if (!entry) {
             co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
@@ -2215,7 +2604,8 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
             entry->in_flight = scope.in_flight;
             entry->count_again = scope.count_again;
         }
-        RequestScope handler_scope = scope;
+        auto message = scope.message ? scope.message : std::make_shared<const nlohmann::json>(json_msg);
+        RequestScope handler_scope = std::move(scope);
         handler_scope.in_flight.reset();
         handler_scope.count_again = nullptr;
         handler_scope.cancelled = std::move(cancelled);
@@ -2223,7 +2613,7 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
         // The handler runs apart from this request, which ends when the handler parks.
         boost::asio::co_spawn(
             entry->strand,
-            run_mrtr_handler(shared_from_this(), entry, json_msg, std::move(handler_scope)),
+            run_mrtr_handler(shared_from_this(), entry, std::move(message), std::move(handler_scope)),
             boost::asio::detached);
     }
 
@@ -2235,7 +2625,7 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
         // The handler answered with the id of the request that started it.
         auto answer = nlohmann::json::parse(outcome.wire);
         answer["id"] = json_msg.at("id");
-        co_return answer.dump();
+        co_return mcp::detail::dump_json(answer);
     }
     if (outcome.event == detail::MrtrEntry::Event::eMissingCapability) {
         detail::mrtr_abandon(entry);
@@ -2250,15 +2640,47 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
                                   "Request cancelled");
     }
-    const auto token = park(entry, scope.principal, method, detail::mrtr_params_digest(params),
+    const auto token = park(entry, principal, method, detail::mrtr_params_digest(params),
                             detail::json_memory_cost(json_msg));
     nlohmann::json result = {{"resultType", "input_required"},
                              {"inputRequests", std::move(outcome.requests)},
                              {"requestState", token}};
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(result));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), request_meta, std::move(result),
+                               std::nullopt);
 }
 
-Task<std::string> Server::Impl::serve_mrtr_method(const nlohmann::json& json_msg, RequestScope scope) {
+Task<std::string> Server::Impl::serve_without_parking(const nlohmann::json& json_msg,
+                                                      RequestScope scope) {
+    const auto input = std::make_shared<detail::InlineInput>(scope.meta);
+    scope.inline_input = input;
+    if (!scope.cancelled) {
+        scope.cancelled = std::make_shared<std::atomic<bool>>(false);
+    }
+    // [gcc11-sso: string-in-frame] The answer is held as json until no suspension is left.
+    nlohmann::json answer;
+    std::exception_ptr failure;
+    try {
+        answer = co_await serve_mrtr_method(json_msg, scope);
+    } catch (...) {
+        failure = std::current_exception();
+    }
+    // A question the handler asked decides the answer, as for a parked handler, whatever the
+    // handler did with the refusal.
+    auto missing = input->missing_capabilities();
+    if (!missing.empty()) {
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  g_MISSING_REQUIRED_CLIENT_CAPABILITY,
+                                  "The request needs a capability the client did not declare",
+                                  {{"requiredCapabilities", std::move(missing)}});
+    }
+    if (failure) {
+        std::rethrow_exception(failure);
+    }
+    co_return std::move(answer.get_ref<nlohmann::json::string_t&>());
+}
+
+Task<std::string> Server::Impl::serve_mrtr_method(const nlohmann::json& json_msg,
+                                                  const RequestScope& scope) {
     const auto& method = json_msg.at("method").get_ref<const std::string&>();
     if (method == "tools/call") {
         co_return co_await handle_tools_call_wire(json_msg, scope);
@@ -2280,19 +2702,21 @@ std::optional<std::string> Server::Impl::retry_header_mismatch(const nlohmann::j
     if (tool == tool_handlers.end()) {
         return std::nullopt;
     }
-    return detail::param_header_mismatch(tool->second.schemas.param_headers, params.arguments,
+    return detail::param_header_mismatch(tool->second.schemas.param_headers->headers, params.arguments,
                                          *scope.param_headers);
 }
 
 Task<void> Server::Impl::run_mrtr_handler(std::shared_ptr<Impl> impl,
                                           std::shared_ptr<detail::MrtrEntry> entry,
-                                          nlohmann::json json_msg, RequestScope scope) {
+                                          std::shared_ptr<const nlohmann::json> message,
+                                          RequestScope scope) {
+    const nlohmann::json& json_msg = *message;
     // [gcc11-sso: string-in-frame] The answer is held as json until no suspension is left.
     nlohmann::json answer;
     int error_code = g_INTERNAL_ERROR;
     nlohmann::json error_payload;
     try {
-        answer = co_await impl->serve_mrtr_method(json_msg, std::move(scope));
+        answer = co_await impl->serve_mrtr_method(json_msg, scope);
     } catch (const InvalidParamsError& error) {
         error_code = g_INVALID_PARAMS;
         error_payload = error.what();
@@ -2316,7 +2740,7 @@ Task<void> Server::Impl::run_mrtr_handler(std::shared_ptr<Impl> impl,
                                                      error_payload.get<std::string>()));
         co_return;
     }
-    detail::mrtr_complete(entry, answer.get<std::string>());
+    detail::mrtr_complete(entry, std::move(answer.get_ref<nlohmann::json::string_t&>()));
 }
 
 std::string Server::Impl::park(const std::shared_ptr<detail::MrtrEntry>& entry,
@@ -2641,11 +3065,113 @@ Task<std::string> Server::Impl::handle_discover_wire(const nlohmann::json& json_
                                nlohmann::json(discover_result), CacheTarget::eDiscover);
 }
 
+namespace {
+
+/// Calls @p handler. It is a named coroutine, not a lambda handed to co_spawn, so what it holds
+/// lives in its own frame; the caller keeps @p context and @p arguments alive until it returns.
+Task<nlohmann::json> call_handler(const TypeErasedHandler& handler, Context& context,
+                                  const nlohmann::json& arguments) {
+    co_return co_await handler(context, arguments);
+}
+
+}  // namespace
+
+Task<nlohmann::json> Server::Impl::call_on_handler_strand(const TypeErasedHandler& handler,
+                                                          Context& ctx,
+                                                          const nlohmann::json& arguments) {
+    if (handler_executor) {
+        co_return co_await detail::spawn_awaitable(detail::make_strand_executor(*handler_executor),
+                                                   call_handler(handler, ctx, arguments));
+    }
+    auto executor = co_await boost::asio::this_coro::executor;
+    if (detail::is_strand_executor(executor)) {
+        co_return co_await handler(ctx, arguments);
+    }
+    co_return co_await detail::spawn_awaitable(detail::make_strand_executor(executor),
+                                               call_handler(handler, ctx, arguments));
+}
+
+Task<nlohmann::json> Server::Impl::call_tool_handler(const ToolRegistration& tool, Context& ctx,
+                                                     const nlohmann::json& arguments) {
+    // Arguments that do not conform to the input schema are a tool execution error too, so the
+    // check runs here, in place of the handler.
+    if (tool_validation.validate_arguments) {
+        if (auto rejection = argument_rejection(tool.schemas.input, arguments)) {
+            argument_rejections.fetch_add(1, std::memory_order_relaxed);
+            co_return std::move(*rejection);
+        }
+    }
+    try {
+        co_return co_await call_on_handler_strand(tool.handler, ctx, arguments);
+    } catch (const std::exception& error) {
+        co_return nlohmann::json(
+            make_tool_error_result(detail::sanitize_for_diagnostics(error.what())));
+    } catch (...) {
+        // A tool that fails reports a tool error whatever it threw, rather than the -32603
+        // "Internal error" that dispatch_request_wire and run_mrtr_handler answer with for
+        // everything else. The text is ours rather than the thrower's, so there is nothing to
+        // sanitize.
+        co_return nlohmann::json(make_tool_error_result("Tool handler failed"));
+    }
+}
+
+void Server::Impl::finish_tool_result(const ToolRegistration& tool, const std::string& name,
+                                      nlohmann::json& handler_result, bool modern) {
+    if (tool.result_mode == detail::ToolResultMode::eValidated) {
+        validate_call_tool_result(handler_result, modern);
+    } else if (tool.result_mode == detail::ToolResultMode::eTyped) {
+        validate_call_tool_result(handler_result, modern, false);
+    } else {
+        handler_result = normalize_structured_tool_result(std::move(handler_result), modern);
+    }
+
+    const bool is_error_result = handler_result.value("isError", false);
+    if (tool.schemas.output && !is_error_result && !handler_result.contains("structuredContent")) {
+        throw std::invalid_argument("Tool with outputSchema must return structuredContent: " + name);
+    }
+    if (tool.schemas.output && !is_error_result && tool_validation.validate_structured_content) {
+        try {
+            check_structured_content(*tool.schemas.output, name, handler_result);
+        } catch (const std::runtime_error&) {
+            structured_content_rejections.fetch_add(1, std::memory_order_relaxed);
+            throw;
+        }
+    }
+}
+
+Task<nlohmann::json> Server::Impl::invoke_tool_direct(
+    const std::string& name, const nlohmann::json& arguments,
+    std::shared_ptr<std::atomic<bool>> cancelled, std::optional<ProgressToken> progress_token,
+    std::shared_ptr<const RequestMetadata> request_meta, bool session_request,
+    MessageSender notifications, std::shared_ptr<const std::string> principal,
+    std::shared_ptr<detail::MrtrEntry> mrtr, std::shared_ptr<const std::string> related_request,
+    std::shared_ptr<detail::InlineInput> inline_input) {
+    const auto iter = tool_handlers.find(name);
+    if (iter == tool_handlers.end()) {
+        throw std::runtime_error("Unknown tool: " + detail::sanitize_for_diagnostics(name));
+    }
+    auto ctx = make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
+                            session_request, std::move(notifications), std::move(principal),
+                            std::move(mrtr), std::move(related_request), std::move(inline_input));
+    const bool modern = ctx.request_meta() != nullptr;
+    nlohmann::json handler_result = co_await call_tool_handler(iter->second, ctx, arguments);
+    finish_tool_result(iter->second, name, handler_result, modern);
+    co_return std::move(handler_result);
+}
+
 Task<nlohmann::json> Server::Impl::invoke_tool_impl(
     CallToolParams params, std::shared_ptr<std::atomic<bool>> cancelled,
     std::optional<ProgressToken> progress_token, std::shared_ptr<const RequestMetadata> request_meta,
     bool session_request, MessageSender notifications, std::shared_ptr<const std::string> principal,
-    std::shared_ptr<detail::MrtrEntry> mrtr, std::shared_ptr<const std::string> related_request) {
+    std::shared_ptr<detail::MrtrEntry> mrtr, std::shared_ptr<const std::string> related_request,
+    std::shared_ptr<detail::InlineInput> inline_input) {
+    if (middlewares.empty()) {
+        co_return co_await invoke_tool_direct(
+            params.name, params.arguments, std::move(cancelled), std::move(progress_token),
+            std::move(request_meta), session_request, std::move(notifications), std::move(principal),
+            std::move(mrtr), std::move(related_request), std::move(inline_input));
+    }
+
     auto iter = tool_handlers.find(params.name);
     if (iter == tool_handlers.end()) {
         // The name is chosen by whoever called: over JSON-RPC that is the client, and through the
@@ -2656,102 +3182,48 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(
 
     auto ctx = make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
                             session_request, std::move(notifications), std::move(principal),
-                            std::move(mrtr), std::move(related_request));
+                            std::move(mrtr), std::move(related_request), std::move(inline_input));
     const bool modern = ctx.request_meta() != nullptr;
     nlohmann::json handler_result;
 
-    // A tool that throws has failed at its own job, which the protocol reports inside the result as
-    // isError. Middleware is not the tool: it decides whether the call may proceed at all, so it
-    // runs outside this catch and a middleware failure surfaces as a JSON-RPC error instead.
-    // Arguments that do not conform to the input schema are a tool execution error too, so the
-    // check runs here, after middleware and in place of the handler.
-    std::optional<CompiledSchema> input_schema;
-    if (tool_validation.validate_arguments) {
-        input_schema = iter->second.schemas.input;
-    }
-    TypeErasedHandler guarded_handler =
-        [original_handler = iter->second.handler, input_schema = std::move(input_schema),
-         rejections = &argument_rejections](Context& inner_ctx,
-                                            const nlohmann::json& arguments) -> Task<nlohmann::json> {
-        if (input_schema) {
-            if (auto rejection = argument_rejection(*input_schema, arguments)) {
-                rejections->fetch_add(1, std::memory_order_relaxed);
-                co_return std::move(*rejection);
-            }
-        }
-        try {
-            co_return co_await original_handler(inner_ctx, arguments);
-        } catch (const std::exception& error) {
-            co_return nlohmann::json(
-                make_tool_error_result(detail::sanitize_for_diagnostics(error.what())));
-        } catch (...) {
-            // A tool that fails reports a tool error whatever it threw, rather than the protocol
-            // error the dispatcher would answer with. The text is ours rather than the thrower's,
-            // so there is nothing to sanitize.
-            co_return nlohmann::json(make_tool_error_result("Tool handler failed"));
-        }
+    // Middleware is not the tool: it decides whether the call may proceed at all, so it runs
+    // outside the catch of call_tool_handler and a middleware failure surfaces as a JSON-RPC error
+    // instead of an isError result.
+    TypeErasedHandler wrapped_handler = [this, tool = &iter->second](
+                                            Context& inner_ctx,
+                                            const nlohmann::json& full_params) -> Task<nlohmann::json> {
+        auto call_params = full_params.get<CallToolParams>();
+        co_return co_await call_tool_handler(*tool, inner_ctx, call_params.arguments);
     };
-
-    if (middlewares.empty()) {
-        handler_result = co_await guarded_handler(ctx, params.arguments);
-    } else {
-        TypeErasedHandler wrapped_handler =
-            [guarded_handler](Context& inner_ctx,
-                              const nlohmann::json& full_params) -> Task<nlohmann::json> {
-            auto call_params = full_params.get<CallToolParams>();
-            co_return co_await guarded_handler(inner_ctx, call_params.arguments);
-        };
-        auto handler = build_middleware_chain(std::move(wrapped_handler));
-        nlohmann::json params_json = params;
-        try {
-            handler_result = co_await handler(ctx, params_json);
-        } catch (const detail::MiddlewareRejection& rejection) {
-            handler_result = nlohmann::json(make_tool_error_result(rejection.what()));
-        }
+    auto handler = build_middleware_chain(std::move(wrapped_handler));
+    nlohmann::json params_json = params;
+    try {
+        handler_result = co_await handler(ctx, params_json);
+    } catch (const detail::MiddlewareRejection& rejection) {
+        handler_result = nlohmann::json(make_tool_error_result(rejection.what()));
     }
 
-    if (iter->second.result_mode == detail::ToolResultMode::eValidated) {
-        validate_call_tool_result(handler_result, modern);
-    } else {
-        handler_result = normalize_structured_tool_result(std::move(handler_result), modern);
-    }
-
-    const bool is_error_result = handler_result.value("isError", false);
-    if (has_tool_output_schema(params.name) && !is_error_result &&
-        !handler_result.contains("structuredContent")) {
-        throw std::invalid_argument("Tool with outputSchema must return structuredContent: " +
-                                    params.name);
-    }
-    const auto& output_schema = iter->second.schemas.output;
-    if (output_schema && !is_error_result && tool_validation.validate_structured_content) {
-        try {
-            check_structured_content(*output_schema, params.name, handler_result);
-        } catch (const std::runtime_error&) {
-            structured_content_rejections.fetch_add(1, std::memory_order_relaxed);
-            throw;
-        }
-    }
-
-    co_return handler_result;
+    finish_tool_result(iter->second, params.name, handler_result, modern);
+    co_return std::move(handler_result);
 }
 
 Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& json_msg,
                                                        const RequestScope& scope) {
-    auto params = deserialize_request_params<CallToolParams>(json_msg, "tools/call");
-    const auto tool = tool_handlers.find(params.name);
+    const auto call = view_call_tool_params(json_msg);
+    const auto tool = tool_handlers.find(*call.name);
     if (tool == tool_handlers.end()) {
         // This, not the throw in invoke_tool_impl, is the site a remote client actually reaches:
         // the RPC path refuses before dispatch. The tools spec lists an unknown tool as -32602
         // (Invalid params). The name is entirely the client's, so flatten and bound it before it
         // reaches the operator's log.
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
-                                  "Unknown tool: " + detail::sanitize_for_diagnostics(params.name));
+                                  "Unknown tool: " + detail::sanitize_for_diagnostics(*call.name));
     }
     // An HTTP request mirrors the arguments the tool's x-mcp-header annotations name into
     // Mcp-Param-* headers, and those must match the body it is executed from.
     if (scope.meta != nullptr && scope.param_headers != nullptr) {
-        if (auto mismatch = detail::param_header_mismatch(tool->second.schemas.param_headers,
-                                                          params.arguments, *scope.param_headers)) {
+        if (auto mismatch = detail::param_header_mismatch(tool->second.schemas.param_headers->headers,
+                                                          *call.arguments, *scope.param_headers)) {
             co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_HEADER_MISMATCH,
                                       "Header mismatch: " + *mismatch);
         }
@@ -2759,11 +3231,8 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
 
     std::optional<ProgressToken> progress_token;
     try {
-        if (params.meta) {
-            auto& meta = *params.meta;
-            if (meta.contains("progressToken")) {
-                progress_token = meta.at("progressToken").get<ProgressToken>();
-            }
+        if (call.meta != nullptr && call.meta->contains("progressToken")) {
+            progress_token = call.meta->at("progressToken").get<ProgressToken>();
         }
     } catch (const nlohmann::json::exception& error) {
         throw InvalidParamsError("Invalid tools/call params: " + std::string(error.what()));
@@ -2772,9 +3241,22 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
     }
 
     auto cancelled = scope.cancelled ? scope.cancelled : std::make_shared<std::atomic<bool>>(false);
-    nlohmann::json handler_result = co_await invoke_tool_impl(
-        std::move(params), std::move(cancelled), std::move(progress_token), scope.meta,
-        scope.session_request, scope.notifications, scope.principal, scope.mrtr, scope.related_request);
+    nlohmann::json handler_result;
+    if (middlewares.empty()) {
+        handler_result = co_await invoke_tool_direct(
+            *call.name, *call.arguments, std::move(cancelled), std::move(progress_token), scope.meta,
+            scope.session_request, scope.notifications, scope.principal, scope.mrtr,
+            scope.related_request, scope.inline_input);
+    } else {
+        // Middleware sees, and may rewrite, the whole parameters object.
+        CallToolParams params{
+            *call.name, *call.arguments,
+            call.meta != nullptr ? std::optional<nlohmann::json>(*call.meta) : std::nullopt};
+        handler_result = co_await invoke_tool_impl(
+            std::move(params), std::move(cancelled), std::move(progress_token), scope.meta,
+            scope.session_request, scope.notifications, scope.principal, scope.mrtr,
+            scope.related_request, scope.inline_input);
+    }
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }
 
@@ -2786,11 +3268,35 @@ Task<std::string> Server::Impl::handle_tools_list_wire(const nlohmann::json& jso
                                   "Invalid pagination cursor");
     }
 
-    // The members ListToolsResult serializes, built from the registered tools rather than a copy.
     auto [begin, end, next_cursor] = *page;
+    const auto listed_text =
+        begin == 0 && end == tools.size() && !next_cursor ? listed_tools_text() : nullptr;
+    if (listed_text) {
+        // Every tool is listed: the tools are spliced into the answer as the text they serialize
+        // to, in place of a copy of each. The placeholder is one string no other member of the
+        // result can equal, and the splice is made only if it is found exactly once.
+        constexpr std::string_view placeholder = R"("\u0001mcp-tools-list")";
+        nlohmann::json list_result = nlohmann::json::object();
+        list_result["tools"] = "\x01mcp-tools-list";
+        auto wire = make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(list_result),
+                                     CacheTarget::eToolsList);
+        const auto first = wire.find(placeholder);
+        if (first != std::string::npos && wire.rfind(placeholder) == first) {
+            std::string spliced;
+            spliced.reserve(wire.size() + listed_text->size() + 2);
+            spliced.append(wire, 0, first);
+            spliced += '[';
+            spliced += *listed_text;
+            spliced += ']';
+            spliced.append(wire, first + placeholder.size(), std::string::npos);
+            co_return spliced;
+        }
+    }
+
+    // The members ListToolsResult serializes, built from the registered tools rather than a copy.
     nlohmann::json tools_json = nlohmann::json::array();
     for (auto index = begin; index < end; ++index) {
-        tools_json.push_back(tools[index]);
+        tools_json.push_back(tools[index].listed_json());
     }
     nlohmann::json list_result = nlohmann::json::object();
     list_result["tools"] = std::move(tools_json);
@@ -2825,13 +3331,12 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
     auto params = deserialize_request_params<ReadResourceRequestParams>(json_msg, "resources/read");
     auto iter = resource_handlers.find(params.uri);
     if (iter != resource_handlers.end()) {
-        auto handler = build_middleware_chain(iter->second);
-
         nlohmann::json params_json = params;
-        auto ctx =
-            make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                         scope.notifications, scope.principal, scope.mrtr, scope.related_request);
-        nlohmann::json handler_result = co_await handler(ctx, params_json);
+        auto ctx = make_context(scope.cancelled, inline_progress_token(scope), scope.meta,
+                                scope.session_request, scope.notifications, scope.principal, scope.mrtr,
+                                scope.related_request, scope.inline_input);
+        nlohmann::json handler_result =
+            co_await call_through_middleware(iter->second, ctx, params_json);
         co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result),
                                    CacheTarget::eResourcesRead);
     }
@@ -2869,12 +3374,11 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
             "Unknown resource: " + params.uri, nlohmann::json{{"uri", params.uri}});
     }
 
-    auto handler = build_middleware_chain(match->handler);
-
     nlohmann::json params_json = params;
-    auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                            scope.notifications, scope.principal, scope.mrtr, scope.related_request);
-    nlohmann::json handler_result = co_await handler(ctx, params_json);
+    auto ctx = make_context(scope.cancelled, inline_progress_token(scope), scope.meta,
+                            scope.session_request, scope.notifications, scope.principal, scope.mrtr,
+                            scope.related_request, scope.inline_input);
+    nlohmann::json handler_result = co_await call_through_middleware(match->handler, ctx, params_json);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result),
                                CacheTarget::eResourcesRead);
 }
@@ -2995,7 +3499,7 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
         message["jsonrpc"] = "2.0";
         message["method"] = "notifications/subscriptions/acknowledged";
         message["params"] = std::move(params);
-        acknowledgment = std::make_shared<const std::string>(message.dump());
+        acknowledgment = std::make_shared<const std::string>(mcp::detail::dump_json(message));
     }
 
     {
@@ -3062,7 +3566,7 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
         message["jsonrpc"] = "2.0";
         message["method"] = "notifications/cancelled";
         message["params"] = std::move(params);
-        cancellation = std::make_shared<const std::string>(message.dump());
+        cancellation = std::make_shared<const std::string>(mcp::detail::dump_json(message));
     }
     co_await listener->sink(*closing);
     co_await listener->sink(*cancellation);
@@ -3172,7 +3676,7 @@ Task<void> Server::Impl::notify_listeners(ListenTopic topic, std::shared_ptr<con
             message["jsonrpc"] = "2.0";
             message["method"] = std::string(method);
             message["params"] = std::move(params);
-            wire = std::make_shared<const std::string>(message.dump());
+            wire = std::make_shared<const std::string>(mcp::detail::dump_json(message));
         }
         if (!listener->deliver_or_defer(wire)) {
             continue;
@@ -3273,12 +3777,11 @@ Task<std::string> Server::Impl::handle_prompts_get_wire(const nlohmann::json& js
                                   "Unknown prompt: " + params.name);
     }
 
-    auto handler = build_middleware_chain(iter->second);
-
     nlohmann::json params_json = std::move(params);
-    auto ctx = make_context(scope.cancelled, std::nullopt, scope.meta, scope.session_request,
-                            scope.notifications, scope.principal, scope.mrtr, scope.related_request);
-    nlohmann::json handler_result = co_await handler(ctx, params_json);
+    auto ctx = make_context(scope.cancelled, inline_progress_token(scope), scope.meta,
+                            scope.session_request, scope.notifications, scope.principal, scope.mrtr,
+                            scope.related_request, scope.inline_input);
+    nlohmann::json handler_result = co_await call_through_middleware(iter->second, ctx, params_json);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }
 
@@ -3309,20 +3812,69 @@ Task<std::string> Server::Impl::handle_complete_wire(const nlohmann::json& json_
 }
 
 std::string Server::Impl::make_result_wire(const RequestId& id, nlohmann::json result) {
-    // The members JSONRPCResultResponse serializes, with the result moved in: its to_json takes the
-    // response by const reference and would copy the whole result.
-    nlohmann::json response = nlohmann::json::object();
-    response["id"] = id;
-    response["jsonrpc"] = "2.0";
-    response["result"] = std::move(result);
-    return response.dump();
+    // The text JSONRPCResultResponse serializes to, members in the order nlohmann::json sorts them,
+    // written around the result rather than moving it into a response object.
+    std::string wire = R"({"id":)";
+    detail::append_json(wire, nlohmann::json(id));
+    wire += R"(,"jsonrpc":"2.0","result":)";
+    detail::append_json(wire, result);
+    wire += '}';
+    return wire;
 }
 
 std::string Server::Impl::make_result_wire(const RequestId& id, const RequestScope& scope,
                                            nlohmann::json result,
                                            std::optional<CacheTarget> target) const {
-    if (scope.meta == nullptr || !result.is_object()) {
+    return make_result_wire(id, scope.meta, std::move(result), target);
+}
+
+const std::string& Server::Impl::server_info_meta() const {
+    std::call_once(server_info_meta_once, [this] {
+        try {
+            nlohmann::json meta = nlohmann::json::object();
+            meta[std::string(g_META_SERVER_INFO)] = server_info;
+            server_info_meta_text = detail::dump_json(meta);
+        } catch (const nlohmann::json::exception&) {
+            // Left empty: each result then has the identity inserted, and fails, as before.
+        }
+    });
+    return server_info_meta_text;
+}
+
+std::string Server::Impl::make_result_wire(const RequestId& id,
+                                           const std::shared_ptr<const RequestMetadata>& request_meta,
+                                           nlohmann::json result,
+                                           std::optional<CacheTarget> target) const {
+    if (request_meta == nullptr || !result.is_object()) {
         return make_result_wire(id, std::move(result));
+    }
+    if (!report_server_info || (!server_info_meta().empty() && !result.contains("_meta"))) {
+        // The members this revision adds are written around the result rather than inserted
+        // into it: each is added only when the result does not hold it, as emplace() does.
+        const CacheHint* const hint =
+            target ? &cache_hints.at(static_cast<std::size_t>(*target)) : nullptr;
+        std::string scope_text;
+        std::string ttl_text;
+        std::array<detail::JsonMemberText, 4> extra{};
+        std::size_t count = 0;
+        if (report_server_info) {
+            extra[count++] = {"_meta", server_info_meta()};
+        }
+        if (hint != nullptr) {
+            scope_text = detail::dump_json(nlohmann::json(hint->scope));
+            extra[count++] = {"cacheScope", scope_text};
+        }
+        extra[count++] = {"resultType", R"("complete")"};
+        if (hint != nullptr) {
+            ttl_text = std::to_string(hint->ttlMs);
+            extra[count++] = {"ttlMs", ttl_text};
+        }
+        std::string wire = R"({"id":)";
+        detail::append_json(wire, nlohmann::json(id));
+        wire += R"(,"jsonrpc":"2.0","result":)";
+        detail::append_json_object_with(wire, result, std::span(extra.data(), count));
+        wire += '}';
+        return wire;
     }
     result.emplace("resultType", "complete");
     if (report_server_info) {
@@ -3331,7 +3883,7 @@ std::string Server::Impl::make_result_wire(const RequestId& id, const RequestSco
             meta = nlohmann::json::object();
         }
         if (meta.is_object()) {
-            meta.emplace(g_META_SERVER_INFO, server_info);
+            meta.emplace(g_META_SERVER_INFO, server_info_json);
         }
     }
     if (target) {
@@ -3349,7 +3901,7 @@ std::string Server::Impl::make_error_wire(const RequestId& id, int code, std::st
     JSONRPCErrorResponse response;
     response.id = id;
     response.error = std::move(error);
-    return nlohmann::json(std::move(response)).dump();
+    return mcp::detail::dump_json(nlohmann::json(std::move(response)));
 }
 
 std::string Server::Impl::make_error_wire(const RequestId& id, int code, std::string message,
@@ -3361,7 +3913,7 @@ std::string Server::Impl::make_error_wire(const RequestId& id, int code, std::st
     JSONRPCErrorResponse response;
     response.id = id;
     response.error = std::move(error);
-    return nlohmann::json(std::move(response)).dump();
+    return mcp::detail::dump_json(nlohmann::json(std::move(response)));
 }
 
 std::vector<std::string> Server::Impl::supported_versions() const {
@@ -3399,7 +3951,7 @@ Task<void> Server::Impl::send_notification(const std::string& method,
         JSONRPCNotification notification;
         notification.method = method;
         notification.params = params;
-        wire = nlohmann::json(std::move(notification)).dump();
+        wire = mcp::detail::dump_json(nlohmann::json(std::move(notification)));
     }
     co_await session->writer->write_message(wire);
 }
@@ -3479,7 +4031,21 @@ Task<void> Server::Impl::notify_resource_updated_on_strand(std::shared_ptr<Sessi
     notification.params = std::move(p);
 
     nlohmann::json json_msg = std::move(notification);
-    co_await session->writer->write_message(json_msg.dump());
+    co_await session->writer->write_message(mcp::detail::dump_json(json_msg));
+}
+
+Task<nlohmann::json> Server::Impl::call_through_middleware(const TypeErasedHandler& final_handler,
+                                                           Context& ctx, const nlohmann::json& params) {
+    TypeErasedHandler on_strand = [this, &final_handler](
+                                      Context& inner_ctx,
+                                      const nlohmann::json& inner_params) -> Task<nlohmann::json> {
+        co_return co_await call_on_handler_strand(final_handler, inner_ctx, inner_params);
+    };
+    if (middlewares.empty()) {
+        co_return co_await on_strand(ctx, params);
+    }
+    auto handler = build_middleware_chain(std::move(on_strand));
+    co_return co_await handler(ctx, params);
 }
 
 TypeErasedHandler Server::Impl::build_middleware_chain(TypeErasedHandler final_handler) {
@@ -3527,9 +4093,9 @@ std::optional<Server::PaginationSlice> Server::Impl::paginate(std::size_t total,
 }
 
 bool Server::Impl::has_tool_output_schema(const std::string& name) const {
-    for (const auto& tool : tools) {
-        if (tool.name == name) {
-            return tool.outputSchema.has_value();
+    for (const auto& listed : tools) {
+        if (listed.tool.name == name) {
+            return listed.output.has_value();
         }
     }
     return false;

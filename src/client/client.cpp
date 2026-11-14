@@ -3,6 +3,7 @@
 #include "../detail/spawn_awaitable.hpp"
 
 #include <mcp/client/client.hpp>
+#include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
 
 #include <algorithm>
@@ -417,7 +418,8 @@ struct Client::Impl {
         request.id = RequestId{std::to_string(id)};
         request.method = std::string(method);
         request.params = params;
-        auto wire = std::make_shared<const std::string>(nlohmann::json(std::move(request)).dump());
+        auto wire = std::make_shared<const std::string>(
+            mcp::detail::dump_json(nlohmann::json(std::move(request))));
         auto strand = state->strand;
         // Awaiting post(strand) would not rebind a caller-owned coroutine's continuation.
         // Spawn the complete pending-request lifecycle on the client strand instead.
@@ -648,7 +650,8 @@ struct Client::Impl {
         request.id = RequestId{std::to_string(id)};
         request.method = "subscriptions/listen";
         request.params = wire_params;
-        auto wire = std::make_shared<const std::string>(nlohmann::json(std::move(request)).dump());
+        auto wire = std::make_shared<const std::string>(
+            mcp::detail::dump_json(nlohmann::json(std::move(request))));
 
         auto stream = std::make_shared<detail::SubscriptionState>(
             state->strand, state->options.subscription_queue_limit);
@@ -871,7 +874,8 @@ struct Client::Impl {
         JSONRPCNotification notification;
         notification.method = std::string(method);
         notification.params = params;
-        auto wire = std::make_shared<const std::string>(nlohmann::json(std::move(notification)).dump());
+        auto wire = std::make_shared<const std::string>(
+            mcp::detail::dump_json(nlohmann::json(std::move(notification))));
         auto strand = state->strand;
         // Keep the closed-state check and write initiation on the client strand.
         return boost::asio::co_spawn(strand, send_notification_wire(std::move(state), std::move(wire)),
@@ -1359,8 +1363,8 @@ struct Client::Impl {
             JSONRPCNotification notification;
             notification.method = "notifications/cancelled";
             notification.params = nlohmann::json(std::move(cancel_params));
-            auto cancel_wire =
-                std::make_shared<const std::string>(nlohmann::json(std::move(notification)).dump());
+            auto cancel_wire = std::make_shared<const std::string>(
+                mcp::detail::dump_json(nlohmann::json(std::move(notification))));
             boost::asio::co_spawn(state->strand, send_notification_wire(state, std::move(cancel_wire)),
                                   [](const std::exception_ptr&) {});
         }
@@ -1676,7 +1680,7 @@ struct Client::Impl {
         JSONRPCResultResponse response;
         response.id = id;
         response.result = std::move(result);
-        return nlohmann::json(std::move(response)).dump();
+        return mcp::detail::dump_json(nlohmann::json(std::move(response)));
     }
 
     static std::string make_error_wire(const RequestId& id, int code, std::string message) {
@@ -1686,7 +1690,7 @@ struct Client::Impl {
         JSONRPCErrorResponse response;
         response.id = id;
         response.error = std::move(error);
-        return nlohmann::json(std::move(response)).dump();
+        return mcp::detail::dump_json(nlohmann::json(std::move(response)));
     }
 
     static void signal_pending_request(PendingRequest& pending_request) {

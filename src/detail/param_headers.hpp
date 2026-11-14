@@ -71,18 +71,18 @@ inline constexpr std::array<std::string_view, 5> g_SCHEMA_ARRAY_KEYWORDS = {"all
 inline constexpr std::array<std::string_view, 5> g_SCHEMA_MAP_KEYWORDS = {
     "patternProperties", "dependentSchemas", "$defs", "definitions", "dependencies"};
 
-inline std::string escape_pointer_token(std::string_view token) {
-    std::string escaped;
+/// Appends @p token to the JSON Pointer @p location as one more reference token.
+inline void append_pointer_token(std::string& location, std::string_view token) {
+    location += '/';
     for (const char symbol : token) {
         if (symbol == '~') {
-            escaped += "~0";
+            location += "~0";
         } else if (symbol == '/') {
-            escaped += "~1";
+            location += "~1";
         } else {
-            escaped += symbol;
+            location += symbol;
         }
     }
-    return escaped;
 }
 
 /// Whether @p type names one primitive an annotation may mirror, alone or alongside "null".
@@ -106,8 +106,9 @@ class Collector {
     std::vector<ParamHeader> headers;
 
     /// @p reachable: whether the schema at @p location is reached from the root through
-    /// `properties` alone, with @p path the keys taken.
-    void walk(const nlohmann::json& schema, const std::string& location, std::vector<std::string>& path,
+    /// `properties` alone, with @p path the keys taken. @p location grows while a subschema is
+    /// walked and is restored before this returns, so a walk builds no location it does not visit.
+    void walk(const nlohmann::json& schema, std::string& location, std::vector<std::string>& path,
               bool reachable) {
         if (!schema.is_object()) {
             return;
@@ -115,19 +116,28 @@ class Collector {
         if (const auto annotation = schema.find("x-mcp-header"); annotation != schema.end()) {
             record(schema, *annotation, location, path, reachable);
         }
+        const auto length = location.size();
         for (const auto& [keyword, value] : schema.items()) {
-            const auto child = location + "/" + escape_pointer_token(keyword);
             if (keyword == "properties") {
-                walk_map(value, child, path, reachable);
+                append_pointer_token(location, keyword);
+                walk_map(value, location, path, reachable);
             } else if (contains(g_SCHEMA_MAP_KEYWORDS, keyword)) {
-                walk_map(value, child, path, false);
+                append_pointer_token(location, keyword);
+                walk_map(value, location, path, false);
             } else if (value.is_array() && contains(g_SCHEMA_ARRAY_KEYWORDS, keyword)) {
+                append_pointer_token(location, keyword);
+                const auto keyword_length = location.size();
                 for (std::size_t index = 0; index < value.size(); ++index) {
-                    walk(value[index], child + "/" + std::to_string(index), path, false);
+                    location += '/';
+                    location += std::to_string(index);
+                    walk(value[index], location, path, false);
+                    location.resize(keyword_length);
                 }
             } else if (contains(g_SCHEMA_KEYWORDS, keyword)) {
-                walk(value, child, path, false);
+                append_pointer_token(location, keyword);
+                walk(value, location, path, false);
             }
+            location.resize(length);
         }
     }
 
@@ -137,14 +147,17 @@ class Collector {
         return std::find(keywords.begin(), keywords.end(), keyword) != keywords.end();
     }
 
-    void walk_map(const nlohmann::json& map, const std::string& location,
-                  std::vector<std::string>& path, bool reachable) {
+    void walk_map(const nlohmann::json& map, std::string& location, std::vector<std::string>& path,
+                  bool reachable) {
         if (!map.is_object()) {
             return;
         }
+        const auto length = location.size();
         for (const auto& [name, subschema] : map.items()) {
             path.push_back(name);
-            walk(subschema, location + "/" + escape_pointer_token(name), path, reachable);
+            append_pointer_token(location, name);
+            walk(subschema, location, path, reachable);
+            location.resize(length);
             path.pop_back();
         }
     }
@@ -223,8 +236,9 @@ inline const nlohmann::json* argument_at(const nlohmann::json& arguments,
 /// never annotations.
 inline std::vector<ParamHeader> collect_param_headers(const nlohmann::json& input_schema) {
     param_headers::Collector collector;
+    std::string location;
     std::vector<std::string> path;
-    collector.walk(input_schema, "", path, true);
+    collector.walk(input_schema, location, path, true);
     return std::move(collector.headers);
 }
 

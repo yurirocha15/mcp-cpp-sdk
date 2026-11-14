@@ -8,10 +8,9 @@ void Server::add_tool(const std::string& name, const std::string& description,
     Tool tool;
     tool.name = name;
     tool.description = description;
-    tool.inputSchema = input_schema;
 
     register_tool(
-        tool, name,
+        std::move(tool), input_schema, nullptr,
         [h = std::move(handler)](Context& /*ctx*/, const nlohmann::json& params)
             -> Task<nlohmann::json> { co_return h(params); },
         detail::ToolResultMode::eNormalize);

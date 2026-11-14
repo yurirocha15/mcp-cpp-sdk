@@ -24,6 +24,53 @@
 
 using json = nlohmann::json;
 
+namespace {
+
+mcp::CallToolResult sample_tool_result() {
+    mcp::CallToolResult result;
+    result.content.emplace_back(mcp::TextContent{"text", std::string(64, 'a')});
+    mcp::ImageContent image;
+    image.data = std::string(64, 'b');
+    image.mimeType = "image/png";
+    result.content.emplace_back(image);
+    result.content.emplace_back(mcp::TextContent{"text", "second"});
+    result.isError = false;
+    result.meta = json{{"trace", {{"id", "t-1"}}}};
+    result.structuredContent = json{{"items", json::array({1, 2, 3})}, {"name", std::string(64, 'c')}};
+    return result;
+}
+
+}  // namespace
+
+TEST(ProtocolTest, MovedCallToolResultSerializesLikeACopy) {
+    const auto original = sample_tool_result();
+    const json copied = original;
+    auto movable = sample_tool_result();
+    const json moved = json(std::move(movable));
+
+    EXPECT_EQ(moved, copied);
+    EXPECT_EQ(moved.dump(), copied.dump());
+    EXPECT_EQ(moved.at("content").size(), 3u);
+}
+
+TEST(ProtocolTest, MovedCallToolResultWithOnlyContentSerializesLikeACopy) {
+    mcp::CallToolResult original;
+    original.content.emplace_back(mcp::TextContent{"text", "only"});
+    const json copied = original;
+    auto movable = original;
+
+    EXPECT_EQ(json(std::move(movable)), copied);
+    EXPECT_FALSE(copied.contains("isError"));
+}
+
+TEST(ProtocolTest, MovedTextContentSerializesLikeACopy) {
+    const mcp::TextContent original{"text", std::string(64, 'x')};
+    auto movable = original;
+    const json moved = json(std::move(movable));
+
+    EXPECT_EQ(moved, json(original));
+}
+
 TEST(ProtocolTest, InitializeRequestSerialization) {
     mcp::InitializeRequest req;
     req.protocolVersion = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);

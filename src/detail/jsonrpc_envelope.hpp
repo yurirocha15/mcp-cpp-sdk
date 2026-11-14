@@ -1,6 +1,9 @@
 #pragma once
 
+#include <bit>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <optional>
 #include <string_view>
 
@@ -11,6 +14,7 @@ struct JsonRpcEnvelope {
     /// Raw text of the `id` value, such as `7` or `"req-1"`; empty when the member is absent.
     std::string_view id;
     bool has_result_or_error{false};
+    /// Whether the message has a `result` member, which only a successful response has.
     bool has_result{false};
 };
 
@@ -22,13 +26,44 @@ inline std::size_t skip_json_whitespace(std::string_view text, std::size_t pos) 
     return pos;
 }
 
+/// The index of the first quote or backslash among the eight bytes of @p word, loaded from memory
+/// on a little-endian machine, or 8 when there is none.
+inline std::size_t first_quote_or_backslash(std::uint64_t word) {
+    constexpr std::uint64_t g_ones = 0x0101010101010101ULL;
+    constexpr std::uint64_t g_highs = 0x8080808080808080ULL;
+    constexpr int g_bits_per_byte = 8;
+    // Flags the zero bytes of @p value. The lowest flag is exact; a borrow can set false flags
+    // only above it, and taking the lowest flag of both masks never reads those.
+    const auto zero_bytes = [](std::uint64_t value) { return (value - g_ones) & ~value & g_highs; };
+    const auto flags = zero_bytes(word ^ (g_ones * '"')) | zero_bytes(word ^ (g_ones * '\\'));
+    return flags == 0 ? sizeof(word)
+                      : static_cast<std::size_t>(std::countr_zero(flags) / g_bits_per_byte);
+}
+
 /// @return The position after the string that opens at @p pos, or npos when it is unterminated.
 inline std::size_t skip_json_string(std::string_view text, std::size_t pos) {
-    for (++pos; pos < text.size(); ++pos) {
+    // The text values of tool results run to kilobytes, mostly escaped JSON, so the scan jumps
+    // eight bytes at a time to the next quote or backslash instead of testing every byte.
+    const auto size = text.size();
+    ++pos;
+    while (pos < size) {
+        if constexpr (std::endian::native == std::endian::little) {
+            if (pos + sizeof(std::uint64_t) <= size) {
+                std::uint64_t word = 0;
+                std::memcpy(&word, text.data() + pos, sizeof(word));
+                const auto offset = first_quote_or_backslash(word);
+                pos += offset;
+                if (offset == sizeof(word)) {
+                    continue;
+                }
+            }
+        }
         if (text[pos] == '\\') {
-            ++pos;
+            pos += 2;
         } else if (text[pos] == '"') {
             return pos + 1;
+        } else {
+            ++pos;
         }
     }
     return std::string_view::npos;
@@ -107,7 +142,10 @@ inline std::optional<JsonRpcEnvelope> scan_jsonrpc_envelope(std::string_view tex
         }
         if (key == "id") {
             envelope.id = text.substr(pos, value_end - pos);
-        } else if (key == "result" || key == "error") {
+        } else if (key == "result") {
+            envelope.has_result_or_error = true;
+            envelope.has_result = true;
+        } else if (key == "error") {
             envelope.has_result_or_error = true;
             envelope.has_result = key == "result";
         }

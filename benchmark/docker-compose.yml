@@ -9,7 +9,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.5"
+          cpus: "${BENCHMARK_REDIS_CPUS:-0.5}"
           memory: 512M
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -28,7 +28,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2.0"
+          cpus: "${BENCHMARK_API_CPUS:-2.0}"
           memory: 2G
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8100/health"]
@@ -95,6 +95,35 @@ services:
     ports:
       - "8089:8080"
     environment:
+      - MCP_SESSION_MODE=${MCP_SESSION_MODE:-}
+      - PORT=8080
+      - REDIS_URL=redis://redis:6379
+      - API_SERVICE_URL=http://api-service:8100
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    networks:
+      - mcp-network
+
+  ours-coroutines-server:
+    build:
+      context: ..
+      dockerfile: benchmark/alternatives/Dockerfile.ours
+      args:
+        OURS_MODEL: coroutines
+    container_name: mcp-ours-coroutines-server
+    cpuset: "${BENCHMARK_CPUSET:-}"
+    ports:
+      - "8098:8080"
+    environment:
+      - MCP_SESSION_MODE=${MCP_SESSION_MODE:-}
       - PORT=8080
       - REDIS_URL=redis://redis:6379
       - API_SERVICE_URL=http://api-service:8100
@@ -121,6 +150,7 @@ services:
     ports:
       - "8081:8082"
     environment:
+      - MCP_SESSION_MODE=${MCP_SESSION_MODE:-}
       - REDIS_URL=redis://redis:6379
       - API_SERVICE_URL=http://api-service:8100
     deploy:
@@ -143,13 +173,14 @@ services:
 
   go-server:
     build:
-      context: ./benchmark-mcp-servers-v2/go-server
+      context: ./baselines/go-server
       dockerfile: Dockerfile
     container_name: mcp-go-server
     cpuset: "${BENCHMARK_CPUSET:-}"
     ports:
       - "8082:8081"
     environment:
+      - MCP_SESSION_MODE=${MCP_SESSION_MODE:-}
       - REDIS_URL=redis://redis:6379
       - API_SERVICE_URL=http://api-service:8100
     deploy:
@@ -172,13 +203,14 @@ services:
 
   rust-server:
     build:
-      context: ./benchmark-mcp-servers-v2/rust-server
+      context: ./baselines/rust-server
       dockerfile: Dockerfile
     container_name: mcp-rust-server
     cpuset: "${BENCHMARK_CPUSET:-}"
     ports:
       - "8083:8095"
     environment:
+      - MCP_SESSION_MODE=${MCP_SESSION_MODE:-}
       - REDIS_URL=redis://redis:6379
       - API_SERVICE_URL=http://api-service:8100
     deploy:

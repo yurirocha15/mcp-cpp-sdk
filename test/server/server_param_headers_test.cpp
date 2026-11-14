@@ -97,6 +97,33 @@ TEST(ServerParamHeaders, RefusalNamesTheTool) {
     }
 }
 
+TEST(ServerParamHeaders, RefusalNamesTheLocationAsAJsonPointer) {
+    const std::vector<std::pair<std::string, json>> cases = {
+        {"x-mcp-header at / ", {{"type", "object"}, {"x-mcp-header", "A"}}},
+        {"x-mcp-header at /properties/a~1b/properties/c~0d ",
+         object_with({{"a/b", object_with({{"c~d", annotated("string", "Bad Name")}})}})},
+        {"x-mcp-header at /allOf/1/properties/x ",
+         {{"type", "object"},
+          {"allOf", json::array({json::object(), object_with({{"x", annotated("string", "X")}})})}}},
+        {"x-mcp-header at /properties/a/items/properties/b ",
+         object_with(
+             {{"a", {{"type", "array"}, {"items", object_with({{"b", annotated("string", "B")}})}}}})},
+        {"x-mcp-header at /properties/z ",
+         object_with({{"a", {{"type", "object"}, {"properties", json::object()}}},
+                      {"z", annotated("number", "Z")}})},
+    };
+    for (const auto& [expected, schema] : cases) {
+        mcp::Server server({"s", "1.0"}, mcp::ServerCapabilities{});
+        try {
+            add_tool_with_schema(server, schema);
+            ADD_FAILURE() << "expected a SchemaError for " << schema.dump();
+        } catch (const mcp::SchemaError& error) {
+            const std::string text = error.what();
+            EXPECT_NE(text.find(expected), std::string::npos) << text;
+        }
+    }
+}
+
 TEST(ServerParamHeaders, AddToolWithoutAnnotationNeverThrows) {
     const std::vector<json> schemas = {
         {{"type", "object"}},
@@ -313,6 +340,46 @@ TEST_F(ServerParamHeadersDispatch, RetryIsCheckedAndARefusedRetryCanBeRepeated) 
     const auto served = dispatch(*server, retry, with_header("us"));
     ASSERT_TRUE(served.contains("result")) << served;
     EXPECT_EQ(served["result"]["resultType"], "complete") << served;
+}
+
+// Servers built one per session share what they read from a repeated input schema, so each must
+// still check the annotations of its own schema: a server whose schema names another header is
+// not checked by the first one's, and a server built after every holder has gone reads them again.
+TEST_F(ServerParamHeadersDispatch, EachServerChecksTheAnnotationsOfItsOwnSchema) {
+    const auto make = [](std::string_view header) {
+        mcp::ServerCapabilities caps;
+        caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+        auto server = std::make_unique<mcp::Server>(mcp::Implementation{"s", "1.0"}, caps);
+        server->add_tool<json, json>("route", "Routed by one header",
+                                     object_with({{"region", annotated("string", header)}}),
+                                     [](json args) -> mcp::Task<json> { co_return args; });
+        return server;
+    };
+    // Both headers are sent; the one named here disagrees with the "us" in the body.
+    const auto answer = [this](mcp::Server& server, const std::string& header) {
+        mcp::RequestContext context;
+        context.param_headers = {
+            {{"Region", header == "Region" ? "eu" : "us"}, {"Zone", header == "Zone" ? "eu" : "us"}}};
+        const auto response = dispatch(server, route_call("us"), std::move(context));
+        return response.contains("error") ? response["error"]["code"].get<int>() : 0;
+    };
+
+    auto first = make("Region");
+    auto second = make("Region");
+    auto other = make("Zone");
+    for (auto* server : {first.get(), second.get()}) {
+        EXPECT_EQ(answer(*server, "Region"), mcp::g_HEADER_MISMATCH);
+        EXPECT_EQ(answer(*server, "Zone"), 0);
+    }
+    EXPECT_EQ(answer(*other, "Zone"), mcp::g_HEADER_MISMATCH);
+    EXPECT_EQ(answer(*other, "Region"), 0);
+
+    first.reset();
+    second.reset();
+    other.reset();
+    auto again = make("Region");
+    EXPECT_EQ(answer(*again, "Region"), mcp::g_HEADER_MISMATCH);
+    EXPECT_EQ(answer(*again, "Zone"), 0);
 }
 
 TEST_F(ServerParamHeadersDispatch, LegacyRequestsAreNeverChecked) {

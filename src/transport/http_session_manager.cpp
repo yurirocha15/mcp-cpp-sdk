@@ -8,8 +8,10 @@
 #include "../detail/peer_json.hpp"
 #include "../detail/principal.hpp"
 #include "../detail/socket_probe.hpp"
+#include "../detail/strand_executor.hpp"
 
 #include <mcp/core/constants.hpp>
+#include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 #include <mcp/transport/memory.hpp>
@@ -17,6 +19,7 @@
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/dispatch.hpp>
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
@@ -32,7 +35,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
-#include <deque>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -110,8 +112,8 @@ inline void append_sse_event(std::string& out, const std::string& id, const std:
 /// and, once the server has answered, the response. Filled from the dispatch executor and read on
 /// the connection's strand, which owns `signal`.
 struct ModernExchange : std::enable_shared_from_this<ModernExchange> {
-    ModernExchange(boost::asio::strand<boost::asio::any_io_executor> strand_arg,
-                   std::size_t max_queued_arg, bool streams_arg)
+    ModernExchange(boost::asio::any_io_executor strand_arg, std::size_t max_queued_arg,
+                   bool streams_arg)
         : strand(std::move(strand_arg)),
           signal(strand),
           max_queued(max_queued_arg),
@@ -172,7 +174,7 @@ struct ModernExchange : std::enable_shared_from_this<ModernExchange> {
         wake();
     }
 
-    boost::asio::strand<boost::asio::any_io_executor> strand;
+    boost::asio::any_io_executor strand;
     boost::asio::steady_timer signal;
     bool woken{false};
     const std::size_t max_queued;
@@ -181,9 +183,11 @@ struct ModernExchange : std::enable_shared_from_this<ModernExchange> {
     std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
 
     std::mutex mutex;
-    std::deque<std::string> notifications;  // guarded by mutex
-    std::optional<std::string> response;    // guarded by mutex
-    std::function<void()> on_cancel;        // guarded by mutex
+    /// Empty, it holds no memory, as for most requests, which send no notification. Guarded by
+    /// mutex.
+    std::vector<std::string> notifications;
+    std::optional<std::string> response;  // guarded by mutex
+    std::function<void()> on_cancel;      // guarded by mutex
 };
 
 struct SessionRuntime {
@@ -304,7 +308,7 @@ inline StringResponse make_error_response(const StringRequest& request, http::st
                                           std::string_view error_message) {
     nlohmann::json error_body = nlohmann::json::object();
     error_body["error"] = std::string(error_message);
-    return make_json_response(request, status_code, error_body.dump());
+    return make_json_response(request, status_code, mcp::detail::dump_json(error_body));
 }
 
 inline StringResponse make_jsonrpc_error_response(const StringRequest& request,
@@ -313,7 +317,7 @@ inline StringResponse make_jsonrpc_error_response(const StringRequest& request,
     // It names no request, so `id` is left out, as MCP's schema has it.
     nlohmann::json error_body = {{"jsonrpc", "2.0"},
                                  {"error", {{"code", error_code}, {"message", error_message}}}};
-    return make_json_response(request, status_code, error_body.dump());
+    return make_json_response(request, status_code, mcp::detail::dump_json(error_body));
 }
 
 /// A JSON-RPC error answering the request @p id.
@@ -323,7 +327,7 @@ inline StringResponse make_jsonrpc_error_response(const StringRequest& request,
                                                   const nlohmann::json& id) {
     nlohmann::json error_body = {
         {"jsonrpc", "2.0"}, {"error", {{"code", error_code}, {"message", error_message}}}, {"id", id}};
-    return make_json_response(request, status_code, error_body.dump());
+    return make_json_response(request, status_code, mcp::detail::dump_json(error_body));
 }
 
 inline StringResponse make_empty_json_response(const StringRequest& request, http::status status_code) {
@@ -522,27 +526,38 @@ struct StreamableHttpSessionManager::Impl {
         if (server && protocol_policy_) {
             server->set_protocol_policy(*protocol_policy_);
         }
+        // The server's own work runs on the HTTP executor; only a tool handler, which may block,
+        // moves to the tool executor.
+        if (server && tool_executor_) {
+            server->set_handler_executor(tool_executor_);
+        }
         return server;
     }
 
     std::shared_ptr<Server> modern_server() {
         std::lock_guard lock(modern_server_mutex_);
         if (!modern_server_) {
-            modern_server_ = build_server(tool_executor_ ? tool_executor_ : executor);
+            modern_server_ = build_server(executor);
         }
         return modern_server_;
     }
 
     std::shared_ptr<detail_session_mgr::SessionRuntime> create_session(
-        boost::asio::strand<boost::asio::any_io_executor> conn_strand, std::string principal) {
+        boost::asio::any_io_executor conn_strand, std::string principal) {
         if (closed.load(std::memory_order_acquire)) {
             return nullptr;
         }
 
         auto session_id = detail_session_mgr::generate_session_id();
 
+        // The session's Server and its endpoint share a strand of the session's own. With the
+        // endpoint on the strand of the connection that created the session, a handler that
+        // blocks would hold up every other session created on that connection. The server's read
+        // loop also waits for a request in place, not through a coroutine spawned onto another
+        // strand for every read.
+        auto session_strand = detail::make_strand_executor(executor);
         auto client_mem = std::make_shared<MemoryTransport>(conn_strand);
-        auto server_mem = std::make_shared<MemoryTransport>(conn_strand);
+        auto server_mem = std::make_shared<MemoryTransport>(session_strand);
         client_mem->set_peer(server_mem);
         server_mem->set_peer(client_mem);
         auto server = build_server(executor);
@@ -562,7 +577,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         std::shared_ptr<ITransport> server_transport = server_mem;
-        auto server_exec = tool_executor_ ? tool_executor_ : executor;
+        auto server_exec = session_strand;
 
         boost::asio::co_spawn(
             conn_strand,
@@ -696,7 +711,7 @@ struct StreamableHttpSessionManager::Impl {
     }
 
     Task<void> handle_connection(const std::shared_ptr<Connection>& connection,
-                                 boost::asio::strand<boost::asio::any_io_executor> conn_strand) {
+                                 boost::asio::any_io_executor conn_strand) {
         namespace beast = boost::beast;
 
         auto& stream = *connection;
@@ -705,6 +720,8 @@ struct StreamableHttpSessionManager::Impl {
         // Set once a watch has read the client's end of the stream. That end is consumed: a later
         // read on this connection would wait for an event that already happened.
         bool client_finished_sending = false;
+        // The start line and fields of the answer being written, kept for the next answer.
+        std::vector<char> response_head;
         // The principal the bearer token validator named for the request being served.
         std::optional<std::string> principal_id;
         const detail::RefuseBeforeBody refuse =
@@ -795,7 +812,8 @@ struct StreamableHttpSessionManager::Impl {
             }
             auto& response = std::get<0>(reply);
             const bool keep_connection_alive = response.keep_alive();
-            if (!co_await detail::write_response_within_limits(stream, response, limits) ||
+            if (!co_await detail::write_response_within_limits(stream, response, limits,
+                                                               response_head) ||
                 !keep_connection_alive) {
                 break;
             }
@@ -897,8 +915,7 @@ struct StreamableHttpSessionManager::Impl {
         co_return std::nullopt;
     }
 
-    Task<Reply> handle_request(const StringRequest& request,
-                               boost::asio::strand<boost::asio::any_io_executor> conn_strand,
+    Task<Reply> handle_request(const StringRequest& request, boost::asio::any_io_executor conn_strand,
                                std::unique_ptr<Server>& stateless_server, detail::BudgetLease& bytes,
                                std::optional<std::string> principal_id) {
         if (closed.load(std::memory_order_acquire)) {
@@ -981,7 +998,7 @@ struct StreamableHttpSessionManager::Impl {
             error_body["id"] = id;
         }
         return detail_session_mgr::make_json_response(request, http::status::not_found,
-                                                      error_body.dump());
+                                                      mcp::detail::dump_json(error_body));
     }
 
     bool has_valid_protocol_header(const StringRequest& request) const {
@@ -1023,7 +1040,7 @@ struct StreamableHttpSessionManager::Impl {
             co_return detail_session_mgr::make_empty_json_response(request, http::status::accepted);
         }
 
-        const auto dispatch_executor = tool_executor_ ? tool_executor_ : executor;
+        const auto dispatch_executor = executor;
         if (!stateless_server) {
             stateless_server = build_server(dispatch_executor);
         }
@@ -1044,8 +1061,7 @@ struct StreamableHttpSessionManager::Impl {
     /// @p check_headers is false for a request that names no 2026-07-28 version and reaches here
     /// only because legacy clients are not served; the server refuses it.
     Task<Reply> handle_modern_post(const StringRequest& request, nlohmann::json request_json,
-                                   bool check_headers,
-                                   boost::asio::strand<boost::asio::any_io_executor> conn_strand,
+                                   bool check_headers, boost::asio::any_io_executor conn_strand,
                                    std::string principal) {
         if (closed.load(std::memory_order_acquire)) {
             co_return detail_session_mgr::make_error_response(
@@ -1109,18 +1125,17 @@ struct StreamableHttpSessionManager::Impl {
 
         // The server answers on the dispatch executor while the connection watches the client, so
         // a client that goes away cancels the request.
-        const auto dispatch_executor = tool_executor_ ? tool_executor_ : executor;
+        const auto dispatch_executor = executor;
         auto request_id = request_json.at("id");
         boost::asio::co_spawn(
             dispatch_executor,
             dispatch_modern(modern_server(), std::move(request_json), std::move(request_context)),
             [exchange, request_id = std::move(request_id)](std::exception_ptr error, std::string wire) {
                 if (error) {
-                    wire = nlohmann::json{{"jsonrpc", "2.0"},
-                                          {"id", request_id},
-                                          {"error",
-                                           {{"code", g_INTERNAL_ERROR}, {"message", "Internal error"}}}}
-                               .dump();
+                    wire = mcp::detail::dump_json(nlohmann::json{
+                        {"jsonrpc", "2.0"},
+                        {"id", request_id},
+                        {"error", {{"code", g_INTERNAL_ERROR}, {"message", "Internal error"}}}});
                 }
                 exchange->finish(std::move(wire));
             });
@@ -1258,7 +1273,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         for (;;) {
-            std::deque<std::string> notifications;
+            std::vector<std::string> notifications;
             std::optional<std::string> response;
             {
                 std::lock_guard lock(exchange->mutex);
@@ -1306,7 +1321,7 @@ struct StreamableHttpSessionManager::Impl {
                     half_closed = true;
                     client_finished_sending = true;
                 }
-                const auto error_code = detail::response_error_code(*response);
+                const auto error_code = detail::serialized_response_error_code(*response);
                 if (error_code == g_HEADER_MISMATCH) {
                     header_mismatch_rejections_.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -1563,8 +1578,7 @@ struct StreamableHttpSessionManager::Impl {
 
     std::variant<std::shared_ptr<detail_session_mgr::SessionRuntime>, StringResponse>
     resolve_session_for_post(const StringRequest& request, const nlohmann::json& request_json,
-                             boost::asio::strand<boost::asio::any_io_executor> conn_strand,
-                             std::string principal) {
+                             boost::asio::any_io_executor conn_strand, std::string principal) {
         if (closed.load(std::memory_order_acquire)) {
             return detail_session_mgr::make_error_response(request, http::status::service_unavailable,
                                                            "Transport closed");
@@ -1658,8 +1672,7 @@ struct StreamableHttpSessionManager::Impl {
     /// @p principal_id is the principal the bearer token validator named, if it named one. Requests
     /// are attributed to it, or else to a digest of their Authorization header. A request served
     /// without a session carries that principal; a session belongs to the principal that created it.
-    Task<Reply> handle_post(const StringRequest& request,
-                            boost::asio::strand<boost::asio::any_io_executor> conn_strand,
+    Task<Reply> handle_post(const StringRequest& request, boost::asio::any_io_executor conn_strand,
                             std::unique_ptr<Server>& stateless_server, detail::BudgetLease& bytes,
                             std::optional<std::string> principal_id) {
         if (closed.load(std::memory_order_acquire)) {
@@ -1770,7 +1783,7 @@ struct StreamableHttpSessionManager::Impl {
             co_return response;
         }
 
-        const auto request_id_key = request_json.at("id").dump();
+        const auto request_id_key = mcp::detail::dump_json(request_json.at("id"));
 
         auto timer_signal = std::make_shared<boost::asio::steady_timer>(conn_strand);
         timer_signal->expires_at(std::chrono::steady_clock::time_point::max());
@@ -1842,8 +1855,7 @@ struct StreamableHttpSessionManager::Impl {
     /// Last-Event-ID resumes a stream: one still going on is served live from there, and one that
     /// ended is replayed.
     Task<Reply> handle_get(const StringRequest& request, std::string principal,
-                           detail::BudgetLease& bytes,
-                           boost::asio::strand<boost::asio::any_io_executor> conn_strand) {
+                           detail::BudgetLease& bytes, boost::asio::any_io_executor conn_strand) {
         const auto session_header_it = request.find("Mcp-Session-Id");
         if (session_header_it == request.end()) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
@@ -1969,7 +1981,7 @@ struct StreamableHttpSessionManager::Impl {
     }
 
     static void signal_timer(const std::shared_ptr<boost::asio::steady_timer>& timer) {
-        boost::asio::post(timer->get_executor(), [timer]() { (void)timer->cancel(); });
+        boost::asio::dispatch(timer->get_executor(), [timer]() { (void)timer->cancel(); });
     }
 
     /// Routes a message the session's server wrote: a response to the stream of its POST, which
@@ -1984,26 +1996,37 @@ struct StreamableHttpSessionManager::Impl {
                                              StreamCounters& counters) {
         // Routing needs only the id and whether a result or error is present, so the message is
         // scanned rather than parsed; the id alone is parsed, to key it as its request was keyed.
+        // Until a message with a result has gone by, the session's initialize has not succeeded.
+        const bool established = session->established.load(std::memory_order_acquire);
         bool is_response = false;
         std::string request_id_key;
         if (const auto envelope = detail::scan_jsonrpc_envelope(message)) {
+            if (!established) {
+                session->established.store(envelope->has_result, std::memory_order_release);
+            }
             is_response = !envelope->id.empty() && envelope->has_result_or_error;
             if (is_response) {
                 const auto id = nlohmann::json::parse(envelope->id, nullptr, false);
                 if (id.is_discarded()) {
                     return;
                 }
-                request_id_key = id.dump();
+                request_id_key = mcp::detail::dump_json(id);
             }
         } else {
             const auto message_json = nlohmann::json::parse(message, nullptr, false);
+            if (!established) {
+                // The scan declined this message, so it is read with the limits of peer input.
+                const auto parsed = detail::parse_peer_json(message);
+                session->established.store(parsed.is_object() && parsed.contains("result"),
+                                           std::memory_order_release);
+            }
             if (message_json.is_discarded() || !message_json.is_object()) {
                 return;
             }
             is_response = message_json.contains("id") &&
                           (message_json.contains("result") || message_json.contains("error"));
             if (is_response) {
-                request_id_key = message_json.at("id").dump();
+                request_id_key = mcp::detail::dump_json(message_json.at("id"));
             }
         }
         std::shared_ptr<boost::asio::steady_timer> timer_to_signal;
@@ -2096,19 +2119,6 @@ struct StreamableHttpSessionManager::Impl {
                     *session->client_transport);
                 if (!message) {
                     break;
-                }
-                if (!session->established.load(std::memory_order_acquire)) {
-                    // The server's own message, read without the depth limit on peer input: an
-                    // initialize result nested deeper than a peer may send still establishes the
-                    // session its client was given.
-                    bool answered = false;
-                    if (const auto envelope = detail::scan_jsonrpc_envelope(message->message)) {
-                        answered = envelope->has_result;
-                    } else {
-                        const auto parsed = detail::parse_peer_json(message->message);
-                        answered = parsed.is_object() && parsed.contains("result");
-                    }
-                    session->established.store(answered, std::memory_order_release);
                 }
                 dispatch_response_to_pending(session.get(), std::move(message->message),
                                              json_only_mode->load(std::memory_order_acquire),
@@ -2433,7 +2443,7 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
             (void)socket.close(ignored);
             continue;
         }
-        auto conn_strand = boost::asio::make_strand(impl->executor);
+        auto conn_strand = detail::make_strand_executor(impl->executor);
         auto native_handle = socket.release();
         boost::asio::ip::tcp::socket conn_socket(conn_strand, boost::asio::ip::tcp::v4(),
                                                  native_handle);

@@ -16,6 +16,10 @@ from typing import Any
 
 
 PROTOCOL_VERSION = "2024-11-05"
+# Revision 2026-07-28 has no initialize handshake and no sessions: every request is self-contained.
+MODERN_PROTOCOL_VERSION = "2026-07-28"
+# The revision the sessions below ask for; main() sets it from --protocol-version.
+requested_protocol_version = PROTOCOL_VERSION
 ELIGIBILITY_CONTRACT = "upstream-v2-strict-mcp-v1"
 SUPPLEMENTAL_CONTRACT = "adapter-exact-v1"
 SUPPORTED_PROTOCOL_VERSIONS = {
@@ -442,11 +446,27 @@ def validate_tool_schema(tool: dict[str, Any]) -> bool:
     )
 
 
+def modern_request_meta() -> dict[str, Any]:
+    return {
+        "io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION,
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {"name": "benchmark-verify", "version": "1.0"},
+    }
+
+
 class McpSession:
-    def __init__(self, url: str, expected_protocol_version: str | None = None) -> None:
+    def __init__(
+        self,
+        url: str,
+        expected_protocol_version: str | None = None,
+    ) -> None:
         self.url = url
         self.session_id: str | None = None
         self.protocol_version: str | None = None
+        self.modern = requested_protocol_version == MODERN_PROTOCOL_VERSION
+        if self.modern:
+            self._discover(expected_protocol_version)
+            return
         response = self.post(
             {
                 "jsonrpc": "2.0",
@@ -492,14 +512,54 @@ class McpSession:
         self.protocol_version = negotiated_version
         self.post({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
+    def _discover(self, expected_protocol_version: str | None) -> None:
+        response = self.post(
+            {"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {}}
+        )
+        if not response or response.get("error") or not isinstance(response.get("result"), dict):
+            raise RuntimeError(f"server/discover failed: {response!r}")
+        result = response["result"]
+        supported = result.get("supportedVersions")
+        capabilities = result.get("capabilities")
+        server_info = (result.get("_meta") or {}).get("io.modelcontextprotocol/serverInfo")
+        if not isinstance(supported, list) or MODERN_PROTOCOL_VERSION not in supported:
+            raise RuntimeError(f"server/discover does not list {MODERN_PROTOCOL_VERSION}: {response!r}")
+        if (
+            expected_protocol_version is not None
+            and expected_protocol_version != MODERN_PROTOCOL_VERSION
+        ):
+            raise RuntimeError(
+                f"server/discover changed the expected revision {expected_protocol_version}"
+            )
+        if not isinstance(capabilities, dict) or not isinstance(capabilities.get("tools"), dict):
+            raise RuntimeError(f"server/discover did not advertise tools: {response!r}")
+        if (
+            not isinstance(server_info, dict)
+            or not isinstance(server_info.get("name"), str)
+            or not server_info["name"]
+            or not isinstance(server_info.get("version"), str)
+            or not server_info["version"]
+        ):
+            raise RuntimeError(f"server/discover returned invalid serverInfo: {response!r}")
+        self.protocol_version = MODERN_PROTOCOL_VERSION
+
     def post(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         }
+        if self.modern:
+            # The headers mirror the body; a server must refuse a request where they disagree.
+            params = dict(payload.get("params") or {})
+            params["_meta"] = modern_request_meta()
+            payload = dict(payload, params=params)
+            headers["MCP-Protocol-Version"] = MODERN_PROTOCOL_VERSION
+            headers["Mcp-Method"] = payload["method"]
+            if payload["method"] == "tools/call":
+                headers["Mcp-Name"] = params["name"]
         if self.session_id:
             headers["Mcp-Session-Id"] = self.session_id
-        if self.protocol_version:
+        if self.protocol_version and not self.modern:
             headers["MCP-Protocol-Version"] = self.protocol_version
         request = urllib.request.Request(
             self.url,
@@ -543,7 +603,7 @@ class McpSession:
             return message
 
     def close(self) -> None:
-        if not self.session_id:
+        if self.modern or not self.session_id:
             return
         headers = {"Mcp-Session-Id": self.session_id}
         if self.protocol_version:
@@ -856,7 +916,15 @@ def main() -> None:
     parser.add_argument("--require-supplemental", action="store_true")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--initialize-only", action="store_true")
+    parser.add_argument(
+        "--protocol-version",
+        choices=[PROTOCOL_VERSION, MODERN_PROTOCOL_VERSION],
+        default=PROTOCOL_VERSION,
+        help="revision the verifier asks for",
+    )
     args = parser.parse_args()
+    global requested_protocol_version
+    requested_protocol_version = args.protocol_version
     if args.initialize_only:
         negotiated_protocol_version = initialize_only(
             args.url, args.expected_protocol_version
@@ -864,7 +932,7 @@ def main() -> None:
         result = {
             "schema_version": 2,
             "server": args.name,
-            "requested_protocol_version": PROTOCOL_VERSION,
+            "requested_protocol_version": requested_protocol_version,
             "negotiated_protocol_version": negotiated_protocol_version,
             "eligibility_contract": ELIGIBILITY_CONTRACT,
             "eligibility_valid": None,
@@ -881,7 +949,7 @@ def main() -> None:
             {
                 "schema_version": 2,
                 "server": args.name,
-                "requested_protocol_version": PROTOCOL_VERSION,
+                "requested_protocol_version": requested_protocol_version,
                 "expected_server_type": args.expected_server_type,
             }
         )

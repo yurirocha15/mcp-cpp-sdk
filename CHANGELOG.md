@@ -413,6 +413,135 @@ Versioning; a `0.x` version is a stable release unless its version has an
   that only uses a pattern the matcher cannot run leaves the tool's results
   unchecked. `ClientOptions::validate_tool_schemas = false` turns all of this
   off.
+- `CompiledSchema::compile()` returns the schema it already compiled when it
+  is given the same schema and options again and something still holds that
+  schema, so a server factory that registers the same tools for every session
+  compiles their schemas once while sessions overlap, not once per session.
+  The cache keeps at most 256 schemas, oldest first out, and lets go of a
+  compiled schema with its last holder, so the schemas of a peer's tool
+  listing are not kept for the life of the process. A repeat is found by a
+  hash of the schema and options and confirmed by comparing the schema it
+  was compiled from, down to how each number is written, so finding it
+  serializes nothing, and a schema of any size is kept. A repeat is looked up
+  before the schema is measured for its nesting depth and for NaN or Infinity,
+  since the schema it matches passed those checks when it was compiled; a
+  schema that fails them is refused as before.
+- A tool registered with an input schema that `CompiledSchema` already shares
+  with a live tool reuses the `x-mcp-header` annotations read from it, so a
+  server factory that registers the same tools for every session reads each
+  input schema's annotations once while sessions overlap.
+- `Server::add_tool()` no longer copies the input and output schemas it is
+  given into the registered tool; the server keeps each schema only in its
+  compiled form, which servers registering the same schema share, and
+  `tools/list` lists the schemas from it, written as they were given.
+  Servers that list the same compiled schema while one of them holds its text
+  share that text, so a server built per session serializes each schema of
+  its `tools/list` once while sessions overlap, not once per session.
+- An in-memory transport allocates nothing for its message and reader queues
+  until something is queued; each endpoint used to allocate about 1 KiB for
+  them when it was created. The Streamable HTTP server creates a pair per
+  session.
+- `StreamableHttpSessionManager::set_tool_executor()` now moves only the call
+  of a tool, resource or prompt handler to that executor. A session's reading,
+  parsing and answering of protocol messages run on the HTTP executor, and the
+  new `Server::set_handler_executor()` is how a `Server` is told where its
+  handlers run. Each handler call runs on a strand of its own, so a handler
+  that fans out with `co_await (a || b)` never has two branches running at
+  once, and two calls of one session may run at the same time. The executor passed to the server factory is the HTTP
+  executor, where it used to be the tool executor when one was set.
+- The Streamable HTTP server no longer parses a finished 2026-07-28 response
+  to read its error code when the response has no `"error"` member.
+- A 2026-07-28 `tools/call`, `prompts/get` or `resources/read` from a client
+  that declares no `elicitation`, `sampling` or `roots` capability runs its
+  handler inside the request, since such a client can never be asked for
+  input. A handler that asks anyway still gets the missing-capability answer.
+  Other requests keep the parked-handler path.
+- A server without middleware calls a tool with the arguments as they arrived,
+  without copying the call's parameters or the registered handler, and
+  `tools/list` sends the tools as the text they serialize to when it lists
+  them all. That text is built by the first such list after a registration,
+  not by each registration, so a server built for a session that never lists
+  its tools never serializes them. A handler's `CallToolResult` is moved into the response, and a
+  result of type `CallToolResult` is no longer decoded a second time to
+  validate it; `to_json` has overloads that take a `CallToolResult`,
+  `ContentBlock` or `TextContent` by rvalue and move what they hold.
+- The strands that the HTTP session manager makes for a connection, `Server`
+  for a session, `MemoryTransport` for an endpoint and the serialized
+  transport writer are kept as an `any_io_executor`. A strand over the
+  executor of an `io_context` is built as
+  `boost::asio::strand<io_context::executor_type>`, which with Boost 1.83 is
+  small enough for the `any_io_executor` to store inline, so the copies and the
+  `prefer()` and `require()` calls that Boost.Asio makes for each asynchronous
+  operation no longer allocate; the `strand<any_io_executor>` it replaces
+  allocated for each of them. With Boost 1.74 that strand is 32 bytes and still
+  allocates. A `MemoryTransport` or writer given a strand of this kind uses it
+  instead of putting a second strand over it, and an in-memory read or write
+  made by a coroutine that already runs on the strand it needs runs in place
+  rather than through a spawned coroutine. The timer that wakes a pending HTTP
+  request is cancelled in place when the code that signals it already runs on
+  the timer's strand. On the benchmark's 2025-03-26 workload the strand change
+  took the allocation calls from 1396 to 767 per operation.
+- A 2026-07-28 request that `StreamableHttpSessionManager` serves keeps the
+  notifications it streams in a vector, which allocates nothing for a request
+  that sends none; the deque it replaces allocated on construction, once for
+  the request and once for each pass of the loop that writes its answer.
+- The server's identity that a 2026-07-28 result reports in `_meta` is
+  converted to JSON once, when the `Server` is constructed, instead of for
+  every result.
+- `RequestMetadata::meta` is a `std::shared_ptr<const nlohmann::json>` that
+  shares the `_meta` object of the request it was read from, instead of a copy
+  of that object; write `request_meta()->meta->find(...)`. It is never null,
+  and a default-constructed `RequestMetadata` holds an empty object. Reading
+  the per-request fields of a 2026-07-28 request no longer copies its `_meta`.
+- Registering a tool looks for `x-mcp-header` annotations without building
+  the JSON Pointer of every member of its input schema; the location is built
+  only along the path walked and named only in a refusal.
+- `StreamableHttpSessionManager` learns that a session's `initialize`
+  succeeded from the scan that routes its answer instead of parsing the
+  answer a second time.
+- The JSON-RPC messages `Server`, `Client` and the transports send, the text
+  of `tools/list` and the schema texts it shares are
+  written by the SDK's own JSON writer rather than `nlohmann::json::dump()`.
+  Its text is byte for byte what `dump()` writes, and a string that is not
+  valid UTF-8 throws the same `type_error` 316. A response is written around
+  its result instead of being built as a response object first.
+- The messages a `Server` reads from its transport and the bodies the HTTP
+  transports and `StreamableHttpSessionManager` receive are parsed by the
+  SDK's own JSON parser, which builds the same `nlohmann::json` value as
+  `nlohmann::json::parse()`, number types included. Text it does not read
+  itself, which is invalid JSON, a byte order mark, text after a NUL byte, an
+  integer out of the range of its type or a number read under a locale whose
+  decimal point is not `.`, is passed to `nlohmann::json::parse()` as before.
+- The JSON writer keeps its place in the output string as an index and grows
+  the string ahead of what it writes, so writing a character is a store
+  rather than a call into `std::string`, and a string that needs no escape is
+  copied in one step.
+- A 2026-07-28 result that has no `_meta` of its own is written with
+  `resultType`, the server's identity in `_meta` and any cache hints added
+  as it is written, in the order `dump()` would put them, rather than by
+  inserting them into the result first; a result with its own `_meta` is
+  still built as before. A result that already holds one of these members
+  keeps its value.
+- The scan that routes each answer of a `StreamableHttpSessionManager`
+  session to its HTTP request passes over string values eight bytes at a
+  time to the next quote or backslash, instead of testing every byte of a
+  tool result's text.
+- `Server` checks a request's JSON-RPC envelope looking each member up once,
+  and compares `jsonrpc` with `"2.0"` without building a JSON value for it.
+- `Server` checks the envelope of a request read from its session, and looks
+  up whether the request names its protocol version in `_meta`, once each
+  instead of twice.
+- `StreamableHttpSessionManager` and `HttpServerTransport` write an answer
+  that keeps its connection open and has a body of its `Content-Length` as
+  its start line and fields followed by its body, in one write, instead of
+  through Beast's serializer. The bytes sent are the same; other answers,
+  and those that close their connection, still go through Beast.
+- A message given to the serialized transport writer by a coroutine that runs
+  on the writer's strand, when no other message is queued or being written, is
+  written by that coroutine in place, without a coroutine spawned to queue it
+  and another to drain the queue. Messages still reach the transport one at a
+  time and in the order they were given, including one that a caller on the
+  strand gives after a `post_message()`.
 
 ### Removed
 
@@ -423,6 +552,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Fixed
 
+- With libc++, an exception of `nlohmann_json` that the shared library
+  throws, such as the `nlohmann::json::type_error` 316 of
+  `mcp::detail::dump_json()` for text that is not valid UTF-8, could not be
+  caught by its type: the library kept its own `type_info` for each of
+  `nlohmann_json`'s exception classes. It now gives them default visibility,
+  as it does Beast's error categories.
 - `OAuthAuthorizationManager` handed the authorization endpoint named in the
   authorization server's metadata to the consent callback as
   `AuthorizationRequest::authorization_url` without checking it. The endpoint
@@ -449,6 +584,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `elicitation-sep1034-defaults` and `elicitation-sep1330-enums`, and the
   client scenarios `sse-retry` and `elicitation-sep1034-client-defaults`, now
   pass.
+- A `StreamableHttpSessionManager` handler that blocks its thread, with no tool
+  executor set, no longer holds up the other sessions created over the same
+  keep-alive connection. Each session's `Server` and its in-memory endpoint
+  now share a strand of the session's own.
 - A throw that does not derive from `std::exception`, from middleware or from
   a resource or prompt handler, left the request unanswered. It is now answered
   with `-32603`. Tool handlers still report it as a tool error.
