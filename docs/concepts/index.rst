@@ -20,6 +20,7 @@ build on.
    context
    completions
    subscriptions
+   tasks
    elicitation
    pagination
    roots

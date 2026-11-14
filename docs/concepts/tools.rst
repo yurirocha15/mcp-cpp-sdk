@@ -113,6 +113,9 @@ report progress and periodically check for cancellation requests.
    :language: cpp
    :lines: 60-100
 
+For work that outlasts a request, a tool can run as a task that the client polls
+for, see :doc:`tasks`.
+
 For more details on using the context, see :doc:`context`.
 
 Error Handling
