@@ -1,5 +1,7 @@
 // Scenario-driven client fixture for the official MCP conformance runner.
 
+#include <mcp/auth/client_credentials.hpp>
+#include <mcp/auth/enterprise_authorization.hpp>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/client/client.hpp>
 #include <mcp/transport/http_client.hpp>
@@ -100,6 +102,9 @@ void install_reverse_rpc_handlers(mcp::Client& client) {
     });
 }
 
+/// The scenario being run; the authorization extension scenarios declare their extension.
+std::string g_scenario;
+
 mcp::Task<mcp::ConnectResult> connect_conformance_client(mcp::Client& client) {
     mcp::Implementation implementation;
     implementation.name = "mcp-cpp-sdk-conformance-client";
@@ -111,6 +116,11 @@ mcp::Task<mcp::ConnectResult> connect_conformance_client(mcp::Client& client) {
     capabilities.elicitation = std::move(elicitation);
     capabilities.sampling = mcp::ClientCapabilities::SamplingCapability{};
     capabilities.roots = mcp::ClientCapabilities::RootsCapability{false};
+    if (g_scenario.starts_with("auth/client-credentials")) {
+        mcp::auth::declare_client_credentials_support(capabilities);
+    } else if (g_scenario == "auth/enterprise-managed-authorization") {
+        mcp::auth::declare_enterprise_authorization_support(capabilities);
+    }
 
     return client.connect(implementation, capabilities);
 }
@@ -385,6 +395,55 @@ mcp::auth::OAuthAuthorizationConfig make_authorization_config(boost::asio::io_co
     return config;
 }
 
+/// The authenticator of the authorization extension scenarios, which authorize without a person: the
+/// runner hands over the credentials in `MCP_CONFORMANCE_CONTEXT`. Null for every other scenario.
+std::shared_ptr<mcp::auth::Authenticator> make_machine_authenticator(
+    const boost::asio::any_io_executor& executor, std::string_view scenario,
+    const std::string& server_url) {
+    const bool client_credentials = scenario.starts_with("auth/client-credentials");
+    if (!client_credentials && scenario != "auth/enterprise-managed-authorization") {
+        return nullptr;
+    }
+    const auto context = conformance_context();
+    if (!context) {
+        throw std::runtime_error("MCP_CONFORMANCE_CONTEXT is required for " + std::string(scenario));
+    }
+    auto token_store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+
+    if (client_credentials) {
+        mcp::auth::ClientCredentialsConfig config;
+        config.server_url = server_url;
+        config.policy = make_fetch_policy(server_url);
+        config.client.client_id = context->at("client_id").get<std::string>();
+        if (context->contains("private_key_pem")) {
+            mcp::auth::PrivateKeyJwtConfig key;
+            key.private_key_pem = context->at("private_key_pem").get<std::string>();
+            if (context->contains("signing_algorithm")) {
+                key.algorithm = context->at("signing_algorithm").get<std::string>();
+            }
+            config.client.private_key_jwt = std::move(key);
+        } else {
+            config.client.client_secret = context->at("client_secret").get<std::string>();
+        }
+        return std::make_shared<mcp::auth::ClientCredentialsAuthenticator>(executor, token_store,
+                                                                           std::move(config));
+    }
+
+    mcp::auth::EnterpriseAuthorizationConfig config;
+    config.server_url = server_url;
+    config.policy = make_fetch_policy(server_url);
+    config.idp_token_endpoint = context->at("idp_token_endpoint").get<std::string>();
+    config.idp_client.client_id = context->at("idp_client_id").get<std::string>();
+    config.client.client_id = context->at("client_id").get<std::string>();
+    config.client.client_secret = context->at("client_secret").get<std::string>();
+    auto id_token = context->at("idp_id_token").get<std::string>();
+    return std::make_shared<mcp::auth::EnterpriseAuthorizationAuthenticator>(
+        executor, token_store, std::move(config),
+        [id_token]() -> mcp::Task<mcp::auth::IdentityAssertion> {
+            co_return mcp::auth::IdentityAssertion{id_token};
+        });
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -395,6 +454,7 @@ int main(int argc, char** argv) {
 
     try {
         auto scenario = required_environment("MCP_CONFORMANCE_SCENARIO");
+        g_scenario = scenario;
         std::string server_url = argv[argc - 1];
 
         boost::asio::io_context io_context;
@@ -402,8 +462,9 @@ int main(int argc, char** argv) {
 
         // Built before the transport exists, because binding runner-supplied credentials to their
         // issuer may need a discovery round trip that drives this io_context to completion first.
+        auto machine_authenticator = make_machine_authenticator(executor, scenario, server_url);
         std::optional<mcp::auth::OAuthAuthorizationConfig> authorization_config;
-        if (std::string_view(scenario).starts_with("auth/")) {
+        if (!machine_authenticator && std::string_view(scenario).starts_with("auth/")) {
             authorization_config = make_authorization_config(io_context, server_url);
         }
 
@@ -415,6 +476,11 @@ int main(int argc, char** argv) {
                 executor, std::make_shared<mcp::auth::InMemoryTokenStore>(),
                 std::move(*authorization_config), make_authorization_callback(executor));
             transport = std::make_shared<mcp::auth::OAuthClientTransport>(transport, manager);
+        }
+
+        if (machine_authenticator) {
+            transport =
+                std::make_shared<mcp::auth::OAuthClientTransport>(transport, machine_authenticator);
         }
 
         mcp::Client client(transport, executor);
