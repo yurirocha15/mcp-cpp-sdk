@@ -300,9 +300,9 @@ Sticky Sessions
 
 A session of 2025-11-25 or earlier is stateful (initialization, followed by multiple requests), so ensure your load balancer uses **sticky sessions** (session affinity) for such clients. If a client's request is routed to a different instance that hasn't seen the ``initialize`` request, the server will reject the request.
 
-A 2026-07-28 request needs no session, and any instance that serves the same tools, resources and prompts can answer it. Two cases still need the request to reach a particular instance:
+A 2026-07-28 request needs no session, and any instance that serves the same tools, resources and prompts can answer it. Two cases can still need the request to reach a particular instance:
 
-- A request whose handler asks the client a question (``Context::elicit()``, ``sample_llm()``, ``request_roots()``) waits in the ``Server`` instance. The client's retry, which carries the ``requestState``, must reach that instance; a retry that does not is answered as for an unknown ``requestState``.
+- A request whose handler asks the client a question (``Context::elicit()``, ``sample_llm()``, ``request_roots()``) waits in the ``Server`` instance by default. The client's retry, which carries the ``requestState``, must reach that instance; a retry that does not is answered as for an unknown ``requestState``. With sealed request state (``MrtrOptions::state_mode``, see :doc:`/concepts/protocol`) the state travels in the ``requestState`` and any instance configured with the same ``sealing_keys`` serves the retry.
 - A ``subscriptions/listen`` stream is one long-lived request, and the notifications it carries come from the instance that holds it.
 
 Health Checks

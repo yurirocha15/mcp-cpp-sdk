@@ -200,6 +200,25 @@ Versioning; a `0.x` version is a stable release unless its version has an
   up throws from its question and its answer is discarded. A cancelled retry
   cancels the handler, and its notifications go to the request that carries it
   now, with that request's progress token.
+- Sealed request state for multi round-trip requests:
+  `MrtrOptions::state_mode = MrtrStateMode::eSealed` (stored state stays the
+  default) makes the `requestState` an AES-256-GCM sealed blob, keyed by
+  HKDF-SHA256 from `MrtrOptions::sealing_keys` (the first key seals, all open,
+  so keys rotate), instead of keeping the handler in the server instance. Any
+  instance with the key serves the retry: it checks the principal, expiry,
+  method and parameters, then runs the handler again from the start, and the
+  questions earlier rounds answered return their answers at once.
+  `Context::is_replay()` is true while the handler re-executes work an earlier
+  round did. `state_ttl` (5 minutes), `max_rounds` (16) and `max_state_bytes`
+  (32 KiB) bound the state; `consume` is called with each state's id before its
+  retry is served, for deployments that serve a state once. A refused retry is
+  answered as for an unknown `requestState`. Progress and log notifications
+  sent while replaying are sent again. A sealed state is not single-use: until
+  it expires it can be sent again, and the steps of a handler after its last
+  question run again each time, so make them idempotent or set `consume`. A
+  handler is released at its first unanswered question without running any more
+  of its code. The expiry is a wall-clock time, so instances sharing keys need
+  reasonably synchronized clocks.
 - `subscriptions/listen` (2026-07-28). A request names the notifications it
   opts in to (`toolsListChanged`, `promptsListChanged`,
   `resourcesListChanged`, `resourceSubscriptions`). The server answers with
