@@ -327,6 +327,21 @@ class MCP_API OAuthHttpClient {
     Task<nlohmann::json> post_json(const std::string& url, const nlohmann::json& body);
 
     /**
+     * @brief Post a form to a token endpoint and read the JSON reply.
+     *
+     * @param url Token endpoint URL.
+     * @param params Form parameters, sent as `application/x-www-form-urlencoded`.
+     * @param authorization Value of the `Authorization` header, or empty to send none.
+     * @return A task resolving to the parsed JSON reply.
+     *
+     * @details For grants the client does not build itself, such as client credentials, token
+     * exchange and the JWT bearer grant. The target is validated against the fetch policy like every
+     * other request, redirects are not followed, and an HTTP error status fails the request.
+     */
+    Task<nlohmann::json> post_form(const std::string& url, const KeyValuePairList& params,
+                                   const std::string& authorization = {});
+
+    /**
      * @brief Abort every HTTP exchange currently in flight on this client, and refuse every one
      *        issued afterward.
      *
@@ -381,6 +396,10 @@ class MCP_API OAuthHttpClientScope {
 
     /** @see OAuthHttpClient::post_json */
     Task<nlohmann::json> post_json(const std::string& url, const nlohmann::json& body);
+
+    /** @see OAuthHttpClient::post_form */
+    Task<nlohmann::json> post_form(const std::string& url, const KeyValuePairList& params,
+                                   const std::string& authorization = {});
 
     /**
      * @brief Abort this scope's in-flight exchanges and refuse every one issued through it after.
