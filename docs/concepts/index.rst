@@ -17,6 +17,9 @@ build on.
    transports
    middleware
    oauth
+   extensions
+   apps
+   skills
    context
    completions
    subscriptions
