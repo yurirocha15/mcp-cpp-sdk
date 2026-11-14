@@ -76,6 +76,17 @@ class MCP_API StructuredContentError : public McpError {
     using McpError::McpError;
 };
 
+/**
+ * @brief Thrown instead of sending an accepted form answer that does not conform to the request's
+ * `requestedSchema` (see ClientOptions::validate_elicitation_content).
+ *
+ * code() is g_INVALID_PARAMS; data() is `{"violations": [{"instancePath": ..., "message": ...}]}`.
+ */
+class MCP_API ElicitationContentError : public McpError {
+   public:
+    using McpError::McpError;
+};
+
 /** @brief The protocol era a client session speaks. */
 enum class ProtocolEra : std::uint8_t {
     eLegacy,  ///< 2025-11-25 and earlier: an initialize handshake starts a session.
@@ -292,6 +303,19 @@ struct ClientOptions {
      * Runs inside list_tools(), so it must not block. An exception thrown from it is discarded.
      */
     std::function<void(const Tool&, const SchemaError&)> on_tool_schema_error;
+    /**
+     * @brief Check the content an on_elicitation() handler accepts against the request's schema.
+     *
+     * @details When the handler returns action `accept` for a form-mode request, its `content` is
+     * validated against the request's `requestedSchema` before anything is sent, in both
+     * protocol eras. Content that does not conform is not sent: the handler's call fails with
+     * ElicitationContentError. A legacy `elicitation/create` request is then answered with a
+     * JSON-RPC error, and a 2026-07-28 request fails the call that asked the question with that
+     * exception. A schema the SDK cannot compile leaves the content unchecked. Applies to handlers
+     * registered with on_elicitation(), not to a raw on_request("elicitation/create") handler.
+     * Turn it off for an application that validates the content itself.
+     */
+    bool validate_elicitation_content{true};
     /**
      * @brief How many notifications a Subscription holds for the application to read.
      *
@@ -866,7 +890,8 @@ class MCP_API Client {
      * @brief Register a handler for incoming elicitation requests from the server.
      *
      * @details Convenience wrapper that registers a request handler for "elicitation/create".
-     * The handler receives ElicitRequestParams and returns ElicitResult.
+     * The handler receives ElicitRequestParams and returns ElicitResult. Accepted form content is
+     * checked against the request's schema first, see ClientOptions::validate_elicitation_content.
      *
      * @param handler Async handler: receives ElicitRequestParams, returns ElicitResult.
      */

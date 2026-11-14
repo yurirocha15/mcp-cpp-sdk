@@ -40,6 +40,9 @@ struct InputOptions {
     /// own and ignore the key. Pass the options as a named variable, not a braced temporary, to a
     /// co_await expression: GCC 11 mishandles the temporary.
     std::optional<std::string> key;
+    /// Used by Context::elicit() only: whether an accepted form answer is checked against the
+    /// request's `requestedSchema`. When false the answer is returned as the client sent it.
+    bool validate_content = true;
 };
 
 /// @brief Type alias for a function that serializes outbound notification writes.
@@ -345,12 +348,19 @@ class Context {
      * Before 2026-07-28 a URL-mode request needs an `elicitationId`, and one is generated when
      * the request leaves it unset; a 2026-07-28 question carries none.
      *
+     * A form-mode answer with action `accept` is checked against the request's `requestedSchema`
+     * before it is returned, as the specification asks servers to do; a URL-mode answer carries no
+     * content and is not checked.
+     *
      * @param params The elicitation request parameters (form or URL mode).
-     * @param options How the question is named in a multi round-trip request; see InputOptions.
+     * @param options How the question is named in a multi round-trip request, and whether an
+     *        accepted form answer is checked; see InputOptions.
      * @return A task that resolves to the client's ElicitResult.
      * @throws std::invalid_argument If `options.key` is empty, reserved or already used, in a
      *         2026-07-28 request (other requests ignore the key).
-     * @throws std::runtime_error If no request sender is available.
+     * @throws std::runtime_error If no request sender is available, or the accepted content does
+     *         not conform to the schema (the message lists the violations). A schema the SDK
+     *         cannot compile leaves the content unchecked.
      *
      * For a 2026-07-28 tools/call, prompts/get or resources/read, the question goes back to the
      * client in the request's `input_required` result, and the call returns once the client
@@ -372,7 +382,11 @@ class Context {
         }
         auto result_json =
             co_await sender_("elicitation/create", std::move(json_params), std::move(options.key));
-        co_return result_json.get<ElicitResult>();
+        auto result = result_json.get<ElicitResult>();
+        if (options.validate_content) {
+            check_form_content(params, result);
+        }
+        co_return result;
     }
 
     /**
@@ -405,6 +419,24 @@ class Context {
     }
 
    private:
+    /// Throws when @p result accepts the form request @p params with content its schema rejects.
+    static void check_form_content(const ElicitRequestParams& params, const ElicitResult& result) {
+        const auto* form = std::get_if<ElicitRequestFormParams>(&params);
+        if (form == nullptr || result.action != ElicitAction::eAccept) {
+            return;
+        }
+        ValidationResult validation;
+        try {
+            validation = validate_elicitation_content(form->requestedSchema, result.content);
+        } catch (const SchemaError&) {
+            return;
+        }
+        if (!validation.valid) {
+            throw std::runtime_error("The elicitation content does not match the requested schema: " +
+                                     describe_violations(validation));
+        }
+    }
+
     /// A fresh, process-unique identifier for a legacy URL-mode elicitation.
     static std::string generate_elicitation_id() {
         static std::atomic<std::uint64_t> counter{0};
