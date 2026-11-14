@@ -86,12 +86,15 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `HttpServerTransport` serves 2026-07-28 requests alongside its legacy
   session, with the same header checks, error statuses and `405` for a
   sessionless `GET` or `DELETE` as `StreamableHttpSessionManager`, counted by
-  its own `header_mismatch_rejections()`. Each is carried under a
-  transport-private id, so clients may reuse ids, and is answered with plain
-  JSON that never carries `Mcp-Session-Id` and never enters the replay store;
-  notifications a handler sends while serving one are dropped. Ending the
-  legacy session does not end them. At most 256 may wait at once; more are
-  answered `503`. On both HTTP transports, a request whose
+  its own `header_mismatch_rejections()`. Once `Server::run()` reads the
+  transport, the server answers each request directly, so clients may reuse
+  ids; the answer never carries `Mcp-Session-Id` and never enters the replay
+  store. Ending the legacy session does not end them. They count against the
+  server's in-flight request limits (`Server::set_max_in_flight_requests()`)
+  and the transport's `HttpConnectionLimits`. A transport that no server reads
+  queues them for whoever calls `read_message()`, under a transport-private id,
+  and holds at most 256 at once; more are answered `503`. On both HTTP
+  transports, a request whose
   `MCP-Protocol-Version` header names a version that `initialize` does not
   negotiate (2026-07-28 or any other) but whose `_meta` names no version is
   answered `400` with `g_INVALID_PARAMS`, and an `initialize` with a
@@ -100,7 +103,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `ITransport::http_server_transport()`, which a transport wrapping an
   `HttpServerTransport` overrides to return it, so that `Server::run()` serves
   the wrapper as an `HttpServerTransport`: it ends sessions on `DELETE`,
-  checks `Mcp-Param-*` headers and drops the notifications of 2026-07-28
+  checks `Mcp-Param-*` headers and streams the notifications of 2026-07-28
   requests. It returns null by default. Adding it changes the layout of
   `ITransport`'s virtual table.
 - `StreamableHttpSessionManager` streams the answer to a 2026-07-28 request:
@@ -110,18 +113,39 @@ Versioning; a `0.x` version is a stable release unless its version has an
   carries the notifications and then the response, with
   `X-Accel-Buffering: no` and periodic keep-alive comments. Otherwise it is
   plain JSON as before, except that a client that accepts SSE and half-closes
-  its connection gets a stream too, and the notifications are dropped. A
-  client that resets its connection while its request runs cancels the
-  request, before or after a half-close; after a half-close the stream is
+  its connection gets a stream too, whose status is 200 even for an error
+  answer. A client that resets its connection while its request runs cancels
+  the request, before or after a half-close; after a half-close the stream is
   probed with comments until a write fails, which cancels it too, and closing
   the manager cancels it. Requests pipelined before a half-close are all
   answered, and the connection then ends. `set_stream_options()`
-  (`StreamOptions`) sets the keep-alive and probe intervals and the
-  queued-notification limit, and `stream_stats()` (`StreamStats`) counts
-  streams, cancellations, probes and dropped notifications. Bytes of a
+  (`StreamOptions`) sets the keep-alive and probe intervals and the limits on
+  queued notifications, and `stream_stats()` (`StreamStats`) counts streams,
+  cancellations, probes and dropped notifications. A request keeps at most
+  `max_queued_notifications` (4096) notifications and `max_queued_bytes`
+  (1 MiB) of them waiting; the bytes are charged to
+  `HttpConnectionLimits::max_request_bytes`. A notification over a limit is
+  dropped and counted, and the request is answered as usual, except that a
+  `subscriptions/listen` stream ends, so that the client lists again. Bytes of a
   pipelined request that arrive while a request runs are kept for the next
   one. `RequestContext::notifications` receives a 2026-07-28 request's
   notifications on a direct dispatch.
+- `HttpServerTransport`, and so `Server::run_http()`, streams the answer to a
+  2026-07-28 request the way `StreamableHttpSessionManager` does: when a
+  handler sends a notification and the client accepts `text/event-stream`
+  over HTTP/1.1, the answer is an SSE stream of the notifications followed by
+  the response, and otherwise plain JSON. A client that closes the response
+  stream or resets its connection cancels the request. A request holds its
+  place under `HttpConnectionLimits::max_requests` and `max_request_bytes`
+  until its stream ends, and a write the client does not take within
+  `request_read_timeout` ends the connection. `subscriptions/listen` is served
+  over it, with the same acknowledgement and filtering as on the manager, and
+  ends when the client closes the stream, the server ends the subscription or
+  the transport closes. `set_stream_options()` and `stream_stats()` are the
+  transport's too; `StreamOptions` and `StreamStats` are declared in
+  `mcp/transport/http_types.hpp`. A write the client does not take within
+  `request_read_timeout` also ends a 2026-07-28 stream of
+  `StreamableHttpSessionManager`.
 - `x-mcp-header` tool parameters (2026-07-28). `add_tool()` and
   `add_raw_tool()` refuse, with `SchemaError`, a tool whose input schema has
   an `x-mcp-header` annotation that is not a string, empty, not an HTTP token,
@@ -197,9 +221,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   request. On `StreamableHttpSessionManager` the subscription runs on the
   shared modern server, built from the factory or given to
   `set_modern_server()`; a client that does not accept `text/event-stream` is
-  answered with `g_INVALID_REQUEST`. `HttpServerTransport` and a direct
-  dispatch without `RequestContext::notifications` answer it with
-  `g_METHOD_NOT_FOUND` and `g_INVALID_REQUEST` respectively.
+  answered with `g_INVALID_REQUEST`, as is a direct dispatch without
+  `RequestContext::notifications`. `HttpServerTransport` carries the stream as
+  `StreamableHttpSessionManager` does, on the `Server` that reads it.
   `Server::subscription_count()` counts the open subscriptions, and
   `RequestContext::watch_cancel` lets a transport wake a request when it sets
   `cancelled`.
@@ -320,8 +344,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `g_INVALID_PARAMS`.
 - `StreamableHttpSessionManager` answers `server/discover` from
   `modern_server()`, like every 2026-07-28 request, instead of from a separate
-  server, and `HttpServerTransport` counts a waiting discover against the 256
-  waiting 2026-07-28 requests instead of a limit of 16 for discovers.
+  server, and `HttpServerTransport` serves it like any other 2026-07-28 request
+  instead of holding it to a limit of 16 for discovers.
 - `initialize` negotiation uses `g_LEGACY_PROTOCOL_VERSIONS` instead of
   `g_SUPPORTED_PROTOCOL_VERSIONS`.
 - `g_LATEST_PROTOCOL_VERSION` names 2026-07-28, and

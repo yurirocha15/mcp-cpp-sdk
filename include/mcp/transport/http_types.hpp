@@ -6,6 +6,7 @@
 #include <boost/beast/http.hpp>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
@@ -200,6 +201,42 @@ struct HttpConnectionLimits {
     /// while it is read, a JSON-RPC message by what it takes parsed. A request past it is answered
     /// 503.
     std::size_t max_request_bytes{std::size_t{1024} * 1024 * 1024};
+};
+
+/**
+ * @brief How an HTTP server transport streams the answer to a 2026-07-28 request.
+ */
+struct StreamOptions {
+    /// How often an open stream carries an SSE comment, so idle intermediaries keep it open.
+    std::chrono::milliseconds keepalive_interval{15000};
+    /// After a client half-closes its connection, how often the server checks that the client is
+    /// still there: by writing an SSE comment to a stream, where a write that fails cancels the
+    /// request, or, for a client that does not accept a stream, by looking for a reset on the
+    /// socket. A client that accepts a stream gets one when it half-closes, since a clean close
+    /// shows no reset and is found only by a failed write; its answer then has status 200.
+    std::chrono::milliseconds disconnect_probe_interval{1000};
+    /// Notifications a request may have waiting to be written. A notification that would take the
+    /// request past this limit, or past max_queued_bytes, is dropped and counted in
+    /// StreamStats::dropped_notifications; the request carries on and its answer is unchanged.
+    /// A subscriptions/listen stream instead ends when a notification is dropped, so that the
+    /// client reconnects and lists again.
+    std::size_t max_queued_notifications{4096};
+    /// Bytes of notifications a request may have waiting to be written or being written, counted
+    /// as the size of each serialized message. Notifications are dropped over this limit as over
+    /// max_queued_notifications. The bytes are also charged to the connection memory budget
+    /// (HttpConnectionLimits::max_request_bytes), so a notification the budget cannot hold is
+    /// dropped too. A message larger than the limit is always dropped.
+    std::size_t max_queued_bytes{1024 * 1024};
+};
+
+/**
+ * @brief Counts of what the 2026-07-28 streams of an HTTP server transport have done.
+ */
+struct StreamStats {
+    std::uint64_t streams_opened{0};         ///< Answers sent as an SSE stream.
+    std::uint64_t disconnect_cancels{0};     ///< Requests cancelled because the client went away.
+    std::uint64_t half_close_probes{0};      ///< Probe comments written after a half-close.
+    std::uint64_t dropped_notifications{0};  ///< Notifications over the queue limits.
 };
 
 }  // namespace mcp

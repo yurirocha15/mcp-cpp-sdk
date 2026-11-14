@@ -34,30 +34,6 @@ struct SessionLimits {
 };
 
 /**
- * @brief How StreamableHttpSessionManager streams the answer to a 2026-07-28 request.
- */
-struct StreamOptions {
-    /// How often an open stream carries an SSE comment, so idle intermediaries keep it open.
-    std::chrono::milliseconds keepalive_interval{15000};
-    /// After a client half-closes its connection, how often the server checks that the client is
-    /// still there: by writing an SSE comment to a stream, where a write that fails cancels the
-    /// request, or, for a plain JSON answer, by looking for a reset on the socket.
-    std::chrono::milliseconds disconnect_probe_interval{1000};
-    /// Notifications a request may have waiting to be written; more are dropped and counted.
-    std::size_t max_queued_notifications{4096};
-};
-
-/**
- * @brief Counts of what StreamableHttpSessionManager's 2026-07-28 streams have done.
- */
-struct StreamStats {
-    std::uint64_t streams_opened{0};         ///< Answers sent as an SSE stream.
-    std::uint64_t disconnect_cancels{0};     ///< Requests cancelled because the client went away.
-    std::uint64_t half_close_probes{0};      ///< Probe comments written after a half-close.
-    std::uint64_t dropped_notifications{0};  ///< Notifications over max_queued_notifications.
-};
-
-/**
  * @brief Multi-session HTTP endpoint for MCP Streamable HTTP.
  *
  * @details Manages multiple concurrent MCP sessions over a single HTTP port.
@@ -74,8 +50,11 @@ struct StreamStats {
  * `text/event-stream`: then the answer becomes an SSE stream carrying those notifications and
  * finally the response. A client that accepts `text/event-stream` and half-closes its connection
  * while the request runs gets an SSE stream as well, carrying comments that probe whether the
- * client is still there, and then the response. A client that disconnects while its request runs
- * cancels it, and so does a reset after a half-close.
+ * client is still there, and then the response: a client that closed cleanly cannot be told from
+ * one that only half-closed until a write fails. The HTTP status of such an answer is 200 even for
+ * an error, which the JSON-RPC body still carries. A client that disconnects while its request
+ * runs cancels it, and so does a reset after a half-close. Notifications wait in a queue limited
+ * by StreamOptions::max_queued_notifications and max_queued_bytes.
  *
  * This class is NOT an ITransport. It owns the HTTP listener and manages
  * the full lifecycle of per-session Server instances.

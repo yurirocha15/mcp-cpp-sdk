@@ -3,6 +3,7 @@
 #include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/protocol.hpp>
+#include <mcp/server/request_context.hpp>
 #include <mcp/transport/http_types.hpp>
 #include <mcp/transport/transport.hpp>
 
@@ -40,6 +41,12 @@ struct HttpServerBinding {
     /// The protocol versions the server serves, named in the error that answers an initialize
     /// sent with a 2026-07-28 version header.
     std::vector<std::string> served_versions;
+    /// Serves a request of 2026-07-28 and returns its serialized response; null while nothing
+    /// serves them, when the transport hands them to whoever reads it. The server it belongs to is
+    /// held weakly: once that server is gone it answers with an error.
+    std::function<Task<std::string>(nlohmann::json, RequestContext)> modern_dispatch;
+    /// Where modern_dispatch runs.
+    boost::asio::any_io_executor dispatch_executor;
 };
 
 /// Installed by Server::run().
@@ -202,10 +209,20 @@ class EventStore {
  * resumes a stream from there, still live when it has not ended.
  *
  * Alongside its one legacy session, it serves requests of protocol revision 2026-07-28, which
- * need no session: their mirrored headers are checked, they are answered with plain JSON and the
- * status the specification gives their errors, and they never read or receive `Mcp-Session-Id`.
- * Notifications a handler sends while serving one are dropped; use StreamableHttpSessionManager
- * to stream them.
+ * need no session: their mirrored headers are checked, they are answered with the status the
+ * specification gives their errors, and they never read or receive `Mcp-Session-Id`. The answer
+ * is plain JSON unless a handler sends a notification (a log message, progress) while serving the
+ * request and the client accepts `text/event-stream`: then it becomes an SSE stream carrying those
+ * notifications and finally the response. A `subscriptions/listen` request is an SSE stream that
+ * lasts until the client closes it or the server ends the subscription. A client that
+ * disconnects while its request runs cancels it, and so does a reset after a half-close. A client
+ * that accepts `text/event-stream` and half-closes gets an SSE stream even when no notification is
+ * sent, carrying comments that probe whether it is still there, because a client that closed
+ * cleanly cannot be told from one that only half-closed until a write fails; the HTTP status of
+ * such an answer is 200 even for an error, which the JSON-RPC body still carries. Notifications
+ * wait in a queue limited by StreamOptions::max_queued_notifications and max_queued_bytes. These
+ * requests are served once a Server::run() reads from the transport; before that they reach
+ * whoever calls read_message().
  */
 class MCP_API HttpServerTransport final : public ITransport {
    public:
@@ -253,6 +270,17 @@ class MCP_API HttpServerTransport final : public ITransport {
      * @param json_only True to bypass SSE framing and event storage.
      */
     void set_json_only(bool json_only);
+
+    /**
+     * @brief Set how the answer to a 2026-07-28 request is streamed.
+     *
+     * @throws std::invalid_argument If an interval is not positive or the queue limit is zero.
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_stream_options(StreamOptions options);
+
+    /// What the 2026-07-28 streams of this transport have done.
+    [[nodiscard]] StreamStats stream_stats() const;
 
     /**
      * @brief Replace the allowlist used for requests carrying an Origin header.

@@ -13,6 +13,7 @@
 #include <mcp/core/core.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/protocol.hpp>
+#include <mcp/server/request_context.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <atomic>
@@ -300,35 +301,6 @@ struct MrtrStats {
     /// Retries refused because they are not the request that parked the handler: another method,
     /// or other parameters.
     std::uint64_t resume_params_mismatch = 0;
-};
-
-/**
- * @brief Per-call state for Server::dispatch_request_direct().
- */
-struct RequestContext {
-    /// Cancellation flag for this call: setting it cancels the request, and its handler sees it
-    /// through Context::is_cancelled(). When null, the call gets a flag of its own.
-    std::shared_ptr<std::atomic<bool>> cancelled;
-    /// The `Mcp-Param-{Name}` headers of the HTTP request that carried this call, as
-    /// {Name, value} pairs with the value as received. When set, a 2026-07-28 tools/call is
-    /// answered with `g_HEADER_MISMATCH` unless each argument its tool mirrors into a header
-    /// (`x-mcp-header`) that is present and not null has exactly one matching header, and every
-    /// header the tool names has a valid value. Leave unset for a request that did not arrive
-    /// over HTTP.
-    std::optional<std::vector<std::pair<std::string, std::string>>> param_headers;
-    /// Receives, serialized and in order, each notification a handler sends while serving a
-    /// 2026-07-28 request (log messages, progress), so a transport can deliver them ahead of the
-    /// answer. When unset, they go to the transport of a running session, if any.
-    MessageSender notifications;
-    /// Who sent this call, as the transport that carried it authenticated the sender; handlers see
-    /// it as Context::principal(). Empty when unknown.
-    std::string principal;
-    /// Called by the server, while it serves a subscriptions/listen request, with a function to
-    /// call whenever `cancelled` is set (from any thread, after setting it), so a request that
-    /// waits for the client to go away is woken. A transport that streams notifications supplies
-    /// it so that closing the stream ends the subscription. When unset, `cancelled` is not
-    /// watched by anything but the request itself.
-    std::function<void(std::function<void()>)> watch_cancel;
 };
 
 /**
@@ -772,6 +744,10 @@ class MCP_API Server {
      * Binds to the given host and port, accepts HTTP connections, and
      * processes JSON-RPC requests. Handles SIGINT and SIGTERM for clean
      * shutdown. Exceptions from the server session are propagated to the caller.
+     *
+     * A 2026-07-28 request is answered with plain JSON, or, when its handler sends a
+     * notification and the client accepts `text/event-stream`, with an SSE stream of the
+     * notifications and then the response. `subscriptions/listen` is served as a stream.
      *
      * The transport keeps its default settings, so a request carrying an Origin
      * header is answered with 403. To accept browser clients, construct an

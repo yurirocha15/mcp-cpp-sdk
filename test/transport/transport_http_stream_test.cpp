@@ -216,6 +216,21 @@ class HttpStreamTest : public ::testing::Test {
                 co_return json{{"cancelled", cancelled}};
             });
         server->add_tool<json, json>(
+            "log_big_until_cancelled", "Logs large messages until cancelled", json{{"type", "object"}},
+            [this](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                handler_started_.store(true);
+                const std::string text(65536, 'x');
+                auto executor = co_await asio::this_coro::executor;
+                while (!ctx.is_cancelled()) {
+                    co_await ctx.log(mcp::LoggingLevel::eError, text);
+                    asio::steady_timer pause(executor, std::chrono::milliseconds(1));
+                    co_await pause.async_wait(asio::use_awaitable);
+                }
+                handler_saw_cancel_.store(true);
+                handler_done_.store(true);
+                co_return json::object();
+            });
+        server->add_tool<json, json>(
             "wait_for_cancel", "Returns once cancelled", json{{"type", "object"}},
             [this](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
                 handler_started_.store(true);
@@ -666,6 +681,23 @@ TEST_F(HttpStreamTest, NotificationsStayOffAnotherTransportOfTheSharedServer) {
     });
     EXPECT_NE(client.received().find(R"("logged":true)"), std::string::npos) << client.received();
     EXPECT_TRUE(on_other_transport.empty()) << on_other_transport.front();
+}
+
+// A client that does not read what is written to it cannot keep its request: a write that takes
+// longer than the request timeout ends the connection, which cancels the request.
+TEST_F(HttpStreamTest, AClientThatDoesNotReadItsStreamLosesIt) {
+    auto manager = make_manager(20607);
+    mcp::HttpConnectionLimits limits;
+    limits.request_read_timeout = std::chrono::milliseconds(50);
+    manager->set_connection_limits(limits);
+    RawClient client(io_ctx_.get_executor());
+    run(*manager, [&]() -> mcp::Task<void> {
+        co_await client.connect(20607);
+        co_await client.send(modern_request_bytes(call_tool(1, "log_big_until_cancelled")));
+        co_await wait_until([this] { return handler_done_.load(); });
+    });
+    EXPECT_TRUE(handler_saw_cancel_.load());
+    EXPECT_EQ(manager->stream_stats().disconnect_cancels, 1u);
 }
 
 TEST(HttpStreamOptions, InvalidOptionsAreRefused) {

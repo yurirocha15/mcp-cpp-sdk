@@ -1135,6 +1135,12 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                       MessageSender notifications,
                                       std::function<void(std::function<void()>)> watch_cancel,
                                       std::shared_ptr<const std::string> principal);
+    /// dispatch_direct() for the call state of dispatch_request_direct().
+    Task<std::string> dispatch_with_context(nlohmann::json json_msg, RequestContext request_context);
+    /// What an HttpServerTransport calls to have this server answer a 2026-07-28 request. Holds the
+    /// server weakly, so a transport that outlives it answers with an error.
+    static Task<std::string> dispatch_for_http(std::weak_ptr<Impl> weak, nlohmann::json json_msg,
+                                               RequestContext request_context);
     /// @p checked_modern, when set, says that the caller found the envelope valid and whether the
     /// request names its protocol version in _meta.
     Task<std::string> dispatch_request_wire(
@@ -1849,6 +1855,18 @@ Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransp
 
     auto session = std::make_shared<Session>();
     session->transport = std::move(transport);
+    // Binds an HttpServerTransport to this server while it runs, and leaves it unbound however the
+    // run ends, so a transport that outlives the run does not dispatch into a server that is not
+    // running.
+    struct HttpUnbinder {
+        std::shared_ptr<ITransport> transport;
+        HttpServerTransport* http_transport{nullptr};
+        ~HttpUnbinder() {
+            if (http_transport != nullptr) {
+                detail::bind_server(*http_transport, {});
+            }
+        }
+    } unbinder{session->transport};
     session->memory_transport = dynamic_cast<MemoryTransport*>(session->transport.get());
     // HttpServerTransport is the one transport that can end a session (on HTTP DELETE) and start a
     // new one while run() keeps reading from it, so its count of ended sessions tells a new client
@@ -1856,8 +1874,15 @@ Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransp
     // transport wrapping one hands it over through http_server_transport().
     if (auto* http_transport = session->transport->http_server_transport()) {
         session->http_transport = http_transport;
+        unbinder.http_transport = http_transport;
         detail::bind_server(*http_transport,
-                            {impl->make_param_header_check(), impl->supported_versions()});
+                            {impl->make_param_header_check(), impl->supported_versions(),
+                             [weak = std::weak_ptr<Impl>(impl)](nlohmann::json json_msg,
+                                                                RequestContext request_context) {
+                                 return Impl::dispatch_for_http(weak, std::move(json_msg),
+                                                                std::move(request_context));
+                             },
+                             executor});
     }
     session->strand =
         std::make_unique<boost::asio::any_io_executor>(detail::make_strand_executor(executor));
@@ -2114,6 +2139,21 @@ Task<std::string> Server::Impl::dispatch_direct(
 
 Task<std::string> Server::dispatch_request_direct(nlohmann::json json_msg,
                                                   RequestContext request_context) {
+    return impl_->dispatch_with_context(std::move(json_msg), std::move(request_context));
+}
+
+Task<std::string> Server::Impl::dispatch_for_http(std::weak_ptr<Impl> weak, nlohmann::json json_msg,
+                                                  RequestContext request_context) {
+    auto impl = weak.lock();
+    if (!impl) {
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+                                  "The server is gone");
+    }
+    co_return co_await impl->dispatch_with_context(std::move(json_msg), std::move(request_context));
+}
+
+Task<std::string> Server::Impl::dispatch_with_context(nlohmann::json json_msg,
+                                                      RequestContext request_context) {
     std::shared_ptr<const detail::ParamHeaderValues> param_headers;
     if (request_context.param_headers) {
         param_headers = std::make_shared<const detail::ParamHeaderValues>(
@@ -2123,9 +2163,10 @@ Task<std::string> Server::dispatch_request_direct(nlohmann::json json_msg,
     if (!request_context.principal.empty()) {
         principal = std::make_shared<const std::string>(std::move(request_context.principal));
     }
-    return impl_->dispatch_direct(std::move(json_msg), std::move(request_context.cancelled),
-                                  std::move(param_headers), std::move(request_context.notifications),
-                                  std::move(request_context.watch_cancel), std::move(principal));
+    co_return co_await dispatch_direct(std::move(json_msg), std::move(request_context.cancelled),
+                                       std::move(param_headers),
+                                       std::move(request_context.notifications),
+                                       std::move(request_context.watch_cancel), std::move(principal));
 }
 
 detail::ParamHeaderCheck Server::Impl::make_param_header_check() {
@@ -2225,14 +2266,14 @@ MessageSender Server::Impl::notification_route(
     const std::shared_ptr<const RequestMetadata>& request_meta, bool session_request,
     MessageSender notifications, const std::shared_ptr<Session>& session, ITransport** transport,
     std::uint64_t* epoch, std::shared_ptr<const std::string> related_request) {
-    // HttpServerTransport answers a 2026-07-28 request with plain JSON, so it has nowhere to send
-    // that request's notifications: written to it, they would join the legacy session's stream.
-    const bool notifications_have_a_route =
-        !(request_meta && session && session->http_transport != nullptr);
     if (request_meta && notifications) {
         // The request's own stream, supplied by the transport that carried it.
         return notifications;
     }
+    // A 2026-07-28 request an HttpServerTransport queued before the server was bound has no stream
+    // of its own: written to the session, its notifications would join the legacy session's stream.
+    const bool notifications_have_a_route =
+        !(request_meta && session && session->http_transport != nullptr);
     if (!session || !session->transport || !(session_request || !request_meta) ||
         !notifications_have_a_route) {
         return {};
@@ -3414,8 +3455,8 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
     std::shared_ptr<Session> owner;
     if (scope.session_request && session) {
         if (session->http_transport != nullptr) {
-            // HttpServerTransport answers every request with plain JSON, so it has no stream to
-            // keep open.
+            // A request an HttpServerTransport queued before the server was bound has no stream to
+            // keep open: the session's own stream is the legacy session's.
             co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_METHOD_NOT_FOUND,
                                       "Method not found: subscriptions/listen");
         }

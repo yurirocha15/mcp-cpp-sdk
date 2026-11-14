@@ -34,6 +34,7 @@ struct Reply {
     unsigned int status{0};
     std::string body;
     std::string allow;
+    std::string content_type;
     std::optional<std::string> session_id;
 
     [[nodiscard]] json parsed() const { return json::parse(body); }
@@ -67,6 +68,7 @@ mcp::Task<Reply> send(asio::any_io_executor executor, unsigned short port, http:
     reply.status = response.result_int();
     reply.body = response.body();
     reply.allow = std::string(response[http::field::allow]);
+    reply.content_type = std::string(response[http::field::content_type]);
     if (auto session = response.find("MCP-Session-Id"); session != response.end()) {
         reply.session_id = std::string(session->value());
     }
@@ -206,6 +208,20 @@ class HttpServerModernTest : public ::testing::Test {
         io_ctx_.run();
     }
 
+    /// Runs @p exchange against the transport with no server reading it, then closes the transport.
+    template <typename Exchange>
+    void run_unserved(Exchange exchange) {
+        asio::co_spawn(io_ctx_, transport_->listen(), asio::detached);
+        asio::co_spawn(
+            io_ctx_,
+            [this, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
+                co_await exchange();
+                transport_->close();
+            },
+            asio::detached);
+        io_ctx_.run();
+    }
+
     static mcp::Task<void> serve(mcp::Server* server, std::shared_ptr<mcp::ITransport> transport,
                                  asio::any_io_executor executor) {
         co_await server->run(std::move(transport), std::move(executor));
@@ -219,6 +235,11 @@ class HttpServerModernTest : public ::testing::Test {
     mcp::Task<Reply> post_modern(json body) {
         auto headers = modern_headers(body);
         return post(std::move(body), std::move(headers));
+    }
+
+    mcp::Task<Reply> post_modern_to(unsigned short port, json body) {
+        auto headers = modern_headers(body);
+        return send(io_ctx_.get_executor(), port, http::verb::post, body.dump(), std::move(headers));
     }
 
     mcp::Task<Reply> post_legacy(json body, std::optional<std::string> session_id) {
@@ -325,7 +346,7 @@ TEST_F(HttpServerModernTest, ErrorsUseTheSpecifiedStatuses) {
         future["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] = "2099-01-01";
         replies.emplace_back("unsupported version", co_await post_modern(future));
         replies.emplace_back("unknown method",
-                             co_await post_modern(make_modern_request(4, "subscriptions/listen")));
+                             co_await post_modern(make_modern_request(4, "no/such/method")));
         replies.emplace_back("unknown tool", co_await post_modern(call_tool(5, "missing")));
     });
 
@@ -395,19 +416,6 @@ TEST_F(HttpServerModernTest, InitializeWithAModernHeaderIsMethodNotFound) {
     EXPECT_FALSE(server_->is_initialized());
 }
 
-// HttpServerTransport answers every request with plain JSON, so it has no stream for a
-// subscription to keep open.
-TEST_F(HttpServerModernTest, SubscriptionsListenIsMethodNotFound) {
-    Reply reply;
-    json params = json::object();
-    params["notifications"] = {{"toolsListChanged", true}};
-    const auto request = make_modern_request(5, "subscriptions/listen", std::move(params));
-    run([&]() -> mcp::Task<void> { reply = co_await post_modern(request); });
-    expect_error(reply, 404, mcp::g_METHOD_NOT_FOUND);
-    EXPECT_EQ(reply.parsed()["id"], 5);
-    EXPECT_EQ(server_->subscription_count(), 0u);
-}
-
 // A wrapper that hands over its HttpServerTransport is served as one: the Mcp-Param headers are
 // checked, and a 2026-07-28 request's notifications stay out of the legacy session's stream.
 TEST_F(HttpServerModernTest, WrapperHandingOverTheTransportIsServedAsIt) {
@@ -433,7 +441,9 @@ TEST_F(HttpServerModernTest, WrapperHandingOverTheTransportIsServedAsIt) {
     EXPECT_EQ(transport_->header_mismatch_rejections(), 1u);
 }
 
-TEST_F(HttpServerModernTest, NotificationsOfAModernRequestStayOutOfTheSessionStream) {
+// The request's notifications are written on its own stream, ahead of its response, and the
+// legacy session's replay store holds none of them.
+TEST_F(HttpServerModernTest, NotificationsOfAModernRequestGoOnItsOwnStream) {
     Reply logged;
     std::size_t stored_before = 0;
     run([&]() -> mcp::Task<void> {
@@ -445,7 +455,12 @@ TEST_F(HttpServerModernTest, NotificationsOfAModernRequestStayOutOfTheSessionStr
     });
 
     EXPECT_EQ(logged.status, 200u) << logged.body;
-    EXPECT_TRUE(logged.parsed()["result"]["structuredContent"]["logged"].get<bool>()) << logged.body;
+    EXPECT_EQ(logged.content_type, "text/event-stream") << logged.body;
+    const auto message_at = logged.body.find("notifications/message");
+    const auto result_at = logged.body.find(R"("logged":true)");
+    ASSERT_NE(message_at, std::string::npos) << logged.body;
+    ASSERT_NE(result_at, std::string::npos) << logged.body;
+    EXPECT_LT(message_at, result_at);
     EXPECT_EQ(transport_->event_store().size(), stored_before);
 }
 
@@ -563,4 +578,112 @@ TEST_F(HttpServerModernTest, PolicyWithoutLegacyAnswersWithTheHttpStatusesItShou
     EXPECT_EQ(get.allow, "POST");
     EXPECT_EQ(remove.status, 405u);
     EXPECT_EQ(remove.allow, "POST");
+}
+
+// With no server reading the transport, at most 256 requests wait for one; the next is answered
+// 503.
+TEST_F(HttpServerModernTest, QueuedRequestsBeyondTheLimitAreRefused) {
+    static constexpr int g_clients = 257;
+    std::atomic<int> refused{0};
+    std::string refusal;
+    auto client = [&](int id) -> mcp::Task<void> {
+        try {
+            const auto reply = co_await post_modern(call_tool(id, "echo"));
+            if (reply.status == 503) {
+                refusal = reply.body;
+                refused.fetch_add(1);
+            }
+        } catch (const std::exception&) {
+            // The transport closing ends the requests still waiting.
+        }
+    };
+    auto exchange = [&]() -> mcp::Task<void> {
+        for (int id = 0; id < g_clients; ++id) {
+            asio::co_spawn(io_ctx_, client(id), asio::detached);
+        }
+        co_await wait_until([&] { return refused.load() >= 1; });
+    };
+    run_unserved(exchange);
+    EXPECT_EQ(refused.load(), 1);
+    EXPECT_NE(refusal.find("Too many pending requests"), std::string::npos) << refusal;
+}
+
+// A server that fails to start serving leaves the transport it bound unbound again: requests
+// queue for a reader instead of reaching a server that is not running it.
+TEST_F(HttpServerModernTest, TransportIsUnboundWhenRunDoesNotServeIt) {
+    auto other = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    bool second_run_failed = false;
+    bool dispatched = false;
+    auto stranded = [&]() -> mcp::Task<void> {
+        try {
+            co_await post_modern_to(other->port(), call_tool(1, "held"));
+        } catch (const std::exception&) {
+            // Closing the transport ends the request that waits.
+        }
+    };
+    run([&]() -> mcp::Task<void> {
+        co_await start_legacy_session();
+        asio::co_spawn(io_ctx_, other->listen(), asio::detached);
+        // The server has a session already, so serving a second transport throws after binding it.
+        try {
+            co_await serve(server_.get(), other, io_ctx_.get_executor());
+        } catch (const std::runtime_error&) {
+            second_run_failed = true;
+        }
+        asio::co_spawn(io_ctx_, stranded(), asio::detached);
+        asio::steady_timer pause(io_ctx_.get_executor(), std::chrono::milliseconds(100));
+        co_await pause.async_wait(asio::use_awaitable);
+        dispatched = held_started_.load();
+        release_held_.store(true);
+        other->close();
+    });
+    EXPECT_TRUE(second_run_failed);
+    EXPECT_FALSE(dispatched);
+}
+
+// A request that waited for the server to read the transport has no stream of its own: its
+// notifications are not written to the legacy session, and it cannot hold a subscription open.
+TEST_F(HttpServerModernTest, RequestsQueuedBeforeTheServerBindsHaveNoStream) {
+    Reply logged;
+    Reply listened;
+    std::size_t stored_before = 0;
+    bool answered = false;
+    auto log_body = call_tool(1, "log");
+    log_body["params"]["_meta"]["io.modelcontextprotocol/logLevel"] = "debug";
+    json params = json::object();
+    params["notifications"] = {{"toolsListChanged", true}};
+    const auto listen_body = make_modern_request(2, "subscriptions/listen", std::move(params));
+    auto early = [&]() -> mcp::Task<void> {
+        asio::co_spawn(
+            io_ctx_,
+            [&]() -> mcp::Task<void> {
+                logged = co_await post_modern(log_body);
+                answered = true;
+            },
+            asio::detached);
+        listened = co_await post_modern(listen_body);
+    };
+    asio::co_spawn(io_ctx_, transport_->listen(), asio::detached);
+    asio::co_spawn(io_ctx_, early(), asio::detached);
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            // The transport has no queue count to wait on, so a generous pause lets both requests
+            // be queued (also in slow sanitizer builds) before the server reads them.
+            asio::steady_timer pause(io_ctx_.get_executor(), std::chrono::seconds(1));
+            co_await pause.async_wait(asio::use_awaitable);
+            stored_before = transport_->event_store().size();
+            asio::co_spawn(io_ctx_, serve(server_.get(), transport_, io_ctx_.get_executor()),
+                           asio::detached);
+            co_await wait_until([&] { return answered && listened.status != 0; });
+            transport_->close();
+        },
+        asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(logged.status, 200u) << logged.body;
+    EXPECT_EQ(logged.content_type, "application/json") << logged.body;
+    EXPECT_TRUE(logged.parsed()["result"]["structuredContent"]["logged"].get<bool>()) << logged.body;
+    EXPECT_EQ(transport_->event_store().size(), stored_before);
+    expect_error(listened, 404, mcp::g_METHOD_NOT_FOUND);
 }

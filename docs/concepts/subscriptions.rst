@@ -95,9 +95,10 @@ Which transports carry the stream:
 - ``StreamableHttpSessionManager``, as a server-sent event stream. The client
   must accept ``text/event-stream``. The stream runs on the manager's shared
   modern server, see :doc:`/guides/deployment`.
-
-``HttpServerTransport`` answers ``subscriptions/listen`` with
-``g_METHOD_NOT_FOUND``.
+- ``HttpServerTransport``, and so ``Server::run_http()``, as a server-sent
+  event stream on the server that reads the transport. The client must accept
+  ``text/event-stream``. Closing the stream, or closing the transport, ends the
+  subscription.
 
 Resource Subscriptions
 ----------------------

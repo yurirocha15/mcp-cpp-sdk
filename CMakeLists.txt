@@ -120,6 +120,7 @@ set(MCP_CPP_SDK_SOURCES
     src/transport/http_server.cpp
     src/transport/http_client.cpp
     src/transport/http_session_manager.cpp
+    src/transport/modern_exchange.cpp
     src/transport/websocket.cpp
     src/transport/transport_factories.cpp)
 
@@ -418,6 +419,7 @@ if(BUILD_TESTING)
       test/transport/transport_http_session_manager_test.cpp
       test/transport/transport_http_modern_test.cpp
       test/transport/transport_http_server_modern_test.cpp
+      test/transport/transport_http_server_stream_test.cpp
       test/transport/transport_http_client_modern_test.cpp
       test/transport/transport_http_principal_test.cpp
       test/transport/transport_http_mrtr_test.cpp

@@ -640,16 +640,13 @@ using FeatureParam = std::tuple<ClientKind, ServerKind, FeatureTransport>;
 class E2eModernFeatures : public ::testing::TestWithParam<FeatureParam> {};
 
 /// The error a subscriptions/listen gets on @p kind, 0 where the stream works. It needs a stream the
-/// server can keep writing to: the session manager refuses it without an event stream, and
-/// HttpServerTransport does not serve it.
+/// server can keep writing to: the HTTP transports refuse it without an event stream.
 int listen_refusal(FeatureTransport kind) {
     switch (kind) {
         case FeatureTransport::eSessionManagerJsonOnly:
         case FeatureTransport::eStatelessJson:
-            return mcp::g_INVALID_REQUEST;
-        case FeatureTransport::eRunHttp:
         case FeatureTransport::eRunHttpJsonOnly:
-            return mcp::g_METHOD_NOT_FOUND;
+            return mcp::g_INVALID_REQUEST;
         default:
             return 0;
     }

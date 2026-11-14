@@ -6,6 +6,7 @@
 #include "../detail/peer_json.hpp"
 #include "../detail/principal.hpp"
 #include "../detail/socket_probe.hpp"
+#include "modern_exchange.hpp"
 
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
@@ -46,8 +47,9 @@ namespace beast = boost::beast;
 namespace http = boost::beast::http;
 
 struct HttpServerTransport::Impl {
-    /// How many sessionless requests (those of revision 2026-07-28) may wait for the server at
-    /// once. They share the incoming queue with the session's own requests.
+    /// How many sessionless requests (those of revision 2026-07-28) may wait at once for whoever
+    /// reads the transport, when no server serves them directly. They share the incoming queue
+    /// with the session's own requests.
     static constexpr std::size_t g_max_pending_sessionless_requests = 256;
     static constexpr auto g_disconnect_probe_interval = std::chrono::milliseconds(250);
 
@@ -101,9 +103,11 @@ struct HttpServerTransport::Impl {
         bool open_at_once{false};
     };
 
-    /// A request handled by handle_request: a complete response, or a stream serve_legacy_stream
-    /// writes as its events come.
-    using Reply = std::variant<StringResponse, std::shared_ptr<LegacyStream>>;
+    /// A request handled by handle_request: a complete response, a stream serve_legacy_stream
+    /// writes as its events come, or the answer to a 2026-07-28 request that serve_modern_exchange
+    /// writes as it is produced.
+    using Reply = std::variant<StringResponse, std::shared_ptr<LegacyStream>,
+                               std::shared_ptr<detail::ModernExchange>>;
 
     /// Events a stream may have waiting to be written; more are dropped. Each is also in the
     /// event store, where a resume finds it.
@@ -779,12 +783,14 @@ struct HttpServerTransport::Impl {
     }
 
     /// Serves a request of protocol revision 2026-07-28. It needs no session: Mcp-Session-Id is
-    /// neither read nor sent, the request is carried under a transport-private sentinel id so two
-    /// clients may use the same id, and its answer is plain JSON with the status the specification
-    /// gives its error, kept out of the session's replay store.
-    Task<StringResponse> handle_modern_post(const StringRequest& request,
-                                            const nlohmann::json& request_json, std::string principal,
-                                            std::shared_ptr<Connection> connection) {
+    /// neither read nor sent, and its answer is kept out of the session's replay store. With a
+    /// server bound to the transport, the server answers it directly and the connection writes
+    /// the answer as it is produced. Otherwise the request is queued for whoever reads the
+    /// transport under a transport-private sentinel id, so two clients may use the same id, and
+    /// is answered with plain JSON and the status the specification gives its error.
+    Task<Reply> handle_modern_post(const StringRequest& request, nlohmann::json request_json,
+                                   std::string principal, std::shared_ptr<Connection> connection,
+                                   detail::BudgetLease& bytes) {
         // 2026-07-28 defines no notification a client sends over HTTP, so one is accepted and
         // dropped.
         if (!request_json.contains("id")) {
@@ -803,12 +809,29 @@ struct HttpServerTransport::Impl {
             co_return make_jsonrpc_error_response(request, http::status::bad_request, g_INVALID_PARAMS,
                                                   std::move(*refusal), request_json.at("id"));
         }
+        std::shared_ptr<const detail::ModernDispatch> dispatch;
+        boost::asio::any_io_executor dispatch_executor;
+        detail::ParamHeaderCheck check;
+        {
+            std::lock_guard lock(configuration_mutex);
+            dispatch = modern_dispatch;
+            dispatch_executor = modern_dispatch_executor;
+            check = param_header_check;
+        }
+        if (dispatch) {
+            // The server checks the Mcp-Param headers of the request it is given.
+            const detail::ModernStart start{strand,
+                                            std::move(dispatch_executor),
+                                            stream_options,
+                                            stream_counters,
+                                            json_only_.load(std::memory_order_acquire),
+                                            &bytes.counter(),
+                                            bytes.limit(),
+                                            true};
+            co_return detail::start_modern_exchange(request, std::move(request_json),
+                                                    std::move(principal), start, *dispatch);
+        }
         if (request_json.at("method") == "tools/call") {
-            detail::ParamHeaderCheck check;
-            {
-                std::lock_guard lock(configuration_mutex);
-                check = param_header_check;
-            }
             if (check) {
                 if (auto mismatch = check(request_json, detail::mcp_param_headers(request))) {
                     header_mismatch_rejections.fetch_add(1, std::memory_order_relaxed);
@@ -867,7 +890,7 @@ struct HttpServerTransport::Impl {
     /// @p principal is what refuse_before_body() attributed the request to.
     Task<Reply> handle_post(const StringRequest& request, std::shared_ptr<Connection> connection,
                             detail::BudgetLease& bytes, std::string principal) {
-        const auto request_json = detail::parse_peer_json(request.body());
+        auto request_json = detail::parse_peer_json(request.body());
         if (request_json.is_discarded() || !request_json.is_object()) {
             co_return make_error_response(request, http::status::bad_request,
                                           "Invalid JSON-RPC payload");
@@ -878,8 +901,8 @@ struct HttpServerTransport::Impl {
         }
         if (detail::is_modern_http_request(request_json,
                                            detail::http_header(request, "MCP-Protocol-Version"))) {
-            co_return co_await handle_modern_post(request, request_json, std::move(principal),
-                                                  std::move(connection));
+            co_return co_await handle_modern_post(request, std::move(request_json),
+                                                  std::move(principal), std::move(connection), bytes);
         }
         if (is_initialize_request(request_json) && !serves_legacy()) {
             co_return initialize_not_served_response(request, request_json);
@@ -1355,6 +1378,9 @@ struct HttpServerTransport::Impl {
         beast::flat_buffer request_buffer;
         // The start line and fields of the answer being written, kept for the next answer.
         std::vector<char> response_head;
+        // Set once a watch has read the client's end of the stream. That end is consumed: a later
+        // read on this connection would wait for an event that already happened.
+        bool client_finished_sending = false;
         // What the request being served is attributed to.
         std::string principal;
         const detail::RefuseBeforeBody refuse =
@@ -1367,9 +1393,14 @@ struct HttpServerTransport::Impl {
             detail::RequestParser parser;
             parser.body_limit(max_request_body_bytes);
             detail::BudgetLease bytes(budget.bytes, connection_limits.max_request_bytes);
-            if (!co_await detail::read_request_within_limits(stream, request_buffer, parser,
-                                                             connection_limits, max_request_body_bytes,
-                                                             bytes, refuse)) {
+            if (client_finished_sending) {
+                if (!co_await detail::read_buffered_request(stream, request_buffer, parser, bytes,
+                                                            refuse)) {
+                    break;
+                }
+            } else if (!co_await detail::read_request_within_limits(
+                           stream, request_buffer, parser, connection_limits, max_request_body_bytes,
+                           bytes, refuse)) {
                 break;
             }
             StringRequest request = detail::take_request(parser);
@@ -1387,7 +1418,20 @@ struct HttpServerTransport::Impl {
                                             "Too many requests");
             }
             if (state->closed.load(std::memory_order_acquire)) {
+                if (auto* exchange = std::get_if<2>(&reply)) {
+                    (*exchange)->abandon();
+                }
                 break;
+            }
+            if (auto* exchange = std::get_if<2>(&reply)) {
+                const detail::ModernServing serving{state->closed, stream_options, *stream_counters,
+                                                    header_mismatch_rejections, connection_limits};
+                if (!co_await detail::serve_modern_exchange(stream, request_buffer, request, *exchange,
+                                                            client_finished_sending, serving,
+                                                            response_head)) {
+                    break;
+                }
+                continue;
             }
             if (auto* legacy = std::get_if<1>(&reply)) {
                 if (!co_await serve_legacy_stream(stream, request, *legacy)) {
@@ -1549,6 +1593,14 @@ struct HttpServerTransport::Impl {
     /// Guarded by configuration_mutex: Server::run() installs it while the transport may be
     /// listening already.
     detail::ParamHeaderCheck param_header_check;
+    /// Guarded by configuration_mutex, like param_header_check: what serves 2026-07-28 requests
+    /// directly once Server::run() reads the transport, and where it runs.
+    std::shared_ptr<const detail::ModernDispatch> modern_dispatch;
+    boost::asio::any_io_executor modern_dispatch_executor;
+    /// Set before listen(); read while serving.
+    StreamOptions stream_options;
+    std::shared_ptr<detail::StreamCounters> stream_counters =
+        std::make_shared<detail::StreamCounters>();
     /// The versions named when initialize arrives with a 2026-07-28 header; every version until
     /// Server::run() says which it serves.
     std::vector<std::string> served_versions{g_SUPPORTED_PROTOCOL_VERSIONS.begin(),
@@ -1632,6 +1684,15 @@ std::uint64_t HttpServerTransport::header_mismatch_rejections() const {
 void HttpServerTransport::set_json_only(bool json_only) {
     impl_->json_only_.store(json_only, std::memory_order_release);
 }
+
+void HttpServerTransport::set_stream_options(StreamOptions options) {
+    detail::check_stream_options(options);
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->stream_options = options;
+}
+
+StreamStats HttpServerTransport::stream_stats() const { return impl_->stream_counters->snapshot(); }
 
 void HttpServerTransport::set_allowed_origins(std::vector<std::string> origins) {
     std::lock_guard lock(impl_->configuration_mutex);
@@ -1872,6 +1933,11 @@ void bind_server(HttpServerTransport& transport, HttpServerBinding binding) {
     std::lock_guard lock(transport.impl_->configuration_mutex);
     transport.impl_->param_header_check = std::move(binding.param_header_check);
     transport.impl_->served_versions = std::move(binding.served_versions);
+    transport.impl_->modern_dispatch =
+        binding.modern_dispatch
+            ? std::make_shared<const detail::ModernDispatch>(std::move(binding.modern_dispatch))
+            : nullptr;
+    transport.impl_->modern_dispatch_executor = std::move(binding.dispatch_executor);
 }
 
 }  // namespace detail

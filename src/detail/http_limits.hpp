@@ -84,6 +84,17 @@ class BudgetLease {
         return true;
     }
 
+    /// Holds @p amount in all, giving back what is above it.
+    void shrink_to(std::size_t amount) noexcept {
+        if (amount < held_) {
+            counter_->fetch_sub(held_ - amount, std::memory_order_relaxed);
+            held_ = amount;
+        }
+    }
+
+    [[nodiscard]] std::atomic<std::size_t>& counter() const noexcept { return *counter_; }
+    [[nodiscard]] std::size_t limit() const noexcept { return limit_; }
+
     void release() noexcept {
         if (held_ != 0) {
             counter_->fetch_sub(held_, std::memory_order_relaxed);
@@ -310,6 +321,45 @@ inline Task<bool> read_request_within_limits(boost::beast::tcp_stream& stream,
         auto too_large_response =
             make_limit_response(head, http::status::payload_too_large, "Request body too large");
         co_await write_final_response(stream, std::move(too_large_response));
+        co_return false;
+    }
+    co_return true;
+}
+
+/// Reads one request from what @p buffer holds, once the peer has finished sending: only what a
+/// watch read ahead can still arrive. The request is served whole, and the connection ends at the
+/// first that is not. Checks @p refuse_before_body and charges the body to @p bytes as
+/// read_request_within_limits() does. Returns false when the connection is to end, after writing
+/// whatever answer is due.
+inline Task<bool> read_buffered_request(boost::beast::tcp_stream& stream,
+                                        boost::beast::flat_buffer& buffer, RequestParser& parser,
+                                        BudgetLease& bytes,
+                                        const RefuseBeforeBody& refuse_before_body) {
+    namespace http = boost::beast::http;
+    boost::system::error_code parse_error;
+    // Without eager, put() stops after the header and a whole buffered body would read as an
+    // incomplete request.
+    parser.eager(true);
+    buffer.consume(parser.put(buffer.data(), parse_error));
+    if (parse_error == http::error::body_limit) {
+        // The parser cannot resynchronize after a truncated body, so the connection ends with
+        // this answer rather than reading another request from it.
+        auto too_large = make_limit_response(StringRequest{parser.get().base()},
+                                             http::status::payload_too_large, "Request body too large");
+        co_await write_final_response(stream, std::move(too_large));
+        co_return false;
+    }
+    if (parse_error || !parser.is_done()) {
+        co_return false;
+    }
+    const StringRequest head{parser.get().base()};
+    if (auto refusal = co_await refuse_before_body(head)) {
+        co_await write_final_response(stream, std::move(*refusal));
+        co_return false;
+    }
+    if (!bytes.grow_to(parser.get().body().size())) {
+        auto busy = make_limit_response(head, http::status::service_unavailable, "Server busy");
+        co_await write_final_response(stream, std::move(busy));
         co_return false;
     }
     co_return true;

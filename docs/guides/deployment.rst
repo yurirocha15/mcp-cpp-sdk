@@ -108,12 +108,38 @@ naming the versions served, and every ``GET`` and ``DELETE`` is answered
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 ``HttpServerTransport`` serves 2026-07-28 requests next to its one legacy
-session, with the same header checks and error statuses. Each request is
-answered with plain JSON. Notifications a handler sends while it serves one are
-dropped, because there is no stream; use ``StreamableHttpSessionManager`` when
-handlers log or report progress, or when clients use ``subscriptions/listen``.
-At most 256 such requests may wait at once, and more are answered ``503``.
-``Server::run_http()`` uses ``HttpServerTransport``.
+session, with the same header checks and error statuses. The server that reads
+the transport answers each request directly. The answer is plain JSON. If a
+handler sends a notification while it runs (a log message at the request's own
+log level, or progress) and the client accepts ``text/event-stream``, the answer
+is a chunked event stream that carries the notifications and then the response,
+as on ``StreamableHttpSessionManager``. A ``subscriptions/listen`` request is an
+event stream that stays open until the client closes it, the server ends the
+subscription or the transport closes. A client that disconnects while its
+request runs cancels it, and so does a reset after a half-close. A client that
+accepts ``text/event-stream`` and half-closes its connection gets an event stream
+even when no notification is sent, carrying comments that probe whether it is
+still there, because a client that closed cleanly cannot be told from one that
+only half-closed until a write fails. The HTTP status of such an answer is 200
+even for an error; the JSON-RPC body still carries the error. A client that
+does not accept a stream gets plain JSON with the specified status, and a reset
+after its half-close is found by checking the socket.
+
+Notifications wait for the client to read them, so each request keeps at most
+``max_queued_notifications`` of them (4096 by default) and ``max_queued_bytes``
+(1 MiB by default, the size of the serialized messages, taken from the
+``max_request_bytes`` budget too). A notification that would take the request
+past a limit, or past that budget, is dropped and counted in
+``StreamStats::dropped_notifications``; the handler is not told and the answer is
+unchanged. A ``subscriptions/listen`` stream ends instead, with its closing
+result, so that the client reconnects and lists again.
+
+A request holds its place under ``HttpConnectionLimits::max_requests`` and
+``max_request_bytes`` until its answer or stream has ended, and the connection
+is closed when the client does not take a write within ``request_read_timeout``.
+``set_stream_options()`` sets the keep-alive and probe intervals and the limits
+on queued notifications, and ``stream_stats()`` counts what the streams did. ``set_json_only(true)`` keeps
+the answers to plain JSON. ``Server::run_http()`` uses ``HttpServerTransport``.
 
 Request headers
 ~~~~~~~~~~~~~~~
