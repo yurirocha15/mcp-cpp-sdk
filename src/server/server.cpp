@@ -1107,6 +1107,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::vector<Resource> resources;
     std::map<std::string, TypeErasedHandler, std::less<>> resource_handlers;
 
+    /// Request methods of extensions, served to 2026-07-28 clients (add_extension_method).
+    std::map<std::string, TypeErasedHandler, std::less<>> extension_methods;
+
     std::vector<ResourceTemplateRegistration> resource_templates;
 
     std::vector<Prompt> prompts;
@@ -1224,6 +1227,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Task<std::string> handle_shutdown_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_ping_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_discover_wire(const nlohmann::json& json_msg, const RequestScope& scope);
+    Task<std::string> handle_extension_wire(const nlohmann::json& json_msg, const RequestScope& scope,
+                                            const TypeErasedHandler& handler);
     Task<std::string> handle_tools_call_wire(const nlohmann::json& json_msg, const RequestScope& scope);
     Task<std::string> handle_tools_list_wire(const nlohmann::json& json_msg, const RequestScope& scope);
     Task<std::string> handle_resources_list_wire(const nlohmann::json& json_msg,
@@ -1643,6 +1648,28 @@ void Server::set_reverse_request_timeout(std::chrono::milliseconds timeout) {
 
 void Server::set_instructions(std::string instructions) {
     impl_->instructions = std::move(instructions);
+}
+
+void Server::declare_extension(const std::string& id, nlohmann::json settings) {
+    if (id.empty()) {
+        throw std::invalid_argument("An extension identifier must not be empty");
+    }
+    if (!settings.is_object()) {
+        throw std::invalid_argument("Extension settings must be a JSON object");
+    }
+    mcp::declare_extension(impl_->capabilities, id, std::move(settings));
+}
+
+ServerCapabilities Server::capabilities() const { return impl_->capabilities; }
+
+void Server::add_extension_method(const std::string& method, TypeErasedHandler handler) {
+    if (method.empty() || !handler) {
+        throw std::invalid_argument("An extension method needs a name and a handler");
+    }
+    if (detail::is_modern_method(method) || impl_->extension_methods.contains(method)) {
+        throw std::invalid_argument("Method is already served: " + method);
+    }
+    impl_->extension_methods.emplace(method, std::move(handler));
 }
 
 void Server::set_cache_hints(CacheTarget target, CacheHint hint) {
@@ -2649,7 +2676,8 @@ Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_
     const bool task_method =
         tasks_enabled.load(std::memory_order_acquire) &&
         (method == "tasks/get" || method == "tasks/update" || method == "tasks/cancel");
-    if (!task_method && !detail::is_modern_method(method)) {
+    const auto extension = extension_methods.find(method);
+    if (!task_method && extension == extension_methods.end() && !detail::is_modern_method(method)) {
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_METHOD_NOT_FOUND,
                                   "Method not found: " + std::string(method));
     }
@@ -2666,6 +2694,9 @@ Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_
 
     if (task_method) {
         co_return co_await handle_task_wire(json_msg, method, scope);
+    }
+    if (extension != extension_methods.end()) {
+        co_return co_await handle_extension_wire(json_msg, scope, extension->second);
     }
     if (method == "tools/call" || method == "resources/read" || method == "prompts/get") {
         co_return co_await dispatch_mrtr(json_msg, method, std::move(scope));
@@ -3431,11 +3462,32 @@ Task<std::string> Server::Impl::handle_discover_wire(const nlohmann::json& json_
     discover_result.supportedVersions = supported_versions();
     discover_result.capabilities = capabilities;
     if (tasks_enabled.load(std::memory_order_acquire)) {
-        declare_extension(discover_result.capabilities, g_TASKS_EXTENSION);
+        mcp::declare_extension(discover_result.capabilities, g_TASKS_EXTENSION);
     }
     discover_result.instructions = instructions;
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope,
                                nlohmann::json(discover_result), CacheTarget::eDiscover);
+}
+
+Task<std::string> Server::Impl::handle_extension_wire(const nlohmann::json& json_msg,
+                                                      const RequestScope& scope,
+                                                      const TypeErasedHandler& handler) {
+    const auto& params = json_msg.at("params");
+    auto ctx = make_context(scope.cancelled, inline_progress_token(scope), scope.meta,
+                            scope.session_request, scope.notifications, scope.principal, scope.mrtr,
+                            scope.related_request, scope.inline_input);
+    std::string invalid_params;
+    nlohmann::json handler_result;
+    try {
+        handler_result = co_await call_through_middleware(handler, ctx, params);
+    } catch (const std::invalid_argument& error) {
+        invalid_params = detail::sanitize_for_diagnostics(error.what());
+    }
+    if (!invalid_params.empty()) {
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+                                  std::move(invalid_params));
+    }
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }
 
 namespace {

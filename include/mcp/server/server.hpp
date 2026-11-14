@@ -635,6 +635,42 @@ class MCP_API Server {
      */
     void set_handler_executor(const boost::asio::any_io_executor& executor);
 
+    /**
+     * @brief Declare support for an extension in the capabilities this server advertises.
+     *
+     * @details Adds `extensions[id]` to the capabilities that initialize and server/discover
+     * return, replacing an earlier declaration of the same extension. Extensions are off until a
+     * server declares them. Must be called before the server serves its first request.
+     *
+     * @param id Extension identifier, `{vendor-prefix}/{extension-name}`.
+     * @param settings The extension's settings object; an empty object declares support with no
+     *        settings.
+     * @throws std::invalid_argument If @p id is empty or @p settings is not an object.
+     */
+    void declare_extension(const std::string& id, nlohmann::json settings = nlohmann::json::object());
+
+    /// A copy of the capabilities this server advertises, including declared extensions.
+    [[nodiscard]] ServerCapabilities capabilities() const;
+
+    /**
+     * @brief Serve an extension's request method to clients of protocol revision 2026-07-28.
+     *
+     * @details The handler receives the request's `params` (including `_meta`) and returns the
+     * result object; the server adds `resultType` and the members every 2026-07-28 result carries.
+     * A result that sets `ttlMs` and `cacheScope` keeps them. The handler reports invalid
+     * parameters by throwing std::invalid_argument, which the client receives as -32602, and any
+     * other exception as an internal error. Middleware registered with use() wraps these handlers
+     * as it wraps `resources/read`, so a request it refuses never reaches the handler. Earlier
+     * revisions answer the method with -32601. Must be called before the server serves its first
+     * request.
+     *
+     * @param method The method name, for example `skills/list`.
+     * @param handler Handler invoked for each request of that method.
+     * @throws std::invalid_argument If @p method is empty, names a method the SDK serves itself, or
+     *         is already registered.
+     */
+    void add_extension_method(const std::string& method, TypeErasedHandler handler);
+
     /// Tool calls refused by validation since this server was created.
     [[nodiscard]] ToolValidationStats tool_validation_stats() const;
 
