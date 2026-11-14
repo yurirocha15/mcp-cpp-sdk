@@ -413,6 +413,39 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `RequestSender` takes the key a handler chose for a question as a third
   argument; senders that build a `Context` from their own `RequestSender` must
   accept it.
+- `ElicitationSchema` builds the `requestedSchema` of a form from typed
+  fields: `StringSchema` (length limits, `format`, `default`), `NumberSchema`
+  (`number` or `integer`, bounds, `default`), `BooleanSchema`, `EnumSchema`
+  (with the legacy `enumNames`), `TitledEnumSchema` (`oneOf`),
+  `MultiSelectEnumSchema` and `TitledMultiSelectEnumSchema` (`type: "array"`).
+  `PrimitiveSchemaDefinition` is the variant of them, `to_titled()` converts
+  an `EnumSchema` with `enumNames`, and `ElicitationSchema::decode()` checks
+  accepted content against the schema and returns it as typed values
+  (`ElicitedContent`).
+  An `integer` field's bounds are written as integers (a minimum rounds up, a
+  maximum down), values no 64-bit integer can satisfy throw
+  `std::invalid_argument`, and a negative `minLength`, `maxLength`,
+  `minItems` or `maxItems` in a parsed schema throws it too. The order in
+  which fields were added is not preserved in the JSON form.
+- The client checks the content an `on_elicitation()` handler accepts for a
+  form request against the request's `requestedSchema` before sending it, in
+  both protocol eras. Content that does not conform is not sent: the handler's
+  call fails with `ElicitationContentError`, which answers a legacy
+  `elicitation/create` request with a JSON-RPC error and fails the call that
+  triggered a 2026-07-28 question. `ClientOptions::validate_elicitation_content`
+  turns the check off. `Context::elicit()` likewise checks accepted form
+  content against the request's schema and throws when it does not conform;
+  `InputOptions::validate_content` set to `false` turns that off. `validate_elicitation_content()` and
+  `describe_violations()` expose the check.
+
+### Changed
+
+- `PrimitiveSchemaDefinition` is a `std::variant` of the typed schemas above
+  instead of a struct with `type`, `title` and `description`, and `StringSchema`,
+  `NumberSchema`, `BooleanSchema` and `EnumSchema` are structs of their own
+  rather than aliases of it. `EnumSchema` has no `type` member and requires
+  `enum` when decoded.
+
 - An unknown resource in `resources/read` is answered with its URI in the
   error's `data`, as the specification shows.
 - A GET on the MCP endpoint whose `Accept` header does not list

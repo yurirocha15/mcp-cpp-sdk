@@ -2036,27 +2036,25 @@ TEST(ProtocolTest, UnsubscribeRequestSerialization) {
 }
 
 TEST(ProtocolTest, PrimitiveSchemaDefinitionSerialization) {
-    mcp::PrimitiveSchemaDefinition def;
-    def.type = "string";
-    def.title = "My String";
-    def.description = "A simple string";
+    mcp::StringSchema field;
+    field.title = "My String";
+    field.description = "A simple string";
+    const mcp::PrimitiveSchemaDefinition def = field;
     nlohmann::json j = def;
     EXPECT_EQ(j["type"], "string");
     EXPECT_EQ(j["title"], "My String");
     auto rt = j.get<mcp::PrimitiveSchemaDefinition>();
-    EXPECT_EQ(rt.type, "string");
-    EXPECT_EQ(rt.title.value_or(""), "My String");
+    ASSERT_TRUE(std::holds_alternative<mcp::StringSchema>(rt));
+    EXPECT_EQ(std::get<mcp::StringSchema>(rt).title.value_or(""), "My String");
 }
 
 TEST(ProtocolTest, EnumSchemaSerialization) {
     mcp::EnumSchema def;
-    def.type = "string";
     def.enumValues = {"a", "b", "c"};
     nlohmann::json j = def;
     EXPECT_EQ(j["type"], "string");
     EXPECT_EQ(j["enum"][0], "a");
     auto rt = j.get<mcp::EnumSchema>();
-    EXPECT_EQ(rt.type, "string");
     EXPECT_EQ(rt.enumValues[1], "b");
 }
 

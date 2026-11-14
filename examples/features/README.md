@@ -129,13 +129,15 @@ done
 **What it demonstrates:**
 - `ctx.elicit()` for server-initiated information requests
 - `client.on_elicitation()` for handling elicitation requests
-- Form-based elicitation patterns
+- Form-based elicitation patterns, with `ElicitationSchema` building the form from typed fields and decoding the accepted content
+- The client checking its answer against the requested schema before it sends it
 - In a 2026-07-28 session the question reaches the client in an `input_required` result and the answer comes back with a retry of the `tools/call`; the tool and the handler are written the same way in both eras
 - `ConnectResult::era` and `Server::mrtr_stats()`
 
 **Key APIs:**
 - `Context::elicit()`
 - `Client::on_elicitation()`
+- `ElicitationSchema` / `ElicitedContent`
 - `ConnectResult`
 
 **Run:** `./build/release/example-feature-elicitation`

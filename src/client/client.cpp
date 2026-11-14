@@ -162,6 +162,40 @@ nlohmann::json task_outcome(const nlohmann::json& task) {
     return std::move(*detailed.result);
 }
 
+/// Throws ElicitationContentError when @p result accepts a form request with content its
+/// `requestedSchema` rejects. A schema that cannot be compiled leaves the content unchecked.
+void check_elicitation_content(const nlohmann::json& params, const ElicitResult& result) {
+    if (result.action != ElicitAction::eAccept || !params.is_object()) {
+        return;
+    }
+    const auto mode = params.find("mode");
+    if (mode != params.end() && mode->is_string() && mode->get_ref<const std::string&>() != "form") {
+        return;
+    }
+    const auto schema = params.find("requestedSchema");
+    if (schema == params.end() || !schema->is_object()) {
+        return;
+    }
+    ValidationResult validation;
+    try {
+        validation = validate_elicitation_content(*schema, result.content);
+    } catch (const SchemaError&) {
+        return;
+    }
+    if (validation.valid) {
+        return;
+    }
+    nlohmann::json violations = nlohmann::json::array();
+    for (const auto& violation : validation.violations) {
+        violations.push_back(
+            {{"instancePath", violation.instance_path}, {"message", violation.message}});
+    }
+    throw ElicitationContentError(g_INVALID_PARAMS,
+                                  "The elicitation content does not match the requested schema: " +
+                                      describe_violations(validation),
+                                  nlohmann::json{{"violations", std::move(violations)}});
+}
+
 }  // namespace
 
 namespace detail {
@@ -2480,11 +2514,16 @@ void Client::on_request(const std::string& method, RequestHandler handler) {
 }
 
 void Client::on_elicitation(std::function<Task<ElicitResult>(const ElicitRequestParams&)> handler) {
-    on_request("elicitation/create",
-               [handler = std::move(handler)](const nlohmann::json& params) -> Task<nlohmann::json> {
-                   auto result = co_await handler(params.get<ElicitRequestParams>());
-                   co_return nlohmann::json(std::move(result));
-               });
+    const bool validate = impl_->options.validate_elicitation_content;
+    on_request(
+        "elicitation/create",
+        [handler = std::move(handler), validate](const nlohmann::json& params) -> Task<nlohmann::json> {
+            auto result = co_await handler(params.get<ElicitRequestParams>());
+            if (validate) {
+                check_elicitation_content(params, result);
+            }
+            co_return nlohmann::json(std::move(result));
+        });
 }
 
 void Client::set_roots(const std::vector<Root>& roots, bool notify) {

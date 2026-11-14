@@ -83,7 +83,9 @@ UNSYNTHESISABLE = {
     "ElicitRequest": "its params are the ElicitRequestParams variant",
     "ElicitAction": "an enum; ElicitResult.action covers its decoder",
     "SamplingMessageContent": "std::variant; from_json accepts a block or a list of blocks",
-    "PrimitiveSchemaDefinition": "base of EnumSchema; exercised through its derived type",
+    "MultiSelectEnumSchema": "its values sit inside `items`; the elicitation schema tests cover it",
+    "TitledMultiSelectEnumSchema": "its options sit inside `items`; the elicitation schema tests cover it",
+    "PrimitiveSchemaDefinition": "std::variant; from_json dispatches on type and the enum keywords",
     "RequestId": "std::variant of string and integer; it has no fields to vary",
     # The decoders of the tasks extension are written by hand and read their members through
     # helpers the census does not follow; test/core/tasks_test.cpp varies every member of each
