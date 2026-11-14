@@ -488,8 +488,15 @@ if(BUILD_TESTING)
   option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
   if(ENABLE_COVERAGE)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-      target_compile_options(mcp-sdk-tests PRIVATE --coverage -O0 -g)
-      target_link_options(mcp-sdk-tests PRIVATE --coverage)
+      # The libraries too, so that the report covers src/ as well as the
+      # headers.
+      foreach(coverage_target mcp-sdk-tests mcp-cpp-sdk-shared
+                              mcp-cpp-sdk-static)
+        if(TARGET ${coverage_target})
+          target_compile_options(${coverage_target} PRIVATE --coverage -O0 -g)
+          target_link_options(${coverage_target} PRIVATE --coverage)
+        endif()
+      endforeach()
     endif()
   endif()
 

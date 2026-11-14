@@ -474,9 +474,12 @@ def main():
                   "--output-on-failure", *ctest_args, quiet=args.quiet, extra_env=extra_env)
 
         if args.coverage:
-            run("gcovr", "-r", ".", "--html", "--html-details",
-                "-o", f"{build_dir}/coverage.html", "-f", "include/")
-            run("gcovr", "-r", ".", "-f", "include/")
+            # The HTML report is for reading; the Cobertura XML is what CI uploads to Codecov.
+            run("gcovr", "-r", ".", "-f", "include/", "-f", "src/", f"-j{args.jobs}",
+                "--exclude-unreachable-branches", "--exclude-throw-branches",
+                "--html-details", f"{build_dir}/coverage.html",
+                "--cobertura", f"{build_dir}/coverage.xml",
+                "--txt-summary")
 
     if args.docs:
         try:
