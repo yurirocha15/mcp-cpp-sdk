@@ -1,11 +1,6 @@
 name: PR commands
 
-# A repository admin comments on a pull request:
-#   /approve [sha]                       approve the head commit
-#   /merge [merge|squash|rebase] [sha]   approve, then merge now or when the required checks pass
-# The sha (7-40 hex characters) names the commit the admin reviewed; it is required for pull
-# requests from forks. The bot is a GitHub App, so its approval counts as a second person's and
-# its merge triggers the workflows that run on the base branch.
+# Admin-only /approve and /merge [merge|squash|rebase] [sha] comments on pull requests.
 
 on:
   issue_comment:
@@ -19,7 +14,6 @@ concurrency:
 
 jobs:
   command:
-    # A cheap filter so most comments start no runner; the job checks the admin role itself.
     if: >-
       github.event.issue.pull_request &&
       github.event.issue.state == 'open' &&
@@ -40,7 +34,6 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-contents: write
           permission-pull-requests: write
-          permission-workflows: write
 
       - name: Run the command
         env:
@@ -68,8 +61,8 @@ jobs:
             react -1
             exit 1
           }
+          trap 'reply "the command failed; see the run log."; react -1' ERR
 
-          # The first line must be exactly a command and its arguments.
           line=$(printf '%s\n' "$BODY" | head -n 1 | tr -d '\r' | tr '[:upper:]' '[:lower:]')
           read -r -a words <<< "$line"
           command=${words[0]:-}
@@ -108,9 +101,17 @@ jobs:
           if [[ "$head_repo" != "$REPO" && -z "$sha_arg" ]]; then
             refuse "this pull request comes from a fork; name the commit you reviewed: \`$command ${head_sha:0:12}\`."
           fi
+          workflow_files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" \
+            --jq '.[] | select([.filename, .previous_filename // ""] | any(startswith(".github/workflows/"))) | .filename' \
+            | wc -l)
+          if [[ "$workflow_files" -gt 0 ]]; then
+            refuse "this pull request changes workflow files; an admin approves and merges those by hand."
+          fi
+          if [[ $(gh api "repos/$REPO/pulls/$PR" --jq .head.sha) != "$head_sha" ]]; then
+            refuse "the head commit changed while the command ran; comment again."
+          fi
 
           if [[ "$command" == /merge ]]; then
-            # The merge methods both the repository and the base branch's rules allow.
             repo_json=$(gh api "repos/$REPO")
             base_path=$(jq -rn --arg ref "$base_ref" '$ref | @uri')
             rule_methods=$(gh api "repos/$REPO/rules/branches/$base_path" \
@@ -118,7 +119,6 @@ jobs:
             allowed=()
             for candidate in merge squash rebase; do
               key=$([[ $candidate == merge ]] && echo allow_merge_commit || echo "allow_${candidate}_merge")
-              # A setting the token is not shown is left to GitHub to enforce.
               [[ $(jq -r ".$key" <<< "$repo_json") != false ]] || continue
               [[ -z "$rule_methods" || " $rule_methods " == *" $candidate "* ]] || continue
               allowed+=("$candidate")
@@ -131,7 +131,6 @@ jobs:
             fi
           fi
 
-          # Approve the head commit once.
           approved=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
             --jq ".[] | select(.user.login == \"$BOT_LOGIN\" and .commit_id == \"$head_sha\" and .state == \"APPROVED\") | .id" \
             | wc -l)
@@ -146,7 +145,6 @@ jobs:
             exit 0
           fi
 
-          # GitHub computes mergeability in the background; wait for it.
           merge_state=unknown
           for _ in $(seq 1 20); do
             merge_state=$(gh api "repos/$REPO/pulls/$PR" --jq '.mergeable_state')
