@@ -71,12 +71,15 @@ class Context {
      * @param request_meta The per-request protocol fields of a 2026-07-28 request, or null for a
      *                     request of an earlier revision.
      * @param principal Who sent the request, or null when unknown.
+     * @param replaying True while the handler re-executes work an earlier round of the request
+     *                  already did, or null when it never does.
      */
     Context(ITransport& transport, RequestSender sender, std::shared_ptr<std::atomic<bool>> cancelled,
             std::optional<ProgressToken> progress_token, const std::atomic<LoggingLevel>* log_level,
             MessageSender message_sender = {},
             std::shared_ptr<const RequestMetadata> request_meta = nullptr,
-            std::shared_ptr<const std::string> principal = nullptr)
+            std::shared_ptr<const std::string> principal = nullptr,
+            std::shared_ptr<const std::atomic<bool>> replaying = nullptr)
         : transport_(transport),
           sender_(std::move(sender)),
           cancelled_(std::move(cancelled)),
@@ -84,7 +87,8 @@ class Context {
           log_level_(log_level),
           message_sender_(std::move(message_sender)),
           request_meta_(std::move(request_meta)),
-          principal_(std::move(principal)) {}
+          principal_(std::move(principal)),
+          replaying_(std::move(replaying)) {}
 
     /**
      * @brief The per-request protocol fields of this request.
@@ -109,6 +113,23 @@ class Context {
      */
     [[nodiscard]] std::string_view principal() const {
         return principal_ ? std::string_view(*principal_) : std::string_view{};
+    }
+
+    /**
+     * @brief Whether the handler is re-executing work an earlier round of the request did.
+     *
+     * @details With sealed request state (MrtrStateMode::eSealed) every retry of a multi
+     * round-trip request runs the handler again from the start, and the questions earlier rounds
+     * answered return their answers at once. This is true from the start of such a run until the
+     * handler has taken the last of those answers or asks a question they do not answer; what the
+     * handler does after that is new. A handler that does not ask again sees true until it ends.
+     * Guard side effects, such as writes or charges, with `if (!ctx.is_replay())`. It is always false
+     * for a first run, for stored request state, and for every other kind of request.
+     *
+     * @return True while the handler is replaying.
+     */
+    [[nodiscard]] bool is_replay() const {
+        return replaying_ && replaying_->load(std::memory_order_relaxed);
     }
 
     /**
@@ -332,6 +353,7 @@ class Context {
     MessageSender message_sender_;
     std::shared_ptr<const RequestMetadata> request_meta_;
     std::shared_ptr<const std::string> principal_;
+    std::shared_ptr<const std::atomic<bool>> replaying_;
 };
 
 }  // namespace mcp

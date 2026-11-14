@@ -9,6 +9,7 @@
 #include "../detail/strand_executor.hpp"
 #include "mrtr.hpp"
 
+#include <mcp/auth/oauth.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
@@ -38,6 +39,7 @@
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 
+#include <openssl/crypto.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -1078,7 +1080,11 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::atomic<std::uint64_t> legacy_shaped_rejections{0};
 
     mutable std::mutex mrtr_mutex;
-    MrtrOptions mrtr_options;
+    /// Immutable snapshot of the options; `sealing_keys` is always empty, the key material lives in
+    /// the codec only.
+    std::shared_ptr<const MrtrOptions> mrtr_options = std::make_shared<const MrtrOptions>();
+    /// Set when mrtr_options->state_mode is sealed.
+    std::shared_ptr<const detail::sealed_state::Codec> mrtr_codec;
     std::unordered_map<std::string, ParkedRequest> parked_requests;
     std::uint64_t next_park_sequence{0};
     std::shared_ptr<detail::MrtrCounters> mrtr_counters = std::make_shared<detail::MrtrCounters>();
@@ -1175,6 +1181,11 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::string park(const std::shared_ptr<detail::MrtrEntry>& entry,
                      const std::shared_ptr<const std::string>& principal, std::string_view method,
                      std::string digest, std::size_t bytes);
+    /// The state of a sealed retry, or nothing when the retry is refused. Counts the outcome.
+    std::optional<detail::MrtrSealedState> open_sealed_state(
+        const detail::sealed_state::Codec& codec, const MrtrOptions& options, const std::string& token,
+        const std::shared_ptr<const std::string>& principal, std::string_view method,
+        const std::string& digest);
     /// Takes the handler filed under @p token for a retry, or returns null when the retry may not
     /// resume it.
     std::shared_ptr<detail::MrtrEntry> take_parked(const std::string& token,
@@ -2257,8 +2268,15 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
         };
     }
 
-    return {*transport, std::move(request_sender), std::move(cancelled),    std::move(progress_token),
-            &log_level, std::move(message_sender), std::move(request_meta), std::move(principal)};
+    return {*transport,
+            std::move(request_sender),
+            std::move(cancelled),
+            std::move(progress_token),
+            &log_level,
+            std::move(message_sender),
+            std::move(request_meta),
+            std::move(principal),
+            mrtr ? mrtr->replaying : nullptr};
 }
 
 MessageSender Server::Impl::notification_route(
@@ -2608,6 +2626,15 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
     // What the answer still needs from the request once the handler has taken it over.
     const auto principal = scope.principal;
     const auto request_meta = scope.meta;
+    std::shared_ptr<const MrtrOptions> options;
+    std::shared_ptr<const detail::sealed_state::Codec> codec;
+    {
+        std::lock_guard lock(mrtr_mutex);
+        options = mrtr_options;
+        codec = mrtr_codec;
+    }
+    const bool sealed = codec != nullptr;
+    std::optional<detail::MrtrSealedState> earlier;
     std::shared_ptr<detail::MrtrEntry> entry;
     if (retry) {
         // Checked before the state is taken, so that a refused retry can be sent again.
@@ -2615,12 +2642,23 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
             co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_HEADER_MISMATCH,
                                       "Header mismatch: " + *mismatch);
         }
-        entry = take_parked(state->get_ref<const std::string&>(), principal, method,
-                            detail::mrtr_params_digest(params));
-        if (!entry) {
-            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
-                                      "Unknown or expired requestState");
+        if (sealed) {
+            earlier = open_sealed_state(*codec, *options, state->get_ref<const std::string&>(),
+                                        principal, method, detail::mrtr_params_digest(params));
+            if (!earlier) {
+                co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+                                          "Unknown or expired requestState");
+            }
+        } else {
+            entry = take_parked(state->get_ref<const std::string&>(), principal, method,
+                                detail::mrtr_params_digest(params));
+            if (!entry) {
+                co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+                                          "Unknown or expired requestState");
+            }
         }
+    }
+    if (entry) {
         {
             // The resumed handler counts as this retry, until it ends or parks again.
             std::lock_guard lock(mrtr_mutex);
@@ -2634,12 +2672,30 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
                                      std::move(progress_token), std::move(client_capabilities));
     } else {
         auto executor = co_await boost::asio::this_coro::executor;
-        auto cancelled =
-            request_cancelled ? request_cancelled : std::make_shared<std::atomic<bool>>(false);
+        // A sealed handler is released when its request ends, which must not mark the request
+        // cancelled, so it has a flag of its own that the request's cancellation is passed on to.
+        auto cancelled = request_cancelled && !sealed ? request_cancelled
+                                                      : std::make_shared<std::atomic<bool>>(false);
         entry = std::make_shared<detail::MrtrEntry>(executor, cancelled, mrtr_counters);
         entry->sink = std::move(route);
         entry->progress_token = std::move(progress_token);
         entry->client_capabilities = std::move(client_capabilities);
+        if (earlier) {
+            // A sealed retry runs the handler again; the answers of the earlier rounds, and of
+            // the questions this retry answers, are given back to it as it asks them again.
+            entry->sealed = true;
+            entry->replay = std::move(earlier->answers);
+            if (responses != params.end()) {
+                for (const auto& key : earlier->asked) {
+                    if (const auto answer = responses->find(key); answer != responses->end()) {
+                        entry->replay[key] = *answer;
+                    }
+                }
+            }
+            entry->replaying->store(!entry->replay.empty(), std::memory_order_relaxed);
+        } else if (sealed) {
+            entry->sealed = true;
+        }
         {
             std::lock_guard lock(mrtr_mutex);
             entry->in_flight = scope.in_flight;
@@ -2658,9 +2714,19 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
             boost::asio::detached);
     }
 
-    auto outcome = co_await detail::mrtr_await(entry, request_cancelled, retry);
+    const bool resumed_parked = retry && !sealed;
+    // A sealed handler that is released is destroyed where it waits and never runs its own ending,
+    // so the request gives up what the handler held.
+    const auto end_sealed_handler = [this, &entry, sealed] {
+        if (sealed) {
+            std::lock_guard lock(mrtr_mutex);
+            entry->in_flight.reset();
+            entry->ended = true;
+        }
+    };
+    auto outcome = co_await detail::mrtr_await(entry, request_cancelled, resumed_parked || sealed);
     if (outcome.event == detail::MrtrEntry::Event::eCompleted) {
-        if (!retry) {
+        if (!resumed_parked) {
             co_return std::move(outcome.wire);
         }
         // The handler answered with the id of the request that started it.
@@ -2670,6 +2736,7 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
     }
     if (outcome.event == detail::MrtrEntry::Event::eMissingCapability) {
         detail::mrtr_abandon(entry);
+        end_sealed_handler();
         co_return make_error_wire(json_msg.at("id").get<RequestId>(),
                                   g_MISSING_REQUIRED_CLIENT_CAPABILITY,
                                   "The request needs a capability the client did not declare",
@@ -2678,11 +2745,41 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
     if (request_cancelled && request_cancelled->load(std::memory_order_relaxed)) {
         // Nothing is sent for a cancelled request, and nothing will retry it.
         detail::mrtr_abandon(entry);
+        end_sealed_handler();
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
                                   "Request cancelled");
     }
-    const auto token = park(entry, principal, method, detail::mrtr_params_digest(params),
-                            detail::json_memory_cost(json_msg));
+    std::string token;
+    if (sealed) {
+        // Nothing waits in this server: the handler is released and the state goes to the client.
+        detail::mrtr_abandon(entry);
+        end_sealed_handler();
+        detail::MrtrSealedState next;
+        next.id = detail::generate_secure_session_id();
+        next.expires_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::system_clock::now().time_since_epoch() + options->state_ttl)
+                              .count();
+        next.principal_digest = detail::mrtr_principal_digest(principal ? *principal : std::string{});
+        next.method = std::string(method);
+        next.params_digest = detail::mrtr_params_digest(params);
+        next.round = (earlier ? earlier->round : 0U) + 1U;
+        for (const auto& item : outcome.requests.items()) {
+            next.asked.push_back(item.key());
+        }
+        next.answers = std::move(outcome.answers);
+        if (next.round > options->max_rounds) {
+            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+                                      "The request needs more rounds of input than the server allows");
+        }
+        token = detail::mrtr_seal_state(*codec, next);
+        if (token.empty()) {
+            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+                                      "The state of the request is larger than the server allows");
+        }
+    } else {
+        token = park(entry, principal, method, detail::mrtr_params_digest(params),
+                     detail::json_memory_cost(json_msg));
+    }
     nlohmann::json result = {{"resultType", "input_required"},
                              {"inputRequests", std::move(outcome.requests)},
                              {"requestState", token}};
@@ -2789,7 +2886,7 @@ std::string Server::Impl::park(const std::shared_ptr<detail::MrtrEntry>& entry,
                                std::string_view method, std::string digest, std::size_t bytes) {
     auto token = detail::generate_secure_session_id();
     std::vector<ParkedRequest> evicted;
-    MrtrOptions options;
+    std::shared_ptr<const MrtrOptions> options;
     auto expiry = std::make_shared<boost::asio::steady_timer>(entry->strand);
     {
         std::lock_guard lock(mrtr_mutex);
@@ -2814,7 +2911,7 @@ std::string Server::Impl::park(const std::shared_ptr<detail::MrtrEntry>& entry,
             }
             return matching;
         };
-        const auto per_principal = std::max<std::size_t>(options.max_parked_per_principal, 1);
+        const auto per_principal = std::max<std::size_t>(options->max_parked_per_principal, 1);
         const auto same_principal = [&who](const ParkedRequest& parked) {
             return parked.principal == who;
         };
@@ -2825,7 +2922,7 @@ std::string Server::Impl::park(const std::shared_ptr<detail::MrtrEntry>& entry,
         for (; waiting >= per_principal; --waiting) {
             evict_oldest(same_principal);
         }
-        while (parked_requests.size() >= std::max<std::size_t>(options.max_parked, 1)) {
+        while (parked_requests.size() >= std::max<std::size_t>(options->max_parked, 1)) {
             evict_oldest([](const ParkedRequest&) { return true; });
         }
         // Each waiting handler keeps its own copy of the request, which a peer can make large.
@@ -2834,7 +2931,7 @@ std::string Server::Impl::park(const std::shared_ptr<detail::MrtrEntry>& entry,
             principal_bytes += same_principal(parked) ? parked.bytes : 0;
         }
         while (principal_bytes > 0 &&
-               principal_bytes + bytes > options.max_parked_bytes_per_principal) {
+               principal_bytes + bytes > options->max_parked_bytes_per_principal) {
             evict_oldest(same_principal);
             principal_bytes -= evicted.back().bytes;
         }
@@ -2842,7 +2939,7 @@ std::string Server::Impl::park(const std::shared_ptr<detail::MrtrEntry>& entry,
         for (const auto& [key, parked] : parked_requests) {
             parked_bytes += parked.bytes;
         }
-        while (!parked_requests.empty() && parked_bytes + bytes > options.max_parked_bytes) {
+        while (!parked_requests.empty() && parked_bytes + bytes > options->max_parked_bytes) {
             evict_oldest([](const ParkedRequest&) { return true; });
             parked_bytes -= evicted.back().bytes;
         }
@@ -2852,9 +2949,9 @@ std::string Server::Impl::park(const std::shared_ptr<detail::MrtrEntry>& entry,
         entry->in_flight.reset();
     }
     for (auto& victim : evicted) {
-        finish_eviction(std::move(victim), MrtrEvictionReason::eCapacity, options);
+        finish_eviction(std::move(victim), MrtrEvictionReason::eCapacity, *options);
     }
-    expiry->expires_after(options.ttl);
+    expiry->expires_after(options->ttl);
     expiry->async_wait(
         [weak = weak_from_this(), token, expiry](const boost::system::error_code& error) {
             if (error) {
@@ -2865,6 +2962,42 @@ std::string Server::Impl::park(const std::shared_ptr<detail::MrtrEntry>& entry,
             }
         });
     return token;
+}
+
+std::optional<detail::MrtrSealedState> Server::Impl::open_sealed_state(
+    const detail::sealed_state::Codec& codec, const MrtrOptions& options, const std::string& token,
+    const std::shared_ptr<const std::string>& principal, std::string_view method,
+    const std::string& digest) {
+    auto state = detail::mrtr_open_state(codec, token);
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
+    if (!state || state->expires_ms <= now || state->round > options.max_rounds) {
+        mrtr_counters->resume_unknown.fetch_add(1, std::memory_order_relaxed);
+        return std::nullopt;
+    }
+    if (state->principal_digest != detail::mrtr_principal_digest(principal ? *principal : "")) {
+        mrtr_counters->resume_principal_mismatch.fetch_add(1, std::memory_order_relaxed);
+        return std::nullopt;
+    }
+    if (state->method != method || state->params_digest != digest) {
+        mrtr_counters->resume_params_mismatch.fetch_add(1, std::memory_order_relaxed);
+        return std::nullopt;
+    }
+    if (options.consume) {
+        bool fresh = false;
+        try {
+            fresh = options.consume(state->id);
+        } catch (...) {
+            // A hook that cannot tell whether the state was used refuses it.
+        }
+        if (!fresh) {
+            mrtr_counters->resume_unknown.fetch_add(1, std::memory_order_relaxed);
+            return std::nullopt;
+        }
+    }
+    mrtr_counters->resume_hit.fetch_add(1, std::memory_order_relaxed);
+    return state;
 }
 
 std::shared_ptr<detail::MrtrEntry> Server::Impl::take_parked(
@@ -2899,7 +3032,7 @@ std::shared_ptr<detail::MrtrEntry> Server::Impl::take_parked(
 
 void Server::Impl::evict_parked(const std::string& token, MrtrEvictionReason reason) {
     ParkedRequest victim;
-    MrtrOptions options;
+    std::shared_ptr<const MrtrOptions> options;
     {
         std::lock_guard lock(mrtr_mutex);
         const auto found = parked_requests.find(token);
@@ -2910,7 +3043,7 @@ void Server::Impl::evict_parked(const std::string& token, MrtrEvictionReason rea
         parked_requests.erase(found);
         options = mrtr_options;
     }
-    finish_eviction(std::move(victim), reason, options);
+    finish_eviction(std::move(victim), reason, *options);
 }
 
 void Server::Impl::finish_eviction(ParkedRequest victim, MrtrEvictionReason reason,
@@ -2951,8 +3084,55 @@ void Server::Impl::abandon_all_parked() {
 void Server::abandon_waiting_handlers() { impl_->abandon_all_parked(); }
 
 void Server::set_mrtr_options(MrtrOptions options) {
+    // The secrets of the caller's list are overwritten once the key ring is built, or on a throw.
+    const auto wipe = [](std::vector<std::string>& secrets) {
+        for (auto& secret : secrets) {
+            OPENSSL_cleanse(secret.data(), secret.size());
+        }
+        secrets.clear();
+    };
+    std::shared_ptr<const detail::sealed_state::Codec> codec;
+    try {
+        if (options.state_ttl <= std::chrono::milliseconds::zero()) {
+            throw std::invalid_argument("state_ttl must be positive");
+        }
+        if (options.max_rounds == 0) {
+            throw std::invalid_argument("max_rounds must be at least 1");
+        }
+        if (options.max_state_bytes < detail::g_min_state_chars) {
+            throw std::invalid_argument("max_state_bytes is too small for any request state");
+        }
+        if (options.state_mode == MrtrStateMode::eSealed) {
+            if (options.sealing_keys.empty()) {
+                throw std::invalid_argument("sealed request state needs at least one sealing key");
+            }
+            std::vector<detail::sealed_state::SealKey> keys;
+            for (const auto& material : options.sealing_keys) {
+                if (material.size() < detail::sealed_state::g_key_size) {
+                    throw std::invalid_argument("a sealing key must be at least 32 bytes");
+                }
+                // The master key and its id are one-way derivations of the supplied secret.
+                auto secret = auth::detail::sha256(material);
+                std::string secret_bytes(secret.begin(), secret.end());
+                const auto id = auth::detail::sha256(secret_bytes);
+                std::array<std::uint8_t, detail::sealed_state::g_kid_size> kid{};
+                std::copy_n(id.begin(), kid.size(), kid.begin());
+                keys.emplace_back(kid, secret);
+                OPENSSL_cleanse(secret.data(), secret.size());
+                OPENSSL_cleanse(secret_bytes.data(), secret_bytes.size());
+            }
+            codec = std::make_shared<const detail::sealed_state::Codec>(std::move(keys),
+                                                                        options.max_state_bytes);
+        }
+    } catch (...) {
+        wipe(options.sealing_keys);
+        throw;
+    }
+    wipe(options.sealing_keys);
+    auto snapshot = std::make_shared<const MrtrOptions>(std::move(options));
     std::lock_guard lock(impl_->mrtr_mutex);
-    impl_->mrtr_options = std::move(options);
+    impl_->mrtr_codec = std::move(codec);
+    impl_->mrtr_options = std::move(snapshot);
 }
 
 MrtrStats Server::mrtr_stats() const {
