@@ -12,5 +12,6 @@
 #include <mcp/protocol/roots.hpp>
 #include <mcp/protocol/sampling.hpp>
 #include <mcp/protocol/schema.hpp>
+#include <mcp/protocol/skills.hpp>
 #include <mcp/protocol/tasks.hpp>
 #include <mcp/protocol/tools.hpp>
