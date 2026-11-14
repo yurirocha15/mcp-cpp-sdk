@@ -1,4 +1,5 @@
-// Scenario-driven client fixture for the official MCP conformance runner.
+// Scenario-driven client fixture for the official MCP conformance runner. The 2025-11-25 scenarios
+// and the 2026-07-28 request-shape scenarios share it; MCP_CONFORMANCE_SCENARIO names the one to run.
 
 #include <mcp/auth/client_credentials.hpp>
 #include <mcp/auth/enterprise_authorization.hpp>
@@ -27,6 +28,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -169,6 +171,125 @@ mcp::Task<void> run_scope_step_up(mcp::Client& client) {
     client.close();
 }
 
+/// The credentials and test values the runner hands the fixture out of band, if it handed it any.
+std::optional<nlohmann::json> conformance_context();
+
+/// Arguments that satisfy the required properties of a tool's input schema.
+nlohmann::json minimal_arguments(const nlohmann::json& schema) {
+    nlohmann::json arguments = nlohmann::json::object();
+    if (!schema.contains("required") || !schema.at("required").is_array() ||
+        !schema.contains("properties") || !schema.at("properties").is_object()) {
+        return arguments;
+    }
+    for (const auto& name : schema.at("required")) {
+        const auto& property =
+            schema.at("properties").value(name.get<std::string>(), nlohmann::json::object());
+        const auto type =
+            property.is_object() ? property.value("type", std::string("string")) : "string";
+        if (type == "integer" || type == "number") {
+            arguments[name.get<std::string>()] = 0;
+        } else if (type == "boolean") {
+            arguments[name.get<std::string>()] = false;
+        } else if (type == "array") {
+            arguments[name.get<std::string>()] = nlohmann::json::array();
+        } else if (type == "object") {
+            arguments[name.get<std::string>()] = nlohmann::json::object();
+        } else {
+            arguments[name.get<std::string>()] = "test-default";
+        }
+    }
+    return arguments;
+}
+
+/// Runs one call of a scenario and reports an error instead of ending the scenario: the scenario's
+/// mock server judges what was sent, and several scenarios answer some calls with errors.
+mcp::Task<void> try_call_tool(mcp::Client& client, std::string name, nlohmann::json arguments) {
+    try {
+        (void)co_await client.call_tool(name, arguments);
+    } catch (const std::exception& error) {
+        std::cerr << "tools/call " << name << " failed: " << error.what() << '\n';
+    }
+}
+
+/// Lists the server's tools and calls each one, then reads its resources and gets its prompts.
+/// The mock servers of the request-metadata, standard-header and invalid-tool-header scenarios judge
+/// the requests this sends; a tool the client left out of the list is never called.
+mcp::Task<void> run_server_walk(mcp::Client& client) {
+    (void)co_await connect_conformance_client(client);
+    const auto tools = co_await client.list_tools();
+    for (const auto& tool : tools.tools) {
+        nlohmann::json arguments = minimal_arguments(tool.inputSchema);
+        co_await try_call_tool(client, tool.name, std::move(arguments));
+    }
+    try {
+        const auto resources = co_await client.list_resources();
+        for (const auto& resource : resources.resources) {
+            (void)co_await client.read_resource(resource.uri);
+        }
+    } catch (const std::exception& error) {
+        std::cerr << "resources failed: " << error.what() << '\n';
+    }
+    try {
+        const auto prompts = co_await client.list_prompts();
+        for (const auto& prompt : prompts.prompts) {
+            (void)co_await client.get_prompt(prompt.name);
+        }
+    } catch (const std::exception& error) {
+        std::cerr << "prompts failed: " << error.what() << '\n';
+    }
+    client.close();
+}
+
+/// Lists the tools, whose schemas carry a `$ref` the client must not fetch.
+mcp::Task<void> run_list_tools_only(mcp::Client& client) {
+    (void)co_await connect_conformance_client(client);
+    (void)co_await client.list_tools();
+    client.close();
+}
+
+/// Calls the tools the runner names in its context with the arguments it names.
+mcp::Task<void> run_custom_headers(mcp::Client& client) {
+    (void)co_await connect_conformance_client(client);
+    (void)co_await client.list_tools();
+    const auto context = conformance_context();
+    if (context && context->contains("toolCalls")) {
+        for (const auto& call : context->at("toolCalls")) {
+            std::string name = call.at("name").get<std::string>();
+            nlohmann::json arguments = call.value("arguments", nlohmann::json::object());
+            co_await try_call_tool(client, std::move(name), std::move(arguments));
+        }
+    }
+    client.close();
+}
+
+/// Calls the tools of the request-state scenario one after the other; each answer to a question
+/// comes from the elicitation handler.
+mcp::Task<void> run_request_state(mcp::Client& client) {
+    (void)co_await connect_conformance_client(client);
+    (void)co_await client.list_tools();
+    const std::vector<std::string> names = {"test_mrtr_echo_state", "test_mrtr_no_state",
+                                            "test_mrtr_unrelated", "test_mrtr_no_result_type"};
+    for (const auto& name : names) {
+        nlohmann::json arguments = nlohmann::json::object();
+        co_await try_call_tool(client, name, std::move(arguments));
+    }
+    client.close();
+}
+
+/// Sends the schema of the focal tool back through the scenario's echo tool, unchanged.
+mcp::Task<void> run_schema_preservation(mcp::Client& client) {
+    (void)co_await connect_conformance_client(client);
+    const auto tools = co_await client.list_tools();
+    for (const auto& tool : tools.tools) {
+        if (tool.name == "json_schema_2020_12_tool") {
+            nlohmann::json arguments = nlohmann::json::object();
+            arguments["schema"] = tool.inputSchema;
+            co_await try_call_tool(client, "json_schema_echo", std::move(arguments));
+        }
+    }
+    client.close();
+}
+
 mcp::Task<void> run_scenario(mcp::Client& client, std::string_view scenario) {
     if (scenario == "initialize") {
         return run_initialize(client);
@@ -186,6 +307,22 @@ mcp::Task<void> run_scenario(mcp::Client& client, std::string_view scenario) {
         // Kept narrow on purpose: other auth fixtures use server builders that never register
         // "test-tool", and only scope-retry-limit tolerates a client error.
         return run_scope_step_up(client);
+    }
+    if (scenario == "request-metadata" || scenario == "http-standard-headers" ||
+        scenario == "http-invalid-tool-headers") {
+        return run_server_walk(client);
+    }
+    if (scenario == "json-schema-ref-no-deref") {
+        return run_list_tools_only(client);
+    }
+    if (scenario == "http-custom-headers") {
+        return run_custom_headers(client);
+    }
+    if (scenario == "sep-2322-client-request-state") {
+        return run_request_state(client);
+    }
+    if (scenario == "json-schema-2020-12-preservation") {
+        return run_schema_preservation(client);
     }
     if (scenario.starts_with("auth/")) {
         // Every other authorization scenario drives the same flow: one authenticated MCP request.
