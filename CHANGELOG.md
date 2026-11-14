@@ -362,6 +362,41 @@ Versioning; a `0.x` version is a stable release unless its version has an
   generated name or is already used by another question of the request makes
   the call throw `std::invalid_argument`. Stored and sealed request state both
   honor the key; requests before 2026-07-28 ignore it.
+- The tasks extension (`io.modelcontextprotocol/tasks`) of protocol revision
+  2026-07-28, on the server and the client. `Server::enable_tasks()` advertises
+  it in `server/discover` and answers `tasks/get`, `tasks/update` and
+  `tasks/cancel`; `Server::set_tool_task_mode()` lets a tool (`ToolTaskMode`:
+  `eNever`, the default, `eAuto` or `eRequired`) answer a client that declared
+  the extension with a task handle (`resultType: "task"`) and run apart from
+  the request, on the handler executor when one is set. A client that did not
+  declare the extension never gets a task, and is answered with
+  `g_MISSING_REQUIRED_CLIENT_CAPABILITY` where the tool or a task method
+  needs it. Inside a task, `Context::report_progress()` sets the task's
+  `statusMessage`, `Context::elicit()`, `sample_llm()` and `request_roots()`
+  put their questions in the task's `inputRequests` until `tasks/update`
+  answers them, under the key `InputOptions` names or one the SDK generates,
+  and `Context::report_progress_sync()` reports progress from a
+  handler that is not a coroutine. A task belongs to the principal that
+  started it. `TaskStore` is the interface tasks are kept through, and
+  `InMemoryTaskStore` the default, which expires tasks by their time to live
+  and limits the tasks of an owner and in all. `TaskOptions` sets the store,
+  the time to live, the polling interval and the limits on handlers that run at
+  once, per principal and in all, which count a task until its handler returns.
+- `ClientOptions::tasks` (`ClientTaskMode`) makes a 2026-07-28 client declare
+  the tasks extension and `Client::call_tool()` follow a task to its result,
+  polling at the task's `pollIntervalMs` and answering its `inputRequests`
+  with the registered handlers. `Client::start_tool()` returns a `TaskHandle`
+  (`get()`, `update()`, `cancel()`, `wait()`, `result()`) when the server
+  starts a task, and `Client::task_handle()` makes one from a task id.
+  `ClientOptions::task_poll_interval` and `task_timeout` bound the polling.
+- `SubscriptionFilter::taskIds` asks a `subscriptions/listen` stream for
+  `notifications/tasks`, which carry the task as `tasks/get` returns it.
+  `Mcp-Name` carries the task id of `tasks/get`, `tasks/update` and
+  `tasks/cancel` over HTTP, which `HttpClientTransport` sets and the HTTP
+  servers check.
+- `mcp/protocol/extensions.hpp` with `declare_extension()`,
+  `declares_extension()` and `extension_settings()` for declaring and reading
+  the extensions of a client's or a server's capabilities.
 
 ### Changed
 
@@ -630,6 +665,17 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Removed
 
+- The task types of the experimental shape of 2025-11-25: the `tasks` member of
+  `ClientCapabilities` and `ServerCapabilities` (a legacy peer that sends it
+  still parses, and the member is dropped), `ToolExecution` and `Tool::execution`,
+  `TaskMetadata` and `RelatedTaskMetadata`, the `task` member of the elicitation
+  request parameters, `GetTaskRequest`, `CancelTaskRequest`,
+  `CancelTaskResult`, `ListTasksRequest`, `ListTasksResult`,
+  `GetTaskPayloadRequest` and `GetTaskPayloadResult`, and the
+  `notifications/tasks/status` shape of `TaskStatusNotification`. `TaskData`,
+  `GetTaskRequestParams`, `CancelTaskRequestParams`, `CreateTaskResult` and
+  `TaskStatusNotification` now have the shape of the tasks extension, with
+  `taskId`, `ttlMs` and `pollIntervalMs`.
 - `Server::set_discover_ttl_ms()` and `set_discover_cache_scope()`, replaced
   by `Server::set_cache_hints()`.
 - `g_DISCOVERABLE_PROTOCOL_VERSIONS`; `g_SUPPORTED_PROTOCOL_VERSIONS` lists
