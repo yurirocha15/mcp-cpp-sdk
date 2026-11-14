@@ -1,6 +1,7 @@
 name: PR commands
 
-# Admin-only /approve and /merge [merge|squash|rebase] [full sha] comments on pull requests.
+# Admin-only /approve and /merge [merge|squash|rebase] comments on the admin's own pull requests
+# into the default branch.
 
 on:
   issue_comment:
@@ -17,6 +18,7 @@ jobs:
     if: >-
       github.event.issue.pull_request &&
       github.event.issue.state == 'open' &&
+      github.event.issue.user.login == github.event.comment.user.login &&
       (startsWith(github.event.comment.body, '/approve') ||
        startsWith(github.event.comment.body, '/merge')) &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
@@ -42,6 +44,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.issue.number }}
           ACTOR: ${{ github.event.comment.user.login }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           COMMENT_ID: ${{ github.event.comment.id }}
           BODY: ${{ github.event.comment.body }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -71,14 +74,11 @@ jobs:
             exit 0
           fi
           method=""
-          sha_arg=""
           for word in "${words[@]:1}"; do
             if [[ "$command" == /merge && "$word" =~ ^(merge|squash|rebase)$ && -z "$method" ]]; then
               method=$word
-            elif [[ "$word" =~ ^[0-9a-f]{40}$ && -z "$sha_arg" ]]; then
-              sha_arg=$word
             else
-              refuse "usage: \`/approve [sha]\` or \`/merge [merge|squash|rebase] [sha]\`; the sha is the full 40-character commit id."
+              refuse "usage: \`/approve\` or \`/merge [merge|squash|rebase]\`."
             fi
           done
 
@@ -92,16 +92,15 @@ jobs:
           draft=$(jq -r .draft <<< "$pr_json")
           head_sha=$(jq -r .head.sha <<< "$pr_json")
           head_repo=$(jq -r '.head.repo.full_name // ""' <<< "$pr_json")
+          author=$(jq -r .user.login <<< "$pr_json")
           changed_files=$(jq -r .changed_files <<< "$pr_json")
           base_ref=$(jq -r .base.ref <<< "$pr_json")
           [[ "$state" == open ]] || refuse "the pull request is not open."
           [[ "$draft" == false ]] || refuse "the pull request is a draft."
-          if [[ -n "$sha_arg" && "$head_sha" != "$sha_arg" ]]; then
-            refuse "the head commit is now \`$head_sha\`, not \`$sha_arg\`; review it and comment again."
-          fi
-          if [[ "$head_repo" != "$REPO" && -z "$sha_arg" ]]; then
-            refuse "this pull request comes from a fork; name the commit you reviewed: \`$command $head_sha\`."
-          fi
+          [[ "$author" == "$ACTOR" && "$head_repo" == "$REPO" ]] \
+            || refuse "the bot only handles pull requests you opened from a branch in this repository."
+          [[ "$base_ref" == "$DEFAULT_BRANCH" ]] \
+            || refuse "the bot only handles pull requests into \`$DEFAULT_BRANCH\`."
           listed=$(gh api --paginate "repos/$REPO/pulls/$PR/files" \
             --jq '.[] | [.filename, .previous_filename // ""] | any(startswith(".github/workflows/"))')
           if grep -qx true <<< "$listed"; then
