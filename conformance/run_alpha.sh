@@ -88,7 +88,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$SERVER" "$PORT" >"$OUTPUT_DIR/server/stdout.txt" 2>"$OUTPUT_DIR/server/stderr.txt" &
+# The alpha runner's skills scenarios need the fixture to serve skills.
+MCP_CONFORMANCE_SKILLS=1 "$SERVER" "$PORT" >"$OUTPUT_DIR/server/stdout.txt" 2>"$OUTPUT_DIR/server/stderr.txt" &
 server_pid=$!
 
 ready=0
@@ -126,6 +127,29 @@ timeout --signal=INT --kill-after=10s "$CLIENT_TIMEOUT" npx --yes "$RUNNER_PACKA
 client_status=${PIPESTATUS[0]}
 set -e
 
+# The requirement set of 2026-07-28 names no Skills extension scenario, so run those one by one
+# (--force runs an extension scenario at a revision it is not on the timeline of). Their logs stay
+# apart from the requirement-set logs above.
+SKILLS_SERVER_SCENARIOS=(sep-2640-skills-directory sep-2640-skills-enumeration sep-2640-skills-manifest)
+SKILLS_CLIENT_SCENARIOS=(sep-2640-client-no-prefetch sep-2640-client-verify-digest
+    sep-2640-client-verify-size sep-2640-client-verify-frontmatter)
+set +e
+for scenario in "${SKILLS_SERVER_SCENARIOS[@]}"; do
+    timeout --signal=INT --kill-after=10s "$SERVER_TIMEOUT" npx --yes "$RUNNER_PACKAGE" server \
+        --url "http://127.0.0.1:$PORT/mcp" \
+        --scenario "$scenario" --spec-version "$SPEC_VERSION" --force \
+        --output-dir "$OUTPUT_DIR/server/skills-results" \
+        2>&1 | tee -a "$OUTPUT_DIR/server/skills-runner.log"
+done
+for scenario in "${SKILLS_CLIENT_SCENARIOS[@]}"; do
+    timeout --signal=INT --kill-after=10s "$CLIENT_TIMEOUT" npx --yes "$RUNNER_PACKAGE" client \
+        --command "exec $CLIENT" \
+        --scenario "$scenario" --spec-version "$SPEC_VERSION" --force --timeout 30000 \
+        --output-dir "$OUTPUT_DIR/client/skills-results" \
+        2>&1 | tee -a "$OUTPUT_DIR/client/skills-runner.log"
+done
+set -e
+
 {
     echo "server_runner_exit_status=$server_status"
     echo "client_runner_exit_status=$client_status"
@@ -138,6 +162,11 @@ set -e
     for side in server client; do
         echo "== $side"
         grep -E '^(Total:|Not scored for)' "$OUTPUT_DIR/$side/runner.log" || echo "no totals in the $side runner log"
+    done
+    # One "Passed: N/M, F failed" line per Skills scenario, in the order they ran.
+    for side in server client; do
+        echo "== $side, Skills scenarios (not in the requirement set)"
+        grep -E '^Passed:' "$OUTPUT_DIR/$side/skills-runner.log" || echo "no totals in the $side Skills log"
     done
 } >"$OUTPUT_DIR/summary.txt"
 cat "$OUTPUT_DIR/summary.txt"
