@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -227,10 +228,13 @@ class Parser {
     }
 
     std::size_t parse_alternation(std::uint32_t depth) {
+        path_.push_back({next_alternation_++, 0});
         std::vector<std::size_t> alternatives{parse_concat(depth)};
         while (accept('|')) {
+            ++path_.back().second;
             alternatives.push_back(parse_concat(depth));
         }
+        path_.pop_back();
         if (alternatives.size() == 1) {
             return alternatives.front();
         }
@@ -259,41 +263,48 @@ class Parser {
     /// returns false when the text there is not a quantifier, in which case `{` is a literal.
     bool parse_braces(std::uint32_t& min, std::optional<std::uint32_t>& max) {
         const std::size_t start = pos_;
-        auto read_number = [this](std::uint32_t& out) {
+        // A number stops growing past the limit: braces that turn out not to be a quantifier are
+        // literal text whatever number they hold, so the limit is checked once they close.
+        static constexpr std::uint64_t past_limit = std::uint64_t{Regex::max_repeat_count} + 1;
+        auto read_number = [this](std::uint64_t& out) {
             std::size_t digits = 0;
             std::uint64_t value = 0;
             while (!at_end() && peek() >= '0' && peek() <= '9') {
-                value = value * 10 + (peek() - '0');
-                if (value > Regex::max_repeat_count) {
-                    fail(RegexError::Kind::eTooLarge,
-                         "repetition count exceeds " + std::to_string(Regex::max_repeat_count));
-                }
+                value = std::min<std::uint64_t>(value * 10 + (peek() - '0'), past_limit);
                 ++pos_;
                 ++digits;
             }
-            out = static_cast<std::uint32_t>(value);
+            out = value;
             return digits > 0;
         };
         ++pos_;  // '{'
-        std::uint32_t low = 0;
+        std::uint64_t low = 0;
         if (!read_number(low)) {
             pos_ = start;
             return false;
         }
-        std::optional<std::uint32_t> high = low;
+        std::optional<std::uint64_t> high = low;
         if (accept(',')) {
-            std::uint32_t value = 0;
-            high = read_number(value) ? std::optional<std::uint32_t>(value) : std::nullopt;
+            std::uint64_t value = 0;
+            high = read_number(value) ? std::optional<std::uint64_t>(value) : std::nullopt;
         }
         if (!accept('}')) {
             pos_ = start;
             return false;
         }
+        if (low == past_limit || high == past_limit) {
+            fail(RegexError::Kind::eTooLarge,
+                 "repetition count exceeds " + std::to_string(Regex::max_repeat_count));
+        }
         if (high && *high < low) {
             fail(RegexError::Kind::eInvalid, "numbers out of order in {} quantifier");
         }
-        min = low;
-        max = high;
+        min = static_cast<std::uint32_t>(low);
+        if (high) {
+            max = static_cast<std::uint32_t>(*high);
+        } else {
+            max.reset();
+        }
         return true;
     }
 
@@ -389,9 +400,12 @@ class Parser {
                 while (!at_end() && (is_word_character(peek()) || peek() == '$')) {
                     ++pos_;
                 }
-                if (pos_ == name_start || !accept('>')) {
+                std::u32string name(text_.begin() + static_cast<std::ptrdiff_t>(name_start),
+                                    text_.begin() + static_cast<std::ptrdiff_t>(pos_));
+                if (name.empty() || !accept('>')) {
                     fail(RegexError::Kind::eUnsupported, "invalid group name");
                 }
+                check_group_name(std::move(name));
             } else {
                 fail(RegexError::Kind::eUnsupported, "invalid group");
             }
@@ -401,6 +415,36 @@ class Parser {
             fail(RegexError::Kind::eInvalid, "missing ')'");
         }
         return inner;
+    }
+
+    /// Where a group sits: for each alternation around it, outermost first, the alternation and
+    /// which of its alternatives holds the group.
+    using AlternativePath = std::vector<std::pair<std::size_t, std::size_t>>;
+
+    /// Whether groups at @p first and @p second never take part in the same match, which holds
+    /// when an alternation puts them in different alternatives.
+    static bool exclusive(const AlternativePath& first, const AlternativePath& second) {
+        const auto common = std::min(first.size(), second.size());
+        for (std::size_t level = 0; level < common; ++level) {
+            if (first[level] != second[level]) {
+                return first[level].first == second[level].first;
+            }
+        }
+        return false;
+    }
+
+    /// Refuses @p name when a group that can take part in the same match already has it.
+    void check_group_name(std::u32string name) {
+        auto& others = group_paths_[std::move(name)];
+        for (const auto& other : others) {
+            if (++name_comparisons_ > g_max_name_comparisons) {
+                fail(RegexError::Kind::eTooLarge, "too many groups of one name");
+            }
+            if (!exclusive(other, path_)) {
+                fail(RegexError::Kind::eInvalid, "duplicate group name");
+            }
+        }
+        others.push_back(path_);
     }
 
     std::uint32_t parse_hex(std::size_t digits) {
@@ -559,7 +603,7 @@ class Parser {
         std::vector<Range> ranges;
         while (!accept(']')) {
             auto low = parse_class_atom();
-            if (peek() == '-' && peek(1) != ']' && peek(1) != 0) {
+            if (peek() == '-' && pos_ + 1 < text_.size() && peek(1) != ']') {
                 ++pos_;  // '-'
                 auto high = parse_class_atom();
                 if (low.code_point && high.code_point) {
@@ -589,8 +633,15 @@ class Parser {
         return add_class(negated ? complement(ranges) : std::move(ranges));
     }
 
+    static constexpr std::size_t g_max_name_comparisons = Regex::max_program_size * 8;
+
     std::vector<char32_t> text_;
     std::size_t pos_ = 0;
+    /// The alternations around the current position.
+    AlternativePath path_;
+    std::size_t next_alternation_ = 0;
+    std::map<std::u32string, std::vector<AlternativePath>> group_paths_;
+    std::size_t name_comparisons_ = 0;
 };
 
 class Compiler {

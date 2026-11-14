@@ -250,6 +250,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   program before matching, so a value with many short strings could fail with
   "pattern matching takes too many steps" though it conforms. A string is now
   charged for the matcher instructions it reaches.
+- `pattern` follows ECMA-262 more closely: two groups of one name are invalid
+  unless they are in different alternatives; `a{10001` without a closing brace
+  is literal text, as `a{5` is, instead of being refused for its count; and a
+  NUL character written after `-` in a class ends a range, as any other
+  character does, instead of making the `-` literal.
 
 ## [0.2.0] - 2026-10-21
 

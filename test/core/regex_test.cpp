@@ -393,4 +393,36 @@ TEST(Regex, CountedSearchPaysForTheInstructionsItReaches) {
     EXPECT_LT(steps, 1'000'000U - 2000U);
 }
 
+// Group names are checked as ECMA-262 checks them: two groups of one name are invalid when both can
+// take part in one match, and allowed in different alternatives.
+TEST(Regex, DuplicateGroupNamesThatCanBothMatchAreInvalid) {
+    for (const char* pattern :
+         {"(?<a>x)(?<a>y)", "(?<a>(?<a>x))", "(?:(?<a>x)|y)(?<a>z)", "(?<a>x)|(?<b>y)(?<b>z)"}) {
+        EXPECT_EQ(refusal(pattern), RegexError::Kind::eInvalid) << pattern;
+    }
+    for (const char* pattern : {"(?<a>x)|(?<a>y)", "(?:(?<a>x)|(?<a>y))z", "(?<a>x)(?<b>y)"}) {
+        EXPECT_EQ(refusal(pattern), std::nullopt) << pattern;
+    }
+    EXPECT_TRUE(matches("^(?:(?<y>\\d{4})-\\d\\d|\\d\\d-(?<y>\\d{4}))$", "12-2024"));
+}
+
+// A brace that does not close a quantifier is literal text whatever number follows it (ECMA-262
+// Annex B). Only a quantifier is held to the repetition limit.
+TEST(Regex, UnclosedBraceIsLiteralWhateverItsNumber) {
+    EXPECT_TRUE(matches("^a{10001$", "a{10001"));
+    EXPECT_TRUE(matches("^a{1,99999$", "a{1,99999"));
+    EXPECT_EQ(refusal("a{10001}"), RegexError::Kind::eTooLarge);
+    EXPECT_EQ(refusal("a{1,10001}"), RegexError::Kind::eTooLarge);
+}
+
+// A NUL character written into a pattern is a character like any other, also at the end of a class
+// range.
+TEST(Regex, NulCharacterInAClassRange) {
+    EXPECT_EQ(refusal(std::string("[a-\0]", 5)), RegexError::Kind::eInvalid);
+    const Regex up_to_a(std::string("^[\0-a]$", 7));
+    EXPECT_TRUE(up_to_a.search(std::string(1, '\0')));
+    EXPECT_TRUE(up_to_a.search("A"));
+    EXPECT_FALSE(up_to_a.search("b"));
+}
+
 }  // namespace

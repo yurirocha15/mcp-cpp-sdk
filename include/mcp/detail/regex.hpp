@@ -97,6 +97,11 @@ class MCP_API PatternBudget {
  * property escapes (`\p{...}`) are rejected with a `RegexError`. Captures are not reported;
  * `search()` only answers whether the pattern matches.
  *
+ * Patterns are read as ECMAScript reads them with the `u` flag, on code points and with `\u{...}`
+ * escapes, except that a `{`, `}` or `]` that does not belong to a quantifier or a class is a
+ * literal, as it is without the flag (ECMA-262 Annex B). Two groups of one name are refused unless
+ * they are in different alternatives, as ECMA-262 has it.
+ *
  * A compiled `Regex` is immutable: copies share the program, and `search()` may be called from
  * several threads at once.
  */
