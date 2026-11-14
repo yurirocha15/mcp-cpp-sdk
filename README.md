@@ -15,7 +15,7 @@ A C++20 SDK for the [Model Context Protocol](https://modelcontextprotocol.io) (M
 - **Typed protocol models**: MCP messages are C++ types that convert to and from `nlohmann/json`.
 - **Three transports**: Stdio, WebSocket and Streamable HTTP.
 - **Protocol revisions**: A `Server` serves revision `2026-07-28` alongside `2025-11-25` and earlier on the same transport. A `Client` detects which one the server speaks when it connects.
-- **Tested against the spec**: The official MCP conformance suites run in CI against protocol `2025-11-25`, and [known gaps](conformance/expected-failures.yml) are listed. This is not an official SDK tier rating.
+- **Tested against the spec**: The official MCP conformance suites run in CI against protocol `2025-11-25`, and [known gaps](conformance/expected-failures.yml) are listed. A separate job reports the alpha runner's `2026-07-28` scenarios without gating. This is not an official SDK tier rating.
 - **Fast**: Throughput and latency on par with the official Rust SDK in our [benchmark](benchmark/RESULTS.md).
 
 ## Quick Start
