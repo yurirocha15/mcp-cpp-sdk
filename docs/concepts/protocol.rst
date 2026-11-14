@@ -276,6 +276,21 @@ The other options of sealed state:
 * The limits on waiting handlers (``max_parked`` and the others) apply to stored
   state only, since sealed state keeps no handler waiting.
 
+Extensions
+----------
+
+An optional extension is negotiated under the ``extensions`` member of the
+capabilities, keyed by its identifier. A server lists the extensions it serves in
+the capabilities it gives ``Server`` and reports them in the ``server/discover``
+result. A client declares the extensions it understands in the capabilities of
+each request, which a handler reads through ``Context::request_meta()``. Declaring
+an extension does not ask for it: the server decides, request by request, whether
+to use one the client declared, and uses none a client did not declare.
+
+``mcp/protocol/extensions.hpp`` has the helpers for both sides:
+``declare_extension()``, ``declares_extension()`` and ``extension_settings()``.
+The one extension the SDK implements is :doc:`tasks`.
+
 Subscriptions
 -------------
 

@@ -149,8 +149,10 @@ a gateway can route or limit it without reading the body. The server requires
 them and checks them against the body:
 
 * ``MCP-Protocol-Version`` and ``Mcp-Method`` on every request.
-* ``Mcp-Name`` on ``tools/call``, ``prompts/get`` and ``resources/read``. A value
-  in the ``=?base64?...?=`` form is decoded first.
+* ``Mcp-Name`` on ``tools/call``, ``prompts/get``, ``resources/read`` and, for the
+  tasks extension, ``tasks/get``, ``tasks/update`` and ``tasks/cancel``, where
+  it holds ``params.taskId``. A value in the ``=?base64?...?=`` form is decoded
+  first.
 * ``Mcp-Param-{Name}`` on a ``tools/call`` whose tool marks input properties with
   ``x-mcp-header``. See `x-mcp-header parameters`_.
 
@@ -304,6 +306,7 @@ A 2026-07-28 request needs no session, and any instance that serves the same too
 
 - A request whose handler asks the client a question (``Context::elicit()``, ``sample_llm()``, ``request_roots()``) waits in the ``Server`` instance by default. The client's retry, which carries the ``requestState``, must reach that instance; a retry that does not is answered as for an unknown ``requestState``. With sealed request state (``MrtrOptions::state_mode``, see :doc:`/concepts/protocol`) the state travels in the ``requestState`` and any instance configured with the same ``sealing_keys`` serves the retry.
 - A ``subscriptions/listen`` stream is one long-lived request, and the notifications it carries come from the instance that holds it.
+- A task (see :doc:`/concepts/tasks`) lives in the ``TaskStore`` of the instance that started it, and its handler runs there. With the default in-memory store, ``tasks/get``, ``tasks/update`` and ``tasks/cancel`` must reach that instance: route on the ``Mcp-Name`` header, which holds the task id. An instance that does not know the task answers ``g_INVALID_PARAMS``.
 
 Health Checks
 ~~~~~~~~~~~~~

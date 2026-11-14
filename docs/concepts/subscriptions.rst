@@ -53,7 +53,9 @@ and the server keeps that request open and sends the notifications on it.
    }
 
 The filter has ``toolsListChanged``, ``promptsListChanged`` and
-``resourcesListChanged`` flags and a list of ``resourceSubscriptions`` URIs. The
+``resourcesListChanged`` flags, a list of ``resourceSubscriptions`` URIs, and a
+list of ``taskIds`` for the notifications of the tasks extension (see
+:doc:`tasks`). The
 server first answers with ``notifications/subscriptions/acknowledged``, which
 lists the part of the filter it honors. It honors a list-changed type only if
 the matching capability sets ``listChanged``, and resource URIs only if the
