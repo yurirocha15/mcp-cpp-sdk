@@ -800,6 +800,10 @@ Regex PatternBudget::compile(std::string_view pattern) {
 }
 
 Regex::Regex(std::string_view pattern) {
+    if (pattern.size() > max_pattern_size) {
+        throw RegexError(RegexError::Kind::eTooLarge, "regular expression is longer than " +
+                                                          std::to_string(max_pattern_size) + " bytes");
+    }
     auto program = std::make_shared<RegexProgram>();
     program->pattern = std::string(pattern);
     Parser parser(pattern);

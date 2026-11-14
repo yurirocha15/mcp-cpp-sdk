@@ -242,6 +242,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - With Boost older than 1.82, an error the shared library threw with a Beast
   error code, such as a WebSocket connect timeout, did not compare equal to the
   same `boost::beast` enumerator in the caller.
+- A JSON Schema `pattern` was read whole before the limit on its compiled
+  program applied, so a long pattern took memory in proportion to its length
+  while it was refused. A pattern longer than 65,536 bytes is now refused
+  (`eUnsupportedPattern`) before it is read.
 
 ## [0.2.0] - 2026-10-21
 

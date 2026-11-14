@@ -86,9 +86,9 @@ class MCP_API PatternBudget {
  *
  * Matching runs in time linear in the input and uses no recursion, so a long input cannot exhaust
  * the stack and a pathological pattern cannot make matching take exponential time. The pattern is
- * compiled into a program for a Pike VM (a breadth-first simulation of its NFA); the parser bounds
- * group nesting and the compiled program size, so a pattern supplied by a peer is as safe to
- * compile as one written by the application.
+ * compiled into a program for a Pike VM (a breadth-first simulation of its NFA). A pattern longer
+ * than `max_pattern_size` is refused before it is read, and the parser bounds group nesting and the
+ * compiled program size, so compiling a pattern supplied by a peer takes bounded time and memory.
  *
  * The syntax is the ECMA-262 subset that JSON Schema recommends, evaluated on Unicode code points:
  * literals, `.`, character classes with ranges and negation, `\d \D \w \W \s \S`, `\b \B`, `^`
@@ -109,6 +109,8 @@ class MCP_API Regex {
     static constexpr std::uint32_t max_nesting = 64;
     /// Largest compiled program, in instructions, accepted.
     static constexpr std::size_t max_program_size = 20000;
+    /// Longest pattern accepted, in bytes. A longer one is refused before it is read.
+    static constexpr std::size_t max_pattern_size = 65536;
 
     /**
      * @brief Compile @p pattern (UTF-8), charging its program to the thread's `PatternBudget`

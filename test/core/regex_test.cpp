@@ -364,4 +364,13 @@ TEST(Regex, NestedRepetitionOfAnEmptyGroupCompilesQuickly) {
     EXPECT_TRUE(regex.search("abc"));
 }
 
+// A pattern longer than the limit is refused before it is read, even one that would compile to a
+// single instruction.
+TEST(Regex, PatternLongerThanTheLimitIsRefused) {
+    const std::string at_limit = "[" + std::string(Regex::max_pattern_size - 2, 'a') + "]";
+    EXPECT_TRUE(Regex(at_limit).search("a"));
+    EXPECT_EQ(refusal("[" + std::string(Regex::max_pattern_size - 1, 'a') + "]"),
+              RegexError::Kind::eTooLarge);
+}
+
 }  // namespace

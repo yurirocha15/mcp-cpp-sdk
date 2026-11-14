@@ -1,4 +1,5 @@
 #include <mcp/auth/metadata_policy.hpp>
+#include <mcp/detail/regex.hpp>
 #include <mcp/protocol/schema.hpp>
 
 #include <gtest/gtest.h>
@@ -685,6 +686,15 @@ TEST(SchemaLimits, SchemaNestingWithinTheMetaschemaBoundCompiles) {
 // an unanchored ".{1,1000}x", costs thousands of steps per character. A validation's matching is
 // budgeted in proportion to the text in the value; past the budget the value is reported invalid.
 // A small budget keeps the test fast in sanitizer builds.
+// A pattern longer than mcp::detail::Regex::max_pattern_size is refused like any pattern the
+// matcher cannot run.
+TEST(SchemaDialect, OverlongPatternIsUnsupported) {
+    const json schema = {
+        {"type", "string"},
+        {"pattern", "[" + std::string(mcp::detail::Regex::max_pattern_size, 'a') + "]"}};
+    EXPECT_EQ(compile_error(schema), SchemaError::Category::eUnsupportedPattern);
+}
+
 TEST(SchemaLimits, PatternMatchingIsBounded) {
     mcp::SchemaOptions options;
     options.base_pattern_steps = 100'000;
