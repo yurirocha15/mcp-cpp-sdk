@@ -382,6 +382,16 @@ Versioning; a `0.x` version is a stable release unless its version has an
   and limits the tasks of an owner and in all. `TaskOptions` sets the store,
   the time to live, the polling interval and the limits on handlers that run at
   once, per principal and in all, which count a task until its handler returns.
+- `Server::set_tool_task_preparation()` gives a task tool a coroutine
+  (`ToolTaskPreparation`) that runs inside the `tools/call`, before the task
+  exists. It may ask the client for input with `Context::elicit()`,
+  `sample_llm()` and `request_roots()` through the multi round-trip flow, in
+  stored and sealed request state; the call then returns the task, whose
+  handler gets the `TaskPreparation::arguments` it returns, or is answered
+  with `TaskPreparation::result` and no task. Middleware sees the call around
+  the preparation and again around the task's handler. The task limits are
+  checked before the preparation runs and again at creation, and a request
+  cancelled during the preparation creates no task.
 - `ClientOptions::tasks` (`ClientTaskMode`) makes a 2026-07-28 client declare
   the tasks extension and `Client::call_tool()` follow a task to its result,
   polling at the task's `pollIntervalMs` and answering its `inputRequests`

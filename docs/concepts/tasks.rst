@@ -51,7 +51,53 @@ before or after ``enable_tasks()``; it takes effect once tasks are enabled.
    in ``data.requiredCapabilities``. A legacy session is answered the same way.
 
 The server never turns a call that is already running into a task after some
-time; the decision is made when the request arrives.
+time; the decision is made when the request arrives. A tool that has to ask the
+client something before its task exists sets a preparation, described next.
+
+Asking before the task is created
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``set_tool_task_preparation()`` gives a tool a coroutine that runs inside the
+``tools/call`` of a client that declared the extension, before the task exists.
+It runs only for a call that would create a task: tasks are enabled, the tool's
+mode is ``eAuto`` or ``eRequired`` and the client declared the extension. A call
+of any other kind is unchanged, and the preparation is not called for it.
+
+.. code-block:: cpp
+
+   server.set_tool_task_preparation(
+       "build_report",
+       [](mcp::Context& ctx, const json& arguments) -> mcp::Task<mcp::TaskPreparation> {
+           const mcp::InputOptions options{.key = "user_name"};
+           const auto answer = co_await ctx.elicit(name_form(), options);
+           mcp::TaskPreparation preparation;
+           preparation.arguments = arguments;
+           preparation.arguments["name"] = answer.content.value_or(json::object()).value("name", "");
+           co_return preparation;
+       });
+
+The preparation gets the Context a synchronous handler of the tool would get, so
+``Context::elicit()``, ``sample_llm()`` and ``request_roots()`` work through the
+multi round-trip flow of the request, in stored and in sealed request state: the
+client is answered with an ``input_required`` result without a ``taskId``, and
+the retry that carries the answers gets the ``CreateTaskResult``, with no
+``requestState`` and no ``inputRequests``. A client that cannot answer what the
+preparation asks gets what it would get from a synchronous handler. The task's
+handler is then called with ``TaskPreparation::arguments``. If the preparation
+sets ``TaskPreparation::result`` instead, the call is answered with that result
+and no task is created. A preparation that throws answers the call the way a
+tool handler that throws does.
+
+Middleware sees such a call twice: around the preparation, where it may reject
+the call, rewrite the parameters the preparation receives, or answer without
+calling the next handler, in which case no task is created; and later around
+the task's handler. When the preparation returns arguments, the middleware
+around it sees an empty ``CallToolResult`` as the answer. The task limits
+described below are checked before the preparation runs, so a client at its
+limit is answered without being asked anything, and again when the task is
+created. A request cancelled while the preparation runs creates no task. Like
+``set_tool_task_mode()``, the preparation can be set
+only for a registered tool and before the server serves its first request.
 
 ``TaskOptions`` sets the time to live of a new task (``ttl``, or unset to keep
 it without limit), the polling interval suggested to clients, and two limits on
