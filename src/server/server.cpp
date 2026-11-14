@@ -2234,14 +2234,15 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
 
     RequestSender request_sender;
     if (mrtr) {
-        request_sender = [mrtr](std::string method,
-                                std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
+        request_sender = [mrtr](std::string method, std::optional<nlohmann::json> params,
+                                std::optional<std::string> key) -> Task<nlohmann::json> {
             return detail::mrtr_request_input(mrtr, nlohmann::json(std::move(method)),
-                                              std::move(params));
+                                              std::move(params),
+                                              key ? nlohmann::json(std::move(*key)) : nlohmann::json());
         };
     } else if (inline_input) {
-        request_sender = [inline_input](std::string method,
-                                        std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
+        request_sender = [inline_input](std::string method, std::optional<nlohmann::json> params,
+                                        std::optional<std::string>) -> Task<nlohmann::json> {
             nlohmann::json request = {{"method", std::move(method)}};
             if (params) {
                 request["params"] = std::move(*params);
@@ -2253,14 +2254,15 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
         };
     } else if (request_meta) {
         // A server never sends a request of its own to a 2026-07-28 client.
-        request_sender = [](std::string, std::optional<nlohmann::json>) -> Task<nlohmann::json> {
+        request_sender = [](std::string, std::optional<nlohmann::json>,
+                            std::optional<std::string>) -> Task<nlohmann::json> {
             throw std::runtime_error(
                 "server-to-client requests are unavailable for a 2026-07-28 request");
         };
     } else {
         request_sender = [impl = shared_from_this(), session, epoch, cancelled, related_request](
-                             std::string method,
-                             std::optional<nlohmann::json> params) -> Task<nlohmann::json> {
+                             std::string method, std::optional<nlohmann::json> params,
+                             std::optional<std::string>) -> Task<nlohmann::json> {
             if (session && Impl::session_epoch(*session) != epoch) {
                 throw std::runtime_error("the client ended the session this request belongs to");
             }
@@ -2686,9 +2688,9 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
             entry->sealed = true;
             entry->replay = std::move(earlier->answers);
             if (responses != params.end()) {
-                for (const auto& key : earlier->asked) {
+                for (const auto& [key, asked_method] : earlier->asked) {
                     if (const auto answer = responses->find(key); answer != responses->end()) {
-                        entry->replay[key] = *answer;
+                        entry->replay[key] = {{"m", asked_method}, {"r", *answer}};
                     }
                 }
             }
@@ -2764,7 +2766,7 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
         next.params_digest = detail::mrtr_params_digest(params);
         next.round = (earlier ? earlier->round : 0U) + 1U;
         for (const auto& item : outcome.requests.items()) {
-            next.asked.push_back(item.key());
+            next.asked[item.key()] = item.value().value("method", std::string{});
         }
         next.answers = std::move(outcome.answers);
         if (next.round > options->max_rounds) {

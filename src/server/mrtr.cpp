@@ -30,6 +30,17 @@ std::string_view key_prefix(std::string_view method) {
     return "roots";
 }
 
+/// Whether @p key is one of the generated names: a kind prefix, a dash and a number.
+bool is_generated_key(std::string_view key) {
+    for (const std::string_view prefix : {"elicitation-", "sampling-", "roots-"}) {
+        if (key.size() > prefix.size() && key.substr(0, prefix.size()) == prefix &&
+            key.find_first_not_of("0123456789", prefix.size()) == std::string_view::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// Wakes the request waiting for the entry. Posted, so that questions other coroutines of the
 /// handler ask in the same turn of the strand join the round.
 void schedule_park(const std::shared_ptr<MrtrEntry>& entry) {
@@ -81,7 +92,8 @@ Task<void> hold_until_released(std::shared_ptr<MrtrEntry> entry) {
 }
 
 Task<nlohmann::json> request_input_on_strand(std::shared_ptr<MrtrEntry> entry, nlohmann::json method,
-                                             std::optional<nlohmann::json> params) {
+                                             std::optional<nlohmann::json> params,
+                                             nlohmann::json chosen_key) {
     if (entry->abandoned) {
         if (entry->sealed) {
             release_held(entry);
@@ -97,17 +109,38 @@ Task<nlohmann::json> request_input_on_strand(std::shared_ptr<MrtrEntry> entry, n
             request["params"].erase("elicitationId");
         }
     }
+    const bool named = chosen_key.is_string();
+    if (named) {
+        const auto& text = chosen_key.get_ref<const std::string&>();
+        if (text.empty()) {
+            throw std::invalid_argument("the key of a question for the client must not be empty");
+        }
+        if (is_generated_key(text)) {
+            throw std::invalid_argument("the key '" + text +
+                                        "' is reserved for the names the SDK generates");
+        }
+        if (!entry->named_keys.insert(text).second) {
+            throw std::invalid_argument("the key '" + text +
+                                        "' already names a question of this request");
+        }
+    }
     // [gcc11-sso: string-in-frame] The key stays a json value, which keeps its text on the heap.
-    // The counter moves on once the question is taken, so a refused one does not use up a key.
-    const nlohmann::json key = std::string(key_prefix(method.get_ref<const std::string&>())) + "-" +
-                               std::to_string(entry->next_key + 1);
+    // A generated name counts the questions that use one, and the counter moves on once the
+    // question is taken, so a refused one does not use up a key.
+    const nlohmann::json key =
+        named ? std::move(chosen_key)
+              : nlohmann::json(std::string(key_prefix(method.get_ref<const std::string&>())) + "-" +
+                               std::to_string(entry->next_key + 1));
     if (const auto replayed = entry->replay.find(key.get_ref<const std::string&>());
-        replayed != entry->replay.end()) {
+        replayed != entry->replay.end() && replayed->at("m") == method) {
         // An earlier round answered this question: the handler goes on without asking again.
-        nlohmann::json response = std::move(*replayed);
+        nlohmann::json response = std::move(replayed->at("r"));
+        const nlohmann::json record = {{"m", method}, {"r", response}};
         entry->replay.erase(replayed);
-        ++entry->next_key;
-        entry->answers[key.get_ref<const std::string&>()] = response;
+        if (!named) {
+            ++entry->next_key;
+        }
+        entry->answers[key.get_ref<const std::string&>()] = record;
         if (entry->replay.empty()) {
             entry->replaying->store(false, std::memory_order_relaxed);
         }
@@ -130,7 +163,9 @@ Task<nlohmann::json> request_input_on_strand(std::shared_ptr<MrtrEntry> entry, n
         }
         throw MrtrAbandoned{};
     }
-    ++entry->next_key;
+    if (!named) {
+        ++entry->next_key;
+    }
 
     if (entry->sealed) {
         // The handler runs again from the start with this question answered, so it is not
@@ -332,10 +367,12 @@ nlohmann::json missing_client_capabilities(const nlohmann::json& client_capabili
 }
 
 Task<nlohmann::json> mrtr_request_input(std::shared_ptr<MrtrEntry> entry, nlohmann::json method,
-                                        std::optional<nlohmann::json> params) {
+                                        std::optional<nlohmann::json> params,
+                                        nlohmann::json chosen_key) {
     auto strand = entry->strand;
     co_return co_await spawn_awaitable(
-        strand, request_input_on_strand(std::move(entry), std::move(method), std::move(params)));
+        strand, request_input_on_strand(std::move(entry), std::move(method), std::move(params),
+                                        std::move(chosen_key)));
 }
 
 Task<void> mrtr_notify(std::shared_ptr<MrtrEntry> entry, std::shared_ptr<const std::string> message) {
@@ -434,10 +471,16 @@ std::optional<MrtrSealedState> mrtr_open_state(const sealed_state::Codec& codec,
         }
         state.params_digest = std::move(*digest);
         state.round = payload.at("r").get<std::uint32_t>();
-        state.asked = payload.at("k").get<std::vector<std::string>>();
+        state.asked = payload.at("k").get<std::map<std::string, std::string>>();
         state.answers = payload.at("a");
         if (!state.answers.is_object()) {
             return std::nullopt;
+        }
+        for (const auto& answer : state.answers) {
+            if (!answer.is_object() || !answer.contains("r") || !answer.contains("m") ||
+                !answer.at("m").is_string()) {
+                return std::nullopt;
+            }
         }
         return state;
     } catch (const nlohmann::json::exception&) {
