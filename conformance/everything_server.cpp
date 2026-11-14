@@ -10,7 +10,11 @@
 #include <boost/asio/experimental/awaitable_operators.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/signal_set.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/thread_pool.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <charconv>
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <exception>
@@ -332,7 +336,9 @@ void register_input_required_tools(mcp::Server& server) {
         "test_input_required_result_elicitation", "Ask one elicitation question", empty_schema,
         [](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
             const auto question = form_request("What is your name?", "name");
-            const auto answer = co_await context.elicit(question);
+            mcp::InputOptions options;
+            options.key = "user_name";
+            const auto answer = co_await context.elicit(question, options);
             co_return mcp::make_tool_text_result("Hello, " + answered_text(answer, "name") + "!");
         });
 
@@ -628,6 +634,126 @@ void register_completion(mcp::Server& server) {
         });
 }
 
+/// Waits up to `seconds`, in slices, and returns early when the task is cancelled.
+mcp::Task<void> sleep_unless_cancelled(mcp::Context& context, double seconds) {
+    using namespace std::chrono;
+    const auto deadline =
+        steady_clock::now() + duration_cast<steady_clock::duration>(duration<double>(seconds));
+    boost::asio::steady_timer timer(co_await boost::asio::this_coro::executor);
+    while (!context.is_cancelled() && steady_clock::now() < deadline) {
+        timer.expires_after(milliseconds(50));
+        co_await timer.async_wait(boost::asio::use_awaitable);
+    }
+}
+
+// --- Tools the tasks scenarios call -------------------------------------------------------------
+//
+// Under 2026-07-28 a client that declares the tasks extension gets a task handle for most of these
+// tools; the others, and every other client, get the result in the call.
+
+void register_task_tools(mcp::Server& server) {
+    const nlohmann::json name_schema = {{"type", "object"},
+                                        {"properties", {{"name", {{"type", "string"}}}}}};
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "greet", "Greet by name; never a task", name_schema, [](const nlohmann::json& arguments) {
+            const auto found = arguments.find("name");
+            const std::string name =
+                found != arguments.end() && found->is_string() ? found->get<std::string>() : "World";
+            return mcp::make_tool_text_result("Hello, " + name + "!");
+        });
+
+    const nlohmann::json compute_schema = {
+        {"type", "object"},
+        {"properties", {{"seconds", {{"type", "number"}}}, {"label", {{"type", "string"}}}}}};
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "slow_compute", "Sleep for the given seconds, then return", compute_schema,
+        [](mcp::Context& context, nlohmann::json arguments) -> mcp::Task<mcp::CallToolResult> {
+            const auto seconds = arguments.value("seconds", 0.0);
+            const auto label = arguments.value("label", std::string());
+            co_await sleep_unless_cancelled(context, seconds);
+            co_return mcp::make_tool_text_result("slept " + std::to_string(seconds) + "s " + label);
+        });
+
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "failing_job", "Run for about a second, then report a tool error", empty_object_schema(),
+        [](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+            co_await sleep_unless_cancelled(context, 1.0);
+            co_return mcp::make_tool_error_result("the job failed");
+        });
+
+    // The result does not fit the output schema, which fails the task with a JSON-RPC error.
+    const nlohmann::json protocol_error_output = {{"type", "object"},
+                                                  {"properties", {{"value", {{"type", "integer"}}}}},
+                                                  {"required", nlohmann::json::array({"value"})}};
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "protocol_error_job", "Return a result that breaks the output schema", empty_object_schema(),
+        protocol_error_output, [](const nlohmann::json&) {
+            mcp::CallToolResult result = mcp::make_tool_text_result("not an integer");
+            result.structuredContent = nlohmann::json{{"value", "not an integer"}};
+            return result;
+        });
+
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "confirm_delete", "Ask the user to confirm a deletion", single_string_schema("filename"),
+        [](mcp::Context& context, nlohmann::json arguments) -> mcp::Task<mcp::CallToolResult> {
+            const auto filename = arguments.value("filename", std::string());
+            const auto question = form_request("Delete " + filename + "?", "confirm");
+            mcp::InputOptions options;
+            options.validate_content = false;
+            (void)co_await context.elicit(question, options);
+            co_return mcp::make_tool_text_result("Deleted " + filename);
+        });
+
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "multi_input", "Ask two questions at once", empty_object_schema(),
+        [](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+            using namespace boost::asio::experimental::awaitable_operators;
+            const auto first = form_request("First answer?", "first");
+            const auto second = form_request("Second answer?", "second");
+            mcp::InputOptions first_options;
+            first_options.key = "first";
+            first_options.validate_content = false;
+            mcp::InputOptions second_options;
+            second_options.key = "second";
+            second_options.validate_content = false;
+            auto ask_first = context.elicit(first, first_options);
+            auto ask_second = context.elicit(second, second_options);
+            (void)co_await (std::move(ask_first) && std::move(ask_second));
+            co_return mcp::make_tool_text_result("Both answered");
+        });
+
+    // Asks for a name in the multi round-trip flow of the call, then greets it from the task.
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "test_tool_with_task", "Ask for a name, then greet it from a task", empty_object_schema(),
+        [](const nlohmann::json& arguments) {
+            return mcp::make_tool_text_result("Hello, " +
+                                              arguments.value("user_name", std::string("World")) + "!");
+        });
+    server.set_tool_task_preparation(
+        "test_tool_with_task",
+        [](mcp::Context& context, const nlohmann::json& arguments) -> mcp::Task<mcp::TaskPreparation> {
+            const auto question = form_request("What is your name?", "name");
+            mcp::InputOptions options;
+            options.key = "user_name";
+            const auto answer = co_await context.elicit(question, options);
+            mcp::TaskPreparation prepared;
+            prepared.arguments = arguments;
+            prepared.arguments["user_name"] = answered_text(answer, "name");
+            co_return prepared;
+        });
+
+    mcp::TaskOptions options;
+    options.ttl = std::chrono::minutes(10);
+    options.poll_interval = std::chrono::milliseconds(200);
+    server.enable_tasks(options);
+    server.set_tool_task_mode("slow_compute", mcp::ToolTaskMode::eAuto);
+    server.set_tool_task_mode("failing_job", mcp::ToolTaskMode::eRequired);
+    server.set_tool_task_mode("protocol_error_job", mcp::ToolTaskMode::eAuto);
+    server.set_tool_task_mode("confirm_delete", mcp::ToolTaskMode::eAuto);
+    server.set_tool_task_mode("multi_input", mcp::ToolTaskMode::eAuto);
+    server.set_tool_task_mode("test_tool_with_task", mcp::ToolTaskMode::eRequired);
+}
+
 /// Serves a few skills of the Skills extension, for the alpha runner's skills scenarios. Off unless
 /// MCP_CONFORMANCE_SKILLS is set, so the pinned suites see the server they always have.
 void register_skills(mcp::Server& server) {
@@ -679,12 +805,14 @@ void register_skills(mcp::Server& server) {
     skills.add_skill(std::move(pdf));
 }
 
-void configure_server(mcp::Server& server) {
+void configure_server(mcp::Server& server, const boost::asio::any_io_executor& handler_executor) {
+    server.set_handler_executor(handler_executor);
     register_skills(server);
     register_content_tools(server);
     register_context_tools(server);
     register_schema_tools(server);
     register_input_required_tools(server);
+    register_task_tools(server);
     register_stateless_tools(server);
     register_resources(server);
     register_prompts(server);
@@ -708,9 +836,12 @@ int main(int argc, char** argv) {
         capabilities.logging = nlohmann::json::object();
         capabilities.completions = nlohmann::json::object();
 
-        auto server_factory = [implementation, capabilities](const boost::asio::any_io_executor&) {
+        // Task handlers run on this pool, apart from the connection's executor.
+        boost::asio::thread_pool handler_pool(4);
+        auto server_factory = [implementation, capabilities,
+                               &handler_pool](const boost::asio::any_io_executor&) {
             auto server = std::make_unique<mcp::Server>(implementation, capabilities);
-            configure_server(*server);
+            configure_server(*server, handler_pool.get_executor());
             return server;
         };
 
