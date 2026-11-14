@@ -3,8 +3,11 @@
 #include <mcp/core/core.hpp>
 #include <mcp/transport/http_types.hpp>
 
+#include <boost/asio/buffer.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/write.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
+#include <boost/beast/core/string.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
 #include <boost/beast/http.hpp>
 
@@ -16,6 +19,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #if !defined(_WIN32)
@@ -205,7 +209,8 @@ using RefuseBeforeBody = std::function<Task<std::optional<StringResponse>>(const
 
 /// Reads one request into @p parser within @p limits. The headers are read first and given to
 /// @p refuse_before_body, so a request that is refused never has its body read or held; then the
-/// body is charged to @p bytes as it arrives.
+/// body is charged to @p bytes as it arrives. A request that is not refused and sent
+/// "Expect: 100-continue" is answered 100 Continue before its body is read.
 /// Returns false when the connection is to end, after writing whatever answer is due.
 inline Task<bool> read_request_within_limits(boost::beast::tcp_stream& stream,
                                              boost::beast::flat_buffer& buffer, RequestParser& parser,
@@ -245,6 +250,22 @@ inline Task<bool> read_request_within_limits(boost::beast::tcp_stream& stream,
         // The body was not read, so the next request cannot be found on this connection.
         co_await write_final_response(stream, std::move(*refusal));
         co_return false;
+    }
+    // A client that sent "Expect: 100-continue" may wait for this before it sends the body.
+    // HTTP/1.0 has no interim responses.
+    if (head.version() >= 11 && !parser.is_done() &&
+        boost::beast::iequals(head[http::field::expect], "100-continue")) {
+        static constexpr std::string_view continue_response = "HTTP/1.1 100 Continue\r\n\r\n";
+        try {
+            co_await boost::asio::async_write(
+                stream, boost::asio::buffer(continue_response.data(), continue_response.size()),
+                boost::asio::use_awaitable);
+        } catch (const boost::system::system_error& error) {
+            if (ends_quietly(error.code())) {
+                co_return false;
+            }
+            throw;
+        }
     }
     // The body is charged as it arrives, so a request holds only what its peer has sent.
     bool too_large = false;

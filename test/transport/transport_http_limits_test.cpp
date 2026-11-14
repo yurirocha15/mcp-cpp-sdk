@@ -16,6 +16,9 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/read.hpp>
+#include <boost/asio/read_until.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/write.hpp>
@@ -97,6 +100,38 @@ mcp::Task<std::string> raw_exchange(asio::any_io_executor executor, unsigned sho
         }
     }
     co_return received;
+}
+
+/// What a client that sends "Expect: 100-continue" sees: what the server wrote before the client
+/// sent the body, which the client waits for, and everything after it until the server closes.
+struct ContinueExchange {
+    std::string before_body;
+    std::string after_body;
+};
+
+mcp::Task<ContinueExchange> post_expecting_continue(asio::any_io_executor executor, unsigned short port,
+                                                    std::string body) {
+    beast::tcp_stream stream(executor);
+    // A bound for reporting a server that never answers, not a measure of speed.
+    stream.expires_after(g_hang_guard);
+    co_await stream.async_connect(asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port),
+                                  asio::use_awaitable);
+    const std::string head =
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        "Content-Type: application/json\r\n"
+        "Accept: application/json, text/event-stream\r\n"
+        "Expect: 100-continue\r\nConnection: close\r\n"
+        "Content-Length: " +
+        std::to_string(body.size()) + "\r\n\r\n";
+    co_await asio::async_write(stream, asio::buffer(head), asio::use_awaitable);
+    ContinueExchange exchange;
+    co_await asio::async_read_until(stream, asio::dynamic_buffer(exchange.before_body), "\r\n\r\n",
+                                    asio::use_awaitable);
+    co_await asio::async_write(stream, asio::buffer(body), asio::use_awaitable);
+    boost::system::error_code closed;
+    co_await asio::async_read(stream, asio::dynamic_buffer(exchange.after_body),
+                              asio::redirect_error(asio::use_awaitable, closed));
+    co_return exchange;
 }
 
 /// A POST whose headers promise @p body_bytes of body, none of which is sent.
@@ -477,6 +512,30 @@ TEST_F(SessionLimitsTest, RequestIdBeyondInt64IsRefused) {
     EXPECT_EQ(refused.status, 400u);
     EXPECT_EQ(json::parse(refused.body)["error"]["code"], mcp::g_INVALID_REQUEST);
     EXPECT_TRUE(ended);
+}
+
+// A client that sends "Expect: 100-continue" waits for 100 Continue before it sends the body.
+TEST_F(SessionLimitsTest, ExpectContinueIsAnsweredBeforeTheBody) {
+    ContinueExchange exchange;
+    run([&]() -> mcp::Task<void> {
+        exchange = co_await post_expecting_continue(io_.get_executor(), port_,
+                                                    make_initialize_request("1").dump());
+    });
+    EXPECT_EQ(exchange.before_body, "HTTP/1.1 100 Continue\r\n\r\n");
+    EXPECT_EQ(exchange.after_body.rfind("HTTP/1.1 200", 0), 0u) << exchange.after_body;
+}
+
+// A request refused on its headers gets its final status, and no 100 Continue before it.
+TEST_F(SessionLimitsTest, RefusedExpectContinueGetsOnlyTheRefusal) {
+    manager_.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
+    std::string answer;
+    run([&]() -> mcp::Task<void> {
+        answer =
+            co_await raw_exchange(io_.get_executor(), port_,
+                                  header_only_post(1024, "Expect: 100-continue\r\n"), g_hang_guard);
+    });
+    EXPECT_EQ(answer.rfind("HTTP/1.1 401", 0), 0u) << answer;
+    EXPECT_EQ(answer.find("100 Continue"), std::string::npos) << answer;
 }
 
 // A request without a valid token is refused on its headers: its body is never waited for.
@@ -971,6 +1030,33 @@ class ReverseBindingTest : public ::testing::Test {
 };
 
 }  // namespace
+
+// HttpServerTransport also answers "Expect: 100-continue" before it reads the body.
+TEST(HttpServerTransportLimits, ExpectContinueIsAnsweredBeforeTheBody) {
+    asio::io_context io;
+    auto transport = std::make_shared<mcp::HttpServerTransport>(io.get_executor(), "127.0.0.1", 0);
+    auto server = make_server();
+    ContinueExchange exchange;
+    asio::co_spawn(io, transport->listen(), asio::detached);
+    asio::co_spawn(
+        io, [&]() -> mcp::Task<void> { co_await server->run(transport, io.get_executor()); },
+        asio::detached);
+    asio::co_spawn(
+        io,
+        [&]() -> mcp::Task<void> {
+            try {
+                exchange = co_await post_expecting_continue(io.get_executor(), transport->port(),
+                                                            make_initialize_request("1").dump());
+            } catch (const std::exception& error) {
+                ADD_FAILURE() << error.what();
+            }
+            transport->close();
+        },
+        asio::detached);
+    io.run();
+    EXPECT_EQ(exchange.before_body, "HTTP/1.1 100 Continue\r\n\r\n");
+    EXPECT_EQ(exchange.after_body.rfind("HTTP/1.1 200", 0), 0u) << exchange.after_body;
+}
 
 // Reverse request ids are small sequential numbers, so anyone could guess the one waiting.
 TEST_F(ReverseBindingTest, StrangerCannotAnswerAfterTheSessionEnded) {

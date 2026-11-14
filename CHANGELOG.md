@@ -259,6 +259,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `pattern` now count each byte that is not part of a well-formed sequence as
   one character on both evaluation paths; the jsoncons path counted a string
   holding one as empty, and the native path skipped stray continuation bytes.
+- Both HTTP server transports answer a request that sends
+  `Expect: 100-continue` with `100 Continue` before reading its body, so a
+  client that waits for it, as curl does for a large body, no longer waits for
+  its timeout first. A request refused on its headers gets only the refusal.
 
 ## [0.2.0] - 2026-10-21
 
