@@ -132,7 +132,7 @@ int main() {
 
                     std::cout << "Client: Connecting to server\n";
                     auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "Client: Connected to " << init_result.serverInfo.name << "\n";
+                    std::cout << "Client: Connected to " << init_result.serverInfo->name << "\n";
 
                     std::cout << "Client: Calling discover_roots tool\n";
                     auto result = co_await client.call_tool("discover_roots", nlohmann::json::object());

@@ -49,8 +49,8 @@ int main() {  // NOLINT(readability-function-cognitive-complexity)
                 caps.sampling = ClientCapabilities::SamplingCapability{};
 
                 auto init_result = co_await client.connect(client_info, caps);
-                std::cerr << "Connected to: " << init_result.serverInfo.name << " "
-                          << init_result.serverInfo.version << "\n";
+                std::cerr << "Connected to: " << init_result.serverInfo->name << " "
+                          << init_result.serverInfo->version << "\n";
 
                 // list_tools
                 auto tools = co_await client.list_tools();

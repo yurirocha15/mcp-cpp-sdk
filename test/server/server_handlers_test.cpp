@@ -726,7 +726,7 @@ TEST_F(ServerHandlersTest, MetadataOnlyTemplateDoesNotBlockHandledTemplate) {
     EXPECT_EQ(responses[1]["result"]["contents"][0]["text"], "handled");
 }
 
-// MCP names a resource that does not exist with -32002.
+// 2025-11-25 and earlier name a resource that does not exist with -32002, and its URI in data.
 TEST_F(ServerHandlersTest, UnknownResourceReturnsResourceNotFound) {
     mcp::ServerCapabilities caps;
     caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
@@ -740,6 +740,7 @@ TEST_F(ServerHandlersTest, UnknownResourceReturnsResourceNotFound) {
 
     ASSERT_EQ(responses.size(), 2);
     EXPECT_EQ(responses[1]["error"]["code"], mcp::g_RESOURCE_NOT_FOUND);
+    EXPECT_EQ(responses[1]["error"]["data"], nlohmann::json({{"uri", "file:///does-not-exist.txt"}}));
 }
 
 TEST_F(ServerHandlersTest, UnknownResourceTemplateReturnsResourceNotFound) {
@@ -761,6 +762,7 @@ TEST_F(ServerHandlersTest, UnknownResourceTemplateReturnsResourceNotFound) {
 
     ASSERT_EQ(responses.size(), 2);
     EXPECT_EQ(responses[1]["error"]["code"], mcp::g_RESOURCE_NOT_FOUND);
+    EXPECT_EQ(responses[1]["error"]["data"], nlohmann::json({{"uri", "file:///other/item.txt"}}));
 }
 
 TEST_F(ServerHandlersTest, OverlongUriIsRejectedWithoutReachingTemplateMatching) {
@@ -2126,7 +2128,8 @@ TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullClientInfoOptionals) {
     auto& init_response = responses[0];
     ASSERT_FALSE(init_response.contains("error")) << "actual error: " << init_response["error"].dump();
     ASSERT_TRUE(init_response.contains("result"));
-    EXPECT_EQ(init_response["result"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(init_response["result"]["protocolVersion"],
+              std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
 }
 
 TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullCapabilityFlags) {

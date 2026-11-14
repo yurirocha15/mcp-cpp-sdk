@@ -10,7 +10,7 @@ The ``Context`` object handles three main categories of interaction:
 
 1.  **Downstream Communication**: Sending real-time updates to the client (logging and progress).
 2.  **Request Lifecycle**: Managing state specific to the current request (cancellation).
-3.  **Reverse RPC**: Initiating requests from the server back to the client (sampling, elicitation, and roots).
+3.  **Reverse RPC**: Initiating requests from the server back to the client (sampling, elicitation, and roots). A request of protocol revision 2026-07-28 has no reverse RPC: these calls always throw ``std::runtime_error`` for it.
 
 Lifecycle and Safety
 --------------------
@@ -24,7 +24,7 @@ Logging
 -------
 
 
-You can send log messages to the client using various log levels. The SDK respects the server's current log level, automatically filtering messages that are less severe than the configured threshold.
+You can send log messages to the client using various log levels. The SDK respects the server's current log level, automatically filtering messages that are less severe than the configured threshold. For a request of protocol revision 2026-07-28 the threshold is the ``io.modelcontextprotocol/logLevel`` in the request's ``_meta``; without one nothing is sent.
 
 Available log levels (from most to least severe):
 

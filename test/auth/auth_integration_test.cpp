@@ -3,6 +3,7 @@
  * @brief Tests for OAuth 2.1 integration (Task 19): middleware, bearer extraction, transport wrapper
  */
 
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include <gtest/gtest.h>
@@ -15,6 +16,7 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <chrono>
 #include <exception>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/protocol/protocol.hpp>
@@ -553,20 +555,43 @@ TEST(AuthClientTransportTest, HttpTransportUsesAuthorizationHeader) {
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::make_address("127.0.0.1"), port});
 
-    std::string authorization_header;
+    // Serves every connection the client opens and records the Authorization of each request.
+    std::vector<std::string> authorization_headers;
+    const auto serve_connection = [&](asio::ip::tcp::socket socket) -> asio::awaitable<void> {
+        beast::tcp_stream stream(std::move(socket));
+        beast::flat_buffer buffer;
+        for (;;) {
+            http::request<http::string_body> request;
+            stream.expires_after(g_hang_guard);
+            boost::system::error_code error;
+            co_await http::async_read(stream, buffer, request,
+                                      asio::redirect_error(asio::use_awaitable, error));
+            if (error) {
+                co_return;
+            }
+            authorization_headers.emplace_back(request[http::field::authorization]);
+            http::response<http::string_body> response{http::status::accepted, request.version()};
+            response.keep_alive(request.keep_alive());
+            response.content_length(0);
+            co_await http::async_write(stream, response,
+                                       asio::redirect_error(asio::use_awaitable, error));
+            if (error || !request.keep_alive()) {
+                co_return;
+            }
+        }
+    };
     asio::co_spawn(
         io,
         [&]() -> asio::awaitable<void> {
-            auto socket = co_await acceptor.async_accept(asio::use_awaitable);
-            beast::tcp_stream stream(std::move(socket));
-            beast::flat_buffer buffer;
-            http::request<http::string_body> request;
-            co_await http::async_read(stream, buffer, request, asio::use_awaitable);
-            authorization_header = std::string(request[http::field::authorization]);
-
-            http::response<http::string_body> response{http::status::accepted, request.version()};
-            response.content_length(0);
-            co_await http::async_write(stream, response, asio::use_awaitable);
+            for (;;) {
+                boost::system::error_code error;
+                auto socket =
+                    co_await acceptor.async_accept(asio::redirect_error(asio::use_awaitable, error));
+                if (error) {
+                    co_return;
+                }
+                asio::co_spawn(io, serve_connection(std::move(socket)), asio::detached);
+            }
         },
         asio::detached);
 
@@ -592,13 +617,19 @@ TEST(AuthClientTransportTest, HttpTransportUsesAuthorizationHeader) {
         io,
         [&]() -> mcp::Task<void> {
             co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
+            co_await transport.write_message(R"({"jsonrpc":"2.0","id":2,"method":"ping"})");
+            co_await transport.write_message(
+                R"({"jsonrpc":"2.0","method":"notifications/roots/list_changed"})");
             transport.close();
+            acceptor.close();
         },
         asio::detached);
 
     io.run();
 
-    EXPECT_EQ(authorization_header, "Bearer header-token");
+    EXPECT_EQ(authorization_headers,
+              (std::vector<std::string>{"Bearer header-token", "Bearer header-token",
+                                        "Bearer header-token"}));
 }
 
 TEST(AuthClientTransportTest, FailedHttpRetryDoesNotLeaveRequestEligibleForReplay) {

@@ -84,7 +84,7 @@ int main() {
                     Client client(transport, io_ctx.get_executor());
 
                     auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "[Client] Connected to: " << init_result.serverInfo.name << "\n\n";
+                    std::cout << "[Client] Connected to: " << init_result.serverInfo->name << "\n\n";
 
                     // Warmup
                     std::cout << "[Client] Warmup phase (10 calls)...\n";

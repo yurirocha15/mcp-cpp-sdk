@@ -55,13 +55,14 @@ inline constexpr int g_REQUEST_TIMEOUT = -32001;
  * @brief Error code the SDK uses locally when the transport closes.
  *
  * @details Outside the range JSON-RPC reserves (-32768 to -32000), as the specification asks of
- * codes it does not define, so it cannot be mistaken for an error the peer sent. -32002 is MCP's
- * code for a resource that does not exist.
+ * codes it does not define, so it cannot be mistaken for an error the peer sent. -32002 is resource
+ * not found in protocol revisions 2025-11-25 and earlier.
  */
 inline constexpr int g_CONNECTION_CLOSED = -31000;
 
 /**
- * @brief JSON-RPC error code for a resource that does not exist.
+ * @brief JSON-RPC error code for a resource that does not exist, in protocol revisions 2025-11-25
+ * and earlier. 2026-07-28 uses g_INVALID_PARAMS instead.
  */
 inline constexpr int g_RESOURCE_NOT_FOUND = -32002;
 

@@ -8,19 +8,258 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Added
 
+- Protocol revision 2026-07-28 is served alongside 2025-11-25 and earlier, as
+  the entries below describe, and is the newest revision the SDK supports.
+- Requests of protocol revision 2026-07-28, which carry their protocol
+  version, client capabilities and optionally client info and log level in
+  `_meta`, are served without `initialize`, alongside a legacy session, by
+  `Server::run()` on stdio, WebSocket and in-memory transports and by
+  `Server::dispatch_request_direct()`. A version the server does not serve,
+  including a legacy one, is answered with `g_UNSUPPORTED_PROTOCOL_VERSION`
+  whose `data` lists the served versions (`UnsupportedProtocolVersionData`); a
+  missing or malformed field with `g_INVALID_PARAMS`; and a method 2026-07-28
+  does not have (`ping`, `logging/setLevel`, `resources/subscribe`,
+  `resources/unsubscribe`, `shutdown`) with `g_METHOD_NOT_FOUND`. These
+  requests never change a session's lifecycle or log level: a handler logs
+  only at the request's own `io.modelcontextprotocol/logLevel`, and nothing
+  without one, and cannot send requests to the client.
+  `notifications/cancelled` cancels any of them that was read from the
+  session, and the server then sends nothing more for it, not even its
+  response; a 2026-07-28 request given to `Server::dispatch_request_direct()`
+  never sends notifications through the session's transport.
+  `Context::request_meta()` gives handlers the parsed fields
+  (`RequestMetadata`, in `mcp/protocol/request_meta.hpp`, with the `g_META_*`
+  key names) and the whole `_meta`.
+- `ServerProtocolPolicy` and `Server::set_protocol_policy()` choose whether a
+  server serves 2026-07-28 requests, legacy clients, or both (the default),
+  and which legacy versions `initialize` may negotiate. A server serving only
+  2026-07-28 answers `initialize` with `g_METHOD_NOT_FOUND` naming the
+  versions it serves in the message and in `data.supported`.
+  `Server::protocol_rejection_stats()` (`ProtocolRejectionStats`) counts the
+  requests refused for their version or `_meta` fields, separately counting
+  refusals of requests without a protocol version in `_meta`.
+  `ServerProtocolPolicy::validate()` checks a policy, and
+  `negotiate_protocol_version(requested, policy)` gives the version
+  `initialize` negotiates under it, and `served_protocol_versions(policy)` the
+  versions it serves.
+- `g_LEGACY_PROTOCOL_VERSIONS` and `g_LATEST_LEGACY_PROTOCOL_VERSION` for the
+  revisions that start a session with `initialize` (2025-11-25 and earlier),
+  `g_MODERN_PROTOCOL_VERSIONS` for those served per request (2026-07-28), and
+  `is_legacy_protocol_version()` and `is_modern_protocol_version()`.
+  `negotiate_protocol_version()` and every `initialize`-time version check use
+  the legacy list, so `initialize` never selects 2026-07-28.
+- `Server::dispatch_request_direct()` overload taking a `RequestContext`,
+  whose `cancelled` flag cancels the request. Direct calls are never cancelled
+  by `notifications/cancelled`, so calls that reuse an id stay independent.
+- Results of 2026-07-28 requests carry `resultType: "complete"` and the
+  server's name and version under `_meta`
+  (`io.modelcontextprotocol/serverInfo`;
+  `Server::set_report_server_info(false)` leaves it out). Results of
+  `server/discover`, `tools/list`, `prompts/list`, `resources/list`,
+  `resources/templates/list` and `resources/read` also carry the `ttlMs` and
+  `cacheScope` hints that `Server::set_cache_hints()` sets per `CacheTarget`
+  as a `CacheHint` (by default `0` and `private`). A member a handler's result
+  already has is kept. Results of legacy requests are unchanged.
+  `ListToolsResult`, `ListPromptsResult`, `ListResourcesResult`,
+  `ListResourceTemplatesResult` and `ReadResourceResult` gain optional `ttlMs`
+  and `cacheScope`, and `DiscoverResult::serverInfo` is optional. A
+  `cacheScope` value other than `public` or `private` is read as unset.
+- `StreamableHttpSessionManager` serves 2026-07-28 requests on the same
+  endpoint as legacy sessions. Such a request needs no session:
+  `Mcp-Session-Id` and `Last-Event-ID` are ignored and never sent back, and
+  one Server answers all of them (`modern_server()`, built from the factory on
+  first use, or `set_modern_server()`). Its `MCP-Protocol-Version`,
+  `Mcp-Method` and, for `tools/call`, `prompts/get` and `resources/read`,
+  `Mcp-Name` headers must be present and match the body (an `Mcp-Name` in the
+  `=?base64?...?=` form is decoded first); otherwise it is answered `400` with
+  `g_HEADER_MISMATCH`, counted by `header_mismatch_rejections()`. Errors use
+  the statuses the specification gives them: `400` for invalid params,
+  unsupported version, header mismatch and missing client capability, `404`
+  for an unknown method. `GET` and `DELETE` with a version header that
+  `initialize` does not negotiate and no session are answered `405`.
+  `initialize` with a 2026-07-28 header is answered `404` with
+  `g_METHOD_NOT_FOUND`, naming the versions served in the message and in
+  `data.supported`. `server/discover` is always served this way.
+  `set_protocol_policy()` applies a `ServerProtocolPolicy` to every Server the
+  manager builds; without legacy clients, `initialize` creates no session and
+  every `GET` and `DELETE` is answered `405`.
+- `HttpServerTransport` serves 2026-07-28 requests alongside its legacy
+  session, with the same header checks, error statuses and `405` for a
+  sessionless `GET` or `DELETE` as `StreamableHttpSessionManager`, counted by
+  its own `header_mismatch_rejections()`. Each is carried under a
+  transport-private id, so clients may reuse ids, and is answered with plain
+  JSON that never carries `Mcp-Session-Id` and never enters the replay store;
+  notifications a handler sends while serving one are dropped. Ending the
+  legacy session does not end them. At most 256 may wait at once; more are
+  answered `503`. On both HTTP transports, a request whose
+  `MCP-Protocol-Version` header names a version that `initialize` does not
+  negotiate (2026-07-28 or any other) but whose `_meta` names no version is
+  answered `400` with `g_INVALID_PARAMS`, and an `initialize` with a
+  2026-07-28 header is answered `404` with `g_METHOD_NOT_FOUND` naming the
+  versions the server serves.
+- `ITransport::http_server_transport()`, which a transport wrapping an
+  `HttpServerTransport` overrides to return it, so that `Server::run()` serves
+  the wrapper as an `HttpServerTransport`: it ends sessions on `DELETE`,
+  checks `Mcp-Param-*` headers and drops the notifications of 2026-07-28
+  requests. It returns null by default. Adding it changes the layout of
+  `ITransport`'s virtual table.
+- `StreamableHttpSessionManager` streams the answer to a 2026-07-28 request:
+  when a handler sends a notification (a log message at the request's own
+  `logLevel`, or progress) and the client accepts `text/event-stream` over
+  HTTP/1.1, the answer becomes a chunked SSE stream without event ids that
+  carries the notifications and then the response, with
+  `X-Accel-Buffering: no` and periodic keep-alive comments. Otherwise it is
+  plain JSON as before, except that a client that accepts SSE and half-closes
+  its connection gets a stream too, and the notifications are dropped. A
+  client that resets its connection while its request runs cancels the
+  request, before or after a half-close; after a half-close the stream is
+  probed with comments until a write fails, which cancels it too, and closing
+  the manager cancels it. Requests pipelined before a half-close are all
+  answered, and the connection then ends. `set_stream_options()`
+  (`StreamOptions`) sets the keep-alive and probe intervals and the
+  queued-notification limit, and `stream_stats()` (`StreamStats`) counts
+  streams, cancellations, probes and dropped notifications. Bytes of a
+  pipelined request that arrive while a request runs are kept for the next
+  one. `RequestContext::notifications` receives a 2026-07-28 request's
+  notifications on a direct dispatch.
+- `x-mcp-header` tool parameters (2026-07-28). `add_tool()` and
+  `add_raw_tool()` refuse, with `SchemaError`, a tool whose input schema has
+  an `x-mcp-header` annotation that is not a string, empty, not an HTTP token,
+  repeated ignoring case, on a property without a `string`, `integer` or
+  `boolean` type, or on a property not reached from the root through
+  `properties` alone. `StreamableHttpSessionManager` passes a 2026-07-28
+  request's `Mcp-Param-*` headers to the server
+  (`RequestContext::param_headers` for a direct dispatch), and a `tools/call`
+  is answered `400` with `g_HEADER_MISMATCH` unless each annotated argument
+  that is present and not null has exactly one header matching it once
+  decoded: integers compare numerically and must lie within ±(2^53 − 1). A
+  header the tool names with characters a header may not carry, or with a
+  malformed Base64 sentinel, is refused the same way even when its argument is
+  absent. A 2026-07-28 request that repeats its `MCP-Protocol-Version`,
+  `Mcp-Method` or `Mcp-Name` header is also answered `g_HEADER_MISMATCH`.
+- `Context::principal()` says who sent a request. Over HTTP it is the
+  principal a bearer token validator names in its new `TokenValidation`
+  result, or else `h:` and the hex SHA-256 of the request's bearer token, or of
+  its `Authorization` header when that holds none, or empty without one; the requests of a
+  `StreamableHttpSessionManager` session carry none, and stdio, WebSocket and
+  memory transports give none. `ITransport::read_incoming()` returns a message
+  with its sender (`IncomingMessage`); `HttpServerTransport` keeps each queued
+  message with its own sender, and `RequestContext::principal` sets it for a
+  direct dispatch. A transport that wraps another must forward
+  `read_incoming()` as well as `read_message()`, or its messages arrive
+  without a principal. An HTTP session is bound to the principal that created
+  it only when a validator checks the tokens. A request naming a session of
+  another principal is answered 404, as for a session that does not exist, and
+  does not count as a use of the session.
+- Multi round-trip requests (2026-07-28): when the handler of a 2026-07-28
+  `tools/call`, `prompts/get` or `resources/read` calls `Context::elicit()`,
+  `sample_llm()` or `request_roots()`, the request is answered with an
+  `input_required` result carrying the questions under server-assigned keys
+  and an opaque `requestState`, and the handler waits. A retry with a new id,
+  the same method and parameters, the `requestState` and the answers in
+  `inputResponses` resumes it, and its result answers the retry; answers the
+  retry leaves out are asked for again. Questions the handler asks before the
+  request is answered share its round. The `requestState` is a random token,
+  usable once, bound to the principal, method and parameters of the request;
+  any mismatch, expiry or reuse gets the same `g_INVALID_PARAMS` error,
+  "Unknown or expired requestState". A question needing a capability the
+  client did not declare in the request is answered with
+  `g_MISSING_REQUIRED_CLIENT_CAPABILITY` and `data.requiredCapabilities`.
+  Waiting handlers live in the server instance, so a retry must reach the same
+  instance, and they are given up when the `Server::run()` that served their
+  request ends, when `StreamableHttpSessionManager::close()` closes the
+  endpoint of its modern server, or on `Server::abandon_waiting_handlers()`.
+  `Server::set_mrtr_options()` (`MrtrOptions`: time to wait, at most 1024
+  waiting handlers, 64 per principal, 64 MiB of requests in all and 16 MiB per
+  principal by default, an eviction callback) and
+  `Server::mrtr_stats()` (`MrtrStats`) bound and count them. A handler given
+  up throws from its question and its answer is discarded. A cancelled retry
+  cancels the handler, and its notifications go to the request that carries it
+  now, with that request's progress token.
+- `subscriptions/listen` (2026-07-28). A request names the notifications it
+  opts in to (`toolsListChanged`, `promptsListChanged`,
+  `resourcesListChanged`, `resourceSubscriptions`). The server answers with
+  `notifications/subscriptions/acknowledged` first, listing the subset it
+  honors: a list-changed type only when the matching capability sets
+  `listChanged`, and resource URIs only when `resources.subscribe` is set.
+  `notify_tools_list_changed()`, `notify_prompts_list_changed()`,
+  `notify_resources_list_changed()` and `notify_resource_updated()` then also
+  send to every open subscription that asked for the type, with the request id
+  in `_meta` as `io.modelcontextprotocol/subscriptionId`
+  (`g_META_SUBSCRIPTION_ID`). A session that serves only 2026-07-28 requests
+  no longer receives the plain list-changed notifications while a subscription
+  is open on it. The request stays open until the client sends
+  `notifications/cancelled` (stdio, WebSocket, memory), closes the stream
+  (`StreamableHttpSessionManager`) or its transport closes, none of which is
+  answered, or until `Server::close_subscriptions()` ends every subscription
+  with an empty `resultType: "complete"` result, followed on stdio, WebSocket
+  and in-memory transports by `notifications/cancelled` naming the listen
+  request. On `StreamableHttpSessionManager` the subscription runs on the
+  shared modern server, built from the factory or given to
+  `set_modern_server()`; a client that does not accept `text/event-stream` is
+  answered with `g_INVALID_REQUEST`. `HttpServerTransport` and a direct
+  dispatch without `RequestContext::notifications` answer it with
+  `g_METHOD_NOT_FOUND` and `g_INVALID_REQUEST` respectively.
+  `Server::subscription_count()` counts the open subscriptions, and
+  `RequestContext::watch_cancel` lets a transport wake a request when it sets
+  `cancelled`.
+- The client detects the server's protocol era and speaks both.
+  `ClientOptions::protocol` takes `ClientProtocol::Auto()` (the default),
+  `Legacy()` or `Version("...")`. `Auto()` sends `server/discover` first: a
+  `DiscoverResult` or a modern protocol error
+  (`g_UNSUPPORTED_PROTOCOL_VERSION`, `g_HEADER_MISMATCH`,
+  `g_MISSING_REQUIRED_CLIENT_CAPABILITY`) means a 2026-07-28 server, while any
+  other error (including `-32601` and `-32602`), a reply that is not JSON, or
+  no reply within `ClientOptions::probe_timeout` (3 s) means a legacy one and
+  the client sends `initialize`. A server that refuses `initialize` naming
+  modern versions after a timed-out probe is probed once more.
+  `ClientOptions::on_era_decision` reports each decision (`EraDecision`,
+  `EraReason`). In a modern session every request carries
+  `io.modelcontextprotocol/protocolVersion`, `clientCapabilities` (the
+  capabilities given to `connect()` plus what the registered handlers imply),
+  `clientInfo` and, when `RequestOptions::log_level` is set, `logLevel` in
+  `_meta`, merged with the caller's own `_meta` entries. In that session
+  `ping()` and the removed subscription and log-level methods fail locally,
+  `set_roots()` sends no list-changed notification, and a result whose
+  `resultType` is neither absent nor `"complete"` fails with `McpError`.
+  `Client::cancel()` ends the wait for the request at once (it fails with
+  `g_REQUEST_CANCELLED`) and a response that arrives anyway is dropped. A
+  request that times out is cancelled with `notifications/cancelled`.
+- `HttpClientTransport` sends requests that name a protocol version in `_meta`
+  (2026-07-28) as sessionless POSTs with the `MCP-Protocol-Version`,
+  `Mcp-Method`, `Mcp-Name` and `Mcp-Param-*` headers (Base64 encoded when the
+  value is not plain header text), reads event-stream answers as they arrive,
+  ends a response stream when its request is cancelled or times out, and
+  refreshes `tools/list` once before retrying a request refused with
+  `HeaderMismatch`. Tools with invalid `x-mcp-header` annotations are left out
+  of `tools/list`; `set_warning_handler()` reports them.
+- The client resumes `input_required` results (2026-07-28): when a modern
+  `tools/call`, `prompts/get` or `resources/read` is answered with one, it
+  runs the elicitation, sampling or roots handler registered for each entry of
+  `inputRequests` and sends the request again with a new id, the answers in
+  `inputResponses` and the server's `requestState` unchanged, until a complete
+  result arrives. `RequestOptions::max_input_rounds` (default 8) limits the
+  retries; the call's timeout covers all rounds, and a question with no
+  handler fails the call naming the method.
+- `Client::listen()` opens a `subscriptions/listen` stream on a 2026-07-28
+  session and returns a `Subscription`: the acknowledged filter (and what the
+  server left out), the notifications of that stream through `next()`,
+  `close()`, and whether the stream ended gracefully (the server's closing
+  result or its `notifications/cancelled`), by cancel, by error or by a
+  dropped connection. Streams on one connection are told apart by their
+  subscription id.
 - `CompiledSchema` (`mcp/protocol/schema.hpp`): compiles a JSON Schema and
-  validates values against it, reporting violations with instance paths.
-  A schema without `$schema` is read as 2020-12; 2019-09, draft-07, draft-06
-  and draft-04 may be named, and any other `$schema` is refused with
+  validates values against it, reporting violations with instance paths. A
+  schema without `$schema` is read as 2020-12; 2019-09, draft-07, draft-06 and
+  draft-04 may be named, and any other `$schema` is refused with
   `SchemaError`. The schema itself is checked against its dialect's
-  metaschema. `SchemaOptions` bounds the nesting of a validated value
-  (64 levels by default), the number of violations reported, the pattern
+  metaschema. `SchemaOptions` bounds the nesting of a validated value (64
+  levels by default), the number of violations reported, the pattern
   matching steps and evaluation work of one validation, and the instructions
-  the patterns of one schema compile to. JSON cannot
-  represent NaN or Infinity: a schema holding one is refused, and a value
-  holding one is checked as the `null` it would be sent as.
-  References resolve only within the document and to the supported
-  metaschemas; any other `$ref` is refused with
+  the patterns of one schema compile to. JSON cannot represent NaN or
+  Infinity: a schema holding one is refused, and a value holding one is
+  checked as the `null` it would be sent as. References resolve only within
+  the document and to the supported metaschemas; any other `$ref` is refused with
   `SchemaError::Category::eUnresolvedRef`, and nothing is fetched. Evaluation
   is bounded in path length, work and pattern matching steps (the latter in
   proportion to the text in the value): a validation that exceeds them reports
@@ -29,20 +268,94 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `examples/features/schema_validation.cpp`, which shows each tool schema
   check on the server and the client and exits with a failure status if one
   does not hold.
+- Sessions of protocol revision 2025-11-25 and earlier stream over HTTP. In
+  `StreamableHttpSessionManager` and `HttpServerTransport`, a POST from a
+  client that accepts SSE over HTTP/1.1 becomes a stream once the server sends
+  anything for the request before its response: the handler's notifications
+  and the server's own requests go on it as they are sent, and the response
+  ends it. A POST answered first gets its response alone, as before. A GET
+  opens the session's stream for what belongs to no request; in a 2025-11-25
+  session it starts with an event that has an id and no data. A GET with
+  `Last-Event-ID` resumes a stream that is still going on, live. A client
+  leaving a stream does not cancel its request. `Server` writes a handler's
+  messages with `ITransport::write_related_message()`, which names the request
+  they belong to, and `EventStore::stream_of()` names the stream of an event.
+- `HttpClientTransport` sends each message of a legacy session on an exchange
+  of its own, so requests overlap, and reads SSE answers as they arrive. After
+  notifications/initialized it opens the session's GET stream, opens it again
+  from its last event when it ends, after the pause its `retry` field asks for
+  but at least 100 ms, which doubles while streams keep ending with nothing, and
+  does not ask again after a 405. A request's stream that ends before its
+  response is resumed with a GET naming its last event, at most three times.
 
 ### Changed
 
+- An unknown resource in `resources/read` is answered with its URI in the
+  error's `data`, as the specification shows.
+- A GET on the MCP endpoint whose `Accept` header does not list
+  `text/event-stream` is answered `406` by both HTTP server transports, as the
+  TypeScript SDK does, instead of opening an event stream.
+- On a session, both HTTP server transports accept an `MCP-Protocol-Version`
+  header naming any version `initialize` can negotiate, not only the session's
+  own, as the TypeScript, Go and Rust SDKs do; another value is still answered
+  `400`. The conformance scenario `server-sse-multiple-streams`, which sends
+  2025-03-26 on a 2025-11-25 session, now passes.
 - Middleware also runs for `resources/subscribe`, `resources/unsubscribe` and
   `completion/complete`, so `make_auth_middleware()` guards them too.
-- `GET` on the MCP endpoint within a session answers `405` with
-  `Allow: POST, DELETE` unless it resumes with `Last-Event-ID`; a `GET` without
-  a session is answered `400`. It used to answer `200` with an empty JSON body,
-  which the specification does not allow; a resume with nothing to replay
-  answers an empty SSE stream.
+- `GET` on the MCP endpoint within a session opens the session's SSE stream,
+  one at a time (another is answered `409`), or resumes a stream with
+  `Last-Event-ID`; a `GET` without a session is answered `400`. It used to
+  answer `200` with an empty JSON body, which the specification does not
+  allow; a resume of a stream that ended with nothing to replay answers an
+  empty SSE stream.
+- `ITransport::overlapping_modern_writes()` is now `overlapping_writes()`. On a
+  transport that returns true, `Client` writes every message beside its queue,
+  in sessions of every protocol revision.
 - `BUILD_TESTING`, `BUILD_EXAMPLES` and `BUILD_DOCS` default to `ON` only when
   the SDK is the top-level CMake project. Added with FetchContent or
   `add_subdirectory`, the SDK no longer builds its tests and examples or needs
   GTest; setting an option still overrides the default.
+- `server/discover` is a 2026-07-28 request: without
+  `io.modelcontextprotocol/protocolVersion` in `_meta` it is answered with
+  `g_INVALID_PARAMS`.
+- `StreamableHttpSessionManager` answers `server/discover` from
+  `modern_server()`, like every 2026-07-28 request, instead of from a separate
+  server, and `HttpServerTransport` counts a waiting discover against the 256
+  waiting 2026-07-28 requests instead of a limit of 16 for discovers.
+- `initialize` negotiation uses `g_LEGACY_PROTOCOL_VERSIONS` instead of
+  `g_SUPPORTED_PROTOCOL_VERSIONS`.
+- `g_LATEST_PROTOCOL_VERSION` names 2026-07-28, and
+  `g_SUPPORTED_PROTOCOL_VERSIONS`, now a `std::array` of five, lists it after
+  the four legacy revisions, so `is_supported_protocol_version()` is true for
+  every revision the SDK serves in either era. Code that used them for the
+  versions `initialize` negotiates should use
+  `g_LATEST_LEGACY_PROTOCOL_VERSION`, `g_LEGACY_PROTOCOL_VERSIONS` and
+  `is_legacy_protocol_version()`; `negotiate_protocol_version()` still selects
+  only those.
+- Before `notifications/initialized`, a session serves a request that carries
+  a 2026-07-28 protocol version in `_meta` instead of answering it with
+  `g_INVALID_REQUEST`; `server/discover` is exempt from the initialization
+  sequence only as such a request.
+- `notifications/cancelled` marks any request the session is still serving as
+  cancelled, so `Context::is_cancelled()` turns true in resource and prompt
+  handlers too, not only in tools. The response of a request of 2025-11-25 or
+  earlier is still sent.
+- `Client::connect()` sends `server/discover` before `initialize` by default
+  (`ClientProtocol::Auto()`, also what a default-constructed `ClientProtocol`
+  selects) and speaks 2026-07-28 with a server that serves it. A legacy server
+  costs one extra round trip, or `ClientOptions::probe_timeout` if it ignores
+  the request; one that closes the connection on it fails the connect.
+  `ClientOptions::protocol = ClientProtocol::Legacy()` keeps sending only
+  `initialize`.
+- `Client::connect()` resolves to `ConnectResult` instead of
+  `InitializeResult`: `era`, `protocolVersion`, `capabilities`, `serverInfo`
+  (now optional, so write `result.serverInfo->name`), `instructions` and
+  `supportedVersions`. Branch on `era` where the two protocol families differ.
+- `ElicitRequestURLParams::elicitationId` is now a
+  `std::optional<std::string>`. `Context::elicit()` generates one for a
+  URL-mode request that leaves it unset, so the wire output for earlier
+  protocol revisions is unchanged; a request serialized without it omits the
+  field, as 2026-07-28 requires.
 - `ElicitationCompleteNotificationParams` holds the `elicitationId` of the
   URL-mode request that completed, the field the specification gives
   `notifications/elicitation/complete`. It held a `requestId`, so the
@@ -53,10 +366,23 @@ Versioning; a `0.x` version is a stable release unless its version has an
   null one. A null id is still read as no id.
 - `g_CONNECTION_CLOSED`, the code the SDK uses locally when a transport
   closes, is -31000, outside the range JSON-RPC reserves, so it cannot be
-  mistaken for an error the peer sent. It was -32002, MCP's code for a
-  resource that does not exist.
+  mistaken for an error the peer sent. It was -32002, the resource-not-found
+  code of 2025-11-25 and earlier, and a server's answer to
+  `subscriptions/listen` with that code read as a dropped stream.
 - `resources/read` of a resource that does not exist is answered -32002
-  (`g_RESOURCE_NOT_FOUND`), as the specification asks, instead of -32602.
+  (`g_RESOURCE_NOT_FOUND`) in sessions of 2025-11-25 and earlier, as those
+  revisions ask, and -32602 for 2026-07-28.
+- `make_tool_structured_result()` accepts any JSON value as
+  `structuredContent`. The server sends a value that is not an object only in
+  response to a 2026-07-28 request, and checks it against the tool's
+  `outputSchema` like any other. For a request of an earlier protocol
+  revision, a tool whose result carries non-object `structuredContent` is
+  answered with the internal error that a raw result got before, including
+  when the helper built it.
+- `BearerTokenValidator` returns a `TokenValidation` and
+  `AsyncBearerTokenValidator` a `Task<TokenValidation>`. A synchronous
+  validator returning `bool` still compiles; an asynchronous one returning
+  `Task<bool>` must change its return type (`co_return true;` still works).
 - `tools/call` naming an unknown tool and `prompts/get` naming an unknown
   prompt are answered with `g_INVALID_PARAMS` (`-32602`), as the tools and
   prompts specifications list, instead of `g_METHOD_NOT_FOUND` (`-32601`).
@@ -65,11 +391,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   object that `CompiledSchema` accepts, or when the input schema does not
   declare `"type": "object"`, which the 2025-11-25 and 2026-07-28 schemas
   require. Previously any JSON value was advertised as the schema.
-- `tools/call` arguments are validated against the tool's input schema, as
-  the 2025-11-25 and 2026-07-28 revisions require of servers. Arguments that
-  do not conform are answered with an `isError` result listing the
-  violations, and the handler does not run; middleware still sees the call.
-  The check also applies to `Server::invoke_tool()`. `Server::set_tool_validation()` with
+- `tools/call` arguments are validated against the tool's input schema, as the
+  2025-11-25 and 2026-07-28 revisions require of servers. Arguments that do
+  not conform are answered with an `isError` result listing the violations,
+  and the handler does not run; middleware still sees the call. The check also
+  applies to `Server::invoke_tool()`. `Server::set_tool_validation()` with
   `ToolValidationOptions::validate_arguments = false` turns it off, and
   `Server::tool_validation_stats()` counts refused calls.
 - The `structuredContent` of a successful tool result is checked against the
@@ -88,6 +414,13 @@ Versioning; a `0.x` version is a stable release unless its version has an
   unchecked. `ClientOptions::validate_tool_schemas = false` turns all of this
   off.
 
+### Removed
+
+- `Server::set_discover_ttl_ms()` and `set_discover_cache_scope()`, replaced
+  by `Server::set_cache_hints()`.
+- `g_DISCOVERABLE_PROTOCOL_VERSIONS`; `g_SUPPORTED_PROTOCOL_VERSIONS` lists
+  the same versions.
+
 ### Fixed
 
 - `OAuthAuthorizationManager` handed the authorization endpoint named in the
@@ -105,17 +438,34 @@ Versioning; a `0.x` version is a stable release unless its version has an
   messages of another stream. Both HTTP server transports now replay only the
   stream the named event was sent on: `EventStore::append()` takes the stream
   of the event, and `events_after()` returns only that stream's later events.
-  `HttpServerTransport` answers each POST with its response alone, so a resume
-  there replays nothing.
+- A request the server sent while it handled a POST of a legacy session over
+  HTTP, such as `elicitation/create` or `sampling/createMessage`, reached the
+  client only with the POST's response, which the handler could not produce
+  without the client's answer, so the call waited for the server's
+  reverse-request timeout. `HttpServerTransport` dropped such requests, and
+  every notification. Both now stream them, and `HttpClientTransport` reads
+  them as they arrive (see Added). The conformance server scenarios
+  `tools-call-elicitation`, `tools-call-sampling`,
+  `elicitation-sep1034-defaults` and `elicitation-sep1330-enums`, and the
+  client scenarios `sse-retry` and `elicitation-sep1034-client-defaults`, now
+  pass.
+- A throw that does not derive from `std::exception`, from middleware or from
+  a resource or prompt handler, left the request unanswered. It is now answered
+  with `-32603`. Tool handlers still report it as a tool error.
 - A session runs at
   most 1024 requests (`Server::set_max_in_flight_requests()`), and its running
   requests and the answers the peer has not taken yet may hold at most 256 MiB
   (`Server::set_max_in_flight_bytes()`). A request counts as its parsed JSON
   takes memory, which for an array of empty objects is about 27 times its text.
   A request past either limit is answered with `-32603`, and reading stops
-  while the peer takes no answers. Those refusals are queued without holding up
-  reading while they fit in the byte limit, so a client that stopped reading
-  until its own answers are read does not stall the session. A
+  while the peer takes no answers. Requests that belong to no session, such as
+  2026-07-28 requests, share one such limit per `Server` and count until their
+  handler ends, even when their client has gone. A 2026-07-28 handler waiting
+  for client input is bounded by `MrtrOptions` instead, and counts as a request
+  again when it goes on after being given up. Those refusals are queued
+  without holding up reading while they fit in the byte limit, so a client that
+  stopped reading until its own answers are read does not stall the session for
+  good. A
   `Client` stops reading while it answers
   1024 requests of the server or they hold 256 MiB
   (`ClientOptions::max_incoming_request_bytes`). A session holds at most 4096
@@ -157,7 +507,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   minutes (`set_session_idle_timeout()`), so a client that left without a
   DELETE does not keep the next one out. A request naming a session the
   transport does not hold, such as one ended this way, is answered `404`,
-  as for a session that ended, so the client starts a new session.
+  as for a session that ended, so the client starts a new session. A request
+  sent without a session, as a 2026-07-28 client sends one, does not keep a
+  session in use.
 - An answer to a server request is accepted only from the session it was sent
   in, and an answer needs an established session.
 - Both HTTP accept loops stopped when the process ran out of file
@@ -169,6 +521,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - A `Server` on a `MemoryTransport` ended its run when a message written as text
   held a number past the range of a double, such as `1e400`. Such a message is
   answered as a parse error, and the session goes on.
+- A 2026-07-28 request naming a protocol version the server does not implement
+  was refused for a missing `Mcp-Method` or `Mcp-Name` header before its
+  version was looked at, so the client never learned the versions served. It
+  is answered `-32022` with that list, as the specification requires.
 - A request answered 403 `insufficient_scope` again and again drove up to
   three consent prompts. A request now gets one step-up by default
   (`OAuthClientTransportOptions::max_step_ups_per_request`); zero leaves the
@@ -242,6 +598,13 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - With Boost older than 1.82, an error the shared library threw with a Beast
   error code, such as a WebSocket connect timeout, did not compare equal to the
   same `boost::beast` enumerator in the caller.
+- `HttpClientTransport` names the version the client asks for in the
+  `MCP-Protocol-Version` header of the initialize request, instead of always
+  the newest.
+- `HttpClientTransport` reports the JSON-RPC error a server sends with a 400
+  or 404 status to an initialize request, such as one from a server that
+  serves only 2026-07-28 naming the versions it serves, instead of only the
+  HTTP status.
 - A JSON Schema `pattern` was read whole before the limit on its compiled
   program applied, so a long pattern took memory in proportion to its length
   while it was refused. A pattern longer than 65,536 bytes is now refused

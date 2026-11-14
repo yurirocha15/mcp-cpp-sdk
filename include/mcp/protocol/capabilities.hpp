@@ -34,40 +34,58 @@ constexpr std::string_view g_PROTOCOL_VERSION_2025_06_18 = "2025-06-18";
 constexpr std::string_view g_PROTOCOL_VERSION_2025_11_25 = "2025-11-25";
 
 /**
- * @brief Protocol version 2026-07-28 (stateless protocol revision).
+ * @brief Protocol version 2026-07-28, the first revision served per request, without initialize.
  *
- * @details Deliberately absent from g_SUPPORTED_PROTOCOL_VERSIONS: legacy initialize
- * negotiation must only resolve to versions whose semantics this SDK fully serves. It is
- * listed only in g_DISCOVERABLE_PROTOCOL_VERSIONS.
+ * @details Listed in g_MODERN_PROTOCOL_VERSIONS and g_SUPPORTED_PROTOCOL_VERSIONS, not in
+ * g_LEGACY_PROTOCOL_VERSIONS. initialize never negotiates it.
  */
 constexpr std::string_view g_PROTOCOL_VERSION_2026_07_28 = "2026-07-28";
 
 /**
- * @brief The latest supported protocol version.
+ * @brief The newest version in g_SUPPORTED_PROTOCOL_VERSIONS.
+ *
+ * @details initialize negotiation does not read it; the newest version initialize negotiates is
+ * g_LATEST_LEGACY_PROTOCOL_VERSION.
  */
-constexpr std::string_view g_LATEST_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2025_11_25;
+constexpr std::string_view g_LATEST_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2026_07_28;
 
 /**
- * @brief List of all supported protocol versions.
+ * @brief The newest protocol version that starts a session with initialize.
  */
-constexpr std::array<std::string_view, 4> g_SUPPORTED_PROTOCOL_VERSIONS = {
+constexpr std::string_view g_LATEST_LEGACY_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2025_11_25;
+
+/**
+ * @brief Protocol versions that start a session with initialize (2025-11-25 and earlier).
+ *
+ * @details initialize negotiates only these versions, whatever the newest supported version is.
+ */
+constexpr std::array<std::string_view, 4> g_LEGACY_PROTOCOL_VERSIONS = {
     g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
     g_PROTOCOL_VERSION_2025_11_25};
 
 /**
- * @brief Protocol versions a server/discover response advertises.
- *
- * @details Deliberately distinct from g_SUPPORTED_PROTOCOL_VERSIONS, which alone governs
- * legacy initialize negotiation. Listing a version here makes no promise to the negotiation
- * path: a legacy peer requesting 2026-07-28 in initialize still negotiates
- * g_LATEST_PROTOCOL_VERSION.
+ * @brief Protocol versions whose requests carry their version in `_meta` and need no
+ * initialize (2026-07-28 and later).
  */
-constexpr std::array<std::string_view, 5> g_DISCOVERABLE_PROTOCOL_VERSIONS = {
+constexpr std::array<std::string_view, 1> g_MODERN_PROTOCOL_VERSIONS = {g_PROTOCOL_VERSION_2026_07_28};
+
+/**
+ * @brief Every protocol version this SDK supports: the legacy versions, then the modern ones.
+ *
+ * @details A server serving every era advertises these in server/discover; a
+ * ServerProtocolPolicy narrows the list. initialize negotiation does not read this list; it uses
+ * g_LEGACY_PROTOCOL_VERSIONS, so a legacy peer requesting 2026-07-28 in initialize negotiates
+ * g_LATEST_LEGACY_PROTOCOL_VERSION.
+ */
+constexpr std::array<std::string_view, 5> g_SUPPORTED_PROTOCOL_VERSIONS = {
     g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
     g_PROTOCOL_VERSION_2025_11_25, g_PROTOCOL_VERSION_2026_07_28};
 
 /**
- * @brief Check whether a protocol version is supported by this SDK.
+ * @brief Check whether a protocol version is listed in g_SUPPORTED_PROTOCOL_VERSIONS, in either
+ * era.
+ *
+ * @details initialize negotiation does not use it; see is_legacy_protocol_version().
  *
  * @param version The protocol version to check.
  * @return true if the version is present in g_SUPPORTED_PROTOCOL_VERSIONS.
@@ -78,18 +96,41 @@ constexpr std::array<std::string_view, 5> g_DISCOVERABLE_PROTOCOL_VERSIONS = {
 }
 
 /**
- * @brief Negotiate the protocol version to use for a session.
+ * @brief Check whether a protocol version starts a session with initialize.
  *
- * @details If the requested version is supported, it is selected. Otherwise,
- * the latest supported version is used as a fallback.
+ * @param version The protocol version to check.
+ * @return true if the version is present in g_LEGACY_PROTOCOL_VERSIONS.
+ */
+[[nodiscard]] constexpr bool is_legacy_protocol_version(std::string_view version) {
+    return std::find(g_LEGACY_PROTOCOL_VERSIONS.begin(), g_LEGACY_PROTOCOL_VERSIONS.end(), version) !=
+           g_LEGACY_PROTOCOL_VERSIONS.end();
+}
+
+/**
+ * @brief Check whether a protocol version is served per request, without initialize.
+ *
+ * @param version The protocol version to check.
+ * @return true if the version is present in g_MODERN_PROTOCOL_VERSIONS.
+ */
+[[nodiscard]] constexpr bool is_modern_protocol_version(std::string_view version) {
+    return std::find(g_MODERN_PROTOCOL_VERSIONS.begin(), g_MODERN_PROTOCOL_VERSIONS.end(), version) !=
+           g_MODERN_PROTOCOL_VERSIONS.end();
+}
+
+/**
+ * @brief Negotiate the protocol version of an initialize request.
+ *
+ * @details A requested version that starts a session with initialize is selected. Any other
+ * version, including one served per request such as 2026-07-28, falls back to
+ * g_LATEST_LEGACY_PROTOCOL_VERSION.
  *
  * @param requested_version The version requested by the peer.
  * @return The negotiated protocol version.
  */
 [[nodiscard]] constexpr std::string_view negotiate_protocol_version(
     std::string_view requested_version) {
-    return is_supported_protocol_version(requested_version) ? requested_version
-                                                            : g_LATEST_PROTOCOL_VERSION;
+    return is_legacy_protocol_version(requested_version) ? requested_version
+                                                         : g_LATEST_LEGACY_PROTOCOL_VERSION;
 }
 
 /**
@@ -812,6 +853,38 @@ enum class CacheScope : std::uint8_t {
 NLOHMANN_JSON_SERIALIZE_ENUM(CacheScope,
                              {{CacheScope::ePublic, "public"}, {CacheScope::ePrivate, "private"}})
 
+namespace detail {
+
+/// Reads the `ttlMs` and `cacheScope` caching hints of a result. A `cacheScope` this SDK does not
+/// recognise is left unset: the enum's JSON conversion would read it as "public", the scope that
+/// lets a cache share the result across callers.
+inline void read_cache_hints(const nlohmann::json& json_obj, std::optional<std::int64_t>& ttl_ms,
+                             std::optional<CacheScope>& cache_scope) {
+    if (has_json_value(json_obj, "ttlMs")) {
+        ttl_ms = json_obj.at("ttlMs").get<std::int64_t>();
+    }
+    if (const auto scope = json_obj.find("cacheScope"); scope != json_obj.end() && scope->is_string()) {
+        if (*scope == "public") {
+            cache_scope = CacheScope::ePublic;
+        } else if (*scope == "private") {
+            cache_scope = CacheScope::ePrivate;
+        }
+    }
+}
+
+/// Writes the `ttlMs` and `cacheScope` caching hints of a result, each only when it is set.
+inline void write_cache_hints(nlohmann::json& json_obj, const std::optional<std::int64_t>& ttl_ms,
+                              const std::optional<CacheScope>& cache_scope) {
+    if (ttl_ms) {
+        json_obj["ttlMs"] = *ttl_ms;
+    }
+    if (cache_scope) {
+        json_obj["cacheScope"] = *cache_scope;
+    }
+}
+
+}  // namespace detail
+
 /**
  * @brief Represents the result of a server/discover request.
  *
@@ -821,7 +894,7 @@ struct DiscoverResult {
     std::string resultType = "complete";         ///< Always "complete" for this result.
     std::vector<std::string> supportedVersions;  ///< Protocol versions the server supports.
     ServerCapabilities capabilities;             ///< The capabilities supported by the server.
-    ServerInfo serverInfo;                    ///< Server identity, carried under `_meta` on the wire.
+    std::optional<ServerInfo> serverInfo;     ///< Server identity, carried under `_meta` on the wire.
     std::optional<std::string> instructions;  ///< Optional instructions for the client.
     std::optional<std::int64_t> ttlMs;        ///< Optional caching TTL hint, in milliseconds.
     std::optional<CacheScope> cacheScope;     ///< Optional caching scope hint.
@@ -838,17 +911,14 @@ inline void to_json(nlohmann::json& json_obj, const DiscoverResult& res) {
         {"resultType", res.resultType},
         {"supportedVersions", res.supportedVersions},
         {"capabilities", res.capabilities},
-        {"_meta", {{"io.modelcontextprotocol/serverInfo", res.serverInfo}}},
     };
+    if (res.serverInfo) {
+        json_obj["_meta"] = {{"io.modelcontextprotocol/serverInfo", *res.serverInfo}};
+    }
     if (res.instructions) {
         json_obj["instructions"] = *res.instructions;
     }
-    if (res.ttlMs) {
-        json_obj["ttlMs"] = *res.ttlMs;
-    }
-    if (res.cacheScope) {
-        json_obj["cacheScope"] = *res.cacheScope;
-    }
+    detail::write_cache_hints(json_obj, res.ttlMs, res.cacheScope);
 }
 
 /**
@@ -862,18 +932,14 @@ inline void from_json(const nlohmann::json& json_obj, DiscoverResult& res) {
     json_obj.at("supportedVersions").get_to(res.supportedVersions);
     json_obj.at("capabilities").get_to(res.capabilities);
     if (json_obj.contains("_meta") &&
-        json_obj.at("_meta").contains("io.modelcontextprotocol/serverInfo")) {
-        json_obj.at("_meta").at("io.modelcontextprotocol/serverInfo").get_to(res.serverInfo);
+        detail::has_json_value(json_obj.at("_meta"), "io.modelcontextprotocol/serverInfo")) {
+        res.serverInfo =
+            json_obj.at("_meta").at("io.modelcontextprotocol/serverInfo").get<ServerInfo>();
     }
     if (detail::has_json_value(json_obj, "instructions")) {
         res.instructions = json_obj.at("instructions").get<std::string>();
     }
-    if (detail::has_json_value(json_obj, "ttlMs")) {
-        res.ttlMs = json_obj.at("ttlMs").get<std::int64_t>();
-    }
-    if (json_obj.contains("cacheScope")) {
-        res.cacheScope = json_obj.at("cacheScope").get<CacheScope>();
-    }
+    detail::read_cache_hints(json_obj, res.ttlMs, res.cacheScope);
 }
 
 }  // namespace mcp
