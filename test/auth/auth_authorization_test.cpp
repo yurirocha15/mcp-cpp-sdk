@@ -32,7 +32,9 @@
 #include <mcp/auth/client_identity.hpp>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/client/client.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/http_client.hpp>
+#include <mcp/transport/http_server.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 
 // Reach-in for retained-state assertions; see the header. Not a public SDK header.
@@ -7053,4 +7055,105 @@ TEST(ClientAuthDeadlineTest, TransportEndsTheWaitWhenTheAuthorizationFails) {
     EXPECT_NE(outcome.failure, nullptr);
     EXPECT_EQ(begun, 2);
     EXPECT_EQ(ended, 2);
+}
+
+// An SDK client against an SDK HTTP server whose scope provider refuses the call: the client
+// authorizes again once with the wider scope, and the replayed request succeeds with the new token.
+TEST(AuthModernClientTest, StepsUpOnceAgainstAnSdkServerThatRequiresAScope) {
+    asio::io_context io_ctx;
+    LoopbackServer auth_server(io_ctx);
+    const auto auth_base = auth_server.base_url();
+    int tokens_issued = 0;
+    auth_server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(auth_base, true));
+        }
+        if (target == "/token") {
+            auto token = token_document();
+            token["access_token"] = "token-" + std::to_string(++tokens_issued);
+            return json_response(token);
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, auth_server.serve(60), asio::detached);
+
+    auto transport = std::make_shared<mcp::HttpServerTransport>(io_ctx.get_executor(), "127.0.0.1", 0);
+    const auto mcp_origin = "http://127.0.0.1:" + std::to_string(transport->port());
+    mcp::ProtectedResourceMetadataConfig resource;
+    resource.resource = mcp_origin + "/mcp";
+    resource.authorization_servers = {auth_base};
+    transport->set_protected_resource_metadata(resource);
+    // The first token holds only the basic scope, the second the basic and write scopes.
+    transport->set_bearer_token_validator([](std::string_view token) -> mcp::TokenValidation {
+        if (token != "token-1" && token != "token-2") {
+            return false;
+        }
+        mcp::TokenValidation validation(true);
+        validation.scopes = token == "token-1" ? std::vector<std::string>{"mcp:basic"}
+                                               : std::vector<std::string>{"mcp:basic", "mcp:write"};
+        return validation;
+    });
+    int tool_calls = 0;
+    transport->set_scope_requirements(
+        [](const mcp::ScopeRequestContext& context) -> std::vector<std::string> {
+            return context.method == "tools/call" ? std::vector<std::string>{"mcp:write"}
+                                                  : std::vector<std::string>{};
+        });
+
+    mcp::ServerCapabilities capabilities;
+    capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
+    mcp::Server server(mcp::Implementation{"scoped", "1.0"}, capabilities);
+    server.add_tool<json, json>("write_file", "Writes a file", json{{"type", "object"}},
+                                [&tool_calls](mcp::Context&, json) -> mcp::Task<json> {
+                                    ++tool_calls;
+                                    co_return json{{"done", true}};
+                                });
+    asio::co_spawn(io_ctx, transport->listen(), asio::detached);
+    asio::co_spawn(io_ctx, server.run(transport, io_ctx.get_executor()), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = mcp_origin + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(auth_server.origin());
+    config.policy.allowed_origins.push_back(mcp_origin);
+
+    std::vector<std::string> consent_scopes;
+    std::string error;
+    std::optional<mcp::CallToolResult> result;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            auto inner =
+                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), mcp_origin + "/mcp");
+            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+                io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(), config,
+                recording_callback(&consent_scopes));
+            auto client_transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, manager);
+            mcp::ClientOptions options;
+            options.protocol = mcp::ClientProtocol::Version("2026-07-28");
+            mcp::Client client(client_transport, io_ctx.get_executor(), options);
+            try {
+                (void)co_await client.connect("auth-client", "1.0");
+                const json arguments = json::object();
+                result = co_await client.call_tool("write_file", arguments);
+            } catch (const std::exception& failure) {
+                error = failure.what();
+            }
+            client.close();
+            transport->close();
+            auth_server.close();
+        },
+        asio::detached);
+    io_ctx.run();
+
+    EXPECT_EQ(error, "");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->isError.value_or(false));
+    // One authorization for the initial 401 and exactly one step-up for the 403.
+    EXPECT_EQ(tokens_issued, 2);
+    ASSERT_EQ(consent_scopes.size(), 2U);
+    EXPECT_TRUE(has_scopes(consent_scopes[1], {"mcp:write"}));
+    EXPECT_EQ(tool_calls, 1);
 }
