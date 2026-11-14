@@ -39,7 +39,7 @@
 // a member that tolerates being absent but throws when a peer sends it as an
 // explicit null. That is a recurring defect class, and
 // scripts/json_census_dispositions.json dispositions it "fix".
-// 0 of the 317 field entries below still carry it; there were 87 before the
+// 0 of the 265 field entries below still carry it; there were 87 before the
 // explicit-null decoding fixes. Those rows pin behaviour as it is so the
 // suite stays green. They do not endorse it. Fixing one makes the build check
 // report this file stale until it is regenerated with the fix. The check reads
@@ -256,37 +256,14 @@ TEST(JsonPeerInputMatrix, CallToolResult) {
     }
 }
 
-TEST(JsonPeerInputMatrix, CancelTaskRequest) {
-    const json baseline = json::parse(R"json({"method":"tasks/cancel","params":{"id":"x"}})json");
-    static const FieldExpect fields[] = {
-        {"method", R"json("tasks/cancel")json", 0, true, true, true, false},
-        {"params", R"json({"id":"x"})json", 0, true, true, true, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("CancelTaskRequest.") + f.key);
-        check_field<mcp::CancelTaskRequest>(baseline, f);
-    }
-}
-
 TEST(JsonPeerInputMatrix, CancelTaskRequestParams) {
-    const json baseline = json::parse(R"json({"id":"x"})json");
+    const json baseline = json::parse(R"json({"taskId":"x"})json");
     static const FieldExpect fields[] = {
-        {"id", R"json("x")json", 0, true, true, true, false},
+        {"taskId", R"json("x")json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("CancelTaskRequestParams.") + f.key);
         check_field<mcp::CancelTaskRequestParams>(baseline, f);
-    }
-}
-
-TEST(JsonPeerInputMatrix, CancelTaskResult) {
-    const json baseline = json::parse(R"json({})json");
-    static const FieldExpect fields[] = {
-        {"_meta", R"json({})json", 0, false, false, false, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("CancelTaskResult.") + f.key);
-        check_field<mcp::CancelTaskResult>(baseline, f);
     }
 }
 
@@ -359,45 +336,6 @@ TEST(JsonPeerInputMatrix, ClientCapabilities_SamplingCapability) {
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ClientCapabilities::SamplingCapability.") + f.key);
         check_field<mcp::ClientCapabilities::SamplingCapability>(baseline, f);
-    }
-}
-
-TEST(JsonPeerInputMatrix, ClientCapabilities_TaskRequestsCapability_ElicitationTaskCapability) {
-    const json baseline = json::parse(R"json({})json");
-    static const FieldExpect fields[] = {
-        {"create", R"json({})json", 0, false, false, false, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(
-            std::string("ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability.") +
-            f.key);
-        check_field<mcp::ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability>(
-            baseline, f);
-    }
-}
-
-TEST(JsonPeerInputMatrix, ClientCapabilities_TaskRequestsCapability_SamplingTaskCapability) {
-    const json baseline = json::parse(R"json({})json");
-    static const FieldExpect fields[] = {
-        {"createMessage", R"json({})json", 0, false, false, false, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(
-            std::string("ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability.") + f.key);
-        check_field<mcp::ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability>(baseline,
-                                                                                             f);
-    }
-}
-
-TEST(JsonPeerInputMatrix, ClientCapabilities_TasksCapability) {
-    const json baseline = json::parse(R"json({})json");
-    static const FieldExpect fields[] = {
-        {"cancel", R"json({})json", 0, false, false, false, false},
-        {"list", R"json({})json", 0, false, false, false, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("ClientCapabilities::TasksCapability.") + f.key);
-        check_field<mcp::ClientCapabilities::TasksCapability>(baseline, f);
     }
 }
 
@@ -483,21 +421,6 @@ TEST(JsonPeerInputMatrix, CreateMessageRequestParams) {
     }
 }
 
-TEST(JsonPeerInputMatrix, CreateTaskResult) {
-    const json baseline = json::parse(
-        R"json({"task":{"taskId":"x","status":"cancelled","createdAt":"x","lastUpdatedAt":"x","ttl":1}})json");
-    static const FieldExpect fields[] = {
-        {"_meta", R"json({})json", 0, false, false, false, false},
-        {"task",
-         R"json({"taskId":"x","status":"cancelled","createdAt":"x","lastUpdatedAt":"x","ttl":1})json",
-         0, true, true, true, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("CreateTaskResult.") + f.key);
-        check_field<mcp::CreateTaskResult>(baseline, f);
-    }
-}
-
 TEST(JsonPeerInputMatrix, DiscoverRequest) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
@@ -531,7 +454,6 @@ TEST(JsonPeerInputMatrix, ElicitRequestFormParams) {
         {"message", R"json("x")json", 0, true, true, true, false},
         {"mode", R"json("form")json", 0, false, false, true, false},
         {"requestedSchema", R"json({})json", 0, true, false, false, false},
-        {"task", R"json({})json", 0, false, false, false, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ElicitRequestFormParams.") + f.key);
@@ -546,7 +468,6 @@ TEST(JsonPeerInputMatrix, ElicitRequestURLParams) {
         {"elicitationId", R"json("x")json", 0, false, false, true, false},
         {"message", R"json("x")json", 0, true, true, true, false},
         {"mode", R"json("url")json", 0, true, true, true, false},
-        {"task", R"json({})json", 0, false, false, false, false},
         {"url", R"json("x")json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
@@ -657,80 +578,14 @@ TEST(JsonPeerInputMatrix, GetPromptResult) {
     }
 }
 
-TEST(JsonPeerInputMatrix, GetTaskPayloadRequest) {
-    const json baseline = json::parse(R"json({"method":"tasks/getPayload","params":{"id":"x"}})json");
-    static const FieldExpect fields[] = {
-        {"method", R"json("tasks/getPayload")json", 0, true, true, true, false},
-        {"params", R"json({"id":"x"})json", 0, true, true, true, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("GetTaskPayloadRequest.") + f.key);
-        check_field<mcp::GetTaskPayloadRequest>(baseline, f);
-    }
-}
-
-TEST(JsonPeerInputMatrix, GetTaskPayloadRequestParams) {
-    const json baseline = json::parse(R"json({"id":"x"})json");
-    static const FieldExpect fields[] = {
-        {"id", R"json("x")json", 0, true, true, true, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("GetTaskPayloadRequestParams.") + f.key);
-        check_field<mcp::GetTaskPayloadRequestParams>(baseline, f);
-    }
-}
-
-TEST(JsonPeerInputMatrix, GetTaskPayloadResult) {
-    const json baseline = json::parse(R"json({"payload":{}})json");
-    static const FieldExpect fields[] = {
-        {"_meta", R"json({})json", 0, false, false, false, false},
-        {"payload", R"json({})json", 0, true, false, false, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("GetTaskPayloadResult.") + f.key);
-        check_field<mcp::GetTaskPayloadResult>(baseline, f);
-    }
-}
-
-TEST(JsonPeerInputMatrix, GetTaskRequest) {
-    const json baseline = json::parse(R"json({"method":"tasks/get","params":{"id":"x"}})json");
-    static const FieldExpect fields[] = {
-        {"method", R"json("tasks/get")json", 0, true, true, true, false},
-        {"params", R"json({"id":"x"})json", 0, true, true, true, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("GetTaskRequest.") + f.key);
-        check_field<mcp::GetTaskRequest>(baseline, f);
-    }
-}
-
 TEST(JsonPeerInputMatrix, GetTaskRequestParams) {
-    const json baseline = json::parse(R"json({"id":"x"})json");
+    const json baseline = json::parse(R"json({"taskId":"x"})json");
     static const FieldExpect fields[] = {
-        {"id", R"json("x")json", 0, true, true, true, false},
+        {"taskId", R"json("x")json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("GetTaskRequestParams.") + f.key);
         check_field<mcp::GetTaskRequestParams>(baseline, f);
-    }
-}
-
-TEST(JsonPeerInputMatrix, GetTaskResult) {
-    const json baseline = json::parse(
-        R"json({"taskId":"x","status":"cancelled","createdAt":"x","lastUpdatedAt":"x","ttl":1})json");
-    static const FieldExpect fields[] = {
-        {"_meta", R"json({})json", 0, false, false, false, false},
-        {"createdAt", R"json("x")json", 0, true, true, true, false},
-        {"lastUpdatedAt", R"json("x")json", 0, true, true, true, false},
-        {"pollInterval", R"json(1)json", 0, false, false, true, false},
-        {"status", R"json("cancelled")json", 0, true, false, false, false},
-        {"statusMessage", R"json("x")json", 0, false, false, true, false},
-        {"taskId", R"json("x")json", 0, true, true, true, false},
-        {"ttl", R"json(1)json", 0, true, true, true, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("GetTaskResult.") + f.key);
-        check_field<mcp::GetTaskResult>(baseline, f);
     }
 }
 
@@ -963,45 +818,6 @@ TEST(JsonPeerInputMatrix, ListRootsResult) {
     }
 }
 
-TEST(JsonPeerInputMatrix, ListTasksRequest) {
-    const json baseline = json::parse(R"json({"method":"tasks/list"})json");
-    static const FieldExpect fields[] = {
-        {"method", R"json("tasks/list")json", 0, true, true, true, false},
-        {"params", R"json({})json", 0, false, false, false, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("ListTasksRequest.") + f.key);
-        check_field<mcp::ListTasksRequest>(baseline, f);
-    }
-}
-
-TEST(JsonPeerInputMatrix, ListTasksRequestParams) {
-    const json baseline = json::parse(R"json({})json");
-    static const FieldExpect fields[] = {
-        {"cursor", R"json("x")json", 0, false, false, true, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("ListTasksRequestParams.") + f.key);
-        check_field<mcp::ListTasksRequestParams>(baseline, f);
-    }
-}
-
-TEST(JsonPeerInputMatrix, ListTasksResult) {
-    const json baseline = json::parse(
-        R"json({"tasks":[{"taskId":"x","status":"cancelled","createdAt":"x","lastUpdatedAt":"x","ttl":1}]})json");
-    static const FieldExpect fields[] = {
-        {"_meta", R"json({})json", 0, false, false, false, false},
-        {"nextCursor", R"json("x")json", 0, false, false, true, false},
-        {"tasks",
-         R"json([{"taskId":"x","status":"cancelled","createdAt":"x","lastUpdatedAt":"x","ttl":1}])json",
-         0, true, true, true, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("ListTasksResult.") + f.key);
-        check_field<mcp::ListTasksResult>(baseline, f);
-    }
-}
-
 TEST(JsonPeerInputMatrix, ListToolsRequest) {
     const json baseline = json::parse(R"json({"method":"tools/list"})json");
     static const FieldExpect fields[] = {
@@ -1226,18 +1042,6 @@ TEST(JsonPeerInputMatrix, ReadResourceResult) {
     }
 }
 
-TEST(JsonPeerInputMatrix, RelatedTaskMetadata) {
-    const json baseline = json::parse(R"json({"id":"x"})json");
-    static const FieldExpect fields[] = {
-        {"id", R"json("x")json", 0, true, true, true, false},
-        {"title", R"json("x")json", 0, false, false, true, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("RelatedTaskMetadata.") + f.key);
-        check_field<mcp::RelatedTaskMetadata>(baseline, f);
-    }
-}
-
 TEST(JsonPeerInputMatrix, Resource) {
     const json baseline = json::parse(R"json({"uri":"x","name":"x"})json");
     static const FieldExpect fields[] = {
@@ -1425,30 +1229,6 @@ TEST(JsonPeerInputMatrix, ServerCapabilities_ResourcesCapability) {
     }
 }
 
-TEST(JsonPeerInputMatrix, ServerCapabilities_TaskRequestsCapability_ToolsTaskCapability) {
-    const json baseline = json::parse(R"json({})json");
-    static const FieldExpect fields[] = {
-        {"call", R"json({})json", 0, false, false, false, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability.") +
-                     f.key);
-        check_field<mcp::ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability>(baseline, f);
-    }
-}
-
-TEST(JsonPeerInputMatrix, ServerCapabilities_TasksCapability) {
-    const json baseline = json::parse(R"json({})json");
-    static const FieldExpect fields[] = {
-        {"cancel", R"json({})json", 0, false, false, false, false},
-        {"list", R"json({})json", 0, false, false, false, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("ServerCapabilities::TasksCapability.") + f.key);
-        check_field<mcp::ServerCapabilities::TasksCapability>(baseline, f);
-    }
-}
-
 TEST(JsonPeerInputMatrix, ServerCapabilities_ToolsCapability) {
     const json baseline = json::parse(R"json({})json");
     static const FieldExpect fields[] = {
@@ -1498,63 +1278,6 @@ TEST(JsonPeerInputMatrix, SubscribeRequest) {
     }
 }
 
-TEST(JsonPeerInputMatrix, TaskData) {
-    const json baseline = json::parse(
-        R"json({"taskId":"x","status":"cancelled","createdAt":"x","lastUpdatedAt":"x","ttl":1})json");
-    static const FieldExpect fields[] = {
-        {"createdAt", R"json("x")json", 0, true, true, true, false},
-        {"lastUpdatedAt", R"json("x")json", 0, true, true, true, false},
-        {"pollInterval", R"json(1)json", 0, false, false, true, false},
-        {"status", R"json("cancelled")json", 0, true, false, false, false},
-        {"statusMessage", R"json("x")json", 0, false, false, true, false},
-        {"taskId", R"json("x")json", 0, true, true, true, false},
-        {"ttl", R"json(1)json", 0, true, true, true, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("TaskData.") + f.key);
-        check_field<mcp::TaskData>(baseline, f);
-    }
-}
-
-TEST(JsonPeerInputMatrix, TaskMetadata) {
-    const json baseline = json::parse(R"json({})json");
-    static const FieldExpect fields[] = {
-        {"relatedTasks", R"json([{"id":"x"}])json", 0, false, false, true, false},
-        {"ttl", R"json(1)json", 0, false, false, true, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("TaskMetadata.") + f.key);
-        check_field<mcp::TaskMetadata>(baseline, f);
-    }
-}
-
-TEST(JsonPeerInputMatrix, TaskStatusNotification) {
-    const json baseline = json::parse(
-        R"json({"method":"notifications/tasks/status","params":{"id":"x","status":"cancelled"}})json");
-    static const FieldExpect fields[] = {
-        {"method", R"json("notifications/tasks/status")json", 0, true, true, true, false},
-        {"params", R"json({"id":"x","status":"cancelled"})json", 0, true, true, true, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("TaskStatusNotification.") + f.key);
-        check_field<mcp::TaskStatusNotification>(baseline, f);
-    }
-}
-
-TEST(JsonPeerInputMatrix, TaskStatusNotificationParams) {
-    const json baseline = json::parse(R"json({"id":"x","status":"cancelled"})json");
-    static const FieldExpect fields[] = {
-        {"id", R"json("x")json", 0, true, true, true, false},
-        {"message", R"json("x")json", 0, false, false, true, false},
-        {"metadata", R"json({})json", 0, false, false, false, false},
-        {"status", R"json("cancelled")json", 0, true, false, false, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("TaskStatusNotificationParams.") + f.key);
-        check_field<mcp::TaskStatusNotificationParams>(baseline, f);
-    }
-}
-
 TEST(JsonPeerInputMatrix, TextContent) {
     const json baseline = json::parse(R"json({"type":"text","text":"x"})json");
     static const FieldExpect fields[] = {
@@ -1586,7 +1309,6 @@ TEST(JsonPeerInputMatrix, Tool) {
         {"_meta", R"json({})json", 0, false, false, false, false},
         {"annotations", R"json({})json", 0, false, false, false, false},
         {"description", R"json("x")json", 0, false, false, true, false},
-        {"execution", R"json({"taskSupport":"x"})json", 0, false, false, true, false},
         {"icons", R"json([{"src":"x"}])json", 0, false, false, true, false},
         {"inputSchema", R"json({})json", 0, true, false, false, false},
         {"name", R"json("x")json", 0, true, true, true, false},
@@ -1622,17 +1344,6 @@ TEST(JsonPeerInputMatrix, ToolChoice) {
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("ToolChoice.") + f.key);
         check_field<mcp::ToolChoice>(baseline, f);
-    }
-}
-
-TEST(JsonPeerInputMatrix, ToolExecution) {
-    const json baseline = json::parse(R"json({"taskSupport":"x"})json");
-    static const FieldExpect fields[] = {
-        {"taskSupport", R"json("x")json", 0, true, true, true, false},
-    };
-    for (const auto& f : fields) {
-        SCOPED_TRACE(std::string("ToolExecution.") + f.key);
-        check_field<mcp::ToolExecution>(baseline, f);
     }
 }
 
@@ -1703,14 +1414,26 @@ TEST(JsonPeerInputMatrix, UnsupportedProtocolVersionData) {
     }
 }
 
+TEST(JsonPeerInputMatrix, UpdateTaskRequestParams) {
+    const json baseline = json::parse(R"json({"inputResponses":{},"taskId":"x"})json");
+    static const FieldExpect fields[] = {
+        {"inputResponses", R"json({})json", 0, true, true, true, false},
+        {"taskId", R"json("x")json", 0, true, true, true, false},
+    };
+    for (const auto& f : fields) {
+        SCOPED_TRACE(std::string("UpdateTaskRequestParams.") + f.key);
+        check_field<mcp::UpdateTaskRequestParams>(baseline, f);
+    }
+}
+
 // The matrix's own arithmetic.  `types x fields x modes` is what a generated
 // suite is worth; a hand-written suite of the same size is only worth what its
 // author thought to write down.
 TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
-    constexpr int types = 118;
-    constexpr int fields = 317;
+    constexpr int types = 97;
+    constexpr int fields = 265;
     constexpr int modes = 4;
-    constexpr int generated_cases = 1268;
+    constexpr int generated_cases = 1060;
     EXPECT_EQ(generated_cases, fields * modes);
     EXPECT_GT(types, 0);
 }
@@ -1722,25 +1445,19 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   CallToolParams
 //   CallToolRequest
 //   CallToolResult
-//   CancelTaskRequest
 //   CancelTaskRequestParams
-//   CancelTaskResult
 //   CancelledNotification
 //   CancelledNotificationParams
 //   ClientCapabilities
 //   ClientCapabilities::ElicitationCapability
 //   ClientCapabilities::RootsCapability
 //   ClientCapabilities::SamplingCapability
-//   ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability
-//   ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability
-//   ClientCapabilities::TasksCapability
 //   CompleteContext
 //   CompleteParamsArgument
 //   CompleteResult
 //   CompletionResultDetails
 //   CreateMessageRequest
 //   CreateMessageRequestParams
-//   CreateTaskResult
 //   DiscoverRequest
 //   DiscoverResult
 //   ElicitRequestFormParams
@@ -1753,12 +1470,7 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   GetPromptRequest
 //   GetPromptRequestParams
 //   GetPromptResult
-//   GetTaskPayloadRequest
-//   GetTaskPayloadRequestParams
-//   GetTaskPayloadResult
-//   GetTaskRequest
 //   GetTaskRequestParams
-//   GetTaskResult
 //   Icon
 //   ImageContent
 //   Implementation
@@ -1777,9 +1489,6 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   ListResourcesResult
 //   ListRootsRequest
 //   ListRootsResult
-//   ListTasksRequest
-//   ListTasksRequestParams
-//   ListTasksResult
 //   ListToolsRequest
 //   ListToolsRequestParams
 //   ListToolsResult
@@ -1798,7 +1507,6 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   ReadResourceRequest
 //   ReadResourceRequestParams
 //   ReadResourceResult
-//   RelatedTaskMetadata
 //   Resource
 //   ResourceLink
 //   ResourceListChangedNotification
@@ -1813,33 +1521,28 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   ServerCapabilities
 //   ServerCapabilities::PromptsCapability
 //   ServerCapabilities::ResourcesCapability
-//   ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability
-//   ServerCapabilities::TasksCapability
 //   ServerCapabilities::ToolsCapability
 //   SetLevelRequest
 //   SetLevelRequestParams
 //   SubscribeRequest
-//   TaskData
-//   TaskMetadata
-//   TaskStatusNotification
-//   TaskStatusNotificationParams
 //   TextContent
 //   TextResourceContents
 //   Tool
 //   ToolAnnotations
 //   ToolChoice
-//   ToolExecution
 //   ToolListChangedNotification
 //   ToolResultContent
 //   ToolUseContent
 //   UnsubscribeRequest
 //   UnsupportedProtocolVersionData
+//   UpdateTaskRequestParams
 // Types deliberately not in the matrix, and why:
-//   ClientCapabilities::TaskRequestsCapability: no census row governs any of its fields
 //   CompleteParams: no baseline document could be synthesised
 //   CompleteReference: std::variant; from_json dispatches on the 'type' discriminator
 //   ContentBlock: std::variant; from_json dispatches on the 'type' discriminator
 //   CreateMessageResult: no baseline document could be synthesised
+//   CreateTaskResult: covered by TasksWire.CreateTaskResultDecodesItsMembersStrictly
+//   DetailedTask: covered by TasksWire.DetailedTaskDecodesItsMembersAndPayloadStrictly
 //   ElicitAction: an enum; ElicitResult.action covers its decoder
 //   ElicitRequest: its params are the ElicitRequestParams variant
 //   ElicitRequestParams: std::variant; from_json dispatches on mode
@@ -1854,4 +1557,6 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   ResourceContents: std::variant; from_json dispatches on text vs blob
 //   SamplingMessage: no baseline document could be synthesised
 //   SamplingMessageContent: std::variant; from_json accepts a block or a list of blocks
-//   ServerCapabilities::TaskRequestsCapability: no census row governs any of its fields
+//   TaskData: covered by TasksWire.TaskDataDecodesItsMembersStrictly
+//   TaskStatus: covered by TasksWire.TaskStatusDecodesOnlyTheSpecificationsStatuses
+//   TaskStatusNotification: covered by TasksWire.StatusNotificationDecodesItsMembersStrictly

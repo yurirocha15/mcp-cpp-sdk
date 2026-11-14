@@ -1320,13 +1320,16 @@ struct HttpClientTransport::Impl {
     }
 
     /// The `Mcp-Name` source of @p call: params.name for tools/call and prompts/get, params.uri for
-    /// resources/read.
+    /// resources/read, params.taskId for the tasks methods.
     static const nlohmann::json* mirrored_name(const ModernCall& call) {
         const char* member = nullptr;
         if (call.method == "tools/call" || call.method == "prompts/get") {
             member = "name";
         } else if (call.method == "resources/read") {
             member = "uri";
+        } else if (call.method == "tasks/get" || call.method == "tasks/update" ||
+                   call.method == "tasks/cancel") {
+            member = "taskId";
         } else {
             return nullptr;
         }

@@ -69,7 +69,6 @@ struct ElicitRequestURLParams {
     /// Unique ID for this elicitation. Required on the wire before 2026-07-28 (the legacy
     /// reverse-RPC path generates one when unset); a 2026-07-28 request never carries it.
     std::optional<std::string> elicitationId;
-    std::optional<TaskMetadata> task;    ///< Optional task augmentation metadata.
     std::optional<nlohmann::json> meta;  ///< Reserved for protocol use.
 };
 
@@ -77,9 +76,6 @@ inline void to_json(nlohmann::json& json_obj, const ElicitRequestURLParams& para
     json_obj = nlohmann::json{{"mode", params.mode}, {"message", params.message}, {"url", params.url}};
     if (params.elicitationId) {
         json_obj["elicitationId"] = *params.elicitationId;
-    }
-    if (params.task) {
-        json_obj["task"] = *params.task;
     }
     if (params.meta) {
         json_obj["_meta"] = *params.meta;
@@ -93,9 +89,6 @@ inline void from_json(const nlohmann::json& json_obj, ElicitRequestURLParams& pa
     if (detail::has_json_value(json_obj, "elicitationId")) {
         params.elicitationId = json_obj.at("elicitationId").get<std::string>();
     }
-    if (json_obj.contains("task")) {
-        params.task = json_obj.at("task").get<TaskMetadata>();
-    }
     if (json_obj.contains("_meta")) {
         params.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
@@ -108,7 +101,6 @@ struct ElicitRequestFormParams {
     std::string mode = "form";           ///< The elicitation mode (always "form").
     std::string message;                 ///< The message describing what info is requested.
     nlohmann::json requestedSchema;      ///< Restricted JSON Schema for the form.
-    std::optional<TaskMetadata> task;    ///< Optional task augmentation metadata.
     std::optional<nlohmann::json> meta;  ///< Reserved for protocol use.
 };
 
@@ -116,9 +108,6 @@ inline void to_json(nlohmann::json& json_obj, const ElicitRequestFormParams& par
     json_obj = nlohmann::json{{"mode", params.mode},
                               {"message", params.message},
                               {"requestedSchema", params.requestedSchema}};
-    if (params.task) {
-        json_obj["task"] = *params.task;
-    }
     if (params.meta) {
         json_obj["_meta"] = *params.meta;
     }
@@ -130,9 +119,6 @@ inline void from_json(const nlohmann::json& json_obj, ElicitRequestFormParams& p
     }
     json_obj.at("message").get_to(params.message);
     json_obj.at("requestedSchema").get_to(params.requestedSchema);
-    if (json_obj.contains("task")) {
-        params.task = json_obj.at("task").get<TaskMetadata>();
-    }
     if (json_obj.contains("_meta")) {
         params.meta = json_obj.at("_meta").get<nlohmann::json>();
     }

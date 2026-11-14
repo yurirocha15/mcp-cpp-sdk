@@ -284,57 +284,43 @@ enum class TaskStatus : std::uint8_t {
     eWorking         ///< Task is currently in progress.
 };
 
-NLOHMANN_JSON_SERIALIZE_ENUM(TaskStatus, {{TaskStatus::eCancelled, "cancelled"},
-                                          {TaskStatus::eCompleted, "completed"},
-                                          {TaskStatus::eFailed, "failed"},
-                                          {TaskStatus::eInputRequired, "input_required"},
-                                          {TaskStatus::eWorking, "working"}})
-
-/**
- * @brief Metadata about a related task.
- */
-struct RelatedTaskMetadata {
-    std::string id;                    ///< The ID of the related task.
-    std::optional<std::string> title;  ///< An optional title.
-};
-
-inline void to_json(nlohmann::json& j, const RelatedTaskMetadata& t) {
-    j = nlohmann::json{{"id", t.id}};
-    if (t.title) {
-        j["title"] = *t.title;
+inline void to_json(nlohmann::json& json_obj, const TaskStatus& status) {
+    switch (status) {
+        case TaskStatus::eCancelled:
+            json_obj = "cancelled";
+            return;
+        case TaskStatus::eCompleted:
+            json_obj = "completed";
+            return;
+        case TaskStatus::eFailed:
+            json_obj = "failed";
+            return;
+        case TaskStatus::eInputRequired:
+            json_obj = "input_required";
+            return;
+        case TaskStatus::eWorking:
+            json_obj = "working";
+            return;
     }
-}
-inline void from_json(const nlohmann::json& j, RelatedTaskMetadata& t) {
-    j.at("id").get_to(t.id);
-    if (detail::has_json_value(j, "title")) {
-        t.title = j.at("title").get<std::string>();
-    }
+    throw std::invalid_argument("Unknown task status");
 }
 
-/**
- * @brief Metadata for augmenting a request with task execution.
- */
-struct TaskMetadata {
-    std::optional<int64_t> ttl;  ///< Requested retention duration from creation in milliseconds.
-    std::optional<std::vector<RelatedTaskMetadata>> relatedTasks;  ///< Related tasks.
-};
-
-inline void to_json(nlohmann::json& json_obj, const TaskMetadata& meta) {
-    json_obj = nlohmann::json::object();
-    if (meta.ttl) {
-        json_obj["ttl"] = *meta.ttl;
-    }
-    if (meta.relatedTasks) {
-        json_obj["relatedTasks"] = *meta.relatedTasks;
-    }
-}
-
-inline void from_json(const nlohmann::json& json_obj, TaskMetadata& meta) {
-    if (detail::has_json_value(json_obj, "ttl")) {
-        meta.ttl = json_obj.at("ttl").get<int64_t>();
-    }
-    if (detail::has_json_value(json_obj, "relatedTasks")) {
-        meta.relatedTasks = json_obj.at("relatedTasks").get<std::vector<RelatedTaskMetadata>>();
+/// Not NLOHMANN_JSON_SERIALIZE_ENUM, which gives a value it does not know the first entry: a task
+/// from a server that sends something else would then read as cancelled.
+inline void from_json(const nlohmann::json& json_obj, TaskStatus& status) {
+    const auto& text = json_obj.get_ref<const std::string&>();
+    if (text == "cancelled") {
+        status = TaskStatus::eCancelled;
+    } else if (text == "completed") {
+        status = TaskStatus::eCompleted;
+    } else if (text == "failed") {
+        status = TaskStatus::eFailed;
+    } else if (text == "input_required") {
+        status = TaskStatus::eInputRequired;
+    } else if (text == "working") {
+        status = TaskStatus::eWorking;
+    } else {
+        throw std::invalid_argument("Unknown task status");
     }
 }
 

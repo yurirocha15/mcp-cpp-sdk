@@ -28,6 +28,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace mcp {
@@ -173,6 +174,15 @@ struct ConnectResult {
     std::vector<std::string> supportedVersions;
 };
 
+/** @brief Whether the client takes part in the tasks extension (see ClientOptions::tasks). */
+enum class ClientTaskMode : std::uint8_t {
+    /// The client does not declare the extension, so a server never answers it with a task.
+    eOff,
+    /// The client declares the extension with every request of a 2026-07-28 session, and
+    /// Client::call_tool() follows a task the server starts until it finishes.
+    eAuto,
+};
+
 /** @brief Client-wide runtime behavior. */
 struct ClientOptions {
     /**
@@ -233,6 +243,35 @@ struct ClientOptions {
      * discarded: there is nowhere left to report a failure of the reporting path itself.
      */
     std::function<void(const Error&)> on_protocol_error;
+    /**
+     * @brief Whether the client declares the tasks extension and follows its tasks; off unless set.
+     *
+     * @details With ClientTaskMode::eAuto, a 2026-07-28 session declares
+     * `io.modelcontextprotocol/tasks` in the capabilities of each request, and call_tool() that
+     * is answered with a task polls `tasks/get` until the task finishes, honoring the server's
+     * `pollIntervalMs`, answers the task's `inputRequests` with the registered elicitation,
+     * sampling and roots handlers, and returns the tool's result as if the call had run in the
+     * request. A task that failed throws the McpError it failed with, and one that was cancelled
+     * throws an McpError. start_tool() and task_handle() take part in the extension whatever this
+     * is set to. A legacy session has no tasks and ignores it.
+     */
+    ClientTaskMode tasks{ClientTaskMode::eOff};
+    /**
+     * @brief How often the client polls a task whose state names no interval. One second unless
+     * set; must be positive.
+     */
+    std::chrono::milliseconds task_poll_interval{std::chrono::seconds(1)};
+    /**
+     * @brief How long call_tool() and TaskHandle::wait() follow one task before they give up with
+     * g_REQUEST_TIMEOUT. Thirty minutes unless set; must be positive.
+     *
+     * @details A TaskHandle::wait() that gives up leaves the task running on the server, and the
+     * handle can pick it up again. A call_tool() that gives up, for this timeout or because a
+     * handler for the task's input requests failed, sends `tasks/cancel` for the task before it
+     * throws, since nothing else holds the task; the cancel is best effort. Each poll is limited
+     * by request_timeout like any other request, and call_tool() takes no per-request options.
+     */
+    std::chrono::milliseconds task_timeout{std::chrono::minutes(30)};
     /**
      * @brief Check the schemas of the tools the server lists.
      *
@@ -313,6 +352,9 @@ struct SubscriptionFilter {
     bool resourcesListChanged{false};  ///< notifications/resources/list_changed
     /// URIs for which notifications/resources/updated is wanted.
     std::vector<std::string> resourceSubscriptions;
+    /// Tasks for which notifications/tasks is wanted. Asking needs the tasks extension, which the
+    /// request then declares whatever ClientOptions::tasks is set to.
+    std::vector<std::string> taskIds;
 
     /// Filters are equal when they ask for the same notifications and the same URIs, in order.
     bool operator==(const SubscriptionFilter&) const = default;
@@ -333,6 +375,9 @@ inline void to_json(nlohmann::json& json_obj, const SubscriptionFilter& filter) 
     if (!filter.resourceSubscriptions.empty()) {
         json_obj["resourceSubscriptions"] = filter.resourceSubscriptions;
     }
+    if (!filter.taskIds.empty()) {
+        json_obj["taskIds"] = filter.taskIds;
+    }
 }
 
 /** @brief Reads a wire `notifications` object; a member that is absent asks for nothing. */
@@ -344,6 +389,9 @@ inline void from_json(const nlohmann::json& json_obj, SubscriptionFilter& filter
     if (const auto found = json_obj.find("resourceSubscriptions");
         found != json_obj.end() && !found->is_null()) {
         found->get_to(filter.resourceSubscriptions);
+    }
+    if (const auto found = json_obj.find("taskIds"); found != json_obj.end() && !found->is_null()) {
+        found->get_to(filter.taskIds);
     }
 }
 
@@ -429,6 +477,82 @@ class MCP_API Subscription {
 
    private:
     std::shared_ptr<detail::SubscriptionState> state_;
+};
+
+/**
+ * @brief A task a server started for a tool call (the tasks extension, protocol revision
+ * 2026-07-28), which the application can follow, answer and cancel.
+ *
+ * @details Client::start_tool() returns one when the server answers with a task, and
+ * Client::task_handle() makes one from a task id kept from an earlier session of the server. A
+ * copy refers to the same task. Every call needs the Client that made the handle to be alive and
+ * connected. Each request carries the extension in its capabilities, whatever
+ * ClientOptions::tasks is set to.
+ */
+class MCP_API TaskHandle {
+   public:
+    /** @brief A handle that is not attached to a task; every call on it throws McpError. */
+    TaskHandle() = default;
+
+    /** @brief For Client; applications do not call this. */
+    TaskHandle(std::shared_ptr<void> client, TaskData created, std::optional<std::string> tool);
+
+    /** @brief The task's identifier, which an application may keep to resume it later. */
+    [[nodiscard]] const std::string& id() const { return created_.taskId; }
+
+    /** @brief The state the task had when the server created it. */
+    [[nodiscard]] const TaskData& created() const { return created_; }
+
+    /**
+     * @brief Fetch the task's current state with `tasks/get`.
+     *
+     * @throws McpError With g_INVALID_PARAMS when the server no longer knows the task.
+     */
+    Task<DetailedTask> get(const RequestOptions& request_options = {}) const;
+
+    /**
+     * @brief Answer the requests of an `input_required` task with `tasks/update`.
+     *
+     * @param input_responses An object holding the answer to each request of the task's
+     *        `inputRequests` that is answered, under the same key.
+     * @param request_options Per-call options of the `tasks/update` request.
+     */
+    Task<void> update(const nlohmann::json& input_responses,
+                      const RequestOptions& request_options = {}) const;
+
+    /**
+     * @brief Ask the server to cancel the task with `tasks/cancel`.
+     *
+     * @details The server decides whether and when the task stops: the task may still finish
+     * with another status.
+     */
+    Task<void> cancel(const RequestOptions& request_options = {}) const;
+
+    /**
+     * @brief Poll the task until it has finished and return its final state.
+     *
+     * @details Polls as ClientOptions::task_poll_interval and the task's `pollIntervalMs` say, and
+     * answers the task's `inputRequests` with the handlers registered for elicitation, sampling
+     * and roots, each question once.
+     *
+     * @throws McpError With g_REQUEST_TIMEOUT after ClientOptions::task_timeout.
+     */
+    Task<DetailedTask> wait(const RequestOptions& request_options = {}) const;
+
+    /**
+     * @brief wait(), then the tool's result.
+     *
+     * @return The CallToolResult of a `completed` task, checked against the tool's output schema
+     *         as call_tool() does when the handle comes from start_tool().
+     * @throws McpError The error a `failed` task carries, or g_INVALID_REQUEST for a task that
+     *         was cancelled.
+     */
+    Task<CallToolResult> result(const RequestOptions& request_options = {}) const;
+
+   private:
+    std::shared_ptr<void> client_;
+    TaskData created_;
+    std::optional<std::string> tool_;
 };
 
 /**
@@ -589,6 +713,35 @@ class MCP_API Client {
     }
 
     /**
+     * @brief Call a tool, taking a task if the server starts one (protocol revision 2026-07-28).
+     *
+     * @details Declares the tasks extension for this call whatever ClientOptions::tasks is set
+     * to. The server decides whether the call becomes a task.
+     *
+     * @tparam Args A JsonSerializable type for the tool arguments.
+     * @return The tool's result when the server ran the call to its end, or a TaskHandle when it
+     *         answered with a task. A legacy session always gets the result.
+     * @throws StructuredContentError as call_tool() does for a result.
+     */
+    template <JsonSerializable Args>
+    Task<std::variant<CallToolResult, TaskHandle>> start_tool(const std::string& name,
+                                                              const Args& arguments) {
+        // [gcc11-sso: not-a-coroutine]
+        CallToolParams call_params;
+        call_params.name = name;
+        call_params.arguments = nlohmann::json(arguments);
+        return start_tool_with(std::move(call_params));
+    }
+
+    /**
+     * @brief A handle to a task by its id, for a task started earlier.
+     *
+     * @details The handle's created() holds nothing but the id until get() or wait() fetches the
+     * task's state.
+     */
+    [[nodiscard]] TaskHandle task_handle(std::string id);
+
+    /**
      * @brief List available tools from the server.
      *
      * Tools whose schemas cannot be used are left out (see ClientOptions::validate_tool_schemas).
@@ -740,7 +893,10 @@ class MCP_API Client {
     void on_roots_list(std::function<Task<ListRootsResult>(const nlohmann::json&)> handler);
 
    private:
+    friend class TaskHandle;
+
     Task<CallToolResult> call_tool_with(CallToolParams params);
+    Task<std::variant<CallToolResult, TaskHandle>> start_tool_with(CallToolParams params);
 
     // [gcc11-sso: string_view] nlohmann::json is heap-allocated; string_view is trivially copyable.
     template <typename Result>
