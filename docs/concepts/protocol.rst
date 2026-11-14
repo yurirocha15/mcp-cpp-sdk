@@ -186,6 +186,32 @@ Some details to know:
   anything. In any other 2026-07-28 request these ``ctx`` calls throw
   ``std::runtime_error``.
 
+Naming the questions
+~~~~~~~~~~~~~~~~~~~~
+
+The key a question travels under, in the result's ``inputRequests`` and in the
+client's ``inputResponses``, is chosen by the server. By default the SDK names
+the questions ``elicitation-1``, ``sampling-2``, ``roots-3`` and so on, counting
+the questions it names. A handler can choose the key itself with the
+``InputOptions`` argument of ``elicit()``, ``sample_llm()`` and
+``request_roots()``:
+
+.. code-block:: cpp
+
+   // Named first: GCC 11 mishandles a braced temporary inside a co_await.
+   const mcp::InputOptions options{.key = "user_name"};
+   auto answer = co_await ctx.elicit(params, options);
+
+The key works the same in stored and sealed mode; a retried sealed handler that
+asks the same named question again gets the answer it was given earlier. A key
+that is empty, that has the form of a generated name (``elicitation-``,
+``sampling-`` or ``roots-`` followed by digits) or that another question of the
+same request already used, in this round or an earlier one, makes the call
+throw ``std::invalid_argument`` before anything is asked. A named key cannot be
+reused within a request, so a handler that asks again must use a new key.
+Requests of protocol revisions before 2026-07-28 send each question as a
+request of its own and ignore the key.
+
 Sealed request state
 ~~~~~~~~~~~~~~~~~~~~
 

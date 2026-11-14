@@ -25,6 +25,7 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -110,6 +111,8 @@ class MrtrEntry {
     bool abandoned{false};
     bool park_scheduled{false};
     std::uint64_t next_key{0};
+    /// The keys handlers chose for their questions in this run, across rounds.
+    std::set<std::string> named_keys;
     /// The input requests of the current round, by key.
     std::map<std::string, nlohmann::json> requests;
     /// The client's responses of the last retry, by key; each is taken once.
@@ -119,9 +122,11 @@ class MrtrEntry {
     /// Sealed mode: the handler runs again from the start on each retry, and asks the earlier
     /// rounds answered return at once from `replay`.
     bool sealed{false};
-    /// Answers given in earlier rounds that the handler has not asked for again yet, by key.
+    /// Answers given in earlier rounds that the handler has not asked for again yet, by key, each
+    /// as `{"m": method of the question, "r": response}`. A question of another method is new.
     nlohmann::json replay = nlohmann::json::object();
-    /// Every answer the handler has taken in this run, by key, replayed or fresh.
+    /// Every answer the handler has taken in this run, by key, replayed or fresh, in the form of
+    /// `replay`.
     nlohmann::json answers = nlohmann::json::object();
     /// True while the handler re-executes what an earlier run already did (see
     /// Context::is_replay()).
@@ -187,9 +192,12 @@ nlohmann::json missing_client_capabilities(const nlohmann::json& client_capabili
 /// Asks the client for input on behalf of the handler of @p entry, and returns the client's
 /// response once a retry brings it. Runs on the entry's strand. Throws MrtrAbandoned when the
 /// request is abandoned, and also, after reporting it, when the client lacks the capability the
-/// input needs.
+/// input needs. @p chosen_key is the key the handler named the question with, or null for a
+/// generated one; a key that is empty, generated-looking or already used in this run throws
+/// std::invalid_argument.
 Task<nlohmann::json> mrtr_request_input(std::shared_ptr<MrtrEntry> entry, nlohmann::json method,
-                                        std::optional<nlohmann::json> params);
+                                        std::optional<nlohmann::json> params,
+                                        nlohmann::json chosen_key);
 
 /// Sends a notification of the handler of @p entry to the request that currently carries it. A
 /// progress notification is given that request's progress token, or dropped when it has none.
@@ -228,9 +236,9 @@ struct MrtrSealedState {
     std::string params_digest;
     /// Rounds that ended in an input_required result, this state's included.
     std::uint32_t round{0};
-    /// Keys of the input requests of the last round.
-    std::vector<std::string> asked;
-    /// The answers of the earlier rounds, by key.
+    /// The input requests of the last round: each key with the method of its question.
+    std::map<std::string, std::string> asked;
+    /// The answers of the earlier rounds, by key, each as `{"m": method, "r": response}`.
     nlohmann::json answers = nlohmann::json::object();
 };
 
