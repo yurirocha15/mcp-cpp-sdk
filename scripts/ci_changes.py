@@ -33,6 +33,7 @@ NO_JOB_PATTERNS = (
     ".devcontainer/*",
     ".github/CODEOWNERS",
     ".github/ISSUE_TEMPLATE/*",
+    ".github/codecov.yml",
     ".github/labels.yml",
     ".gitignore",
     ".pre-commit-config.yaml",
