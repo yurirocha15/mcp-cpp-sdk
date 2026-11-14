@@ -789,6 +789,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         detail::ToolResultMode result_mode;
         CompiledToolSchemas schemas;
         ToolTaskMode task_mode{ToolTaskMode::eNever};
+        ToolTaskPreparation task_preparation;
     };
 
     struct ResourceTemplateRegistration {
@@ -1250,8 +1251,27 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                    std::shared_ptr<const TaskRecord>& changed);
     /// Creates the task for a tools/call of a client that declared the tasks extension, starts its
     /// handler apart from the request, and returns the answer carrying the task's handle.
+    /// The task's handler is called with @p arguments.
     std::string start_task(const nlohmann::json& json_msg, const RequestScope& scope,
-                           const CallToolView& call, const boost::asio::any_io_executor& executor);
+                           const CallToolView& call, const nlohmann::json& arguments,
+                           const boost::asio::any_io_executor& executor);
+    /// Whether @p owner or the server as a whole already runs as many task handlers as the limits
+    /// allow. The caller holds task_runs_mutex.
+    bool task_limit_reached_locked(const std::string& owner) const;
+    /// Runs the task preparation of @p tool, through the middleware when there is any, in the
+    /// context of the request @p scope. Sets @p prepared to what the preparation returned; it
+    /// stays empty when the preparation did not run to its end, in which case the returned
+    /// result answers the call.
+    Task<nlohmann::json> prepare_task_call(const ToolRegistration& tool, CallToolParams params,
+                                           std::shared_ptr<std::atomic<bool>> cancelled,
+                                           std::optional<ProgressToken> progress_token,
+                                           const RequestScope& scope,
+                                           std::optional<TaskPreparation>& prepared);
+    /// Checks @p arguments against the input schema and calls the preparation of @p tool, and reports
+    /// what it threw like call_tool_handler().
+    Task<nlohmann::json> call_task_preparation(const ToolRegistration& tool, Context& ctx,
+                                               const nlohmann::json& arguments,
+                                               std::optional<TaskPreparation>& prepared);
     /// Runs the handler of a task and records its outcome.
     static Task<void> run_task_worker(std::shared_ptr<Impl> impl, std::shared_ptr<detail::TaskRun> run,
                                       CallToolParams params,
@@ -3178,6 +3198,18 @@ void Server::enable_tasks(TaskOptions options) {
     impl_->tasks_enabled.store(true, std::memory_order_release);
 }
 
+void Server::set_tool_task_preparation(const std::string& name, ToolTaskPreparation preparation) {
+    if (impl_->serving.load(std::memory_order_acquire)) {
+        throw std::logic_error(
+            "A tool's task preparation cannot change once the server serves requests");
+    }
+    const auto tool = impl_->tool_handlers.find(name);
+    if (tool == impl_->tool_handlers.end()) {
+        throw std::invalid_argument("Unknown tool: " + name);
+    }
+    tool->second.task_preparation = std::move(preparation);
+}
+
 void Server::set_tool_task_mode(const std::string& name, ToolTaskMode mode) {
     if (impl_->serving.load(std::memory_order_acquire)) {
         throw std::logic_error("A tool's task mode cannot change once the server serves requests");
@@ -3550,6 +3582,69 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(
     co_return std::move(handler_result);
 }
 
+Task<nlohmann::json> Server::Impl::call_task_preparation(const ToolRegistration& tool, Context& ctx,
+                                                         const nlohmann::json& arguments,
+                                                         std::optional<TaskPreparation>& prepared) {
+    // The preparation sees only arguments that conform to the input schema, as a handler does.
+    if (tool_validation.validate_arguments) {
+        if (auto rejection = argument_rejection(tool.schemas.input, arguments)) {
+            argument_rejections.fetch_add(1, std::memory_order_relaxed);
+            co_return std::move(*rejection);
+        }
+    }
+    const TypeErasedHandler run = [&tool, &prepared](
+                                      Context& inner_ctx,
+                                      const nlohmann::json& inner_arguments) -> Task<nlohmann::json> {
+        auto preparation = co_await tool.task_preparation(inner_ctx, inner_arguments);
+        // Arguments, not a result, leave the middleware an empty but well-formed result.
+        nlohmann::json answer =
+            nlohmann::json(preparation.result ? *preparation.result : CallToolResult{});
+        prepared = std::move(preparation);
+        co_return std::move(answer);
+    };
+    try {
+        co_return co_await call_on_handler_strand(run, ctx, arguments);
+    } catch (const std::exception& error) {
+        co_return nlohmann::json(
+            make_tool_error_result(detail::sanitize_for_diagnostics(error.what())));
+    } catch (...) {
+        co_return nlohmann::json(make_tool_error_result("Tool handler failed"));
+    }
+}
+
+Task<nlohmann::json> Server::Impl::prepare_task_call(const ToolRegistration& tool,
+                                                     CallToolParams params,
+                                                     std::shared_ptr<std::atomic<bool>> cancelled,
+                                                     std::optional<ProgressToken> progress_token,
+                                                     const RequestScope& scope,
+                                                     std::optional<TaskPreparation>& prepared) {
+    auto ctx = make_context(std::move(cancelled), std::move(progress_token), scope.meta,
+                            scope.session_request, scope.notifications, scope.principal, scope.mrtr,
+                            scope.related_request, scope.inline_input);
+    if (middlewares.empty()) {
+        co_return co_await call_task_preparation(tool, ctx, params.arguments, prepared);
+    }
+
+    // Like the middleware around a tool's handler, this runs outside the catch of the preparation,
+    // so a middleware failure surfaces as a JSON-RPC error and a rejection as an isError result.
+    TypeErasedHandler wrapped = [this, &tool, &prepared](
+                                    Context& inner_ctx,
+                                    const nlohmann::json& full_params) -> Task<nlohmann::json> {
+        auto call_params = full_params.get<CallToolParams>();
+        co_return co_await call_task_preparation(tool, inner_ctx, call_params.arguments, prepared);
+    };
+    auto handler = build_middleware_chain(std::move(wrapped));
+    nlohmann::json params_json = params;
+    nlohmann::json answer;
+    try {
+        answer = co_await handler(ctx, params_json);
+    } catch (const detail::MiddlewareRejection& rejection) {
+        prepared.reset();
+        answer = nlohmann::json(make_tool_error_result(rejection.what()));
+    }
+    co_return std::move(answer);
+}
+
 Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& json_msg,
                                                        const RequestScope& scope) {
     const auto call = view_call_tool_params(json_msg);
@@ -3572,27 +3667,62 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
         }
     }
 
+    const auto progress_token_of = [&call]() -> std::optional<ProgressToken> {
+        try {
+            if (call.meta != nullptr && call.meta->contains("progressToken")) {
+                return call.meta->at("progressToken").get<ProgressToken>();
+            }
+        } catch (const nlohmann::json::exception& error) {
+            throw InvalidParamsError("Invalid tools/call params: " + std::string(error.what()));
+        } catch (const std::invalid_argument& error) {
+            throw InvalidParamsError("Invalid tools/call params: " + std::string(error.what()));
+        }
+        return std::nullopt;
+    };
+
     if (tasks_enabled.load(std::memory_order_acquire) &&
         tool->second.task_mode != ToolTaskMode::eNever) {
         if (declares_extension(scope.meta.get(), g_TASKS_EXTENSION)) {
             auto executor = co_await boost::asio::this_coro::executor;
-            co_return start_task(json_msg, scope, call, executor);
+            if (!tool->second.task_preparation) {
+                co_return start_task(json_msg, scope, call, *call.arguments, executor);
+            }
+            {
+                // A client at its limit is told before it answers the preparation's questions.
+                std::lock_guard runs_lock(task_runs_mutex);
+                if (task_limit_reached_locked(scope.principal ? *scope.principal : std::string())) {
+                    co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+                                              "Too many tasks for this principal");
+                }
+            }
+            auto prepared_progress = progress_token_of();
+            auto prepared_cancelled =
+                scope.cancelled ? scope.cancelled : std::make_shared<std::atomic<bool>>(false);
+            CallToolParams prepared_params{
+                *call.name, *call.arguments,
+                call.meta != nullptr ? std::optional<nlohmann::json>(*call.meta) : std::nullopt};
+            std::optional<TaskPreparation> prepared;
+            nlohmann::json prepared_answer =
+                co_await prepare_task_call(tool->second, std::move(prepared_params), prepared_cancelled,
+                                           std::move(prepared_progress), scope, prepared);
+            if (prepared && !prepared->result) {
+                if (prepared_cancelled->load(std::memory_order_relaxed)) {
+                    // A cancelled request creates no task.
+                    co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+                                              "Request cancelled");
+                }
+                co_return start_task(json_msg, scope, call, prepared->arguments, executor);
+            }
+            finish_tool_result(tool->second, *call.name, prepared_answer, true);
+            co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope,
+                                       std::move(prepared_answer));
         }
         if (tool->second.task_mode == ToolTaskMode::eRequired) {
             co_return missing_tasks_extension_wire(json_msg.at("id").get<RequestId>());
         }
     }
 
-    std::optional<ProgressToken> progress_token;
-    try {
-        if (call.meta != nullptr && call.meta->contains("progressToken")) {
-            progress_token = call.meta->at("progressToken").get<ProgressToken>();
-        }
-    } catch (const nlohmann::json::exception& error) {
-        throw InvalidParamsError("Invalid tools/call params: " + std::string(error.what()));
-    } catch (const std::invalid_argument& error) {
-        throw InvalidParamsError("Invalid tools/call params: " + std::string(error.what()));
-    }
+    auto progress_token = progress_token_of();
 
     auto cancelled = scope.cancelled ? scope.cancelled : std::make_shared<std::atomic<bool>>(false);
     nlohmann::json handler_result;
@@ -4164,18 +4294,22 @@ std::string Server::Impl::serve_task_request(const nlohmann::json& json_msg, std
     return make_result_wire(id.get<RequestId>(), scope, nlohmann::json::object());
 }
 
+bool Server::Impl::task_limit_reached_locked(const std::string& owner) const {
+    const auto owned = static_cast<std::size_t>(
+        std::count_if(task_runs.begin(), task_runs.end(),
+                      [&owner](const auto& entry) { return entry.second->owner == owner; }));
+    return owned >= task_options.max_tasks_per_principal || task_runs.size() >= task_options.max_tasks;
+}
+
 std::string Server::Impl::start_task(const nlohmann::json& json_msg, const RequestScope& scope,
-                                     const CallToolView& call,
+                                     const CallToolView& call, const nlohmann::json& arguments,
                                      const boost::asio::any_io_executor& executor) {
     const std::string owner = scope.principal ? *scope.principal : std::string();
     // The limits count handlers that have not returned, not stored tasks: a cancelled or expired
     // task keeps its slot until its handler ends. The check, the creation and the registration
     // happen under one lock, so concurrent requests cannot pass the limit together.
     std::unique_lock runs_lock(task_runs_mutex);
-    const auto owned = static_cast<std::size_t>(
-        std::count_if(task_runs.begin(), task_runs.end(),
-                      [&owner](const auto& entry) { return entry.second->owner == owner; }));
-    if (owned >= task_options.max_tasks_per_principal || task_runs.size() >= task_options.max_tasks) {
+    if (task_limit_reached_locked(owner)) {
         return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
                                "Too many tasks for this principal");
     }
@@ -4206,7 +4340,7 @@ std::string Server::Impl::start_task(const nlohmann::json& json_msg, const Reque
     runs_lock.unlock();
 
     CallToolParams params{
-        *call.name, *call.arguments,
+        *call.name, arguments,
         call.meta != nullptr ? std::optional<nlohmann::json>(*call.meta) : std::nullopt};
     // The answer is complete before the handler can start, so it always describes a task that has
     // not run.
