@@ -8,7 +8,7 @@ directory.
 Overview
 --------
 
-The SDK builds nine core examples plus 15 specialized feature examples:
+The SDK builds nine core examples plus 16 specialized feature examples:
 
 1. **server_stdio** - Full-featured MCP server over stdio
 2. **server_simple** - Minimal MCP server over stdio
@@ -23,7 +23,7 @@ The SDK builds nine core examples plus 15 specialized feature examples:
 Feature Examples
 ----------------
 
-The ``examples/features/`` directory contains 15 specialized examples. They use
+The ``examples/features/`` directory contains 16 specialized examples. They use
 small, self-contained setups to demonstrate individual capabilities; some use
 in-memory loopback and others exercise local network transports.
 
@@ -44,6 +44,8 @@ in-memory loopback and others exercise local network transports.
     per-request log levels and cache hints
 15. **legacy_protocols** - The older protocol revisions: pinning a version, ``ServerProtocolPolicy``,
     ``ping()`` and ``resources/subscribe``
+16. **stdio_launch** - ``StdioClientTransport`` and ``StdioClientSession``: launching a server process,
+    capturing its standard error, shutting it down and restarting it
 
 These examples are non-interactive and designed to be run as part of a
 test suite or to understand specific API patterns.
