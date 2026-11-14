@@ -489,12 +489,14 @@ if(BUILD_TESTING)
   if(ENABLE_COVERAGE)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
       # The libraries too, so that the report covers src/ as well as the
-      # headers. Whatever links them also links the coverage runtime.
+      # headers. Whatever links them also links the coverage runtime. Counters
+      # are updated atomically because the tests run the SDK on many threads.
+      set(COVERAGE_FLAGS --coverage -fprofile-update=atomic -O0 -g)
       foreach(sdk_target IN LISTS MCP_CPP_SDK_INSTALL_TARGETS)
-        target_compile_options(${sdk_target} PRIVATE --coverage -O0 -g)
+        target_compile_options(${sdk_target} PRIVATE ${COVERAGE_FLAGS})
         target_link_options(${sdk_target} PUBLIC --coverage)
       endforeach()
-      target_compile_options(mcp-sdk-tests PRIVATE --coverage -O0 -g)
+      target_compile_options(mcp-sdk-tests PRIVATE ${COVERAGE_FLAGS})
       target_link_options(mcp-sdk-tests PRIVATE --coverage)
     endif()
   endif()
