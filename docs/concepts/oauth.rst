@@ -218,6 +218,167 @@ checks that its ``client_id`` equals the URL, which stay the application's
 responsibility. Stored registrations are kept per authorization server, so a change of
 server never reuses another server's ``client_id`` or secret.
 
+.. _oauth-machine-to-machine:
+
+Machine-to-machine authorization
+--------------------------------
+
+Two optional extensions authorize a client without a person at a browser. Both
+are implemented as ``Authenticator`` classes that take the place of
+``OAuthAuthorizationManager`` under ``OAuthClientTransport``, so discovery, the
+fetch policy, the token store and the replay of a refused request work as
+described above. Both parse the challenge, read the protected resource metadata
+it names (or the well-known location), require that the document's ``resource``
+identify the configured ``server_url`` and that the authorization server's
+metadata come from the issuer the document names, and request the token with
+the RFC 8707 ``resource`` indicator, all before any credential is sent. They
+store the token under ``server_url``, like the manager, and keep a token per
+authorization server issuer for ``authorize()``. They run no consent step.
+
+Each declares itself to the peer with a helper on the capabilities, as
+:doc:`extensions` describes: ``declare_client_credentials_support()`` and
+``declare_enterprise_authorization_support()`` accept a ``ClientCapabilities``
+or a ``Server``.
+
+Neither authenticator coalesces concurrent callers: two requests refused at the
+same moment each run their own discovery and token request. Both leave the
+fetch policy as the only gate on the origins contacted, so the policy has to
+list every origin involved, including an identity provider's.
+
+.. _oauth-client-credentials:
+
+Client credentials
+~~~~~~~~~~~~~~~~~~
+
+``io.modelcontextprotocol/oauth-client-credentials`` uses the OAuth 2.0 client
+credentials grant for automated systems. The client holds pre-registered
+credentials and no dynamic client registration is involved.
+``mcp::auth::ClientCredentialsAuthenticator`` runs the grant:
+
+.. code-block:: cpp
+
+   #include <mcp/auth/client_credentials.hpp>
+
+   mcp::auth::ClientCredentialsConfig config;
+   config.server_url = "https://mcp.example.com/mcp";
+   config.client.client_id = "ci-pipeline";
+   config.client.client_secret = read_secret("ci-pipeline");
+   config.policy.allowed_origins = {"https://mcp.example.com", "https://auth.example.com"};
+
+   auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+   auto authenticator = std::make_shared<mcp::auth::ClientCredentialsAuthenticator>(
+       executor, store, std::move(config));
+
+   // Optional: obtain a token before the first request instead of after a 401.
+   co_await authenticator->authorize();
+
+   auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, authenticator);
+
+The extension names two ways to authenticate at the token endpoint, both in
+``ClientAuthentication``:
+
+* ``private_key_jwt`` (recommended): set ``client.private_key_jwt`` to a PEM
+  private key, an RSA key of at least 2048 bits (``RS256`` or ``PS256``) or an EC key on P-256
+  (``ES256``). Each request carries a fresh assertion with the claims ``iss``
+  and ``sub`` (the client identifier), ``aud`` (the authorization server's issuer
+  unless ``audience`` is set), ``iat``, ``exp`` (60 seconds later unless ``lifetime``
+  is set) and a random ``jti``, signed with an algorithm the key allows and the
+  server's ``token_endpoint_auth_signing_alg_values_supported`` lists. The form
+  holds ``client_assertion_type`` and ``client_assertion`` and no ``client_id``.
+* A client secret, sent in the HTTP Basic header (``client_secret_basic``) or in
+  the form body (``client_secret_post``).
+
+When ``client.method`` is unset, the method follows from the credentials and
+the ``token_endpoint_auth_methods_supported`` the server publishes:
+``private_key_jwt`` first, then ``client_secret_basic``, then
+``client_secret_post``. A server that publishes no list is assumed to accept
+``client_secret_basic``, as RFC 8414 says. If the server lists
+``grant_types_supported`` without ``client_credentials``, the grant is refused
+before a credential is sent. The scope is ``config.scope``, else the
+challenge's ``scope``, else every scope in the resource's
+``scopes_supported``, the scope selection strategy of the core authorization
+specification, which the extension defers to. A server that lists scopes it
+only grants to some clients should therefore name the scope in its challenge or
+the client should set ``config.scope``. A step-up
+challenge (``insufficient_scope``) requests its scope together with what the
+earlier grant covered.
+
+The grant issues no refresh token, so ``try_refresh_token()`` requests a new
+token from the authorization server of the last grant. It returns ``false``
+when there was none or the request failed, and the transport then falls back to
+the challenge.
+
+.. _oauth-enterprise-managed-authorization:
+
+Enterprise-managed authorization
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``io.modelcontextprotocol/enterprise-managed-authorization`` lets an
+organization's identity provider (IdP) control which MCP servers its users'
+clients may use, with no per-server consent. A client that signed the user in
+through the IdP exchanges the identity assertion it holds for an Identity
+Assertion JWT Authorization Grant (ID-JAG) at the IdP, then presents the ID-JAG
+as a JWT bearer grant to the MCP server's authorization server.
+``mcp::auth::EnterpriseAuthorizationAuthenticator`` runs both steps. Signing
+the user in and keeping the ID token fresh are the application's work; it
+supplies the assertion through a callback:
+
+.. code-block:: cpp
+
+   #include <mcp/auth/enterprise_authorization.hpp>
+
+   mcp::auth::EnterpriseAuthorizationConfig config;
+   config.server_url = "https://mcp.chat.example/";
+   config.idp_token_endpoint = "https://acme.idp.example/oauth2/token";
+   config.idp_client.client_id = "2ec954a1d60620116d36d9ceb7";
+   config.idp_client.client_secret = read_secret("idp");
+   config.client.client_id = "https://client.example.com/client.json";  // a client ID metadata document
+   config.policy.allowed_origins = {"https://mcp.chat.example", "https://auth.chat.example",
+                                    "https://acme.idp.example"};
+
+   auto authenticator = std::make_shared<mcp::auth::EnterpriseAuthorizationAuthenticator>(
+       executor, store, std::move(config),
+       []() -> mcp::Task<mcp::auth::IdentityAssertion> {
+           co_return mcp::auth::IdentityAssertion{current_id_token()};  // an OpenID Connect ID token
+       });
+
+For each token the authenticator:
+
+#. discovers the protected resource and its authorization server, and refuses a
+   server whose ``authorization_grant_profiles_supported`` omits
+   ``urn:ietf:params:oauth:grant-profile:id-jag``, before the callback runs (a
+   server that publishes no such list is tried);
+#. calls the callback, which returns the token and its type URN
+   (``IdentityAssertion::token_type`` is an ID token by default; a refresh token
+   obtained for a SAML assertion has ``g_REFRESH_TOKEN_TYPE``);
+#. posts an RFC 8693 token exchange to ``idp_token_endpoint`` with
+   ``requested_token_type=urn:ietf:params:oauth:token-type:id-jag``, the
+   authorization server's issuer as ``audience``, the protected resource's
+   identifier as ``resource``, and the scope, and requires that the IdP answer
+   with an ``issued_token_type`` of ``id-jag``;
+#. posts the ID-JAG as the ``assertion`` of a
+   ``urn:ietf:params:oauth:grant-type:jwt-bearer`` request to the authorization
+   server's token endpoint.
+
+A token is cached per authorization server and per identity assertion (the
+SHA-256 of the callback's token and type), so ``authorize()`` reuses it only
+while the callback returns the assertion the token was issued for.
+
+``idp_client`` is how the client authenticates at the IdP; with a secret and no
+``method`` it is sent in the request body, as in the extension's example, and a
+private key's assertion names the IdP's token endpoint as its audience unless
+``audience`` is set.
+``client`` is how it authenticates at the authorization server, with the same
+choices as above; a client with neither a secret nor a key sends only its
+``client_id``, which fits a client ID metadata document URL used as the
+identifier. At the authorization server, ``client_secret_basic`` puts the
+credentials in the header and nothing in the body, and ``private_key_jwt`` also
+sends ``client_id``.
+
+The access token the authorization server issues is bound to the resource the
+ID-JAG names; the SDK does not inspect the ID-JAG. ``try_refresh_token()`` runs
+the exchange again and so calls the callback again.
+
 .. _oauth-protecting-a-server:
 
 Protecting a server
