@@ -346,6 +346,8 @@ jobs:
         max-size: 1G
 
     - name: Build and Test with coverage
+      env:
+        MCP_REQUIRE_TWIN_LOOPBACK: '1'
       run: python scripts/build.py --coverage --test --quiet
 
     - name: Upload coverage to Codecov
