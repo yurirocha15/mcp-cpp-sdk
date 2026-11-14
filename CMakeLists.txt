@@ -489,14 +489,13 @@ if(BUILD_TESTING)
   if(ENABLE_COVERAGE)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
       # The libraries too, so that the report covers src/ as well as the
-      # headers.
-      foreach(coverage_target mcp-sdk-tests mcp-cpp-sdk-shared
-                              mcp-cpp-sdk-static)
-        if(TARGET ${coverage_target})
-          target_compile_options(${coverage_target} PRIVATE --coverage -O0 -g)
-          target_link_options(${coverage_target} PRIVATE --coverage)
-        endif()
+      # headers. Whatever links them also links the coverage runtime.
+      foreach(sdk_target IN LISTS MCP_CPP_SDK_INSTALL_TARGETS)
+        target_compile_options(${sdk_target} PRIVATE --coverage -O0 -g)
+        target_link_options(${sdk_target} PUBLIC --coverage)
       endforeach()
+      target_compile_options(mcp-sdk-tests PRIVATE --coverage -O0 -g)
+      target_link_options(mcp-sdk-tests PRIVATE --coverage)
     endif()
   endif()
 
