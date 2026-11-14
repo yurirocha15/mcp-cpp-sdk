@@ -8,6 +8,9 @@
 /// - The client returning ElicitResult with action=accept and form values
 /// - The server using the elicited values to complete the tool execution
 /// - ConnectResult::era, and how the same ctx.elicit() call runs in each era
+/// - ElicitationSchema, which builds the form from typed fields (string with a format, titled
+///   single-select, multi-select, number, boolean) and decodes the accepted content
+/// - The client checking its answer against the requested schema before it is sent
 ///
 /// In a 2026-07-28 session the server cannot send a request to the client while it serves
 /// another. When the tool calls ctx.elicit(), the server answers the tools/call with an
@@ -32,8 +35,35 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace asio = boost::asio;
+
+namespace {
+
+/// The form the tool asks, built from typed fields. A function-local static keeps its strings out
+/// of the tool's coroutine frame.
+const mcp::ElicitationSchema& contact_form() {
+    static const mcp::ElicitationSchema form = [] {
+        using namespace mcp;
+        ElicitationSchema built;
+        built.add("name", StringSchema{.title = "Full Name", .minLength = 1}, true)
+            .add("email", StringSchema{.title = "Email Address", .format = "email"}, true)
+            .add("priority",
+                 TitledEnumSchema{.title = "Priority Level",
+                                  .options = {{"low", "Low"}, {"medium", "Medium"}, {"high", "High"}},
+                                  .defaultValue = "medium"})
+            .add("topics",
+                 MultiSelectEnumSchema{
+                     .title = "Topics", .minItems = 1, .enumValues = {"bugs", "features", "docs"}})
+            .add("age", NumberSchema{.integer = true, .title = "Age", .minimum = 18})
+            .add("subscribe", BooleanSchema{.title = "Send me updates", .defaultValue = false});
+        return built;
+    }();
+    return form;
+}
+
+}  // namespace
 
 int main() {
     try {
@@ -63,20 +93,12 @@ int main() {
                 std::string task = args.at("task").get<std::string>();
                 std::cout << "Tool: Starting request_user_info for task: " << task << "\n";
 
+                const auto& form = contact_form();
+
                 ElicitRequestFormParams form_params;
                 form_params.mode = "form";
                 form_params.message = "Please provide your contact information";
-                form_params.requestedSchema = nlohmann::json{
-                    {"type", "object"},
-                    {"properties",
-                     nlohmann::json{
-                         {"name", nlohmann::json{{"type", "string"}, {"title", "Full Name"}}},
-                         {"email", nlohmann::json{{"type", "string"}, {"title", "Email Address"}}},
-                         {"priority",
-                          nlohmann::json{{"type", "string"},
-                                         {"title", "Priority Level"},
-                                         {"enum", nlohmann::json::array({"low", "medium", "high"})}}}}},
-                    {"required", nlohmann::json::array({"name", "email"})}};
+                form_params.requestedSchema = form;
 
                 std::cout << "Tool: Sending elicitation request\n";
                 ElicitRequestParams params = form_params;
@@ -92,9 +114,17 @@ int main() {
                 if (result.action == ElicitAction::eAccept) {
                     std::cout << "Tool: User accepted the form\n";
                     if (result.content) {
+                        // Context::elicit() has checked the content against the schema; decode()
+                        // reads it as typed values.
+                        const auto values = form.decode(*result.content);
+                        const auto name = values.get<std::string>("name").value_or("");
+                        const auto topics = values.get<std::vector<std::string>>("topics").value_or(
+                            std::vector<std::string>{});
                         std::cout << "Tool: Form data: " << result.content->dump() << "\n";
-                        co_return make_result("Accepted: task=" + task +
-                                              " info=" + result.content->dump());
+                        co_return make_result(
+                            "Accepted: task=" + task + " name=" + name +
+                            " priority=" + values.get<std::string>("priority").value_or("-") +
+                            " topics=" + std::to_string(topics.size()));
                     }
                     co_return make_result("Accepted: task=" + task + " (no form data)");
                 } else if (result.action == ElicitAction::eDecline) {
@@ -162,9 +192,13 @@ int main() {
                             std::cout << "Client: Form schema: " << form_params.requestedSchema.dump()
                                       << "\n";
 
-                            nlohmann::json form_data = {{"name", "Alice Johnson"},
-                                                        {"email", "alice@example.com"},
-                                                        {"priority", "high"}};
+                            nlohmann::json form_data = {
+                                {"name", "Alice Johnson"},
+                                {"email", "alice@example.com"},
+                                {"priority", "high"},
+                                {"topics", nlohmann::json::array({"bugs", "docs"})},
+                                {"age", 36},
+                                {"subscribe", true}};
 
                             std::cout << "Client: Submitting form with data: " << form_data.dump()
                                       << "\n";

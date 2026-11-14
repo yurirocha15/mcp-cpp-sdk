@@ -513,13 +513,22 @@ TEST(JsonPeerInputMatrix, ElicitationCompleteNotificationParams) {
     }
 }
 
-TEST(JsonPeerInputMatrix, EnumSchema) {
-    const json baseline = json::parse(R"json({"type":"x"})json");
+TEST(JsonPeerInputMatrix, EnumOption) {
+    const json baseline = json::parse(R"json({"const":"x","title":"x"})json");
     static const FieldExpect fields[] = {
-        {"description", R"json("x")json", 0, false, false, true, false},
-        {"enum", R"json(["x"])json", 0, false, false, true, false},
-        {"title", R"json("x")json", 0, false, false, true, false},
-        {"type", R"json("x")json", 0, true, true, true, false},
+        {"const", R"json("x")json", 0, true, true, true, false},
+        {"title", R"json("x")json", 0, true, true, true, false},
+    };
+    for (const auto& f : fields) {
+        SCOPED_TRACE(std::string("EnumOption.") + f.key);
+        check_field<mcp::EnumOption>(baseline, f);
+    }
+}
+
+TEST(JsonPeerInputMatrix, EnumSchema) {
+    const json baseline = json::parse(R"json({"enum":["x"]})json");
+    static const FieldExpect fields[] = {
+        {"enum", R"json(["x"])json", 0, true, true, true, false},
     };
     for (const auto& f : fields) {
         SCOPED_TRACE(std::string("EnumSchema.") + f.key);
@@ -1303,6 +1312,17 @@ TEST(JsonPeerInputMatrix, TextResourceContents) {
     }
 }
 
+TEST(JsonPeerInputMatrix, TitledEnumSchema) {
+    const json baseline = json::parse(R"json({"oneOf":[{"const":"x","title":"x"}]})json");
+    static const FieldExpect fields[] = {
+        {"oneOf", R"json([{"const":"x","title":"x"}])json", 0, true, true, true, false},
+    };
+    for (const auto& f : fields) {
+        SCOPED_TRACE(std::string("TitledEnumSchema.") + f.key);
+        check_field<mcp::TitledEnumSchema>(baseline, f);
+    }
+}
+
 TEST(JsonPeerInputMatrix, Tool) {
     const json baseline = json::parse(R"json({"name":"x","inputSchema":{}})json");
     static const FieldExpect fields[] = {
@@ -1430,7 +1450,7 @@ TEST(JsonPeerInputMatrix, UpdateTaskRequestParams) {
 // suite is worth; a hand-written suite of the same size is only worth what its
 // author thought to write down.
 TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
-    constexpr int types = 97;
+    constexpr int types = 99;
     constexpr int fields = 265;
     constexpr int modes = 4;
     constexpr int generated_cases = 1060;
@@ -1465,6 +1485,7 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   ElicitResult
 //   ElicitationCompleteNotification
 //   ElicitationCompleteNotificationParams
+//   EnumOption
 //   EnumSchema
 //   Error
 //   GetPromptRequest
@@ -1527,6 +1548,7 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   SubscribeRequest
 //   TextContent
 //   TextResourceContents
+//   TitledEnumSchema
 //   Tool
 //   ToolAnnotations
 //   ToolChoice
@@ -1537,6 +1559,7 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   UnsupportedProtocolVersionData
 //   UpdateTaskRequestParams
 // Types deliberately not in the matrix, and why:
+//   BooleanSchema: no baseline document could be synthesised
 //   CompleteParams: no baseline document could be synthesised
 //   CompleteReference: std::variant; from_json dispatches on the 'type' discriminator
 //   ContentBlock: std::variant; from_json dispatches on the 'type' discriminator
@@ -1546,17 +1569,22 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
 //   ElicitAction: an enum; ElicitResult.action covers its decoder
 //   ElicitRequest: its params are the ElicitRequestParams variant
 //   ElicitRequestParams: std::variant; from_json dispatches on mode
+//   ElicitationSchema: no baseline document could be synthesised
 //   EmbeddedResource: no baseline document could be synthesised
 //   InitializeRequest: no baseline document could be synthesised
 //   InitializeResult: no baseline document could be synthesised
 //   JSONRPCMessage: std::variant; from_json dispatches on which key is present
 //   JSONRPCResponse: std::variant; from_json dispatches on which key is present
-//   PrimitiveSchemaDefinition: base of EnumSchema; exercised through its derived type
+//   MultiSelectEnumSchema: its values sit inside `items`; the elicitation schema tests cover it
+//   NumberSchema: no baseline document could be synthesised
+//   PrimitiveSchemaDefinition: std::variant; from_json dispatches on type and the enum keywords
 //   PromptMessage: no baseline document could be synthesised
 //   RequestId: std::variant of string and integer; it has no fields to vary
 //   ResourceContents: std::variant; from_json dispatches on text vs blob
 //   SamplingMessage: no baseline document could be synthesised
 //   SamplingMessageContent: std::variant; from_json accepts a block or a list of blocks
+//   StringSchema: no baseline document could be synthesised
 //   TaskData: covered by TasksWire.TaskDataDecodesItsMembersStrictly
 //   TaskStatus: covered by TasksWire.TaskStatusDecodesOnlyTheSpecificationsStatuses
 //   TaskStatusNotification: covered by TasksWire.StatusNotificationDecodesItsMembersStrictly
+//   TitledMultiSelectEnumSchema: its options sit inside `items`; the elicitation schema tests cover it

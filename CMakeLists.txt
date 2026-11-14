@@ -103,6 +103,7 @@ set(MCP_CPP_SDK_SOURCES
     src/core/serialized_transport_writer.cpp
     src/protocol/native_schema.cpp
     src/protocol/schema.cpp
+    src/protocol/elicitation.cpp
     src/protocol/tools.cpp
     src/auth/challenge.cpp
     src/auth/client_identity.cpp
@@ -385,10 +386,12 @@ if(BUILD_TESTING)
       test/client/client_modern_test.cpp
       test/client/client_mrtr_test.cpp
       test/client/client_tasks_test.cpp
+      test/client/client_elicitation_test.cpp
       test/client/client_features_test.cpp
       test/client/client_notifications_test.cpp
       test/core/capabilities_extensions_test.cpp
       test/core/concepts_test.cpp
+      test/core/elicitation_schema_test.cpp
       test/core/core_test.cpp
       test/core/fifo_test.cpp
       test/core/json_dump_test.cpp
