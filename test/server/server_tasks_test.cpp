@@ -1,6 +1,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "mcp/auth/oauth.hpp"
 #include "mcp/protocol/extensions.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
@@ -20,6 +21,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -143,6 +145,8 @@ class TasksTest : public ::testing::Test {
     std::atomic<int> creates_at_start_{-1};
     std::atomic<bool> saw_cancel_{false};
     std::atomic<int> middleware_runs_{0};
+    std::atomic<int> preparations_{0};
+    std::atomic<int> prepared_handler_runs_{0};
     std::thread::id handler_thread_;
     std::mutex handler_thread_mutex_;
 
@@ -241,12 +245,45 @@ class TasksTest : public ::testing::Test {
                                          co_await ctx.log(mcp::LoggingLevel::eError, "logged");
                                          co_return json{{"logged", true}};
                                      });
+        server->add_tool<json, json>("prepared", "A task whose preparation asks first",
+                                     json{{"type", "object"}}, [this](json args) -> mcp::Task<json> {
+                                         ++prepared_handler_runs_;
+                                         co_return json{{"args", std::move(args)}};
+                                     });
+        server->add_tool<json, json>(
+            "prepared_strict", "A prepared task that needs an integer n",
+            json{{"type", "object"},
+                 {"properties", {{"n", {{"type", "integer"}}}}},
+                 {"required", {"n"}}},
+            [](json args) -> mcp::Task<json> { co_return json{{"args", std::move(args)}}; });
         server->add_tool<json, json>("sync_progress_outside", "Calls the sync progress outside a task",
                                      json{{"type", "object"}},
                                      [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
                                          co_return json{{"reported", ctx.report_progress_sync(1)}};
                                      });
         return server;
+    }
+
+    /// Registers @p preparation for the tool "prepared", which may become a task in @p mode.
+    void prepare(mcp::ToolTaskPreparation preparation,
+                 mcp::ToolTaskMode mode = mcp::ToolTaskMode::eAuto) {
+        server_->set_tool_task_preparation("prepared", std::move(preparation));
+        prepared_mode_ = mode;
+    }
+
+    mcp::ToolTaskMode prepared_mode_ = mcp::ToolTaskMode::eAuto;
+
+    /// A preparation that asks for a name under the key "user_name" and hands it to the task.
+    mcp::ToolTaskPreparation asking_preparation() {
+        return [this](mcp::Context& ctx, const json& arguments) -> mcp::Task<mcp::TaskPreparation> {
+            ++preparations_;
+            const mcp::InputOptions options{.key = "user_name"};
+            const auto answer = co_await ctx.elicit(form_elicitation("Your name?"), options);
+            mcp::TaskPreparation preparation;
+            preparation.arguments = arguments;
+            preparation.arguments["name"] = answer.content.value_or(json::object()).value("name", "");
+            co_return preparation;
+        };
     }
 
     void enable(mcp::TaskOptions options = {}) {
@@ -259,6 +296,7 @@ class TasksTest : public ::testing::Test {
             server_->set_tool_task_mode(name, mcp::ToolTaskMode::eAuto);
         }
         server_->set_tool_task_mode("required", mcp::ToolTaskMode::eRequired);
+        server_->set_tool_task_mode("prepared", prepared_mode_);
     }
 
     std::vector<std::string> warnings_;
@@ -1218,6 +1256,365 @@ TEST_F(TasksTest, DestroyingTheServerCancelsARunningTask) {
         const bool stopped = co_await wait_until([this] { return saw_cancel_.load(); });
         EXPECT_TRUE(stopped);
     });
+}
+
+// ---- task preparation --------------------------------------------------------------------------
+
+/// @p request retried with @p state and @p responses under a new id.
+json retried(json request, const json& id, const json& state, json responses) {
+    request["id"] = id;
+    request["params"]["requestState"] = state;
+    request["params"]["inputResponses"] = std::move(responses);
+    return request;
+}
+
+/// Asks for a name before the task exists, and checks the rounds. @p server answers both rounds.
+void expect_prepared_call_rounds(const json& first, const json& second) {
+    ASSERT_TRUE(first.contains("result")) << first;
+    EXPECT_EQ(first["result"]["resultType"], "input_required") << first;
+    EXPECT_TRUE(first["result"]["inputRequests"].contains("user_name")) << first;
+    EXPECT_FALSE(first["result"].contains("taskId")) << first;
+    ASSERT_TRUE(second.contains("result")) << second;
+    EXPECT_EQ(second["result"]["resultType"], "task") << second;
+    EXPECT_TRUE(second["result"]["taskId"].is_string()) << second;
+    EXPECT_FALSE(second["result"].contains("requestState")) << second;
+    EXPECT_FALSE(second["result"].contains("inputRequests")) << second;
+}
+
+TEST_F(TasksTest, ATaskToolCanAskForInputBeforeItsTaskExists) {
+    prepare(asking_preparation());
+    enable();
+    json first;
+    json second;
+    json completed;
+    run([&]() -> mcp::Task<void> {
+        const auto capabilities = tasks_client({{"elicitation", json::object()}});
+        const auto request = call_tool(1, "prepared", capabilities, {{"topic", "x"}});
+        first = co_await send(request);
+        const json answers = {{"user_name", accept("Luca")}};
+        const auto retry = retried(request, 2, first["result"]["requestState"], answers);
+        second = co_await send(retry);
+        completed =
+            co_await task_in_status(second["result"].value("taskId", ""), "completed", capabilities);
+    });
+    expect_prepared_call_rounds(first, second);
+    EXPECT_EQ(completed["result"]["structuredContent"]["args"],
+              (json{{"topic", "x"}, {"name", "Luca"}}))
+        << completed;
+    EXPECT_EQ(prepared_handler_runs_.load(), 1);
+}
+
+TEST_F(TasksTest, ASealedRequestCanAskForInputBeforeItsTaskExists) {
+    mcp::MrtrOptions mrtr;
+    mrtr.state_mode = mcp::MrtrStateMode::eSealed;
+    mrtr.sealing_keys = {std::string(32, 'a')};
+    server_->set_mrtr_options(mrtr);
+    prepare(asking_preparation());
+    enable();
+    json first;
+    json second;
+    json completed;
+    run([&]() -> mcp::Task<void> {
+        const auto capabilities = tasks_client({{"elicitation", json::object()}});
+        const auto request = call_tool(1, "prepared", capabilities, {{"topic", "x"}});
+        first = co_await send(request);
+        const json answers = {{"user_name", accept("Luca")}};
+        const auto retry = retried(request, 2, first["result"]["requestState"], answers);
+        second = co_await send(retry);
+        completed =
+            co_await task_in_status(second["result"].value("taskId", ""), "completed", capabilities);
+    });
+    expect_prepared_call_rounds(first, second);
+    EXPECT_EQ(completed["result"]["structuredContent"]["args"],
+              (json{{"topic", "x"}, {"name", "Luca"}}))
+        << completed;
+    EXPECT_EQ(prepared_handler_runs_.load(), 1);
+}
+
+TEST_F(TasksTest, ATaskPreparationCanAnswerTheCallWithoutATask) {
+    prepare([this](mcp::Context&, const json&) -> mcp::Task<mcp::TaskPreparation> {
+        ++preparations_;
+        mcp::TaskPreparation preparation;
+        mcp::CallToolResult result;
+        result.content.push_back(mcp::TextContent{.text = "answered at once"});
+        preparation.result = std::move(result);
+        co_return preparation;
+    });
+    auto store = std::make_shared<CountingStore>();
+    mcp::TaskOptions options;
+    options.store = store;
+    enable(std::move(options));
+    json response;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "prepared");
+        response = co_await send(request);
+    });
+    ASSERT_TRUE(response.contains("result")) << response;
+    EXPECT_EQ(response["result"]["resultType"], "complete") << response;
+    EXPECT_EQ(response["result"]["content"][0]["text"], "answered at once") << response;
+    EXPECT_EQ(store->creates.load(), 0);
+    EXPECT_EQ(prepared_handler_runs_.load(), 0);
+}
+
+TEST_F(TasksTest, ATaskPreparationIsNotCalledForAClientWithoutTheExtension) {
+    prepare(asking_preparation());
+    enable();
+    json response;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "prepared", json::object(), {{"topic", "x"}});
+        response = co_await send(request);
+    });
+    ASSERT_TRUE(response.contains("result")) << response;
+    EXPECT_EQ(response["result"]["resultType"], "complete") << response;
+    EXPECT_EQ(response["result"]["structuredContent"]["args"], (json{{"topic", "x"}})) << response;
+    EXPECT_EQ(preparations_.load(), 0);
+}
+
+TEST_F(TasksTest, ATaskPreparationIsNotCalledWhenARequiredToolRefusesTheClient) {
+    prepare(asking_preparation(), mcp::ToolTaskMode::eRequired);
+    enable();
+    json response;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "prepared", json::object());
+        response = co_await send(request);
+    });
+    ASSERT_TRUE(response.contains("error")) << response;
+    EXPECT_EQ(response["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY);
+    EXPECT_EQ(preparations_.load(), 0);
+}
+
+// The refusal comes from the bundled auth middleware, which refuses a request without a token:
+// the exception it throws for that is internal to the library.
+TEST_F(TasksTest, MiddlewareCanRejectATaskPreparation) {
+    server_->use(
+        mcp::auth::make_auth_middleware([](const std::string&) -> mcp::Task<bool> { co_return true; }));
+    prepare(asking_preparation());
+    auto store = std::make_shared<CountingStore>();
+    mcp::TaskOptions options;
+    options.store = store;
+    enable(std::move(options));
+    json response;
+    run([&]() -> mcp::Task<void> {
+        const auto capabilities = tasks_client({{"elicitation", json::object()}});
+        const auto request = call_tool(1, "prepared", capabilities);
+        response = co_await send(request);
+    });
+    ASSERT_TRUE(response.contains("result")) << response;
+    EXPECT_EQ(response["result"]["resultType"], "complete") << response;
+    EXPECT_EQ(response["result"]["isError"], true) << response;
+    EXPECT_EQ(response["result"]["content"][0]["text"], "Unauthorized: missing Bearer token")
+        << response;
+    EXPECT_EQ(preparations_.load(), 0);
+    EXPECT_EQ(store->creates.load(), 0);
+}
+
+TEST_F(TasksTest, MiddlewareCanAnswerATaskPreparationItself) {
+    server_->use([](mcp::Context&, const json&, mcp::TypeErasedHandler) -> mcp::Task<json> {
+        co_return json{{"content", json::array({{{"type", "text"}, {"text", "from middleware"}}})}};
+    });
+    prepare(asking_preparation());
+    auto store = std::make_shared<CountingStore>();
+    mcp::TaskOptions options;
+    options.store = store;
+    enable(std::move(options));
+    json response;
+    run([&]() -> mcp::Task<void> {
+        const auto capabilities = tasks_client({{"elicitation", json::object()}});
+        const auto request = call_tool(1, "prepared", capabilities);
+        response = co_await send(request);
+    });
+    ASSERT_TRUE(response.contains("result")) << response;
+    EXPECT_EQ(response["result"]["resultType"], "complete") << response;
+    EXPECT_EQ(response["result"]["content"][0]["text"], "from middleware") << response;
+    EXPECT_EQ(preparations_.load(), 0);
+    EXPECT_EQ(store->creates.load(), 0);
+}
+
+TEST_F(TasksTest, MiddlewareCanRewriteTheArgumentsOfATaskPreparation) {
+    server_->use(
+        [this](mcp::Context& ctx, const json& params, mcp::TypeErasedHandler next) -> mcp::Task<json> {
+            middleware_runs_.fetch_add(1);
+            json rewritten = params;
+            rewritten["arguments"]["rewritten"] = true;
+            co_return co_await next(ctx, rewritten);
+        });
+    json seen;
+    prepare([this, &seen](mcp::Context&, const json& arguments) -> mcp::Task<mcp::TaskPreparation> {
+        ++preparations_;
+        seen = arguments;
+        mcp::TaskPreparation preparation;
+        preparation.arguments = arguments;
+        co_return preparation;
+    });
+    enable();
+    json completed;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "prepared", tasks_client(), {{"topic", "x"}});
+        const auto response = co_await send(request);
+        completed = co_await task_in_status(response["result"].value("taskId", ""), "completed");
+    });
+    EXPECT_EQ(seen, (json{{"topic", "x"}, {"rewritten", true}}));
+    EXPECT_EQ(completed["result"]["structuredContent"]["args"], seen) << completed;
+    // The preparation and the task's handler each pass through the middleware.
+    EXPECT_EQ(middleware_runs_.load(), 2);
+}
+
+TEST_F(TasksTest, MiddlewareSeesAWellFormedResultWhenATaskPreparationReturnsArguments) {
+    std::vector<json> seen;
+    server_->use(
+        [&seen](mcp::Context& ctx, const json& params, mcp::TypeErasedHandler next) -> mcp::Task<json> {
+            auto result = co_await next(ctx, params);
+            seen.push_back(result);
+            co_return result;
+        });
+    prepare([this](mcp::Context&, const json& arguments) -> mcp::Task<mcp::TaskPreparation> {
+        ++preparations_;
+        mcp::TaskPreparation preparation;
+        preparation.arguments = arguments;
+        co_return preparation;
+    });
+    enable();
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "prepared", tasks_client(), {{"topic", "x"}});
+        const auto response = co_await send(request);
+        co_await task_in_status(response["result"].value("taskId", ""), "completed");
+    });
+    ASSERT_FALSE(seen.empty());
+    EXPECT_EQ(seen.front(), json(mcp::CallToolResult{})) << seen.front();
+    EXPECT_TRUE(seen.front().contains("content")) << seen.front();
+}
+
+TEST_F(TasksTest, APrincipalAtTheTaskLimitIsAnsweredBeforeTheTaskPreparationRuns) {
+    prepare(asking_preparation());
+    mcp::TaskOptions options;
+    options.max_tasks_per_principal = 1;
+    enable(options);
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const json capabilities = tasks_client({{"elicitation", json::object()}});
+        co_await start("gated", capabilities, "alice");
+        const auto again = call_tool(2, "prepared", capabilities);
+        second = co_await send(again, "alice");
+        release_ = true;
+    });
+    ASSERT_TRUE(second.contains("error")) << second;
+    EXPECT_EQ(second["error"]["code"], mcp::g_INTERNAL_ERROR) << second;
+    EXPECT_EQ(preparations_.load(), 0);
+}
+
+TEST_F(TasksTest, ARequestCancelledDuringATaskPreparationCreatesNoTask) {
+    auto cancelled = std::make_shared<std::atomic<bool>>(false);
+    prepare([this, cancelled](mcp::Context&, const json& arguments) -> mcp::Task<mcp::TaskPreparation> {
+        ++preparations_;
+        cancelled->store(true);
+        mcp::TaskPreparation preparation;
+        preparation.arguments = arguments;
+        co_return preparation;
+    });
+    auto store = std::make_shared<CountingStore>();
+    mcp::TaskOptions options;
+    options.store = store;
+    enable(std::move(options));
+    json response;
+    run([&]() -> mcp::Task<void> {
+        mcp::RequestContext context;
+        context.cancelled = cancelled;
+        const json request = call_tool(1, "prepared", tasks_client(), {{"topic", "x"}});
+        const auto wire = co_await server_->dispatch_request_direct(request, std::move(context));
+        response = json::parse(wire);
+    });
+    ASSERT_TRUE(response.contains("error")) << response;
+    EXPECT_EQ(response["error"]["message"], "Request cancelled") << response;
+    EXPECT_EQ(preparations_.load(), 1);
+    EXPECT_EQ(store->creates.load(), 0);
+    EXPECT_EQ(prepared_handler_runs_.load(), 0);
+}
+
+TEST_F(TasksTest, ATaskPreparationThatThrowsAnswersLikeAToolThatThrows) {
+    prepare([this](mcp::Context&, const json&) -> mcp::Task<mcp::TaskPreparation> {
+        ++preparations_;
+        throw std::runtime_error("the preparation failed");
+        co_return mcp::TaskPreparation{};
+    });
+    auto store = std::make_shared<CountingStore>();
+    mcp::TaskOptions options;
+    options.store = store;
+    enable(std::move(options));
+    json response;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "prepared");
+        response = co_await send(request);
+    });
+    ASSERT_TRUE(response.contains("result")) << response;
+    EXPECT_EQ(response["result"]["resultType"], "complete") << response;
+    EXPECT_EQ(response["result"]["isError"], true) << response;
+    EXPECT_EQ(response["result"]["content"][0]["text"], "the preparation failed") << response;
+    EXPECT_EQ(store->creates.load(), 0);
+}
+
+TEST_F(TasksTest, ATaskPreparationCannotAskWhatTheClientDidNotDeclare) {
+    prepare(asking_preparation());
+    enable();
+    json response;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "prepared", tasks_client());
+        response = co_await send(request);
+    });
+    ASSERT_TRUE(response.contains("error")) << response;
+    EXPECT_EQ(response["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << response;
+    EXPECT_EQ(response["error"]["data"]["requiredCapabilities"],
+              (json{{"elicitation", {{"form", json::object()}}}}));
+}
+
+TEST_F(TasksTest, ATaskPreparationSeesOnlyArgumentsThatConformToTheInputSchema) {
+    server_->set_tool_task_preparation(
+        "prepared_strict", [this](mcp::Context&, const json&) -> mcp::Task<mcp::TaskPreparation> {
+            ++preparations_;
+            co_return mcp::TaskPreparation{};
+        });
+    auto store = std::make_shared<CountingStore>();
+    mcp::TaskOptions options;
+    options.store = store;
+    enable(std::move(options));
+    server_->set_tool_task_mode("prepared_strict", mcp::ToolTaskMode::eAuto);
+    json rejected;
+    json synchronous;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "prepared_strict", tasks_client(), {{"n", "text"}});
+        rejected = co_await send(request);
+        const auto plain = call_tool(2, "prepared_strict", json::object(), {{"n", "text"}});
+        synchronous = co_await send(plain);
+    });
+    ASSERT_TRUE(rejected.contains("result")) << rejected;
+    EXPECT_EQ(rejected["result"]["resultType"], "complete") << rejected;
+    EXPECT_EQ(rejected["result"]["isError"], true) << rejected;
+    EXPECT_EQ(rejected["result"]["content"], synchronous["result"]["content"]);
+    EXPECT_EQ(preparations_.load(), 0);
+    EXPECT_EQ(store->creates.load(), 0);
+    EXPECT_EQ(server_->tool_validation_stats().argument_rejections, 2u);
+}
+
+TEST_F(TasksTest, ATaskPreparationNeedsAKnownTool) {
+    EXPECT_THROW(server_->set_tool_task_preparation(
+                     "missing",
+                     [](mcp::Context&, const json&) -> mcp::Task<mcp::TaskPreparation> {
+                         co_return mcp::TaskPreparation{};
+                     }),
+                 std::invalid_argument);
+}
+
+TEST_F(TasksTest, ATaskPreparationCannotChangeOnceTheServerServes) {
+    json answer;
+    run([&]() -> mcp::Task<void> {
+        const auto discover = make_discover_request(1);
+        answer = co_await send(discover);
+    });
+    EXPECT_THROW(server_->set_tool_task_preparation(
+                     "prepared",
+                     [](mcp::Context&, const json&) -> mcp::Task<mcp::TaskPreparation> {
+                         co_return mcp::TaskPreparation{};
+                     }),
+                 std::logic_error);
 }
 
 // ---- notifications over subscriptions/listen ---------------------------------------------------
