@@ -1,4 +1,5 @@
-// Project fixture for the official MCP conformance runner's 2025-11-25 baseline.
+// Project fixture for the official MCP conformance runner: the 2025-11-25 baseline and the diagnostic
+// tools that the 2026-07-28 scenarios call.
 
 #include <mcp/server/server.hpp>
 #include <mcp/server/skills.hpp>
@@ -6,6 +7,7 @@
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/experimental/awaitable_operators.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/signal_set.hpp>
 #include <charconv>
@@ -254,16 +256,226 @@ void register_schema_tools(mcp::Server& server) {
     register_elicitation_schema_tool(server, "test_elicitation_sep1034_defaults", defaults_schema());
     register_elicitation_schema_tool(server, "test_elicitation_sep1330_enums", enums_schema());
 
-    const nlohmann::json schema_2020_12 = {
-        {"$schema", "https://json-schema.org/draft/2020-12/schema"},
-        {"type", "object"},
-        {"$defs",
-         {{"address", {{"type", "object"}, {"properties", {{"street", {{"type", "string"}}}}}}}}},
-        {"properties", {{"address", {{"$ref", "#/$defs/address"}}}}},
-        {"additionalProperties", false}};
+    // The keywords SEP-2106 allows next to the root `type`: composition, conditional and $anchor.
+    const auto schema_2020_12 = nlohmann::json::parse(R"json({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "$defs": {
+            "address": {
+                "$anchor": "addressDef",
+                "type": "object",
+                "properties": {"street": {"type": "string"}, "city": {"type": "string"}}
+            }
+        },
+        "properties": {
+            "name": {"type": "string"},
+            "address": {"$ref": "#/$defs/address"},
+            "contactMethod": {"type": "string", "enum": ["phone", "email"]},
+            "phone": {"type": "string"},
+            "email": {"type": "string"}
+        },
+        "allOf": [{"anyOf": [{"required": ["phone"]}, {"required": ["email"]}]}],
+        "if": {"properties": {"contactMethod": {"const": "phone"}}, "required": ["contactMethod"]},
+        "then": {"required": ["phone"]},
+        "else": {"required": ["email"]},
+        "additionalProperties": false
+    })json");
     server.add_tool<nlohmann::json, mcp::CallToolResult>(
         "json_schema_2020_12_tool", "Tool with JSON Schema 2020-12 features", schema_2020_12,
         [](const nlohmann::json&) { return mcp::make_tool_text_result("Schema preserved"); });
+}
+
+// --- Tools the 2026-07-28 scenarios call ------------------------------------------------------
+//
+// Under 2026-07-28 a handler's question (Context::elicit(), sample_llm(), request_roots()) reaches the
+// client in an input_required result and the handler resumes when the client retries, so these tools
+// are ordinary handlers.
+
+nlohmann::json single_string_schema(std::string_view property) {
+    return {{"type", "object"},
+            {"properties", {{std::string(property), {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({std::string(property)})}};
+}
+
+mcp::ElicitRequestParams form_request(std::string message, std::string_view property) {
+    mcp::ElicitRequestFormParams request;
+    request.message = std::move(message);
+    request.requestedSchema = single_string_schema(property);
+    return mcp::ElicitRequestParams{std::move(request)};
+}
+
+mcp::CreateMessageRequestParams sampling_request(std::string text, int max_tokens) {
+    mcp::SamplingMessage message;
+    message.role = mcp::Role::eUser;
+    message.content = mcp::SamplingMessageContentBlock{text_content(std::move(text))};
+
+    mcp::CreateMessageRequestParams request;
+    request.messages.emplace_back(std::move(message));
+    request.maxTokens = max_tokens;
+    return request;
+}
+
+/// The string the client answered for `property`, or an empty string.
+std::string answered_text(const mcp::ElicitResult& answer, std::string_view property) {
+    if (!answer.content) {
+        return {};
+    }
+    const auto found = answer.content->find(std::string(property));
+    return found != answer.content->end() && found->is_string() ? found->get<std::string>()
+                                                                : std::string();
+}
+
+void register_input_required_tools(mcp::Server& server) {
+    const auto empty_schema = empty_object_schema();
+
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "test_input_required_result_elicitation", "Ask one elicitation question", empty_schema,
+        [](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+            const auto question = form_request("What is your name?", "name");
+            const auto answer = co_await context.elicit(question);
+            co_return mcp::make_tool_text_result("Hello, " + answered_text(answer, "name") + "!");
+        });
+
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "test_input_required_result_sampling", "Ask one sampling question", empty_schema,
+        [](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+            const auto question = sampling_request("What is the capital of France?", 100);
+            (void)co_await context.sample_llm(question);
+            co_return mcp::make_tool_text_result("Sampling response received");
+        });
+
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "test_input_required_result_list_roots", "Ask for the client's roots", empty_schema,
+        [](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+            const auto roots = co_await context.request_roots();
+            co_return mcp::make_tool_text_result("Received " + std::to_string(roots.roots.size()) +
+                                                 " root(s)");
+        });
+
+    for (const char* name :
+         {"test_input_required_result_request_state", "test_input_required_result_tampered_state"}) {
+        server.add_tool<nlohmann::json, mcp::CallToolResult>(
+            name, "Ask a question that carries requestState", empty_schema,
+            [](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+                const auto question = form_request("Please confirm", "ok");
+                (void)co_await context.elicit(question);
+                co_return mcp::make_tool_text_result("state-ok");
+            });
+    }
+
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "test_input_required_result_multiple_inputs",
+        "Ask an elicitation, a sampling and a roots question together", empty_schema,
+        [](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+            using namespace boost::asio::experimental::awaitable_operators;
+            const auto elicitation = form_request("What is your name?", "name");
+            const auto sampling = sampling_request("Generate a greeting", 50);
+            auto ask_name = context.elicit(elicitation);
+            auto ask_greeting = context.sample_llm(sampling);
+            auto ask_roots = context.request_roots();
+            (void)co_await (std::move(ask_name) && std::move(ask_greeting) && std::move(ask_roots));
+            co_return mcp::make_tool_text_result("All inputs received");
+        });
+
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "test_input_required_result_multi_round", "Ask two questions one after the other", empty_schema,
+        [](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+            const auto first = form_request("Step 1: What is your name?", "name");
+            const auto name = co_await context.elicit(first);
+            const auto second = form_request("Step 2: What is your favorite color?", "color");
+            const auto color = co_await context.elicit(second);
+            co_return mcp::make_tool_text_result(answered_text(name, "name") + " likes " +
+                                                 answered_text(color, "color"));
+        });
+
+    // Asks only what the request's declared client capabilities can answer.
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "test_input_required_result_capabilities", "Ask what the client declared it can answer",
+        empty_schema, [](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+            const auto* meta = context.request_meta();
+            if (meta != nullptr && meta->clientCapabilities.sampling) {
+                const auto question = sampling_request("What is the capital of France?", 100);
+                (void)co_await context.sample_llm(question);
+            } else if (meta != nullptr && meta->clientCapabilities.elicitation) {
+                const auto question = form_request("What is your name?", "name");
+                (void)co_await context.elicit(question);
+            } else if (meta != nullptr && meta->clientCapabilities.roots) {
+                (void)co_await context.request_roots();
+            }
+            co_return mcp::make_tool_text_result("Capabilities respected");
+        });
+
+    mcp::Prompt prompt;
+    prompt.name = "test_input_required_result_prompt";
+    prompt.description = "A prompt that asks for context";
+    server.add_prompt<mcp::GetPromptRequestParams, mcp::GetPromptResult>(
+        prompt,
+        [](mcp::Context& context, mcp::GetPromptRequestParams) -> mcp::Task<mcp::GetPromptResult> {
+            const auto question = form_request("What context should the prompt use?", "context");
+            const auto answer = co_await context.elicit(question);
+            mcp::GetPromptResult result;
+            result.messages.emplace_back(
+                prompt_text("Prompt context: " + answered_text(answer, "context")));
+            co_return result;
+        });
+}
+
+void register_stateless_tools(mcp::Server& server) {
+    const auto empty_schema = empty_object_schema();
+
+    // Needs a capability the request does not declare, so the server answers with
+    // MissingRequiredClientCapabilityError.
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "test_missing_capability", "Needs the sampling capability", empty_schema,
+        [](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+            const auto question = sampling_request("Needs sampling", 10);
+            (void)co_await context.sample_llm(question);
+            co_return mcp::make_tool_text_result("Sampling answered");
+        });
+
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "test_streaming_elicitation", "Asks one elicitation question", empty_schema,
+        [](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+            const auto question = form_request("What is your name?", "name");
+            (void)co_await context.elicit(question);
+            co_return mcp::make_tool_text_result("Elicitation answered");
+        });
+
+    // Nothing is sent unless the request sets a log level.
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "test_logging_tool", "Logs without asking for a level", empty_schema,
+        [](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+            co_await context.log_info("Tool execution started");
+            co_await context.log(mcp::LoggingLevel::eError, "Tool reports an error level message");
+            co_return mcp::make_tool_text_result("Logging complete");
+        });
+
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "test_trigger_tool_change", "Announces a change of the tool list", empty_schema,
+        [&server](nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+            co_await server.notify_tools_list_changed();
+            co_return mcp::make_tool_text_result("Tool list change announced");
+        });
+
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "test_trigger_prompt_change", "Announces a change of the prompt list", empty_schema,
+        [&server](nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
+            co_await server.notify_prompts_list_changed();
+            co_return mcp::make_tool_text_result("Prompt list change announced");
+        });
+
+    // Parameters mirrored into the Mcp-Param-Region and Mcp-Param-Priority headers.
+    const nlohmann::json header_schema = {
+        {"type", "object"},
+        {"properties",
+         {{"region", {{"type", "string"}, {"x-mcp-header", "Region"}}},
+          {"priority", {{"type", "integer"}, {"x-mcp-header", "Priority"}}}}},
+        {"required", nlohmann::json::array({"region"})}};
+    server.add_tool<nlohmann::json, mcp::CallToolResult>(
+        "test_custom_headers", "Mirrors parameters into headers", header_schema,
+        [](const nlohmann::json& arguments) {
+            return mcp::make_tool_text_result("Region: " + arguments.value("region", std::string()));
+        });
 }
 
 void register_resources(mcp::Server& server) {
@@ -472,6 +684,8 @@ void configure_server(mcp::Server& server) {
     register_content_tools(server);
     register_context_tools(server);
     register_schema_tools(server);
+    register_input_required_tools(server);
+    register_stateless_tools(server);
     register_resources(server);
     register_prompts(server);
     register_completion(server);
