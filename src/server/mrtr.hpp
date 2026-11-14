@@ -12,6 +12,8 @@
 
 #include <mcp/protocol/request_meta.hpp>
 
+#include "../detail/sealed_state.hpp"
+
 #include <atomic>
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -26,6 +28,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace mcp::detail {
 
@@ -34,6 +37,16 @@ namespace mcp::detail {
 class MrtrAbandoned : public std::runtime_error {
    public:
     MrtrAbandoned() : std::runtime_error("the request waiting for client input was abandoned") {}
+};
+
+/// A completion handler kept without being invoked. Destroying it destroys the coroutines that
+/// wait for it, running no more of their code.
+class HeldHandler {
+   public:
+    HeldHandler() = default;
+    HeldHandler(const HeldHandler&) = delete;
+    HeldHandler& operator=(const HeldHandler&) = delete;
+    virtual ~HeldHandler() = default;
 };
 
 /// Counters the entries of one server share with it.
@@ -65,7 +78,19 @@ class MrtrEntry {
         std::string wire;
         nlohmann::json requests;
         nlohmann::json missing_capabilities;
+        /// The answers the handler took in this run, by key (sealed mode).
+        nlohmann::json answers;
     };
+
+    /// Keeps @p handler, the completion handler of a question, until `held` is cleared.
+    template <typename Handler>
+    void hold(Handler handler) {
+        struct Holder final : HeldHandler {
+            explicit Holder(Handler&& value) : handler(std::move(value)) {}
+            Handler handler;
+        };
+        held.push_back(std::make_unique<Holder>(std::move(handler)));
+    }
 
     MrtrEntry(const boost::asio::any_io_executor& executor,
               std::shared_ptr<std::atomic<bool>> cancelled, std::shared_ptr<MrtrCounters> counters);
@@ -91,6 +116,19 @@ class MrtrEntry {
     nlohmann::json responses = nlohmann::json::object();
     nlohmann::json missing_capabilities = nlohmann::json::object();
     std::string wire;
+    /// Sealed mode: the handler runs again from the start on each retry, and asks the earlier
+    /// rounds answered return at once from `replay`.
+    bool sealed{false};
+    /// Answers given in earlier rounds that the handler has not asked for again yet, by key.
+    nlohmann::json replay = nlohmann::json::object();
+    /// Every answer the handler has taken in this run, by key, replayed or fresh.
+    nlohmann::json answers = nlohmann::json::object();
+    /// True while the handler re-executes what an earlier run already did (see
+    /// Context::is_replay()).
+    std::shared_ptr<std::atomic<bool>> replaying = std::make_shared<std::atomic<bool>>(false);
+    /// Sealed mode: the completion handlers of the questions that wait for the server to release
+    /// the handler. Destroyed, not invoked, on release.
+    std::vector<std::unique_ptr<HeldHandler>> held;
     /// The handler finished while parked, so the next retry gets `wire` instead of resuming it.
     bool answered_while_parked{false};
 
@@ -175,6 +213,42 @@ Task<void> mrtr_resume(std::shared_ptr<MrtrEntry> entry, nlohmann::json response
 /// Abandons the handler: its pending and later requests for input throw MrtrAbandoned. Safe from
 /// any thread.
 void mrtr_abandon(const std::shared_ptr<MrtrEntry>& entry);
+
+/// What a sealed `requestState` carries. Sealed with sealed_state::Codec, so only a server with the
+/// key ring can write or read it.
+struct MrtrSealedState {
+    /// Unique to the state, for the single-use hook.
+    std::string id;
+    /// Milliseconds since the Unix epoch after which the state is refused.
+    std::int64_t expires_ms{0};
+    /// Digest of the principal that made the request.
+    std::string principal_digest;
+    std::string method;
+    /// mrtr_params_digest() of the originating request.
+    std::string params_digest;
+    /// Rounds that ended in an input_required result, this state's included.
+    std::uint32_t round{0};
+    /// Keys of the input requests of the last round.
+    std::vector<std::string> asked;
+    /// The answers of the earlier rounds, by key.
+    nlohmann::json answers = nlohmann::json::object();
+};
+
+/// The shortest `requestState` limit (MrtrOptions::max_state_bytes) that set_mrtr_options() accepts.
+/// A state that carries one question, a principal digest and a parameters digest seals to fewer
+/// characters than this, so a smaller limit would fail every question.
+inline constexpr std::size_t g_min_state_chars = 512;
+
+/// A digest of a principal for MrtrSealedState::principal_digest; empty for an unknown one.
+std::string mrtr_principal_digest(std::string_view principal);
+
+/// Seals @p state; an empty string when it does not fit the codec's size cap.
+std::string mrtr_seal_state(const sealed_state::Codec& codec, const MrtrSealedState& state);
+
+/// Opens @p token; nothing when it was not sealed by a key of the ring, is malformed or has
+/// outgrown the size cap.
+std::optional<MrtrSealedState> mrtr_open_state(const sealed_state::Codec& codec,
+                                               std::string_view token);
 
 /// A digest of the parameters that identify a request across its retries: everything but `_meta`,
 /// `inputResponses` and `requestState`.
