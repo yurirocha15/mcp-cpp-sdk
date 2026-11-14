@@ -514,10 +514,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
   tool, list-change triggers, a tool with `x-mcp-header` parameters and the
   SEP-2106 keywords in `json_schema_2020_12_tool`; the client runs the
   request-metadata, request-state, standard and custom header, invalid-tool,
-  `$ref` and schema-preservation scenarios. The conformance client speaks the
-  protocol version the runner names in `MCP_CONFORMANCE_PROTOCOL_VERSION`.
+  `$ref` and schema-preservation scenarios. The conformance server also
+  serves the tools of the tasks scenarios through `Server::enable_tasks()` and
+  names the question of `test_input_required_result_elicitation` `user_name`,
+  and the client runs the Skills host scenarios. The conformance client speaks
+  the protocol version the runner names in `MCP_CONFORMANCE_PROTOCOL_VERSION`.
   `conformance/run_alpha.sh` runs the alpha runner with
-  `--requirements 2026-07-28`, and a CI job runs it on every change that
+  `--requirements 2026-07-28` and, one by one, the Skills scenarios that
+  requirement set lacks, and a CI job runs it on every change that
   reads the fixtures and uploads the results. The job cannot fail the workflow:
   the gate stays the pinned `0.1.16` run against `2025-11-25`.
 
