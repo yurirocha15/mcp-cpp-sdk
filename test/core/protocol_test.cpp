@@ -1244,6 +1244,16 @@ TEST(ProtocolTest, RequestIdIntegerSerialization) {
     EXPECT_EQ(std::get<int64_t>(deserialized.value), 7);
 }
 
+// An id above INT64_MAX could not be echoed back as it was sent.
+TEST(ProtocolTest, RequestIdAboveInt64Throws) {
+    EXPECT_THROW(nlohmann::json::parse("9223372036854775808").get<mcp::RequestId>(),
+                 std::invalid_argument);
+    EXPECT_THROW(nlohmann::json::parse("18446744073709551615").get<mcp::RequestId>(),
+                 std::invalid_argument);
+    const auto largest = nlohmann::json::parse("9223372036854775807").get<mcp::RequestId>();
+    EXPECT_EQ(nlohmann::json(largest).dump(), "9223372036854775807");
+}
+
 TEST(ProtocolTest, RequestIdInvalidTypeThrows) {
     nlohmann::json j = 3.14;
     EXPECT_THROW(j.get<mcp::RequestId>(), std::invalid_argument);
@@ -1432,11 +1442,14 @@ TEST(ProtocolTest, JSONRPCErrorResponseSerialization) {
     no_id.error = {.code = mcp::g_PARSE_ERROR, .message = "Parse error"};
 
     nlohmann::json j2 = no_id;
-    EXPECT_TRUE(j2.contains("id"));
-    EXPECT_TRUE(j2["id"].is_null());
+    EXPECT_FALSE(j2.contains("id"));
 
     auto deserialized2 = j2.get<mcp::JSONRPCErrorResponse>();
     EXPECT_FALSE(deserialized2.id.has_value());
+
+    // A peer following JSON-RPC 2.0 sends a null id instead; it reads as no id.
+    j2["id"] = nullptr;
+    EXPECT_FALSE(j2.get<mcp::JSONRPCErrorResponse>().id.has_value());
 }
 
 TEST(ProtocolTest, CallToolArgumentsDefaultToObjectAndRejectOtherJsonTypes) {
@@ -2364,10 +2377,10 @@ TEST(ProtocolTest, TaskStatusNotificationSerialization) {
 
 TEST(ProtocolTest, ElicitationCompleteNotificationSerialization) {
     mcp::ElicitationCompleteNotification notif;
-    notif.params.requestId = "req1";
+    notif.params.elicitationId = "550e8400-e29b-41d4-a716-446655440000";
     nlohmann::json j = notif;
     EXPECT_EQ(j["method"], "notifications/elicitation/complete");
-    EXPECT_EQ(j["params"]["requestId"], "req1");
+    EXPECT_EQ(j["params"], (nlohmann::json{{"elicitationId", "550e8400-e29b-41d4-a716-446655440000"}}));
 }
 
 TEST(ProtocolTest, RejectsInvalidJsonRpcVersion) {
@@ -2686,4 +2699,50 @@ TEST(PeerJsonTest, ParsePeerJsonDiscardsDocumentsNestedTooDeeplyOrInvalid) {
     EXPECT_TRUE(mcp::detail::parse_peer_json("{not json").is_discarded());
     // Two megabytes of brackets: refused before anything is built from them.
     EXPECT_TRUE(mcp::detail::parse_peer_json(nested(1'000'000)).is_discarded());
+}
+
+TEST(ProtocolElicitation, UnknownActionIsAnError) {
+    EXPECT_THROW((void)nlohmann::json({{"action", "maybe"}}).get<mcp::ElicitResult>(), std::exception);
+    EXPECT_THROW((void)nlohmann::json({{"action", 1}}).get<mcp::ElicitResult>(), std::exception);
+    EXPECT_EQ(nlohmann::json({{"action", "decline"}}).get<mcp::ElicitResult>().action,
+              mcp::ElicitAction::eDecline);
+    EXPECT_EQ(nlohmann::json(mcp::ElicitResult{mcp::ElicitAction::eCancel, {}, {}})["action"],
+              "cancel");
+}
+
+TEST(ProtocolElicitation, FormRequestMayLeaveItsModeOut) {
+    const auto params =
+        nlohmann::json({{"message", "Name?"}, {"requestedSchema", {{"type", "object"}}}})
+            .get<mcp::ElicitRequestParams>();
+    ASSERT_TRUE(std::holds_alternative<mcp::ElicitRequestFormParams>(params));
+    EXPECT_EQ(std::get<mcp::ElicitRequestFormParams>(params).mode, "form");
+}
+
+// A null mode is read as a mode left out, as other optional fields are.
+TEST(ProtocolElicitation, NullModeIsAFormRequest) {
+    const auto params =
+        nlohmann::json(
+            {{"mode", nullptr}, {"message", "Name?"}, {"requestedSchema", {{"type", "object"}}}})
+            .get<mcp::ElicitRequestParams>();
+    ASSERT_TRUE(std::holds_alternative<mcp::ElicitRequestFormParams>(params));
+    EXPECT_EQ(std::get<mcp::ElicitRequestFormParams>(params).mode, "form");
+}
+
+// Converting the double to int would be undefined behaviour, and a peer chooses the value. It is
+// still an error, so it decodes to one instead of leaving the caller waiting.
+TEST(ProtocolError, ACodeThatIsNoIntOfThisSizeDecodesToInternalError) {
+    const auto decode = [](nlohmann::json code) {
+        return nlohmann::json{{"code", std::move(code)}, {"message", "m"}}.get<mcp::Error>();
+    };
+    EXPECT_EQ(decode(1e308).code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(1.5).code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(4294967296LL).code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(-4294967296LL).code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(18446744073709551615ULL).code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(1e308).message, "m");
+    EXPECT_EQ(decode(-32601).code, -32601);
+    EXPECT_EQ(decode(-32601.0).code, -32601);
+    EXPECT_EQ(decode(-1.5).code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(7).code, 7);
+    EXPECT_THROW((void)decode("x"), nlohmann::json::exception);
 }

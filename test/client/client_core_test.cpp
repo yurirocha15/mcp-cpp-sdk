@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "mcp/client/client.hpp"
@@ -766,7 +767,7 @@ TEST_F(ClientCoreTest, RequestTimeoutIncludesTimeQueuedInTransportWrite) {
     bool request_completed = false;
     bool watchdog_fired = false;
     boost::asio::steady_timer watchdog(io_ctx_);
-    watchdog.expires_after(std::chrono::milliseconds(250));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](const boost::system::error_code& error) {
         if (!error) {
             watchdog_fired = true;
@@ -888,11 +889,12 @@ TEST_F(ClientCoreTest, RemoteErrorPreservesJsonRpcData) {
 TEST_F(ClientCoreTest, ImmediateResponseCannotBeLostBeforeWaitStarts) {
     auto transport = std::make_shared<ImmediateResponseTransport>(io_ctx_.get_executor());
     mcp::ClientOptions client_options;
-    client_options.request_timeout = std::chrono::seconds(2);
+    // Longer than the watchdog, so a lost response is reported by the watchdog.
+    client_options.request_timeout = g_release_guard;
     mcp::Client client(transport, io_ctx_.get_executor(), client_options);
 
     boost::asio::steady_timer watchdog(io_ctx_);
-    watchdog.expires_after(std::chrono::milliseconds(250));
+    watchdog.expires_after(g_hang_guard);
     bool watchdog_fired = false;
     bool request_completed = false;
     nlohmann::json result;
@@ -961,7 +963,7 @@ TEST_F(ClientCoreTest, ConcurrentRequestsRemainCorrelatedOnMultiThreadedExecutor
     // This timeout and the watchdog below only end a run that has gone wrong. They are wide
     // because a sanitizer can stop every thread for seconds while it prepares a report, including
     // one a suppression then discards.
-    options.request_timeout = 30s;
+    options.request_timeout = g_hang_guard;
     mcp::Client client(client_transport, io_ctx_.get_executor(), options);
 
     std::atomic_size_t completed{0};
@@ -1025,7 +1027,7 @@ TEST_F(ClientCoreTest, ConcurrentRequestsRemainCorrelatedOnMultiThreadedExecutor
         boost::asio::detached);
 
     boost::asio::steady_timer watchdog(io_ctx_);
-    watchdog.expires_after(60s);
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&client, &completed, &stop_poll](const boost::system::error_code& error) {
         if (!error && completed.load(std::memory_order_acquire) != request_count) {
             stop_poll.store(true, std::memory_order_release);
@@ -1337,9 +1339,9 @@ SecondRequestOutcome send_two_requests(
     });
 
     mcp::ClientOptions options;
-    // Short enough that a response the client never delivers surfaces as a test failure instead of
-    // a stalled run.
-    options.request_timeout = std::chrono::seconds(5);
+    // Bounded, so that a response the client never delivers surfaces as a test failure instead of a
+    // stalled run.
+    options.request_timeout = g_hang_guard;
     options.on_protocol_error = [&](const mcp::Error& error) { outcome.reported.push_back(error); };
     mcp::Client client(transport, io_ctx.get_executor(), options);
 

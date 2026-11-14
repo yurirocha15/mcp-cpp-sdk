@@ -4,6 +4,7 @@
 #include <mcp/core/export.hpp>
 
 #include <boost/beast/http.hpp>
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <string>
@@ -64,8 +65,8 @@ using AsyncBearerTokenValidator = std::function<Task<bool>(std::string)>;
 /**
  * @brief Extract a bearer token from an HTTP Authorization header.
  * @param authorization_header Complete Authorization header value.
- * @return The characters after the Bearer scheme, or an empty view when the
- *         scheme is absent or no characters follow it.
+ * @return The characters after the Bearer scheme and the spaces that follow it,
+ *         or an empty view when the scheme is absent or nothing follows it.
  */
 MCP_API std::string_view http_bearer_token(std::string_view authorization_header);
 
@@ -154,5 +155,28 @@ MCP_API std::string format_protected_resource_metadata(const ProtectedResourceMe
  * @throws std::invalid_argument If `resource` is not an absolute URL with an authority.
  */
 MCP_API std::string protected_resource_metadata_url(const ProtectedResourceMetadataConfig& metadata);
+
+/**
+ * @brief What an HTTP server transport lets its connections and requests hold at once.
+ *
+ * Every limit covers the whole listener, whatever session a request belongs to.
+ */
+struct HttpConnectionLimits {
+    /// Connections at once; one past it is closed as soon as it is accepted, without an answer.
+    /// Zero takes three quarters of the process's soft descriptor limit (RLIMIT_NOFILE) where
+    /// there is one, else 4096. systemd gives a service a soft limit of 1024 unless its unit sets
+    /// LimitNOFILE=, which makes 768; each SSE stream on GET holds a connection too.
+    std::size_t max_connections{0};
+    /// How long reading one request may take, from waiting for its first byte to the end of its
+    /// body, and how long the peer may take to read the answer; a connection that takes longer is
+    /// closed. Zero means no limit.
+    std::chrono::milliseconds request_read_timeout{std::chrono::seconds(60)};
+    /// Requests being handled at once. One past it is answered 503.
+    std::size_t max_requests{4096};
+    /// Memory the requests being read or handled may hold together: a body by what has arrived
+    /// while it is read, a JSON-RPC message by what it takes parsed. A request past it is answered
+    /// 503.
+    std::size_t max_request_bytes{std::size_t{1024} * 1024 * 1024};
+};
 
 }  // namespace mcp

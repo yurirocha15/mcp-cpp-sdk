@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
+#include <string>
 #include <string_view>
 
 namespace mcp::detail {
@@ -62,6 +63,41 @@ inline nlohmann::json parse_peer_json(std::string_view text) {
         return nlohmann::json(nlohmann::json::value_t::discarded);
     }
     return nlohmann::json::parse(text, nullptr, false);
+}
+
+/// About how many bytes @p value takes in memory once parsed. The limits on work a peer can start
+/// charge this rather than the length of the text, since a parsed container is far larger than its
+/// text: `{}` is two bytes of text and about eighty in memory. Recursion is bounded by
+/// g_MAX_PEER_JSON_DEPTH for anything parse_peer_json() returned.
+inline std::size_t json_memory_cost(const nlohmann::json& value) {
+    // A value on the heap: the allocation itself and the allocator's own bookkeeping.
+    constexpr std::size_t heap_block = 64;
+    // A member of an object: a tree node holding the key and the value.
+    constexpr std::size_t member_node = 96;
+    std::size_t cost = sizeof(nlohmann::json);
+    switch (value.type()) {
+        case nlohmann::json::value_t::object:
+            cost += heap_block;
+            for (auto member = value.begin(); member != value.end(); ++member) {
+                cost += member_node + member.key().size() + json_memory_cost(member.value());
+            }
+            break;
+        case nlohmann::json::value_t::array:
+            cost += heap_block;
+            for (const auto& element : value) {
+                cost += json_memory_cost(element);
+            }
+            break;
+        case nlohmann::json::value_t::string:
+            cost += heap_block + value.get_ref<const std::string&>().size();
+            break;
+        case nlohmann::json::value_t::binary:
+            cost += heap_block + value.get_binary().size();
+            break;
+        default:
+            break;
+    }
+    return cost;
 }
 
 }  // namespace mcp::detail

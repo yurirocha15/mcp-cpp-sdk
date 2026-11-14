@@ -10,6 +10,7 @@
 #include <boost/beast/http.hpp>
 #include <mcp/transport/http_types.hpp>
 
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -18,6 +19,18 @@
 #include <vector>
 
 namespace mcp {
+
+/** @brief What a StreamableHttpSessionManager holds for clients it has not heard from. */
+struct SessionLimits {
+    /// Sessions at once. An initialize past it is answered 503. A session costs about 31 KiB
+    /// before it does anything, so this bounds what an unauthenticated client can make a server
+    /// hold; a bearer token validator refuses such a client before any session exists.
+    std::size_t max_sessions{10000};
+    /// How long a session lives after its last request, unless a request of it is still running,
+    /// or zero to keep it until its DELETE. A client that leaves without one is otherwise kept
+    /// until the process ends.
+    std::chrono::milliseconds idle_timeout{std::chrono::minutes(5)};
+};
 
 /**
  * @brief Multi-session HTTP endpoint for MCP Streamable HTTP.
@@ -213,6 +226,25 @@ class MCP_API StreamableHttpSessionManager {
      * @return The number of live MCP sessions currently managed by this endpoint.
      */
     [[nodiscard]] std::size_t session_count() const;
+
+    /**
+     * @brief Set what the manager holds for clients it has not heard from.
+     *
+     * @param limits The limits. They apply from the next session and the next sweep.
+     * @throws std::invalid_argument If `limits.max_sessions` is 0.
+     */
+    void set_session_limits(const SessionLimits& limits);
+
+    /**
+     * @brief Set what the connections and requests of this endpoint may hold at once.
+     *
+     * @details The headers of a request are read first, and the Origin and bearer token checks
+     * run on them, so a request they refuse never has its body read. See HttpConnectionLimits for
+     * the defaults.
+     *
+     * @throws std::invalid_argument If `max_requests` or `max_request_bytes` is 0.
+     */
+    void set_connection_limits(const HttpConnectionLimits& limits);
 
     /**
      * @brief Enable or disable JSON-only responses for managed sessions.

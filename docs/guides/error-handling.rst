@@ -158,9 +158,10 @@ The client checks a tool result's ``structuredContent`` against the
 ``outputSchema`` the server listed for the tool and throws
 ``mcp::StructuredContentError`` when it does not conform. It is an
 ``mcp::McpError`` with code ``-32603``; ``data()`` holds
-``{"violations": [{"instancePath": ..., "message": ...}]}``. Tools whose schemas
-the client cannot use are left out of ``list_tools()`` and reported through
-``ClientOptions::on_tool_schema_error``. See :doc:`../concepts/tools` for the
+``{"violations": [{"instancePath": ..., "message": ...}]}``. An ``outputSchema``
+the client cannot use is reported through
+``ClientOptions::on_tool_schema_error``, and the tool stays listed. See
+:doc:`../concepts/tools` for what a call of such a tool does and for the
 server-side checks, which answer invalid arguments with an ``isError`` result.
 
 Handling Application Errors

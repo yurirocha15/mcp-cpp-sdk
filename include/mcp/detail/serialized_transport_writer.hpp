@@ -6,6 +6,7 @@
 #include <boost/asio/any_io_executor.hpp>
 
 #include <atomic>
+#include <cstddef>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -17,6 +18,12 @@ class ITransport;
 namespace detail {
 
 struct SerializedTransportWriterState;
+
+/// What queued_bytes() counts for each queued message besides its text: an allowance for the memory
+/// the queue holds per message (the shared text, the operation with its timer, the queue slot and
+/// the posted handler). A bound on queued_bytes() then bounds memory even when the messages are
+/// small.
+inline constexpr std::size_t g_queued_message_overhead = 512;
 
 /**
  * @brief Serializes asynchronous writes to a shared transport.
@@ -54,6 +61,25 @@ class MCP_API SerializedTransportWriter {
     [[nodiscard]] Task<void> write_message(
         std::shared_ptr<const std::string> message,
         std::shared_ptr<const std::atomic<bool>> cancel_before_start) const;
+
+    /**
+     * @brief Queue one message without waiting for it to be written.
+     *
+     * Its bytes count in queued_bytes() from the moment this returns, so a caller can bound what it
+     * queues this way. Nobody waits for the write, so a failed write is not reported.
+     */
+    void post_message(std::shared_ptr<const std::string> message) const;
+
+    /**
+     * @brief Wait until every message queued before this call has been written or has failed.
+     *
+     * Messages queued after it are not waited for.
+     */
+    [[nodiscard]] Task<void> written() const;
+
+    /// Bytes of the messages queued or being written, each counted with g_queued_message_overhead:
+    /// what waits on a peer that reads slowly.
+    [[nodiscard]] std::size_t queued_bytes() const noexcept;
 
    private:
     std::shared_ptr<SerializedTransportWriterState> state_;

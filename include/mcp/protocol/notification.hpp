@@ -261,13 +261,14 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TaskStatusNotification, method, params)
  * @brief Parameters for elicitation completion notifications.
  */
 struct ElicitationCompleteNotificationParams {
-    RequestId requestId;  ///< Request identifier for the completed elicitation.
+    /// The `elicitationId` of the URL-mode `elicitation/create` request that completed.
+    std::string elicitationId;
 };
 inline void to_json(nlohmann::json& j, const ElicitationCompleteNotificationParams& p) {
-    j = nlohmann::json{{"requestId", p.requestId}};
+    j = nlohmann::json{{"elicitationId", p.elicitationId}};
 }
 inline void from_json(const nlohmann::json& j, ElicitationCompleteNotificationParams& p) {
-    j.at("requestId").get_to(p.requestId);
+    j.at("elicitationId").get_to(p.elicitationId);
 }
 
 /**

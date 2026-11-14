@@ -1,3 +1,5 @@
+#include <mcp/auth/metadata_policy.hpp>
+#include <mcp/detail/regex.hpp>
 #include <mcp/protocol/schema.hpp>
 
 #include <gtest/gtest.h>
@@ -7,6 +9,8 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -18,14 +22,34 @@
 #include <utility>
 #include <vector>
 
+#if defined(__linux__)
+#include <sys/resource.h>
+#endif
+
 namespace {
 
 using mcp::CompiledSchema;
 using mcp::SchemaError;
 using nlohmann::json;
 
+/// @p schema with "not": false added, which constrains nothing but keeps the schema off the native
+/// evaluation, so it is evaluated by jsoncons.
+json through_jsoncons(json schema) {
+    schema["not"] = false;
+    return schema;
+}
+
 bool is_valid(const json& schema, const json& instance) {
     return CompiledSchema::compile(schema).validate(instance).valid;
+}
+
+/// Whether validating @p value against @p schema stops for want of work, given @p work to spend.
+bool stops_for_work(const json& schema, const json& value, std::size_t work) {
+    mcp::SchemaOptions options;
+    options.max_evaluation_work = work;
+    const auto result = CompiledSchema::compile(schema, options).validate(value);
+    return !result.valid && result.violations.size() == 1U &&
+           result.violations[0].message.find("takes too much work") != std::string::npos;
 }
 
 SchemaError::Category compile_error(const json& schema) {
@@ -142,10 +166,11 @@ TEST(SchemaDialect, BooleanSchemaAccepted) {
     EXPECT_FALSE(is_valid(false, json::object()));
 }
 
-TEST(SchemaDialect, UnsupportedPatternSyntaxIsInvalidSchema) {
-    EXPECT_EQ(compile_error({{"pattern", "(a)\\1"}}), SchemaError::Category::eInvalidSchema);
+TEST(SchemaDialect, UnsupportedPatternSyntaxHasItsOwnCategory) {
+    EXPECT_EQ(compile_error({{"pattern", "(a)\\1"}}), SchemaError::Category::eUnsupportedPattern);
+    EXPECT_EQ(compile_error({{"pattern", "^(?=x)"}}), SchemaError::Category::eUnsupportedPattern);
     EXPECT_EQ(compile_error({{"patternProperties", {{"\\p{L}", true}}}}),
-              SchemaError::Category::eInvalidSchema);
+              SchemaError::Category::eUnsupportedPattern);
 }
 
 // `$schema` names the dialect wherever it appears; an embedded resource that names one the SDK does
@@ -268,6 +293,60 @@ TEST(SchemaRefPolicy, PointerIntoDefinitionsResolvesInEveryDialect) {
     }
 }
 
+// A subschema under a keyword that maps names to subschemas sits at the name's own location.
+TEST(SchemaRefPolicy, PointerIntoNamedSubschemaKeywordsResolves) {
+    const std::vector<std::pair<const char*, const char*>> cases = {
+        {"", "patternProperties"},
+        {"", "dependentSchemas"},
+        {"https://json-schema.org/draft/2019-09/schema", "patternProperties"},
+        {"https://json-schema.org/draft/2019-09/schema", "dependentSchemas"},
+        {"http://json-schema.org/draft-07/schema#", "patternProperties"},
+        {"http://json-schema.org/draft-07/schema#", "dependencies"},
+    };
+    for (const auto& [dialect, keyword] : cases) {
+        SCOPED_TRACE(std::string(dialect) + " " + keyword);
+        json schema = {{keyword, {{"name", {{"type", "string"}}}, {"other", {{"type", "integer"}}}}},
+                       {"properties", {{"a", {{"$ref", std::string("#/") + keyword + "/name"}}}}}};
+        if (*dialect != '\0') {
+            schema["$schema"] = dialect;
+        }
+        try {
+            const auto compiled = CompiledSchema::compile(schema);
+            EXPECT_TRUE(compiled.validate({{"a", "x"}}).valid);
+            EXPECT_FALSE(compiled.validate({{"a", 5}}).valid);
+        } catch (const SchemaError& error) {
+            ADD_FAILURE() << error.what();
+        }
+    }
+}
+
+// `definitions` and `$defs` are separate locations, so the same name under both is two subschemas.
+TEST(SchemaRefPolicy, SameNameUnderDefinitionsAndDefsKeepsBothSubschemas) {
+    for (const char* dialect : {"", "https://json-schema.org/draft/2020-12/schema",
+                                "https://json-schema.org/draft/2019-09/schema"}) {
+        SCOPED_TRACE(dialect);
+        json schema = {{"$defs", {{"name", {{"type", "string"}}}}},
+                       {"definitions", {{"name", {{"type", "integer"}}}}},
+                       {"properties",
+                        {{"a", {{"$ref", "#/$defs/name"}}}, {"b", {{"$ref", "#/definitions/name"}}}}}};
+        if (*dialect != '\0') {
+            schema["$schema"] = dialect;
+        }
+        try {
+            const auto compiled = CompiledSchema::compile(schema);
+            EXPECT_TRUE(compiled.validate({{"a", "x"}, {"b", 5}}).valid);
+            EXPECT_FALSE(compiled.validate({{"a", 5}}).valid);
+            EXPECT_FALSE(compiled.validate({{"b", "x"}}).valid);
+        } catch (const SchemaError& error) {
+            ADD_FAILURE() << error.what();
+        }
+    }
+    // The anchor makes the `$defs` subschema register a reference target of its own.
+    const auto anchored =
+        json::parse(R"({"$defs":{"a":{"$dynamicAnchor":"a"}},"definitions":{"a":true},"if":true})");
+    EXPECT_TRUE(CompiledSchema::compile(anchored).validate(json::object()).valid);
+}
+
 TEST(SchemaRefPolicy, EmbeddedIdResolvesWithoutFetching) {
     const json schema = json::parse(R"({
         "$id": "https://example.com/root.json",
@@ -351,6 +430,182 @@ TEST(SchemaLimits, ExponentialEvaluationIsStopped) {
         << result.violations.front().message;
 }
 
+// Each value of the array is compared with each value of the enum. No subschema is entered for a
+// comparison, so nothing but a charge per comparison stops this.
+TEST(SchemaLimits, EnumComparisonsAreCharged) {
+    json allowed = json::array();
+    for (int i = 0; i < 500; ++i) {
+        allowed.push_back(1000000 + i);
+    }
+    const json schema = {{"items", {{"enum", allowed}}}};
+    // The last value of the enum, so every comparison runs and no item is a violation: 250,000
+    // comparisons at 8 units each, which a million units do not pay for and ten million do.
+    const json value(500, allowed.back());
+    const std::vector<json> schemas{schema, through_jsoncons(schema)};
+    for (const auto& each : schemas) {
+        EXPECT_TRUE(stops_for_work(each, value, 1'000'000));
+        EXPECT_FALSE(stops_for_work(each, value, 10'000'000));
+    }
+}
+
+// A long string that differs from each long enum value only at its end costs its length per value.
+// Every item is the last enum value, so no item is a violation and every comparison runs.
+TEST(SchemaLimits, EnumComparisonsOfLongStringsAreCharged) {
+    const std::string text(1U << 16U, 'x');
+    json allowed = json::array();
+    for (int i = 0; i < 2000; ++i) {
+        allowed.push_back(text + std::to_string(1000 + i));
+    }
+    const auto result =
+        CompiledSchema::compile({{"items", {{"enum", allowed}}}}).validate(json(2000, allowed.back()));
+    EXPECT_FALSE(result.valid);
+    ASSERT_EQ(result.violations.size(), 1U);
+    EXPECT_NE(result.violations.front().message.find("too much work"), std::string::npos)
+        << result.violations.front().message;
+}
+
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) ||                             \
+    __has_feature(memory_sanitizer)
+#define MCP_TEST_SANITIZER_SHADOW_MEMORY 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define MCP_TEST_SANITIZER_SHADOW_MEMORY 1
+#endif
+
+#if defined(__linux__) && !defined(MCP_TEST_SANITIZER_SHADOW_MEMORY)
+// A report may quote the whole value, and every branch of an anyOf that fails keeps its report, so
+// without a cut this holds 1 MiB per branch. Reports are sanitized on their way out, so only the
+// peak shows it. A peak that an earlier test in the process set can hide this, never fail it.
+TEST(SchemaLimits, FailedBranchesDoNotKeepCopiesOfTheValue) {
+    const auto peak_kib = [] {
+        rusage usage{};
+        EXPECT_EQ(getrusage(RUSAGE_SELF, &usage), 0);
+        return usage.ru_maxrss;
+    };
+    json branches = json::array();
+    for (int i = 0; i < 2000; ++i) {
+        branches.push_back({{"enum", {i}}});
+    }
+    const auto compiled = CompiledSchema::compile({{"anyOf", branches}});
+    const std::string text(1U << 20U, 'x');
+    const auto before = peak_kib();
+    EXPECT_FALSE(compiled.validate(text).valid);
+    EXPECT_LT(peak_kib() - before, 256L * 1024L);
+}
+#endif
+
+#if defined(__GLIBCXX__) && __SIZEOF_SIZE_T__ == 8 && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+/// @p count distinct 16-byte ASCII strings with one std::hash value. libstdc++ hashes a string with
+/// Murmur64A, whose block step can be inverted, so a second block can be solved for any first one.
+std::vector<std::string> strings_with_one_hash(std::size_t count) {
+    constexpr std::uint64_t g_multiplier = 0xc6a4a7935bd1e995ULL;
+    constexpr std::uint64_t g_seed = 0xc70f6907ULL;
+    constexpr std::uint64_t g_length = 16;
+    constexpr std::uint64_t g_target = 0x1234567890abcdefULL;
+    std::uint64_t inverse = g_multiplier;
+    for (int i = 0; i < 6; ++i) {
+        inverse *= 2 - g_multiplier * inverse;
+    }
+    const auto shift_mix = [](std::uint64_t value) { return value ^ (value >> 47U); };
+
+    std::vector<std::string> strings;
+    std::mt19937_64 random(5);
+    while (strings.size() < count) {
+        std::uint64_t first = random() & 0x7f7f7f7f7f7f7f7fULL;
+        const std::uint64_t state =
+            ((g_seed ^ (g_length * g_multiplier)) ^ (shift_mix(first * g_multiplier) * g_multiplier)) *
+            g_multiplier;
+        const std::uint64_t needed = state ^ (g_target * inverse);
+        std::uint64_t second = shift_mix(needed * inverse) * inverse;
+        if ((second & 0x8080808080808080ULL) != 0) {
+            continue;
+        }
+        std::string text(16, '\0');
+        std::memcpy(text.data(), &first, sizeof first);
+        std::memcpy(text.data() + sizeof first, &second, sizeof second);
+        strings.push_back(std::move(text));
+    }
+    return strings;
+}
+
+// uniqueItems sorts by hash and compares only equal hashes, which is linear until someone chooses
+// strings that all hash alike.
+TEST(SchemaLimits, UniqueItemsOfCollidingStringsAreCharged) {
+    const auto strings = strings_with_one_hash(2000);
+    ASSERT_EQ(std::set<std::string>(strings.begin(), strings.end()).size(), strings.size());
+    const std::hash<std::string> hash;
+    for (const auto& text : strings) {
+        ASSERT_EQ(hash(text), hash(strings.front()));
+    }
+
+    const auto result =
+        CompiledSchema::compile({{"uniqueItems", true}, {"not", false}}).validate(json(strings));
+    EXPECT_FALSE(result.valid);
+    ASSERT_EQ(result.violations.size(), 1U);
+    EXPECT_NE(result.violations.front().message.find("too much work"), std::string::npos)
+        << result.violations.front().message;
+}
+
+// Elements that share a hash are compared in full, so a comparison costs what the elements hold.
+// 200 arrays of 201 values share one hash and differ only in their last value: about 20,000
+// comparisons of 201 values each.
+TEST(SchemaLimits, UniqueItemsComparisonsAreChargedByWhatTheyHold) {
+    const auto strings = strings_with_one_hash(200);
+    json value = json::array();
+    for (const auto& text : strings) {
+        json element(200, 0);
+        element.push_back(text);
+        value.push_back(std::move(element));
+    }
+    const auto stops = [&value](std::size_t work) {
+        mcp::SchemaOptions options;
+        options.max_evaluation_work = work;
+        const auto result = CompiledSchema::compile({{"uniqueItems", true}}, options).validate(value);
+        return !result.valid && result.violations.size() == 1U &&
+               result.violations[0].message.find("takes too much work") != std::string::npos;
+    };
+    EXPECT_FALSE(stops(100'000'000));
+    EXPECT_TRUE(stops(1'000'000));
+}
+
+// Sets of property names are ordered, so names chosen to share a hash cost no more to look up than
+// any others. Timed against the same number of ordinary names, so the bound holds in slow builds.
+TEST(SchemaLimits, PropertyNamesThatShareAHashAreLookedUpQuickly) {
+    const auto colliding = strings_with_one_hash(20000);
+    std::vector<std::string> ordinary;
+    for (std::size_t i = 0; i < colliding.size(); ++i) {
+        ordinary.push_back("k" + std::to_string(1'000'000'000'000'000 + i));
+    }
+    const auto object_of = [](const std::vector<std::string>& names) {
+        json object = json::object();
+        for (const auto& name : names) {
+            object[name] = 1;
+        }
+        return object;
+    };
+    const auto closed = CompiledSchema::compile(
+        through_jsoncons({{"patternProperties", {{"^[\\x00-\\x7f]", {{"type", "integer"}}}}},
+                          {"additionalProperties", false}}));
+    const auto unevaluated =
+        CompiledSchema::compile({{"anyOf", {{{"additionalProperties", {{"type", "integer"}}}}}},
+                                 {"unevaluatedProperties", false}});
+    for (const auto* schema : {&closed, &unevaluated}) {
+        const auto time = [schema](const json& value) {
+            const auto start = std::chrono::steady_clock::now();
+            EXPECT_TRUE(schema->validate(value).valid);
+            return std::chrono::steady_clock::now() - start;
+        };
+        const auto baseline_time = time(object_of(ordinary));
+        const auto colliding_time = time(object_of(colliding));
+        EXPECT_LT(colliding_time, 20 * baseline_time + std::chrono::milliseconds(500))
+            << "baseline "
+            << std::chrono::duration_cast<std::chrono::milliseconds>(baseline_time).count() << " ms";
+    }
+}
+#endif
+
 // A recursive schema through anyOf adds several keywords to the evaluation path per level of the
 // value, so it reaches the path bound before max_instance_depth; the value is then invalid.
 TEST(SchemaLimits, EvaluationPathIsBounded) {
@@ -431,6 +686,47 @@ TEST(SchemaLimits, SchemaNestingWithinTheMetaschemaBoundCompiles) {
 // an unanchored ".{1,1000}x", costs thousands of steps per character. A validation's matching is
 // budgeted in proportion to the text in the value; past the budget the value is reported invalid.
 // A small budget keeps the test fast in sanitizer builds.
+// A string pays for the matcher instructions it reaches, so many short strings against a pattern
+// of 10,000 instructions conform, on both evaluation paths.
+TEST(SchemaLimits, ManyShortStringsAgainstALargePatternConform) {
+    const json schema = {{"type", "array"},
+                         {"items", {{"type", "string"}, {"pattern", "^[\\s\\S]{0,5000}$"}}}};
+    json value = json::array();
+    for (int index = 0; index < 2000; ++index) {
+        value.push_back("hi");
+    }
+    for (const auto& each : {schema, through_jsoncons(schema)}) {
+        const auto result = CompiledSchema::compile(each).validate(value);
+        EXPECT_TRUE(result.valid) << (result.violations.empty() ? "" : result.violations[0].message);
+    }
+}
+
+// A pattern longer than mcp::detail::Regex::max_pattern_size is refused like any pattern the
+// matcher cannot run.
+TEST(SchemaDialect, OverlongPatternIsUnsupported) {
+    const json schema = {
+        {"type", "string"},
+        {"pattern", "[" + std::string(mcp::detail::Regex::max_pattern_size, 'a') + "]"}};
+    EXPECT_EQ(compile_error(schema), SchemaError::Category::eUnsupportedPattern);
+}
+
+// A value built in C++ may hold malformed UTF-8. Both evaluation paths count each byte that is not
+// part of a well-formed sequence as one character, as pattern matching reads it.
+TEST(SchemaBridge, MalformedUtf8CountsOneCharacterPerByte) {
+    const json value = std::string("\xC3\xA9\xFF\x80", 4);  // e-acute, then two stray bytes
+    for (const bool jsoncons : {false, true}) {
+        SCOPED_TRACE(jsoncons ? "jsoncons" : "native");
+        const auto check = [&](const json& schema) {
+            return is_valid(jsoncons ? through_jsoncons(schema) : schema, value);
+        };
+        EXPECT_TRUE(check({{"maxLength", 3}}));
+        EXPECT_FALSE(check({{"maxLength", 2}}));
+        EXPECT_TRUE(check({{"minLength", 3}}));
+        EXPECT_FALSE(check({{"minLength", 4}}));
+        EXPECT_TRUE(check({{"pattern", "^.{3}$"}}));
+    }
+}
+
 TEST(SchemaLimits, PatternMatchingIsBounded) {
     mcp::SchemaOptions options;
     options.base_pattern_steps = 100'000;
@@ -492,6 +788,305 @@ TEST(SchemaLimits, UniqueItemsOnALargeArrayTakesBoundedTime) {
     EXPECT_FALSE(unique.validate(items).valid);
 }
 
+// Every step under a property copies the instance location, so a long name above many items would
+// cost its length once per item. Locations keep the first 1024 bytes of a name, which is more than
+// a reported location can show, so the report is the same as for the full name.
+TEST(SchemaLimits, LongPropertyNameAboveManyItemsIsCheap) {
+    const std::string name(1U << 20U, 'k');
+    json value = {{"m", {{name, json(2000, 0)}}}};
+    const json schema = {
+        {"type", "object"},
+        {"properties",
+         {{"m",
+           {{"type", "object"},
+            {"additionalProperties", {{"type", "array"}, {"items", {{"type", "integer"}}}}}}}}}};
+    mcp::SchemaOptions options;
+    options.max_evaluation_work = 10'000'000;
+    for (const auto& each : {schema, through_jsoncons(schema)}) {
+        const auto compiled = CompiledSchema::compile(each, options);
+        EXPECT_TRUE(compiled.validate(value).valid);
+        value["m"][name][5] = "x";
+        const auto result = compiled.validate(value);
+        value["m"][name][5] = 0;
+        ASSERT_EQ(result.violations.size(), 1U);
+        EXPECT_EQ(result.violations[0].instance_path,
+                  mcp::auth::detail::sanitize_for_diagnostics("/m/" + name + "/5"));
+    }
+}
+
+// Names up to 1024 bytes are kept whole, so a deep path of them makes each copy of a location long.
+// Copies are charged by their length, so a small budget stops what a large one allows.
+TEST(SchemaLimits, LocationCopiesAreCharged) {
+    json value = json(3000, 0);
+    for (int i = 0; i < 30; ++i) {
+        const std::string name = std::to_string(i) + std::string(1000, 'k');
+        value = {{name, std::move(value)}};
+    }
+    const json schema = through_jsoncons(json::parse(R"({
+        "type": ["object", "array"], "additionalProperties": {"$ref": "#"}, "items": {"type": "integer"}
+    })"));
+    EXPECT_TRUE(CompiledSchema::compile(schema).validate(value).valid);
+    mcp::SchemaOptions options;
+    options.max_evaluation_work = 4'000'000;
+    const auto result = CompiledSchema::compile(schema, options).validate(value);
+    EXPECT_FALSE(result.valid);
+    ASSERT_EQ(result.violations.size(), 1U);
+    EXPECT_EQ(result.violations[0].message,
+              "validation stopped: schema evaluation takes too much work");
+}
+
+// A branching keyword counts every message its branches report but keeps only the first few, each
+// holding its location. 2000 failed branches under a long path would hold 40 MB.
+TEST(SchemaLimits, BranchesKeepAFewOfTheirMessages) {
+    json branches = json::array({{{"type", "object"}, {"additionalProperties", {{"$ref", "#"}}}}});
+    for (int i = 0; i < 2000; ++i) {
+        branches.push_back({{"enum", {i}}});
+    }
+    const json schema = through_jsoncons({{"anyOf", branches}});
+    json value = 99999;
+    for (int i = 0; i < 20; ++i) {
+        value = {{std::to_string(i) + std::string(1000, 'k'), std::move(value)}};
+    }
+    const auto result = CompiledSchema::compile(schema).validate(value);
+    EXPECT_FALSE(result.valid);
+    ASSERT_EQ(result.violations.size(), 1U);
+    EXPECT_EQ(result.violations[0].message,
+              "Must be valid against at least one schema, but found no matching schemas");
+}
+
+// Branches that fail by recursing keep messages that hold the messages under them, so the kept
+// messages grow exponentially with the value's depth. What they hold is bounded.
+TEST(SchemaLimits, MemoryOfKeptMessagesIsBounded) {
+    const auto schema = CompiledSchema::compile(json::parse(R"({
+        "$defs": {"a": {"anyOf": [{"type": "array", "items": {"$ref": "#/$defs/a"}},
+                                  {"type": "array", "items": {"$ref": "#/$defs/a"}},
+                                  {"type": "string"}]}},
+        "properties": {"deep": {"$ref": "#/$defs/a"}}
+    })"));
+    json deep = 1;
+    for (int i = 0; i < 40; ++i) {
+        deep = json::array({std::move(deep)});
+    }
+    // Text the schema never reads raises the work allowed, so that memory runs out first.
+    const auto result =
+        schema.validate({{"padding", std::string(8U << 20U, 'x')}, {"deep", std::move(deep)}});
+    EXPECT_FALSE(result.valid);
+    ASSERT_EQ(result.violations.size(), 1U);
+    EXPECT_EQ(result.violations[0].message,
+              "validation stopped: the messages kept for failed branches take too much memory");
+}
+
+// A message names the value it rejects. Quoting all of it would make each failed branch cost time in
+// proportion to the value; a structured value is named by its size, a string by an excerpt.
+TEST(SchemaValidation, MessagesNameLargeValuesBriefly) {
+    const auto compiled = CompiledSchema::compile(through_jsoncons({{"enum", {1, 2}}}));
+    const auto first_message = [&compiled](const json& value) {
+        const auto result = compiled.validate(value);
+        return result.violations.empty() ? std::string() : result.violations[0].message;
+    };
+    EXPECT_EQ(first_message(json::array({1, 2, 3})), "An array of length 3 is not a valid enum value.");
+    EXPECT_EQ(first_message({{"a", 1}}), "An object of size 1 is not a valid enum value.");
+    EXPECT_EQ(first_message(7), "'7' is not a valid enum value.");
+    EXPECT_EQ(first_message("seven"), "'seven' is not a valid enum value.");
+}
+
+// Each branch counts a long string's characters again, which no evaluation step pays for.
+TEST(SchemaLimits, WholeStringKeywordsAreCharged) {
+    json branches = json::array();
+    for (int i = 0; i < 200; ++i) {
+        branches.push_back({{"minLength", 2'000'000 + i}});
+    }
+    const json schema = through_jsoncons({{"anyOf", branches}});
+    // 200 branches over 32 KiB read about 6.6 million bytes, about 410,000 units at 16 bytes each.
+    // 250,000 units pay for checking the schema when it is compiled, but not for that.
+    const std::string text(std::size_t{32} * 1024, 'x');
+    EXPECT_FALSE(stops_for_work(schema, text, 10'000'000));
+    EXPECT_FALSE(CompiledSchema::compile(schema).validate(text).violations.empty());
+    mcp::SchemaOptions options;
+    options.max_evaluation_work = 250'000;
+    const auto result = CompiledSchema::compile(schema, options).validate(text);
+    ASSERT_EQ(result.violations.size(), 1U);
+    EXPECT_EQ(result.violations[0].message,
+              "validation stopped: schema evaluation takes too much work");
+}
+
+// Draft-07 evaluates contentEncoding and contentMediaType, and each reads the whole string: 100
+// branches over 1 MiB cost about 26 million units, which 10 million do not pay for.
+TEST(SchemaLimits, ContentKeywordsAreChargedByTheStringsLength) {
+    const json text = std::string(1U << 20U, 'x');
+    for (const auto& [keyword, value] :
+         {std::pair{"contentEncoding", "base64"}, std::pair{"contentMediaType", "text/plain"}}) {
+        json branches = json::array();
+        for (int i = 0; i < 100; ++i) {
+            branches.push_back({{keyword, value}});
+        }
+        const json schema = {{"$schema", "http://json-schema.org/draft-07/schema#"},
+                             {"allOf", branches}};
+        EXPECT_TRUE(CompiledSchema::compile(schema).validate(text).valid) << keyword;
+        EXPECT_TRUE(stops_for_work(schema, text, 10'000'000)) << keyword;
+    }
+}
+
+// 40,000 enum comparisons. Both validators charge 8 units for one, so 100,000 units do not pay for
+// them, whichever validator runs.
+TEST(SchemaLimits, BothValidatorsChargeAComparisonAlike) {
+    json allowed = json::array();
+    for (int i = 0; i < 200; ++i) {
+        allowed.push_back(1000 + i);
+    }
+    const json schema = {{"items", {{"enum", allowed}}}};
+    const json value(200, allowed.back());
+    EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
+    EXPECT_TRUE(stops_for_work(schema, value, 100'000));
+    EXPECT_TRUE(stops_for_work(through_jsoncons(schema), value, 100'000));
+}
+
+// Each item is compared with a const of 200 values: 40,000 comparisons in all.
+TEST(SchemaLimits, ConstComparisonsAreCharged) {
+    const json constant(200, 7);
+    const json schema = {{"items", {{"const", constant}}}};
+    const json value(200, constant);
+    EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
+    EXPECT_TRUE(stops_for_work(schema, value, 100'000));
+}
+
+// 2,500 enum comparisons of arrays of 101 values. Charged by what they compare, they cost more than
+// 100,000 units on either validator.
+TEST(SchemaLimits, EnumComparisonsAreChargedByWhatTheyHold) {
+    json allowed = json::array();
+    for (int i = 0; i < 50; ++i) {
+        json member(100, 0);
+        member.push_back(i);
+        allowed.push_back(std::move(member));
+    }
+    const json schema = {{"items", {{"enum", allowed}}}};
+    const json value(50, allowed.back());
+    EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
+    EXPECT_TRUE(stops_for_work(schema, value, 100'000));
+    EXPECT_FALSE(stops_for_work(through_jsoncons(schema), value, 10'000'000));
+    EXPECT_TRUE(stops_for_work(through_jsoncons(schema), value, 100'000));
+}
+
+// 400 const comparisons of arrays of 500 values, on the validator that "not" sends a schema to.
+TEST(SchemaLimits, ConstComparisonsAreChargedOnEitherValidator) {
+    const json constant(500, 7);
+    const json schema = through_jsoncons({{"items", {{"const", constant}}}});
+    const json value(400, constant);
+    EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
+    EXPECT_TRUE(stops_for_work(schema, value, 100'000));
+}
+
+// Each of 500 objects is checked against 500 dependentRequired entries, which enters no subschema.
+TEST(SchemaLimits, DependentRequiredEntriesAreCharged) {
+    json dependencies = json::object();
+    for (int i = 0; i < 500; ++i) {
+        dependencies["d" + std::to_string(i)] = json::array();
+    }
+    const json schema = through_jsoncons({{"items", {{"dependentRequired", dependencies}}}});
+    const json value(500, json::object());
+    EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
+    EXPECT_TRUE(stops_for_work(schema, value, 100'000));
+}
+
+// Each of 200,000 properties is looked up in "properties", and none enters a subschema.
+TEST(SchemaLimits, PropertiesLookedUpAreCharged) {
+    json value = json::object();
+    for (int i = 0; i < 200000; ++i) {
+        value["p" + std::to_string(i)] = 0;
+    }
+    const json schema = through_jsoncons({{"properties", {{"q", json::object()}}}});
+    EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
+    EXPECT_TRUE(stops_for_work(schema, value, 100'000));
+}
+
+// The work allowed grows with the schema as well as the value, so a large enum or a union of many
+// object types over an ordinary array is not stopped.
+TEST(SchemaLimits, LargeSchemasOverOrdinaryArraysAreNotStopped) {
+    json allowed = json::array();
+    for (int i = 0; i < 200; ++i) {
+        allowed.push_back("v" + std::to_string(1000 + i));
+    }
+    const json codes = {{"type", "array"}, {"items", {{"enum", allowed}}}};
+    for (const auto& each : {codes, through_jsoncons(codes)}) {
+        EXPECT_TRUE(is_valid(each, json(1000, allowed.back())));
+    }
+
+    json defs = json::object();
+    json branches = json::array();
+    for (int i = 0; i < 20; ++i) {
+        const auto name = "T" + std::to_string(i);
+        defs[name] = {{"type", "object"},
+                      {"properties",
+                       {{"kind", {{"const", "t" + std::to_string(i)}}},
+                        {"name", {{"type", "string"}}},
+                        {"n", {{"type", "integer"}}}}},
+                      {"required", {"kind", "name"}},
+                      {"additionalProperties", false}};
+        branches.push_back({{"$ref", "#/$defs/" + name}});
+    }
+    const json union_schema = {{"$defs", defs}, {"type", "array"}, {"items", {{"oneOf", branches}}}};
+    // Each item costs the same, so 500 items within a tenth of the default budget stand for 5000
+    // within all of it.
+    const json items(500, {{"kind", "t19"}, {"name", "x"}, {"n", 1}});
+    EXPECT_TRUE(is_valid(union_schema, items));
+    EXPECT_FALSE(stops_for_work(union_schema, items, mcp::SchemaOptions{}.max_evaluation_work / 10));
+}
+
+// Property names are compared whole: a NUL inside one does not end it, in values and in schemas.
+TEST(SchemaValidation, PropertyNamesWithNulAreComparedWhole) {
+    const std::string name("a\0b", 3);
+    const json schema = {{"type", "object"},
+                         {"properties", {{"a", {{"type", "integer"}}}, {name, {{"type", "string"}}}}}};
+    for (const auto& each : {schema, through_jsoncons(schema)}) {
+        EXPECT_TRUE(is_valid(each, {{name, "text"}}));
+        EXPECT_FALSE(is_valid(each, {{name, 1}}));
+        EXPECT_FALSE(is_valid(each, {{"a", "text"}}));
+    }
+    const json closed =
+        through_jsoncons({{"properties", {{"a", true}}}, {"additionalProperties", false}});
+    EXPECT_FALSE(is_valid(closed, {{name, 1}}));
+    // An unknown keyword, not "type".
+    EXPECT_TRUE(is_valid(through_jsoncons({{std::string("type\0x", 6), "integer"}}), "text"));
+}
+
+// A pattern that is not a regular expression makes the schema invalid. A pattern that cannot be run
+// here is reported only when nothing else is wrong with the schema, since a client sends a call
+// whose output schema has only that problem.
+TEST(SchemaDialect, PatternProblemsComeAfterOtherProblems) {
+    EXPECT_EQ(compile_error({{"pattern", "("}}), SchemaError::Category::eInvalidSchema);
+    EXPECT_EQ(compile_error({{"pattern", "[z-a]"}}), SchemaError::Category::eInvalidSchema);
+    EXPECT_EQ(compile_error({{"patternProperties", {{"*", true}}}}),
+              SchemaError::Category::eInvalidSchema);
+    EXPECT_EQ(
+        compile_error({{"properties", {{"a", {{"pattern", "(?=x)"}}}, {"b", {{"pattern", "("}}}}}}),
+        SchemaError::Category::eInvalidSchema);
+    for (
+        const auto* text : {
+            R"json({"properties": {"a": {"pattern": "(?=x)"}, "b": {"$ref": "https://example.com/a.json"}}})json",
+            R"json({"properties": {"b": {"$ref": "https://example.com/a.json"}, "a": {"pattern": "(?=x)"}}})json",
+            R"json({"properties": {"a": {"pattern": "(?=x)"}, "b": {"$ref": "#/$defs/missing"}}})json",
+        }) {
+        SCOPED_TRACE(text);
+        EXPECT_EQ(compile_error(json::parse(text)), SchemaError::Category::eUnresolvedRef);
+    }
+    // Every evaluation of this schema nests too deeply.
+    EXPECT_EQ(compile_error({{"$ref", "#"}, {"properties", {{"a", {{"pattern", "(?=x)"}}}}}}),
+              SchemaError::Category::eInvalidSchema);
+}
+
+// Each pattern is bounded on its own, and the patterns of one schema are bounded together.
+TEST(SchemaLimits, PatternProgramsAreBoundedPerSchema) {
+    json properties = json::object();
+    for (int i = 0; i < 100; ++i) {
+        properties["p" + std::to_string(i)] = {{"pattern", "(?:a{1000}){19}"}};
+    }
+    const json schema = {{"type", "object"}, {"properties", properties}};
+    EXPECT_EQ(compile_error(schema), SchemaError::Category::eUnsupportedPattern);
+    mcp::SchemaOptions options;
+    options.max_pattern_instructions = 3'000'000;
+    EXPECT_NO_THROW((void)CompiledSchema::compile(schema, options));
+}
+
 // A 2020-12 schema that constrains only the value's type is evaluated natively, with the same
 // message as jsoncons gives. Adding "not": false, which constrains nothing, sends the same schema
 // through jsoncons; both must agree on every value, messages included.
@@ -549,13 +1144,6 @@ TEST(SchemaValidation, TypeOnlySchemasMatchFullEvaluation) {
     EXPECT_FALSE(CompiledSchema::compile(true, options).validate(deep).valid);
 }
 
-/// @p schema with "not": false added, which constrains nothing but keeps the schema off the native
-/// evaluation, so it is evaluated by jsoncons.
-json through_jsoncons(json schema) {
-    schema["not"] = false;
-    return schema;
-}
-
 // Messages only the native evaluation produces show that a schema using just the keywords it
 // implements is evaluated that way.
 TEST(SchemaNative, SupportedSchemaIsEvaluatedNatively) {
@@ -603,32 +1191,38 @@ TEST(SchemaValidation, AdditionalPropertyViolationsNameTheMember) {
 }
 
 // JSON Schema compares numbers by value. Converting an integer beyond 2^53 to a double rounds it,
-// so the native evaluation compares an integer with a double exactly.
+// so both evaluations compare an integer with a double exactly.
 TEST(SchemaNative, IntegersAndDoublesCompareExactly) {
+    const auto expect = [](bool valid, const char* schema_text, const json& instance) {
+        SCOPED_TRACE(std::string(schema_text) + " against " + instance.dump());
+        const auto schema = json::parse(schema_text);
+        EXPECT_EQ(is_valid(schema, instance), valid);
+        EXPECT_EQ(is_valid(through_jsoncons(schema), instance), valid);
+    };
     // 18446744073709551616 (2^64) does not fit std::uint64_t and is read as a double.
     const json above_uint64_max = json::parse("18446744073709551616");
     ASSERT_TRUE(above_uint64_max.is_number_float());
-    EXPECT_FALSE(is_valid(json::parse(R"({"maximum": 18446744073709551615})"), above_uint64_max));
-    EXPECT_FALSE(
-        is_valid(json::parse(R"({"exclusiveMaximum": 18446744073709551615})"), above_uint64_max));
-    EXPECT_TRUE(is_valid(json::parse(R"({"minimum": 18446744073709551615})"), above_uint64_max));
-    EXPECT_FALSE(is_valid(json::parse(R"({"const": 18446744073709551615})"), above_uint64_max));
-    EXPECT_FALSE(is_valid(json::parse(R"({"enum": [9223372036854775807]})"),
-                          json::parse("9223372036854775808.0")));
-    EXPECT_TRUE(
-        is_valid(json::parse(R"({"maximum": 9007199254740993})"), json::parse("9007199254740992.0")));
-    EXPECT_FALSE(
-        is_valid(json::parse(R"({"maximum": 9007199254740992.0})"), json::parse("9007199254740993")));
-    EXPECT_FALSE(
-        is_valid(json::parse(R"({"const": 9007199254740993})"), json::parse("9007199254740992.0")));
-    EXPECT_FALSE(is_valid(json::parse(R"({"maximum": -2.5})"), json(-2)));
-    EXPECT_TRUE(is_valid(json::parse(R"({"minimum": -2.5})"), json(-2)));
+    expect(false, R"({"maximum": 18446744073709551615})", above_uint64_max);
+    expect(false, R"({"exclusiveMaximum": 18446744073709551615})", above_uint64_max);
+    expect(true, R"({"minimum": 18446744073709551615})", above_uint64_max);
+    expect(false, R"({"const": 18446744073709551615})", above_uint64_max);
+    expect(false, R"({"enum": [9223372036854775807]})", json::parse("9223372036854775808.0"));
+    expect(false, R"({"type": "integer", "maximum": 9223372036854775807})",
+           json::parse("9223372036854775808.0"));
+    expect(true, R"({"maximum": 9007199254740993})", json::parse("9007199254740992.0"));
+    expect(false, R"({"maximum": 9007199254740992.0})", json::parse("9007199254740993"));
+    expect(false, R"({"exclusiveMinimum": 9007199254740993})", json::parse("9007199254740992.0"));
+    expect(false, R"({"minimum": -9007199254740992.0})", json::parse("-9007199254740993"));
+    expect(false, R"({"const": 9007199254740993})", json::parse("9007199254740992.0"));
+    expect(false, R"({"const": [9007199254740993]})", json::parse("[9007199254740992.0]"));
+    expect(true, R"({"uniqueItems": true})", json::parse("[9007199254740993, 9007199254740992.0]"));
+    expect(false, R"({"maximum": -2.5})", json(-2));
+    expect(true, R"({"minimum": -2.5})", json(-2));
     // Equal values stay equal whatever their representation.
-    EXPECT_TRUE(
-        is_valid(json::parse(R"({"const": 9007199254740992})"), json::parse("9007199254740992.0")));
-    EXPECT_TRUE(is_valid(json::parse(R"({"const": -9223372036854775808})"),
-                         json::parse("-9223372036854775808.0")));
-    EXPECT_TRUE(is_valid(json::parse(R"({"const": 0})"), json(-0.0)));
+    expect(true, R"({"const": 9007199254740992})", json::parse("9007199254740992.0"));
+    expect(true, R"({"const": -9223372036854775808})", json::parse("-9223372036854775808.0"));
+    expect(true, R"({"const": 0})", json(-0.0));
+    expect(false, R"({"uniqueItems": true})", json::parse("[9007199254740992, 9007199254740992.0]"));
 }
 
 // Generated schemas over the keywords the native evaluation implements, against generated values:
@@ -835,6 +1429,26 @@ TEST(SchemaBridge, NonFiniteNumbersAreCheckedAsNull) {
             EXPECT_FALSE(is_valid(number, value));
             EXPECT_TRUE(is_valid(null, value));
             EXPECT_TRUE(is_valid({{"items", null}}, json::array({value, value})));
+        }
+    }
+    // Nested in a value that `const` or `enum` compares, one is the null a peer would receive too.
+    for (const double value : {nan, infinity, -infinity}) {
+        SCOPED_TRACE(value);
+        for (const auto& schema :
+             {json::parse(R"({"const": [null]})"), json::parse(R"({"enum": [[1], [null]]})"),
+              json::parse(R"({"const": {"a": null}})")}) {
+            const json instance = schema.contains("const") && schema["const"].is_object()
+                                      ? json{{"a", value}}
+                                      : json::array({value});
+            EXPECT_TRUE(is_valid(schema, instance)) << schema.dump();
+            EXPECT_TRUE(is_valid(through_jsoncons(schema), instance)) << schema.dump();
+        }
+        for (const auto& schema : {json::parse(R"({"const": [0.5, 1.5]})"),
+                                   json::parse(R"({"const": [9223372036854775807, 1]})"),
+                                   json::parse(R"({"enum": [[1, 1], [18446744073709551615, 2]]})")}) {
+            EXPECT_FALSE(is_valid(schema, json::array({value, value}))) << schema.dump();
+            EXPECT_FALSE(is_valid(through_jsoncons(schema), json::array({value, value})))
+                << schema.dump();
         }
     }
     EXPECT_EQ(compile_error({{"maximum", nan}}), SchemaError::Category::eInvalidSchema);

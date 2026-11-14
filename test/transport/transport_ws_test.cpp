@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include "../support/hang_guard.hpp"
 #include "../support/resolve_gate.hpp"
 #include "../support/stalling_server.hpp"
 
@@ -28,10 +29,12 @@
 #include <boost/system/system_error.hpp>
 #include <boost/version.hpp>
 #include <chrono>
+#include <condition_variable>
 #include <exception>
 #include <functional>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -581,7 +584,7 @@ TEST_F(WebSocketTransportTest, CanceledQueuedWriteDoesNotBlockSubsequentWrites) 
                 io_ctx_.get_executor(), "127.0.0.1", std::to_string(port));
             EXPECT_EQ(co_await transport->read_message(), "ready");
 
-            auto watchdog = std::make_shared<asio::steady_timer>(coordinator, 30s);
+            auto watchdog = std::make_shared<asio::steady_timer>(coordinator, g_hang_guard);
             watchdog->async_wait(
                 asio::bind_executor(coordinator, [transport](const boost::system::error_code& error) {
                     if (!error) {
@@ -661,7 +664,7 @@ TEST_F(WebSocketTransportTest, StalledHandshakeFailsAfterTheConnectTimeout) {
         asio::use_future);
 
     std::thread runner([this]() { io_ctx_.run(); });
-    const bool finished = result.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    const bool finished = result.wait_for(g_hang_guard) == std::future_status::ready;
     io_ctx_.stop();
     runner.join();
 
@@ -698,7 +701,7 @@ TEST_F(WebSocketTransportTest, ConnectTimeoutTooLongForTheClockMeansNoLimit) {
     const bool still_pending =
         result.wait_for(std::chrono::milliseconds(300)) == std::future_status::timeout;
     transport.close();
-    const bool finished = result.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    const bool finished = result.wait_for(g_hang_guard) == std::future_status::ready;
     io_ctx_.stop();
     runner.join();
 
@@ -736,7 +739,7 @@ TEST_F(WebSocketTransportTest, ConnectTimeoutPassingBetweenTwoHandshakeReadsRepo
         },
         asio::use_future);
     std::thread runner([this]() { io_ctx_.run(); });
-    const bool finished = result.wait_for(5s) == std::future_status::ready;
+    const bool finished = result.wait_for(g_hang_guard) == std::future_status::ready;
     transport.close();
     io_ctx_.stop();
     runner.join();
@@ -786,7 +789,7 @@ TEST_F(WebSocketTransportTest, CloseWhileTheResolverIsPastItsCancelCheckOpensNoC
 
     std::thread runner([this]() { io_ctx_.run(); });
 
-    const auto limit = std::chrono::seconds(10);
+    const auto limit = g_hang_guard;
     const bool lookup_held = resolve_gate().wait_until_entered(limit);
 
     // close() posts its cancelling to the transport's strand, which is one hop through the
@@ -870,7 +873,7 @@ OriginHandshakeResult handshake_with_origin(
         },
         [](const std::exception_ptr&) {});
 
-    io_ctx.run_for(5s);
+    io_ctx.run_for(g_hang_guard);
     return result;
 }
 
@@ -879,6 +882,228 @@ OriginHandshakeResult handshake_with_origin(
 // A browser lets any web page open a WebSocket to a local port and sends the page's Origin with the
 // upgrade; WebSockets are not covered by CORS. Like the HTTP transports, the WebSocket server
 // refuses an upgrade whose Origin it has not been told to allow.
+namespace {
+
+/// A connected pair of sockets: the server side for a transport, the peer side for the test.
+struct SocketPair {
+    explicit SocketPair(asio::io_context& io) : server(io), peer(io) {
+        tcp::acceptor acceptor(io, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
+        peer.connect(acceptor.local_endpoint());
+        acceptor.accept(server);
+    }
+
+    tcp::socket server;
+    tcp::socket peer;
+};
+
+/// Runs @p body on @p io until it finishes; its exception goes to the test.
+/// Runs @p body and everything it started. An exchange still running after g_hang_guard is reported
+/// as a failure and ended with @p on_hang (or by stopping @p io), so a regression fails the test
+/// before ctest's timeout kills it. The bound reports a hang; it is not a measure of speed.
+void run_until_done(asio::io_context& io, std::function<mcp::Task<void>()> body,
+                    std::function<void()> on_hang = {}) {
+    auto done = asio::co_spawn(io, std::move(body), asio::use_future);
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool finished = false;
+    std::thread watchdog([&] {
+        std::unique_lock lock(mutex);
+        if (changed.wait_for(lock, g_hang_guard, [&] { return finished; })) {
+            return;
+        }
+        ADD_FAILURE() << "the exchange did not finish";
+        if (on_hang) {
+            asio::post(io, on_hang);
+            if (changed.wait_for(lock, std::chrono::seconds(10), [&] { return finished; })) {
+                return;
+            }
+        }
+        io.stop();
+    });
+    io.run();
+    {
+        std::lock_guard lock(mutex);
+        finished = true;
+    }
+    changed.notify_all();
+    watchdog.join();
+    if (done.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        done.get();
+    }
+}
+
+}  // namespace
+
+TEST(WebSocketLimitsTest, APeerThatNeverUpgradesFailsTheRead) {
+    asio::io_context io;
+    SocketPair sockets(io);
+    auto transport = std::make_shared<mcp::WebSocketServerTransport>(std::move(sockets.server));
+    transport->set_handshake_timeout(50ms);
+
+    std::optional<boost::system::error_code> failure;
+    run_until_done(io, [&]() -> mcp::Task<void> {
+        try {
+            co_await transport->read_message();
+        } catch (const boost::system::system_error& error) {
+            failure = error.code();
+        }
+    });
+
+    ASSERT_TRUE(failure.has_value());
+    EXPECT_EQ(*failure, boost::beast::error::timeout);
+}
+
+namespace {
+
+/// A WebSocket client on @p socket that completes the upgrade and then never reads.
+void upgrade_and_go_silent(tcp::socket& socket, const tcp::endpoint& endpoint) {
+    std::string request =
+        "GET / HTTP/1.1\r\nHost: " + endpoint.address().to_string() +
+        "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+    asio::write(socket, asio::buffer(request));
+}
+
+}  // namespace
+
+TEST(WebSocketLimitsTest, APeerThatGoesQuietIsDisconnected) {
+    asio::io_context io;
+    SocketPair sockets(io);
+    const auto endpoint = sockets.peer.local_endpoint();
+    auto transport = std::make_shared<mcp::WebSocketServerTransport>(std::move(sockets.server));
+    transport->set_idle_timeout(100ms);
+    upgrade_and_go_silent(sockets.peer, endpoint);
+
+    bool failed = false;
+    run_until_done(io, [&]() -> mcp::Task<void> {
+        try {
+            co_await transport->read_message();
+        } catch (const std::exception&) {
+            failed = true;
+        }
+    });
+
+    EXPECT_TRUE(failed);
+}
+
+// Nothing reads here, as when a server has stopped reading at its limit on requests in flight, so
+// only the write can notice that the peer stopped.
+TEST(WebSocketLimitsTest, AWriteToAPeerThatStoppedReadingFails) {
+    asio::io_context io;
+    SocketPair sockets(io);
+    const auto endpoint = sockets.peer.local_endpoint();
+    auto transport = std::make_shared<mcp::WebSocketServerTransport>(std::move(sockets.server));
+    transport->set_idle_timeout(100ms);
+    upgrade_and_go_silent(sockets.peer, endpoint);
+
+    bool failed = false;
+    const std::string message(1U << 20U, 'x');
+    run_until_done(
+        io,
+        [&]() -> mcp::Task<void> {
+            try {
+                for (;;) {
+                    co_await transport->write_message(message);
+                }
+            } catch (const std::exception&) {
+                failed = true;
+            }
+        },
+        [&] { transport->close(); });
+
+    EXPECT_TRUE(failed);
+}
+
+TEST(WebSocketLimitsTest, AQuietPeerThatAnswersPingsStaysConnected) {
+    asio::io_context io;
+    tcp::acceptor acceptor(io, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
+    const auto port = std::to_string(acceptor.local_endpoint().port());
+    std::shared_ptr<mcp::WebSocketServerTransport> server;
+    auto client = std::make_shared<mcp::WebSocketClientTransport>(io.get_executor(), "127.0.0.1", port);
+
+    std::optional<std::string> received;
+    run_until_done(io, [&]() -> mcp::Task<void> {
+        asio::co_spawn(
+            io,
+            [&]() -> mcp::Task<void> {
+                auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+                server = std::make_shared<mcp::WebSocketServerTransport>(std::move(socket));
+                server->set_idle_timeout(1s);
+                co_await server->read_message();
+                asio::co_spawn(
+                    io,
+                    [&]() -> mcp::Task<void> {
+                        try {
+                            co_await server->read_message();
+                        } catch (const std::exception&) {
+                            // Ends with the connection when the test closes it.
+                        }
+                    },
+                    asio::detached);
+                asio::steady_timer quiet(io, 2500ms);
+                co_await quiet.async_wait(asio::use_awaitable);
+                co_await server->write_message("still here");
+            },
+            asio::detached);
+        co_await client->write_message("hello");
+        received = co_await client->read_message();
+        client->close();
+        server->close();
+    });
+
+    EXPECT_EQ(received, "still here");
+}
+
+TEST(WebSocketLimitsTest, MessageLimitIsSettableOnBothEnds) {
+    asio::io_context io;
+    tcp::acceptor acceptor(io, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
+    const auto port = std::to_string(acceptor.local_endpoint().port());
+    std::shared_ptr<mcp::WebSocketServerTransport> server;
+    auto client = std::make_shared<mcp::WebSocketClientTransport>(io.get_executor(), "127.0.0.1", port);
+    client->set_max_message_bytes(32U * 1024U * 1024U);
+
+    const std::string large(20U * 1024U * 1024U, 'x');
+    std::optional<std::string> received;
+    bool server_refused = false;
+    run_until_done(
+        io,
+        [&]() -> mcp::Task<void> {
+            asio::co_spawn(
+                io,
+                [&]() -> mcp::Task<void> {
+                    auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+                    server = std::make_shared<mcp::WebSocketServerTransport>(std::move(socket));
+                    server->set_max_message_bytes(1024);
+                    co_await server->read_message();
+                    co_await server->write_message(large);
+                    try {
+                        co_await server->read_message();
+                    } catch (const std::exception&) {
+                        server_refused = true;
+                    }
+                },
+                asio::detached);
+            co_await client->write_message("hello");
+            received = co_await client->read_message();
+            co_await client->write_message(std::string(2048, 'y'));
+            try {
+                co_await client->read_message();
+            } catch (const std::exception&) {
+                // The server ended the connection.
+            }
+            client->close();
+        },
+        [&] {
+            client->close();
+            if (server) {
+                server->close();
+            }
+        });
+
+    EXPECT_EQ(received, large);
+    EXPECT_TRUE(server_refused);
+}
+
 TEST(WebSocketOriginTest, AnUpgradeFromAnOriginNotAllowedIsRefused) {
     const auto result =
         handshake_with_origin("https://elsewhere.example", [](mcp::WebSocketServerTransport&) {});

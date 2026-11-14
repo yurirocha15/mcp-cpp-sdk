@@ -43,6 +43,27 @@ TEST_F(EventStoreTest, AppendAndRetrieve) {
     EXPECT_TRUE(after_id3->empty());
 }
 
+// A resume continues the stream that the last event was sent on, never another.
+TEST_F(EventStoreTest, ReplayHoldsOnlyTheStreamOfTheLastEvent) {
+    mcp::EventStore store(10);
+
+    const auto first_a = store.append("a1", "a");
+    const auto first_b = store.append("b1", "b");
+    const auto second_a = store.append("a2", "a");
+    const auto second_b = store.append("b2", "b");
+
+    const auto after_a = store.events_after(first_a);
+    ASSERT_TRUE(after_a.has_value());
+    ASSERT_EQ(after_a->size(), 1U);
+    EXPECT_EQ((*after_a)[0].first, second_a);
+    EXPECT_EQ((*after_a)[0].second, "a2");
+
+    const auto after_b = store.events_after(first_b);
+    ASSERT_TRUE(after_b.has_value());
+    ASSERT_EQ(after_b->size(), 1U);
+    EXPECT_EQ((*after_b)[0].first, second_b);
+}
+
 TEST_F(EventStoreTest, EvictionOnOverflow) {
     mcp::EventStore store(3);
 
@@ -55,6 +76,17 @@ TEST_F(EventStoreTest, EvictionOnOverflow) {
 
     auto result = store.events_after(id1);
     EXPECT_FALSE(result.has_value());
+}
+
+// The bytes of an evicted event are given back, so the store keeps as many events as fit, however
+// many it held before.
+TEST_F(EventStoreTest, EvictedEventsLeaveRoomForNewOnes) {
+    constexpr std::size_t g_event_bytes = 1024 * 1024;
+    mcp::EventStore store(1000);
+    for (int i = 0; i < 100; ++i) {
+        store.append(std::string(g_event_bytes, 'e'));
+    }
+    EXPECT_EQ(store.size(), mcp::constants::g_event_store_max_bytes / g_event_bytes);
 }
 
 TEST_F(EventStoreTest, AllEvents) {
@@ -200,7 +232,9 @@ TEST_F(HttpResumabilityTest, EventStorePopulatedOnWrite) {
     EXPECT_GE(server_transport.event_store().size(), 1);
 }
 
-TEST_F(HttpResumabilityTest, GetWithLastEventIdReplaysEvents) {
+// Each POST is answered on a stream of its own, which its response ends. Resuming the stream of
+// the initialize answer replays nothing, and never the answers of the POSTs after it.
+TEST_F(HttpResumabilityTest, ResumeReplaysNoOtherStream) {
     mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18092, 100);
 
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
@@ -235,6 +269,7 @@ TEST_F(HttpResumabilityTest, GetWithLastEventIdReplaysEvents) {
         asio::detached);
 
     bool replay_received = false;
+    unsigned replay_status = 0;
     std::string replay_body;
     asio::co_spawn(
         io_ctx_,
@@ -281,6 +316,7 @@ TEST_F(HttpResumabilityTest, GetWithLastEventIdReplaysEvents) {
             http::response<http::string_body> response;
             co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
 
+            replay_status = response.result_int();
             if (response.result() == http::status::ok) {
                 replay_body = response.body();
                 replay_received = !replay_body.empty();
@@ -296,11 +332,8 @@ TEST_F(HttpResumabilityTest, GetWithLastEventIdReplaysEvents) {
 
     io_ctx_.run();
 
-    EXPECT_TRUE(replay_received);
-    EXPECT_NE(replay_body.find("id: 2"), std::string::npos);
-    EXPECT_NE(replay_body.find("id: 3"), std::string::npos);
-    EXPECT_NE(replay_body.find("\"result\":\"first\""), std::string::npos);
-    EXPECT_NE(replay_body.find("\"result\":\"second\""), std::string::npos);
+    EXPECT_EQ(replay_status, 200U);
+    EXPECT_FALSE(replay_received) << replay_body;
 }
 
 TEST_F(HttpResumabilityTest, GetWithEvictedEventIdReturns410) {
@@ -388,6 +421,80 @@ TEST_F(HttpResumabilityTest, GetWithEvictedEventIdReturns410) {
     io_ctx_.run();
 
     EXPECT_EQ(get_status_code, 410);
+}
+
+// A server either answers GET with an SSE stream or with 405, so a client can tell which it got.
+TEST_F(HttpResumabilityTest, GetAnswersWithAStreamOnlyWhenResuming) {
+    mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18099);
+    mcp::HttpClientTransport client_transport(io_ctx_.get_executor(), "http://127.0.0.1:18099/mcp");
+
+    std::optional<http::response<http::string_body>> plain;
+    std::optional<http::response<http::string_body>> resumed;
+    asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            auto request = nlohmann::json::parse(co_await server_transport.read_message());
+            nlohmann::json answer = {{"jsonrpc", "2.0"},
+                                     {"result",
+                                      {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                                       {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
+                                       {"capabilities", nlohmann::json::object()}}},
+                                     {"id", request.at("id")}};
+            co_await server_transport.write_message(answer.dump());
+        },
+        asio::detached);
+    asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            nlohmann::json initialize = {
+                {"jsonrpc", "2.0"},
+                {"method", "initialize"},
+                {"params",
+                 {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+                  {"capabilities", nlohmann::json::object()},
+                  {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}}}},
+                {"id", 1}};
+            co_await client_transport.write_message(initialize.dump());
+            co_await client_transport.read_message();
+
+            const auto get = [&](std::optional<std::string> last_event_id)
+                -> mcp::Task<http::response<http::string_body>> {
+                beast::tcp_stream stream(io_ctx_.get_executor());
+                auto resolver = asio::ip::tcp::resolver(io_ctx_.get_executor());
+                auto endpoints =
+                    co_await resolver.async_resolve("127.0.0.1", "18099", asio::use_awaitable);
+                co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+                http::request<http::empty_body> get_request{http::verb::get, "/mcp", 11};
+                get_request.set(http::field::host, "127.0.0.1");
+                get_request.set(http::field::accept, "text/event-stream");
+                get_request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+                get_request.set("MCP-Session-Id", client_transport.session_id());
+                if (last_event_id) {
+                    get_request.set("Last-Event-ID", *last_event_id);
+                }
+                co_await http::async_write(stream, get_request, asio::use_awaitable);
+                beast::flat_buffer buffer;
+                http::response<http::string_body> response;
+                co_await http::async_read(stream, buffer, response, asio::use_awaitable);
+                co_return response;
+            };
+            plain = co_await get(std::nullopt);
+            resumed = co_await get(std::string("1"));
+            client_transport.close();
+            server_transport.close();
+        },
+        asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_TRUE(plain.has_value());
+    EXPECT_EQ(plain->result_int(), 405);
+    EXPECT_EQ((*plain)[http::field::allow], "POST, DELETE");
+    ASSERT_TRUE(resumed.has_value());
+    EXPECT_EQ(resumed->result_int(), 200);
+    EXPECT_EQ((*resumed)[http::field::content_type], "text/event-stream");
+    EXPECT_EQ(resumed->body(), "");
 }
 
 TEST_F(HttpResumabilityTest, ClientParsesEventIdFromSseResponse) {

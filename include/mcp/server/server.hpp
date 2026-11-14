@@ -338,7 +338,10 @@ class MCP_API Server {
      *
      * Middleware executes in registration order (first registered = outermost).
      * Each middleware receives the context, request parameters, and a
-     * continuation to call the next in the chain or the final handler.
+     * continuation to call the next in the chain or the final handler. It runs for every request
+     * that reaches an application handler: tools/call, resources/read, prompts/get,
+     * resources/subscribe, resources/unsubscribe and completion/complete. Requests the server
+     * answers itself, such as the list methods, ping and logging/setLevel, do not pass through it.
      *
      * @param mw Middleware function to register.
      */
@@ -367,6 +370,45 @@ class MCP_API Server {
      * @param size The maximum number of items per page. 0 means no pagination.
      */
     void set_page_size(std::size_t size);
+
+    /**
+     * @brief Set how many requests of one session may run at once.
+     *
+     * @details A request past the limit is answered with an error instead of being queued, so a
+     * peer that sends requests faster than they finish cannot grow the process without bound. The
+     * same answer goes to a request past the memory limit, set_max_in_flight_bytes().
+     *
+     * @param limit The limit, at least 1. The default is 1024.
+     * @throws std::invalid_argument If @p limit is 0.
+     */
+    void set_max_in_flight_requests(std::size_t limit);
+
+    /**
+     * @brief Set how much memory the requests of one session that are running, and their answers
+     * that are not written yet, may take.
+     *
+     * @details A request is counted as its parsed JSON takes memory, which can be far more than its
+     * text: an array of empty objects takes about 27 times its length. An answer is counted by its
+     * length until the peer has taken it, so a peer that stops reading stops the session from
+     * reading more requests. A request that would go past the limit is answered with an error, as
+     * one past set_max_in_flight_requests() is. The handlers' own copies of a request are not
+     * counted.
+     *
+     * @param bytes The limit, at least 1. The default is 256 MiB.
+     * @throws std::invalid_argument If @p bytes is 0.
+     */
+    void set_max_in_flight_bytes(std::size_t bytes);
+
+    /**
+     * @brief Set how long a request the server sends the client may wait for its answer.
+     *
+     * @details The request then fails in the handler that made it, as a client that never answers
+     * would otherwise hold that handler for as long as the session lasts.
+     *
+     * @param timeout The timeout, longer than zero. The default is ten minutes.
+     * @throws std::invalid_argument If @p timeout is not positive.
+     */
+    void set_reverse_request_timeout(std::chrono::milliseconds timeout);
 
     /**
      * @brief Set the instructions string returned by initialize and server/discover.

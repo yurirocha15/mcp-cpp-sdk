@@ -35,6 +35,7 @@
 
 // Reach-in for retained-state assertions; see the header. Not a public SDK header.
 #include "../../src/auth/oauth_internal.hpp"
+#include "../support/hang_guard.hpp"
 #include "../support/resolve_gate.hpp"
 #include "../support/socket_gate.hpp"
 
@@ -45,6 +46,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #if BOOST_VERSION >= 107700
@@ -1619,7 +1621,11 @@ TEST(AuthScopeStepUpTest, UnionsTheGrantedScopeWithAForbiddenChallengeAndReplays
     EXPECT_EQ(server.authorizations().back(), "Bearer granted-access-token");
 }
 
-TEST(AuthScopeStepUpTest, StopsAfterThreeAuthorizationChallengesForOneRequest) {
+namespace {
+
+/// The consent prompts one request costs against a server that answers a 401 and then refuses
+/// every token with insufficient_scope, with @p options on the transport, and whether it failed.
+std::pair<std::size_t, bool> prompts_for_one_request(mcp::auth::OAuthClientTransportOptions options) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
     const auto base = server.base_url();
@@ -1673,7 +1679,7 @@ TEST(AuthScopeStepUpTest, StopsAfterThreeAuthorizationChallengesForOneRequest) {
                 std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
             auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
                 io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
-            mcp::auth::OAuthClientTransport transport(inner, manager);
+            mcp::auth::OAuthClientTransport transport(inner, manager, options);
             try {
                 co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
             } catch (...) {
@@ -1685,10 +1691,33 @@ TEST(AuthScopeStepUpTest, StopsAfterThreeAuthorizationChallengesForOneRequest) {
         asio::detached);
 
     io_ctx.run();
+    return {requested_scopes.size(), failure != nullptr};
+}
 
-    // The refusal is surfaced rather than retried forever, and the cap is three per request.
-    EXPECT_NE(failure, nullptr);
-    EXPECT_EQ(requested_scopes.size(), 3U);
+}  // namespace
+
+// The refusal is surfaced rather than retried forever: by default a request costs the
+// authorization its 401 asks for and one step-up.
+TEST(AuthScopeStepUpTest, AllowsOneStepUpPerRequestByDefault) {
+    const auto [prompts, failed] = prompts_for_one_request({});
+    EXPECT_TRUE(failed);
+    EXPECT_EQ(prompts, 2U);
+}
+
+// With no step-ups allowed, the 403 goes to the caller; with more, three challenges in all are
+// honoured per request.
+TEST(AuthScopeStepUpTest, StepUpsPerRequestAreConfigurable) {
+    mcp::auth::OAuthClientTransportOptions none;
+    none.max_step_ups_per_request = 0;
+    const auto [prompts_without, failed_without] = prompts_for_one_request(none);
+    EXPECT_TRUE(failed_without);
+    EXPECT_EQ(prompts_without, 1U);
+
+    mcp::auth::OAuthClientTransportOptions many;
+    many.max_step_ups_per_request = 10;
+    const auto [prompts_with, failed_with] = prompts_for_one_request(many);
+    EXPECT_TRUE(failed_with);
+    EXPECT_EQ(prompts_with, 3U);
 }
 
 // A step-up whose challenge names a different authorization server, and which that server's user
@@ -1893,7 +1922,7 @@ TEST(AuthTransportCloseTest, CloseDuringDiscoveryAbortsTheStalledExchange) {
     // Declared before the work is spawned so the coroutine can cancel it on completion instead of
     // io_ctx.run() always waiting out the full watchdog window.
     asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error && !completed) {
             timed_out = true;
@@ -1983,7 +2012,7 @@ TEST(AuthTransportCloseTest, CloseDuringTokenExchangeAbortsTheStalledExchange) {
     std::exception_ptr failure;
 
     asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error && !completed) {
             timed_out = true;
@@ -2106,7 +2135,7 @@ TEST(AuthTransportCloseTest, AFollowerReportsItsOwnFlightsFailureNotALaterFlight
 
     std::atomic<bool> timed_out{false};
     asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(std::chrono::seconds(30));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error) {
             timed_out.store(true);
@@ -2134,7 +2163,7 @@ TEST(AuthTransportCloseTest, AFollowerReportsItsOwnFlightsFailureNotALaterFlight
         },
         asio::detached);
 
-    ASSERT_EQ(leader_parked.wait_for(std::chrono::seconds(10)), std::future_status::ready)
+    ASSERT_EQ(leader_parked.wait_for(g_hang_guard), std::future_status::ready)
         << "the first leader never reached the authorization callback";
 
     // Spawned before the blocker is posted to the same strand, so the follower has already joined
@@ -2160,13 +2189,13 @@ TEST(AuthTransportCloseTest, AFollowerReportsItsOwnFlightsFailureNotALaterFlight
         blocker_running_signal.set_value();
         blocker_release.wait();
     });
-    ASSERT_EQ(blocker_running.wait_for(std::chrono::seconds(10)), std::future_status::ready)
+    ASSERT_EQ(blocker_running.wait_for(g_hang_guard), std::future_status::ready)
         << "the follower's strand was never taken over, so nothing was held back";
 
     // Release the first leader, which now fails.
     asio::post(leader_strand,
                [&leader_gate]() { leader_gate.expires_at(asio::steady_timer::time_point::min()); });
-    ASSERT_EQ(first_leader.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+    ASSERT_EQ(first_leader.wait_for(g_hang_guard), std::future_status::ready);
     const auto first_message = first_leader.get();
     ASSERT_NE(first_message.find(leader_failure_text), std::string::npos)
         << "the first leader did not fail the way this test needs it to: " << first_message;
@@ -2184,13 +2213,13 @@ TEST(AuthTransportCloseTest, AFollowerReportsItsOwnFlightsFailureNotALaterFlight
             second_leader_signal.set_value(authorized);
         },
         asio::detached);
-    ASSERT_EQ(second_leader.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+    ASSERT_EQ(second_leader.wait_for(g_hang_guard), std::future_status::ready);
     ASSERT_TRUE(second_leader.get())
         << "the second flight had to succeed for this test to mean anything";
 
     // Only now may the follower wake.
     blocker_release_signal.set_value();
-    const auto follower_status = follower_result.wait_for(std::chrono::seconds(10));
+    const auto follower_status = follower_result.wait_for(g_hang_guard);
 
     io_ctx.stop();
     for (auto& runner : runners) {
@@ -2240,7 +2269,7 @@ TEST(AuthTransportCloseTest, CloseWhileAFollowerIsParkedOnTheSingleFlightTimerWa
     std::exception_ptr follower_failure;
 
     asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error && !(leader_done && follower_done)) {
             timed_out = true;
@@ -2362,7 +2391,7 @@ TEST(AuthTransportCloseTest,
     std::exception_ptr leader_failure;
 
     asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error && followers_done < follower_count) {
             timed_out = true;
@@ -2388,7 +2417,7 @@ TEST(AuthTransportCloseTest,
     // Bounded even though discovery against this instant loopback server should resolve in well
     // under a millisecond: nothing here may block the main thread indefinitely, since a stall here
     // would sit outside the io_context's own watchdog entirely.
-    const auto parked_status = leader_parked.wait_for(std::chrono::seconds(5));
+    const auto parked_status = leader_parked.wait_for(g_hang_guard);
 
     if (parked_status == std::future_status::ready) {
         for (int index = 0; index < follower_count; ++index) {
@@ -2515,7 +2544,7 @@ TEST(AuthTransportCloseTest, CloseWakesEveryFollowerWhileTheyKeepArrivingOnAMult
     }
 
     asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(std::chrono::seconds(30));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error && followers_done.load() < follower_count) {
             timed_out.store(true);
@@ -2540,7 +2569,7 @@ TEST(AuthTransportCloseTest, CloseWakesEveryFollowerWhileTheyKeepArrivingOnAMult
         runners.emplace_back([&io_ctx]() { io_ctx.run(); });
     }
 
-    const auto parked_status = leader_parked.wait_for(std::chrono::seconds(10));
+    const auto parked_status = leader_parked.wait_for(g_hang_guard);
 
     std::thread feeder;
     if (parked_status == std::future_status::ready) {
@@ -2660,7 +2689,7 @@ TEST(AuthTransportCloseTest, AFollowerReleasedFromTheSingleFlightTimerResumesOnI
     std::exception_ptr leader_failure;
 
     asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(std::chrono::seconds(30));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error && !follower_done.load()) {
             timed_out.store(true);
@@ -2685,7 +2714,7 @@ TEST(AuthTransportCloseTest, AFollowerReleasedFromTheSingleFlightTimerResumesOnI
         runners.emplace_back([&io_ctx]() { io_ctx.run(); });
     }
 
-    const auto parked_status = leader_parked.wait_for(std::chrono::seconds(10));
+    const auto parked_status = leader_parked.wait_for(g_hang_guard);
 
     bool follower_was_parked = false;
     if (parked_status == std::future_status::ready) {
@@ -2774,7 +2803,7 @@ TEST(AuthTransportCloseTest, CloseFromAnotherThreadWhileAuthorizationIsInFlightT
     std::exception_ptr failure;
 
     asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error && !completed) {
             timed_out = true;
@@ -2799,7 +2828,7 @@ TEST(AuthTransportCloseTest, CloseFromAnotherThreadWhileAuthorizationIsInFlightT
 
     // Wait until the discovery fetch has connected to the stalling server (a fixed head start is
     // not enough under sanitizer slowdown), then close from a thread that never runs the io_context.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    const auto deadline = std::chrono::steady_clock::now() + g_hang_guard;
     while (stalling.accepted() < 1 && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
@@ -2846,7 +2875,7 @@ TEST(AuthTransportCloseTest, AbortBetweenResolutionAndConnectOpensNoConnection) 
     asio::ip::tcp::endpoint first_accepted_endpoint;
 
     asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error && !completed) {
             timed_out = true;
@@ -2947,7 +2976,7 @@ TEST(AuthTransportCloseTest, CloseWhileTheResolverIsPastItsCancelCheckOpensNoCon
 
     std::thread runner([&io_ctx]() { io_ctx.run(); });
 
-    const auto limit = std::chrono::seconds(10);
+    const auto limit = g_hang_guard;
     const bool lookup_held = resolve_gate().wait_until_entered(limit);
 
     // close() posts its abort to the io_context. Two further hops through the same queue cannot
@@ -3013,7 +3042,7 @@ void expect_abort_during_socket_open_stops_the_exchange(
     std::thread first_runner([&io_ctx]() { io_ctx.run(); });
     std::thread second_runner([&io_ctx]() { io_ctx.run(); });
 
-    const auto limit = std::chrono::seconds(10);
+    const auto limit = g_hang_guard;
     const bool open_held = socket_gate().wait_until_entered(limit);
 
     // One io thread is parked in socket(), so the other runs everything posted from here, in
@@ -3178,7 +3207,7 @@ TEST(AuthTransportCloseTest, AbortRacingExchangesOnThreeIoThreadsEndsEveryReques
         }
         client->abort_pending();
 
-        if (request_finished.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
+        if (request_finished.wait_for(g_hang_guard) != std::future_status::ready) {
             break;
         }
         ++ended;
@@ -3220,14 +3249,14 @@ TEST(AuthHttpClientExecutorTest, ACallerThatBlocksAfterARequestDoesNotStallTheCl
             }
             first_resumed.set_value();
             // Blocks the io thread it resumed on, as a caller doing synchronous work would.
-            (void)first_released.wait_for(std::chrono::seconds(30));
+            (void)first_released.wait_for(g_release_guard);
         },
         asio::detached);
 
     std::thread first_runner([&io_ctx]() { io_ctx.run(); });
     std::thread second_runner([&io_ctx]() { io_ctx.run(); });
 
-    const auto limit = std::chrono::seconds(10);
+    const auto limit = g_hang_guard;
     const bool resumed = first_has_resumed.wait_for(limit) == std::future_status::ready;
 
     std::promise<void> second_done;
@@ -3313,14 +3342,14 @@ CancelledCallerOutcome cancel_a_caller_mid_request(asio::cancellation_type type)
             outcome.still_throws_if_cancelled = co_await asio::this_coro::throw_if_cancelled();
             first_resumed.set_value();
             // Blocks the io thread it resumed on, as a caller doing synchronous work would.
-            (void)first_released.wait_for(std::chrono::seconds(30));
+            (void)first_released.wait_for(g_release_guard);
         },
         asio::bind_cancellation_slot(cancel.slot(), asio::detached));
 
     std::thread first_runner([&io_ctx]() { io_ctx.run(); });
     std::thread second_runner([&io_ctx]() { io_ctx.run(); });
 
-    const auto limit = std::chrono::seconds(10);
+    const auto limit = g_hang_guard;
     outcome.resumed = first_has_resumed.wait_for(limit) == std::future_status::ready;
 
     std::promise<void> second_done;
@@ -3805,7 +3834,7 @@ TEST(AuthTransportCloseTest, CloseWithQueuedPendingRequestsFailsThemPromptlyWith
     bool timed_out = false;
 
     asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error && completed < request_count) {
             timed_out = true;
@@ -3910,7 +3939,7 @@ TEST(AuthTransportCloseTest, ANewTransportOverTheSameManagerAuthorizesAfterTheFi
     std::string second_failure;
 
     asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error && !done) {
             timed_out = true;
@@ -4044,7 +4073,7 @@ TEST(AuthTransportCloseTest, ClosingATransportEndsOnlyTheAuthenticatorsRefreshIn
     int accepted_before_authenticator_close = 0;
 
     asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error && !done) {
             timed_out = true;
@@ -4206,7 +4235,7 @@ TEST(AuthAuthorizationManagerTest, CancelReleasesARefreshInFlightAndLeavesRefres
     bool stopping = false;
 
     asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error && !done) {
             timed_out = true;
@@ -4495,7 +4524,7 @@ void expect_close_during_refresh_starts_no_authorization(bool refresh_refused) {
     bool done = false;
     bool timed_out = false;
     asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error && !done) {
             timed_out = true;
@@ -4618,7 +4647,7 @@ int consent_prompts_for_a_write_whose_transport_closes(bool forwards_cancel) {
     bool done = false;
     bool timed_out = false;
     asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(std::chrono::seconds(10));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](boost::system::error_code error) {
         if (!error && !done) {
             timed_out = true;
@@ -4726,6 +4755,100 @@ TEST(AuthIssuerBindingTest, RejectsAuthServerMetadataWhoseIssuerIsNotItsDiscover
     // Refused before any consent prompt or token exchange could bind a credential to the wrong AS.
     EXPECT_TRUE(requested_scopes.empty());
     EXPECT_FALSE(store->load(config.server_url).has_value());
+}
+
+namespace {
+
+/// Runs one challenge against a server whose metadata names `authorization_endpoint`, and reports
+/// whether the challenge threw and which authorization URL reached the consent callback.
+struct EndpointOutcome {
+    bool threw{false};
+    std::string authorization_url;
+    std::size_t requests{0};
+};
+
+EndpointOutcome challenge_with_authorization_endpoint(const std::string& authorization_endpoint) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            auto metadata = auth_server_metadata(base, true);
+            metadata["authorization_endpoint"] = authorization_endpoint;
+            return json_response(metadata);
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    EndpointOutcome outcome;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+                io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(), config,
+                echoing_callback(&outcome.authorization_url));
+            try {
+                (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                             R"(/prm")");
+            } catch (const std::exception&) {
+                outcome.threw = true;
+            }
+            server.close();
+        },
+        asio::detached);
+    io_ctx.run();
+    outcome.requests = server.targets().size();
+    return outcome;
+}
+
+}  // namespace
+
+// The application opens the authorization URL in a browser, and the server names it. A URL of
+// another scheme, with a fragment, or with characters a URI cannot hold never reaches the callback.
+TEST(AuthAuthorizationEndpointTest, RefusesAnEndpointThatIsNotAPlainHttpsUrl) {
+    const std::vector<std::string> endpoints = {
+        "file:///etc/passwd",
+        "javascript:alert(document.cookie)//",
+        R"(\\attacker.test\share\payload.exe)",
+        R"(https://x.test/a";touch${IFS}/tmp/pwned;")",
+        "https://x.test/a b",
+        "https://x.test/authorize#fragment",
+        "http://x.test/authorize",
+        "data:text/html,hello",
+    };
+    for (const auto& endpoint : endpoints) {
+        const auto outcome = challenge_with_authorization_endpoint(endpoint);
+        EXPECT_TRUE(outcome.threw) << endpoint;
+        EXPECT_TRUE(outcome.authorization_url.empty())
+            << endpoint << " -> " << outcome.authorization_url;
+        // Refused after the two metadata documents and before any token request.
+        EXPECT_EQ(outcome.requests, 2U) << endpoint;
+    }
+}
+
+// The browser, not the SDK, connects to the authorization endpoint, so it may sit on another origin
+// than the metadata, as many providers' do.
+TEST(AuthAuthorizationEndpointTest, AcceptsAnHttpsEndpointOnAnotherOrigin) {
+    const auto outcome = challenge_with_authorization_endpoint("https://login.example.com/authorize");
+    EXPECT_FALSE(outcome.threw);
+    EXPECT_EQ(outcome.authorization_url.rfind("https://login.example.com/authorize?", 0), 0U)
+        << outcome.authorization_url;
+    EXPECT_EQ(outcome.requests, 3U);
 }
 
 TEST(AuthClientIdentityBindingTest, RefusesInjectedCredentialsBoundToADifferentIssuer) {
@@ -6041,7 +6164,7 @@ TEST(AuthHttpClientPolicyTest, ReplacingThePolicyAndResolverUnderLiveRequestsIsS
             asio::detached);
     }
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    const auto deadline = std::chrono::steady_clock::now() + g_hang_guard;
     while (completed.load() < request_count && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }

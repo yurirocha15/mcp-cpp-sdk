@@ -51,6 +51,8 @@ Static library and private dependency metadata for explicit static consumers.
 %build
 %cmake -G Ninja -DMCP_CPP_SDK_BUILD_SHARED=ON -DMCP_CPP_SDK_BUILD_STATIC=ON -DBUILD_TESTING=ON -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo
 %cmake_build
+# The test binary is linked; its objects are not needed again and would only use build space.
+rm -rf %{__cmake_builddir}/CMakeFiles/mcp-sdk-tests.dir
 
 %check
 %ctest --output-on-failure

@@ -151,6 +151,78 @@ TEST(ServerMiddlewareTest, MiddlewareShortCircuits) {
 }
 
 // Test 3: Multiple middlewares execute in order (1→2→handler→2→1)
+// Each of these reaches an application handler, so a middleware guarding the server guards it too.
+TEST(ServerMiddlewareTest, MiddlewareGuardsSubscriptionsAndCompletion) {
+    boost::asio::io_context io;
+
+    ServerCapabilities caps;
+    ServerCapabilities::ResourcesCapability resources_cap;
+    resources_cap.subscribe = true;
+    caps.resources = std::move(resources_cap);
+    caps.completions = json::object();
+
+    Implementation info;
+    info.name = "test-server";
+    info.version = "1.0";
+
+    Server server(std::move(info), std::move(caps));
+    server.use([](Context& ctx, const json& params, TypeErasedHandler next) -> Task<json> {
+        if (params.contains("refuse")) {
+            throw std::runtime_error("refused by middleware");
+        }
+        co_return co_await next(ctx, params);
+    });
+
+    int handler_calls = 0;
+    server.on_subscribe([&handler_calls](const std::string&) { ++handler_calls; });
+    server.on_unsubscribe([&handler_calls](const std::string&) { ++handler_calls; });
+    server.set_completion_provider(
+        [&handler_calls](const mcp::CompleteParams&) -> Task<mcp::CompleteResult> {
+            ++handler_calls;
+            co_return mcp::CompleteResult{};
+        });
+
+    auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
+    auto* transport_ptr = transport.get();
+    std::vector<json> responses;
+    transport_ptr->set_on_write([&responses, transport_ptr](std::string_view msg) {
+        responses.push_back(json::parse(msg));
+        if (responses.size() >= 7) {
+            transport_ptr->close();
+        }
+    });
+    transport_ptr->enqueue_message(make_initialize_request("0").dump());
+    transport_ptr->enqueue_message(make_initialized_notification().dump());
+    const json completion = {{"ref", {{"type", "ref/prompt"}, {"name", "p"}}},
+                             {"argument", {{"name", "a"}, {"value", "b"}}}};
+    const std::vector<std::pair<std::string, json>> requests = {
+        {"resources/subscribe", {{"uri", "mem://a"}}},
+        {"resources/unsubscribe", {{"uri", "mem://a"}}},
+        {"completion/complete", completion},
+    };
+    int id = 1;
+    for (const auto& [method, params] : requests) {
+        for (const bool refuse : {true, false}) {
+            json sent = params;
+            if (refuse) {
+                sent["refuse"] = true;
+            }
+            transport_ptr->enqueue_message(
+                json{{"jsonrpc", "2.0"}, {"id", id++}, {"method", method}, {"params", sent}}.dump());
+        }
+    }
+
+    boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
+    io.run();
+
+    ASSERT_EQ(responses.size(), 7U);
+    EXPECT_EQ(handler_calls, 3);
+    for (int request = 1; request <= 6; ++request) {
+        const auto& response = responses[static_cast<std::size_t>(request)];
+        EXPECT_EQ(response.contains("error"), request % 2 == 1) << response;
+    }
+}
+
 TEST(ServerMiddlewareTest, MultipleMiddlewaresExecuteInOrder) {
     boost::asio::io_context io;
 

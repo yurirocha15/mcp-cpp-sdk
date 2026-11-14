@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "mcp/core/context.hpp"
@@ -88,8 +89,9 @@ void run_server_io_on_thread_pool(boost::asio::io_context& io_context, std::size
 }
 
 mcp::Task<void> verify_memory_transport_parse_recovery(
-    std::shared_ptr<mcp::ITransport> client_transport, std::vector<nlohmann::json>* responses) {
-    const auto malformed_wire = std::make_shared<const std::string>("{");
+    std::shared_ptr<mcp::ITransport> client_transport, std::vector<nlohmann::json>* responses,
+    std::string malformed = "{") {
+    const auto malformed_wire = std::make_shared<const std::string>(std::move(malformed));
     co_await client_transport->write_message(*malformed_wire);
     {
         auto response_wire = co_await client_transport->read_message();
@@ -635,11 +637,41 @@ TEST_F(ServerCoreTest, MalformedAndNonObjectMessagesReturnErrorsThenAcceptValidR
 
     ASSERT_EQ(responses.size(), 3);
     EXPECT_EQ(responses[0]["error"]["code"], mcp::g_PARSE_ERROR);
-    EXPECT_TRUE(responses[0]["id"].is_null());
+    EXPECT_FALSE(responses[0].contains("id"));
     EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_REQUEST);
-    EXPECT_TRUE(responses[1]["id"].is_null());
+    EXPECT_FALSE(responses[1].contains("id"));
     EXPECT_EQ(responses[2]["id"], "ping");
     EXPECT_EQ(responses[2]["result"], nlohmann::json::object());
+}
+
+// A number past the range of a double cannot be parsed: it is answered as a parse error, and the
+// session goes on.
+TEST_F(ServerCoreTest, MemoryTransportRecoversFromANumberOutOfRange) {
+    mcp::Server server({"validation-server", "1.0"}, mcp::ServerCapabilities{});
+    auto [server_transport, client_transport] =
+        mcp::create_memory_transport_pair(io_ctx_.get_executor());
+
+    std::vector<nlohmann::json> responses;
+    std::exception_ptr server_error;
+    std::exception_ptr client_error;
+    boost::asio::co_spawn(
+        io_ctx_, server.run(server_transport, io_ctx_.get_executor()),
+        [&server_error](std::exception_ptr error) { server_error = std::move(error); });
+    boost::asio::co_spawn(
+        io_ctx_,
+        verify_memory_transport_parse_recovery(
+            client_transport, &responses,
+            R"({"jsonrpc":"2.0","id":3,"method":"ping","params":{"x":1e400}})"),
+        [&client_error](std::exception_ptr error) { client_error = std::move(error); });
+
+    io_ctx_.run();
+
+    EXPECT_EQ(server_error, nullptr);
+    EXPECT_EQ(client_error, nullptr);
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[0]["error"]["code"], mcp::g_PARSE_ERROR);
+    EXPECT_EQ(responses[1]["id"], 7);
+    EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
 }
 
 TEST_F(ServerCoreTest, MemoryTransportRecoversFromMalformedJson) {
@@ -663,7 +695,7 @@ TEST_F(ServerCoreTest, MemoryTransportRecoversFromMalformedJson) {
     EXPECT_EQ(client_error, nullptr);
     ASSERT_EQ(responses.size(), 2);
     EXPECT_EQ(responses[0]["error"]["code"], mcp::g_PARSE_ERROR);
-    EXPECT_TRUE(responses[0]["id"].is_null());
+    EXPECT_FALSE(responses[0].contains("id"));
     EXPECT_EQ(responses[1]["id"], 7);
     EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
 }
@@ -936,7 +968,7 @@ TEST_F(ServerCoreTest, ReverseRequestResponseCarryingNullErrorIsAccepted) {
     };
     launch();
 
-    io_ctx_.run_for(5s);
+    io_ctx_.run_for(g_hang_guard);
 
     ASSERT_TRUE(completed) << "the reverse request never correlated with its response";
     EXPECT_EQ(reverse_result["ok"], true);
@@ -1022,7 +1054,7 @@ TEST_F(ServerCoreTest, ConcurrentReverseRequestsRemainCorrelatedOnMultiThreadedE
     // Wide for the same reason as in the client's twin of this test: a sanitizer can stop every
     // thread for seconds, and the bound only ends a run that has gone wrong.
     boost::asio::steady_timer watchdog(io_ctx_);
-    watchdog.expires_after(60s);
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait(
         [&completed, &stop_poll, client_transport](const boost::system::error_code& error) {
             if (!error && completed.load(std::memory_order_acquire) != request_count) {
@@ -1549,7 +1581,7 @@ ReverseErrorOutcome reverse_request_against_peer_error(boost::asio::io_context& 
         boost::asio::detached);
 
     boost::asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(10s);
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([client_transport](const boost::system::error_code& error) {
         if (!error) {
             client_transport->close();
@@ -1560,14 +1592,15 @@ ReverseErrorOutcome reverse_request_against_peer_error(boost::asio::io_context& 
         io_ctx,
         [&io_ctx, &server, &outcome, &session_ready, &watchdog, client_transport]() -> mcp::Task<void> {
             boost::asio::steady_timer poll(io_ctx);
-            for (int attempt = 0; attempt < 5000 && !session_ready.load(std::memory_order_acquire);
-                 ++attempt) {
+            const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
+            while (!session_ready.load(std::memory_order_acquire) &&
+                   std::chrono::steady_clock::now() < give_up) {
                 poll.expires_after(1ms);
                 co_await poll.async_wait(boost::asio::use_awaitable);
             }
             co_await capture_reverse_request_error(server, outcome);
             // Cancelled rather than left pending: an armed watchdog is outstanding work, and
-            // io_context::run() would sit on it for the full ten seconds after the test is done.
+            // io_context::run() would sit on it until it ran out after the test is done.
             watchdog.cancel();
             client_transport->close();
         },

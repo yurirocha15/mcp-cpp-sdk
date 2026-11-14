@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "mcp/client/client.hpp"
@@ -7,8 +8,10 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <chrono>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -222,6 +225,65 @@ TEST_F(ClientNotificationsTest, CustomRequestHandlerDispatch) {
     EXPECT_EQ(response["result"]["roots"][0]["uri"], "file:///workspace");
 }
 
+// A handler whose result, or whose exception's text, is not UTF-8 still has the server answered,
+// with an error, instead of leaving the server's request to wait out its timeout.
+TEST_F(ClientNotificationsTest, AnswerThatCannotBeEncodedIsAnError) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw = transport.get();
+
+    mcp::Client client(transport, io_ctx_.get_executor());
+    const std::string not_utf8 = "\xff\xfe";
+    client.on_request("test/result", [&](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+        co_return nlohmann::json{{"path", not_utf8}};
+    });
+    client.on_request("test/throw", [&](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+        throw std::runtime_error("cannot open " + not_utf8);
+        co_return nlohmann::json::object();
+    });
+
+    // Bounds a missing answer, which would otherwise leave the exchange open.
+    boost::asio::steady_timer guard(io_ctx_, g_hang_guard);
+    guard.async_wait([raw](const boost::system::error_code& error) {
+        if (!error) {
+            raw->close();
+        }
+    });
+    std::vector<nlohmann::json> written;
+    raw->set_on_write([&](std::string_view msg) {
+        written.push_back(nlohmann::json::parse(msg));
+        if (written.size() == 1) {
+            raw->enqueue_message(nlohmann::json{
+                {"jsonrpc", "2.0"}, {"id", written[0]["id"]}, {"result", make_initialize_result()}}
+                                     .dump());
+        } else if (written.size() == 2) {
+            raw->enqueue_message(
+                nlohmann::json{{"jsonrpc", "2.0"}, {"id", "r"}, {"method", "test/result"}}.dump());
+            raw->enqueue_message(
+                nlohmann::json{{"jsonrpc", "2.0"}, {"id", "t"}, {"method", "test/throw"}}.dump());
+        } else if (written.size() == 4) {
+            guard.cancel();
+            raw->close();
+        }
+    });
+
+    boost::asio::co_spawn(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    std::map<std::string, nlohmann::json> answers;
+    for (const auto& message : written) {
+        if (message.contains("id") && message["id"].is_string()) {
+            answers[message["id"].get<std::string>()] = message;
+        }
+    }
+    for (const auto* id : {"r", "t"}) {
+        ASSERT_TRUE(answers.count(id) == 1) << id;
+        EXPECT_EQ(answers[id]["error"]["code"], mcp::g_INTERNAL_ERROR) << answers[id].dump();
+        EXPECT_EQ(answers[id]["error"]["message"], "The answer could not be encoded as JSON");
+    }
+}
+
 TEST_F(ClientNotificationsTest, UnknownRequestReturnsMethodNotFound) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
@@ -284,8 +346,8 @@ NotificationSessionOutcome deliver_notifications(
     NotificationSessionOutcome outcome;
 
     mcp::ClientOptions options;
-    // Short enough that a swallowed response surfaces as a test failure instead of a stalled run.
-    options.request_timeout = std::chrono::seconds(5);
+    // Bounded, so that a swallowed response surfaces as a test failure instead of a stalled run.
+    options.request_timeout = g_hang_guard;
     options.on_protocol_error = [&](const mcp::Error& error) { outcome.reported.push_back(error); };
     mcp::Client client(transport, io_ctx.get_executor(), options);
     register_handlers(client);

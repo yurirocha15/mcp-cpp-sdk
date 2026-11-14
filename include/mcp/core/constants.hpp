@@ -9,6 +9,9 @@ namespace mcp::constants {
  * @brief The default capacity of the event store.
  */
 inline constexpr std::size_t g_event_store_default_capacity = 1024;
+/// Most bytes of events one replay store keeps. Older events are dropped first, and the newest is
+/// kept whatever its size.
+inline constexpr std::size_t g_event_store_max_bytes = 32U * 1024U * 1024U;
 
 /**
  * @brief Hexadecimal digits used for base64 encoding.

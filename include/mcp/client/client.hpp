@@ -87,6 +87,14 @@ struct ClientOptions {
      * the deadline.
      */
     std::chrono::milliseconds request_timeout{std::chrono::seconds(30)};
+    /**
+     * @brief Memory the server's requests being answered, and the answers not yet written, may
+     * take before the client stops reading. 256 MiB unless set; must be positive.
+     *
+     * A request is counted as its parsed JSON takes memory, which can be far more than its text.
+     * The client also stops reading while it answers 1024 requests of the server.
+     */
+    std::size_t max_incoming_request_bytes{std::size_t{256} * 1024 * 1024};
     /** @brief Reject malformed JSON-RPC envelopes received from the peer. */
     bool strict_protocol_validation{true};
     /**
@@ -105,16 +113,19 @@ struct ClientOptions {
     /**
      * @brief Check the schemas of the tools the server lists.
      *
-     * list_tools() compiles each tool's `inputSchema` and `outputSchema` and leaves out a tool
-     * whose schema is not one CompiledSchema accepts (invalid, an unsupported dialect, or a `$ref`
-     * outside the document), reporting it through on_tool_schema_error. call_tool() then checks the
+     * list_tools() lists every tool the server names and compiles each `outputSchema`, reporting
+     * one it cannot use through on_tool_schema_error. call_tool() then checks the
      * `structuredContent` of a successful result against the output schema from the most recent
      * list_tools() result that included the tool, and throws StructuredContentError when it does
-     * not conform. A tool the client has not seen listed is not checked.
+     * not conform. A call of a tool whose output schema is invalid, in an unsupported dialect or
+     * has a `$ref` outside the document throws that SchemaError. A schema that only uses a pattern
+     * the matcher cannot run, such as a lookahead, leaves that tool's results unchecked. A tool the
+     * client has not seen listed is not checked. The server enforces `inputSchema`, so the client
+     * does not compile it.
      */
     bool validate_tool_schemas{true};
     /**
-     * @brief Invoked for each tool list_tools() leaves out because its schema cannot be used.
+     * @brief Invoked for each tool whose output schema list_tools() found it cannot use.
      *
      * Runs inside list_tools(), so it must not block. An exception thrown from it is discarded.
      */

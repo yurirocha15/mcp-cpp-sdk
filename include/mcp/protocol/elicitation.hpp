@@ -2,6 +2,9 @@
 
 #include <mcp/protocol/base.hpp>
 
+#include <stdexcept>
+#include <string>
+
 namespace mcp {
 
 /**
@@ -118,7 +121,9 @@ inline void to_json(nlohmann::json& json_obj, const ElicitRequestFormParams& par
 }
 
 inline void from_json(const nlohmann::json& json_obj, ElicitRequestFormParams& params) {
-    json_obj.at("mode").get_to(params.mode);
+    if (detail::has_json_value(json_obj, "mode")) {
+        json_obj.at("mode").get_to(params.mode);
+    }
     json_obj.at("message").get_to(params.message);
     json_obj.at("requestedSchema").get_to(params.requestedSchema);
     if (json_obj.contains("task")) {
@@ -139,8 +144,9 @@ inline void to_json(nlohmann::json& json_obj, const ElicitRequestParams& params)
 }
 
 inline void from_json(const nlohmann::json& json_obj, ElicitRequestParams& params) {
-    std::string mode;
-    json_obj.at("mode").get_to(mode);
+    // A form request may leave its mode out.
+    const auto mode = detail::has_json_value(json_obj, "mode") ? json_obj.at("mode").get<std::string>()
+                                                               : std::string("form");
     if (mode == "url") {
         params = json_obj.get<ElicitRequestURLParams>();
     } else if (mode == "form") {
@@ -169,9 +175,35 @@ enum class ElicitAction : std::uint8_t {
     eCancel    ///< User dismissed without making an explicit choice.
 };
 
-NLOHMANN_JSON_SERIALIZE_ENUM(ElicitAction, {{ElicitAction::eAccept, "accept"},
-                                            {ElicitAction::eDecline, "decline"},
-                                            {ElicitAction::eCancel, "cancel"}})
+inline void to_json(nlohmann::json& json_obj, const ElicitAction& action) {
+    switch (action) {
+        case ElicitAction::eAccept:
+            json_obj = "accept";
+            return;
+        case ElicitAction::eDecline:
+            json_obj = "decline";
+            return;
+        case ElicitAction::eCancel:
+            json_obj = "cancel";
+            return;
+    }
+    throw std::invalid_argument("Unknown elicitation action");
+}
+
+/// Not NLOHMANN_JSON_SERIALIZE_ENUM, which gives a value it does not know the first entry: that
+/// would turn a reply nobody understood into a person's consent.
+inline void from_json(const nlohmann::json& json_obj, ElicitAction& action) {
+    const auto text = json_obj.get<std::string>();
+    if (text == "accept") {
+        action = ElicitAction::eAccept;
+    } else if (text == "decline") {
+        action = ElicitAction::eDecline;
+    } else if (text == "cancel") {
+        action = ElicitAction::eCancel;
+    } else {
+        throw std::invalid_argument("Unknown elicitation action");
+    }
+}
 
 /**
  * @brief The result returned by the client for an elicitation/create request.

@@ -11,6 +11,7 @@ struct JsonRpcEnvelope {
     /// Raw text of the `id` value, such as `7` or `"req-1"`; empty when the member is absent.
     std::string_view id;
     bool has_result_or_error{false};
+    bool has_result{false};
 };
 
 inline std::size_t skip_json_whitespace(std::string_view text, std::size_t pos) {
@@ -108,6 +109,7 @@ inline std::optional<JsonRpcEnvelope> scan_jsonrpc_envelope(std::string_view tex
             envelope.id = text.substr(pos, value_end - pos);
         } else if (key == "result" || key == "error") {
             envelope.has_result_or_error = true;
+            envelope.has_result = key == "result";
         }
         pos = skip_json_whitespace(text, value_end);
         if (pos >= text.size()) {

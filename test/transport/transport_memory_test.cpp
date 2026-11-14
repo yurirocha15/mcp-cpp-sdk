@@ -1,3 +1,4 @@
+#include "../support/hang_guard.hpp"
 #include "mcp/transport/memory.hpp"
 
 #include <gtest/gtest.h>
@@ -524,7 +525,7 @@ TEST_F(MemoryTransportTest, ConcurrentCloseWakesReadersOnRunningThreadPool) {
     bool all_readers_started = false;
     {
         std::unique_lock lock(started_mutex);
-        all_readers_started = started_condition.wait_for(lock, std::chrono::seconds(30), [&started]() {
+        all_readers_started = started_condition.wait_for(lock, g_hang_guard, [&started]() {
             return started.load(std::memory_order_acquire) == reader_count;
         });
     }

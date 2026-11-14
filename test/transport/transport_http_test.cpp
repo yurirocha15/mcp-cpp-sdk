@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include "../support/hang_guard.hpp"
 #include "../support/resolve_gate.hpp"
 #include "../support/stalling_server.hpp"
 
@@ -523,7 +524,7 @@ TEST_F(HttpTransportTest, ClientCloseDeletesSentToServer) {
     auto work = asio::make_work_guard(io_ctx_);
     std::thread runner([this]() { io_ctx_.run(); });
 
-    const auto limit = std::chrono::seconds(10);
+    const auto limit = g_hang_guard;
     const bool session_started = initialized.wait_for(limit) == std::future_status::ready;
     bool delete_received = false;
     if (session_started) {
@@ -930,7 +931,7 @@ TEST_F(HttpTransportTest, ClientCloseCancelsInFlightPostAfterSessionInitializati
         });
 
     // Bound the test even if cancellation or listener cleanup regresses.
-    io_ctx_.run_for(std::chrono::seconds(5));
+    io_ctx_.run_for(g_hang_guard);
     const bool event_loop_drained = io_ctx_.stopped();
     if (!event_loop_drained) {
         client_transport->close();
@@ -972,7 +973,7 @@ TEST_F(HttpTransportTest, PendingOperationsOwnImplementationAfterTransportDestru
 
 TEST_F(HttpTransportTest, SerializesConcurrentWritesAcrossTwoIoThreads) {
     constexpr int message_count = 64;
-    constexpr auto timeout = std::chrono::seconds(30);
+    constexpr auto timeout = g_hang_guard;
 
     asio::io_context server_io;
     auto server =
@@ -1076,7 +1077,7 @@ TEST_F(HttpTransportTest, CloseCancelsIdleKeepAliveAndRejectsFurtherRequests) {
     auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
     auto client = std::make_shared<beast::tcp_stream>(io_ctx_.get_executor());
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
-    deadline->expires_after(std::chrono::seconds(2));
+    deadline->expires_after(g_hang_guard);
 
     std::atomic<int> authorization_calls{0};
     server->set_bearer_token_validator([&authorization_calls](std::string_view token) {
@@ -1166,7 +1167,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverSucceedsAfterSessionEstablished) {
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
 
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
-    deadline->expires_after(std::chrono::seconds(10));
+    deadline->expires_after(g_hang_guard);
     bool timed_out = false;
 
     bool discover_request_received = false;
@@ -1283,7 +1284,7 @@ TEST_F(HttpTransportTest, SessionlessNonDiscoverRequestRejectedAfterSessionEstab
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
 
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
-    deadline->expires_after(std::chrono::seconds(10));
+    deadline->expires_after(g_hang_guard);
     bool timed_out = false;
 
     bool tools_list_reached_server = false;
@@ -1382,7 +1383,7 @@ TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
 
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
-    deadline->expires_after(std::chrono::seconds(10));
+    deadline->expires_after(g_hang_guard);
     bool timed_out = false;
 
     bool discover_reached_server = false;
@@ -1477,9 +1478,8 @@ TEST_F(HttpTransportTest, DiscoverWithWrongSessionHeaderIsStillRejected) {
 
     EXPECT_FALSE(timed_out);
     EXPECT_FALSE(discover_reached_server);
-    EXPECT_EQ(discover_status, http::status::bad_request) << "body: " << discover_body;
-    EXPECT_NE(discover_body.find("Invalid MCP-Session-Id header"), std::string::npos)
-        << "body: " << discover_body;
+    EXPECT_EQ(discover_status, http::status::not_found) << "body: " << discover_body;
+    EXPECT_NE(discover_body.find("Session not found"), std::string::npos) << "body: " << discover_body;
 }
 
 TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsStillRejected) {
@@ -1488,7 +1488,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverNotificationIsStillRejected) {
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
 
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
-    deadline->expires_after(std::chrono::seconds(10));
+    deadline->expires_after(g_hang_guard);
     bool timed_out = false;
 
     bool notification_reached_server = false;
@@ -1597,7 +1597,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverWithAnInvalidIdIsStillRejected) {
 
     // If the request took the exemption it would wait for a response nobody writes.
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
-    deadline->expires_after(std::chrono::seconds(10));
+    deadline->expires_after(g_hang_guard);
     bool timed_out = false;
     deadline->async_wait([&timed_out, &server_transport](const boost::system::error_code& error) {
         if (error) {
@@ -1682,7 +1682,7 @@ TEST_F(HttpTransportTest, PendingSessionlessDiscoversAreBounded) {
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
 
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
-    deadline->expires_after(std::chrono::seconds(10));
+    deadline->expires_after(g_hang_guard);
     bool timed_out = false;
     deadline->async_wait([&timed_out, &server_transport](const boost::system::error_code& error) {
         if (error) {
@@ -1765,7 +1765,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverDoesNotEvictSessionReplayHistory) {
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
 
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
-    deadline->expires_after(std::chrono::seconds(10));
+    deadline->expires_after(g_hang_guard);
     bool timed_out = false;
 
     constexpr int k_sessionless_request_count = 3;
@@ -1903,7 +1903,7 @@ TEST_F(HttpTransportTest, DiscoverAcceptsDiscoverableOnlyProtocolVersionHeader) 
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
 
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
-    deadline->expires_after(std::chrono::seconds(10));
+    deadline->expires_after(g_hang_guard);
     bool timed_out = false;
 
     bool discover_request_received = false;
@@ -1980,7 +1980,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
     asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
 
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
-    deadline->expires_after(std::chrono::seconds(10));
+    deadline->expires_after(g_hang_guard);
     bool timed_out = false;
 
     // Signalled once initialize has produced a session, so the sessionless prober runs while a
@@ -2322,6 +2322,15 @@ TEST_F(HttpTransportTest, WriteMessagePinsBearerProviderAtRequestStart) {
 // ===========================================================================
 // WWW-Authenticate challenge rendering
 // ===========================================================================
+
+// RFC 6750 allows more than one space after the scheme; the token is what follows them.
+TEST(HttpBearerToken, SpacesAfterTheSchemeAreSkipped) {
+    EXPECT_EQ(mcp::http_bearer_token("Bearer tok"), "tok");
+    EXPECT_EQ(mcp::http_bearer_token("Bearer   tok"), "tok");
+    EXPECT_EQ(mcp::http_bearer_token("bearer tok"), "tok");
+    EXPECT_EQ(mcp::http_bearer_token("Bearer    "), "");
+    EXPECT_EQ(mcp::http_bearer_token("Basic tok"), "");
+}
 
 TEST(BearerChallengeTest, EmptyConfigRendersBareBearer) {
     EXPECT_EQ(mcp::format_www_authenticate(mcp::BearerChallengeConfig{}), "Bearer");
@@ -3275,7 +3284,7 @@ CloseAfterResponseAttempt close_after_the_response_arrived(std::chrono::millisec
     auto work = asio::make_work_guard(io_ctx);
     std::thread runner([&io_ctx]() { io_ctx.run(); });
 
-    const auto limit = std::chrono::seconds(10);
+    const auto limit = g_hang_guard;
     attempt.session_started = initialized.wait_for(limit) == std::future_status::ready;
     attempt.request_held = attempt.session_started && peer.wait_for_held_request(limit);
 
@@ -3303,7 +3312,7 @@ CloseAfterResponseAttempt close_after_the_response_arrived(std::chrono::millisec
         }
     }
     attempt.close_ran =
-        close_posted && close_queued.wait_for(std::chrono::seconds(30)) == std::future_status::ready;
+        close_posted && close_queued.wait_for(g_hang_guard) == std::future_status::ready;
     attempt.write_finished =
         attempt.close_ran && write_finished.wait_for(limit) == std::future_status::ready;
     attempt.delete_received = attempt.write_finished && peer.wait_for_deletes(1, limit);
@@ -3391,8 +3400,7 @@ TEST_F(HttpTransportTest, CloseBetweenTwoSocketOperationsEndsTheWrite) {
 
     std::thread runner([this]() { io_ctx_.run(); });
 
-    const bool finished =
-        write_finished.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    const bool finished = write_finished.wait_for(g_hang_guard) == std::future_status::ready;
 
     // Everything below reads state the runner thread wrote, so it stops first.
     io_ctx_.stop();
@@ -3446,7 +3454,7 @@ TEST_F(HttpTransportTest, CloseWhileTheResolverIsPastItsCancelCheckOpensNoConnec
 
     std::thread runner([this]() { io_ctx_.run(); });
 
-    const auto limit = std::chrono::seconds(10);
+    const auto limit = g_hang_guard;
     const bool lookup_held = resolve_gate().wait_until_entered(limit);
 
     // close() spawns its cancelling onto the transport's strand, which is one hop through the
@@ -3685,7 +3693,7 @@ TEST_F(HttpTransportTest, OutputOfTheEndedSessionDoesNotReachTheNextSession) {
     const auto port = std::to_string(transport->port());
 
     bool timed_out = false;
-    asio::steady_timer watchdog(io_ctx_.get_executor(), std::chrono::seconds(10));
+    asio::steady_timer watchdog(io_ctx_.get_executor(), g_hang_guard);
     watchdog.async_wait([&](const boost::system::error_code& error) {
         if (!error) {
             timed_out = true;
@@ -3752,7 +3760,9 @@ TEST_F(HttpTransportTest, OutputOfTheEndedSessionDoesNotReachTheNextSession) {
     io_ctx_.run();
 
     ASSERT_FALSE(timed_out);
-    EXPECT_EQ(first_call.status, 404U) << first_call.body;
+    // The call reached the server before its session ended, so it is not answered 404, which would
+    // have its client send it again in a new session.
+    EXPECT_EQ(first_call.status, 500U) << first_call.body;
     ASSERT_FALSE(second_init_event.empty());
     EXPECT_EQ(replay.body.find("first-session"), std::string::npos) << replay.body;
 }
@@ -3806,7 +3816,7 @@ TEST_F(HttpTransportTest, RequestWithAnUnusableIdIsAnswered) {
     const auto port = std::to_string(transport->port());
 
     bool timed_out = false;
-    asio::steady_timer watchdog(io_ctx_.get_executor(), std::chrono::seconds(5));
+    asio::steady_timer watchdog(io_ctx_.get_executor(), g_hang_guard);
     watchdog.async_wait([&](const boost::system::error_code& error) {
         if (!error) {
             timed_out = true;
@@ -3866,7 +3876,7 @@ TEST_F(HttpTransportTest, ServerRequestWithAPendingIdIsNotTakenForTheResponse) {
     const auto port = std::to_string(transport->port());
 
     bool timed_out = false;
-    asio::steady_timer watchdog(io_ctx_.get_executor(), std::chrono::seconds(5));
+    asio::steady_timer watchdog(io_ctx_.get_executor(), g_hang_guard);
     watchdog.async_wait([&](const boost::system::error_code& error) {
         if (!error) {
             timed_out = true;
@@ -4003,7 +4013,7 @@ TEST_F(HttpTransportTest, ClientOpensANewConnectionAfterConnectionClose) {
         },
         [](const std::exception_ptr&) {});
 
-    io_ctx_.run_for(std::chrono::seconds(10));
+    io_ctx_.run_for(g_hang_guard);
 
     EXPECT_TRUE(pinged) << "failure: " << failure << " after " << requests << " request(s)";
 }

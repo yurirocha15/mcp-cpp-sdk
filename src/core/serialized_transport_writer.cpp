@@ -5,6 +5,7 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/error.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
@@ -22,6 +23,15 @@
 
 namespace mcp::detail {
 
+namespace {
+
+/// What a queued message counts in queued_bytes().
+std::size_t queued_cost(const std::string& message) {
+    return message.size() + g_queued_message_overhead;
+}
+
+}  // namespace
+
 struct SerializedTransportWriterState {
     struct Operation {
         Operation(const boost::asio::any_io_executor& executor,
@@ -33,6 +43,7 @@ struct SerializedTransportWriterState {
             completion.expires_at(std::chrono::steady_clock::time_point::max());
         }
 
+        /// Null for a marker that completes once everything queued before it is written.
         std::shared_ptr<const std::string> message;
         std::shared_ptr<const std::atomic<bool>> cancel_before_start;
         boost::asio::steady_timer completion;
@@ -55,9 +66,16 @@ struct SerializedTransportWriterState {
     static Task<void> drain(std::shared_ptr<SerializedTransportWriterState> state) {
         while (!state->queue.empty()) {
             auto operation = state->queue.front();
+            if (!operation->message) {
+                state->queue.pop_front();
+                complete(operation);
+                continue;
+            }
             if (operation->cancel_before_start &&
                 operation->cancel_before_start->load(std::memory_order_acquire)) {
                 state->queue.pop_front();
+                state->queued_bytes.fetch_sub(queued_cost(*operation->message),
+                                              std::memory_order_relaxed);
                 complete(operation, std::make_exception_ptr(boost::system::system_error(
                                         boost::asio::error::operation_aborted)));
                 continue;
@@ -74,10 +92,21 @@ struct SerializedTransportWriterState {
             }
 
             state->queue.pop_front();
+            state->queued_bytes.fetch_sub(queued_cost(*operation->message), std::memory_order_relaxed);
             complete(operation, std::move(error));
         }
 
         state->draining = false;
+    }
+
+    /// Queues @p operation, whose bytes are already counted, and starts draining. On the strand.
+    static void push(const std::shared_ptr<SerializedTransportWriterState>& state,
+                     std::shared_ptr<Operation> operation) {
+        state->queue.push_back(std::move(operation));
+        if (!state->draining) {
+            state->draining = true;
+            boost::asio::co_spawn(state->strand, drain(state), boost::asio::detached);
+        }
     }
 
     static Task<void> enqueue_and_wait(std::shared_ptr<SerializedTransportWriterState> state,
@@ -85,12 +114,10 @@ struct SerializedTransportWriterState {
                                        std::shared_ptr<const std::atomic<bool>> cancel_before_start) {
         auto operation = std::make_shared<Operation>(state->strand, std::move(message),
                                                      std::move(cancel_before_start));
-        state->queue.push_back(operation);
-
-        if (!state->draining) {
-            state->draining = true;
-            boost::asio::co_spawn(state->strand, drain(state), boost::asio::detached);
+        if (operation->message) {
+            state->queued_bytes.fetch_add(queued_cost(*operation->message), std::memory_order_relaxed);
         }
+        push(state, operation);
 
         while (!operation->completed) {
             boost::system::error_code ignored;
@@ -107,6 +134,8 @@ struct SerializedTransportWriterState {
     boost::asio::strand<boost::asio::any_io_executor> strand;
     std::deque<std::shared_ptr<Operation>> queue;
     bool draining{false};
+    /// Bytes of the messages queued or being written.
+    std::atomic<std::size_t> queued_bytes{0};
 };
 
 SerializedTransportWriter::SerializedTransportWriter(std::shared_ptr<ITransport> transport,
@@ -115,6 +144,10 @@ SerializedTransportWriter::SerializedTransportWriter(std::shared_ptr<ITransport>
     if (!state_->transport) {
         throw std::invalid_argument("SerializedTransportWriter requires a transport");
     }
+}
+
+std::size_t SerializedTransportWriter::queued_bytes() const noexcept {
+    return state_ ? state_->queued_bytes.load(std::memory_order_relaxed) : 0;
 }
 
 Task<void> SerializedTransportWriter::write_message(std::string_view message) const {
@@ -135,6 +168,32 @@ Task<void> SerializedTransportWriter::write_message(std::string_view message) co
 
 Task<void> SerializedTransportWriter::write_message(std::shared_ptr<const std::string> message) const {
     return write_message(std::move(message), nullptr);
+}
+
+Task<void> SerializedTransportWriter::written() const {
+    if (!state_) {
+        throw std::logic_error("Cannot use a moved-from SerializedTransportWriter");
+    }
+    auto state = state_;
+    return boost::asio::co_spawn(
+        state->strand, SerializedTransportWriterState::enqueue_and_wait(state, nullptr, nullptr),
+        boost::asio::use_awaitable);
+}
+
+void SerializedTransportWriter::post_message(std::shared_ptr<const std::string> message) const {
+    if (!state_) {
+        throw std::logic_error("Cannot use a moved-from SerializedTransportWriter");
+    }
+    if (!message) {
+        throw std::invalid_argument("SerializedTransportWriter message must not be null");
+    }
+    auto state = state_;
+    state->queued_bytes.fetch_add(queued_cost(*message), std::memory_order_relaxed);
+    boost::asio::post(state->strand, [state, message = std::move(message)]() mutable {
+        using State = SerializedTransportWriterState;
+        State::push(state,
+                    std::make_shared<State::Operation>(state->strand, std::move(message), nullptr));
+    });
 }
 
 Task<void> SerializedTransportWriter::write_message(

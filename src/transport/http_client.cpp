@@ -55,6 +55,17 @@ struct HttpClientTransport::Impl {
         std::string last_event_id;
         std::string protocol_version{std::string(g_LATEST_PROTOCOL_VERSION)};
         std::optional<std::string> initialize_request_key;
+        /// The initialize request that started the session, repeated to start a new one when the
+        /// server has forgotten it. Touched on the strand only.
+        std::string initialize_request;
+        bool reinitialize_on_expired_session{true};
+        /// Set while the session the server forgot has not been replaced: a new one is started
+        /// before the next request. Touched on the strand only.
+        bool session_lost{false};
+        /// The protocol version and capabilities the server answered initialize with. A session
+        /// started in place of a forgotten one must answer with the same, since the Client knows
+        /// the server by them. Touched on the strand only.
+        nlohmann::json session_terms;
         bool operation_active{false};
         bool read_active{false};
     };
@@ -121,9 +132,33 @@ struct HttpClientTransport::Impl {
         return ParsedUrl{std::move(host), std::move(port), std::move(path)};
     }
 
+    /// Whether the peer has closed @p stream, or sent something no request asked for. A server
+    /// closes a connection that sits idle between requests; a request written into it is never
+    /// read, so the connection is not used again.
+    static bool closed_by_peer(beast::tcp_stream& stream) {
+        auto& socket = stream.socket();
+        if (!socket.is_open()) {
+            return true;
+        }
+        beast::error_code error;
+        const bool was_non_blocking = socket.non_blocking();
+        (void)socket.non_blocking(true, error);
+        if (error) {
+            return false;
+        }
+        char byte = 0;
+        const auto read = socket.read_some(net::buffer(&byte, 1), error);
+        beast::error_code restore_error;
+        (void)socket.non_blocking(was_non_blocking, restore_error);
+        return read != 0 || error != net::error::would_block;
+    }
+
     Task<void> ensure_connected() {
         if (state->stream.has_value()) {
-            co_return;
+            if (!closed_by_peer(*state->stream)) {
+                co_return;
+            }
+            reset_connection();
         }
 
         auto resolved_endpoints =
@@ -226,6 +261,7 @@ struct HttpClientTransport::Impl {
                 request.contains("id") &&
                 (request.at("id").is_string() || request.at("id").is_number_integer())) {
                 state->initialize_request_key = request.at("id").get<RequestId>().correlation_key();
+                state->initialize_request = std::string(message);
                 return true;
             }
         } catch (const std::exception&) {
@@ -262,9 +298,59 @@ struct HttpClientTransport::Impl {
             if (is_supported_protocol_version(protocol_version)) {
                 state->protocol_version = protocol_version;
             }
+            state->session_terms = terms_of(result);
         } catch (const std::exception&) {
             // The client protocol layer owns response validation.
         }
+    }
+
+    /// What of an initialize result the Client relies on: the protocol version and capabilities.
+    static nlohmann::json terms_of(const nlohmann::json& result) {
+        return nlohmann::json{{"protocolVersion", result.value("protocolVersion", nlohmann::json())},
+                              {"capabilities", result.value("capabilities", nlohmann::json())}};
+    }
+
+    /// The terms of the initialize result @p response carries for the initialize @p sent, as
+    /// JSON or in an event, or nullopt when it carries none.
+    static std::optional<nlohmann::json> initialize_terms(const StringResponse& response,
+                                                          const std::string& sent) {
+        const auto request = detail::parse_peer_json(sent);
+        if (!request.is_object() || !request.contains("id")) {
+            return std::nullopt;
+        }
+        const auto answers = [&request](const std::string& text) -> std::optional<nlohmann::json> {
+            const auto message = detail::parse_peer_json(text);
+            if (!message.is_object() || message.value("id", nlohmann::json()) != request.at("id") ||
+                !message.contains("result") || !message.at("result").is_object()) {
+                return std::nullopt;
+            }
+            return terms_of(message.at("result"));
+        };
+        const auto content_type = response.find(http::field::content_type);
+        if (content_type == response.end()) {
+            return std::nullopt;
+        }
+        if (starts_with(std::string(content_type->value()), "text/event-stream")) {
+            auto events = parse_sse_messages(response.body());
+            for (; !events.empty(); events.pop()) {
+                if (auto terms = answers(events.front().data)) {
+                    return terms;
+                }
+            }
+            return std::nullopt;
+        }
+        return answers(response.body());
+    }
+
+    /// Whether the initialize result @p response carries for @p sent names another protocol
+    /// version or other capabilities than the session it replaces.
+    [[nodiscard]] bool changes_session_terms(const StringResponse& response,
+                                             const std::string& sent) const {
+        if (state->session_terms.is_null()) {
+            return false;
+        }
+        const auto terms = initialize_terms(response, sent);
+        return terms && *terms != state->session_terms;
     }
 
     void process_response(const StringResponse& response) {
@@ -398,6 +484,84 @@ struct HttpClientTransport::Impl {
         state.operation_active = true;
         const bool initialize_operation = impl->capture_initialize_request(message);
 
+        const bool had_session = !state.session_id.empty();
+        // Kept to send again once a new session has started. Held outside the coroutine frame:
+        // GCC 11 mishandles a std::string that lives across a suspension point there.
+        const auto retry_body = std::make_shared<const std::string>(
+            had_session && !initialize_operation ? message : std::string());
+        try {
+            if (state.session_lost && !initialize_operation && state.reinitialize_on_expired_session &&
+                !state.initialize_request.empty()) {
+                // The last attempt to replace a forgotten session failed, so this request tries
+                // again before it is sent.
+                co_await reinitialize(impl, bearer_token_provider);
+            }
+            auto response = co_await exchange(impl, std::move(message), bearer_token_provider);
+            if (response.result() == http::status::not_found && had_session && !initialize_operation &&
+                state.reinitialize_on_expired_session && !state.initialize_request.empty()) {
+                // The server no longer knows the session: a new one is started with the initialize
+                // that began this one, and the request is sent once more in it.
+                co_await reinitialize(impl, bearer_token_provider);
+                response = co_await exchange(impl, *retry_body, bearer_token_provider);
+            }
+            impl->capture_session_id(response);
+            impl->process_response(response);
+            if (initialize_operation) {
+                state.initialize_request_key.reset();
+            }
+            complete_operation(impl->state);
+        } catch (...) {
+            if (initialize_operation) {
+                state.initialize_request_key.reset();
+            }
+            // A refused request leaves nothing to reuse: the next one opens a new connection.
+            impl->reset_connection();
+            complete_operation(impl->state);
+            throw;
+        }
+    }
+
+    /// Starts a new session by sending the initialize that started the last one, then
+    /// notifications/initialized. The initialize result goes to the reader too, which no longer
+    /// waits for it and drops it.
+    static Task<void> reinitialize(std::shared_ptr<Impl> impl,
+                                   std::function<std::string()> bearer_token_provider) {
+        auto& state = *impl->state;
+        {
+            std::lock_guard lock(state.metadata_mutex);
+            state.session_id.clear();
+            state.last_event_id.clear();
+        }
+        state.session_lost = true;
+        const auto initialize = std::make_shared<const std::string>(state.initialize_request);
+        impl->capture_initialize_request(*initialize);
+        const auto initialized = co_await exchange(impl, *initialize, bearer_token_provider);
+        if (impl->changes_session_terms(initialized, *initialize)) {
+            // The Client would go on with what the old session said of the server.
+            state.initialize_request_key.reset();
+            throw std::runtime_error(
+                "The server started a new session with another protocol version or other "
+                "capabilities; connect again to use it");
+        }
+        impl->capture_session_id(initialized);
+        try {
+            impl->process_response(initialized);
+        } catch (...) {
+            state.initialize_request_key.reset();
+            throw;
+        }
+        state.initialize_request_key.reset();
+        const auto notification = std::make_shared<const std::string>(
+            R"({"jsonrpc":"2.0","method":"notifications/initialized"})");
+        const auto accepted = co_await exchange(impl, *notification, bearer_token_provider);
+        impl->process_response(accepted);
+        state.session_lost = false;
+    }
+
+    /// Sends @p body in one POST of the current session and reads the response.
+    static Task<StringResponse> exchange(std::shared_ptr<Impl> impl, std::string body,
+                                         std::function<std::string()> bearer_token_provider) {
+        auto& state = *impl->state;
         std::optional<detail::SocketDeadline> deadline;
         try {
             co_await impl->ensure_connected();
@@ -419,7 +583,7 @@ struct HttpClientTransport::Impl {
             if (!state.last_event_id.empty()) {
                 request.set("Last-Event-ID", state.last_event_id);
             }
-            request.body() = std::move(message);
+            request.body() = std::move(body);
             request.prepare_payload();
 
             if (!state.stream) {
@@ -439,21 +603,11 @@ struct HttpClientTransport::Impl {
                 // the next request has to open a new one.
                 impl->reset_connection();
             }
-
-            impl->capture_session_id(response);
-            impl->process_response(response);
-            if (initialize_operation) {
-                state.initialize_request_key.reset();
-            }
-            complete_operation(impl->state);
+            co_return response;
         } catch (...) {
             const bool timed_out = deadline && deadline->expired();
             deadline.reset();
-            if (initialize_operation) {
-                state.initialize_request_key.reset();
-            }
             impl->reset_connection();
-            complete_operation(impl->state);
             // close() closes the socket under the write, and what the socket layer then reports
             // depends on the platform and on which operation the close landed in.
             if (state.closed.load(std::memory_order_acquire)) {
@@ -501,6 +655,11 @@ std::string HttpClientTransport::last_event_id() const {
 
 /// Safe to call at any time, including mid-flight: a request already started keeps the provider it
 /// pinned, and the next one picks up the new value.
+void HttpClientTransport::set_reinitialize_on_expired_session(bool enabled) {
+    auto state = impl_->state;
+    net::post(impl_->strand, [state, enabled] { state->reinitialize_on_expired_session = enabled; });
+}
+
 void HttpClientTransport::set_bearer_token_provider(std::function<std::string()> provider) {
     std::lock_guard lock(impl_->provider_mutex);
     impl_->bearer_token_provider = std::move(provider);

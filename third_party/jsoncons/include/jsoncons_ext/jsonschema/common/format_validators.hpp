@@ -7,6 +7,7 @@
 #ifndef MCP_DETAIL_JSONCONS_EXT_JSONSCHEMA_COMMON_FORMAT_VALIDATORS_HPP
 #define MCP_DETAIL_JSONCONS_EXT_JSONSCHEMA_COMMON_FORMAT_VALIDATORS_HPP
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <exception>
@@ -976,7 +977,7 @@ namespace jsonschema {
         if (MCP_DETAIL_JSONCONS_UNLIKELY(ec))
         {
             std::string message{"'"};
-            message.append(sv.data(), sv.size());
+            message.append(sv.data(), (std::min)(sv.size(), evaluation_limits::max_excerpt));
             message.append("': ");
             message.append(ec.message());
             walk_state result = reporter.error(message_factory.make_validation_message(
@@ -991,7 +992,7 @@ namespace jsonschema {
         else if (!u.is_absolute())
         {
             std::string message{"'"};
-            message.append(sv.data(), sv.size());
+            message.append(sv.data(), (std::min)(sv.size(), evaluation_limits::max_excerpt));
             message.append("' is not an absolute URI.");
             walk_state result = reporter.error(message_factory.make_validation_message(
                 eval_path,
@@ -1017,7 +1018,7 @@ namespace jsonschema {
         if (MCP_DETAIL_JSONCONS_UNLIKELY(ec))
         {
             std::string message{"'"};
-            message.append(sv.data(), sv.size());
+            message.append(sv.data(), (std::min)(sv.size(), evaluation_limits::max_excerpt));
             message.append("': ");
             message.append(ec.message());
             walk_state result = reporter.error(message_factory.make_validation_message(
@@ -1044,7 +1045,7 @@ namespace jsonschema {
         if (MCP_DETAIL_JSONCONS_UNLIKELY(ec))
         {
             std::string message{"'"};
-            message.append(sv.data(), sv.size());
+            message.append(sv.data(), (std::min)(sv.size(), evaluation_limits::max_excerpt));
             message.append("' is not a valid JSONPointer.");
             walk_state result = reporter.error(message_factory.make_validation_message(
                 eval_path,
@@ -1069,7 +1070,7 @@ namespace jsonschema {
         if (!validate_date_time_rfc3339(sv,date_time_type::date))
         {
             std::string message{"'"};
-            message.append(sv.data(), sv.size());
+            message.append(sv.data(), (std::min)(sv.size(), evaluation_limits::max_excerpt));
             message.append("' is not a RFC 3339 date string.");
             walk_state result = reporter.error(message_factory.make_validation_message(
                 eval_path,
@@ -1093,7 +1094,7 @@ namespace jsonschema {
         if (!validate_date_time_rfc3339(sv, date_time_type::time))        
         {
             std::string message{"'"};
-            message.append(sv.data(), sv.size());
+            message.append(sv.data(), (std::min)(sv.size(), evaluation_limits::max_excerpt));
             message.append("' is not a RFC 3339 time string.");
             walk_state result = reporter.error(message_factory.make_validation_message(
                 eval_path,
@@ -1117,7 +1118,7 @@ namespace jsonschema {
         if (!validate_date_time_rfc3339(sv, date_time_type::date_time))        
         {
             std::string message{"'"};
-            message.append(sv.data(), sv.size());
+            message.append(sv.data(), (std::min)(sv.size(), evaluation_limits::max_excerpt));
             message.append("' is not a RFC 3339 date-time string.");
             walk_state result = reporter.error(message_factory.make_validation_message(
                 eval_path,  
@@ -1141,7 +1142,7 @@ namespace jsonschema {
         if (!validate_email_rfc5322(sv))        
         {
             std::string message{"'"};
-            message.append(sv.data(), sv.size());
+            message.append(sv.data(), (std::min)(sv.size(), evaluation_limits::max_excerpt));
             message.append("' is not a valid email address as defined by RFC 5322.");
             walk_state result = reporter.error(message_factory.make_validation_message(
                 eval_path, 
@@ -1165,7 +1166,7 @@ namespace jsonschema {
         if (!validate_hostname_rfc1034(sv))
         {
             std::string message{"'"};
-            message.append(sv.data(), sv.size());
+            message.append(sv.data(), (std::min)(sv.size(), evaluation_limits::max_excerpt));
             message.append("' is not a valid hostname as defined by RFC 3986 Appendix A.");
             walk_state result = reporter.error(message_factory.make_validation_message(
                 eval_path, 
@@ -1189,7 +1190,7 @@ namespace jsonschema {
         if (!validate_ipv4_rfc2673(sv))
         {
             std::string message{"'"};
-            message.append(sv.data(), sv.size());
+            message.append(sv.data(), (std::min)(sv.size(), evaluation_limits::max_excerpt));
             message.append("' is not a valid IPv4 address as defined by RFC 2673.");
             walk_state result = reporter.error(message_factory.make_validation_message(
                 eval_path, 
@@ -1213,7 +1214,7 @@ namespace jsonschema {
         if (!validate_ipv6_rfc2373(sv))
         {
             std::string message{"'"};
-            message.append(sv.data(), sv.size());
+            message.append(sv.data(), (std::min)(sv.size(), evaluation_limits::max_excerpt));
             message.append("' is not a valid IPv6 address as defined by RFC 2373.");
             walk_state result = reporter.error(message_factory.make_validation_message(
                 eval_path, 
@@ -1235,6 +1236,9 @@ namespace jsonschema {
         mcp_detail_jsoncons::optional<Json>& patch) 
     {
 #if defined(MCP_DETAIL_JSONCONS_HAS_STD_REGEX)
+        // Added by mcp-cpp-sdk (scripts/vendor_jsoncons.py): compiling takes time in proportion
+        // to the pattern's length and to its program, which Regex bounds.
+        evaluation_limits::charge(::mcp::detail::Regex::max_program_size / 2 + sv.size());
         MCP_DETAIL_JSONCONS_TRY 
         {
             ::mcp::detail::Regex re(std::string_view(sv.data(), sv.size()));
@@ -1242,7 +1246,7 @@ namespace jsonschema {
         MCP_DETAIL_JSONCONS_CATCH(...) 
         {
             std::string message{"'"};
-            message.append(sv.data(), sv.size());
+            message.append(sv.data(), (std::min)(sv.size(), evaluation_limits::max_excerpt));
             message.append("' is not a valid ECMAScript regular expression. ");
             walk_state result = reporter.error(message_factory.make_validation_message(
                 eval_path, 

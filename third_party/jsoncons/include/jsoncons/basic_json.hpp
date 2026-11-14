@@ -8,6 +8,7 @@
 #define MCP_DETAIL_JSONCONS_BASIC_JSON_HPP
 
 #include <algorithm> // std::swap
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -382,6 +383,36 @@ namespace mcp_detail_jsoncons {
             return reverse_iterator(first_);
         }
     };
+
+    namespace detail {
+
+    // Added by mcp-cpp-sdk (scripts/vendor_jsoncons.py): compares an integer with a double
+    // exactly, -1, 0 or 1 as the integer is less than, equal to or greater than the double. A NaN
+    // compares less than every integer, which keeps it unequal to each.
+    template <typename Integer>
+    int compare_integer_with_double(Integer integer, double number) noexcept
+    {
+        constexpr bool is_signed = std::is_signed<Integer>::value;
+        constexpr double upper = is_signed ? 9223372036854775808.0 : 18446744073709551616.0;
+        constexpr double lower = is_signed ? -9223372036854775808.0 : 0.0;
+        if (std::isnan(number) || number < lower)
+        {
+            return 1;
+        }
+        if (number >= upper)
+        {
+            return -1;
+        }
+        const double whole = std::floor(number);
+        const auto truncated = static_cast<Integer>(whole);
+        if (integer != truncated)
+        {
+            return integer < truncated ? -1 : 1;
+        }
+        return number > whole ? -1 : 0;
+    }
+
+    } // namespace detail
 
     template <typename CharT,typename Policy,typename Allocator>
     class basic_json
@@ -1727,8 +1758,7 @@ namespace mcp_detail_jsoncons {
                                 return static_cast<uint64_t>(cast<int64_storage>().value()) < rhs.cast<uint64_storage>().value() ? -1 : 1;
                         case json_storage_kind::float64:
                         {
-                            double r = static_cast<double>(cast<int64_storage>().value()) - rhs.cast<double_storage>().value();
-                            return r == 0.0 ? 0 : (r < 0.0 ? -1 : 1);
+                            return detail::compare_integer_with_double(cast<int64_storage>().value(), rhs.cast<double_storage>().value());
                         }
                         case json_storage_kind::const_json_ref:
                             return compare(rhs.cast<const_json_ref_storage>().value());
@@ -1755,8 +1785,7 @@ namespace mcp_detail_jsoncons {
                                 return cast<uint64_storage>().value() < static_cast<uint64_t>(rhs.cast<int64_storage>().value()) ? -1 : 1;
                         case json_storage_kind::float64:
                         {
-                            auto r = static_cast<double>(cast<uint64_storage>().value()) - rhs.cast<double_storage>().value();
-                            return r == 0 ? 0 : (r < 0.0 ? -1 : 1);
+                            return detail::compare_integer_with_double(cast<uint64_storage>().value(), rhs.cast<double_storage>().value());
                         }
                         case json_storage_kind::const_json_ref:
                             return compare(rhs.cast<const_json_ref_storage>().value());
@@ -1771,13 +1800,13 @@ namespace mcp_detail_jsoncons {
                     {
                         case json_storage_kind::int64:
                         {
-                            auto r = cast<double_storage>().value() - static_cast<double>(rhs.cast<int64_storage>().value());
-                            return r == 0 ? 0 : (r < 0.0 ? -1 : 1);
+                            const double number = cast<double_storage>().value();
+                            return std::isnan(number) ? 1 : -detail::compare_integer_with_double(rhs.cast<int64_storage>().value(), number);
                         }
                         case json_storage_kind::uint64:
                         {
-                            auto r = cast<double_storage>().value() - static_cast<double>(rhs.cast<uint64_storage>().value());
-                            return r == 0 ? 0 : (r < 0.0 ? -1 : 1);
+                            const double number = cast<double_storage>().value();
+                            return std::isnan(number) ? 1 : -detail::compare_integer_with_double(rhs.cast<uint64_storage>().value(), number);
                         }
                         case json_storage_kind::float64:
                         {
