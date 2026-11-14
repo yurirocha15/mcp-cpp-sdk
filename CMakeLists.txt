@@ -105,16 +105,25 @@ set(MCP_CPP_SDK_SOURCES
     src/protocol/schema.cpp
     src/protocol/elicitation.cpp
     src/protocol/tools.cpp
+    src/protocol/skills.cpp
     src/auth/challenge.cpp
     src/auth/client_identity.cpp
     src/auth/metadata_policy.cpp
     src/auth/oauth.cpp
+    src/auth/grant_flow.cpp
+    src/auth/client_authentication.cpp
+    src/auth/client_credentials.cpp
+    src/auth/enterprise_authorization.cpp
     src/client/client.cpp
     src/detail/sealed_state.cpp
     src/client/stdio_session.cpp
+    src/client/apps.cpp
+    src/client/skills.cpp
     src/server/server_stdio.cpp
     src/server/server_http.cpp
     src/server/server_tool.cpp
+    src/server/apps.cpp
+    src/server/skills.cpp
     src/server/mrtr.cpp
     src/server/task_run.cpp
     src/server/task_store.cpp
@@ -379,7 +388,9 @@ if(BUILD_TESTING)
   set(TEST_SRCS
       test/auth/auth_authorization_test.cpp
       test/auth/auth_challenge_test.cpp
+      test/auth/auth_client_credentials_test.cpp
       test/auth/auth_client_identity_test.cpp
+      test/auth/auth_enterprise_authorization_test.cpp
       test/auth/auth_integration_test.cpp
       test/auth/auth_oauth_test.cpp
       test/auth/auth_token_endpoint_auth_test.cpp
@@ -408,7 +419,10 @@ if(BUILD_TESTING)
       test/core/strand_executor_test.cpp
       test/server/roots_test.cpp
       test/server/sampling_test.cpp
+      test/server/server_apps_test.cpp
       test/server/server_core_test.cpp
+      test/server/server_extension_test.cpp
+      test/server/server_skills_test.cpp
       test/server/server_cancellation_test.cpp
       test/server/server_elicitation_test.cpp
       test/server/server_limits_test.cpp

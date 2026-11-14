@@ -863,6 +863,16 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                                   std::move(authorization)));
     }
 
+    Task<nlohmann::json> post_form(std::string url, const KeyValuePairList& params,
+                                   std::string authorization,
+                                   std::shared_ptr<detail::OAuthScopeState> scope = nullptr) {
+        return on_strand(strand,
+                         run_post_json(make_exchange(std::move(url), std::move(scope)),
+                                       std::make_shared<std::string>(detail::build_form_body(params)),
+                                       "application/x-www-form-urlencoded", "Token request",
+                                       std::move(authorization)));
+    }
+
     Task<nlohmann::json> post_json(std::string url, std::string body,
                                    std::shared_ptr<detail::OAuthScopeState> scope = nullptr) {
         // Sanitized where the label is built, not where it is thrown: `url` is moved into the
@@ -1112,6 +1122,11 @@ Task<nlohmann::json> OAuthHttpClient::post_json(const std::string& url, const nl
     return impl_->post_json(url, body.dump());
 }
 
+Task<nlohmann::json> OAuthHttpClient::post_form(const std::string& url, const KeyValuePairList& params,
+                                                const std::string& authorization) {
+    return impl_->post_form(url, params, authorization);
+}
+
 namespace internal {
 
 std::size_t live_scope_latch_count() { return detail::OAuthScopeState::live_count(); }
@@ -1148,6 +1163,12 @@ Task<nlohmann::json> OAuthHttpClientScope::get_json(const std::string& url) {
 Task<nlohmann::json> OAuthHttpClientScope::post_json(const std::string& url,
                                                      const nlohmann::json& body) {
     return impl_->post_json(url, body.dump(), state_);
+}
+
+Task<nlohmann::json> OAuthHttpClientScope::post_form(const std::string& url,
+                                                     const KeyValuePairList& params,
+                                                     const std::string& authorization) {
+    return impl_->post_form(url, params, authorization, state_);
 }
 
 void OAuthHttpClientScope::abort() { impl_->abort_matching(state_); }
