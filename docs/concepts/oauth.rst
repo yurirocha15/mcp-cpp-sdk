@@ -361,6 +361,64 @@ whose principal changed with its token starts a new session. On
 ``HttpServerTransport``, which holds one session, that new session can start
 once the old one has been idle for the session idle timeout.
 
+.. _oauth-required-scopes:
+
+Requiring scopes
+~~~~~~~~~~~~~~~~
+
+A token the validator accepts may still lack what a request needs. Name the
+scopes each request needs with ``set_scope_requirements``, and report the scopes
+a token grants in ``TokenValidation::scopes``:
+
+.. code-block:: cpp
+
+   manager.set_bearer_token_validator(
+       [](std::string_view token) -> mcp::TokenValidation {
+           const auto grant = lookup_grant(token);  // your own lookup
+           if (!grant) {
+               return false;
+           }
+           mcp::TokenValidation validation(true, grant->subject);
+           validation.scopes = grant->scopes;
+           return validation;
+       });
+   manager.set_scope_requirements(
+       [](const mcp::ScopeRequestContext& request) -> std::vector<std::string> {
+           if (request.method == "tools/call" &&
+               request.params.value("name", "") == "write_file") {
+               return {"files:read", "files:write"};
+           }
+           return {};
+       });
+
+The provider is called for every POSTed JSON-RPC message that has a method,
+after the token is accepted and before the message is dispatched or any response
+stream is opened, on both ``HttpServerTransport`` and
+``StreamableHttpSessionManager``. Return every scope the operation needs at
+once. When the token lacks any of them the answer is ``403`` with
+
+.. code-block:: text
+
+   WWW-Authenticate: Bearer error="insufficient_scope", scope="files:read files:write",
+                     resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp"
+
+The ``scope`` parameter lists all the scopes the operation needs, not only the
+missing ones, so a client authorizes once for the operation, and the realm and
+metadata URL come from ``set_bearer_challenge`` and
+``set_protected_resource_metadata``. ``OAuthClientTransport`` answers this
+challenge with a step-up authorization (see
+:ref:`oauth-scopes-and-step-up`). A scope is held only when it appears literally
+in ``TokenValidation::scopes``; a validator that reports no scopes grants none,
+and a scope hierarchy is expanded by the validator, which lists every scope the
+token implies. A provider that throws is answered ``500`` with no challenge, as
+a validator that throws is, and so is a provider that returns a scope containing
+anything but printable ASCII, because it cannot be written into the challenge.
+Scopes must be quotable header text. A provider needs a validator to report the
+scopes a token holds, so ``listen()`` throws ``std::logic_error`` when
+``set_scope_requirements`` is used without a token validator, whichever was set
+first. Answers to the server's own requests, ``GET`` and
+``DELETE`` carry no method and are not checked.
+
 Health checks and other routes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

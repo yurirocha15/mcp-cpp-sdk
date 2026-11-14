@@ -7,6 +7,7 @@
 #include "../detail/modern_methods.hpp"
 #include "../detail/peer_json.hpp"
 #include "../detail/principal.hpp"
+#include "../detail/scope_challenge.hpp"
 #include "../detail/strand_executor.hpp"
 #include "modern_exchange.hpp"
 
@@ -299,6 +300,7 @@ struct StreamableHttpSessionManager::Impl {
     AsyncBearerTokenValidator async_bearer_token_validator_;
     std::size_t max_request_body_bytes_{constants::g_default_max_request_body_bytes};
     BearerChallengeConfig bearer_challenge_;
+    ScopeRequirementProvider scope_requirements_;
     /// Rendered once when the challenge or the metadata changes, so serving a 401 never formats.
     std::string www_authenticate_value_{"Bearer"};
     std::optional<ProtectedResourceMetadataConfig> protected_resource_metadata_;
@@ -387,6 +389,11 @@ struct StreamableHttpSessionManager::Impl {
         }
         if (listening_started_) {
             throw std::logic_error("StreamableHttpSessionManager::listen() may only be called once");
+        }
+        if (scope_requirements_ && !bearer_token_validator_ && !async_bearer_token_validator_) {
+            throw std::logic_error(
+                "StreamableHttpSessionManager::set_scope_requirements() needs a token validator: "
+                "call set_bearer_token_validator() or set_async_bearer_token_validator()");
         }
         listening_started_ = true;
         return true;
@@ -637,14 +644,18 @@ struct StreamableHttpSessionManager::Impl {
         std::vector<char> response_head;
         // The principal the bearer token validator named for the request being served.
         std::optional<std::string> principal_id;
+        // The scopes the bearer token validator reported for the request being served.
+        std::optional<std::vector<std::string>> token_scopes;
         const detail::RefuseBeforeBody refuse =
-            [this, &principal_id](const StringRequest& head) -> Task<std::optional<StringResponse>> {
-            co_return co_await refuse_before_body(head, principal_id);
+            [this, &principal_id,
+             &token_scopes](const StringRequest& head) -> Task<std::optional<StringResponse>> {
+            co_return co_await refuse_before_body(head, principal_id, token_scopes);
         };
 
         for (;;) {
             const auto limits = current_connection_limits();
             principal_id.reset();
+            token_scopes.reset();
             detail::RequestParser parser;
             parser.body_limit(max_request_body_bytes_);
             detail::BudgetLease bytes(budget_.bytes, limits.max_request_bytes);
@@ -676,7 +687,7 @@ struct StreamableHttpSessionManager::Impl {
                 continue;
             }
             auto reply = co_await handle_request(request, conn_strand, stateless_server, bytes,
-                                                 std::move(principal_id));
+                                                 std::move(principal_id), token_scopes);
             if (closed.load(std::memory_order_acquire)) {
                 if (auto* exchange = std::get_if<1>(&reply)) {
                     (*exchange)->abandon();
@@ -723,6 +734,26 @@ struct StreamableHttpSessionManager::Impl {
         return format_www_authenticate(effective);
     }
 
+    /// The `403` that answers a request whose token lacks a scope it needs, the `500` for a provider
+    /// that failed to decide, or nothing when the request may be served.
+    std::optional<StringResponse> check_request_scopes(
+        const StringRequest& request, const nlohmann::json& request_json,
+        const std::optional<std::vector<std::string>>& token_scopes) const {
+        const auto check = detail::check_request_scopes(scope_requirements_, token_scopes, request_json,
+                                                        bearer_challenge_);
+        if (check.outcome == detail::ScopeCheck::Outcome::failed) {
+            return detail_session_mgr::make_error_response(request, http::status::internal_server_error,
+                                                           "Scope requirement check failed");
+        }
+        if (check.outcome == detail::ScopeCheck::Outcome::allowed) {
+            return std::nullopt;
+        }
+        auto response = detail_session_mgr::make_error_response(request, http::status::forbidden,
+                                                                "Insufficient scope");
+        response.set(http::field::www_authenticate, render_challenge(check.challenge));
+        return response;
+    }
+
     bool is_unauthenticated_path(const StringRequest& request) const {
         if (unauthenticated_paths_.empty()) {
             return false;
@@ -755,8 +786,9 @@ struct StreamableHttpSessionManager::Impl {
 
     /// Origin and bearer checks: they need only the headers, so a request they refuse never has its
     /// body read. Sets @p principal_id to the principal the validator names, if it names one.
-    Task<std::optional<StringResponse>> refuse_before_body(const StringRequest& request,
-                                                           std::optional<std::string>& principal_id) {
+    Task<std::optional<StringResponse>> refuse_before_body(
+        const StringRequest& request, std::optional<std::string>& principal_id,
+        std::optional<std::vector<std::string>>& token_scopes) {
         // A closed transport answers nothing more, so a request is not worth a token check.
         if (closed.load(std::memory_order_acquire)) {
             co_return std::nullopt;
@@ -800,6 +832,7 @@ struct StreamableHttpSessionManager::Impl {
                 co_return response;
             }
             principal_id = std::move(validation->principal_id);
+            token_scopes = std::move(validation->scopes);
         }
 
         co_return std::nullopt;
@@ -807,7 +840,8 @@ struct StreamableHttpSessionManager::Impl {
 
     Task<Reply> handle_request(const StringRequest& request, boost::asio::any_io_executor conn_strand,
                                std::unique_ptr<Server>& stateless_server, detail::BudgetLease& bytes,
-                               std::optional<std::string> principal_id) {
+                               std::optional<std::string> principal_id,
+                               const std::optional<std::vector<std::string>>& token_scopes) {
         if (closed.load(std::memory_order_acquire)) {
             co_return detail_session_mgr::make_error_response(
                 request, http::status::service_unavailable, "Transport closed");
@@ -835,7 +869,7 @@ struct StreamableHttpSessionManager::Impl {
 
         if (request.method() == http::verb::post) {
             co_return co_await handle_post(request, conn_strand, stateless_server, bytes,
-                                           std::move(principal_id));
+                                           std::move(principal_id), token_scopes);
         }
 
         // A 2026-07-28 client has no session to read from or end, so GET and DELETE are not part
@@ -1269,7 +1303,8 @@ struct StreamableHttpSessionManager::Impl {
     /// without a session carries that principal; a session belongs to the principal that created it.
     Task<Reply> handle_post(const StringRequest& request, boost::asio::any_io_executor conn_strand,
                             std::unique_ptr<Server>& stateless_server, detail::BudgetLease& bytes,
-                            std::optional<std::string> principal_id) {
+                            std::optional<std::string> principal_id,
+                            const std::optional<std::vector<std::string>>& token_scopes) {
         if (closed.load(std::memory_order_acquire)) {
             co_return detail_session_mgr::make_error_response(
                 request, http::status::service_unavailable, "Transport closed");
@@ -1284,6 +1319,10 @@ struct StreamableHttpSessionManager::Impl {
         if (!bytes.grow_to(request.body().size() + detail::json_memory_cost(request_json))) {
             co_return detail_session_mgr::make_error_response(
                 request, http::status::service_unavailable, "Server busy");
+        }
+        // Before the request is dispatched or any stream for its answer is opened.
+        if (auto refusal = check_request_scopes(request, request_json, token_scopes)) {
+            co_return std::move(*refusal);
         }
 
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
@@ -1825,6 +1864,12 @@ void StreamableHttpSessionManager::set_bearer_challenge(BearerChallengeConfig ch
     auto rendered = impl_->render_challenge(challenge);
     impl_->bearer_challenge_ = std::move(challenge);
     impl_->www_authenticate_value_ = std::move(rendered);
+}
+
+void StreamableHttpSessionManager::set_scope_requirements(ScopeRequirementProvider provider) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    impl_->scope_requirements_ = std::move(provider);
 }
 
 void StreamableHttpSessionManager::set_protected_resource_metadata(

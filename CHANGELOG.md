@@ -322,6 +322,17 @@ Versioning; a `0.x` version is a stable release unless its version has an
   that the write of a request is waiting for a person. `OAuthClientTransport`
   reports the wait for `Authenticator::try_handle_challenge()`, and `Client`
   installs an observer on its transport.
+- `HttpServerTransport::set_scope_requirements()` and
+  `StreamableHttpSessionManager::set_scope_requirements()` take a
+  `ScopeRequirementProvider` that names the scopes each POSTed JSON-RPC message
+  needs, and `TokenValidation::scopes` carries the scopes a validator found in
+  a token. A request whose token lacks a needed scope is answered `403` with
+  `WWW-Authenticate: Bearer error="insufficient_scope", scope="...",
+  resource_metadata="..."` before it is dispatched or any response stream is
+  opened. A provider that throws, or that names a scope the header cannot carry
+  (anything but printable ASCII), is answered `500` without a challenge.
+  `listen()` throws `std::logic_error` when a provider is set without a token
+  validator, since no token could then hold a scope.
 - `OAuthDiscoveryClient::forget_protected_resource()` drops the cached
   protected-resource metadata of one resource.
 
@@ -833,9 +844,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `OAuthClientTransportOptions::max_step_ups_per_request`.
 - `OAuthAuthorizationManager` reads the protected-resource metadata again for
   every challenge it handles, so a resource that has moved to another
-  authorization server is noticed at the next challenge instead of after the metadata cache interval:
-  the client registers with the new server (or uses the credentials bound to it)
-  instead of authorizing again at the old one with its client identifier.
+  authorization server is noticed at the next challenge instead of after the
+  metadata cache interval: the client registers with the new server (or uses
+  the credentials bound to it) instead of authorizing again at the old one with
+  its client identifier.
 
 ## [0.2.0] - 2026-10-21
 

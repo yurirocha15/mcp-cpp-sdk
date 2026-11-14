@@ -393,6 +393,34 @@ class MCP_API HttpServerTransport final : public ITransport {
     void set_bearer_challenge(BearerChallengeConfig challenge);
 
     /**
+     * @brief Name the scopes each request needs, so a token without them is answered 403.
+     *
+     * @details After a validator accepts a token, the provider is asked about every POSTed JSON-RPC
+     * message that has a method (see ScopeRequirementProvider). When the token's scopes
+     * (TokenValidation::scopes) lack one the provider named, the message is not dispatched and no
+     * response stream is opened: the answer is `403` with a
+     * `WWW-Authenticate: Bearer error="insufficient_scope", scope="...", resource_metadata="..."`
+     * challenge naming every scope the operation needs, which a client such as
+     * OAuthClientTransport answers by authorizing again with the wider scope. The challenge keeps
+     * the realm and metadata URL of set_bearer_challenge() and set_protected_resource_metadata().
+     * A validator that reports no scopes grants none, so a request that needs a scope is refused.
+     * Requests that carry no JSON-RPC method (answers to the server's own requests, GET and DELETE)
+     * are not checked.
+     *
+     * The scopes the provider returns are written into the challenge as quoted header text, so
+     * each must consist of printable ASCII (0x20-0x7E); a provider that returns anything else is
+     * answered `500` with no challenge, as one that throws is.
+     *
+     * Passing an empty provider removes the check. Configure it before listen() or run() starts.
+     * A provider needs a token validator to report the scopes a token holds, so
+     * listen() throws when one is set without the other, whichever was set first.
+     *
+     * @throws std::logic_error If listen() has already been called or the transport is closed. listen()
+     * also throws it when a provider is set and no validator is.
+     */
+    void set_scope_requirements(ScopeRequirementProvider provider);
+
+    /**
      * @brief Serve an RFC 9728 protected-resource metadata document.
      *
      * The document answers GET requests at its configured path without an Authorization header. When

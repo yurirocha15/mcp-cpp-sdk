@@ -5,6 +5,7 @@
 #include "../detail/modern_methods.hpp"
 #include "../detail/peer_json.hpp"
 #include "../detail/principal.hpp"
+#include "../detail/scope_challenge.hpp"
 #include "../detail/socket_probe.hpp"
 #include "modern_exchange.hpp"
 
@@ -206,6 +207,11 @@ struct HttpServerTransport::Impl {
         }
         if (listening_started) {
             throw std::logic_error("HttpServerTransport::listen() may only be called once");
+        }
+        if (scope_requirements && !bearer_token_validator && !async_bearer_token_validator) {
+            throw std::logic_error(
+                "HttpServerTransport::set_scope_requirements() needs a token validator: call "
+                "set_bearer_token_validator() or set_async_bearer_token_validator()");
         }
         listening_started = true;
         return true;
@@ -636,6 +642,25 @@ struct HttpServerTransport::Impl {
         return make_json_response(request, http::status::ok, protected_resource_metadata_body);
     }
 
+    /// The `403` that answers a request whose token lacks a scope it needs, the `500` for a provider
+    /// that failed to decide, or nothing when the request may be served.
+    std::optional<StringResponse> check_request_scopes(
+        const StringRequest& request, const nlohmann::json& request_json,
+        const std::optional<std::vector<std::string>>& token_scopes) const {
+        const auto check = detail::check_request_scopes(scope_requirements, token_scopes, request_json,
+                                                        bearer_challenge);
+        if (check.outcome == detail::ScopeCheck::Outcome::failed) {
+            return make_error_response(request, http::status::internal_server_error,
+                                       "Scope requirement check failed");
+        }
+        if (check.outcome == detail::ScopeCheck::Outcome::allowed) {
+            return std::nullopt;
+        }
+        auto response = make_error_response(request, http::status::forbidden, "Insufficient scope");
+        response.set(http::field::www_authenticate, render_challenge(check.challenge));
+        return response;
+    }
+
     StringResponse make_unauthorized_response(const StringRequest& request) const {
         auto response =
             make_error_response(request, http::status::unauthorized, "Invalid bearer token");
@@ -661,6 +686,8 @@ struct HttpServerTransport::Impl {
     struct Authorization {
         std::optional<StringResponse> refusal;
         std::string principal;
+        /// What the validator reported the token grants.
+        std::optional<std::vector<std::string>> scopes;
     };
 
     /// @brief Run the bearer check when it can be decided without suspending.
@@ -690,7 +717,8 @@ struct HttpServerTransport::Impl {
         if (!validation->accepted) {
             return {make_unauthorized_response(request), {}};
         }
-        return {std::nullopt, detail::request_principal(validation->principal_id, authorization)};
+        return {std::nullopt, detail::request_principal(validation->principal_id, authorization),
+                std::move(validation->scopes)};
     }
 
     /// @brief Run the bearer check against an async validator. Only entered when one is installed.
@@ -710,7 +738,8 @@ struct HttpServerTransport::Impl {
             co_return Authorization{make_unauthorized_response(request), {}};
         }
         co_return Authorization{std::nullopt,
-                                detail::request_principal(validation->principal_id, authorization)};
+                                detail::request_principal(validation->principal_id, authorization),
+                                std::move(validation->scopes)};
     }
 
     static StringResponse make_jsonrpc_error_response(const StringRequest& request,
@@ -889,7 +918,8 @@ struct HttpServerTransport::Impl {
 
     /// @p principal is what refuse_before_body() attributed the request to.
     Task<Reply> handle_post(const StringRequest& request, std::shared_ptr<Connection> connection,
-                            detail::BudgetLease& bytes, std::string principal) {
+                            detail::BudgetLease& bytes, std::string principal,
+                            const std::optional<std::vector<std::string>>& token_scopes) {
         auto request_json = detail::parse_peer_json(request.body());
         if (request_json.is_discarded() || !request_json.is_object()) {
             co_return make_error_response(request, http::status::bad_request,
@@ -898,6 +928,10 @@ struct HttpServerTransport::Impl {
         // Held until the answer is written: the parsed message can be far larger than its body.
         if (!bytes.grow_to(request.body().size() + detail::json_memory_cost(request_json))) {
             co_return make_error_response(request, http::status::service_unavailable, "Server busy");
+        }
+        // Before the request is dispatched or any stream for its answer is opened.
+        if (auto refusal = check_request_scopes(request, request_json, token_scopes)) {
+            co_return std::move(*refusal);
         }
         if (detail::is_modern_http_request(request_json,
                                            detail::http_header(request, "MCP-Protocol-Version"))) {
@@ -1318,8 +1352,9 @@ struct HttpServerTransport::Impl {
     /// Origin and bearer checks for the MCP endpoint: they need only the headers, so a request they
     /// refuse never has its body read. Sets @p principal to what the request is attributed to. The
     /// metadata document and exempt paths need neither check.
-    Task<std::optional<StringResponse>> refuse_before_body(const StringRequest& request,
-                                                           std::string& principal) const {
+    Task<std::optional<StringResponse>> refuse_before_body(
+        const StringRequest& request, std::string& principal,
+        std::optional<std::vector<std::string>>& token_scopes) const {
         // A closed transport answers nothing more, so a request is not worth a token check.
         if (state->closed.load(std::memory_order_acquire)) {
             co_return std::nullopt;
@@ -1339,11 +1374,13 @@ struct HttpServerTransport::Impl {
             authorization = co_await check_authorization_async(request);
         }
         principal = std::move(authorization.principal);
+        token_scopes = std::move(authorization.scopes);
         co_return std::move(authorization.refusal);
     }
 
     Task<Reply> handle_request(const StringRequest& request, std::shared_ptr<Connection> connection,
-                               detail::BudgetLease& bytes, std::string principal) {
+                               detail::BudgetLease& bytes, std::string principal,
+                               const std::optional<std::vector<std::string>>& token_scopes) {
         if (state->closed.load(std::memory_order_acquire)) {
             co_return make_error_response(request, http::status::service_unavailable,
                                           "Transport closed");
@@ -1358,7 +1395,8 @@ struct HttpServerTransport::Impl {
             co_return make_error_response(request, http::status::not_found, "Not found");
         }
         if (request.method() == http::verb::post) {
-            co_return co_await handle_post(request, std::move(connection), bytes, std::move(principal));
+            co_return co_await handle_post(request, std::move(connection), bytes, std::move(principal),
+                                           token_scopes);
         }
         if (request.method() == http::verb::get) {
             co_return co_await handle_get(request, principal, bytes);
@@ -1383,13 +1421,16 @@ struct HttpServerTransport::Impl {
         bool client_finished_sending = false;
         // What the request being served is attributed to.
         std::string principal;
+        std::optional<std::vector<std::string>> token_scopes;
         const detail::RefuseBeforeBody refuse =
-            [this, &principal](const StringRequest& head) -> Task<std::optional<StringResponse>> {
-            co_return co_await refuse_before_body(head, principal);
+            [this, &principal,
+             &token_scopes](const StringRequest& head) -> Task<std::optional<StringResponse>> {
+            co_return co_await refuse_before_body(head, principal, token_scopes);
         };
 
         for (;;) {
             principal.clear();
+            token_scopes.reset();
             detail::RequestParser parser;
             parser.body_limit(max_request_body_bytes);
             detail::BudgetLease bytes(budget.bytes, connection_limits.max_request_bytes);
@@ -1412,7 +1453,8 @@ struct HttpServerTransport::Impl {
             detail::BudgetLease slot(budget.requests, connection_limits.max_requests);
             Reply reply;
             if (slot.grow_to(1)) {
-                reply = co_await handle_request(request, connection, bytes, std::move(principal));
+                reply = co_await handle_request(request, connection, bytes, std::move(principal),
+                                                token_scopes);
             } else {
                 reply = make_error_response(request, http::status::service_unavailable,
                                             "Too many requests");
@@ -1641,6 +1683,7 @@ struct HttpServerTransport::Impl {
     HttpConnectionLimits connection_limits;
     detail::HttpListenerBudget budget;
     BearerChallengeConfig bearer_challenge;
+    ScopeRequirementProvider scope_requirements;
     /// Rendered once when the challenge or the metadata changes, so serving a 401 never formats.
     std::string www_authenticate_value{"Bearer"};
     std::optional<ProtectedResourceMetadataConfig> protected_resource_metadata;
@@ -1758,6 +1801,12 @@ void HttpServerTransport::set_bearer_challenge(BearerChallengeConfig challenge) 
     auto rendered = impl_->render_challenge(challenge);
     impl_->bearer_challenge = std::move(challenge);
     impl_->www_authenticate_value = std::move(rendered);
+}
+
+void HttpServerTransport::set_scope_requirements(ScopeRequirementProvider provider) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->scope_requirements = std::move(provider);
 }
 
 void HttpServerTransport::set_protected_resource_metadata(ProtectedResourceMetadataConfig metadata) {

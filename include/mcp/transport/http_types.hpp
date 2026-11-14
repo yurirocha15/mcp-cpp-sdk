@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -63,6 +64,11 @@ struct TokenValidation {
     /// client that refreshes its token keeps its identity. Without one the SDK derives a
     /// principal from the token itself, which changes when the token does.
     std::optional<std::string> principal_id;
+    /// The scopes the token grants. A transport with a ScopeRequirementProvider compares them with
+    /// the scopes a request needs and answers `403` with an `insufficient_scope` challenge when one
+    /// is missing; a validator that leaves this empty grants none. Scope hierarchies are the
+    /// validator's to expand: list every scope the token implies.
+    std::optional<std::vector<std::string>> scopes;
 
     /// Accept or refuse without naming a principal.
     // NOLINTNEXTLINE(google-explicit-constructor)
@@ -71,6 +77,25 @@ struct TokenValidation {
     TokenValidation(bool is_accepted, std::string principal)
         : accepted(is_accepted), principal_id(std::move(principal)) {}
 };
+
+/**
+ * @brief The JSON-RPC message a ScopeRequirementProvider is asked about.
+ */
+struct ScopeRequestContext {
+    std::string_view method;       ///< JSON-RPC method, such as `tools/call`.
+    const nlohmann::json& params;  ///< The message's `params`, or null when it has none.
+};
+
+/**
+ * @brief Names the scopes a request needs before it is served.
+ *
+ * Called on every POSTed JSON-RPC message that has a method, after the bearer token is accepted and
+ * before anything is dispatched or any response stream is opened. Return every scope the operation
+ * needs, together: the answer to a token that lacks one is a single `403` whose challenge names
+ * all of them, so the client authorizes once. An empty list means the request needs no scope.
+ * A provider that throws is answered `500`, as a validator that throws is.
+ */
+using ScopeRequirementProvider = std::function<std::vector<std::string>(const ScopeRequestContext&)>;
 
 /// @brief Synchronous validator invoked at the HTTP boundary for a bearer token.
 using BearerTokenValidator = std::function<TokenValidation(std::string_view)>;
