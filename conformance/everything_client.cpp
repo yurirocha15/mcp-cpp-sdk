@@ -5,6 +5,7 @@
 #include <mcp/auth/enterprise_authorization.hpp>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/client/client.hpp>
+#include <mcp/client/skills.hpp>
 #include <mcp/transport/http_client.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
@@ -22,8 +23,10 @@
 #include <exception>
 #include <future>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -290,6 +293,55 @@ mcp::Task<void> run_schema_preservation(mcp::Client& client) {
     client.close();
 }
 
+/// The `key: value` lines of a SKILL.md's frontmatter block, as strings.
+std::map<std::string, std::string> skill_frontmatter(const std::string& text) {
+    std::map<std::string, std::string> fields;
+    std::istringstream lines(text);
+    std::string line;
+    if (!std::getline(lines, line) || line != "---") {
+        return fields;
+    }
+    while (std::getline(lines, line) && line != "---") {
+        const auto colon = line.find(": ");
+        if (colon != std::string::npos) {
+            fields[line.substr(0, colon)] = line.substr(colon + 2);
+        }
+    }
+    return fields;
+}
+
+/// Whether the frontmatter of a fetched SKILL.md says what the skill's entry says.
+bool frontmatter_matches(const mcp::Skill& entry, const std::string& text) {
+    const auto fields = skill_frontmatter(text);
+    for (const auto& [key, value] : entry.frontmatter.items()) {
+        const auto found = fields.find(key);
+        if (found == fields.end() || !value.is_string() || found->second != value.get<std::string>()) {
+            return false;
+        }
+    }
+    return fields.size() == entry.frontmatter.size();
+}
+
+/// Lists a server's skills. Unless the scenario is the no-prefetch one, loads the first skill: reads
+/// its SKILL.md, which the SDK checks against the listed size and digest, compares the frontmatter,
+/// and reads the supporting files only when every check holds.
+mcp::Task<void> run_skills_host(mcp::Client& client, std::string_view scenario) {
+    (void)co_await connect_conformance_client(client);
+    const auto listing = co_await mcp::skills::list_skills(client);
+    if (scenario != "sep-2640-client-no-prefetch" && !listing.skills.empty()) {
+        const auto& entry = listing.skills.front();
+        const auto skill_md = co_await mcp::skills::read_skill_file(client, entry, entry.uri);
+        if (frontmatter_matches(entry, skill_md)) {
+            for (const auto& resource : entry.resources) {
+                if (resource.uri != entry.uri) {
+                    (void)co_await mcp::skills::read_skill_file(client, entry, resource.uri);
+                }
+            }
+        }
+    }
+    client.close();
+}
+
 mcp::Task<void> run_scenario(mcp::Client& client, std::string_view scenario) {
     if (scenario == "initialize") {
         return run_initialize(client);
@@ -323,6 +375,9 @@ mcp::Task<void> run_scenario(mcp::Client& client, std::string_view scenario) {
     }
     if (scenario == "json-schema-2020-12-preservation") {
         return run_schema_preservation(client);
+    }
+    if (scenario.starts_with("sep-2640-client-")) {
+        return run_skills_host(client, scenario);
     }
     if (scenario.starts_with("auth/")) {
         // Every other authorization scenario drives the same flow: one authenticated MCP request.
