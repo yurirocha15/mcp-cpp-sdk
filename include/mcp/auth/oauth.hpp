@@ -530,6 +530,20 @@ class MCP_API OAuthDiscoveryClient {
         ProtectedResourceAcceptor accept);
 
     /**
+     * @brief Drop the cached protected-resource metadata for one resource.
+     *
+     * @param resource_url Resource URL the metadata was discovered for.
+     * @param challenge_metadata_url `resource_metadata` URL of the challenge the metadata was
+     *        discovered through, when it supplied one.
+     *
+     * @details The next discover_protected_resource() call for the same arguments fetches the
+     * document again. A client that has just been challenged uses this so the authorization server
+     * it authorizes at is the one the resource names now, not the one the cached copy named.
+     */
+    void forget_protected_resource(const std::string& resource_url,
+                                   const std::optional<std::string>& challenge_metadata_url);
+
+    /**
      * @brief Discover metadata for an authorization server.
      *
      * @param issuer_url Issuer URL or base URL of the authorization server.

@@ -322,6 +322,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   that the write of a request is waiting for a person. `OAuthClientTransport`
   reports the wait for `Authenticator::try_handle_challenge()`, and `Client`
   installs an observer on its transport.
+- `OAuthDiscoveryClient::forget_protected_resource()` drops the cached
+  protected-resource metadata of one resource.
 
 ### Changed
 
@@ -829,6 +831,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   granted only when it appears literally in the granted scope, and the
   step-ups one request may cost stay limited by
   `OAuthClientTransportOptions::max_step_ups_per_request`.
+- `OAuthAuthorizationManager` reads the protected-resource metadata again for
+  every challenge it handles, so a resource that has moved to another
+  authorization server is noticed at the next challenge instead of after the metadata cache interval:
+  the client registers with the new server (or uses the credentials bound to it)
+  instead of authorizing again at the old one with its client identifier.
 
 ## [0.2.0] - 2026-10-21
 

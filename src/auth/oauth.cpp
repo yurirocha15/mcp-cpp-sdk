@@ -1443,6 +1443,12 @@ Task<AuthServerMetadata> OAuthDiscoveryClient::discover_auth_server(const std::s
     return Impl::discover_auth_server(impl_, issuer_url);
 }
 
+void OAuthDiscoveryClient::forget_protected_resource(
+    const std::string& resource_url, const std::optional<std::string>& challenge_metadata_url) {
+    std::lock_guard lock(impl_->cache_mutex);
+    impl_->resource_cache.erase(challenge_metadata_url.value_or(resource_url));
+}
+
 void OAuthDiscoveryClient::clear_cache() {
     std::lock_guard lock(impl_->cache_mutex);
     impl_->resource_cache.clear();
@@ -2072,12 +2078,27 @@ struct OAuthAuthorizationManager::Impl {
             require_resource_identifies_server(resource.resource, owner->config.server_url);
         };
 
-        // The challenge's own metadata URL wins over the well-known fallback order.
-        operation->resource_metadata = co_await operation->discovery->discover_protected_resource(
-            owner.config.server_url, operation->challenge.resource_metadata, std::move(accept));
+        // A challenge means the token in hand was refused, so the resource may have moved to another
+        // authorization server since the metadata was cached. Reading it again is what lets the
+        // client notice and authorize, with credentials of its own, at the server named now.
+        operation->discovery->forget_protected_resource(owner.config.server_url,
+                                                        operation->challenge.resource_metadata);
 
-        operation->auth_metadata = co_await operation->discovery->discover_auth_server(
-            operation->resource_metadata->authorization_servers.front());
+        // The challenge's own metadata URL wins over the well-known fallback order. A fetch that
+        // fails because cancel() aborted it is reported as the cancellation it is.
+        try {
+            operation->resource_metadata = co_await operation->discovery->discover_protected_resource(
+                owner.config.server_url, operation->challenge.resource_metadata, std::move(accept));
+
+            operation->auth_metadata = co_await operation->discovery->discover_auth_server(
+                operation->resource_metadata->authorization_servers.front());
+        } catch (...) {
+            std::lock_guard lock(owner.state_mutex);
+            if (operation->flight->cancelled) {
+                throw std::runtime_error("OAuth authorization attempt was cancelled");
+            }
+            throw;
+        }
         // RFC 8414 §3.3: the issuer a metadata document claims MUST be the location it was fetched
         // from, compared byte-exact. Normalizing here would re-open the AS mix-up this closes.
         if (operation->auth_metadata->issuer.empty() ||

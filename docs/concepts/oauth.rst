@@ -72,6 +72,25 @@ that with ``server_url``, which may use ``https`` while an ``HttpClientTransport
 speaks plain HTTP. Give each server its own manager, and wrap only transports
 that talk to that server with it.
 
+.. _oauth-authorization-server-change:
+
+When the authorization server changes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Every ``try_handle_challenge`` call reads the protected-resource metadata again
+instead of serving the cached copy, because a challenge means the token in hand
+was refused and the resource may have moved to another authorization server.
+The authorization server the document names now is the one the manager
+authorizes at. Client credentials are kept per issuer in the
+``credential_store``, so a new server gets a registration of its own (or the
+client metadata document, or the pre-registered credentials bound to that
+issuer) and never receives another server's client identifier or secret. The
+token and the token endpoint the manager refreshes with are replaced together
+when the exchange at the new server succeeds; until then a refresh still goes
+to the server that issued the token. A concurrent burst of requests that meet
+the same challenge shares one flight, so the document is read once for the
+burst. Authorization server metadata keeps the discovery cache.
+
 .. _oauth-what-the-manager-validates:
 
 What the manager validates
@@ -481,7 +500,9 @@ Discovery and PKCE
 ~~~~~~~~~~~~~~~~~~
 
 ``OAuthDiscoveryClient`` reads protected-resource and authorization-server
-metadata. Discovery results are cached for a configurable interval. Install a
+metadata. Discovery results are cached for a configurable interval; the manager drops the
+cached protected-resource document before each challenge it handles (see
+:ref:`oauth-authorization-server-change`). Install a
 :cpp:struct:`mcp::auth::MetadataFetchPolicy` on the ``OAuthHttpClient`` first,
 or every fetch is refused.
 
