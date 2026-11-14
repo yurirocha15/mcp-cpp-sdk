@@ -254,6 +254,17 @@ enum class MrtrEvictionReason : std::uint8_t {
                 ///< max_parked_bytes_per_principal).
 };
 
+/// How the state of a request that waits for client input is kept (see MrtrOptions::state_mode).
+enum class MrtrStateMode : std::uint8_t {
+    /// The handler waits, parked, in the Server instance that answered the first request, and the
+    /// retry must reach that instance.
+    eStored,
+    /// `requestState` carries the state, encrypted and authenticated with MrtrOptions::sealing_keys.
+    /// Any Server instance with the key ring serves the retry by running the handler again from the
+    /// start with the earlier answers (Context::is_replay()).
+    eSealed,
+};
+
 /**
  * @brief Limits on the 2026-07-28 requests that wait for client input (see
  *        Server::set_mrtr_options()).
@@ -281,6 +292,33 @@ struct MrtrOptions {
     std::size_t max_parked_bytes_per_principal{16U * 1024U * 1024U};
     /// Called, on no particular thread, each time a waiting handler is given up.
     std::function<void(MrtrEvictionReason)> on_eviction;
+
+    /// Where the state of a waiting request lives. The limits above bound stored state only.
+    MrtrStateMode state_mode{MrtrStateMode::eStored};
+    /// Sealed state: secrets of at least 32 bytes, newest first. The first seals; every one opens,
+    /// so a key can be rotated in by putting a new one first and kept until the states sealed under
+    /// the old one have expired. Each secret is hashed to the AES-256-GCM master key, and every
+    /// state derives its own key from it with HKDF-SHA256. Server::set_mrtr_options() throws
+    /// std::invalid_argument when sealed mode has no key or a key is too short.
+    std::vector<std::string> sealing_keys;
+    /// Sealed state: how long a state is accepted after the round that sealed it. The expiry is a
+    /// wall-clock time, so server instances that share keys need reasonably synchronized clocks.
+    std::chrono::milliseconds state_ttl{std::chrono::minutes(5)};
+    /// Sealed state: the most rounds of input one request may take, at least 1; a request that
+    /// asks for more is answered with an internal error.
+    std::size_t max_rounds{16};
+    /// Sealed state: the longest `requestState` the server writes or accepts, in characters, at
+    /// least 512. A request whose state outgrows it is answered with an internal error.
+    std::size_t max_state_bytes{32U * 1024U};
+    /// Sealed state: called with the unique id of a state before its retry is served. Returning
+    /// false (or throwing) refuses the retry as an unknown requestState, so a deployment that must
+    /// not serve a state twice can record the ids it has seen. The id is not secret. May run on any
+    /// thread.
+    ///
+    /// Optional, but without it a state can be sent again until it expires, and each time the
+    /// handler runs again from the start with the same answers: the steps after its last question
+    /// run once more. Make those steps idempotent, or set this hook.
+    std::function<bool(std::string_view)> consume;
 };
 
 /**
@@ -651,12 +689,37 @@ class MCP_API Server {
     /**
      * @brief Set the limits on 2026-07-28 requests that wait for client input.
      *
-     * @details The waiting handlers live in this server, so a client's retry must reach the same
-     * server instance (and process) as the request it retries; one that does not is answered as
-     * for an unknown requestState. When run() ends, its transport can bring no more retries, and
-     * the waiting handlers are given up. Takes effect for requests parked afterwards.
+     * @details With MrtrStateMode::eStored (the default) the waiting handlers live in this server,
+     * so a client's retry must reach the same server instance (and process) as the request it
+     * retries; one that does not is answered as for an unknown requestState. When run() ends, its
+     * transport can bring no more retries, and the waiting handlers are given up. Takes effect for
+     * requests parked afterwards.
+     *
+     * With MrtrStateMode::eSealed nothing waits in the server: `requestState` carries the state,
+     * sealed with MrtrOptions::sealing_keys, and a retry may reach any server instance that has
+     * the key. The instance runs the handler again from the start and the questions earlier
+     * rounds answered return their answers at once (see Context::is_replay()), so a handler must
+     * ask the same questions in the same order when given the same answers. Progress and log
+     * notifications a handler sends before the question it asks again are sent again. A retry
+     * is refused as an unknown requestState when its state is expired, was sealed by another key,
+     * or belongs to another principal, method or arguments.
+     *
+     * A sealed state is not single-use: until it expires the client (or anyone holding the state)
+     * can send it again, and each time the handler runs again from the start with the same
+     * answers. The steps after the handler's last question then run once more, so make them
+     * idempotent or set MrtrOptions::consume to refuse a state it has seen. A handler is released
+     * at its first unanswered question without running any more of its code (its locals are
+     * destroyed), so no `catch` of the handler sees the release. The expiry is a wall-clock time;
+     * instances that share keys need reasonably synchronized clocks. Context::is_replay() is true only
+     * while earlier answers remain to be replayed.
+     *
+     * The secrets in @p options are overwritten once the key ring is built and the server keeps
+     * none of them.
      *
      * @param options The limits.
+     * @throws std::invalid_argument when sealed mode has no key, a key is shorter than 32 bytes,
+     *         two keys are the same secret or share a 4-byte key id, `max_rounds` is 0,
+     *         `state_ttl` is zero or negative, or `max_state_bytes` is below 512.
      */
     void set_mrtr_options(MrtrOptions options);
 
@@ -666,8 +729,9 @@ class MCP_API Server {
     /**
      * @brief Give up every handler waiting for the retry of a 2026-07-28 request.
      *
-     * @details Each throws from its question, so its frame unwinds, and its answer is discarded.
-     * For when no retry can arrive any more: run() does this when it ends, and
+     * @details Each stops at its question and its frame unwinds (a stored handler throws from the
+     * question, a sealed handler is destroyed without running more of its code), and its answer is
+     * discarded. For when no retry can arrive any more: run() does this when it ends, and
      * StreamableHttpSessionManager::close() for its modern server.
      */
     void abandon_waiting_handlers();
