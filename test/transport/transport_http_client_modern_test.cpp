@@ -2023,3 +2023,72 @@ TEST(HttpClientModern, EventWithoutAnEndIsCutOffAtTheMessageLimit) {
 
     EXPECT_NE(failure.find("too long"), std::string::npos) << failure;
 }
+
+namespace {
+
+/// A legacy server whose every GET stream carries `stream_text` and then ends. `gets` records when
+/// each GET arrived.
+struct EndingStreams {
+    std::string stream_text;
+    std::vector<std::chrono::steady_clock::time_point> gets;
+};
+
+/// Connects a legacy Client to an EndingStreams server and waits for @p wanted GETs.
+void run_ending_streams(EndingStreams& streams, std::size_t wanted) {
+    asio::io_context io;
+    RawServer raw(io, [&streams](const Recorded& request) {
+        Reply reply;
+        reply.headers = {{"Mcp-Session-Id", "s1"}};
+        if (request.method == "GET") {
+            streams.gets.push_back(std::chrono::steady_clock::now());
+            reply.content_type = "text/event-stream";
+            reply.stream = {Step{streams.stream_text, {}}};
+            return reply;
+        }
+        const auto message = request.parsed();
+        if (message.value("method", "") == "initialize") {
+            reply.body = rpc_result(message, legacy_initialize_result()).dump();
+            return reply;
+        }
+        reply.status = 202;
+        return reply;
+    });
+    auto transport = make_transport(io, raw.url());
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::Legacy();
+    mcp::Client client(transport, io.get_executor(), options);
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("streams", "1.0");
+        co_await wait_until([&streams, wanted] { return streams.gets.size() >= wanted; });
+        client.close();
+    });
+}
+
+}  // namespace
+
+// A GET stream the server ends at once is opened again no sooner than 100 ms later, whatever its
+// `retry` asks for, and the pause doubles each time a stream ends again carrying nothing. Only lower
+// bounds are checked, so a slow machine cannot fail the test.
+TEST(HttpClientLegacyStream, StreamsThatEndEmptyAreOpenedLessAndLessOften) {
+    EndingStreams streams{"retry: 0\n\n", {}};
+    run_ending_streams(streams, 4);
+    ASSERT_GE(streams.gets.size(), 4u);
+    EXPECT_GE(streams.gets[1] - streams.gets[0], std::chrono::milliseconds(100));
+    EXPECT_GE(streams.gets[2] - streams.gets[1], std::chrono::milliseconds(200));
+    EXPECT_GE(streams.gets[3] - streams.gets[2], std::chrono::milliseconds(400));
+}
+
+// A stream that carries an event before it ends is opened again after its `retry`, and no sooner
+// than 100 ms.
+TEST(HttpClientLegacyStream, StreamWithAnEventIsOpenedAgainNoSoonerThanTheFloor) {
+    const json note = {{"jsonrpc", "2.0"},
+                       {"method", "notifications/message"},
+                       {"params", {{"level", "info"}, {"data", "tick"}}}};
+    EndingStreams streams{"retry: 0\nid: e1\n" + sse_event(note), {}};
+    run_ending_streams(streams, 4);
+    ASSERT_GE(streams.gets.size(), 4u);
+    for (std::size_t index = 1; index < 4; ++index) {
+        EXPECT_GE(streams.gets[index] - streams.gets[index - 1], std::chrono::milliseconds(100))
+            << "between GET " << index << " and the one before";
+    }
+}

@@ -283,9 +283,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `HttpClientTransport` sends each message of a legacy session on an exchange
   of its own, so requests overlap, and reads SSE answers as they arrive. After
   notifications/initialized it opens the session's GET stream, opens it again
-  from its last event when it ends, and does not ask again after a 405. A
-  request's stream that ends before its response is resumed with a GET naming
-  its last event, at most three times.
+  from its last event when it ends, after the pause its `retry` field asks for
+  but at least 100 ms, which doubles while streams keep ending with nothing, and
+  does not ask again after a 405. A request's stream that ends before its
+  response is resumed with a GET naming its last event, at most three times.
 
 ### Changed
 

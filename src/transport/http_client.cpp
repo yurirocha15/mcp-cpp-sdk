@@ -53,6 +53,8 @@ constexpr std::size_t g_max_modern_message_bytes = 16U * 1024U * 1024U;
 constexpr int g_max_stream_resumes = 3;
 /// The pause before a stream is opened again when the server named none.
 constexpr std::chrono::milliseconds g_default_reconnect_delay{1000};
+/// The shortest pause before a stream is opened again, whatever the server asked for.
+constexpr std::chrono::milliseconds g_min_reconnect_delay{100};
 /// The longest pause before a stream is opened again, whatever the server asked for.
 constexpr std::chrono::milliseconds g_max_reconnect_delay{30000};
 /// Longest `Mcp-Param-*` value sent. Longer ones do not get through the servers that limit a header.
@@ -75,6 +77,9 @@ class SseDecoder {
 
     /// The reconnection time a `retry` field asked for, if one did.
     [[nodiscard]] std::optional<std::chrono::milliseconds> retry() const { return retry_; }
+
+    /// Whether the stream carried an event or an event id.
+    [[nodiscard]] bool carried_anything() const { return carried_anything_; }
 
     std::vector<std::string> feed(std::string_view chunk) {
         std::vector<std::string> events;
@@ -100,6 +105,7 @@ class SseDecoder {
         if (!payload_.empty()) {
             events.push_back(std::move(payload_));
             payload_.clear();
+            carried_anything_ = true;
         }
         return events;
     }
@@ -113,6 +119,7 @@ class SseDecoder {
             if (!payload_.empty()) {
                 events.push_back(std::move(payload_));
                 payload_.clear();
+                carried_anything_ = true;
             }
         } else if (line_.compare(0, 3, "id:") == 0) {
             std::string_view value = std::string_view(line_).substr(3);
@@ -122,6 +129,7 @@ class SseDecoder {
             // An id holding NUL is ignored, as the SSE standard has it.
             if (value.find('\0') == std::string_view::npos) {
                 last_id_.assign(value.data(), value.size());
+                carried_anything_ = true;
             }
         } else if (line_.compare(0, 6, "retry:") == 0) {
             std::string_view value = std::string_view(line_).substr(6);
@@ -154,6 +162,7 @@ class SseDecoder {
     std::string line_;
     std::string payload_;
     std::string last_id_;
+    bool carried_anything_ = false;
     std::optional<std::chrono::milliseconds> retry_;
 };
 
@@ -1053,7 +1062,8 @@ struct HttpClientTransport::Impl {
     /// How long to wait before a stream is opened again: what its `retry` field asked for, within
     /// bounds, or a second.
     static std::chrono::milliseconds reconnect_delay(const SseDecoder& decoder) {
-        return std::min(decoder.retry().value_or(g_default_reconnect_delay), g_max_reconnect_delay);
+        return std::clamp(decoder.retry().value_or(g_default_reconnect_delay), g_min_reconnect_delay,
+                          g_max_reconnect_delay);
     }
 
     /// Opens the session's GET stream, once per session.
@@ -1079,6 +1089,7 @@ struct HttpClientTransport::Impl {
         auto& shared = *impl->state;
         auto last_event_id = std::make_shared<std::string>();
         std::chrono::milliseconds delay = g_default_reconnect_delay;
+        std::chrono::milliseconds backoff{0};
         for (;;) {
             if (shared.closed.load(std::memory_order_acquire) || shared.session_id != *session) {
                 co_return;
@@ -1106,6 +1117,15 @@ struct HttpClientTransport::Impl {
                 impl->remember_last_event_id(call->decoder);
             }
             delay = reconnect_delay(call->decoder);
+            // A stream that ends carrying nothing is opened again after twice the pause before it,
+            // so a server that ends every stream at once is asked less and less often.
+            if (call->decoder.carried_anything()) {
+                backoff = std::chrono::milliseconds::zero();
+            } else {
+                backoff = std::min(backoff == std::chrono::milliseconds::zero() ? delay : backoff * 2,
+                                   g_max_reconnect_delay);
+                delay = std::max(delay, backoff);
+            }
             end_call(shared, *call);
             if (!opened || shared.closed.load(std::memory_order_acquire)) {
                 co_return;
