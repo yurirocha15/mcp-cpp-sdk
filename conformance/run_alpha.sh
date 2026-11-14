@@ -1,33 +1,32 @@
 #!/usr/bin/env bash
-# INFORMATIONAL-ONLY, NON-DEFAULT, NON-CI-GATING.
+# NON-GATING, NEVER TIER EVIDENCE.
 #
-# Side-by-side alpha conformance harness. Runs the official MCP conformance
-# runner's alpha channel (@modelcontextprotocol/conformance@0.2.0-alpha.12,
-# which defaults to spec 2026-07-28) against the SAME already-built fixtures
-# used by conformance/run.sh, but writes to a DISTINCT results directory and
-# is never invoked by CI or any phase-exit script.
+# Runs the official MCP conformance runner's alpha channel against the same
+# already-built fixtures as conformance/run.sh, with the requirement set of
+# protocol revision 2026-07-28 (`--requirements 2026-07-28`, which selects the
+# scenarios and the wire the revision defines). Results go to a distinct
+# directory. CI runs this in a job that cannot fail the workflow, so its
+# results are an informational report next to the gating pinned run.
 #
-# conformance/run.sh and its pinned 0.1.16 / spec-2025-11-25 runner are the
-# SDK's only tier-evidence instrument and are left completely untouched by
-# this script: no shared runner install, no shared baseline file, no shared
-# results directory, no shared summarizer (summarize.py's scenario catalog
-# and "runner=0.1.16" label are specific to the pinned suite and do not
-# apply to the alpha scenario set, which already differs materially).
+# conformance/run.sh and its pinned 0.1.16 / spec-2025-11-25 runner stay the
+# SDK's only gate: no shared runner install, no shared baseline file, no shared
+# results directory, no shared summarizer (summarize.py's scenario catalog and
+# its runner label are specific to the pinned suite).
 #
-# The alpha runner is fetched on demand via `npx` (network required) pinned
-# to an exact version -- nothing is installed into conformance/runner, which
-# stays reserved for the pinned 0.1.16 install.
+# The alpha runner is fetched on demand via `npx` (network required) pinned to
+# an exact version; nothing is installed into conformance/runner, which stays
+# reserved for the pinned install.
 #
-# This script's exit code reflects whether it *ran to completion*, not
-# whether alpha scenarios passed or failed. Conformance results here are
-# never tier evidence.
+# This script's exit code reflects whether it *ran to completion*, not whether
+# alpha scenarios passed or failed.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="${1:-$PROJECT_DIR/build/release}"
 OUTPUT_DIR="${2:-$PROJECT_DIR/build/conformance-results-alpha}"
-RUNNER_PACKAGE="@modelcontextprotocol/conformance@0.2.0-alpha.12"
+RUNNER_VERSION="0.2.0-alpha.12"
+RUNNER_PACKAGE="@modelcontextprotocol/conformance@$RUNNER_VERSION"
 SERVER="$BUILD_DIR/conformance/mcp-conformance-everything-server"
 CLIENT="$BUILD_DIR/conformance/mcp-conformance-everything-client"
 SPEC_VERSION="2026-07-28"
@@ -42,8 +41,8 @@ fi
 
 echo "Resolving pinned alpha runner: $RUNNER_PACKAGE (network access required)..." >&2
 runner_version="$(npx --yes "$RUNNER_PACKAGE" --version)"
-if [[ "$runner_version" != "0.2.0-alpha.12" ]]; then
-    echo "Unexpected alpha conformance runner version: $runner_version (expected 0.2.0-alpha.12)" >&2
+if [[ "$runner_version" != "$RUNNER_VERSION" ]]; then
+    echo "Unexpected alpha conformance runner version: $runner_version (expected $RUNNER_VERSION)" >&2
     exit 2
 fi
 if [[ ! -x "$SERVER" || ! -x "$CLIENT" ]]; then
@@ -72,7 +71,7 @@ if status_output="$(git -C "$PROJECT_DIR" status --porcelain 2>/dev/null)"; then
     fi
 fi
 {
-    echo "# INFORMATIONAL ONLY -- NEVER TIER EVIDENCE -- NEVER CI-GATING"
+    echo "# NON-GATING -- NEVER TIER EVIDENCE"
     echo "runner=@modelcontextprotocol/conformance@$runner_version"
     echo "protocol_version=$SPEC_VERSION"
     echo "source_revision=$revision"
@@ -113,17 +112,15 @@ fi
 set +e
 timeout --signal=INT --kill-after=10s "$SERVER_TIMEOUT" npx --yes "$RUNNER_PACKAGE" server \
     --url "http://127.0.0.1:$PORT/mcp" \
-    --suite active \
-    --spec-version "$SPEC_VERSION" \
+    --requirements "$SPEC_VERSION" \
     --output-dir "$OUTPUT_DIR/server/results" \
     2>&1 | tee "$OUTPUT_DIR/server/runner.log"
 server_status=${PIPESTATUS[0]}
 
 timeout --signal=INT --kill-after=10s "$CLIENT_TIMEOUT" npx --yes "$RUNNER_PACKAGE" client \
     --command "exec $CLIENT" \
-    --suite core \
     --timeout 30000 \
-    --spec-version "$SPEC_VERSION" \
+    --requirements "$SPEC_VERSION" \
     --output-dir "$OUTPUT_DIR/client/results" \
     2>&1 | tee "$OUTPUT_DIR/client/runner.log"
 client_status=${PIPESTATUS[0]}
@@ -135,11 +132,21 @@ set -e
     echo "finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >>"$OUTPUT_DIR/metadata.txt"
 
+# The runner prints "Total: N passed, M failed" and the list of scenarios it does not score.
+{
+    echo "runner=$RUNNER_PACKAGE requirements=$SPEC_VERSION"
+    for side in server client; do
+        echo "== $side"
+        grep -E '^(Total:|Not scored for)' "$OUTPUT_DIR/$side/runner.log" || echo "no totals in the $side runner log"
+    done
+} >"$OUTPUT_DIR/summary.txt"
+cat "$OUTPUT_DIR/summary.txt"
+
 echo
-echo "Alpha conformance run complete (informational only; not tier evidence)." >&2
+echo "Alpha conformance run complete (non-gating; not tier evidence)." >&2
 echo "server-side runner exit: $server_status, client-side runner exit: $client_status" >&2
 echo "Results: $OUTPUT_DIR" >&2
-echo "Per-scenario pass/fail totals are in $OUTPUT_DIR/server/runner.log and $OUTPUT_DIR/client/runner.log" >&2
+echo "Totals are in $OUTPUT_DIR/summary.txt; per-scenario results are in the runner logs and results directories" >&2
 
 # Deliberately always exit 0 here: this harness never gates anything.
 # A non-zero exit above (missing runner/fixtures/server-not-ready) already returned early.
