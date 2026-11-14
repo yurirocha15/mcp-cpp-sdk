@@ -508,6 +508,18 @@ Versioning; a `0.x` version is a stable release unless its version has an
   (RFC 7523), after checking that the server lists the `id-jag` grant profile.
   A cached token is reused only for the identity assertion it was issued for.
   See `docs/concepts/oauth.rst`.
+- The conformance fixtures carry what the 2026-07-28 scenarios of the official
+  runner's alpha channel call: input-required test tools and a prompt, a tool
+  that needs an undeclared capability, a streaming elicitation tool, a logging
+  tool, list-change triggers, a tool with `x-mcp-header` parameters and the
+  SEP-2106 keywords in `json_schema_2020_12_tool`; the client runs the
+  request-metadata, request-state, standard and custom header, invalid-tool,
+  `$ref` and schema-preservation scenarios. The conformance client speaks the
+  protocol version the runner names in `MCP_CONFORMANCE_PROTOCOL_VERSION`.
+  `conformance/run_alpha.sh` runs the alpha runner with
+  `--requirements 2026-07-28`, and a CI job runs it on every change that
+  reads the fixtures and uploads the results. The job cannot fail the workflow:
+  the gate stays the pinned `0.1.16` run against `2025-11-25`.
 
 ### Changed
 
