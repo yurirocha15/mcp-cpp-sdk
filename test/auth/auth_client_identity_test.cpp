@@ -690,6 +690,80 @@ TEST(AuthClientIdentityLoopbackTest, KeepsCredentialsBoundToTheIssuerThatGranted
     EXPECT_EQ(second->client_id, "client-for-as-2");
 }
 
+// The metadata URL stays the same while the authorization server it names changes. A second
+// challenge reads the document again, so the client registers with the new server instead of
+// authorizing again at the old one from the cached copy.
+TEST(AuthClientIdentityLoopbackTest, RegistersWithTheNewServerWhenTheSameMetadataUrlNamesAnother) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    std::string current_server = "/as1";
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response({{"resource", base + "/mcp"},
+                                  {"authorization_servers", json::array({base + current_server})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server/as1") {
+            return json_response(server_metadata(base, "/as1", false, true));
+        }
+        if (target == "/.well-known/oauth-authorization-server/as2") {
+            return json_response(server_metadata(base, "/as2", false, true));
+        }
+        if (target == "/as1/register") {
+            return json_response({{"client_id", "client-for-as-1"}, {"client_secret", "secret-one"}},
+                                 http::status::created);
+        }
+        if (target == "/as2/register") {
+            return json_response({{"client_id", "client-for-as-2"}, {"client_secret", "secret-two"}},
+                                 http::status::created);
+        }
+        if (target == "/as1/token" || target == "/as2/token") {
+            return json_response(token_document());
+        }
+        return not_found();
+    });
+    asio::co_spawn(io_ctx, server.serve(12), asio::detached);
+
+    IdentityFixture fixture;
+    fixture.config.server_url = base + "/mcp";
+    fixture.config.redirect_uri = "http://127.0.0.1:9999/callback";
+    fixture.config.credential_store = fixture.credentials;
+    fixture.config.policy = loopback_policy(server.origin());
+
+    const auto challenge = R"(Bearer resource_metadata=")" + base + R"(/prm")";
+    std::string second_authorization_url;
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
+                                                         fixture.config, echoing_callback(nullptr));
+            try {
+                (void)co_await manager.try_handle_challenge(challenge);
+                current_server = "/as2";
+                (void)co_await manager.try_handle_challenge(challenge);
+                fixture.identity = manager.last_client_identity();
+                second_authorization_url = manager.last_authorization_request()->authorization_url;
+            } catch (...) {
+                fixture.failure = std::current_exception();
+            }
+            server.close();
+        },
+        asio::detached);
+    io_ctx.run();
+
+    ASSERT_EQ(fixture.failure, nullptr);
+    ASSERT_TRUE(fixture.identity.has_value());
+    EXPECT_EQ(fixture.identity->client_id, "client-for-as-2");
+    EXPECT_EQ(fixture.identity->issuer, base + "/as2");
+    EXPECT_EQ(server.count("/as1/register"), 1U);
+    EXPECT_EQ(server.count("/as2/register"), 1U);
+    EXPECT_EQ(server.count("/prm"), 2U);
+    EXPECT_EQ(second_authorization_url.rfind(base + "/as2/authorize", 0), 0U);
+    EXPECT_NE(second_authorization_url.find("client_id=client-for-as-2"), std::string::npos);
+}
+
 TEST(AuthTokenEndpointAuthLoopbackTest, PutsTheSecretInHttpBasicWhenTheServerAsksForIt) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
