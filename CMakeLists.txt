@@ -578,6 +578,38 @@ if(BUILD_TESTING)
   # take to run. test/support/test_timeout.cpp keeps the per-test timeout.
   mcp_cpp_sdk_add_test_suites(mcp-sdk-tests TIMEOUT ${MCP_CPP_SDK_TEST_TIMEOUT})
 
+  # Compiling the test files in batches of a few per translation unit parses the
+  # shared headers and instantiates the shared templates once per batch rather
+  # than once per file. Only the test program is batched, not the libraries.
+  option(MCP_CPP_SDK_TEST_UNITY_BUILD
+         "Compile the test program as a unity build" ON)
+  set(MCP_CPP_SDK_TEST_UNITY_BATCH_SIZE
+      4
+      CACHE STRING "Test files compiled together in one unity translation unit")
+  if(MCP_CPP_SDK_TEST_UNITY_BUILD)
+    if(NOT MCP_CPP_SDK_TEST_UNITY_BATCH_SIZE MATCHES "^[1-9][0-9]*$")
+      message(
+        FATAL_ERROR
+          "MCP_CPP_SDK_TEST_UNITY_BATCH_SIZE must be a positive whole number")
+    endif()
+    set_target_properties(
+      mcp-sdk-tests
+      PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE
+                                ${MCP_CPP_SDK_TEST_UNITY_BATCH_SIZE})
+    # The support sources are not tests: the gates replace libc functions and
+    # sealed_state.cpp is a library source that the test program rebuilds.
+    set_source_files_properties(
+      test/support/test_timeout.cpp test/support/resolve_gate.cpp
+      test/support/socket_gate.cpp src/detail/sealed_state.cpp
+      PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+    # A fixture in a test file's unnamed namespace is the base of the test
+    # classes that gtest defines in the enclosing namespace. GCC reports that as
+    # a linkage mismatch when the file is included from the unity source, where
+    # it cannot reach another translation unit.
+    target_compile_options(
+      mcp-sdk-tests PRIVATE "$<$<CXX_COMPILER_ID:GNU>:-Wno-subobject-linkage>")
+  endif()
+
   # Optimizing the test code takes most of a test file's compile at -O3, so
   # release builds compile the test program at -O1. The SDK libraries keep the
   # build's own optimization.

@@ -145,6 +145,12 @@ Example test structure:
        // Assertions...
    }
 
+The test program compiles its files a few at a time in one translation unit
+(a unity build). Put the contents of a test file in a namespace named after the
+file, for example ``namespace server_core_test { ... }``, so that its helpers,
+aliases and using-declarations cannot collide with, or silently overload, those
+of another file compiled with it.
+
 Running Tests
 ^^^^^^^^^^^^^
 
@@ -161,6 +167,12 @@ Running Tests
 
 A test build from a checkout needs Python 3.9+ for the peer-input matrix check;
 opt out with ``-DMCP_CPP_SDK_CHECK_JSON_MATRIX=OFF``.
+
+The unity build of the test program is controlled by two CMake options:
+``-DMCP_CPP_SDK_TEST_UNITY_BUILD=OFF`` compiles every test file on its own, and
+``-DMCP_CPP_SDK_TEST_UNITY_BATCH_SIZE=<n>`` sets how many files share a
+translation unit (the default is 4). Editing a test file recompiles all the
+files in its group.
 
 Code Coverage
 ^^^^^^^^^^^^^
