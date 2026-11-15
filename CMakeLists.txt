@@ -197,9 +197,15 @@ if(MCP_CPP_SDK_BUILD_SHARED)
   if(NOT WIN32 AND NOT APPLE)
     set(MCP_CPP_SDK_VENDORED_SYMBOLS_MAP
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/vendored-symbols.map")
+    # --exclude-libs keeps the symbols of static archives linked into the
+    # library, such as a static OpenSSL or zlib, out of its exports. Exported,
+    # they take the place of the same functions for other code in the process: a
+    # system libssl loaded by libcurl, for example, then calls this copy's
+    # libcrypto functions with objects its own libcrypto built.
     target_link_options(
       mcp-cpp-sdk-shared PRIVATE
-      "LINKER:--version-script=${MCP_CPP_SDK_VENDORED_SYMBOLS_MAP}")
+      "LINKER:--version-script=${MCP_CPP_SDK_VENDORED_SYMBOLS_MAP}"
+      "LINKER:--exclude-libs,ALL")
     set_property(TARGET mcp-cpp-sdk-shared APPEND
                  PROPERTY LINK_DEPENDS "${MCP_CPP_SDK_VENDORED_SYMBOLS_MAP}")
   endif()

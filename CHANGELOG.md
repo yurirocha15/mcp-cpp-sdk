@@ -859,6 +859,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Fixed
 
+- The shared library exported the symbols of the dependencies linked into it
+  statically, such as the static OpenSSL of a Conan build. Another OpenSSL in
+  the same process, such as the system one that libcurl loads, then called the
+  SDK's copy with objects of its own and could crash. On platforms other than
+  Windows and macOS the library now keeps those symbols out of its exports.
 - With libc++, an exception of `nlohmann_json` that the shared library
   throws, such as the `nlohmann::json::type_error` 316 of
   `mcp::detail::dump_json()` for text that is not valid UTF-8, could not be
