@@ -1,5 +1,6 @@
 #include "../detail/accept_retry.hpp"
 #include "../detail/beast_string.hpp"
+#include "../detail/constants.hpp"
 #include "../detail/http_limits.hpp"
 #include "../detail/http_request_metadata.hpp"
 #include "../detail/modern_methods.hpp"
@@ -9,6 +10,7 @@
 #include "../detail/socket_probe.hpp"
 #include "modern_exchange.hpp"
 
+#include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_server.hpp>
@@ -566,7 +568,7 @@ struct HttpServerTransport::Impl {
         auto message = detail::initialize_not_served_message(served);
         nlohmann::json error_body = {{"jsonrpc", "2.0"},
                                      {"error",
-                                      {{"code", g_METHOD_NOT_FOUND},
+                                      {{"code", mcp::constants::jsonrpc::g_METHOD_NOT_FOUND},
                                        {"message", std::move(message)},
                                        {"data", {{"supported", std::move(served)}}}}}};
         if (detail::is_request_id(id)) {
@@ -757,7 +759,7 @@ struct HttpServerTransport::Impl {
 
     static StringResponse make_invalid_id_response(const StringRequest& request) {
         return make_jsonrpc_error_response(
-            request, http::status::bad_request, g_INVALID_REQUEST,
+            request, http::status::bad_request, mcp::constants::jsonrpc::g_INVALID_REQUEST,
             "JSON-RPC request id must be a string or an integer within int64_t");
     }
 
@@ -830,12 +832,13 @@ struct HttpServerTransport::Impl {
         }
         if (auto mismatch = detail::modern_header_mismatch(request, request_json)) {
             header_mismatch_rejections.fetch_add(1, std::memory_order_relaxed);
-            co_return make_jsonrpc_error_response(request, http::status::bad_request, g_HEADER_MISMATCH,
-                                                  "Header mismatch: " + *mismatch,
-                                                  request_json.at("id"));
+            co_return make_jsonrpc_error_response(
+                request, http::status::bad_request, mcp::constants::jsonrpc::g_HEADER_MISMATCH,
+                "Header mismatch: " + *mismatch, request_json.at("id"));
         }
         if (auto refusal = detail::missing_modern_version(request_json)) {
-            co_return make_jsonrpc_error_response(request, http::status::bad_request, g_INVALID_PARAMS,
+            co_return make_jsonrpc_error_response(request, http::status::bad_request,
+                                                  mcp::constants::jsonrpc::g_INVALID_PARAMS,
                                                   std::move(*refusal), request_json.at("id"));
         }
         std::shared_ptr<const detail::ModernDispatch> dispatch;
@@ -865,7 +868,7 @@ struct HttpServerTransport::Impl {
                 if (auto mismatch = check(request_json, detail::mcp_param_headers(request))) {
                     header_mismatch_rejections.fetch_add(1, std::memory_order_relaxed);
                     co_return make_jsonrpc_error_response(
-                        request, http::status::bad_request, g_HEADER_MISMATCH,
+                        request, http::status::bad_request, mcp::constants::jsonrpc::g_HEADER_MISMATCH,
                         "Header mismatch: " + *mismatch, request_json.at("id"));
                 }
             }
@@ -1645,8 +1648,9 @@ struct HttpServerTransport::Impl {
         std::make_shared<detail::StreamCounters>();
     /// The versions named when initialize arrives with a 2026-07-28 header; every version until
     /// Server::run() says which it serves.
-    std::vector<std::string> served_versions{g_SUPPORTED_PROTOCOL_VERSIONS.begin(),
-                                             g_SUPPORTED_PROTOCOL_VERSIONS.end()};
+    std::vector<std::string> served_versions{
+        mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.begin(),
+        mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.end()};
     std::atomic<std::uint64_t> header_mismatch_rejections{0};
     /// Names the stream of each stored response; see run_write.
     std::uint64_t response_streams{0};
@@ -1667,7 +1671,8 @@ struct HttpServerTransport::Impl {
     std::string sentinel_id_prefix;
     std::uint64_t sentinel_id_counter{0};
     std::optional<std::string> session_id;
-    std::string negotiated_protocol_version{std::string(g_LATEST_LEGACY_PROTOCOL_VERSION)};
+    std::string negotiated_protocol_version{
+        std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)};
     bool session_active{false};
     std::string session_principal;
     std::string initializing_principal;
@@ -1679,7 +1684,7 @@ struct HttpServerTransport::Impl {
     std::unordered_set<std::string> allowed_origins;
     BearerTokenValidator bearer_token_validator;
     AsyncBearerTokenValidator async_bearer_token_validator;
-    std::size_t max_request_body_bytes{constants::g_default_max_request_body_bytes};
+    std::size_t max_request_body_bytes{mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES};
     HttpConnectionLimits connection_limits;
     detail::HttpListenerBudget budget;
     BearerChallengeConfig bearer_challenge;
@@ -1897,7 +1902,8 @@ void HttpServerTransport::close() {
         impl->sessionless_request_ids.clear();
 
         impl->session_id.reset();
-        impl->negotiated_protocol_version = std::string(g_LATEST_LEGACY_PROTOCOL_VERSION);
+        impl->negotiated_protocol_version =
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION);
         impl->session_active = false;
     });
 
@@ -1932,7 +1938,8 @@ Task<void> HttpServerTransport::listen_impl(std::shared_ptr<Impl> impl) {
             retry = true;
         }
         if (retry) {
-            boost::asio::steady_timer pause(impl->strand, detail::g_accept_retry_delay);
+            boost::asio::steady_timer pause(impl->strand,
+                                            mcp::detail::constants::accept_retry::g_DELAY);
             boost::system::error_code ignored;
             co_await pause.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ignored));
             continue;

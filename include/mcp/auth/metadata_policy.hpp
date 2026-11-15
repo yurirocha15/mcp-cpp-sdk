@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 
 #include <cstddef>
@@ -10,13 +11,6 @@
 #include <vector>
 
 namespace mcp::auth {
-
-namespace constants {
-
-constexpr std::size_t g_default_max_metadata_bytes = 256 * 1024;
-constexpr std::size_t g_default_max_metadata_redirects = 3;
-
-}  // namespace constants
 
 namespace detail {
 
@@ -114,10 +108,10 @@ struct MetadataFetchPolicy {
 
     /// Maximum number of response body bytes accepted from a metadata or token endpoint. A
     /// response that exceeds the cap is rejected without being fully buffered.
-    std::size_t max_response_bytes{constants::g_default_max_metadata_bytes};
+    std::size_t max_response_bytes{mcp::constants::metadata_policy::g_DEFAULT_MAX_BYTES};
 
     /// Maximum number of HTTP redirects followed. Each redirect target is validated afresh.
-    std::size_t max_redirects{constants::g_default_max_metadata_redirects};
+    std::size_t max_redirects{mcp::constants::metadata_policy::g_DEFAULT_MAX_REDIRECTS};
 };
 
 /**

@@ -1,3 +1,4 @@
+#include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/json_parse.hpp>
 
@@ -318,13 +319,15 @@ TEST(JsonParseTest, ReadsBackWhatDumpWrites) {
 
 TEST(JsonParseTest, NestingUpToItsLimitParsesOnASmallStack) {
     constexpr std::size_t small_stack = 256 * 1024;
-    constexpr std::size_t depth = mcp::detail::g_MAX_FAST_PARSE_DEPTH;
+    constexpr std::size_t depth = mcp::constants::json_parse::g_MAX_FAST_DEPTH;
     for (const auto& text : {nested_arrays(depth), nested_objects(depth)}) {
         run_on_small_stack(small_stack, [&text] { expect_parsed_alike(text); });
     }
     nlohmann::json value;
-    EXPECT_FALSE(parse_json_fast(nested_arrays(mcp::detail::g_MAX_FAST_PARSE_DEPTH + 1), value));
-    EXPECT_FALSE(parse_json_fast(nested_objects(mcp::detail::g_MAX_FAST_PARSE_DEPTH + 1), value));
+    EXPECT_FALSE(
+        parse_json_fast(nested_arrays(mcp::constants::json_parse::g_MAX_FAST_DEPTH + 1), value));
+    EXPECT_FALSE(
+        parse_json_fast(nested_objects(mcp::constants::json_parse::g_MAX_FAST_DEPTH + 1), value));
 }
 
 // A hostile peer's deep nesting is declined at the parser's limit, without recursing further,

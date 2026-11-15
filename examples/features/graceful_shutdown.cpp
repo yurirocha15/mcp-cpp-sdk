@@ -6,6 +6,7 @@
 /// - Manual transport pattern (not run_stdio convenience)
 /// - Timer-based auto-exit for CI/testing
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/signal.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/stdio.hpp>
@@ -140,7 +141,7 @@ int main() {
                 input_buffer.close();
                 graceful_shutdown(io_ctx, transport);
                 std::cerr << "[Main] Graceful shutdown initiated (timeout: "
-                          << constants::g_shutdown_timeout_ms << "ms)\n";
+                          << mcp::constants::shutdown::g_TIMEOUT_MS << "ms)\n";
             },
             asio::detached);
 

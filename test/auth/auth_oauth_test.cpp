@@ -30,7 +30,10 @@
 #include <thread>
 #include <vector>
 
+#include "../../src/detail/constants.hpp"
 #include "../support/hang_guard.hpp"
+
+namespace encoding = mcp::detail::constants::encoding;
 
 namespace {
 
@@ -45,8 +48,8 @@ std::string hex_encode(const unsigned char* data, std::size_t len) {
     std::string result;
     result.reserve(len * 2);
     for (std::size_t i = 0; i < len; ++i) {
-        result.push_back(mcp::constants::g_hex_digits[data[i] >> 4]);
-        result.push_back(mcp::constants::g_hex_digits[data[i] & 0x0F]);
+        result.push_back(encoding::g_HEX_DIGITS[data[i] >> 4]);
+        result.push_back(encoding::g_HEX_DIGITS[data[i] & 0x0F]);
     }
     return result;
 }

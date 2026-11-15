@@ -24,10 +24,6 @@
 
 namespace mcp::auth {
 
-/// Identifier of the extension in `capabilities.extensions`.
-inline constexpr std::string_view g_CLIENT_CREDENTIALS_EXTENSION_ID =
-    "io.modelcontextprotocol/oauth-client-credentials";
-
 /// Configuration of a ClientCredentialsAuthenticator.
 struct ClientCredentialsConfig {
     /// URL of the MCP server; also the key the token is stored under, and what the protected

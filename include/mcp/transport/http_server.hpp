@@ -70,9 +70,9 @@ class EventStore {
      * @brief Construct an event store with a given capacity.
      *
      * @param capacity Maximum number of events to retain. Past
-     *        constants::g_event_store_max_bytes the oldest go first as well.
+     *        mcp::constants::event_store::g_MAX_BYTES the oldest go first as well.
      */
-    explicit EventStore(std::size_t capacity = constants::g_event_store_default_capacity)
+    explicit EventStore(std::size_t capacity = mcp::constants::event_store::g_DEFAULT_CAPACITY)
         : capacity_(capacity) {}
 
     /**
@@ -87,7 +87,7 @@ class EventStore {
         stored_bytes_ += data.size();
         events_.push_back(StoredEvent{id, std::move(stream), std::move(data)});
         while (events_.size() > capacity_ ||
-               (events_.size() > 1 && stored_bytes_ > constants::g_event_store_max_bytes)) {
+               (events_.size() > 1 && stored_bytes_ > mcp::constants::event_store::g_MAX_BYTES)) {
             stored_bytes_ -= events_.front().data.size();
             events_.pop_front();
         }
@@ -236,7 +236,7 @@ class MCP_API HttpServerTransport final : public ITransport {
      */
     HttpServerTransport(
         const boost::asio::any_io_executor& executor, std::string host, unsigned short port,
-        std::size_t event_store_capacity = mcp::constants::g_event_store_default_capacity);
+        std::size_t event_store_capacity = mcp::constants::event_store::g_DEFAULT_CAPACITY);
 
     ~HttpServerTransport() override;
 
@@ -341,8 +341,8 @@ class MCP_API HttpServerTransport final : public ITransport {
      *
      * A request whose body exceeds the cap is answered `413 Payload Too Large` and its connection is
      * closed; it never reaches MCP dispatch. Defaults to
-     * mcp::constants::g_default_max_request_body_bytes. Binary content travels as base64 inside the
-     * JSON body, so a cap near the size of the raw content rejects it.
+     * mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES. Binary content travels as base64
+     * inside the JSON body, so a cap near the size of the raw content rejects it.
      *
      * The body is read, up to this cap, before the origin and bearer token are checked, so the cap
      * is also what one unauthenticated connection can make the transport buffer. The body is parsed
@@ -454,9 +454,9 @@ class MCP_API HttpServerTransport final : public ITransport {
      */
     void set_unauthenticated_paths(std::vector<std::string> paths);
 
-    /// 2026-07-28 requests refused with `g_HEADER_MISMATCH` because their MCP-Protocol-Version,
-    /// Mcp-Method, Mcp-Name or Mcp-Param-* header was missing, malformed, repeated or did not
-    /// match the body.
+    /// 2026-07-28 requests refused with `mcp::constants::jsonrpc::g_HEADER_MISMATCH` because their
+    /// MCP-Protocol-Version, Mcp-Method, Mcp-Name or Mcp-Param-* header was missing, malformed,
+    /// repeated or did not match the body.
     [[nodiscard]] std::uint64_t header_mismatch_rejections() const;
 
     /**

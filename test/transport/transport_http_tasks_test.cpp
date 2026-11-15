@@ -18,11 +18,14 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
+namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace {
 
@@ -153,7 +156,7 @@ TEST_F(HttpTasksTest, TaskMethodsMirrorTheTaskIdInMcpName) {
     ASSERT_EQ(mismatched.size(), 6u);
     for (const auto& reply : mismatched) {
         EXPECT_EQ(reply.status, 400u) << reply.message;
-        EXPECT_EQ(reply.message["error"]["code"], mcp::g_HEADER_MISMATCH) << reply.message;
+        EXPECT_EQ(reply.message["error"]["code"], jsonrpc::g_HEADER_MISMATCH) << reply.message;
     }
     EXPECT_EQ(matched.status, 200u) << matched.message;
     EXPECT_EQ(matched.message["result"]["resultType"], "complete");
@@ -170,7 +173,7 @@ TEST_F(HttpTasksTest, ATaskMethodWithoutTheExtensionIsAMissingCapability) {
             co_await post(g_port, request, headers_for(request, "0123456789abcdef0123456789abcdef"));
     });
     EXPECT_EQ(reply.status, 400u) << reply.message;
-    EXPECT_EQ(reply.message["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY);
+    EXPECT_EQ(reply.message["error"]["code"], jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY);
 }
 
 TEST_F(HttpTasksTest, AnUnknownTaskIs400InvalidParams) {
@@ -184,7 +187,7 @@ TEST_F(HttpTasksTest, AnUnknownTaskIs400InvalidParams) {
             co_await post(g_port, request, headers_for(request, "0123456789abcdef0123456789abcdef"));
     });
     EXPECT_EQ(reply.status, 400u) << reply.message;
-    EXPECT_EQ(reply.message["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(reply.message["error"]["code"], jsonrpc::g_INVALID_PARAMS);
 }
 
 // The client sends the header the server checks: following a task needs both ends to agree.

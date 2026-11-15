@@ -1,3 +1,4 @@
+#include <mcp/core/constants.hpp>
 #include <mcp/detail/json_parse.hpp>
 
 #include "../detail/json_text_scan.hpp"
@@ -41,7 +42,8 @@ class FastParser {
     std::size_t depth_ = 0;
 
     /// Counts one more open array or object for as long as it lives, and refuses one past
-    /// g_MAX_FAST_PARSE_DEPTH, so the recursion stays within a small thread stack.
+    /// mcp::constants::json_parse::g_MAX_FAST_DEPTH, so the recursion stays within a small thread
+    /// stack.
     class Nesting {
        public:
         explicit Nesting(std::size_t& depth) : depth_(depth) { ++depth_; }
@@ -50,7 +52,9 @@ class FastParser {
         Nesting(Nesting&&) = delete;
         Nesting& operator=(Nesting&&) = delete;
         ~Nesting() { --depth_; }
-        [[nodiscard]] bool too_deep() const { return depth_ > g_MAX_FAST_PARSE_DEPTH; }
+        [[nodiscard]] bool too_deep() const {
+            return depth_ > mcp::constants::json_parse::g_MAX_FAST_DEPTH;
+        }
 
        private:
         std::size_t& depth_;

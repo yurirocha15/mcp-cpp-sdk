@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/core.hpp>
 #include <mcp/core/export.hpp>
 
@@ -18,12 +19,6 @@ class ITransport;
 namespace detail {
 
 struct SerializedTransportWriterState;
-
-/// What queued_bytes() counts for each queued message besides its text: an allowance for the memory
-/// the queue holds per message (the shared text, the operation with its timer, the queue slot and
-/// the posted handler). A bound on queued_bytes() then bounds memory even when the messages are
-/// small.
-inline constexpr std::size_t g_queued_message_overhead = 512;
 
 /**
  * @brief Serializes asynchronous writes to a shared transport.
@@ -95,8 +90,9 @@ class MCP_API SerializedTransportWriter {
      */
     [[nodiscard]] Task<void> written() const;
 
-    /// Bytes of the messages queued or being written, each counted with g_queued_message_overhead:
-    /// what waits on a peer that reads slowly.
+    /// Bytes of the messages queued or being written, each counted with
+    /// mcp::constants::transport_writer::g_QUEUED_MESSAGE_OVERHEAD: what waits on a peer that reads
+    /// slowly.
     [[nodiscard]] std::size_t queued_bytes() const noexcept;
 
    private:

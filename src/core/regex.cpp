@@ -9,13 +9,11 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "../detail/constants.hpp"
 
 namespace mcp::detail {
 
 namespace {
-
-constexpr char32_t g_max_code_point = 0x10FFFF;
-constexpr char32_t g_replacement_character = 0xFFFD;
 
 struct Range {
     char32_t first;
@@ -68,23 +66,24 @@ char32_t decode_utf8(std::string_view text, std::size_t& pos) {
         minimum = 0x10000;
     } else {
         ++pos;
-        return g_replacement_character;
+        return mcp::detail::constants::regex::g_REPLACEMENT_CHARACTER;
     }
     if (pos + length > text.size()) {
         ++pos;
-        return g_replacement_character;
+        return mcp::detail::constants::regex::g_REPLACEMENT_CHARACTER;
     }
     for (std::size_t i = 1; i < length; ++i) {
         const auto byte = static_cast<unsigned char>(text[pos + i]);
         if ((byte & 0xC0) != 0x80) {
             ++pos;
-            return g_replacement_character;
+            return mcp::detail::constants::regex::g_REPLACEMENT_CHARACTER;
         }
         value = (value << 6) | (byte & 0x3F);
     }
-    if (value < minimum || value > g_max_code_point || (value >= 0xD800 && value <= 0xDFFF)) {
+    if (value < minimum || value > mcp::detail::constants::regex::g_MAX_CODE_POINT ||
+        (value >= 0xD800 && value <= 0xDFFF)) {
         ++pos;
-        return g_replacement_character;
+        return mcp::detail::constants::regex::g_REPLACEMENT_CHARACTER;
     }
     pos += length;
     return value;
@@ -119,8 +118,8 @@ std::vector<Range> complement(const std::vector<Range>& ranges) {
         }
         next = range.last + 1;
     }
-    if (next <= g_max_code_point) {
-        result.push_back({next, g_max_code_point});
+    if (next <= mcp::detail::constants::regex::g_MAX_CODE_POINT) {
+        result.push_back({next, mcp::detail::constants::regex::g_MAX_CODE_POINT});
     }
     return result;
 }
@@ -474,7 +473,7 @@ class Parser {
             std::size_t digits = 0;
             while (!at_end() && peek() != '}') {
                 value = value * 16 + parse_hex(1);
-                if (++digits > 6 || value > g_max_code_point) {
+                if (++digits > 6 || value > mcp::detail::constants::regex::g_MAX_CODE_POINT) {
                     fail(RegexError::Kind::eUnsupported, "code point out of range");
                 }
             }

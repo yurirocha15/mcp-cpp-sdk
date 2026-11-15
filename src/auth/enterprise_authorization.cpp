@@ -1,21 +1,20 @@
 #include <mcp/auth/enterprise_authorization.hpp>
 
+#include "../detail/constants.hpp"
 #include "grant_flow.hpp"
 
+#include <mcp/core/constants.hpp>
 #include <mcp/protocol/extensions.hpp>
 
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
 
+namespace encoding = mcp::detail::constants::encoding;
+
 namespace mcp::auth {
 
 namespace {
-
-constexpr std::string_view g_ID_JAG_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:id-jag";
-constexpr std::string_view g_ID_JAG_PROFILE = "urn:ietf:params:oauth:grant-profile:id-jag";
-constexpr std::string_view g_TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
-constexpr std::string_view g_JWT_BEARER_GRANT = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 
 /// The metadata the IdP's client authentication is built against: only its token endpoint is known.
 AuthServerMetadata idp_metadata(const std::string& token_endpoint) {
@@ -53,8 +52,8 @@ class EnterpriseFlow final : public detail::GrantFlow {
         const auto digest = auth::detail::sha256(assertion.token_type + '\n' + assertion.token);
         std::string text;
         for (const auto byte : digest) {
-            text.push_back(mcp::constants::g_hex_digits[byte >> 4]);
-            text.push_back(mcp::constants::g_hex_digits[byte & 0x0F]);
+            text.push_back(encoding::g_HEX_DIGITS[byte >> 4]);
+            text.push_back(encoding::g_HEX_DIGITS[byte & 0x0F]);
         }
         co_return detail::GrantIdentity{std::move(text), std::move(assertion)};
     }
@@ -70,7 +69,8 @@ class EnterpriseFlow final : public detail::GrantFlow {
         }
         const bool listed =
             std::any_of(profiles->begin(), profiles->end(), [](const nlohmann::json& profile) {
-                return profile.is_string() && profile.get_ref<const std::string&>() == g_ID_JAG_PROFILE;
+                return profile.is_string() &&
+                       profile.get_ref<const std::string&>() == mcp::constants::oauth::g_ID_JAG_PROFILE;
             });
         if (!listed) {
             throw std::runtime_error(
@@ -96,8 +96,8 @@ class EnterpriseFlow final : public detail::GrantFlow {
         // Step one, at the IdP: the identity assertion for an ID-JAG naming this authorization
         // server as its audience and the MCP server as its resource.
         KeyValuePairList exchange = {
-            {"grant_type", std::string(g_TOKEN_EXCHANGE_GRANT)},
-            {"requested_token_type", std::string(g_ID_JAG_TOKEN_TYPE)},
+            {"grant_type", std::string(mcp::constants::oauth::g_TOKEN_EXCHANGE_GRANT)},
+            {"requested_token_type", std::string(mcp::constants::oauth::g_ID_JAG_TOKEN_TYPE)},
             {"audience", target.server.issuer},
             {"resource", target.resource.resource},
             {"subject_token", assertion.token},
@@ -113,14 +113,15 @@ class EnterpriseFlow final : public detail::GrantFlow {
         const auto issued = exchanged.find("issued_token_type");
         const auto grant = exchanged.find("access_token");
         if (issued == exchanged.end() || !issued->is_string() ||
-            issued->get_ref<const std::string&>() != g_ID_JAG_TOKEN_TYPE || grant == exchanged.end() ||
-            !grant->is_string() || grant->get_ref<const std::string&>().empty()) {
+            issued->get_ref<const std::string&>() != mcp::constants::oauth::g_ID_JAG_TOKEN_TYPE ||
+            grant == exchanged.end() || !grant->is_string() ||
+            grant->get_ref<const std::string&>().empty()) {
             throw std::runtime_error("The identity provider did not issue an ID-JAG");
         }
 
         // Step two, at the authorization server: the ID-JAG as a JWT bearer assertion.
         KeyValuePairList request = {
-            {"grant_type", std::string(g_JWT_BEARER_GRANT)},
+            {"grant_type", std::string(mcp::constants::oauth::g_JWT_BEARER_GRANT)},
             {"assertion", grant->get<std::string>()},
         };
         const auto authorization = authenticate_token_request(client_, target.server, request, true);
@@ -183,11 +184,12 @@ void EnterpriseAuthorizationAuthenticator::cancel_pending() { impl_->flow->cance
 void EnterpriseAuthorizationAuthenticator::close() { impl_->flow->close(); }
 
 void declare_enterprise_authorization_support(ClientCapabilities& capabilities) {
-    declare_extension(capabilities, g_ENTERPRISE_AUTHORIZATION_EXTENSION_ID);
+    declare_extension(capabilities, mcp::constants::oauth::g_ENTERPRISE_AUTHORIZATION_EXTENSION_ID);
 }
 
 void declare_enterprise_authorization_support(Server& server) {
-    server.declare_extension(std::string(g_ENTERPRISE_AUTHORIZATION_EXTENSION_ID));
+    server.declare_extension(
+        std::string(mcp::constants::oauth::g_ENTERPRISE_AUTHORIZATION_EXTENSION_ID));
 }
 
 }  // namespace mcp::auth

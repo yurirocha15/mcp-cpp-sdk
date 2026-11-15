@@ -1,8 +1,10 @@
 #include "mrtr.hpp"
 
+#include "../detail/constants.hpp"
 #include "../detail/spawn_awaitable.hpp"
 
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 
 #include <boost/asio/async_result.hpp>
@@ -15,10 +17,6 @@
 namespace mcp::detail {
 
 namespace {
-
-/// How often a retry waiting for its parked handler looks for its own cancellation, which it
-/// passes on to the handler.
-constexpr std::chrono::milliseconds g_cancel_poll_interval{50};
 
 std::string_view key_prefix(std::string_view method) {
     if (method == "elicitation/create") {
@@ -233,7 +231,7 @@ Task<MrtrEntry::Outcome> await_on_strand(std::shared_ptr<MrtrEntry> entry,
             continue;
         }
         if (watching) {
-            entry->event_signal.expires_after(g_cancel_poll_interval);
+            entry->event_signal.expires_after(mcp::detail::constants::mrtr::g_CANCEL_POLL_INTERVAL);
         } else {
             entry->event_signal.expires_at(std::chrono::steady_clock::time_point::max());
         }
@@ -295,7 +293,7 @@ MrtrEntry::MrtrEntry(const boost::asio::any_io_executor& executor,
 }
 
 bool client_can_answer_input(const nlohmann::json& request_meta) {
-    const auto declared = request_meta.find(g_META_CLIENT_CAPABILITIES);
+    const auto declared = request_meta.find(mcp::constants::meta::g_META_CLIENT_CAPABILITIES);
     if (declared == request_meta.end() || !declared->is_object()) {
         return false;
     }
@@ -310,7 +308,7 @@ bool client_can_answer_input(const nlohmann::json& request_meta) {
 
 bool InlineInput::refuse(const nlohmann::json& request) {
     const auto& meta = *request_meta_->meta;
-    const auto declared = meta.find(g_META_CLIENT_CAPABILITIES);
+    const auto declared = meta.find(mcp::constants::meta::g_META_CLIENT_CAPABILITIES);
     const auto missing = missing_client_capabilities(
         declared != meta.end() ? *declared : nlohmann::json::object(), request);
     if (missing.empty()) {

@@ -1,8 +1,10 @@
+#include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
 #include "../detail/peer_json.hpp"
 #include "../detail/spawn_awaitable.hpp"
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
 
@@ -37,9 +39,6 @@ namespace mcp {
 
 namespace {
 
-/// Requests of the server a client answers at once before it stops reading.
-constexpr std::size_t g_max_incoming_requests = 1024;
-
 std::optional<nlohmann::json> make_paginated_params(const std::optional<std::string>& cursor) {
     if (!cursor) {
         return std::nullopt;
@@ -67,7 +66,7 @@ McpError::McpError(int code, std::string message, std::optional<nlohmann::json> 
 ClientProtocol ClientProtocol::Auto() { return {Kind::eAuto, std::string()}; }
 
 ClientProtocol ClientProtocol::Legacy() {
-    return {Kind::eLegacy, std::string(g_LATEST_LEGACY_PROTOCOL_VERSION)};
+    return {Kind::eLegacy, std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)};
 }
 
 ClientProtocol ClientProtocol::Version(std::string version) {
@@ -101,7 +100,7 @@ CallToolResult finish_call_result(const nlohmann::json& result_json, const Outpu
                 violations.push_back(
                     {{"instancePath", violation.instance_path}, {"message", violation.message}});
             }
-            throw StructuredContentError(g_INTERNAL_ERROR, std::move(message),
+            throw StructuredContentError(mcp::constants::jsonrpc::g_INTERNAL_ERROR, std::move(message),
                                          nlohmann::json{{"violations", std::move(violations)}});
         }
     }
@@ -124,7 +123,7 @@ bool is_task_result(const nlohmann::json& result) {
     }
     const auto found = result.find("resultType");
     return found != result.end() && found->is_string() &&
-           found->get_ref<const std::string&>() == g_RESULT_TYPE_TASK;
+           found->get_ref<const std::string&>() == mcp::constants::tasks::g_RESULT_TYPE_TASK;
 }
 
 /// Decodes the answer of `tasks/get`, which an invalid answer turns into an McpError.
@@ -132,7 +131,7 @@ DetailedTask decode_task_state(const nlohmann::json& reply) {
     try {
         return reply.get<DetailedTask>();
     } catch (const std::exception& error) {
-        throw McpError(g_INVALID_REQUEST,
+        throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                        "Invalid task state: " + detail::sanitize_for_diagnostics(error.what()));
     }
 }
@@ -150,14 +149,14 @@ nlohmann::json task_outcome(const nlohmann::json& task) {
             failure = detailed.error->get<Error>();
         }
     } catch (const std::exception& error) {
-        throw McpError(g_INVALID_REQUEST,
+        throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                        "Invalid task state: " + detail::sanitize_for_diagnostics(error.what()));
     }
     if (failure) {
         throw McpError(std::move(*failure));
     }
     if (detailed.task.status == TaskStatus::eCancelled) {
-        throw McpError(g_INVALID_REQUEST, "The task was cancelled");
+        throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST, "The task was cancelled");
     }
     return std::move(*detailed.result);
 }
@@ -190,7 +189,7 @@ void check_elicitation_content(const nlohmann::json& params, const ElicitResult&
         violations.push_back(
             {{"instancePath", violation.instance_path}, {"message", violation.message}});
     }
-    throw ElicitationContentError(g_INVALID_PARAMS,
+    throw ElicitationContentError(mcp::constants::jsonrpc::g_INVALID_PARAMS,
                                   "The elicitation content does not match the requested schema: " +
                                       describe_violations(validation),
                                   nlohmann::json{{"violations", std::move(violations)}});
@@ -538,8 +537,9 @@ struct Client::Impl {
         static constexpr std::array<std::string_view, 5> g_removed = {
             "initialize", "ping", "logging/setLevel", "resources/subscribe", "resources/unsubscribe"};
         if (std::find(g_removed.begin(), g_removed.end(), method) != g_removed.end()) {
-            throw McpError(g_METHOD_NOT_FOUND, "Method " + std::string(method) +
-                                                   " does not exist in protocol version " + version);
+            throw McpError(
+                mcp::constants::jsonrpc::g_METHOD_NOT_FOUND,
+                "Method " + std::string(method) + " does not exist in protocol version " + version);
         }
     }
 
@@ -556,8 +556,9 @@ struct Client::Impl {
             const auto found = result.find("resultType");
             if (found != result.end() && !(found->is_string() && *found == "complete")) {
                 std::string shown = found->is_string() ? found->get<std::string>() : found->dump();
-                throw McpError(g_INVALID_REQUEST, "Unsupported resultType in result: " +
-                                                      detail::sanitize_for_diagnostics(shown));
+                throw McpError(
+                    mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                    "Unsupported resultType in result: " + detail::sanitize_for_diagnostics(shown));
             }
         }
     }
@@ -573,17 +574,18 @@ struct Client::Impl {
                                                       std::shared_ptr<const nlohmann::json> requests,
                                                       std::size_t limit) {
         if (requests->size() > limit) {
-            throw McpError(g_INVALID_REQUEST, "The server asked " + std::to_string(requests->size()) +
-                                                  " questions in one input_required result "
-                                                  "(RequestOptions::max_input_requests)");
+            throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                           "The server asked " + std::to_string(requests->size()) +
+                               " questions in one input_required result "
+                               "(RequestOptions::max_input_requests)");
         }
         nlohmann::json responses = nlohmann::json::object();
         for (const auto& entry : requests->items()) {
             const auto& request = entry.value();
             if (!request.is_object() || !request.contains("method") || !request["method"].is_string()) {
-                throw McpError(g_INVALID_REQUEST, "input_required entry " +
-                                                      detail::sanitize_for_diagnostics(entry.key()) +
-                                                      " is not a request");
+                throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                               "input_required entry " + detail::sanitize_for_diagnostics(entry.key()) +
+                                   " is not a request");
             }
             const auto method =
                 std::make_shared<const std::string>(request["method"].get<std::string>());
@@ -598,7 +600,7 @@ struct Client::Impl {
             const bool answerable = *method == "elicitation/create" ||
                                     *method == "sampling/createMessage" || *method == "roots/list";
             if (!answerable || !handler) {
-                throw McpError(g_INVALID_REQUEST,
+                throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                                "The server asked for " + detail::sanitize_for_diagnostics(*method) +
                                    " in an input_required result, but " +
                                    (answerable ? "no handler is registered for it"
@@ -611,7 +613,7 @@ struct Client::Impl {
                 answer = co_await handler(handler_params);
             } catch (const nlohmann::json::exception& error) {
                 throw McpError(
-                    g_INVALID_REQUEST,
+                    mcp::constants::jsonrpc::g_INVALID_REQUEST,
                     "input_required entry " + detail::sanitize_for_diagnostics(entry.key()) +
                         " cannot be decoded: " + detail::sanitize_for_diagnostics(error.what()));
             }
@@ -654,7 +656,7 @@ struct Client::Impl {
                 boost::asio::redirect_error(boost::asio::use_awaitable, ignored));
         }
         if (!outcome->done) {
-            throw McpError(g_REQUEST_TIMEOUT, "Request timed out");
+            throw McpError(mcp::constants::jsonrpc::g_REQUEST_TIMEOUT, "Request timed out");
         }
         if (outcome->failure) {
             std::rethrow_exception(outcome->failure);
@@ -684,7 +686,7 @@ struct Client::Impl {
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                 deadline - std::chrono::steady_clock::now());
             if (remaining <= std::chrono::milliseconds::zero()) {
-                throw McpError(g_REQUEST_TIMEOUT, "Request timed out");
+                throw McpError(mcp::constants::jsonrpc::g_REQUEST_TIMEOUT, "Request timed out");
             }
             request_options.timeout = remaining;
             auto round_params =
@@ -705,21 +707,22 @@ struct Client::Impl {
                 co_return reply;
             }
             if (round >= request_options.max_input_rounds) {
-                throw McpError(g_INVALID_REQUEST, "The server still asked for input after " +
-                                                      std::to_string(request_options.max_input_rounds) +
-                                                      " rounds (RequestOptions::max_input_rounds)");
+                throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                               "The server still asked for input after " +
+                                   std::to_string(request_options.max_input_rounds) +
+                                   " rounds (RequestOptions::max_input_rounds)");
             }
             const auto requests = reply.find("inputRequests");
             const auto reply_state = reply.find("requestState");
             const bool has_requests = requests != reply.end();
             const bool has_state = reply_state != reply.end();
             if ((has_requests && !requests->is_object()) || (has_state && !reply_state->is_string())) {
-                throw McpError(g_INVALID_REQUEST,
+                throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                                "input_required result: inputRequests must be an object and "
                                "requestState a string");
             }
             if (!has_requests && !has_state) {
-                throw McpError(g_INVALID_REQUEST,
+                throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                                "input_required result has neither inputRequests nor requestState");
             }
             request_state = has_state ? std::make_shared<const nlohmann::json>(*reply_state) : nullptr;
@@ -805,7 +808,8 @@ struct Client::Impl {
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                 deadline - std::chrono::steady_clock::now());
             if (remaining <= std::chrono::milliseconds::zero()) {
-                throw McpError(g_REQUEST_TIMEOUT, "Timed out waiting for the task to finish");
+                throw McpError(mcp::constants::jsonrpc::g_REQUEST_TIMEOUT,
+                               "Timed out waiting for the task to finish");
             }
             auto executor = co_await boost::asio::this_coro::executor;
             boost::asio::steady_timer pause(executor);
@@ -829,7 +833,7 @@ struct Client::Impl {
             try {
                 task_params["taskId"] = reply.get<CreateTaskResult>().task.taskId;
             } catch (const std::exception& error) {
-                throw McpError(g_INVALID_REQUEST,
+                throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                                "Invalid task: " + detail::sanitize_for_diagnostics(error.what()));
             }
             // Nobody else holds this task, so a call that gives up on it asks the server to stop it.
@@ -873,7 +877,7 @@ struct Client::Impl {
                 co_return std::variant<CallToolResult, TaskHandle>(
                     TaskHandle(state, reply.get<CreateTaskResult>().task, std::move(tool)));
             } catch (const std::exception& error) {
-                throw McpError(g_INVALID_REQUEST,
+                throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                                "Invalid task: " + detail::sanitize_for_diagnostics(error.what()));
             }
         }
@@ -887,7 +891,7 @@ struct Client::Impl {
                                      const RequestOptions& request_options) {
         const auto modern_version = state->modern_version();
         if (!modern_version) {
-            throw McpError(g_METHOD_NOT_FOUND,
+            throw McpError(mcp::constants::jsonrpc::g_METHOD_NOT_FOUND,
                            "subscriptions/listen needs a session of protocol version 2026-07-28 or "
                            "later");
         }
@@ -950,7 +954,7 @@ struct Client::Impl {
         // either shows as closed or finds the stream and ends it.
         if (state->closed.load(std::memory_order_acquire)) {
             stream->forget();
-            throw McpError(g_CONNECTION_CLOSED, "Client transport is closed");
+            throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED, "Client transport is closed");
         }
 
         // Not awaited: on HTTP the write lasts until the answer starts, and the deadline covers that.
@@ -969,7 +973,8 @@ struct Client::Impl {
             if (*write_failure) {
                 stream->forget();
                 if (state->closed.load(std::memory_order_acquire)) {
-                    throw McpError(g_CONNECTION_CLOSED, "Client transport is closed");
+                    throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                                   "Client transport is closed");
                 }
                 std::rethrow_exception(*write_failure);
             }
@@ -1001,7 +1006,8 @@ struct Client::Impl {
             if (failure) {
                 throw McpError(std::move(*failure));
             }
-            throw McpError(g_INTERNAL_ERROR, "subscriptions/listen ended before it was acknowledged");
+            throw McpError(mcp::constants::jsonrpc::g_INTERNAL_ERROR,
+                           "subscriptions/listen ended before it was acknowledged");
         }
 
         // No acknowledgment in time: end the stream here and tell the server, best effort.
@@ -1012,7 +1018,8 @@ struct Client::Impl {
         } catch (...) {
             // The request timeout below is the failure to report.
         }
-        throw McpError(g_REQUEST_TIMEOUT, "subscriptions/listen was not acknowledged in time");
+        throw McpError(mcp::constants::jsonrpc::g_REQUEST_TIMEOUT,
+                       "subscriptions/listen was not acknowledged in time");
     }
 
     /// Routes a notification that names a subscription to that subscription's queue. The
@@ -1031,7 +1038,7 @@ struct Client::Impl {
         if (meta == params.end() || !meta->is_object()) {
             return;
         }
-        const auto named = meta->find(std::string(g_META_SUBSCRIPTION_ID));
+        const auto named = meta->find(std::string(mcp::constants::meta::g_META_SUBSCRIPTION_ID));
         if (named == meta->end() || !detail::is_request_id(*named)) {
             return;
         }
@@ -1070,12 +1077,13 @@ struct Client::Impl {
             try {
                 // HttpClientTransport reports a stream that broke as an answer with this code.
                 auto error = json_message.at("error").get<Error>();
-                const auto end = error.code == g_CONNECTION_CLOSED ? SubscriptionEnd::eDropped
-                                                                   : SubscriptionEnd::eFailed;
+                const auto end = error.code == mcp::constants::jsonrpc::g_CONNECTION_CLOSED
+                                     ? SubscriptionEnd::eDropped
+                                     : SubscriptionEnd::eFailed;
                 stream->finish(end, std::move(error));
             } catch (const std::exception& decode_error) {
                 stream->finish(SubscriptionEnd::eFailed,
-                               Error{g_INVALID_REQUEST,
+                               Error{mcp::constants::jsonrpc::g_INVALID_REQUEST,
                                      "Malformed JSON-RPC error object: " +
                                          detail::sanitize_for_diagnostics(decode_error.what()),
                                      std::nullopt});
@@ -1167,8 +1175,9 @@ struct Client::Impl {
     using VersionsPtr = std::shared_ptr<const std::vector<std::string>>;
 
     static bool is_modern_error_code(int code) {
-        return code == g_UNSUPPORTED_PROTOCOL_VERSION || code == g_HEADER_MISMATCH ||
-               code == g_MISSING_REQUIRED_CLIENT_CAPABILITY;
+        return code == mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION ||
+               code == mcp::constants::jsonrpc::g_HEADER_MISMATCH ||
+               code == mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY;
     }
 
     static ProbePtr classify_probe_error(const std::shared_ptr<Impl>& state, const Error& error) {
@@ -1178,7 +1187,7 @@ struct Client::Impl {
             outcome->kind = ProbeOutcome::Kind::eClosed;
         } else if (is_modern_error_code(error.code)) {
             outcome->kind = ProbeOutcome::Kind::eModernError;
-        } else if (error.code == g_REQUEST_TIMEOUT) {
+        } else if (error.code == mcp::constants::jsonrpc::g_REQUEST_TIMEOUT) {
             outcome->kind = ProbeOutcome::Kind::eTimeout;
         }
         return outcome;
@@ -1302,7 +1311,8 @@ struct Client::Impl {
             result_json = co_await std::move(pending);
             answered = true;
         } catch (const McpError& error) {
-            if (state->closed.load(std::memory_order_acquire) || error.code() == g_REQUEST_TIMEOUT) {
+            if (state->closed.load(std::memory_order_acquire) ||
+                error.code() == mcp::constants::jsonrpc::g_REQUEST_TIMEOUT) {
                 throw;
             }
             attempt->error = error.error();
@@ -1319,7 +1329,7 @@ struct Client::Impl {
             // The version is whatever the remote server put in its `initialize` result, and
             // this message reaches the application's log. Flatten and bound it, or a server
             // answering with CR/LF forges a log line the application did not write.
-            throw McpError(g_INVALID_REQUEST,
+            throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                            "Server selected unsupported protocol version: " +
                                detail::sanitize_for_diagnostics(initialize_result->protocolVersion));
         }
@@ -1364,17 +1374,17 @@ struct Client::Impl {
     static Task<ConnectResult> adopt_discover(std::shared_ptr<Impl> state, ProbePtr outcome,
                                               EraReason reason,
                                               std::chrono::steady_clock::time_point started) {
-        const auto modern =
-            newest_mutual(g_MODERN_PROTOCOL_VERSIONS, outcome->discover->supportedVersions);
+        const auto modern = newest_mutual(mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS,
+                                          outcome->discover->supportedVersions);
         if (modern) {
             state->become_modern(*modern);
             state->report_era(ProtocolEra::eModern, reason, started);
             co_return modern_result(*outcome->discover, *modern);
         }
-        const auto legacy =
-            newest_mutual(g_LEGACY_PROTOCOL_VERSIONS, outcome->discover->supportedVersions);
+        const auto legacy = newest_mutual(mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS,
+                                          outcome->discover->supportedVersions);
         if (!legacy) {
-            throw McpError(g_UNSUPPORTED_PROTOCOL_VERSION,
+            throw McpError(mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
                            "The server shares no protocol version with this client",
                            nlohmann::json{{"supported", outcome->discover->supportedVersions}});
         }
@@ -1389,7 +1399,8 @@ struct Client::Impl {
                                                  const std::string& version) {
         if (outcome.kind == ProbeOutcome::Kind::eModernError) {
             const auto advertised = advertised_versions(*outcome.error);
-            if (outcome.error->code != g_UNSUPPORTED_PROTOCOL_VERSION || advertised.empty()) {
+            if (outcome.error->code != mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION ||
+                advertised.empty()) {
                 throw McpError(*outcome.error);
             }
             std::string listed;
@@ -1402,13 +1413,13 @@ struct Client::Impl {
             const bool listed_by_server =
                 std::find(advertised.begin(), advertised.end(), version) != advertised.end();
             if (listed_by_server) {
-                throw McpError(g_UNSUPPORTED_PROTOCOL_VERSION,
+                throw McpError(mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
                                "The server refused protocol version " + version +
                                    " although it lists it among the versions it supports (" + listed +
                                    ")",
                                outcome.error->data);
             }
-            throw McpError(g_UNSUPPORTED_PROTOCOL_VERSION,
+            throw McpError(mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
                            "The server does not support protocol version " + version +
                                "; it supports " + listed +
                                ". Use ClientProtocol::Auto() to connect with a version both sides "
@@ -1416,7 +1427,7 @@ struct Client::Impl {
                            outcome.error->data);
         }
         if (outcome.kind == ProbeOutcome::Kind::eClosed) {
-            throw McpError(g_CONNECTION_CLOSED,
+            throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
                            "The server closed the connection while the client probed it with "
                            "server/discover; a server that exits on an unknown request needs "
                            "ClientProtocol::Legacy()");
@@ -1424,7 +1435,7 @@ struct Client::Impl {
         const std::string reason = outcome.error
                                        ? ": " + detail::sanitize_for_diagnostics(outcome.error->message)
                                        : " without a usable reply";
-        throw McpError(outcome.error ? outcome.error->code : g_INVALID_REQUEST,
+        throw McpError(outcome.error ? outcome.error->code : mcp::constants::jsonrpc::g_INVALID_REQUEST,
                        "The server does not speak protocol version " + version +
                            "; server/discover failed" + reason +
                            ". Use ClientProtocol::Auto() or ClientProtocol::Legacy() for a server "
@@ -1449,16 +1460,19 @@ struct Client::Impl {
     static Task<ConnectResult> connect_auto(std::shared_ptr<Impl> state,
                                             std::chrono::steady_clock::time_point started) {
         const auto no_versions = std::make_shared<const std::vector<std::string>>();
-        const auto preferred = std::make_shared<const std::string>(g_MODERN_PROTOCOL_VERSIONS.back());
+        const auto preferred = std::make_shared<const std::string>(
+            mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.back());
         auto outcome = co_await probe(state, preferred, state->options.probe_timeout);
         auto reason = EraReason::eDiscoverOk;
 
         if (outcome->kind == ProbeOutcome::Kind::eModernError &&
-            outcome->error->code == g_UNSUPPORTED_PROTOCOL_VERSION) {
+            outcome->error->code == mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION) {
             const auto advertised =
                 std::make_shared<const std::vector<std::string>>(advertised_versions(*outcome->error));
-            const auto modern = newest_mutual(g_MODERN_PROTOCOL_VERSIONS, *advertised);
-            const auto legacy = newest_mutual(g_LEGACY_PROTOCOL_VERSIONS, *advertised);
+            const auto modern =
+                newest_mutual(mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS, *advertised);
+            const auto legacy =
+                newest_mutual(mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS, *advertised);
             if (modern) {
                 // The server is modern and names a version this client speaks: ask again with it.
                 reason = EraReason::eModernErrorRetry;
@@ -1467,7 +1481,7 @@ struct Client::Impl {
                 state->report_era(ProtocolEra::eLegacy, EraReason::eModernErrorRetry, started);
                 co_return co_await initialize_session(state, legacy, advertised);
             } else {
-                throw McpError(g_UNSUPPORTED_PROTOCOL_VERSION,
+                throw McpError(mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
                                "The server shares no protocol version with this client",
                                outcome->error->data);
             }
@@ -1487,8 +1501,11 @@ struct Client::Impl {
                               ? EraReason::eFallbackTimeout
                               : EraReason::eFallbackNonModernError,
                           started);
-        auto attempt = co_await attempt_initialize(
-            state, std::make_shared<const std::string>(g_LATEST_LEGACY_PROTOCOL_VERSION), no_versions);
+        auto attempt =
+            co_await attempt_initialize(state,
+                                        std::make_shared<const std::string>(
+                                            mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION),
+                                        no_versions);
         if (attempt->result) {
             co_return std::move(*attempt->result);
         }
@@ -1542,7 +1559,8 @@ struct Client::Impl {
         }
 
         boost::asio::post(state->strand, [state, message = std::move(message)]() mutable {
-            fail_pending_requests(state, Error{g_CONNECTION_CLOSED, std::move(message), std::nullopt});
+            fail_pending_requests(state, Error{mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                                               std::move(message), std::nullopt});
             state->transport->close();
             state->incoming_requests_wake.cancel();
         });
@@ -1556,7 +1574,7 @@ struct Client::Impl {
                                                   std::shared_ptr<const std::string> wire, int64_t id,
                                                   std::chrono::milliseconds timeout, bool probe) {
         if (state->closed.load(std::memory_order_acquire)) {
-            throw McpError(g_CONNECTION_CLOSED, "Client transport is closed");
+            throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED, "Client transport is closed");
         }
 
         // [gcc11-sso: scope-before-await] The correlation key is a short std::string, so it is
@@ -1569,7 +1587,8 @@ struct Client::Impl {
                 auto [iter, inserted] = state->pending_requests.try_emplace(
                     id_key, std::make_unique<PendingRequest>(state->strand, timeout));
                 if (!inserted) {
-                    throw McpError(g_INVALID_REQUEST, "Duplicate pending request id: " + id_key);
+                    throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                                   "Duplicate pending request id: " + id_key);
                 }
                 pending_request = iter->second.get();
                 pending_request->probe = probe;
@@ -1608,12 +1627,14 @@ struct Client::Impl {
             std::lock_guard lock(state->pending_requests_mutex);
             auto iter = state->pending_requests.find(id_key);
             if (iter == state->pending_requests.end()) {
-                throw McpError(g_CONNECTION_CLOSED, "Pending request was removed: " + id_key);
+                throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                               "Pending request was removed: " + id_key);
             }
             if (!iter->second->completed) {
                 iter->second->cancel_write_before_start->store(true, std::memory_order_release);
-                iter->second->error = Error{g_REQUEST_TIMEOUT, "Request timed out",
-                                            nlohmann::json{{"id", std::to_string(id)}}};
+                iter->second->error =
+                    Error{mcp::constants::jsonrpc::g_REQUEST_TIMEOUT, "Request timed out",
+                          nlohmann::json{{"id", std::to_string(id)}}};
                 iter->second->completed = true;
                 timed_out = true;
             }
@@ -1653,7 +1674,7 @@ struct Client::Impl {
     static Task<void> send_notification_wire(std::shared_ptr<Impl> state,
                                              std::shared_ptr<const std::string> wire) {
         if (state->closed.load(std::memory_order_acquire)) {
-            throw McpError(g_CONNECTION_CLOSED, "Client transport is closed");
+            throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED, "Client transport is closed");
         }
 
         try {
@@ -1664,7 +1685,8 @@ struct Client::Impl {
             }
         } catch (...) {
             if (state->closed.load(std::memory_order_acquire)) {
-                throw McpError(g_CONNECTION_CLOSED, "Client transport is closed");
+                throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                               "Client transport is closed");
             }
             throw;
         }
@@ -1682,7 +1704,8 @@ struct Client::Impl {
                 dispatch_message(state, raw);
                 // The server's requests run in the background, and each holds memory until its
                 // answer is written. Reading stops here until they are fewer.
-                while ((state->incoming_requests >= g_max_incoming_requests ||
+                while ((state->incoming_requests >=
+                            mcp::detail::constants::client::g_MAX_INCOMING_REQUESTS ||
                         state->incoming_request_bytes + state->writer.queued_bytes() >=
                             state->options.max_incoming_request_bytes) &&
                        state->incoming_requests != 0 &&
@@ -1696,15 +1719,15 @@ struct Client::Impl {
             }
         } catch (const std::exception& error) {
             state->closed.store(true, std::memory_order_release);
-            fail_pending_requests(state, Error{g_CONNECTION_CLOSED,
+            fail_pending_requests(state, Error{mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
                                                "Client read loop stopped: " +
                                                    detail::sanitize_for_diagnostics(error.what()),
                                                std::nullopt});
             state->transport->close();
         } catch (...) {
             state->closed.store(true, std::memory_order_release);
-            fail_pending_requests(state,
-                                  Error{g_CONNECTION_CLOSED, "Client read loop stopped", std::nullopt});
+            fail_pending_requests(state, Error{mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                                               "Client read loop stopped", std::nullopt});
             state->transport->close();
         }
     }
@@ -1714,18 +1737,21 @@ struct Client::Impl {
     static void dispatch_message(const std::shared_ptr<Impl>& state, const std::string& raw) {
         try {
             if (detail::exceeds_json_depth(raw)) {
-                throw McpError(g_PARSE_ERROR, "JSON-RPC message nests deeper than " +
-                                                  std::to_string(detail::g_MAX_PEER_JSON_DEPTH) +
-                                                  " levels");
+                throw McpError(mcp::constants::jsonrpc::g_PARSE_ERROR,
+                               "JSON-RPC message nests deeper than " +
+                                   std::to_string(mcp::detail::constants::peer_json::g_MAX_DEPTH) +
+                                   " levels");
             }
             auto json_message = nlohmann::json::parse(raw);
 
             if (!json_message.is_object()) {
-                throw McpError(g_INVALID_REQUEST, "JSON-RPC message must be an object");
+                throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                               "JSON-RPC message must be an object");
             }
             if (state->options.strict_protocol_validation) {
                 if (!json_message.contains("jsonrpc") || !json_message.at("jsonrpc").is_string()) {
-                    throw McpError(g_INVALID_REQUEST, "JSON-RPC message is missing jsonrpc");
+                    throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                                   "JSON-RPC message is missing jsonrpc");
                 }
                 detail::validate_jsonrpc_version(json_message.at("jsonrpc").get<std::string>());
             }
@@ -1733,7 +1759,8 @@ struct Client::Impl {
             const bool has_id = json_message.contains("id");
             const bool has_method = json_message.contains("method");
             if (has_method && !json_message.at("method").is_string()) {
-                throw McpError(g_INVALID_REQUEST, "JSON-RPC method must be a string");
+                throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                               "JSON-RPC method must be a string");
             }
 
             if (has_id && !has_method) {
@@ -1744,7 +1771,7 @@ struct Client::Impl {
                 // drop is reported, instead of leaving the request silently unanswered.
                 const auto& id = json_message.at("id");
                 if (!detail::is_request_id(id)) {
-                    throw McpError(g_INVALID_REQUEST,
+                    throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                                    "JSON-RPC request id must be a string or an integer within "
                                    "int64_t");
                 }
@@ -1763,12 +1790,13 @@ struct Client::Impl {
             }
         } catch (const std::exception& error) {
             fail_probe(state);
-            report_protocol_error(state, g_PARSE_ERROR,
+            report_protocol_error(state, mcp::constants::jsonrpc::g_PARSE_ERROR,
                                   "Dropped an undecodable message from the peer: " +
                                       detail::sanitize_for_diagnostics(error.what()));
         } catch (...) {
             fail_probe(state);
-            report_protocol_error(state, g_PARSE_ERROR, "Dropped an undecodable message from the peer");
+            report_protocol_error(state, mcp::constants::jsonrpc::g_PARSE_ERROR,
+                                  "Dropped an undecodable message from the peer");
         }
     }
 
@@ -1780,8 +1808,8 @@ struct Client::Impl {
         for (auto& [id, pending_request] : state->pending_requests) {
             static_cast<void>(id);
             if (pending_request->probe && !pending_request->completed) {
-                pending_request->error =
-                    Error{g_PARSE_ERROR, "Reply to server/discover is not JSON-RPC"};
+                pending_request->error = Error{mcp::constants::jsonrpc::g_PARSE_ERROR,
+                                               "Reply to server/discover is not JSON-RPC"};
                 pending_request->completed = true;
                 signal_pending_request(*pending_request);
             }
@@ -1825,7 +1853,7 @@ struct Client::Impl {
         const bool has_result = json_message.contains("result");
         if (has_error == has_result) {
             iter->second->error =
-                Error{g_INVALID_REQUEST,
+                Error{mcp::constants::jsonrpc::g_INVALID_REQUEST,
                       "JSON-RPC response must contain exactly one of result or error", std::nullopt};
         } else if (has_error) {
             // An undecodable `error` member still identifies the request it answers. Fail that
@@ -1834,7 +1862,7 @@ struct Client::Impl {
             try {
                 iter->second->error = json_message.at("error").get<Error>();
             } catch (const std::exception& decode_error) {
-                iter->second->error = Error{g_INVALID_REQUEST,
+                iter->second->error = Error{mcp::constants::jsonrpc::g_INVALID_REQUEST,
                                             "Malformed JSON-RPC error object: " +
                                                 detail::sanitize_for_diagnostics(decode_error.what()),
                                             std::nullopt};
@@ -1863,7 +1891,8 @@ struct Client::Impl {
                 auto iter = state->pending_requests.find(id_key);
                 if (iter != state->pending_requests.end() &&
                     std::chrono::steady_clock::now() < iter->second->deadline) {
-                    iter->second->error = Error{g_REQUEST_CANCELLED, "Request cancelled by server"};
+                    iter->second->error = Error{mcp::constants::jsonrpc::g_REQUEST_CANCELLED,
+                                                "Request cancelled by server"};
                     iter->second->completed = true;
                     signal_pending_request(*iter->second);
                 }
@@ -1888,13 +1917,13 @@ struct Client::Impl {
             try {
                 callback(params);
             } catch (const std::exception& error) {
-                report_protocol_error(state, g_INTERNAL_ERROR,
+                report_protocol_error(state, mcp::constants::jsonrpc::g_INTERNAL_ERROR,
                                       "Notification callback for " +
                                           detail::sanitize_for_diagnostics(method) +
                                           " threw: " + detail::sanitize_for_diagnostics(error.what()));
             } catch (...) {
                 report_protocol_error(
-                    state, g_INTERNAL_ERROR,
+                    state, mcp::constants::jsonrpc::g_INTERNAL_ERROR,
                     "Notification callback for " + detail::sanitize_for_diagnostics(method) + " threw");
             }
         }
@@ -1933,18 +1962,20 @@ struct Client::Impl {
             try {
                 wire = error_payload.is_null()
                            ? make_result_wire(id, std::move(result))
-                           : make_error_wire(id, g_INTERNAL_ERROR, error_payload.get<std::string>());
+                           : make_error_wire(id, mcp::constants::jsonrpc::g_INTERNAL_ERROR,
+                                             error_payload.get<std::string>());
             } catch (const nlohmann::json::exception&) {
-                wire = make_error_wire(id, g_INTERNAL_ERROR, "The answer could not be encoded as JSON");
+                wire = make_error_wire(id, mcp::constants::jsonrpc::g_INTERNAL_ERROR,
+                                       "The answer could not be encoded as JSON");
             }
             co_await state->writer.write_message(std::move(wire));
         } else if (method == "ping") {
             co_await state->writer.write_message(
                 make_result_wire(json_message.at("id").get<RequestId>(), nlohmann::json::object()));
         } else {
-            co_await state->writer.write_message(
-                make_error_wire(json_message.at("id").get<RequestId>(), g_METHOD_NOT_FOUND,
-                                "Method not found: " + std::string(method)));
+            co_await state->writer.write_message(make_error_wire(
+                json_message.at("id").get<RequestId>(), mcp::constants::jsonrpc::g_METHOD_NOT_FOUND,
+                "Method not found: " + std::string(method)));
         }
     }
 
@@ -2018,7 +2049,8 @@ struct Client::Impl {
         }
 
         if (state->closed.load(std::memory_order_acquire)) {
-            iter->second->error = Error{g_CONNECTION_CLOSED, "Client transport is closed"};
+            iter->second->error =
+                Error{mcp::constants::jsonrpc::g_CONNECTION_CLOSED, "Client transport is closed"};
         } else {
             iter->second->write_error = std::move(write_error);
         }
@@ -2122,32 +2154,36 @@ struct Client::Impl {
             merged = nlohmann::json::object();
         }
         if (!merged.is_object()) {
-            throw McpError(g_INVALID_PARAMS, "Request params must be an object");
+            throw McpError(mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                           "Request params must be an object");
         }
         nlohmann::json meta = nlohmann::json::object();
         if (const auto found = merged.find("_meta"); found != merged.end() && !found->is_null()) {
             if (!found->is_object()) {
-                throw McpError(g_INVALID_PARAMS, "Request _meta must be an object");
+                throw McpError(mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                               "Request _meta must be an object");
             }
             meta = *found;
         }
-        meta[std::string(g_META_PROTOCOL_VERSION)] = version;
-        meta[std::string(g_META_CLIENT_CAPABILITIES)] = effective_capabilities();
+        meta[std::string(mcp::constants::meta::g_META_PROTOCOL_VERSION)] = version;
+        meta[std::string(mcp::constants::meta::g_META_CLIENT_CAPABILITIES)] = effective_capabilities();
         if (declare_tasks || options.tasks == ClientTaskMode::eAuto) {
-            auto& extensions = meta[std::string(g_META_CLIENT_CAPABILITIES)]["extensions"];
+            auto& extensions =
+                meta[std::string(mcp::constants::meta::g_META_CLIENT_CAPABILITIES)]["extensions"];
             if (!extensions.is_object()) {
                 extensions = nlohmann::json::object();
             }
-            if (!extensions.contains(std::string(g_TASKS_EXTENSION))) {
-                extensions[std::string(g_TASKS_EXTENSION)] = nlohmann::json::object();
+            if (!extensions.contains(std::string(mcp::constants::tasks::g_EXTENSION_ID))) {
+                extensions[std::string(mcp::constants::tasks::g_EXTENSION_ID)] =
+                    nlohmann::json::object();
             }
         }
         {
             std::lock_guard lock(handlers_mutex);
-            meta[std::string(g_META_CLIENT_INFO)] = client_info;
+            meta[std::string(mcp::constants::meta::g_META_CLIENT_INFO)] = client_info;
         }
         if (level) {
-            meta[std::string(g_META_LOG_LEVEL)] = *level;
+            meta[std::string(mcp::constants::meta::g_META_LOG_LEVEL)] = *level;
         }
         merged["_meta"] = std::move(meta);
         return merged;
@@ -2279,10 +2315,11 @@ Task<ConnectResult> Client::connect(const Implementation& client_info,
                                     const ClientCapabilities& capabilities) {
     auto state = impl_;
     if (state->closed.load(std::memory_order_acquire)) {
-        throw McpError(g_CONNECTION_CLOSED, "Client is closed");
+        throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED, "Client is closed");
     }
     if (state->read_loop_started.exchange(true, std::memory_order_acq_rel)) {
-        throw McpError(g_INVALID_REQUEST, "Client has already been initialized");
+        throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                       "Client has already been initialized");
     }
 
     Impl::start_read_loop(state);
@@ -2307,7 +2344,8 @@ Task<nlohmann::json> Client::send_request(std::string_view method,
                                           const std::optional<nlohmann::json>& params,
                                           const RequestOptions& request_options) {
     if (!impl_->read_loop_started.load(std::memory_order_acquire)) {
-        throw McpError(g_INVALID_REQUEST, "Client must connect before sending requests");
+        throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                       "Client must connect before sending requests");
     }
     return Impl::request(impl_, method, params, request_options);
 }
@@ -2319,7 +2357,8 @@ Task<Subscription> Client::listen(const SubscriptionFilter& filter) {
 Task<Subscription> Client::listen(const SubscriptionFilter& filter,
                                   const RequestOptions& request_options) {
     if (!impl_->read_loop_started.load(std::memory_order_acquire)) {
-        throw McpError(g_INVALID_REQUEST, "Client must connect before sending requests");
+        throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                       "Client must connect before sending requests");
     }
     return Impl::listen(impl_, filter, request_options);
 }
@@ -2327,7 +2366,8 @@ Task<Subscription> Client::listen(const SubscriptionFilter& filter,
 Task<void> Client::send_notification(std::string_view method,
                                      const std::optional<nlohmann::json>& params) {
     if (!impl_->read_loop_started.load(std::memory_order_acquire)) {
-        throw McpError(g_INVALID_REQUEST, "Client must connect before sending notifications");
+        throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                       "Client must connect before sending notifications");
     }
     return Impl::notification(impl_, method, params);
 }
@@ -2354,7 +2394,8 @@ Task<CallToolResult> Client::call_tool_with(CallToolParams params) {
     auto check = impl_->output_check_for(params.name);
     if (impl_->options.tasks == ClientTaskMode::eAuto && impl_->modern_version()) {
         if (!impl_->read_loop_started.load(std::memory_order_acquire)) {
-            throw McpError(g_INVALID_REQUEST, "Client must connect before sending requests");
+            throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                           "Client must connect before sending requests");
         }
         return Impl::call_tool_following(impl_, nlohmann::json(std::move(params)), std::move(check));
     }
@@ -2366,7 +2407,8 @@ Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool_with(CallToolP
     // [gcc11-sso: not-a-coroutine]
     auto check = impl_->output_check_for(params.name);
     if (!impl_->read_loop_started.load(std::memory_order_acquire)) {
-        throw McpError(g_INVALID_REQUEST, "Client must connect before sending requests");
+        throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                       "Client must connect before sending requests");
     }
     return Impl::start_tool(impl_, nlohmann::json(std::move(params)), std::move(check));
 }
@@ -2384,7 +2426,8 @@ namespace {
 
 std::shared_ptr<void> attached_client(const std::shared_ptr<void>& client) {
     if (!client) {
-        throw McpError(g_INVALID_REQUEST, "The task handle is not attached to a task");
+        throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                       "The task handle is not attached to a task");
     }
     return client;
 }
@@ -2473,7 +2516,8 @@ Task<CompleteResult> Client::complete(const CompleteParams& params) {
 
 Task<void> Client::ping() {
     if (!impl_->read_loop_started.load(std::memory_order_acquire)) {
-        throw McpError(g_INVALID_REQUEST, "Client must connect before sending requests");
+        throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                       "Client must connect before sending requests");
     }
     return Impl::discard_result(Impl::request(impl_, "ping", std::nullopt, {}));
 }
@@ -2487,7 +2531,8 @@ Task<void> Client::cancel(const RequestId& request_id, const std::optional<std::
         const auto iter = impl_->pending_requests.find(request_id.correlation_key());
         if (iter != impl_->pending_requests.end() && !iter->second->completed) {
             iter->second->cancel_write_before_start->store(true, std::memory_order_release);
-            iter->second->error = Error{g_REQUEST_CANCELLED, "Request cancelled"};
+            iter->second->error =
+                Error{mcp::constants::jsonrpc::g_REQUEST_CANCELLED, "Request cancelled"};
             iter->second->completed = true;
             Impl::signal_pending_request(*iter->second);
         }
@@ -2504,20 +2549,21 @@ void Client::on_notification(const std::string& method, NotificationCallback cal
 }
 
 void Client::on_progress(ProgressCallback callback) {
-    on_notification(
-        "notifications/progress", [callback = std::move(callback)](const nlohmann::json& params) {
-            ProgressNotificationParams progress;
-            try {
-                params.get_to(progress);
-            } catch (const std::exception& error) {
-                // Reported through ClientOptions::on_protocol_error by the read loop.
-                // Naming the cause here separates a notification the peer sent wrong
-                // from a bug in the application's own progress callback.
-                throw McpError(g_INVALID_PARAMS, "Malformed progress notification params: " +
-                                                     detail::sanitize_for_diagnostics(error.what()));
-            }
-            callback(progress);
-        });
+    on_notification("notifications/progress",
+                    [callback = std::move(callback)](const nlohmann::json& params) {
+                        ProgressNotificationParams progress;
+                        try {
+                            params.get_to(progress);
+                        } catch (const std::exception& error) {
+                            // Reported through ClientOptions::on_protocol_error by the read loop.
+                            // Naming the cause here separates a notification the peer sent wrong
+                            // from a bug in the application's own progress callback.
+                            throw McpError(mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                                           "Malformed progress notification params: " +
+                                               detail::sanitize_for_diagnostics(error.what()));
+                        }
+                        callback(progress);
+                    });
 }
 
 void Client::on_request(const std::string& method, RequestHandler handler) {
@@ -2550,7 +2596,8 @@ void Client::set_roots(const std::vector<Root>& roots, bool notify) {
                 "roots/list", [weak_state](const nlohmann::json&) -> Task<nlohmann::json> {
                     auto active_state = weak_state.lock();
                     if (!active_state) {
-                        throw McpError(g_CONNECTION_CLOSED, "Client is closed");
+                        throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                                       "Client is closed");
                     }
 
                     ListRootsResult result;

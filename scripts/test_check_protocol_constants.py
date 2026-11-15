@@ -42,7 +42,7 @@ class ProtocolConstantGuardTest(unittest.TestCase):
     def test_fails_on_stray_latest_use(self) -> None:
         self.append(
             "src/server/server.cpp",
-            "\nstd::string_view stray() { return mcp::g_LATEST_PROTOCOL_VERSION; }\n",
+            "\nstd::string_view stray() { return mcp::constants::protocol::g_LATEST_PROTOCOL_VERSION; }\n",
         )
         violations = check.find_violations(self.root)
         self.assertEqual(len(violations), 1, violations)
@@ -93,7 +93,7 @@ class ProtocolConstantGuardTest(unittest.TestCase):
         self.assertEqual(check.find_violations(self.root), [])
 
     def test_removed_site_must_leave_the_allowlist(self) -> None:
-        path = self.root / "include/mcp/protocol/base.hpp"
+        path = self.root / "include/mcp/core/constants.hpp"
         text = path.read_text(encoding="utf-8")
         self.assertIn("= -32002;", text)
         path.write_text(text.replace("= -32002;", "= -32099;"), encoding="utf-8")

@@ -13,6 +13,7 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <chrono>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -22,6 +23,8 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace {
 
@@ -571,7 +574,7 @@ class MrtrTest : public ::testing::Test {
 
     static void expect_unknown_state(const json& response) {
         ASSERT_TRUE(response.contains("error")) << response;
-        EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_PARAMS) << response;
+        EXPECT_EQ(response["error"]["code"], jsonrpc::g_INVALID_PARAMS) << response;
         EXPECT_EQ(response["error"]["message"], "Unknown or expired requestState") << response;
     }
 };
@@ -610,7 +613,7 @@ TEST_F(MrtrTest, AResultThatCannotBeEncodedDoesNotExposeTheLibraryText) {
     json answer;
     run([&]() -> mcp::Task<void> { answer = co_await send(call_tool(1, "not-text")); });
 
-    EXPECT_EQ(answer["error"]["code"], mcp::g_INTERNAL_ERROR) << answer;
+    EXPECT_EQ(answer["error"]["code"], jsonrpc::g_INTERNAL_ERROR) << answer;
     EXPECT_EQ(answer["error"]["message"], "The result could not be encoded as JSON") << answer;
 }
 
@@ -1008,7 +1011,7 @@ TEST_F(MrtrTest, UndeclaredCapabilityIs32021WithData) {
     });
 
     ASSERT_TRUE(response.contains("error")) << response;
-    EXPECT_EQ(response["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY);
+    EXPECT_EQ(response["error"]["code"], jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY);
     EXPECT_EQ(response["error"]["data"]["requiredCapabilities"],
               (json{{"elicitation", {{"form", json::object()}}}}))
         << response;
@@ -1024,7 +1027,7 @@ TEST_F(MrtrTest, UrlModeNeedsTheUrlCapabilityAndCarriesNoElicitationId) {
             call_tool(2, "ask_url", json::object(), declaring("elicitation", declaring("url"))));
     });
 
-    EXPECT_EQ(refused["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << refused;
+    EXPECT_EQ(refused["error"]["code"], jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << refused;
     EXPECT_EQ(refused["error"]["data"]["requiredCapabilities"],
               (json{{"elicitation", {{"url", json::object()}}}}));
     expect_input_required(asked);
@@ -1067,7 +1070,7 @@ TEST_F(MrtrTest, ToolSamplingNeedsTheSamplingToolsCapability) {
     });
 
     EXPECT_EQ(refused.value("error", json::object()).value("code", 0),
-              mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY)
+              jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY)
         << refused;
     EXPECT_EQ(refused["error"]["data"]["requiredCapabilities"],
               (json{{"sampling", {{"tools", json::object()}}}}));
@@ -1692,7 +1695,7 @@ TEST_F(MrtrSealedTest, StateLargerThanTheLimitIsAnInternalError) {
 
     expect_input_required(first);
     ASSERT_TRUE(second.contains("error")) << second;
-    EXPECT_EQ(second["error"]["code"], mcp::g_INTERNAL_ERROR) << second;
+    EXPECT_EQ(second["error"]["code"], jsonrpc::g_INTERNAL_ERROR) << second;
 }
 
 TEST_F(MrtrSealedTest, StateLongerThanTheLimitIsUnknown) {
@@ -1807,7 +1810,7 @@ TEST_F(MrtrSealedTest, RoundLimitEndsARequestThatKeepsAsking) {
 
     expect_input_required(first);
     ASSERT_TRUE(second.contains("error")) << second;
-    EXPECT_EQ(second["error"]["code"], mcp::g_INTERNAL_ERROR) << second;
+    EXPECT_EQ(second["error"]["code"], jsonrpc::g_INTERNAL_ERROR) << second;
 }
 
 TEST_F(MrtrSealedTest, ConsumeHookMakesAStateSingleUse) {
@@ -2262,12 +2265,13 @@ TEST_F(MrtrWithoutMiddlewareTest, QuestionOfAClientThatCannotAnswerIsRefused) {
         prompt = co_await send(req_prompt);
     });
 
-    EXPECT_EQ(elicitation["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << elicitation;
+    EXPECT_EQ(elicitation["error"]["code"], jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY)
+        << elicitation;
     EXPECT_EQ(elicitation["error"]["data"]["requiredCapabilities"],
               (json{{"elicitation", {{"form", json::object()}}}}));
     EXPECT_EQ(sampling["error"]["data"]["requiredCapabilities"], (json{{"sampling", json::object()}}));
     EXPECT_EQ(roots["error"]["data"]["requiredCapabilities"], (json{{"roots", json::object()}}));
-    EXPECT_EQ(prompt["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << prompt;
+    EXPECT_EQ(prompt["error"]["code"], jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << prompt;
     EXPECT_EQ(server_->mrtr_stats().parked, 0u);
 }
 
@@ -2280,7 +2284,7 @@ TEST_F(MrtrWithoutMiddlewareTest, RefusalWinsOverAHandlerThatCatchesIt) {
 
     EXPECT_EQ(abandoned_caught_.load(), 1);
     ASSERT_TRUE(response.contains("error")) << response;
-    EXPECT_EQ(response["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << response;
+    EXPECT_EQ(response["error"]["code"], jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << response;
 }
 
 TEST_F(MrtrWithoutMiddlewareTest, ParallelQuestionsAreRefusedTogether) {
@@ -2354,7 +2358,7 @@ TEST_F(MrtrWithoutMiddlewareTest, MalformedToolCallsAreAnsweredAsWithMiddleware)
     ASSERT_EQ(plain.size(), malformed.size());
     for (std::size_t index = 0; index < malformed.size(); ++index) {
         ASSERT_TRUE(plain[index].contains("error")) << plain[index];
-        EXPECT_EQ(plain[index]["error"]["code"], mcp::g_INVALID_PARAMS) << plain[index];
+        EXPECT_EQ(plain[index]["error"]["code"], jsonrpc::g_INVALID_PARAMS) << plain[index];
         EXPECT_EQ(plain[index], wrapped[index]) << malformed[index];
     }
     for (const std::size_t index : {0u, 1u, 2u, 4u}) {
