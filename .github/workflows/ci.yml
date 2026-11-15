@@ -211,7 +211,8 @@ jobs:
 
   sanitize:
     # One job per compiler. The GCC job also collects the coverage report for Codecov, so the
-    # instrumented tests run once for both.
+    # instrumented tests run once for both. The sanitizer jobs build only the shared library, which
+    # the tests link; the Build jobs build the static one.
     name: sanitize (${{ matrix.compiler }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -268,7 +269,7 @@ jobs:
     - name: Build and Test with Sanitizers
       env:
         MCP_REQUIRE_TWIN_LOOPBACK: '1'
-      run: python scripts/build.py --sanitize ${{ matrix.build_args }} --test --quiet
+      run: python scripts/build.py --sanitize ${{ matrix.build_args }} --linkage shared --test --quiet
 
     - name: Upload coverage to Codecov
       if: matrix.compiler == 'gcc'
@@ -340,7 +341,7 @@ jobs:
     - name: Build and Test with ThreadSanitizer
       env:
         MCP_REQUIRE_TWIN_LOOPBACK: '1'
-      run: python scripts/build.py --tsan ${{ matrix.build_args }} --test --quiet
+      run: python scripts/build.py --tsan ${{ matrix.build_args }} --linkage shared --test --quiet
 
     - name: Drop Conan build trees before saving the cache
       if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
@@ -405,7 +406,7 @@ jobs:
     - name: Build and Test with MemorySanitizer
       env:
         MCP_REQUIRE_TWIN_LOOPBACK: '1'
-      run: python scripts/build.py --msan --test --quiet
+      run: python scripts/build.py --msan --linkage shared --test --quiet
 
     - name: Drop Conan build trees before saving the cache
       if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
