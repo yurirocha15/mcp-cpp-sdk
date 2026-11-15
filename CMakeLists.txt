@@ -572,6 +572,14 @@ if(BUILD_TESTING)
   # take to run. test/support/test_timeout.cpp keeps the per-test timeout.
   mcp_cpp_sdk_add_test_suites(mcp-sdk-tests TIMEOUT ${MCP_CPP_SDK_TEST_TIMEOUT})
 
+  # Optimizing the test code takes most of a test file's compile at -O3, so
+  # release builds compile the test program at -O1. The SDK libraries keep the
+  # build's own optimization.
+  set(GCC_OR_CLANG "$<CXX_COMPILER_ID:GNU,Clang,AppleClang>")
+  set(RELEASE_CONFIG "$<CONFIG:Release,RelWithDebInfo,MinSizeRel>")
+  target_compile_options(
+    mcp-sdk-tests PRIVATE "$<$<AND:${GCC_OR_CLANG},${RELEASE_CONFIG}>:-O1>")
+
   # Every test file parses these third-party headers. The SDK's own headers stay
   # out, so that a change to one recompiles only the test files that include it.
   # ccache supports precompiled headers with GCC and Clang only, so MSVC builds
