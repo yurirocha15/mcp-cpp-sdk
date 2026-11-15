@@ -20,12 +20,15 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+namespace protocol = mcp::constants::protocol;
 
 namespace {
 
@@ -471,7 +474,7 @@ TEST_F(HttpPrincipalTest, LegacySessionRequestsCarryThePrincipal) {
         auto headers = authorization;
         headers.emplace_back("MCP-Session-Id", initialized.session_id.value_or(""));
         headers.emplace_back("MCP-Protocol-Version",
-                             std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+                             std::string(protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
         co_await send(io_ctx_.get_executor(), transport_->port(),
                       make_initialized_notification().dump(), headers);
         const json call_json = {{"jsonrpc", "2.0"},
@@ -599,7 +602,7 @@ TEST_F(HttpPrincipalManagerTest, SessionRequestsCarryNoPrincipal) {
         auto headers = authorization;
         headers.emplace_back("MCP-Session-Id", initialized.session_id.value_or(""));
         headers.emplace_back("MCP-Protocol-Version",
-                             std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+                             std::string(protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
         co_await send(io_ctx_.get_executor(), g_port, make_initialized_notification().dump(), headers);
         const json call_json = {{"jsonrpc", "2.0"},
                                 {"id", 2},

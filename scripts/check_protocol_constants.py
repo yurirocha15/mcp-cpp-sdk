@@ -6,8 +6,9 @@
 revision becomes the latest one. The library code therefore names the era it
 means (``g_LATEST_LEGACY_PROTOCOL_VERSION``, ``is_legacy_protocol_version()``,
 ``is_modern_protocol_version()``) and uses the era-neutral names only where
-they are defined. A new use under ``src/`` or ``include/`` fails this check
-until it is either rewritten or added to ``ALLOWED_USES`` on purpose.
+they are defined, in ``include/mcp/core/constants.hpp``. A new use under
+``src/`` or ``include/`` fails this check until it is either rewritten or added
+to ``ALLOWED_USES`` on purpose.
 
 Implementations of protocol revision 2026-07-28 must not emit ``-32002``
 (resource not found in 2025-11-25 and earlier) or ``-32042`` (URL elicitation
@@ -36,8 +37,10 @@ GUARDED_NAMES = (
 
 # (path relative to the repository root, name) -> number of uses outside comments.
 ALLOWED_USES: dict[tuple[str, str], int] = {
-    ("include/mcp/protocol/capabilities.hpp", "g_LATEST_PROTOCOL_VERSION"): 1,
-    ("include/mcp/protocol/capabilities.hpp", "g_SUPPORTED_PROTOCOL_VERSIONS"): 4,
+    # The definitions, in include/mcp/core/constants.hpp (namespace mcp::constants::protocol).
+    ("include/mcp/core/constants.hpp", "g_LATEST_PROTOCOL_VERSION"): 1,
+    ("include/mcp/core/constants.hpp", "g_SUPPORTED_PROTOCOL_VERSIONS"): 1,
+    ("include/mcp/protocol/capabilities.hpp", "g_SUPPORTED_PROTOCOL_VERSIONS"): 3,
     ("include/mcp/protocol/capabilities.hpp", "is_supported_protocol_version"): 1,
     # Every version the SDK knows is a valid pin.
     ("src/client/client.cpp", "is_supported_protocol_version"): 1,
@@ -51,7 +54,7 @@ RETIRED_CODES = ("-32002", "-32042")
 
 # (path, code) -> number of literals allowed outside comments.
 ALLOWED_CODES: dict[tuple[str, str], int] = {
-    ("include/mcp/protocol/base.hpp", "-32002"): 1,  # g_RESOURCE_NOT_FOUND
+    ("include/mcp/core/constants.hpp", "-32002"): 1,  # g_RESOURCE_NOT_FOUND
 }
 
 _COMMENT_OR_STRING = re.compile(

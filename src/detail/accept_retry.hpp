@@ -7,9 +7,6 @@
 
 namespace mcp::detail {
 
-/// How long an accept loop waits after a failure that can pass.
-inline constexpr auto g_accept_retry_delay = std::chrono::milliseconds(100);
-
 /// Whether a failed accept says something about this moment rather than the listening socket: the
 /// process or the system is out of descriptors or memory, or the connection died before it was
 /// accepted. Ending the loop over one of these would leave a server that never accepts again.

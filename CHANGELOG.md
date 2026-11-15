@@ -794,6 +794,21 @@ Versioning; a `0.x` version is a stable release unless its version has an
   rule and the deprecation of dynamic client registration, and
   `docs/concepts/oauth.rst` says that request deadlines do not run while the
   user answers an authorization prompt.
+- Public constants live in `mcp/core/constants.hpp`, grouped by namespace under
+  `mcp::constants` (`jsonrpc`, `protocol`, `meta`, `apps`, `skills`,
+  `tasks`, `oauth`, `metadata_policy`, `http_server`, `event_store`,
+  `shutdown`, `json_parse` and `transport_writer`), and every constant
+  is named `g_UPPER_CASE`. `mcp::g_INVALID_PARAMS` is now
+  `mcp::constants::jsonrpc::g_INVALID_PARAMS`, `mcp::g_LATEST_PROTOCOL_VERSION`
+  is `mcp::constants::protocol::g_LATEST_PROTOCOL_VERSION`,
+  `mcp::apps::g_EXTENSION_ID` is `mcp::constants::apps::g_EXTENSION_ID`,
+  `mcp::constants::g_event_store_default_capacity` is
+  `mcp::constants::event_store::g_DEFAULT_CAPACITY`,
+  `mcp::constants::g_default_max_request_body_bytes` is
+  `mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES` and the
+  constants of `mcp::auth::constants` are in
+  `mcp::constants::oauth` and `mcp::constants::metadata_policy`. The old names
+  are gone. Constants only the implementation uses moved to a private header.
 
 ### Deprecated
 

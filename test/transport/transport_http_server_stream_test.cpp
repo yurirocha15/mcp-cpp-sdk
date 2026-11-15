@@ -22,11 +22,15 @@
 #include <chrono>
 #include <exception>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
+
+namespace jsonrpc = mcp::constants::jsonrpc;
+namespace protocol = mcp::constants::protocol;
 
 namespace {
 
@@ -209,7 +213,7 @@ mcp::Task<LegacyReply> post_legacy(asio::any_io_executor executor, unsigned shor
     request.set(http::field::accept, "application/json");
     if (!session_id.empty()) {
         request.set("MCP-Session-Id", session_id);
-        request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+        request.set("MCP-Protocol-Version", std::string(protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
     }
     request.body() = body.dump();
     request.prepare_payload();
@@ -933,7 +937,7 @@ TEST_F(HttpServerStreamTest, ListenFromAClientNotAcceptingStreamsIsRefused) {
 
     EXPECT_NE(client.received().find("Content-Type: application/json"), std::string::npos)
         << client.received();
-    EXPECT_NE(client.received().find(std::to_string(mcp::g_INVALID_REQUEST)), std::string::npos)
+    EXPECT_NE(client.received().find(std::to_string(jsonrpc::g_INVALID_REQUEST)), std::string::npos)
         << client.received();
 }
 
@@ -1047,7 +1051,7 @@ TEST_F(HttpServerStreamTest, HeaderChecksStillRefuseAStreamingRequest) {
     });
     EXPECT_NE(origin_client.received().find("403"), std::string::npos) << origin_client.received();
     EXPECT_NE(mismatch_client.received().find("400"), std::string::npos) << mismatch_client.received();
-    EXPECT_NE(mismatch_client.received().find(std::to_string(mcp::g_HEADER_MISMATCH)),
+    EXPECT_NE(mismatch_client.received().find(std::to_string(jsonrpc::g_HEADER_MISMATCH)),
               std::string::npos)
         << mismatch_client.received();
     EXPECT_EQ(transport_->header_mismatch_rejections(), 1u);

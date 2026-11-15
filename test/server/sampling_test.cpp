@@ -8,6 +8,7 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -491,7 +492,7 @@ TEST_F(SamplingTest, SampleLlmErrorResponseThrows) {
                 nlohmann::json error_response;
                 error_response["jsonrpc"] = "2.0";
                 error_response["id"] = request_id;
-                error_response["error"] = {{"code", mcp::g_INVALID_REQUEST},
+                error_response["error"] = {{"code", mcp::constants::jsonrpc::g_INVALID_REQUEST},
                                            {"message", "sampling denied"}};
 
                 raw_transport->enqueue_message(error_response.dump());

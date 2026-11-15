@@ -1,3 +1,4 @@
+#include "../detail/constants.hpp"
 #include "../detail/header_value.hpp"
 #include "../detail/http_request_metadata.hpp"
 #include "../detail/param_headers.hpp"
@@ -48,21 +49,6 @@ namespace net = boost::asio;
 
 namespace {
 
-/// The most a single response body or SSE line may hold before the exchange is abandoned.
-constexpr std::size_t g_max_modern_message_bytes = 16U * 1024U * 1024U;
-/// How many times one request's event stream is resumed after it ends without the response.
-constexpr int g_max_stream_resumes = 3;
-/// The pause before a stream is opened again when the server named none.
-constexpr std::chrono::milliseconds g_default_reconnect_delay{1000};
-/// The shortest pause before a stream is opened again, whatever the server asked for.
-constexpr std::chrono::milliseconds g_min_reconnect_delay{100};
-/// The longest pause before a stream is opened again, whatever the server asked for.
-constexpr std::chrono::milliseconds g_max_reconnect_delay{30000};
-/// Longest `Mcp-Param-*` value sent. Longer ones do not get through the servers that limit a header.
-constexpr std::size_t g_max_param_header_bytes = 4096;
-/// The most pages of tools/list one schema refresh follows.
-constexpr int g_max_refresh_pages = 64;
-
 /// Reads a text/event-stream body in the pieces the network delivers it and returns the data of each
 /// event as soon as its terminating blank line arrives. It keeps the last event id and the
 /// reconnection time the server asked for, which a resume needs; comment lines and other fields are
@@ -87,7 +73,7 @@ class SseDecoder {
         for (const char symbol : chunk) {
             if (symbol != '\n') {
                 line_.push_back(symbol);
-                if (line_.size() > g_max_modern_message_bytes) {
+                if (line_.size() > mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
                     throw std::runtime_error("An SSE line from the server is too long");
                 }
                 continue;
@@ -146,7 +132,8 @@ class SseDecoder {
             if (!value.empty() && value.front() == ' ') {
                 value.remove_prefix(1);
             }
-            if (payload_.size() + value.size() + 1 > g_max_modern_message_bytes) {
+            if (payload_.size() + value.size() + 1 >
+                mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
                 throw std::runtime_error("An SSE event from the server is too long");
             }
             if (!payload_.empty()) {
@@ -245,7 +232,8 @@ struct HttpClientTransport::Impl {
         mutable std::mutex metadata_mutex;
         std::string session_id;
         std::string last_event_id;
-        std::string protocol_version{std::string(g_LATEST_LEGACY_PROTOCOL_VERSION)};
+        std::string protocol_version{
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)};
         std::optional<std::string> initialize_request_key;
         /// The initialize request that started the session, repeated to start a new one when the
         /// server has forgotten it. Touched on the strand only.
@@ -401,8 +389,9 @@ struct HttpClientTransport::Impl {
             state->stream.emplace(strand);
         }
         auto& stream = *state->stream;
-        const detail::SocketDeadline deadline(stream.get_executor(), stream.socket(),
-                                              std::chrono::seconds(constants::g_http_timeout_seconds));
+        const detail::SocketDeadline deadline(
+            stream.get_executor(), stream.socket(),
+            std::chrono::seconds(mcp::detail::constants::http_client::g_TIMEOUT_SECONDS));
         co_await stream.async_connect(resolved_endpoints, net::use_awaitable);
         // The wait for a response has a long limit, so this is what finds a peer that vanished.
         beast::error_code keep_alive_error;
@@ -633,7 +622,7 @@ struct HttpClientTransport::Impl {
             return;
         }
 
-        if (response.result_int() >= constants::g_http_bad_request) {
+        if (response.result_int() >= mcp::detail::constants::http_client::g_STATUS_BAD_REQUEST) {
             if (!in_session) {
                 if (auto error_body = sessionless_error_body(response, sent)) {
                     enqueue_message(std::move(*error_body));
@@ -1011,7 +1000,7 @@ struct HttpClientTransport::Impl {
             impl->remember_last_event_id(call->decoder);
             if (call->final_message || !call->expects_response || call->cancelled ||
                 shared.closed.load(std::memory_order_acquire) || call->decoder.last_id().empty() ||
-                resumes >= g_max_stream_resumes) {
+                resumes >= mcp::detail::constants::http_client::g_MAX_STREAM_RESUMES) {
                 break;
             }
             call->last_event_id = call->decoder.last_id();
@@ -1046,7 +1035,7 @@ struct HttpClientTransport::Impl {
             impl->enqueue_message(std::move(*call->final_message));
         } else if (call->expects_response) {
             impl->enqueue_message(error_response(
-                *call, g_CONNECTION_CLOSED,
+                *call, mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
                 failure ? describe(failure) : "The server's event stream ended without a response"));
         }
     }
@@ -1063,8 +1052,10 @@ struct HttpClientTransport::Impl {
     /// How long to wait before a stream is opened again: what its `retry` field asked for, within
     /// bounds, or a second.
     static std::chrono::milliseconds reconnect_delay(const SseDecoder& decoder) {
-        return std::clamp(decoder.retry().value_or(g_default_reconnect_delay), g_min_reconnect_delay,
-                          g_max_reconnect_delay);
+        return std::clamp(
+            decoder.retry().value_or(mcp::detail::constants::http_client::g_DEFAULT_RECONNECT_DELAY),
+            mcp::detail::constants::http_client::g_MIN_RECONNECT_DELAY,
+            mcp::detail::constants::http_client::g_MAX_RECONNECT_DELAY);
     }
 
     /// Opens the session's GET stream, once per session.
@@ -1089,7 +1080,8 @@ struct HttpClientTransport::Impl {
                              std::function<std::string()> bearer_token_provider) {
         auto& shared = *impl->state;
         auto last_event_id = std::make_shared<std::string>();
-        std::chrono::milliseconds delay = g_default_reconnect_delay;
+        std::chrono::milliseconds delay =
+            mcp::detail::constants::http_client::g_DEFAULT_RECONNECT_DELAY;
         std::chrono::milliseconds backoff{0};
         for (;;) {
             if (shared.closed.load(std::memory_order_acquire) || shared.session_id != *session) {
@@ -1124,7 +1116,7 @@ struct HttpClientTransport::Impl {
                 backoff = std::chrono::milliseconds::zero();
             } else {
                 backoff = std::min(backoff == std::chrono::milliseconds::zero() ? delay : backoff * 2,
-                                   g_max_reconnect_delay);
+                                   mcp::detail::constants::http_client::g_MAX_RECONNECT_DELAY);
                 delay = std::max(delay, backoff);
             }
             end_call(shared, *call);
@@ -1145,7 +1137,8 @@ struct HttpClientTransport::Impl {
         try {
             co_await impl->ensure_connected();
 
-            StringRequest request{http::verb::post, impl->path, constants::g_http_version_11};
+            StringRequest request{http::verb::post, impl->path,
+                                  mcp::detail::constants::http_client::g_VERSION_11};
             request.set(http::field::host, impl->host);
             request.set(http::field::content_type, "application/json");
             request.set(http::field::accept, "application/json, text/event-stream");
@@ -1169,8 +1162,9 @@ struct HttpClientTransport::Impl {
                 throw std::runtime_error("HttpClientTransport stream is not initialized");
             }
             auto& stream = *state.stream;
-            deadline.emplace(stream.get_executor(), stream.socket(),
-                             std::chrono::seconds(constants::g_http_timeout_seconds));
+            deadline.emplace(
+                stream.get_executor(), stream.socket(),
+                std::chrono::seconds(mcp::detail::constants::http_client::g_TIMEOUT_SECONDS));
             co_await http::async_write(stream, request, net::use_awaitable);
             // A handler takes as long as it takes, and the caller's timeout decides how long to
             // wait for it. This only frees the connection for the next request in the end.
@@ -1294,14 +1288,15 @@ struct HttpClientTransport::Impl {
         }
         if (value.is_number_unsigned()) {
             const auto number = value.get<std::uint64_t>();
-            if (number > static_cast<std::uint64_t>(detail::g_MAX_SAFE_HEADER_INTEGER)) {
+            if (number > static_cast<std::uint64_t>(
+                             mcp::detail::constants::param_headers::g_MAX_SAFE_HEADER_INTEGER)) {
                 return std::nullopt;
             }
             return std::to_string(number);
         }
         if (value.is_number_integer()) {
             const auto number = value.get<std::int64_t>();
-            if (number < -detail::g_MAX_SAFE_HEADER_INTEGER) {
+            if (number < -mcp::detail::constants::param_headers::g_MAX_SAFE_HEADER_INTEGER) {
                 return std::nullopt;
             }
             return std::to_string(number);
@@ -1309,7 +1304,8 @@ struct HttpClientTransport::Impl {
         if (value.is_number_float()) {
             // An integral float in the safe range is the same integer the server compares with.
             const auto number = value.get<double>();
-            constexpr auto limit = static_cast<double>(detail::g_MAX_SAFE_HEADER_INTEGER);
+            constexpr auto limit =
+                static_cast<double>(mcp::detail::constants::param_headers::g_MAX_SAFE_HEADER_INTEGER);
             if (!(number >= -limit && number <= limit) ||
                 number != static_cast<double>(static_cast<std::int64_t>(number))) {
                 return std::nullopt;
@@ -1366,7 +1362,7 @@ struct HttpClientTransport::Impl {
             const auto text = param_header_text(*value);
             if (text) {
                 const auto encoded = detail::encode_header_value(*text);
-                if (encoded.size() > g_max_param_header_bytes) {
+                if (encoded.size() > mcp::detail::constants::http_client::g_MAX_PARAM_HEADER_BYTES) {
                     throw UnsendableCall("Argument " + param.name +
                                          " is too long for its Mcp-Param header");
                 }
@@ -1495,14 +1491,15 @@ struct HttpClientTransport::Impl {
         call->stream = std::make_shared<beast::tcp_stream>(impl->strand);
         const auto stream = call->stream;
 
-        call->deadline.emplace(stream->get_executor(), stream->socket(),
-                               std::chrono::seconds(constants::g_http_timeout_seconds));
+        call->deadline.emplace(
+            stream->get_executor(), stream->socket(),
+            std::chrono::seconds(mcp::detail::constants::http_client::g_TIMEOUT_SECONDS));
         co_await stream->async_connect(endpoints, net::use_awaitable);
         beast::error_code keep_alive_error;
         (void)stream->socket().set_option(net::socket_base::keep_alive(true), keep_alive_error);
 
         StringRequest request{call->get ? http::verb::get : http::verb::post, impl->path,
-                              constants::g_http_version_11};
+                              mcp::detail::constants::http_client::g_VERSION_11};
         request.set(http::field::host, impl->host);
         if (call->get) {
             request.set(http::field::accept, "text/event-stream");
@@ -1560,7 +1557,7 @@ struct HttpClientTransport::Impl {
         if (challenge != head.end()) {
             call->challenge = std::string(challenge->value());
         }
-        call->event_stream = call->status < constants::g_http_bad_request &&
+        call->event_stream = call->status < mcp::detail::constants::http_client::g_STATUS_BAD_REQUEST &&
                              starts_with(call->content_type, "text/event-stream");
     }
 
@@ -1595,7 +1592,7 @@ struct HttpClientTransport::Impl {
                 }
             } else {
                 body.append(piece);
-                if (body.size() > g_max_modern_message_bytes) {
+                if (body.size() > mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
                     throw std::runtime_error("The server's response is too large");
                 }
             }
@@ -1613,7 +1610,7 @@ struct HttpClientTransport::Impl {
             co_return;
         }
 
-        if (status >= constants::g_http_bad_request) {
+        if (status >= mcp::detail::constants::http_client::g_STATUS_BAD_REQUEST) {
             const bool may_carry_error = call->expects_response && !call->in_session &&
                                          (status == 400 || status == 404 || status == 405);
             if (may_carry_error) {
@@ -1644,7 +1641,7 @@ struct HttpClientTransport::Impl {
             return false;
         }
         const auto code = detail::response_error_code(*call.final_message);
-        return code && *code == g_HEADER_MISMATCH;
+        return code && *code == mcp::constants::jsonrpc::g_HEADER_MISMATCH;
     }
 
     /// Asks the server for its tools again so the `x-mcp-header` annotations the next attempt mirrors
@@ -1652,7 +1649,7 @@ struct HttpClientTransport::Impl {
     static Task<void> refresh_tool_schemas(std::shared_ptr<Impl> impl,
                                            std::shared_ptr<ModernCall> origin) {
         const auto cursor = std::make_shared<std::optional<std::string>>();
-        for (int page = 0; page < g_max_refresh_pages; ++page) {
+        for (int page = 0; page < mcp::detail::constants::http_client::g_MAX_REFRESH_PAGES; ++page) {
             auto refresh = std::make_shared<ModernCall>();
             refresh->method = "tools/list";
             refresh->version = origin->version;
@@ -1742,9 +1739,11 @@ struct HttpClientTransport::Impl {
             co_return;
         }
         if (call->cancelled) {
-            impl->enqueue_message(error_response(*call, g_REQUEST_CANCELLED, "Request cancelled"));
+            impl->enqueue_message(error_response(*call, mcp::constants::jsonrpc::g_REQUEST_CANCELLED,
+                                                 "Request cancelled"));
         } else if (failure) {
-            impl->enqueue_message(error_response(*call, g_CONNECTION_CLOSED, describe(failure)));
+            impl->enqueue_message(
+                error_response(*call, mcp::constants::jsonrpc::g_CONNECTION_CLOSED, describe(failure)));
         } else {
             impl->deliver_final(*call);
         }
@@ -1801,7 +1800,8 @@ struct HttpClientTransport::Impl {
                 streaming = co_await run_exchange(impl, call, true);
             }
         } catch (const UnsendableCall& error) {
-            impl->enqueue_message(error_response(*call, g_INVALID_PARAMS, error.what()));
+            impl->enqueue_message(
+                error_response(*call, mcp::constants::jsonrpc::g_INVALID_PARAMS, error.what()));
             co_return;
         } catch (...) {
             failure = std::current_exception();
@@ -1811,8 +1811,8 @@ struct HttpClientTransport::Impl {
             if (call->cancelled && !shared.closed.load(std::memory_order_acquire)) {
                 // The response stream was closed on purpose; the request is over.
                 if (call->expects_response && call->forward) {
-                    impl->enqueue_message(
-                        error_response(*call, g_REQUEST_CANCELLED, "Request cancelled"));
+                    impl->enqueue_message(error_response(
+                        *call, mcp::constants::jsonrpc::g_REQUEST_CANCELLED, "Request cancelled"));
                 }
                 co_return;
             }
@@ -1956,13 +1956,15 @@ void HttpClientTransport::close() {
                         shared_state->stream.emplace(shared_state->timer.get_executor());
                         const detail::SocketDeadline connect_deadline(
                             shared_state->stream->get_executor(), shared_state->stream->socket(),
-                            std::chrono::seconds(constants::g_http_timeout_seconds));
+                            std::chrono::seconds(
+                                mcp::detail::constants::http_client::g_TIMEOUT_SECONDS));
                         co_await shared_state->stream->async_connect(resolved_endpoints,
                                                                      net::use_awaitable);
                     }
 
                     http::request<http::empty_body> delete_request{
-                        http::verb::delete_, close_target->path, constants::g_http_version_11};
+                        http::verb::delete_, close_target->path,
+                        mcp::detail::constants::http_client::g_VERSION_11};
                     delete_request.set(http::field::host, close_target->host);
                     delete_request.set("MCP-Session-Id", *active_session_id);
                     delete_request.set("MCP-Protocol-Version", *active_protocol_version);
@@ -1975,7 +1977,7 @@ void HttpClientTransport::close() {
 
                     const detail::SocketDeadline deadline(
                         shared_state->stream->get_executor(), shared_state->stream->socket(),
-                        std::chrono::seconds(constants::g_http_timeout_seconds));
+                        std::chrono::seconds(mcp::detail::constants::http_client::g_TIMEOUT_SECONDS));
                     co_await http::async_write(*shared_state->stream, delete_request,
                                                net::use_awaitable);
 

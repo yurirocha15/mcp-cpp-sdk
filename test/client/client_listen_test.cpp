@@ -22,6 +22,7 @@
 #include <condition_variable>
 #include <functional>
 #include <istream>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -320,9 +321,11 @@ TEST(ClientListen, GracefulCloseVsDrop) {
 
         harness.deliver(notification_of(json(closed.id()), "notifications/tools/list_changed"));
         harness.deliver(closing_result(json(closed.id())));
-        harness.deliver({{"jsonrpc", "2.0"},
-                         {"id", json(refused.id())},
-                         {"error", {{"code", mcp::g_INTERNAL_ERROR}, {"message", "shutting down"}}}});
+        harness.deliver(
+            {{"jsonrpc", "2.0"},
+             {"id", json(refused.id())},
+             {"error",
+              {{"code", mcp::constants::jsonrpc::g_INTERNAL_ERROR}, {"message", "shutting down"}}}});
         graceful_methods = co_await drain(closed);
         co_await drain(refused);
         graceful = closed.end_reason();
@@ -342,10 +345,10 @@ TEST(ClientListen, GracefulCloseVsDrop) {
     EXPECT_FALSE(graceful_error.has_value());
     EXPECT_EQ(failed, mcp::SubscriptionEnd::eFailed);
     ASSERT_TRUE(failed_error.has_value());
-    EXPECT_EQ(failed_error->code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(failed_error->code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
     EXPECT_EQ(dropped, mcp::SubscriptionEnd::eDropped);
     ASSERT_TRUE(dropped_error.has_value());
-    EXPECT_EQ(dropped_error->code, mcp::g_CONNECTION_CLOSED);
+    EXPECT_EQ(dropped_error->code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
 }
 
 // "close the SSE stream (HTTP) or send notifications/cancelled referencing the
@@ -435,7 +438,7 @@ TEST(ClientListen, LegacySessionIsRefused) {
         boost::asio::detached);
     io.run();
 
-    EXPECT_EQ(code, mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     for (const auto& message : seen) {
         EXPECT_NE(message.value("method", ""), "subscriptions/listen");
     }
@@ -444,7 +447,7 @@ TEST(ClientListen, LegacySessionIsRefused) {
 // An error answer before the acknowledgment (for example a malformed filter) fails listen().
 TEST(ClientListen, ErrorBeforeAcknowledgmentFailsListen) {
     Harness harness;
-    harness.refuse = mcp::Error{mcp::g_INVALID_PARAMS, "bad filter", std::nullopt};
+    harness.refuse = mcp::Error{mcp::constants::jsonrpc::g_INVALID_PARAMS, "bad filter", std::nullopt};
     int code = 0;
     harness.run([&]() -> mcp::Task<void> {
         co_await harness.client->connect("listen-client", "1.0");
@@ -455,7 +458,7 @@ TEST(ClientListen, ErrorBeforeAcknowledgmentFailsListen) {
             code = error.code();
         }
     });
-    EXPECT_EQ(code, mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_INVALID_PARAMS);
 }
 
 // No acknowledgment: listen() times out, and the half-open stream is cancelled at the server.
@@ -475,7 +478,7 @@ TEST(ClientListen, MissingAcknowledgmentTimesOutAndCancels) {
             code = error.code();
         }
     });
-    EXPECT_EQ(code, mcp::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
     const auto listens = harness.with_method("subscriptions/listen");
     const auto cancels = harness.with_method("notifications/cancelled");
     ASSERT_EQ(listens.size(), 1u);

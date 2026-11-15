@@ -5,6 +5,7 @@
 #include "peer_json.hpp"
 #include "request_meta.hpp"
 
+#include <mcp/core/constants.hpp>
 #include <mcp/protocol/base.hpp>
 #include <mcp/protocol/capabilities.hpp>
 #include <mcp/transport/http_types.hpp>
@@ -105,8 +106,8 @@ inline std::optional<std::string> modern_header_mismatch(const StringRequest& re
     }
     if (const auto* version = requested_protocol_version(body);
         version != nullptr && *version != *protocol_header) {
-        return "MCP-Protocol-Version header does not match " + std::string(g_META_PROTOCOL_VERSION) +
-               " in _meta";
+        return "MCP-Protocol-Version header does not match " +
+               std::string(mcp::constants::meta::g_META_PROTOCOL_VERSION) + " in _meta";
     }
     // A version the server does not implement is answered with the versions it does, whatever
     // other headers the request lacks: a later version may mirror different ones.
@@ -148,7 +149,8 @@ inline std::optional<std::string> missing_modern_version(const nlohmann::json& b
     if (requested_protocol_version(body) != nullptr) {
         return std::nullopt;
     }
-    return "Missing or invalid " + std::string(g_META_PROTOCOL_VERSION) + " in _meta";
+    return "Missing or invalid " + std::string(mcp::constants::meta::g_META_PROTOCOL_VERSION) +
+           " in _meta";
 }
 
 /// The HTTP status a JSON-RPC error answers a 2026-07-28 request with: 400 for invalid params and
@@ -156,12 +158,12 @@ inline std::optional<std::string> missing_modern_version(const nlohmann::json& b
 /// version), 404 for an unknown method, and 200 with the JSON-RPC body for anything else.
 inline boost::beast::http::status http_status_for_error(int code) {
     switch (code) {
-        case g_INVALID_PARAMS:
-        case g_HEADER_MISMATCH:
-        case g_MISSING_REQUIRED_CLIENT_CAPABILITY:
-        case g_UNSUPPORTED_PROTOCOL_VERSION:
+        case mcp::constants::jsonrpc::g_INVALID_PARAMS:
+        case mcp::constants::jsonrpc::g_HEADER_MISMATCH:
+        case mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY:
+        case mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION:
             return boost::beast::http::status::bad_request;
-        case g_METHOD_NOT_FOUND:
+        case mcp::constants::jsonrpc::g_METHOD_NOT_FOUND:
             return boost::beast::http::status::not_found;
         default:
             return boost::beast::http::status::ok;

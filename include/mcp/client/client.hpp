@@ -12,6 +12,7 @@
 //                        do NOT convert them to Task<T> coroutines.
 
 #include <mcp/core/concepts.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/core/core.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/protocol.hpp>
@@ -69,7 +70,8 @@ class MCP_API McpError : public std::runtime_error {
  * @brief Thrown by Client::call_tool() when the `structuredContent` of a successful result does not
  * conform to the output schema the tool declared (see ClientOptions::validate_tool_schemas).
  *
- * code() is g_INTERNAL_ERROR; data() is `{"violations": [{"instancePath": ..., "message": ...}]}`.
+ * code() is mcp::constants::jsonrpc::g_INTERNAL_ERROR; data() is `{"violations": [{"instancePath": ...,
+ * "message": ...}]}`.
  */
 class MCP_API StructuredContentError : public McpError {
    public:
@@ -80,7 +82,8 @@ class MCP_API StructuredContentError : public McpError {
  * @brief Thrown instead of sending an accepted form answer that does not conform to the request's
  * `requestedSchema` (see ClientOptions::validate_elicitation_content).
  *
- * code() is g_INVALID_PARAMS; data() is `{"violations": [{"instancePath": ..., "message": ...}]}`.
+ * code() is mcp::constants::jsonrpc::g_INVALID_PARAMS; data() is `{"violations": [{"instancePath": ...,
+ * "message": ...}]}`.
  */
 class MCP_API ElicitationContentError : public McpError {
    public:
@@ -115,10 +118,11 @@ class MCP_API ClientProtocol {
      * @brief Detect the server's era: send server/discover first, fall back to initialize.
      *
      * @details The server is modern when it answers with a DiscoverResult or with a modern
-     * protocol error (g_UNSUPPORTED_PROTOCOL_VERSION, g_HEADER_MISMATCH,
-     * g_MISSING_REQUIRED_CLIENT_CAPABILITY); any other error, a reply that is not JSON, or no
-     * reply within ClientOptions::probe_timeout makes it legacy, and the client sends initialize.
-     * A server that exits when it receives the probe fails the connect with an error that
+     * protocol error (mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
+     * mcp::constants::jsonrpc::g_HEADER_MISMATCH,
+     * mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY); any other error, a reply that is
+     * not JSON, or no reply within ClientOptions::probe_timeout makes it legacy, and the client sends
+     * initialize. A server that exits when it receives the probe fails the connect with an error that
      * names Legacy() as the remedy.
      *
      * Over HTTP the probe is a 2026-07-28 POST. A legacy server answers it with an error status
@@ -225,10 +229,10 @@ struct ClientOptions {
      *
      * Every request the client issues carries this deadline, including the typed helpers such
      * as call_tool() and read_resource(), which accept no per-request override. A request that
-     * outlives it fails with McpError g_REQUEST_TIMEOUT while the peer may still be running it,
-     * so raise this for a client whose tools legitimately take longer. Must be positive: the
-     * constructor throws std::invalid_argument otherwise, and there is no value that disables
-     * the deadline.
+     * outlives it fails with McpError mcp::constants::jsonrpc::g_REQUEST_TIMEOUT while the peer may
+     * still be running it, so raise this for a client whose tools legitimately take longer. Must be
+     * positive: the constructor throws std::invalid_argument otherwise, and there is no value that
+     * disables the deadline.
      */
     std::chrono::milliseconds request_timeout{std::chrono::seconds(30)};
     /**
@@ -246,9 +250,10 @@ struct ClientOptions {
      *
      * Reports two things, neither of which ends the session and neither of which the
      * application can otherwise observe:
-     * - a message the peer sent that the client could not decode, as g_PARSE_ERROR;
-     * - an exception thrown by an application notification callback, as g_INTERNAL_ERROR,
-     *   with the notification method in the message.
+     * - a message the peer sent that the client could not decode, as
+     * mcp::constants::jsonrpc::g_PARSE_ERROR;
+     * - an exception thrown by an application notification callback, as
+     * mcp::constants::jsonrpc::g_INTERNAL_ERROR, with the notification method in the message.
      *
      * Runs on the client's read loop, so it must not block. An exception thrown from it is
      * discarded: there is nowhere left to report a failure of the reporting path itself.
@@ -274,7 +279,7 @@ struct ClientOptions {
     std::chrono::milliseconds task_poll_interval{std::chrono::seconds(1)};
     /**
      * @brief How long call_tool() and TaskHandle::wait() follow one task before they give up with
-     * g_REQUEST_TIMEOUT. Thirty minutes unless set; must be positive.
+     * mcp::constants::jsonrpc::g_REQUEST_TIMEOUT. Thirty minutes unless set; must be positive.
      *
      * @details A TaskHandle::wait() that gives up leaves the task running on the server, and the
      * handle can pick it up again. A call_tool() that gives up, for this timeout or because a
@@ -530,7 +535,8 @@ class MCP_API TaskHandle {
     /**
      * @brief Fetch the task's current state with `tasks/get`.
      *
-     * @throws McpError With g_INVALID_PARAMS when the server no longer knows the task.
+     * @throws McpError With mcp::constants::jsonrpc::g_INVALID_PARAMS when the server no longer knows
+     * the task.
      */
     Task<DetailedTask> get(const RequestOptions& request_options = {}) const;
 
@@ -559,7 +565,8 @@ class MCP_API TaskHandle {
      * answers the task's `inputRequests` with the handlers registered for elicitation, sampling
      * and roots, each question once.
      *
-     * @throws McpError With g_REQUEST_TIMEOUT after ClientOptions::task_timeout.
+     * @throws McpError With mcp::constants::jsonrpc::g_REQUEST_TIMEOUT after
+     * ClientOptions::task_timeout.
      */
     Task<DetailedTask> wait(const RequestOptions& request_options = {}) const;
 
@@ -568,8 +575,8 @@ class MCP_API TaskHandle {
      *
      * @return The CallToolResult of a `completed` task, checked against the tool's output schema
      *         as call_tool() does when the handle comes from start_tool().
-     * @throws McpError The error a `failed` task carries, or g_INVALID_REQUEST for a task that
-     *         was cancelled.
+     * @throws McpError The error a `failed` task carries, or mcp::constants::jsonrpc::g_INVALID_REQUEST
+     * for a task that was cancelled.
      */
     Task<CallToolResult> result(const RequestOptions& request_options = {}) const;
 
@@ -683,11 +690,12 @@ class MCP_API Client {
      *
      * @param filter The notification types wanted.
      * @return A task that resolves to the open stream.
-     * @throws McpError g_METHOD_NOT_FOUND when the session is not modern (a legacy session, or
-     *         connect() has not finished), g_INVALID_REQUEST before connect(), g_REQUEST_TIMEOUT
-     *         when no acknowledgment arrives in time, g_CONNECTION_CLOSED when the connection
-     *         ends first, or the server's error (for example g_INVALID_PARAMS for a malformed
-     *         filter, g_METHOD_NOT_FOUND for a server or transport without streams).
+     * @throws McpError mcp::constants::jsonrpc::g_METHOD_NOT_FOUND when the session is not modern (a
+     * legacy session, or connect() has not finished), mcp::constants::jsonrpc::g_INVALID_REQUEST before
+     * connect(), mcp::constants::jsonrpc::g_REQUEST_TIMEOUT when no acknowledgment arrives in time,
+     * mcp::constants::jsonrpc::g_CONNECTION_CLOSED when the connection ends first, or the server's
+     * error (for example mcp::constants::jsonrpc::g_INVALID_PARAMS for a malformed filter,
+     * mcp::constants::jsonrpc::g_METHOD_NOT_FOUND for a server or transport without streams).
      */
     Task<Subscription> listen(const SubscriptionFilter& filter);
 
@@ -830,8 +838,8 @@ class MCP_API Client {
     /**
      * @brief Send a ping request to the connected server.
      *
-     * @details Fails with McpError (g_METHOD_NOT_FOUND) without sending anything in a modern
-     * session: protocol revision 2026-07-28 has no ping.
+     * @details Fails with McpError (mcp::constants::jsonrpc::g_METHOD_NOT_FOUND) without sending
+     * anything in a modern session: protocol revision 2026-07-28 has no ping.
      *
      * @return A task that completes once the ping round-trip succeeds.
      */

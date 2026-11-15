@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <queue>
 #include <string>
@@ -120,13 +121,14 @@ class ScriptedTransport final : public mcp::ITransport {
 // JSON-RPC message helpers
 // ---------------------------------------------------------------------------
 inline nlohmann::json make_initialize_request(std::string_view id) {
-    return {{"jsonrpc", "2.0"},
-            {"id", id},
-            {"method", "initialize"},
-            {"params",
-             {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
-              {"clientInfo", {{"name", "test-client"}, {"version", "0.1"}}},
-              {"capabilities", nlohmann::json::object()}}}};
+    return {
+        {"jsonrpc", "2.0"},
+        {"id", id},
+        {"method", "initialize"},
+        {"params",
+         {{"protocolVersion", std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)},
+          {"clientInfo", {{"name", "test-client"}, {"version", "0.1"}}},
+          {"capabilities", nlohmann::json::object()}}}};
 }
 
 /// The per-request `_meta` fields a 2026-07-28 request carries.

@@ -30,6 +30,7 @@
 #include <chrono>
 #include <functional>
 #include <istream>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <ostream>
 #include <string>
@@ -37,6 +38,8 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+
+namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace {
 
@@ -646,7 +649,7 @@ int listen_refusal(FeatureTransport kind) {
         case FeatureTransport::eSessionManagerJsonOnly:
         case FeatureTransport::eStatelessJson:
         case FeatureTransport::eRunHttpJsonOnly:
-            return mcp::g_INVALID_REQUEST;
+            return jsonrpc::g_INVALID_REQUEST;
         default:
             return 0;
     }

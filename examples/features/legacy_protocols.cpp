@@ -12,6 +12,7 @@
 /// - What a 2026-07-28 session does with the methods that revision removed
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
 
@@ -28,6 +29,8 @@
 #include <optional>
 #include <string>
 #include <vector>
+
+namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace asio = boost::asio;
 using json = nlohmann::json;
@@ -147,9 +150,10 @@ mcp::Task<bool> exercise_legacy_pin(const asio::any_io_executor& executor) {
     {
         mcp::ConnectResult connected =
             co_await client.connect(g_client_info, mcp::ClientCapabilities{});
-        ok &= check(connected.era == mcp::ProtocolEra::eLegacy &&
-                        connected.protocolVersion == mcp::g_LATEST_LEGACY_PROTOCOL_VERSION,
-                    "Legacy() gives a session of " + connected.protocolVersion);
+        ok &= check(
+            connected.era == mcp::ProtocolEra::eLegacy &&
+                connected.protocolVersion == mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION,
+            "Legacy() gives a session of " + connected.protocolVersion);
     }
     client.close();
     co_return ok;
@@ -244,9 +248,9 @@ mcp::Task<bool> exercise_modern_only_policy(const asio::any_io_executor& executo
         co_await client.connect(g_client_info, mcp::ClientCapabilities{});
     } catch (const mcp::McpError& error) {
         std::cout << "  initialize refused: " << error.what() << '\n';
-        refused = error.code() == mcp::g_METHOD_NOT_FOUND;
+        refused = error.code() == jsonrpc::g_METHOD_NOT_FOUND;
     }
-    ok &= check(refused, "initialize is answered with g_METHOD_NOT_FOUND");
+    ok &= check(refused, "initialize is answered with jsonrpc::g_METHOD_NOT_FOUND");
     client.close();
     co_return ok;
 }
@@ -273,9 +277,9 @@ mcp::Task<bool> exercise_modern_contrast(const asio::any_io_executor& executor) 
         co_await client.ping();
     } catch (const mcp::McpError& error) {
         std::cout << "  ping: " << error.what() << '\n';
-        ping_failed = error.code() == mcp::g_METHOD_NOT_FOUND;
+        ping_failed = error.code() == jsonrpc::g_METHOD_NOT_FOUND;
     }
-    ok &= check(ping_failed, "ping() fails with g_METHOD_NOT_FOUND");
+    ok &= check(ping_failed, "ping() fails with jsonrpc::g_METHOD_NOT_FOUND");
 
     bool subscribe_failed = false;
     try {
@@ -283,9 +287,9 @@ mcp::Task<bool> exercise_modern_contrast(const asio::any_io_executor& executor) 
         co_await client.send_request("resources/subscribe", subscribe_params);
     } catch (const mcp::McpError& error) {
         std::cout << "  resources/subscribe: " << error.what() << '\n';
-        subscribe_failed = error.code() == mcp::g_METHOD_NOT_FOUND;
+        subscribe_failed = error.code() == jsonrpc::g_METHOD_NOT_FOUND;
     }
-    ok &= check(subscribe_failed, "resources/subscribe fails with g_METHOD_NOT_FOUND");
+    ok &= check(subscribe_failed, "resources/subscribe fails with jsonrpc::g_METHOD_NOT_FOUND");
     client.close();
     co_return ok;
 }

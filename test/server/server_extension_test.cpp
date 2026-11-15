@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <mcp/core/constants.hpp>
 #include <nlohmann/json.hpp>
 
 namespace {
@@ -85,7 +86,7 @@ TEST(ServerExtensionTest, InvalidArgumentBecomesInvalidParams) {
     const auto response =
         mcp_test::dispatch_direct(server, make_modern_request(1, "com.example/strict"));
     ASSERT_TRUE(response.contains("error")) << response;
-    EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
     EXPECT_EQ(response["error"]["message"], "the value is wrong");
 }
 
@@ -99,7 +100,7 @@ TEST(ServerExtensionTest, OtherExceptionsAreInternalErrors) {
     const auto response =
         mcp_test::dispatch_direct(server, make_modern_request(1, "com.example/broken"));
     ASSERT_TRUE(response.contains("error")) << response;
-    EXPECT_EQ(response["error"]["code"], mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
 }
 
 TEST(ServerExtensionTest, MiddlewareWrapsExtensionHandlers) {
@@ -116,7 +117,7 @@ TEST(ServerExtensionTest, MiddlewareWrapsExtensionHandlers) {
                                 });
     const auto response = mcp_test::dispatch_direct(server, make_modern_request(1, "com.example/echo"));
     ASSERT_TRUE(response.contains("error")) << response;
-    EXPECT_EQ(response["error"]["code"], mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
     EXPECT_EQ(handler_calls, 0);
 }
 
@@ -128,13 +129,14 @@ TEST(ServerExtensionTest, ExtensionMethodsAreNotFoundWithoutRegistrationOrBefore
 
     const auto unregistered =
         mcp_test::dispatch_direct(server, make_modern_request(1, "com.example/other"));
-    EXPECT_EQ(unregistered["error"]["code"], mcp::g_METHOD_NOT_FOUND) << unregistered;
+    EXPECT_EQ(unregistered["error"]["code"], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND)
+        << unregistered;
 
     // A request that carries no 2026-07-28 `_meta` is a legacy request, which has no extension methods.
     const json legacy = {{"jsonrpc", "2.0"}, {"id", 2}, {"method", "com.example/echo"}};
     const auto response = mcp_test::dispatch_direct(server, legacy);
     ASSERT_TRUE(response.contains("error")) << response;
-    EXPECT_EQ(response["error"]["code"], mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
 }
 
 TEST(ServerExtensionTest, MethodRegistrationRejectsClashesAndEmptyInput) {

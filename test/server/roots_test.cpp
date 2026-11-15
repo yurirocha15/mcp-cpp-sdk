@@ -10,9 +10,12 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <string>
 #include <string_view>
+
+namespace protocol = mcp::constants::protocol;
 
 namespace {
 
@@ -191,7 +194,7 @@ TEST_F(RootsTest, ClientSetRootsServesRootsList) {
             EXPECT_FALSE(json_msg["params"]["capabilities"]["roots"].contains("listChanged"));
 
             mcp::InitializeResult init_result;
-            init_result.protocolVersion = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
+            init_result.protocolVersion = std::string(protocol::g_LATEST_LEGACY_PROTOCOL_VERSION);
             init_result.serverInfo.name = "test-server";
             init_result.serverInfo.version = "1.0";
 
@@ -262,7 +265,7 @@ TEST_F(RootsTest, ClientSetRootsWithNotifySendsNotification) {
                 auto request_id = json_msg["id"].get<std::string>();
 
                 mcp::InitializeResult init_result;
-                init_result.protocolVersion = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
+                init_result.protocolVersion = std::string(protocol::g_LATEST_LEGACY_PROTOCOL_VERSION);
                 init_result.serverInfo.name = "test-server";
                 init_result.serverInfo.version = "1.0";
 
