@@ -431,39 +431,10 @@ struct SubscriptionFilter {
 };
 
 /** @brief Serializes only the members that ask for something, as the wire `notifications` object. */
-inline void to_json(nlohmann::json& json_obj, const SubscriptionFilter& filter) {
-    json_obj = nlohmann::json::object();
-    if (filter.toolsListChanged) {
-        json_obj["toolsListChanged"] = true;
-    }
-    if (filter.promptsListChanged) {
-        json_obj["promptsListChanged"] = true;
-    }
-    if (filter.resourcesListChanged) {
-        json_obj["resourcesListChanged"] = true;
-    }
-    if (!filter.resourceSubscriptions.empty()) {
-        json_obj["resourceSubscriptions"] = filter.resourceSubscriptions;
-    }
-    if (!filter.taskIds.empty()) {
-        json_obj["taskIds"] = filter.taskIds;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const SubscriptionFilter& filter);
 
 /** @brief Reads a wire `notifications` object; a member that is absent asks for nothing. */
-inline void from_json(const nlohmann::json& json_obj, SubscriptionFilter& filter) {
-    filter = SubscriptionFilter{};
-    filter.toolsListChanged = json_obj.value("toolsListChanged", false);
-    filter.promptsListChanged = json_obj.value("promptsListChanged", false);
-    filter.resourcesListChanged = json_obj.value("resourcesListChanged", false);
-    if (const auto found = json_obj.find("resourceSubscriptions");
-        found != json_obj.end() && !found->is_null()) {
-        found->get_to(filter.resourceSubscriptions);
-    }
-    if (const auto found = json_obj.find("taskIds"); found != json_obj.end() && !found->is_null()) {
-        found->get_to(filter.taskIds);
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, SubscriptionFilter& filter);
 
 /** @brief How a subscription ended. */
 enum class SubscriptionEnd : std::uint8_t {

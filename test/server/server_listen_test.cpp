@@ -1,6 +1,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
 
@@ -22,6 +23,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+namespace server_listen_test {
 
 namespace {
 
@@ -96,16 +99,13 @@ class Listen : public ::testing::Test {
         transport_ = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
         transport_->set_on_write(
             [this](std::string_view message) { written_.push_back(json::parse(message)); });
-        asio::co_spawn(
-            io_ctx_,
-            [this, &server]() -> mcp::Task<void> {
-                try {
-                    co_await server.run(transport_, io_ctx_.get_executor());
-                } catch (const std::exception&) {
-                }
-                run_done_.store(true);
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [this, &server]() -> mcp::Task<void> {
+            try {
+                co_await server.run(transport_, io_ctx_.get_executor());
+            } catch (const std::exception&) {
+            }
+            run_done_.store(true);
+        });
     }
 
     void send(const json& message) { transport_->enqueue_message(message.dump()); }
@@ -123,7 +123,7 @@ class Listen : public ::testing::Test {
 
     void run(std::function<mcp::Task<void>()> scenario) {
         io_ctx_.restart();
-        asio::co_spawn(io_ctx_, std::move(scenario), asio::detached);
+        mcp_test::spawn_detached(io_ctx_, std::move(scenario));
         io_ctx_.run();
     }
 
@@ -257,15 +257,15 @@ TEST_F(Listen, NotificationBeforeTheAckIsWrittenFollowsIt) {
     };
     // Called once the subscription is registered and before its acknowledgment is written.
     context.watch_cancel = [this, &server](std::function<void()> /*wake*/) {
-        asio::co_spawn(io_ctx_, server->notify_tools_list_changed(), asio::detached);
+        mcp_test::spawn_detached(io_ctx_, server->notify_tools_list_changed());
     };
-    asio::co_spawn(io_ctx_,
-                   server->dispatch_request_direct(listen_request(1, {{"toolsListChanged", true}}),
-                                                   std::move(context)),
-                   [&wire](std::exception_ptr error, std::string response) {
-                       EXPECT_EQ(error, nullptr);
-                       wire = std::move(response);
-                   });
+    mcp_test::spawn_then(io_ctx_,
+                         server->dispatch_request_direct(
+                             listen_request(1, {{"toolsListChanged", true}}), std::move(context)),
+                         [&wire](std::exception_ptr error, std::string response) {
+                             EXPECT_EQ(error, nullptr);
+                             wire = std::move(response);
+                         });
     run([&]() -> mcp::Task<void> {
         const bool both = co_await wait_until([&sent] { return sent.size() >= 2; });
         EXPECT_TRUE(both);
@@ -483,12 +483,12 @@ TEST_F(Listen, InvalidFilterIsInvalidParams) {
 TEST_F(Listen, DirectDispatchWithoutAStreamIsRejected) {
     auto server = make_server();
     json response;
-    asio::co_spawn(io_ctx_,
-                   server->dispatch_request_direct(listen_request(1, {{"toolsListChanged", true}})),
-                   [&response](std::exception_ptr error, std::string wire) {
-                       EXPECT_EQ(error, nullptr);
-                       response = json::parse(wire);
-                   });
+    mcp_test::spawn_then(
+        io_ctx_, server->dispatch_request_direct(listen_request(1, {{"toolsListChanged", true}})),
+        [&response](std::exception_ptr error, std::string wire) {
+            EXPECT_EQ(error, nullptr);
+            response = json::parse(wire);
+        });
     io_ctx_.run();
 
     ASSERT_TRUE(response.contains("error")) << response;
@@ -576,12 +576,11 @@ TEST(ListenConcurrencyTest, NotificationsFromManyThreadsReachTheListener) {
     std::vector<json> received;
     std::atomic<std::size_t> received_count{0};
     std::atomic<bool> run_done{false};
-    asio::co_spawn(pool, collect(client, &received, &received_count), asio::detached);
-    asio::co_spawn(pool, serve(server.get(), server_end, pool.get_executor(), &run_done),
-                   asio::detached);
+    mcp_test::spawn_detached(pool, collect(client, &received, &received_count));
+    mcp_test::spawn_detached(pool, serve(server.get(), server_end, pool.get_executor(), &run_done));
 
     const auto request = listen_request(1, {{"toolsListChanged", true}}).dump();
-    asio::co_spawn(pool, write_to(client, request), asio::detached);
+    mcp_test::spawn_detached(pool, write_to(client, request));
     const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
     while (received_count.load() < 1 && std::chrono::steady_clock::now() < give_up) {
         std::this_thread::yield();
@@ -593,8 +592,8 @@ TEST(ListenConcurrencyTest, NotificationsFromManyThreadsReachTheListener) {
         threads.emplace_back([&] {
             for (int index = 0; index < g_per_thread; ++index) {
                 std::promise<void> done;
-                asio::co_spawn(pool, server->notify_tools_list_changed(),
-                               [&done](std::exception_ptr) { done.set_value(); });
+                mcp_test::spawn_then(pool, server->notify_tools_list_changed(),
+                                     [&done](std::exception_ptr) { done.set_value(); });
                 done.get_future().wait();
             }
         });
@@ -621,3 +620,5 @@ TEST(ListenConcurrencyTest, NotificationsFromManyThreadsReachTheListener) {
 }
 
 }  // namespace
+
+}  // namespace server_listen_test

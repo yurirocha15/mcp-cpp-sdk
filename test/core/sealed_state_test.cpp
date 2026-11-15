@@ -11,6 +11,8 @@
 #include <string_view>
 #include <vector>
 
+namespace sealed_state_test {
+
 namespace ss = mcp::detail::sealed_state;
 namespace sealed_token = mcp::detail::constants::sealed_token;
 
@@ -292,3 +294,5 @@ TEST(SealedStateTest, SaltsDoNotRepeatAcrossManySeals) {
     }
     EXPECT_EQ(salts.size(), 200U);
 }
+
+}  // namespace sealed_state_test

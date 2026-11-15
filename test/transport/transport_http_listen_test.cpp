@@ -1,6 +1,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
 
@@ -26,6 +27,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+namespace transport_http_listen_test {
 
 namespace jsonrpc = mcp::constants::jsonrpc;
 
@@ -195,14 +198,12 @@ class HttpListen : public ::testing::Test {
     /// Runs @p exchange against @p manager, then closes the manager.
     template <typename Exchange>
     void run(mcp::StreamableHttpSessionManager& manager, Exchange exchange) {
-        asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
-        asio::co_spawn(
-            io_ctx_,
-            [&manager, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
+        mcp_test::spawn_detached(io_ctx_, manager.listen());
+        mcp_test::spawn_detached(
+            io_ctx_, [&manager, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
                 co_await exchange();
                 manager.close();
-            },
-            asio::detached);
+            });
         io_ctx_.run();
     }
 
@@ -443,3 +444,5 @@ TEST_F(HttpListen, ClientNotAcceptingStreamsIsRefused) {
 }
 
 }  // namespace
+
+}  // namespace transport_http_listen_test

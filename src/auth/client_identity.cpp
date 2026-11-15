@@ -110,6 +110,7 @@ bool OAuthClientInformation::secret_expired(std::int64_t now_seconds) const {
 }
 
 void from_json(const nlohmann::json& json, OAuthClientInformation& information) {
+    information = OAuthClientInformation{};
     if (json.contains("client_id")) {
         json.at("client_id").get_to(information.client_id);
     }

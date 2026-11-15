@@ -1,4 +1,5 @@
 #include "../support/hang_guard.hpp"
+#include "../support/spawn.hpp"
 #include "mcp/transport/stdio.hpp"
 
 #include <gtest/gtest.h>
@@ -28,6 +29,15 @@
 #include <thread>
 #include <unordered_set>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
+
+namespace transport_stdio_test {
 
 namespace {
 
@@ -196,14 +206,11 @@ TEST_F(StdioTransportTest, ReadMultipleMessages) {
         std::make_shared<mcp::StdioTransport>(io_ctx_.get_executor(), input, output);
 
     std::vector<std::string> results;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            results.push_back(co_await transport->read_message());
-            results.push_back(co_await transport->read_message());
-            results.push_back(co_await transport->read_message());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        results.push_back(co_await transport->read_message());
+        results.push_back(co_await transport->read_message());
+        results.push_back(co_await transport->read_message());
+    });
     io_ctx_.run();
 
     ASSERT_EQ(results.size(), 3);
@@ -221,22 +228,19 @@ TEST_F(StdioTransportTest, ReadAfterCloseDeliversLinesQueuedBeforeClose) {
 
     std::vector<std::string> results;
     std::string error_after_queue;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            results.push_back(co_await transport.read_message());
-            // Give the reader thread time to queue the second line and reach end of input.
-            boost::asio::steady_timer settle(io_ctx_, std::chrono::milliseconds(200));
-            co_await settle.async_wait(boost::asio::use_awaitable);
-            transport.close();
-            results.push_back(co_await transport.read_message());
-            try {
-                (void)co_await transport.read_message();
-            } catch (const std::runtime_error& error) {
-                error_after_queue = error.what();
-            }
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        results.push_back(co_await transport.read_message());
+        // Give the reader thread time to queue the second line and reach end of input.
+        boost::asio::steady_timer settle(io_ctx_, std::chrono::milliseconds(200));
+        co_await settle.async_wait(boost::asio::use_awaitable);
+        transport.close();
+        results.push_back(co_await transport.read_message());
+        try {
+            (void)co_await transport.read_message();
+        } catch (const std::runtime_error& error) {
+            error_after_queue = error.what();
+        }
+    });
     io_ctx_.run();
 
     ASSERT_EQ(results.size(), 2U);
@@ -263,13 +267,10 @@ TEST_F(StdioTransportTest, WriteMultipleMessages) {
 
     mcp::StdioTransport transport(io_ctx_.get_executor(), input, output);
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await transport.write_message("line1");
-            co_await transport.write_message("line2");
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await transport.write_message("line1");
+        co_await transport.write_message("line2");
+    });
     io_ctx_.run();
 
     EXPECT_EQ(output.str(), "line1\nline2\n");
@@ -299,8 +300,7 @@ TEST_F(StdioTransportTest, ConcurrentWritesOwnPayloadAndRemainSerialized) {
                 auto source = expected[index];
                 auto write = transport.write_message(source);
                 source.assign("mutated after write_message returned");
-                completions[index] =
-                    boost::asio::co_spawn(io_ctx_, std::move(write), boost::asio::use_future);
+                completions[index] = mcp_test::spawn_future(io_ctx_, std::move(write));
             }
         });
     }
@@ -337,8 +337,8 @@ TEST_F(StdioTransportTest, RejectsASecondOutstandingRead) {
     std::ostringstream output;
     mcp::StdioTransport transport(io_ctx_.get_executor(), input, output);
 
-    auto first = boost::asio::co_spawn(io_ctx_, transport.read_message(), boost::asio::use_future);
-    auto second = boost::asio::co_spawn(io_ctx_, transport.read_message(), boost::asio::use_future);
+    auto first = mcp_test::spawn_future(io_ctx_, transport.read_message());
+    auto second = mcp_test::spawn_future(io_ctx_, transport.read_message());
 
     std::thread first_runner([this]() { io_ctx_.run(); });
     std::thread second_runner([this]() { io_ctx_.run(); });
@@ -389,7 +389,7 @@ TEST_F(StdioTransportTest, PendingWriteOwnsStateAfterTransportDestruction) {
         message.assign("mutated");
     }
 
-    auto completion = boost::asio::co_spawn(io_ctx_, std::move(*pending), boost::asio::use_future);
+    auto completion = mcp_test::spawn_future(io_ctx_, std::move(*pending));
     io_ctx_.run();
     EXPECT_THROW(completion.get(), std::runtime_error);
     EXPECT_TRUE(output.str().empty());
@@ -401,8 +401,7 @@ TEST_F(StdioTransportTest, DestructionWaitsForAnActiveWrite) {
     std::ostream output(&output_buffer);
     auto transport = std::make_unique<mcp::StdioTransport>(io_ctx_.get_executor(), input, output);
 
-    auto completion =
-        boost::asio::co_spawn(io_ctx_, transport->write_message("in flight"), boost::asio::use_future);
+    auto completion = mcp_test::spawn_future(io_ctx_, transport->write_message("in flight"));
     std::thread runner([this]() { io_ctx_.run(); });
     const bool write_started = output_buffer.wait_until_write_starts(g_hang_guard);
     if (!write_started) {
@@ -438,7 +437,7 @@ TEST_F(StdioTransportTest, PendingReadOwnsStateAfterTransportDestruction) {
         pending.emplace(transport.read_message());
     }
 
-    auto completion = boost::asio::co_spawn(io_ctx_, std::move(*pending), boost::asio::use_future);
+    auto completion = mcp_test::spawn_future(io_ctx_, std::move(*pending));
     io_ctx_.run();
     EXPECT_THROW(completion.get(), std::runtime_error);
 }
@@ -463,14 +462,11 @@ TEST_F(StdioTransportTest, LinesLongerThanTheReadChunkArriveIntact) {
     mcp::StdioTransport transport(io_ctx_.get_executor(), input, output);
 
     std::vector<std::string> lines;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            for (int i = 0; i < 4; ++i) {
-                lines.push_back(co_await transport.read_message());
-            }
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        for (int i = 0; i < 4; ++i) {
+            lines.push_back(co_await transport.read_message());
+        }
+    });
     io_ctx_.run();
 
     ASSERT_EQ(lines.size(), 4U);
@@ -488,17 +484,14 @@ TEST_F(StdioTransportTest, LineOverTheLimitFailsTheRead) {
 
     std::optional<std::string> at_the_limit;
     std::string error;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            at_the_limit = co_await transport.read_message();
-            try {
-                co_await transport.read_message();
-            } catch (const std::runtime_error& failure) {
-                error = failure.what();
-            }
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        at_the_limit = co_await transport.read_message();
+        try {
+            co_await transport.read_message();
+        } catch (const std::runtime_error& failure) {
+            error = failure.what();
+        }
+    });
     io_ctx_.run();
 
     EXPECT_EQ(at_the_limit, "0123456789");
@@ -541,13 +534,10 @@ TEST_F(StdioTransportTest, ReadAheadStopsWhenNothingTakesTheLines) {
     mcp::StdioTransport transport(io_ctx_.get_executor(), input, output);
 
     bool first_read = false;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await transport.read_message();
-            first_read = true;
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await transport.read_message();
+        first_read = true;
+    });
     io_ctx_.run();
     ASSERT_TRUE(first_read);
 
@@ -586,19 +576,16 @@ TEST_F(StdioTransportTest, LinesTakenLeaveRoomForMore) {
             transport.close();
         }
     });
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            try {
-                for (; read < 300; ++read) {
-                    co_await transport.read_message();
-                }
-            } catch (const std::exception&) {
-                // Closed by the guard.
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        try {
+            for (; read < 300; ++read) {
+                co_await transport.read_message();
             }
-            guard.cancel();
-        },
-        boost::asio::detached);
+        } catch (const std::exception&) {
+            // Closed by the guard.
+        }
+        guard.cancel();
+    });
     io_ctx_.run();
     EXPECT_EQ(read, 300);
     transport.close();
@@ -609,11 +596,6 @@ TEST_F(StdioTransportTest, LinesTakenLeaveRoomForMore) {
 // descriptor level. POSIX only; the Windows implementation of
 // create_owning_stdout() uses the CRT equivalents and is not exercised here.
 #if !defined(_WIN32)
-
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/ioctl.h>
-#include <unistd.h>
 
 namespace {
 
@@ -711,14 +693,11 @@ TEST_F(StdioTransportTest, DefaultOutputSharesTheProtocolChannelWithTheApplicati
         std::istringstream input;
         mcp::StdioTransport transport(io_ctx_.get_executor(), input, std::cout);
 
-        boost::asio::co_spawn(
-            io_ctx_,
-            [&]() -> mcp::Task<void> {
-                co_await transport.write_message(kFramedMessage);
-                emit_stray_application_output();
-                co_await transport.write_message(kFramedMessage);
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+            co_await transport.write_message(kFramedMessage);
+            emit_stray_application_output();
+            co_await transport.write_message(kFramedMessage);
+        });
         io_ctx_.run();
         std::cout.flush();
     }
@@ -744,14 +723,11 @@ TEST_F(StdioTransportTest, OwnedStdoutKeepsStrayApplicationOutputOffTheProtocolC
         std::istringstream input;
         auto transport = mcp::StdioTransport::create_owning_stdout(io_ctx_.get_executor(), input);
 
-        boost::asio::co_spawn(
-            io_ctx_,
-            [&]() -> mcp::Task<void> {
-                co_await transport->write_message(kFramedMessage);
-                emit_stray_application_output();
-                co_await transport->write_message(kFramedMessage);
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+            co_await transport->write_message(kFramedMessage);
+            emit_stray_application_output();
+            co_await transport->write_message(kFramedMessage);
+        });
         io_ctx_.run();
         std::cout.flush();
         transport.reset();
@@ -834,14 +810,11 @@ TEST_F(StdioTransportTest, OwnedStdoutStaysPrivateWhenStderrIsClosed) {
         std::istringstream input;
         auto transport = mcp::StdioTransport::create_owning_stdout(io_ctx_.get_executor(), input);
 
-        boost::asio::co_spawn(
-            io_ctx_,
-            [&]() -> mcp::Task<void> {
-                co_await transport->write_message(kFramedMessage);
-                emit_stray_application_output();
-                co_await transport->write_message(kFramedMessage);
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+            co_await transport->write_message(kFramedMessage);
+            emit_stray_application_output();
+            co_await transport->write_message(kFramedMessage);
+        });
         io_ctx_.run();
         std::cout.flush();
         transport.reset();
@@ -918,18 +891,15 @@ std::vector<std::string> read_stdin_messages(boost::asio::io_context& io, std::s
         transport.set_max_message_bytes(max_message_bytes);
     }
     std::vector<std::string> messages;
-    boost::asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            try {
-                for (;;) {
-                    messages.push_back(co_await transport.read_message());
-                }
-            } catch (const std::exception& error) {
-                ended_by = error.what();
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            for (;;) {
+                messages.push_back(co_await transport.read_message());
             }
-        },
-        boost::asio::detached);
+        } catch (const std::exception& error) {
+            ended_by = error.what();
+        }
+    });
     io.run();
     return messages;
 }
@@ -1006,9 +976,8 @@ TEST_F(StdioTransportTest, ReplacedStdoutBufferIsWritten) {
     {
         std::istringstream input;
         mcp::StdioTransport transport(io_ctx_.get_executor(), input, std::cout);
-        boost::asio::co_spawn(
-            io_ctx_, [&]() -> mcp::Task<void> { co_await transport.write_message(kFramedMessage); },
-            boost::asio::detached);
+        mcp_test::spawn_detached(
+            io_ctx_, [&]() -> mcp::Task<void> { co_await transport.write_message(kFramedMessage); });
         io_ctx_.run();
     }
     std::cout.rdbuf(original);
@@ -1086,29 +1055,23 @@ TEST_F(StdioTransportTest, CloseReleasesAWriteThePeerDoesNotRead) {
                 stalled.release();
             }
         });
-        boost::asio::co_spawn(
-            io_ctx_,
-            [&]() -> mcp::Task<void> {
-                try {
-                    co_await transport.write_message(std::string(1U << 20U, 'x'));
-                } catch (const std::exception&) {
-                    // Closed before the peer took it.
-                }
-                write_ended = true;
-                guard.cancel();
-            },
-            boost::asio::detached);
-        boost::asio::co_spawn(
-            io_ctx_,
-            [&]() -> mcp::Task<void> {
-                auto executor = co_await boost::asio::this_coro::executor;
-                while (!stalled.full() && !released_by_guard) {
-                    boost::asio::steady_timer tick(executor, std::chrono::milliseconds(1));
-                    co_await tick.async_wait(boost::asio::use_awaitable);
-                }
-                transport.close();
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+            try {
+                co_await transport.write_message(std::string(1U << 20U, 'x'));
+            } catch (const std::exception&) {
+                // Closed before the peer took it.
+            }
+            write_ended = true;
+            guard.cancel();
+        });
+        mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+            auto executor = co_await boost::asio::this_coro::executor;
+            while (!stalled.full() && !released_by_guard) {
+                boost::asio::steady_timer tick(executor, std::chrono::milliseconds(1));
+                co_await tick.async_wait(boost::asio::use_awaitable);
+            }
+            transport.close();
+        });
         io_ctx_.run();
         stalled.release();
     }
@@ -1118,3 +1081,5 @@ TEST_F(StdioTransportTest, CloseReleasesAWriteThePeerDoesNotRead) {
 #endif  // defined(__linux__)
 
 #endif  // !defined(_WIN32)
+
+}  // namespace transport_stdio_test

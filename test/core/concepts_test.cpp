@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+namespace concepts_test {
+
 // --- Positive: ADL free functions ---
 static_assert(mcp::JsonSerializable<mcp::Icon>);
 static_assert(mcp::JsonSerializable<mcp::Annotations>);
@@ -45,3 +47,5 @@ static_assert(mcp::JsonSerializable<int>);
 static_assert(mcp::JsonSerializable<bool>);
 static_assert(mcp::JsonSerializable<double>);
 static_assert(mcp::JsonSerializable<std::vector<int>>);
+
+}  // namespace concepts_test

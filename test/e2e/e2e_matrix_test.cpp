@@ -10,6 +10,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
@@ -38,6 +39,8 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+
+namespace e2e_matrix_test {
 
 namespace jsonrpc = mcp::constants::jsonrpc;
 
@@ -248,13 +251,10 @@ void run_guarded(boost::asio::io_context& io, std::function<mcp::Task<void>()> b
             io.stop();
         }
     });
-    boost::asio::co_spawn(
-        io,
-        [&guard, body = std::move(body)]() -> mcp::Task<void> {
-            co_await body();
-            guard.cancel();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&guard, body = std::move(body)]() -> mcp::Task<void> {
+        co_await body();
+        guard.cancel();
+    });
     io.run();
     EXPECT_FALSE(fired) << "the cell did not finish";
 }
@@ -298,8 +298,7 @@ Outcome run_cell(ClientKind client_kind, ServerKind server_kind, TransportKind t
             auto [client_transport, server_transport] =
                 mcp::create_memory_transport_pair(io.get_executor());
             mcp::Client client(client_transport, io.get_executor(), options);
-            boost::asio::co_spawn(io, serve(server.get(), server_transport, io.get_executor()),
-                                  boost::asio::detached);
+            mcp_test::spawn_detached(io, serve(server.get(), server_transport, io.get_executor()));
             run_guarded(io, [&]() -> mcp::Task<void> {
                 co_await connect_and_ask(client, outcome);
                 client.close();
@@ -345,7 +344,7 @@ Outcome run_cell(ClientKind client_kind, ServerKind server_kind, TransportKind t
             auto transport = std::make_shared<mcp::HttpClientTransport>(
                 io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
             mcp::Client client(transport, io.get_executor(), options);
-            boost::asio::co_spawn(io, manager.listen(), boost::asio::detached);
+            mcp_test::spawn_detached(io, manager.listen());
             run_guarded(io, [&]() -> mcp::Task<void> {
                 co_await connect_and_ask(client, outcome);
                 client.close();
@@ -361,9 +360,8 @@ Outcome run_cell(ClientKind client_kind, ServerKind server_kind, TransportKind t
             auto transport = std::make_shared<mcp::HttpClientTransport>(
                 io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
             mcp::Client client(transport, io.get_executor(), options);
-            boost::asio::co_spawn(io, server_transport->listen(), boost::asio::detached);
-            boost::asio::co_spawn(io, serve(server.get(), server_transport, io.get_executor()),
-                                  boost::asio::detached);
+            mcp_test::spawn_detached(io, server_transport->listen());
+            mcp_test::spawn_detached(io, serve(server.get(), server_transport, io.get_executor()));
             run_guarded(io, [&]() -> mcp::Task<void> {
                 co_await connect_and_ask(client, outcome);
                 client.close();
@@ -378,8 +376,7 @@ Outcome run_cell(ClientKind client_kind, ServerKind server_kind, TransportKind t
             auto transport = std::make_shared<mcp::WebSocketClientTransport>(
                 io.get_executor(), "127.0.0.1", std::to_string(port));
             mcp::Client client(transport, io.get_executor(), options);
-            boost::asio::co_spawn(io, accept_websocket(&acceptor, server.get(), io.get_executor()),
-                                  boost::asio::detached);
+            mcp_test::spawn_detached(io, accept_websocket(&acceptor, server.get(), io.get_executor()));
             run_guarded(io, [&]() -> mcp::Task<void> {
                 co_await connect_and_ask(client, outcome);
                 client.close();
@@ -534,8 +531,7 @@ FeatureOutcome run_feature_cell(ClientKind client_kind, ServerKind server_kind,
                 mcp::create_memory_transport_pair(io.get_executor());
             mcp::Client client(client_transport, io.get_executor(), options);
             answer_elicitations(client);
-            boost::asio::co_spawn(io, serve(server.get(), server_transport, io.get_executor()),
-                                  boost::asio::detached);
+            mcp_test::spawn_detached(io, serve(server.get(), server_transport, io.get_executor()));
             run_guarded(io, [&]() -> mcp::Task<void> {
                 co_await feature_scenario(client, server, outcome);
                 client.close();
@@ -591,7 +587,7 @@ FeatureOutcome run_feature_cell(ClientKind client_kind, ServerKind server_kind,
                 io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
             mcp::Client client(transport, io.get_executor(), options);
             answer_elicitations(client);
-            boost::asio::co_spawn(io, manager.listen(), boost::asio::detached);
+            mcp_test::spawn_detached(io, manager.listen());
             run_guarded(io, [&]() -> mcp::Task<void> {
                 co_await feature_scenario(client, server, outcome);
                 client.close();
@@ -609,9 +605,8 @@ FeatureOutcome run_feature_cell(ClientKind client_kind, ServerKind server_kind,
                 io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
             mcp::Client client(transport, io.get_executor(), options);
             answer_elicitations(client);
-            boost::asio::co_spawn(io, server_transport->listen(), boost::asio::detached);
-            boost::asio::co_spawn(io, serve(server.get(), server_transport, io.get_executor()),
-                                  boost::asio::detached);
+            mcp_test::spawn_detached(io, server_transport->listen());
+            mcp_test::spawn_detached(io, serve(server.get(), server_transport, io.get_executor()));
             run_guarded(io, [&]() -> mcp::Task<void> {
                 co_await feature_scenario(client, server, outcome);
                 client.close();
@@ -626,8 +621,7 @@ FeatureOutcome run_feature_cell(ClientKind client_kind, ServerKind server_kind,
                 io.get_executor(), "127.0.0.1", std::to_string(port));
             mcp::Client client(transport, io.get_executor(), options);
             answer_elicitations(client);
-            boost::asio::co_spawn(io, accept_websocket(&acceptor, server.get(), io.get_executor()),
-                                  boost::asio::detached);
+            mcp_test::spawn_detached(io, accept_websocket(&acceptor, server.get(), io.get_executor()));
             run_guarded(io, [&]() -> mcp::Task<void> {
                 co_await feature_scenario(client, server, outcome);
                 client.close();
@@ -726,9 +720,8 @@ TEST(E2eParamHeaders, IntegralFloatArgumentCarriesTheIntegerHeader) {
     mcp::ClientOptions options;
     options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
     mcp::Client client(transport, io.get_executor(), options);
-    boost::asio::co_spawn(io, server_transport->listen(), boost::asio::detached);
-    boost::asio::co_spawn(io, serve(&server, server_transport, io.get_executor()),
-                          boost::asio::detached);
+    mcp_test::spawn_detached(io, server_transport->listen());
+    mcp_test::spawn_detached(io, serve(&server, server_transport, io.get_executor()));
 
     const std::vector<json> sent = {json(5), json(5.0), json(-3.0), json(-0.0)};
     std::vector<std::string> errors;
@@ -747,3 +740,5 @@ TEST(E2eParamHeaders, IntegralFloatArgumentCarriesTheIntegerHeader) {
 }
 
 }  // namespace
+
+}  // namespace e2e_matrix_test

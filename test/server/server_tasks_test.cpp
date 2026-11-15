@@ -1,6 +1,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/auth/oauth.hpp"
 #include "mcp/protocol/extensions.hpp"
 #include "mcp/server/server.hpp"
@@ -28,6 +29,8 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+namespace server_tasks_test {
 
 namespace {
 
@@ -311,14 +314,11 @@ class TasksTest : public ::testing::Test {
                 io_ctx_.stop();
             }
         });
-        asio::co_spawn(
-            io_ctx_,
-            [this, &body, &guard]() -> mcp::Task<void> {
-                co_await body();
-                guard.cancel();
-                io_ctx_.stop();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [this, &body, &guard]() -> mcp::Task<void> {
+            co_await body();
+            guard.cancel();
+            io_ctx_.stop();
+        });
         io_ctx_.run();
     }
 
@@ -1634,16 +1634,13 @@ class TaskListen : public TasksTest {
         transport_ = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
         transport_->set_on_write(
             [this](std::string_view message) { written_.push_back(json::parse(message)); });
-        asio::co_spawn(
-            io_ctx_,
-            [this]() -> mcp::Task<void> {
-                try {
-                    co_await server_->run(transport_, io_ctx_.get_executor());
-                } catch (const std::exception&) {
-                }
-                run_done_.store(true);
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [this]() -> mcp::Task<void> {
+            try {
+                co_await server_->run(transport_, io_ctx_.get_executor());
+            } catch (const std::exception&) {
+            }
+            run_done_.store(true);
+        });
     }
 
     void send_message(const json& message) { transport_->enqueue_message(message.dump()); }
@@ -1846,3 +1843,5 @@ TEST_F(TaskListen, ASessionServesTasksOverItsOwnTransport) {
 }
 
 }  // namespace
+
+}  // namespace server_tasks_test

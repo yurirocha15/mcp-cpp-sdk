@@ -25,24 +25,7 @@ struct ToolAnnotations {
  * @param json_obj The JSON object to populate.
  * @param annotations The ToolAnnotations object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const ToolAnnotations& annotations) {
-    json_obj = nlohmann::json::object();
-    if (annotations.destructiveHint) {
-        json_obj["destructiveHint"] = *annotations.destructiveHint;
-    }
-    if (annotations.idempotentHint) {
-        json_obj["idempotentHint"] = *annotations.idempotentHint;
-    }
-    if (annotations.openWorldHint) {
-        json_obj["openWorldHint"] = *annotations.openWorldHint;
-    }
-    if (annotations.readOnlyHint) {
-        json_obj["readOnlyHint"] = *annotations.readOnlyHint;
-    }
-    if (annotations.title) {
-        json_obj["title"] = *annotations.title;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const ToolAnnotations& annotations);
 
 /**
  * @brief Deserializes ToolAnnotations from JSON.
@@ -50,23 +33,7 @@ inline void to_json(nlohmann::json& json_obj, const ToolAnnotations& annotations
  * @param json_obj The JSON object to read from.
  * @param annotations The ToolAnnotations object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, ToolAnnotations& annotations) {
-    if (detail::has_json_value(json_obj, "destructiveHint")) {
-        annotations.destructiveHint = json_obj.at("destructiveHint").get<bool>();
-    }
-    if (detail::has_json_value(json_obj, "idempotentHint")) {
-        annotations.idempotentHint = json_obj.at("idempotentHint").get<bool>();
-    }
-    if (detail::has_json_value(json_obj, "openWorldHint")) {
-        annotations.openWorldHint = json_obj.at("openWorldHint").get<bool>();
-    }
-    if (detail::has_json_value(json_obj, "readOnlyHint")) {
-        annotations.readOnlyHint = json_obj.at("readOnlyHint").get<bool>();
-    }
-    if (detail::has_json_value(json_obj, "title")) {
-        annotations.title = json_obj.at("title").get<std::string>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, ToolAnnotations& annotations);
 
 /**
  * @brief Represents a tool definition.
@@ -89,27 +56,7 @@ struct Tool {
  * @param json_obj The JSON object to populate.
  * @param tool The Tool object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const Tool& tool) {
-    json_obj = nlohmann::json{{"name", tool.name}, {"inputSchema", tool.inputSchema}};
-    if (tool.description) {
-        json_obj["description"] = *tool.description;
-    }
-    if (tool.meta) {
-        json_obj["_meta"] = *tool.meta;
-    }
-    if (tool.annotations) {
-        json_obj["annotations"] = *tool.annotations;
-    }
-    if (tool.outputSchema) {
-        json_obj["outputSchema"] = *tool.outputSchema;
-    }
-    if (tool.title) {
-        json_obj["title"] = *tool.title;
-    }
-    if (tool.icons) {
-        json_obj["icons"] = *tool.icons;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const Tool& tool);
 
 /**
  * @brief Deserializes Tool from JSON.
@@ -117,28 +64,7 @@ inline void to_json(nlohmann::json& json_obj, const Tool& tool) {
  * @param json_obj The JSON object to read from.
  * @param tool The Tool object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, Tool& tool) {
-    json_obj.at("name").get_to(tool.name);
-    json_obj.at("inputSchema").get_to(tool.inputSchema);
-    if (detail::has_json_value(json_obj, "description")) {
-        tool.description = json_obj.at("description").get<std::string>();
-    }
-    if (detail::has_json_value(json_obj, "_meta")) {
-        tool.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-    if (detail::has_json_value(json_obj, "annotations")) {
-        tool.annotations = json_obj.at("annotations").get<ToolAnnotations>();
-    }
-    if (detail::has_json_value(json_obj, "outputSchema")) {
-        tool.outputSchema = json_obj.at("outputSchema").get<nlohmann::json>();
-    }
-    if (detail::has_json_value(json_obj, "title")) {
-        tool.title = json_obj.at("title").get<std::string>();
-    }
-    if (detail::has_json_value(json_obj, "icons")) {
-        tool.icons = json_obj.at("icons").get<std::vector<Icon>>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, Tool& tool);
 
 /**
  * @brief Parameters for calling a tool.
@@ -149,24 +75,9 @@ struct CallToolParams {
     std::optional<nlohmann::json> meta;                   ///< Reserved for protocol use.
 };
 
-inline void to_json(nlohmann::json& json_obj, const CallToolParams& params) {
-    json_obj = nlohmann::json{{"name", params.name}, {"arguments", params.arguments}};
-    if (params.meta) {
-        json_obj["_meta"] = *params.meta;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const CallToolParams& params);
 
-inline void from_json(const nlohmann::json& json_obj, CallToolParams& params) {
-    json_obj.at("name").get_to(params.name);
-    if (json_obj.contains("arguments") && !json_obj.at("arguments").is_object()) {
-        throw std::invalid_argument("CallToolParams arguments must be a JSON object");
-    }
-    params.arguments =
-        json_obj.contains("arguments") ? json_obj.at("arguments") : nlohmann::json::object();
-    if (detail::has_json_value(json_obj, "_meta")) {
-        params.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, CallToolParams& params);
 
 /**
  * @brief Result of calling a tool.
@@ -217,18 +128,7 @@ MCP_API CallToolResult make_tool_structured_result(nlohmann::json structured_con
  * @param json_obj The JSON object to populate.
  * @param result The CallToolResult object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const CallToolResult& result) {
-    json_obj = nlohmann::json{{"content", result.content}};
-    if (result.isError) {
-        json_obj["isError"] = *result.isError;
-    }
-    if (result.meta) {
-        json_obj["_meta"] = *result.meta;
-    }
-    if (result.structuredContent) {
-        json_obj["structuredContent"] = *result.structuredContent;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const CallToolResult& result);
 
 /**
  * @brief Serializes CallToolResult to JSON, moving what it holds into the result.
@@ -238,25 +138,7 @@ inline void to_json(nlohmann::json& json_obj, const CallToolResult& result) {
  * @param json_obj The JSON object to populate.
  * @param result The CallToolResult object to serialize; left in an unspecified state.
  */
-inline void to_json(nlohmann::json& json_obj, CallToolResult&& result) {
-    nlohmann::json content = nlohmann::json::array();
-    for (auto& block : result.content) {
-        nlohmann::json serialized;
-        to_json(serialized, std::move(block));
-        content.push_back(std::move(serialized));
-    }
-    json_obj = nlohmann::json::object();
-    json_obj["content"] = std::move(content);
-    if (result.isError) {
-        json_obj["isError"] = *result.isError;
-    }
-    if (result.meta) {
-        json_obj["_meta"] = std::move(*result.meta);
-    }
-    if (result.structuredContent) {
-        json_obj["structuredContent"] = std::move(*result.structuredContent);
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, CallToolResult&& result);
 
 /**
  * @brief Deserializes CallToolResult from JSON.
@@ -264,18 +146,7 @@ inline void to_json(nlohmann::json& json_obj, CallToolResult&& result) {
  * @param json_obj The JSON object to read from.
  * @param result The CallToolResult object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, CallToolResult& result) {
-    json_obj.at("content").get_to(result.content);
-    if (detail::has_json_value(json_obj, "isError")) {
-        result.isError = json_obj.at("isError").get<bool>();
-    }
-    if (detail::has_json_value(json_obj, "_meta")) {
-        result.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-    if (detail::has_json_value(json_obj, "structuredContent")) {
-        result.structuredContent = json_obj.at("structuredContent").get<nlohmann::json>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, CallToolResult& result);
 
 /**
  * @brief A request to call a tool.
@@ -284,7 +155,8 @@ struct CallToolRequest {
     std::string method = "tools/call";  ///< The method name.
     CallToolParams params;              ///< The request parameters.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CallToolRequest, method, params)
+MCP_API void to_json(nlohmann::json& json_obj, const CallToolRequest& value);
+MCP_API void from_json(const nlohmann::json& json_obj, CallToolRequest& value);
 
 /**
  * @brief Parameters for listing available tools.
@@ -292,17 +164,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CallToolRequest, method, params)
 struct ListToolsRequestParams {
     std::optional<std::string> cursor;  ///< Optional pagination cursor.
 };
-inline void to_json(nlohmann::json& j, const ListToolsRequestParams& p) {
-    j = nlohmann::json::object();
-    if (p.cursor) {
-        j["cursor"] = *p.cursor;
-    }
-}
-inline void from_json(const nlohmann::json& j, ListToolsRequestParams& p) {
-    if (detail::has_json_value(j, "cursor")) {
-        p.cursor = j.at("cursor").get<std::string>();
-    }
-}
+MCP_API void to_json(nlohmann::json& j, const ListToolsRequestParams& p);
+MCP_API void from_json(const nlohmann::json& j, ListToolsRequestParams& p);
 
 /**
  * @brief A request to list all available tools.
@@ -311,18 +174,8 @@ struct ListToolsRequest {
     std::string method = "tools/list";             ///< The method name.
     std::optional<ListToolsRequestParams> params;  ///< Optional request parameters.
 };
-inline void to_json(nlohmann::json& j, const ListToolsRequest& r) {
-    j = nlohmann::json{{"method", r.method}};
-    if (r.params) {
-        j["params"] = *r.params;
-    }
-}
-inline void from_json(const nlohmann::json& j, ListToolsRequest& r) {
-    j.at("method").get_to(r.method);
-    if (j.contains("params")) {
-        r.params = j.at("params").get<ListToolsRequestParams>();
-    }
-}
+MCP_API void to_json(nlohmann::json& j, const ListToolsRequest& r);
+MCP_API void from_json(const nlohmann::json& j, ListToolsRequest& r);
 
 /**
  * @brief Result containing a list of available tools.
@@ -334,25 +187,7 @@ struct ListToolsResult {
     std::optional<std::int64_t> ttlMs;      ///< Caching TTL hint, in milliseconds (2026-07-28).
     std::optional<CacheScope> cacheScope;   ///< Caching scope hint (2026-07-28).
 };
-inline void to_json(nlohmann::json& j, const ListToolsResult& r) {
-    j = nlohmann::json{{"tools", r.tools}};
-    if (r.nextCursor) {
-        j["nextCursor"] = *r.nextCursor;
-    }
-    if (r.meta) {
-        j["_meta"] = *r.meta;
-    }
-    detail::write_cache_hints(j, r.ttlMs, r.cacheScope);
-}
-inline void from_json(const nlohmann::json& j, ListToolsResult& r) {
-    j.at("tools").get_to(r.tools);
-    if (detail::has_json_value(j, "nextCursor")) {
-        r.nextCursor = j.at("nextCursor").get<std::string>();
-    }
-    if (j.contains("_meta")) {
-        r.meta = j.at("_meta");
-    }
-    detail::read_cache_hints(j, r.ttlMs, r.cacheScope);
-}
+MCP_API void to_json(nlohmann::json& j, const ListToolsResult& r);
+MCP_API void from_json(const nlohmann::json& j, ListToolsResult& r);
 
 }  // namespace mcp

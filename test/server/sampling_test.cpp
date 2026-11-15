@@ -1,5 +1,6 @@
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -12,6 +13,8 @@
 #include <memory>
 #include <string>
 #include <string_view>
+
+namespace sampling_test {
 
 namespace {
 
@@ -126,9 +129,8 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
     raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tools_call_request.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -154,19 +156,16 @@ TEST_F(SamplingTest, SampleLlmWithoutSenderThrows) {
     mcp::Context ctx(*raw_transport);
 
     bool threw = false;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            try {
-                mcp::CreateMessageRequestParams req;
-                req.maxTokens = 10;
-                co_await ctx.sample_llm(std::move(req));
-            } catch (const std::runtime_error&) {
-                threw = true;
-            }
-            raw_transport->close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        try {
+            mcp::CreateMessageRequestParams req;
+            req.maxTokens = 10;
+            co_await ctx.sample_llm(std::move(req));
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        raw_transport->close();
+    });
 
     io_ctx_.run();
     EXPECT_TRUE(threw);
@@ -269,9 +268,8 @@ TEST_F(SamplingTest, SamplingResponseWithToolUseContent) {
     raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tools_call_request.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -381,9 +379,8 @@ TEST_F(SamplingTest, SamplingResponseWithToolResultContent) {
     raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tools_call_request.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -515,9 +512,8 @@ TEST_F(SamplingTest, SampleLlmErrorResponseThrows) {
     raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tools_call_request.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -533,3 +529,5 @@ TEST_F(SamplingTest, SampleLlmErrorResponseThrows) {
     }
     EXPECT_TRUE(found_result);
 }
+
+}  // namespace sampling_test

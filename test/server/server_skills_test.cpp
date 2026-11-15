@@ -11,6 +11,8 @@
 #include <mcp/core/constants.hpp>
 #include <nlohmann/json.hpp>
 
+namespace server_skills_test {
+
 namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace {
@@ -576,3 +578,5 @@ TEST(SkillsClientTest, ContentThatDiffersFromTheEntryIsNotUsed) {
 }
 
 }  // namespace
+
+}  // namespace server_skills_test

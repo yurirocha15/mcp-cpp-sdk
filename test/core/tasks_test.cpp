@@ -15,6 +15,8 @@
 #include <thread>
 #include <vector>
 
+namespace tasks_test {
+
 namespace {
 
 using nlohmann::json;
@@ -657,3 +659,5 @@ TEST(TaskStore, ConcurrentCreatesRespectTheLimit) {
     EXPECT_EQ(accepted.load(), 40);
     EXPECT_EQ(store.size(), 40u);
 }
+
+}  // namespace tasks_test

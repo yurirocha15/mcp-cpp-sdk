@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+namespace json_schema_engines_test {
+
 namespace {
 
 using mcp::CompiledSchema;
@@ -82,3 +84,5 @@ TEST(SchemaEngines, AgreeOnEverySuiteCase) {
 }
 
 }  // namespace
+
+}  // namespace json_schema_engines_test

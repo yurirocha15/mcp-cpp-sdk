@@ -6,6 +6,7 @@
 
 #include "../support/jwt_test_keys.hpp"
 #include "../support/loopback_server.hpp"
+#include "../support/spawn.hpp"
 
 #include <gtest/gtest.h>
 
@@ -19,6 +20,8 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+
+namespace auth_enterprise_authorization_test {
 
 namespace asio = boost::asio;
 namespace http = boost::beast::http;
@@ -85,7 +88,7 @@ struct Fixture {
             }
             return status_response(http::status::not_found);
         });
-        asio::co_spawn(io_ctx, server.serve(budget), asio::detached);
+        mcp_test::spawn_detached(io_ctx, server.serve(budget));
     }
 
     [[nodiscard]] std::string challenge() const {
@@ -108,23 +111,20 @@ struct Fixture {
              mcp::auth::IdentityAssertion assertion,
              std::function<mcp::Task<void>(mcp::auth::EnterpriseAuthorizationAuthenticator&)> body) {
         auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
-        asio::co_spawn(
-            io_ctx,
-            [&, store, assertion]() -> mcp::Task<void> {
-                mcp::auth::EnterpriseAuthorizationAuthenticator authenticator(
-                    io_ctx.get_executor(), store, config,
-                    [this, assertion]() -> mcp::Task<mcp::auth::IdentityAssertion> {
-                        ++provider_calls;
-                        co_return switched_assertion ? *switched_assertion : assertion;
-                    });
-                try {
-                    co_await body(authenticator);
-                } catch (const std::exception& error) {
-                    ADD_FAILURE() << "unexpected exception: " << error.what();
-                }
-                server.close();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx, [&, store, assertion]() -> mcp::Task<void> {
+            mcp::auth::EnterpriseAuthorizationAuthenticator authenticator(
+                io_ctx.get_executor(), store, config,
+                [this, assertion]() -> mcp::Task<mcp::auth::IdentityAssertion> {
+                    ++provider_calls;
+                    co_return switched_assertion ? *switched_assertion : assertion;
+                });
+            try {
+                co_await body(authenticator);
+            } catch (const std::exception& error) {
+                ADD_FAILURE() << "unexpected exception: " << error.what();
+            }
+            server.close();
+        });
         io_ctx.run();
     }
 };
@@ -452,3 +452,5 @@ TEST(EnterpriseAuthorizationCapabilityTest, BothSidesDeclareTheExtension) {
 }
 
 }  // namespace
+
+}  // namespace auth_enterprise_authorization_test

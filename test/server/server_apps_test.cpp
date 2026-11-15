@@ -10,6 +10,8 @@
 
 #include <nlohmann/json.hpp>
 
+namespace server_apps_test {
+
 namespace {
 
 using nlohmann::json;
@@ -379,3 +381,5 @@ TEST(AppsClientTest, ABlobViewIsDecodedAndAWrongMimeTypeIsRefused) {
 }
 
 }  // namespace
+
+}  // namespace server_apps_test

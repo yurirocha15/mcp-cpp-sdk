@@ -6,6 +6,7 @@
 
 #include "../support/jwt_test_keys.hpp"
 #include "../support/loopback_server.hpp"
+#include "../support/spawn.hpp"
 
 #include <gtest/gtest.h>
 
@@ -21,6 +22,8 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+
+namespace auth_client_credentials_test {
 
 namespace asio = boost::asio;
 namespace http = boost::beast::http;
@@ -80,7 +83,7 @@ struct Fixture {
             }
             return status_response(http::status::not_found);
         });
-        asio::co_spawn(io_ctx, server.serve(budget), asio::detached);
+        mcp_test::spawn_detached(io_ctx, server.serve(budget));
     }
 
     [[nodiscard]] std::string challenge() const {
@@ -102,19 +105,16 @@ struct Fixture {
                                            mcp::auth::TokenStore&)>
                  body) {
         auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
-        asio::co_spawn(
-            io_ctx,
-            [&, store]() -> mcp::Task<void> {
-                mcp::auth::ClientCredentialsAuthenticator authenticator(io_ctx.get_executor(), store,
-                                                                        config);
-                try {
-                    co_await body(authenticator, *store);
-                } catch (const std::exception& error) {
-                    ADD_FAILURE() << "unexpected exception: " << error.what();
-                }
-                server.close();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx, [&, store]() -> mcp::Task<void> {
+            mcp::auth::ClientCredentialsAuthenticator authenticator(io_ctx.get_executor(), store,
+                                                                    config);
+            try {
+                co_await body(authenticator, *store);
+            } catch (const std::exception& error) {
+                ADD_FAILURE() << "unexpected exception: " << error.what();
+            }
+            server.close();
+        });
         io_ctx.run();
     }
 };
@@ -434,28 +434,25 @@ TEST(ClientCredentialsTest, TheTransportReplaysARefusedRequestWithTheMachineToke
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(fixture.io_ctx, fixture.server.serve(5), asio::detached);
+    mcp_test::spawn_detached(fixture.io_ctx, fixture.server.serve(5));
 
     const std::string wire = R"({"jsonrpc":"2.0","id":1,"method":"ping"})";
     std::exception_ptr failure;
-    asio::co_spawn(
-        fixture.io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto inner = std::make_shared<mcp::HttpClientTransport>(fixture.io_ctx.get_executor(),
-                                                                    fixture.base + "/mcp");
-            auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
-            auto authenticator = std::make_shared<mcp::auth::ClientCredentialsAuthenticator>(
-                fixture.io_ctx.get_executor(), store, fixture.config());
-            mcp::auth::OAuthClientTransport transport(inner, authenticator);
-            try {
-                co_await transport.write_message(wire);
-            } catch (...) {
-                failure = std::current_exception();
-            }
-            transport.close();
-            fixture.server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(fixture.io_ctx, [&]() -> mcp::Task<void> {
+        auto inner = std::make_shared<mcp::HttpClientTransport>(fixture.io_ctx.get_executor(),
+                                                                fixture.base + "/mcp");
+        auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+        auto authenticator = std::make_shared<mcp::auth::ClientCredentialsAuthenticator>(
+            fixture.io_ctx.get_executor(), store, fixture.config());
+        mcp::auth::OAuthClientTransport transport(inner, authenticator);
+        try {
+            co_await transport.write_message(wire);
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        transport.close();
+        fixture.server.close();
+    });
     fixture.io_ctx.run();
 
     EXPECT_EQ(failure, nullptr);
@@ -643,3 +640,5 @@ TEST(ClientAuthenticationTest, NoCommonMethodIsAnError) {
 }
 
 }  // namespace
+
+}  // namespace auth_client_credentials_test

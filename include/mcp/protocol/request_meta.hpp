@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mcp/core/constants.hpp>
+#include <mcp/core/export.hpp>
 #include <mcp/protocol/capabilities.hpp>
 #include <mcp/protocol/notification.hpp>
 
@@ -47,13 +48,8 @@ struct UnsupportedProtocolVersionData {
     std::string requested;               ///< The protocol version the request asked for.
 };
 
-inline void to_json(nlohmann::json& json_obj, const UnsupportedProtocolVersionData& data) {
-    json_obj = nlohmann::json{{"supported", data.supported}, {"requested", data.requested}};
-}
+MCP_API void to_json(nlohmann::json& json_obj, const UnsupportedProtocolVersionData& data);
 
-inline void from_json(const nlohmann::json& json_obj, UnsupportedProtocolVersionData& data) {
-    json_obj.at("supported").get_to(data.supported);
-    json_obj.at("requested").get_to(data.requested);
-}
+MCP_API void from_json(const nlohmann::json& json_obj, UnsupportedProtocolVersionData& data);
 
 }  // namespace mcp

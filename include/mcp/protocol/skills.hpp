@@ -73,104 +73,36 @@ struct ReadResourceDirectoryResult {
 };
 
 /// Writes `uri`, `digest` and `size`.
-inline void to_json(nlohmann::json& json_obj, const SkillResource& resource) {
-    json_obj =
-        nlohmann::json{{"uri", resource.uri}, {"digest", resource.digest}, {"size", resource.size}};
-}
+MCP_API void to_json(nlohmann::json& json_obj, const SkillResource& resource);
 
 /// Reads `uri`, `digest` and `size`; `at()` throws when one is missing.
-inline void from_json(const nlohmann::json& json_obj, SkillResource& resource) {
-    json_obj.at("uri").get_to(resource.uri);
-    json_obj.at("digest").get_to(resource.digest);
-    json_obj.at("size").get_to(resource.size);
-}
+MCP_API void from_json(const nlohmann::json& json_obj, SkillResource& resource);
 
 /// Writes `resources` as `"dynamic"` when the skill is dynamic and as the file list otherwise.
-inline void to_json(nlohmann::json& json_obj, const Skill& skill) {
-    json_obj = nlohmann::json{{"uri", skill.uri}, {"frontmatter", skill.frontmatter}};
-    if (skill.dynamic) {
-        json_obj["resources"] = "dynamic";
-    } else {
-        json_obj["resources"] = skill.resources;
-    }
-    if (skill.meta) {
-        json_obj["_meta"] = *skill.meta;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const Skill& skill);
 
 /// @throws std::invalid_argument For an entry the extension calls invalid: no `frontmatter` object
 ///         with string `name` and `description`, or `resources` that is neither an array nor the
 ///         string `"dynamic"`.
-inline void from_json(const nlohmann::json& json_obj, Skill& skill) {
-    skill = Skill{};
-    json_obj.at("uri").get_to(skill.uri);
-    const auto& frontmatter = json_obj.at("frontmatter");
-    if (!frontmatter.is_object() || !frontmatter.contains("name") ||
-        !frontmatter.at("name").is_string() || !frontmatter.contains("description") ||
-        !frontmatter.at("description").is_string()) {
-        throw std::invalid_argument("A skill entry's frontmatter needs a string name and description");
-    }
-    skill.frontmatter = frontmatter;
-    const auto& resources = json_obj.at("resources");
-    if (resources.is_array()) {
-        resources.get_to(skill.resources);
-    } else if (resources.is_string() && resources.get_ref<const std::string&>() == "dynamic") {
-        skill.dynamic = true;
-    } else {
-        throw std::invalid_argument("A skill entry's resources must be an array or \"dynamic\"");
-    }
-    if (const auto meta = json_obj.find("_meta"); meta != json_obj.end()) {
-        skill.meta = *meta;
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, Skill& skill);
 
 /// Writes the page of entries, the cursor and the cache hints that are set.
-inline void to_json(nlohmann::json& json_obj, const ListSkillsResult& result) {
-    json_obj = nlohmann::json{{"skills", result.skills}};
-    if (result.nextCursor) {
-        json_obj["nextCursor"] = *result.nextCursor;
-    }
-    detail::write_cache_hints(json_obj, result.ttlMs, result.cacheScope);
-}
+MCP_API void to_json(nlohmann::json& json_obj, const ListSkillsResult& result);
 
 /// Reads the page of entries, the cursor and the cache hints.
-inline void from_json(const nlohmann::json& json_obj, ListSkillsResult& result) {
-    json_obj.at("skills").get_to(result.skills);
-    if (detail::has_json_value(json_obj, "nextCursor")) {
-        result.nextCursor = json_obj.at("nextCursor").get<std::string>();
-    }
-    detail::read_cache_hints(json_obj, result.ttlMs, result.cacheScope);
-}
+MCP_API void from_json(const nlohmann::json& json_obj, ListSkillsResult& result);
 
 /// Writes the entry and the cache hints that are set.
-inline void to_json(nlohmann::json& json_obj, const GetSkillResult& result) {
-    json_obj = nlohmann::json{{"skill", result.skill}};
-    detail::write_cache_hints(json_obj, result.ttlMs, result.cacheScope);
-}
+MCP_API void to_json(nlohmann::json& json_obj, const GetSkillResult& result);
 
 /// Reads the entry and the cache hints.
-inline void from_json(const nlohmann::json& json_obj, GetSkillResult& result) {
-    json_obj.at("skill").get_to(result.skill);
-    detail::read_cache_hints(json_obj, result.ttlMs, result.cacheScope);
-}
+MCP_API void from_json(const nlohmann::json& json_obj, GetSkillResult& result);
 
 /// Writes the children, the cursor and the cache hints that are set.
-inline void to_json(nlohmann::json& json_obj, const ReadResourceDirectoryResult& result) {
-    json_obj = nlohmann::json{{"resources", result.resources}};
-    if (result.nextCursor) {
-        json_obj["nextCursor"] = *result.nextCursor;
-    }
-    detail::write_cache_hints(json_obj, result.ttlMs, result.cacheScope);
-}
+MCP_API void to_json(nlohmann::json& json_obj, const ReadResourceDirectoryResult& result);
 
 /// Reads the children, the cursor and the cache hints.
-inline void from_json(const nlohmann::json& json_obj, ReadResourceDirectoryResult& result) {
-    json_obj.at("resources").get_to(result.resources);
-    if (detail::has_json_value(json_obj, "nextCursor")) {
-        result.nextCursor = json_obj.at("nextCursor").get<std::string>();
-    }
-    detail::read_cache_hints(json_obj, result.ttlMs, result.cacheScope);
-}
+MCP_API void from_json(const nlohmann::json& json_obj, ReadResourceDirectoryResult& result);
 
 }  // namespace mcp
 

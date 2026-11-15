@@ -1,5 +1,6 @@
 #include "../support/hang_guard.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
@@ -16,6 +17,8 @@
 #include <optional>
 #include <string>
 #include <utility>
+
+namespace client_elicitation_test {
 
 namespace jsonrpc = mcp::constants::jsonrpc;
 
@@ -90,35 +93,29 @@ class Session {
                 io_.stop();
             }
         });
-        boost::asio::co_spawn(
-            io_,
-            [this]() -> mcp::Task<void> {
-                try {
-                    co_await server_->run(server_transport_, io_.get_executor());
-                } catch (...) {
-                }
-            },
-            boost::asio::detached);
-        boost::asio::co_spawn(
-            io_,
-            [this, body = std::move(body)]() -> mcp::Task<void> {
-                try {
-                    mcp::ClientCapabilities capabilities;
-                    capabilities.elicitation = mcp::ClientCapabilities::ElicitationCapability{
-                        nlohmann::json::object(), nlohmann::json::object()};
-                    mcp::Implementation info;
-                    info.name = "elicit-client-with-a-long-name";
-                    info.version = "1.0.0-long-version-string";
-                    co_await client_->connect(info, capabilities);
-                    co_await body();
-                } catch (const std::exception& error) {
-                    ADD_FAILURE() << "unexpected exception: " << error.what();
-                }
-                client_->close();
-                server_transport_->close();
-                guard_.cancel();
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io_, [this]() -> mcp::Task<void> {
+            try {
+                co_await server_->run(server_transport_, io_.get_executor());
+            } catch (...) {
+            }
+        });
+        mcp_test::spawn_detached(io_, [this, body = std::move(body)]() -> mcp::Task<void> {
+            try {
+                mcp::ClientCapabilities capabilities;
+                capabilities.elicitation = mcp::ClientCapabilities::ElicitationCapability{
+                    nlohmann::json::object(), nlohmann::json::object()};
+                mcp::Implementation info;
+                info.name = "elicit-client-with-a-long-name";
+                info.version = "1.0.0-long-version-string";
+                co_await client_->connect(info, capabilities);
+                co_await body();
+            } catch (const std::exception& error) {
+                ADD_FAILURE() << "unexpected exception: " << error.what();
+            }
+            client_->close();
+            server_transport_->close();
+            guard_.cancel();
+        });
         io_.run();
         EXPECT_FALSE(fired_) << "the test did not finish";
     }
@@ -276,3 +273,5 @@ INSTANTIATE_TEST_SUITE_P(Eras, ElicitationValidation, ::testing::Bool(),
                          [](const ::testing::TestParamInfo<bool>& info) {
                              return info.param ? std::string("Modern") : std::string("Legacy");
                          });
+
+}  // namespace client_elicitation_test

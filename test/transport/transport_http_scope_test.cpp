@@ -1,6 +1,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/auth/challenge.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_server.hpp"
@@ -23,6 +24,8 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+namespace transport_http_scope_test {
 
 namespace {
 
@@ -212,15 +215,12 @@ TEST(HttpInsufficientScope, HttpServerTransportAnswers403BeforeDispatch) {
     auto handled = std::make_shared<std::atomic<int>>(0);
     auto server = make_server(handled);
     Replies replies;
-    asio::co_spawn(io, transport->listen(), asio::detached);
-    asio::co_spawn(io, server->run(transport, io.get_executor()), asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            replies = co_await exchange(io.get_executor(), port);
-            transport->close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, transport->listen());
+    mcp_test::spawn_detached(io, server->run(transport, io.get_executor()));
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        replies = co_await exchange(io.get_executor(), port);
+        transport->close();
+    });
     io.run();
 
     expect_scope_behaviour(replies, handled->load(), metadata_url_for(port));
@@ -236,14 +236,11 @@ TEST(HttpInsufficientScope, SessionManagerAnswers403BeforeDispatch) {
     configure_scopes(manager, port);
 
     Replies replies;
-    asio::co_spawn(io, manager.listen(), asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            replies = co_await exchange(io.get_executor(), port);
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, manager.listen());
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        replies = co_await exchange(io.get_executor(), port);
+        manager.close();
+    });
     io.run();
 
     expect_scope_behaviour(replies, handled->load(), metadata_url_for(port));
@@ -286,17 +283,13 @@ TEST(HttpInsufficientScope, LegacyRequestsAreCheckedAndOpenNoSession) {
 
     Reply refused;
     Reply allowed;
-    asio::co_spawn(io, manager.listen(), asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            refused =
-                co_await post(io.get_executor(), port, legacy_initialize(), legacy_headers("other"));
-            allowed = co_await post(io.get_executor(), port, legacy_initialize(),
-                                    legacy_headers("files:read"));
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, manager.listen());
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        refused = co_await post(io.get_executor(), port, legacy_initialize(), legacy_headers("other"));
+        allowed =
+            co_await post(io.get_executor(), port, legacy_initialize(), legacy_headers("files:read"));
+        manager.close();
+    });
     io.run();
 
     EXPECT_EQ(refused.status, 403u) << refused.body;
@@ -316,18 +309,14 @@ TEST(HttpInsufficientScope, HttpServerTransportChecksLegacyRequests) {
     auto server = make_server(handled);
     Reply refused;
     Reply allowed;
-    asio::co_spawn(io, transport->listen(), asio::detached);
-    asio::co_spawn(io, server->run(transport, io.get_executor()), asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            refused =
-                co_await post(io.get_executor(), port, legacy_initialize(), legacy_headers("other"));
-            allowed = co_await post(io.get_executor(), port, legacy_initialize(),
-                                    legacy_headers("files:read"));
-            transport->close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, transport->listen());
+    mcp_test::spawn_detached(io, server->run(transport, io.get_executor()));
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        refused = co_await post(io.get_executor(), port, legacy_initialize(), legacy_headers("other"));
+        allowed =
+            co_await post(io.get_executor(), port, legacy_initialize(), legacy_headers("files:read"));
+        transport->close();
+    });
     io.run();
 
     EXPECT_EQ(refused.status, 403u) << refused.body;
@@ -349,15 +338,12 @@ TEST(HttpInsufficientScope, AProviderThatThrowsIsAnswered500WithoutAChallenge) {
     });
 
     Reply reply;
-    asio::co_spawn(io, manager.listen(), asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            reply = co_await post(io.get_executor(), port, call_tool("read_file"),
-                                  modern_headers("files:read", "tools/call", "read_file"));
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, manager.listen());
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        reply = co_await post(io.get_executor(), port, call_tool("read_file"),
+                              modern_headers("files:read", "tools/call", "read_file"));
+        manager.close();
+    });
     io.run();
 
     EXPECT_EQ(reply.status, 500u) << reply.body;
@@ -393,15 +379,12 @@ TEST(HttpInsufficientScope, ASessionManagerScopeThatCannotBeQuotedIsAnswered500)
     manager.set_scope_requirements(unquotable_scope);
 
     Reply reply;
-    asio::co_spawn(io, manager.listen(), asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            reply = co_await post(io.get_executor(), port, call_tool("read_file"),
-                                  modern_headers("other", "tools/call", "read_file"));
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, manager.listen());
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        reply = co_await post(io.get_executor(), port, call_tool("read_file"),
+                              modern_headers("other", "tools/call", "read_file"));
+        manager.close();
+    });
     io.run();
 
     EXPECT_EQ(reply.status, 500u) << reply.body;
@@ -420,16 +403,13 @@ TEST(HttpInsufficientScope, AnHttpServerTransportScopeThatCannotBeQuotedIsAnswer
     auto handled = std::make_shared<std::atomic<int>>(0);
     auto server = make_server(handled);
     Reply reply;
-    asio::co_spawn(io, transport->listen(), asio::detached);
-    asio::co_spawn(io, server->run(transport, io.get_executor()), asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            reply = co_await post(io.get_executor(), port, call_tool("read_file"),
-                                  modern_headers("other", "tools/call", "read_file"));
-            transport->close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, transport->listen());
+    mcp_test::spawn_detached(io, server->run(transport, io.get_executor()));
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        reply = co_await post(io.get_executor(), port, call_tool("read_file"),
+                              modern_headers("other", "tools/call", "read_file"));
+        transport->close();
+    });
     io.run();
 
     EXPECT_EQ(reply.status, 500u) << reply.body;
@@ -463,3 +443,5 @@ TEST(HttpInsufficientScope, ScopeRequirementsWithoutAValidatorAreRefusedWhenList
         manager.close();
     }
 }
+
+}  // namespace transport_http_scope_test

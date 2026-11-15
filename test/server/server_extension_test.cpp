@@ -8,6 +8,8 @@
 #include <mcp/core/constants.hpp>
 #include <nlohmann/json.hpp>
 
+namespace server_extension_test {
+
 namespace {
 
 using nlohmann::json;
@@ -152,3 +154,5 @@ TEST(ServerExtensionTest, MethodRegistrationRejectsClashesAndEmptyInput) {
 }
 
 }  // namespace
+
+}  // namespace server_extension_test

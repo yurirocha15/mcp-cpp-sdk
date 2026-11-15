@@ -1,6 +1,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
@@ -21,6 +22,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+namespace transport_http_version_header_test {
 
 namespace protocol = mcp::constants::protocol;
 
@@ -122,18 +125,15 @@ TEST(VersionHeader, SessionManagerAcceptsAnyLegacyVersionOnASession) {
         [](const asio::any_io_executor&) { return make_server(); });
     manager.set_json_only(true);
     Answers answers;
-    asio::co_spawn(io, manager.listen(), asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            try {
-                answers = co_await exchange(io.get_executor(), port);
-            } catch (const std::exception& error) {
-                ADD_FAILURE() << error.what();
-            }
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, manager.listen());
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            answers = co_await exchange(io.get_executor(), port);
+        } catch (const std::exception& error) {
+            ADD_FAILURE() << error.what();
+        }
+        manager.close();
+    });
     io.run();
 
     EXPECT_EQ(answers.other_legacy_version, 200U);
@@ -147,24 +147,22 @@ TEST(VersionHeader, HttpServerTransportAcceptsAnyLegacyVersionOnASession) {
     transport->set_json_only(true);
     auto server = make_server();
     Answers answers;
-    asio::co_spawn(io, transport->listen(), asio::detached);
-    asio::co_spawn(
-        io, [&]() -> mcp::Task<void> { co_await server->run(transport, io.get_executor()); },
-        asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            try {
-                answers = co_await exchange(io.get_executor(), transport->port());
-            } catch (const std::exception& error) {
-                ADD_FAILURE() << error.what();
-            }
-            transport->close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, transport->listen());
+    mcp_test::spawn_detached(
+        io, [&]() -> mcp::Task<void> { co_await server->run(transport, io.get_executor()); });
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            answers = co_await exchange(io.get_executor(), transport->port());
+        } catch (const std::exception& error) {
+            ADD_FAILURE() << error.what();
+        }
+        transport->close();
+    });
     io.run();
 
     EXPECT_EQ(answers.other_legacy_version, 200U);
     EXPECT_EQ(answers.unknown_version, 400U);
     EXPECT_EQ(answers.delete_with_other_legacy_version, 200U);
 }
+
+}  // namespace transport_http_version_header_test

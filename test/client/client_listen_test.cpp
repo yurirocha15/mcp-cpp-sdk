@@ -2,6 +2,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
@@ -33,6 +34,8 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+namespace client_listen_test {
 
 namespace {
 
@@ -84,18 +87,15 @@ class Harness {
                 io.stop();
             }
         });
-        boost::asio::co_spawn(
-            io,
-            [this, body = std::move(body)]() -> mcp::Task<void> {
-                try {
-                    co_await body();
-                } catch (const std::exception& error) {
-                    ADD_FAILURE() << "unexpected exception: " << error.what();
-                }
-                client->close();
-                guard.cancel();
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io, [this, body = std::move(body)]() -> mcp::Task<void> {
+            try {
+                co_await body();
+            } catch (const std::exception& error) {
+                ADD_FAILURE() << "unexpected exception: " << error.what();
+            }
+            client->close();
+            guard.cancel();
+        });
         io.run();
         EXPECT_FALSE(guard_fired) << "the test did not finish";
     }
@@ -394,9 +394,8 @@ TEST(ClientListen, CloseWakesAWaitingNext) {
     harness.run([&]() -> mcp::Task<void> {
         co_await harness.client->connect("listen-client", "1.0");
         auto stream = co_await harness.client->listen(tools);
-        boost::asio::co_spawn(
-            harness.io, [stream]() mutable -> mcp::Task<void> { co_await stream.close(); },
-            boost::asio::detached);
+        mcp_test::spawn_detached(harness.io,
+                                 [stream]() mutable -> mcp::Task<void> { co_await stream.close(); });
         auto event = co_await stream.next();
         got_nothing = !event.has_value();
     });
@@ -422,20 +421,17 @@ TEST(ClientListen, LegacySessionIsRefused) {
     mcp::Client client(transport, io.get_executor(), legacy_client_options());
 
     int code = 0;
-    boost::asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("listen-client", "1.0");
-            try {
-                mcp::SubscriptionFilter tools;
-                tools.toolsListChanged = true;
-                co_await client.listen(tools);
-            } catch (const mcp::McpError& error) {
-                code = error.code();
-            }
-            client.close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        co_await client.connect("listen-client", "1.0");
+        try {
+            mcp::SubscriptionFilter tools;
+            tools.toolsListChanged = true;
+            co_await client.listen(tools);
+        } catch (const mcp::McpError& error) {
+            code = error.code();
+        }
+        client.close();
+    });
     io.run();
 
     EXPECT_EQ(code, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
@@ -643,13 +639,10 @@ void run_guarded(boost::asio::io_context& io, boost::asio::steady_timer& guard, 
             io.stop();
         }
     });
-    boost::asio::co_spawn(
-        io,
-        [&guard, body = std::move(body)]() -> mcp::Task<void> {
-            co_await body();
-            guard.cancel();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&guard, body = std::move(body)]() -> mcp::Task<void> {
+        co_await body();
+        guard.cancel();
+    });
     io.run();
     EXPECT_FALSE(fired) << "the test did not finish";
 }
@@ -665,15 +658,12 @@ TEST(ClientListen, AgainstSdkServerOverMemory) {
     mcp::Client client(client_transport, io.get_executor(), modern_options());
     auto outcome = std::make_shared<ListenOutcome>();
 
-    boost::asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await server->run(server_transport, io.get_executor());
-            } catch (...) {
-            }
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            co_await server->run(server_transport, io.get_executor());
+        } catch (...) {
+        }
+    });
     run_guarded(io, guard, fired, [&]() -> mcp::Task<void> {
         co_await listen_scenario(client, *server, outcome);
         client.close();
@@ -732,7 +722,7 @@ TEST(ClientListen, AgainstSdkServerOverHttp) {
     mcp::Client client(transport, io.get_executor(), modern_options());
     auto outcome = std::make_shared<ListenOutcome>();
 
-    boost::asio::co_spawn(io, manager.listen(), boost::asio::detached);
+    mcp_test::spawn_detached(io, manager.listen());
     run_guarded(io, guard, fired, [&]() -> mcp::Task<void> {
         co_await listen_scenario(client, *server, outcome);
         client.close();
@@ -757,7 +747,7 @@ TEST(ClientListen, WorksWithoutSetModernServer) {
     mcp::Client client(transport, io.get_executor(), modern_options());
     auto outcome = std::make_shared<ListenOutcome>();
 
-    boost::asio::co_spawn(io, manager.listen(), boost::asio::detached);
+    mcp_test::spawn_detached(io, manager.listen());
     run_guarded(io, guard, fired, [&]() -> mcp::Task<void> {
         co_await listen_scenario(client, *server, outcome);
         client.close();
@@ -775,17 +765,14 @@ TEST(ClientListen, AgainstSdkServerOverWebSocket) {
     const auto port = acceptor.local_endpoint().port();
     auto outcome = std::make_shared<ListenOutcome>();
 
-    boost::asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            try {
-                auto socket = co_await acceptor.async_accept(boost::asio::use_awaitable);
-                auto transport = std::make_shared<mcp::WebSocketServerTransport>(std::move(socket));
-                co_await server->run(transport, io.get_executor());
-            } catch (...) {
-            }
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            auto socket = co_await acceptor.async_accept(boost::asio::use_awaitable);
+            auto transport = std::make_shared<mcp::WebSocketServerTransport>(std::move(socket));
+            co_await server->run(transport, io.get_executor());
+        } catch (...) {
+        }
+    });
     auto transport = std::make_shared<mcp::WebSocketClientTransport>(io.get_executor(), "127.0.0.1",
                                                                      std::to_string(port));
     mcp::Client client(transport, io.get_executor(), modern_options());
@@ -795,3 +782,5 @@ TEST(ClientListen, AgainstSdkServerOverWebSocket) {
     });
     expect_listen_outcome(*outcome);
 }
+
+}  // namespace client_listen_test

@@ -4,6 +4,7 @@
  */
 
 #include "../support/hang_guard.hpp"
+#include "../support/spawn.hpp"
 #include "../test_utils.hpp"
 
 #include <gtest/gtest.h>
@@ -30,6 +31,8 @@
 #include <queue>
 #include <string>
 #include <vector>
+
+namespace auth_integration_test {
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -165,7 +168,7 @@ TEST(AuthMiddlewareTest, ChecksTheTokenOfEachCall) {
     call("invalid", "wrong_token");
     call("missing", std::nullopt);
 
-    asio::co_spawn(io, server.run(transport, io.get_executor()), asio::detached);
+    mcp_test::spawn_detached(io, server.run(transport, io.get_executor()));
     io.run();
 
     const auto response = [&responses](const std::string& id) -> const json* {
@@ -259,7 +262,7 @@ TEST(AuthMiddlewareTest, RejectsResourceAndPromptRequestsWithAJsonRpcError) {
              {"params", {{"name", "greeting"}, {"_meta", {{"auth_token", "wrong_token"}}}}}}
             .dump());
 
-    asio::co_spawn(io, server.run(transport, io.get_executor()), asio::detached);
+    mcp_test::spawn_detached(io, server.run(transport, io.get_executor()));
     io.run();
 
     EXPECT_EQ(handler_calls, 0);
@@ -323,13 +326,10 @@ TEST(AuthClientTransportTest, ReadWritePassThrough) {
     std::string received;
     std::string written;
 
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            received = co_await transport.read_message();
-            co_await transport.write_message("hello from client");
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        received = co_await transport.read_message();
+        co_await transport.write_message("hello from client");
+    });
 
     io.run();
 
@@ -357,14 +357,11 @@ TEST(AuthClientTransportTest, LegacyRetryReplaysTheRequestMatchingTheErrorId) {
     inner->enqueue_message(make_result_response("A", json{{"ok", true}}).dump());
 
     std::string response;
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            co_await transport.write_message(request_a);
-            co_await transport.write_message(request_b);
-            response = co_await transport.read_message();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        co_await transport.write_message(request_a);
+        co_await transport.write_message(request_b);
+        response = co_await transport.read_message();
+    });
     io.run();
 
     ASSERT_EQ(inner->written().size(), 3);
@@ -400,16 +397,13 @@ TEST(AuthClientTransportTest, NoResponseRequestsAreEvictedAtConfiguredBound) {
 
     std::string evicted_response;
     std::string retained_response;
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            co_await transport.write_message(make_request("A"));
-            co_await transport.write_message(make_request("B"));
-            co_await transport.write_message(make_request("C"));
-            evicted_response = co_await transport.read_message();
-            retained_response = co_await transport.read_message();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        co_await transport.write_message(make_request("A"));
+        co_await transport.write_message(make_request("B"));
+        co_await transport.write_message(make_request("C"));
+        evicted_response = co_await transport.read_message();
+        retained_response = co_await transport.read_message();
+    });
     io.run();
 
     ASSERT_EQ(inner->written().size(), 4);
@@ -432,16 +426,13 @@ TEST(AuthClientTransportTest, PendingReplayCorrelationExpires) {
         make_error_response("expired", mcp::constants::jsonrpc::g_UNAUTHORIZED, "Unauthorized").dump());
 
     std::string response;
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            co_await transport.write_message(request);
-            asio::steady_timer expiry_wait(io);
-            expiry_wait.expires_after(std::chrono::milliseconds(25));
-            co_await expiry_wait.async_wait(asio::use_awaitable);
-            response = co_await transport.read_message();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        co_await transport.write_message(request);
+        asio::steady_timer expiry_wait(io);
+        expiry_wait.expires_after(std::chrono::milliseconds(25));
+        co_await expiry_wait.async_wait(asio::use_awaitable);
+        response = co_await transport.read_message();
+    });
     io.run();
 
     ASSERT_EQ(inner->written().size(), 1);
@@ -460,15 +451,12 @@ TEST(AuthClientTransportTest, CloseClearsPendingReplayCorrelationAndIsIdempotent
         make_error_response("closed", mcp::constants::jsonrpc::g_UNAUTHORIZED, "Unauthorized").dump());
 
     std::string response;
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            co_await transport.write_message(request);
-            transport.close();
-            transport.close();
-            response = co_await transport.read_message();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        co_await transport.write_message(request);
+        transport.close();
+        transport.close();
+        response = co_await transport.read_message();
+    });
     io.run();
 
     ASSERT_EQ(inner->written().size(), 1);
@@ -507,20 +495,17 @@ TEST(AuthClientTransportTest, HttpTransportUsesAuthorizationHeader) {
             }
         }
     };
-    asio::co_spawn(
-        io,
-        [&]() -> asio::awaitable<void> {
-            for (;;) {
-                boost::system::error_code error;
-                auto socket =
-                    co_await acceptor.async_accept(asio::redirect_error(asio::use_awaitable, error));
-                if (error) {
-                    co_return;
-                }
-                asio::co_spawn(io, serve_connection(std::move(socket)), asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> asio::awaitable<void> {
+        for (;;) {
+            boost::system::error_code error;
+            auto socket =
+                co_await acceptor.async_accept(asio::redirect_error(asio::use_awaitable, error));
+            if (error) {
+                co_return;
             }
-        },
-        asio::detached);
+            mcp_test::spawn_detached(io, serve_connection(std::move(socket)));
+        }
+    });
 
     auto inner = std::make_shared<mcp::HttpClientTransport>(
         io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
@@ -540,17 +525,14 @@ TEST(AuthClientTransportTest, HttpTransportUsesAuthorizationHeader) {
         std::make_shared<mcp::auth::OAuthAuthenticator>(store, oauth_client, config, "http://server1");
     mcp::auth::OAuthClientTransport transport(inner, authenticator);
 
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
-            co_await transport.write_message(R"({"jsonrpc":"2.0","id":2,"method":"ping"})");
-            co_await transport.write_message(
-                R"({"jsonrpc":"2.0","method":"notifications/roots/list_changed"})");
-            transport.close();
-            acceptor.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
+        co_await transport.write_message(R"({"jsonrpc":"2.0","id":2,"method":"ping"})");
+        co_await transport.write_message(
+            R"({"jsonrpc":"2.0","method":"notifications/roots/list_changed"})");
+        transport.close();
+        acceptor.close();
+    });
 
     io.run();
 
@@ -568,24 +550,21 @@ TEST(AuthClientTransportTest, FailedHttpRetryDoesNotLeaveRequestEligibleForRepla
     initial_acceptor.listen();
     const auto port = initial_acceptor.local_endpoint().port();
 
-    asio::co_spawn(
-        io,
-        [&]() -> asio::awaitable<void> {
-            auto socket = co_await initial_acceptor.async_accept(asio::use_awaitable);
-            initial_acceptor.close();
+    mcp_test::spawn_detached(io, [&]() -> asio::awaitable<void> {
+        auto socket = co_await initial_acceptor.async_accept(asio::use_awaitable);
+        initial_acceptor.close();
 
-            beast::tcp_stream stream(std::move(socket));
-            beast::flat_buffer buffer;
-            http::request<http::string_body> request;
-            co_await http::async_read(stream, buffer, request, asio::use_awaitable);
+        beast::tcp_stream stream(std::move(socket));
+        beast::flat_buffer buffer;
+        http::request<http::string_body> request;
+        co_await http::async_read(stream, buffer, request, asio::use_awaitable);
 
-            http::response<http::empty_body> response{http::status::unauthorized, request.version()};
-            response.set(http::field::www_authenticate, "Bearer");
-            response.keep_alive(false);
-            response.content_length(0);
-            co_await http::async_write(stream, response, asio::use_awaitable);
-        },
-        asio::detached);
+        http::response<http::empty_body> response{http::status::unauthorized, request.version()};
+        response.set(http::field::www_authenticate, "Bearer");
+        response.keep_alive(false);
+        response.content_length(0);
+        co_await http::async_write(stream, response, asio::use_awaitable);
+    });
 
     auto inner = std::make_shared<mcp::HttpClientTransport>(
         io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
@@ -600,7 +579,7 @@ TEST(AuthClientTransportTest, FailedHttpRetryDoesNotLeaveRequestEligibleForRepla
     std::string response_wire;
     std::vector<json> replay_server_requests;
     std::exception_ptr controller_error;
-    asio::co_spawn(
+    mcp_test::spawn_then(
         io,
         [&]() -> mcp::Task<void> {
             try {
@@ -615,9 +594,8 @@ TEST(AuthClientTransportTest, FailedHttpRetryDoesNotLeaveRequestEligibleForRepla
             replay_acceptor->bind({asio::ip::make_address("127.0.0.1"), port});
             replay_acceptor->listen();
 
-            asio::co_spawn(
-                io,
-                [replay_acceptor, &replay_server_requests]() -> asio::awaitable<void> {
+            mcp_test::spawn_detached(
+                io, [replay_acceptor, &replay_server_requests]() -> asio::awaitable<void> {
                     for (int request_index = 0; request_index < 2; ++request_index) {
                         boost::system::error_code accept_error;
                         auto socket = co_await replay_acceptor->async_accept(
@@ -648,8 +626,7 @@ TEST(AuthClientTransportTest, FailedHttpRetryDoesNotLeaveRequestEligibleForRepla
                         response.prepare_payload();
                         co_await http::async_write(stream, response, asio::use_awaitable);
                     }
-                },
-                asio::detached);
+                });
 
             co_await transport.write_message(probe_notification);
             response_wire = co_await transport.read_message();
@@ -676,31 +653,28 @@ TEST(AuthClientTransportTest, RefreshTokenReturnsTrue) {
 
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::make_address("127.0.0.1"), port});
 
-    asio::co_spawn(
-        io,
-        [&]() -> asio::awaitable<void> {
-            auto socket = co_await acceptor.async_accept(asio::use_awaitable);
-            beast::tcp_stream stream(std::move(socket));
+    mcp_test::spawn_detached(io, [&]() -> asio::awaitable<void> {
+        auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+        beast::tcp_stream stream(std::move(socket));
 
-            beast::flat_buffer buffer;
-            http::request<http::string_body> req;
-            co_await http::async_read(stream, buffer, req, asio::use_awaitable);
+        beast::flat_buffer buffer;
+        http::request<http::string_body> req;
+        co_await http::async_read(stream, buffer, req, asio::use_awaitable);
 
-            json response_json = {{"access_token", "new_access_token"},
-                                  {"token_type", "Bearer"},
-                                  {"refresh_token", "new_refresh_token"},
-                                  {"expires_in", 3600}};
+        json response_json = {{"access_token", "new_access_token"},
+                              {"token_type", "Bearer"},
+                              {"refresh_token", "new_refresh_token"},
+                              {"expires_in", 3600}};
 
-            http::response<http::string_body> res{http::status::ok, req.version()};
-            res.set(http::field::content_type, "application/json");
-            res.body() = response_json.dump();
-            res.prepare_payload();
-            co_await http::async_write(stream, res, asio::use_awaitable);
+        http::response<http::string_body> res{http::status::ok, req.version()};
+        res.set(http::field::content_type, "application/json");
+        res.body() = response_json.dump();
+        res.prepare_payload();
+        co_await http::async_write(stream, res, asio::use_awaitable);
 
-            beast::error_code ec;
-            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-        },
-        asio::detached);
+        beast::error_code ec;
+        stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+    });
 
     auto inner = std::make_shared<ScriptedTransport>(io.get_executor());
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
@@ -726,9 +700,8 @@ TEST(AuthClientTransportTest, RefreshTokenReturnsTrue) {
 
     bool refresh_result = false;
 
-    asio::co_spawn(
-        io, [&]() -> mcp::Task<void> { refresh_result = co_await authenticator->try_refresh_token(); },
-        asio::detached);
+    mcp_test::spawn_detached(
+        io, [&]() -> mcp::Task<void> { refresh_result = co_await authenticator->try_refresh_token(); });
 
     io.run();
 
@@ -758,9 +731,8 @@ TEST(AuthClientTransportTest, RefreshTokenReturnsFalseWithoutRefreshToken) {
 
     bool refresh_result = true;
 
-    asio::co_spawn(
-        io, [&]() -> mcp::Task<void> { refresh_result = co_await authenticator->try_refresh_token(); },
-        asio::detached);
+    mcp_test::spawn_detached(
+        io, [&]() -> mcp::Task<void> { refresh_result = co_await authenticator->try_refresh_token(); });
 
     io.run();
 
@@ -785,9 +757,8 @@ TEST(AuthClientTransportTest, RefreshTokenReturnsFalseWithNoStoredToken) {
 
     bool refresh_result = true;
 
-    asio::co_spawn(
-        io, [&]() -> mcp::Task<void> { refresh_result = co_await authenticator->try_refresh_token(); },
-        asio::detached);
+    mcp_test::spawn_detached(
+        io, [&]() -> mcp::Task<void> { refresh_result = co_await authenticator->try_refresh_token(); });
 
     io.run();
 
@@ -800,28 +771,25 @@ TEST(AuthClientTransportTest, RefreshPreservesOldRefreshTokenIfNewOneMissing) {
 
     asio::ip::tcp::acceptor acceptor(io, {asio::ip::make_address("127.0.0.1"), port});
 
-    asio::co_spawn(
-        io,
-        [&]() -> asio::awaitable<void> {
-            auto socket = co_await acceptor.async_accept(asio::use_awaitable);
-            beast::tcp_stream stream(std::move(socket));
+    mcp_test::spawn_detached(io, [&]() -> asio::awaitable<void> {
+        auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+        beast::tcp_stream stream(std::move(socket));
 
-            beast::flat_buffer buffer;
-            http::request<http::string_body> req;
-            co_await http::async_read(stream, buffer, req, asio::use_awaitable);
+        beast::flat_buffer buffer;
+        http::request<http::string_body> req;
+        co_await http::async_read(stream, buffer, req, asio::use_awaitable);
 
-            json response_json = {{"access_token", "refreshed_at"}, {"token_type", "Bearer"}};
+        json response_json = {{"access_token", "refreshed_at"}, {"token_type", "Bearer"}};
 
-            http::response<http::string_body> res{http::status::ok, req.version()};
-            res.set(http::field::content_type, "application/json");
-            res.body() = response_json.dump();
-            res.prepare_payload();
-            co_await http::async_write(stream, res, asio::use_awaitable);
+        http::response<http::string_body> res{http::status::ok, req.version()};
+        res.set(http::field::content_type, "application/json");
+        res.body() = response_json.dump();
+        res.prepare_payload();
+        co_await http::async_write(stream, res, asio::use_awaitable);
 
-            beast::error_code ec;
-            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-        },
-        asio::detached);
+        beast::error_code ec;
+        stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+    });
 
     auto inner = std::make_shared<ScriptedTransport>(io.get_executor());
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
@@ -845,8 +813,8 @@ TEST(AuthClientTransportTest, RefreshPreservesOldRefreshTokenIfNewOneMissing) {
         std::make_shared<mcp::auth::OAuthAuthenticator>(store, oauth_client, config, "http://server1");
     mcp::auth::OAuthClientTransport transport(inner, authenticator);
 
-    asio::co_spawn(
-        io, [&]() -> mcp::Task<void> { co_await authenticator->try_refresh_token(); }, asio::detached);
+    mcp_test::spawn_detached(io,
+                             [&]() -> mcp::Task<void> { co_await authenticator->try_refresh_token(); });
 
     io.run();
 
@@ -856,3 +824,5 @@ TEST(AuthClientTransportTest, RefreshPreservesOldRefreshTokenIfNewOneMissing) {
     ASSERT_TRUE(stored->refresh_token.has_value());
     EXPECT_EQ(stored->refresh_token.value(), "keep_this_rt");
 }
+
+}  // namespace auth_integration_test

@@ -205,6 +205,7 @@ bool TokenResponse::is_expired(int margin) const {
 }
 
 void from_json(const nlohmann::json& json, TokenResponse& token) {
+    token = TokenResponse{};
     json.at("access_token").get_to(token.access_token);
     token.token_type = json.value("token_type", "Bearer");
     if (json.contains("refresh_token")) {
@@ -1188,6 +1189,7 @@ Task<nlohmann::json> OAuthHttpClientScope::post_form(const std::string& url,
 void OAuthHttpClientScope::abort() { impl_->abort_matching(state_); }
 
 void from_json(const nlohmann::json& json, ProtectedResourceMetadata& metadata) {
+    metadata = ProtectedResourceMetadata{};
     metadata.raw = json;
     if (json.contains("resource")) {
         json.at("resource").get_to(metadata.resource);
@@ -1201,6 +1203,7 @@ void from_json(const nlohmann::json& json, ProtectedResourceMetadata& metadata) 
 }
 
 void from_json(const nlohmann::json& json, AuthServerMetadata& metadata) {
+    metadata = AuthServerMetadata{};
     metadata.raw = json;
     if (json.contains("issuer")) {
         json.at("issuer").get_to(metadata.issuer);

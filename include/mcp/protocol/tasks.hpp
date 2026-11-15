@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mcp/core/constants.hpp>
+#include <mcp/core/export.hpp>
 #include <mcp/protocol/base.hpp>
 
 #include <cstdint>
@@ -29,36 +30,9 @@ struct TaskData {
     std::optional<std::int64_t> pollIntervalMs;  ///< Suggested polling interval in milliseconds.
 };
 
-inline void to_json(nlohmann::json& json_obj, const TaskData& task) {
-    json_obj = nlohmann::json{{"taskId", task.taskId},
-                              {"status", task.status},
-                              {"createdAt", task.createdAt},
-                              {"lastUpdatedAt", task.lastUpdatedAt},
-                              {"ttlMs", task.ttlMs ? nlohmann::json(*task.ttlMs) : nlohmann::json()}};
-    if (task.statusMessage) {
-        json_obj["statusMessage"] = *task.statusMessage;
-    }
-    if (task.pollIntervalMs) {
-        json_obj["pollIntervalMs"] = *task.pollIntervalMs;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const TaskData& task);
 
-inline void from_json(const nlohmann::json& json_obj, TaskData& task) {
-    json_obj.at("taskId").get_to(task.taskId);
-    json_obj.at("status").get_to(task.status);
-    json_obj.at("createdAt").get_to(task.createdAt);
-    json_obj.at("lastUpdatedAt").get_to(task.lastUpdatedAt);
-    const auto& ttl = json_obj.at("ttlMs");
-    task.ttlMs = ttl.is_null() ? std::nullopt : std::optional<std::int64_t>(ttl.get<std::int64_t>());
-    task.statusMessage.reset();
-    if (detail::has_json_value(json_obj, "statusMessage")) {
-        task.statusMessage = json_obj.at("statusMessage").get<std::string>();
-    }
-    task.pollIntervalMs.reset();
-    if (detail::has_json_value(json_obj, "pollIntervalMs")) {
-        task.pollIntervalMs = json_obj.at("pollIntervalMs").get<std::int64_t>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, TaskData& task);
 
 /**
  * @brief A task together with the payload its status carries: the DetailedTask of the
@@ -78,46 +52,9 @@ struct DetailedTask {
     std::optional<nlohmann::json> error;
 };
 
-inline void to_json(nlohmann::json& json_obj, const DetailedTask& detailed) {
-    json_obj = detailed.task;
-    if (detailed.task.status == TaskStatus::eInputRequired && detailed.inputRequests) {
-        json_obj["inputRequests"] = *detailed.inputRequests;
-    }
-    if (detailed.task.status == TaskStatus::eCompleted && detailed.result) {
-        json_obj["result"] = *detailed.result;
-    }
-    if (detailed.task.status == TaskStatus::eFailed && detailed.error) {
-        json_obj["error"] = *detailed.error;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const DetailedTask& detailed);
 
-inline void from_json(const nlohmann::json& json_obj, DetailedTask& detailed) {
-    json_obj.get_to(detailed.task);
-    detailed.inputRequests.reset();
-    detailed.result.reset();
-    detailed.error.reset();
-    const auto payload = [&json_obj](const char* name) -> const nlohmann::json& {
-        const auto found = json_obj.find(name);
-        if (found == json_obj.end() || !found->is_object()) {
-            throw std::invalid_argument(std::string("task is missing its ") + name + " object");
-        }
-        return *found;
-    };
-    switch (detailed.task.status) {
-        case TaskStatus::eInputRequired:
-            detailed.inputRequests = payload("inputRequests");
-            break;
-        case TaskStatus::eCompleted:
-            detailed.result = payload("result");
-            break;
-        case TaskStatus::eFailed:
-            detailed.error = payload("error");
-            break;
-        case TaskStatus::eWorking:
-        case TaskStatus::eCancelled:
-            break;
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, DetailedTask& detailed);
 
 /// @brief The result of `tasks/get`.
 using GetTaskResult = DetailedTask;
@@ -131,36 +68,31 @@ struct CreateTaskResult {
     TaskData task;  ///< The task that was created.
 };
 
-inline void to_json(nlohmann::json& json_obj, const CreateTaskResult& result) {
-    json_obj = result.task;
-    json_obj["resultType"] = mcp::constants::tasks::g_RESULT_TYPE_TASK;
-}
+MCP_API void to_json(nlohmann::json& json_obj, const CreateTaskResult& result);
 
-inline void from_json(const nlohmann::json& json_obj, CreateTaskResult& result) {
-    if (json_obj.value("resultType", "") != mcp::constants::tasks::g_RESULT_TYPE_TASK) {
-        throw std::invalid_argument("result is not a task");
-    }
-    json_obj.get_to(result.task);
-}
+MCP_API void from_json(const nlohmann::json& json_obj, CreateTaskResult& result);
 
 /// @brief Parameters of `tasks/get`.
 struct GetTaskRequestParams {
     std::string taskId;  ///< The task to query.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetTaskRequestParams, taskId)
+MCP_API void to_json(nlohmann::json& json_obj, const GetTaskRequestParams& value);
+MCP_API void from_json(const nlohmann::json& json_obj, GetTaskRequestParams& value);
 
 /// @brief Parameters of `tasks/cancel`.
 struct CancelTaskRequestParams {
     std::string taskId;  ///< The task to cancel.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CancelTaskRequestParams, taskId)
+MCP_API void to_json(nlohmann::json& json_obj, const CancelTaskRequestParams& value);
+MCP_API void from_json(const nlohmann::json& json_obj, CancelTaskRequestParams& value);
 
 /// @brief Parameters of `tasks/update`.
 struct UpdateTaskRequestParams {
     std::string taskId;                                    ///< The task to answer.
     std::map<std::string, nlohmann::json> inputResponses;  ///< Responses to its inputRequests, by key.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(UpdateTaskRequestParams, taskId, inputResponses)
+MCP_API void to_json(nlohmann::json& json_obj, const UpdateTaskRequestParams& value);
+MCP_API void from_json(const nlohmann::json& json_obj, UpdateTaskRequestParams& value);
 
 /**
  * @brief A notification that carries a task's current state, for a client that listened for it
@@ -171,13 +103,8 @@ struct TaskStatusNotification {
     DetailedTask params;                         ///< The task as `tasks/get` would return it.
 };
 
-inline void to_json(nlohmann::json& json_obj, const TaskStatusNotification& notification) {
-    json_obj = nlohmann::json{{"method", notification.method}, {"params", notification.params}};
-}
+MCP_API void to_json(nlohmann::json& json_obj, const TaskStatusNotification& notification);
 
-inline void from_json(const nlohmann::json& json_obj, TaskStatusNotification& notification) {
-    json_obj.at("method").get_to(notification.method);
-    json_obj.at("params").get_to(notification.params);
-}
+MCP_API void from_json(const nlohmann::json& json_obj, TaskStatusNotification& notification);
 
 }  // namespace mcp

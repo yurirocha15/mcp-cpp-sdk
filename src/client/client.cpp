@@ -78,6 +78,39 @@ ClientProtocol ClientProtocol::pinned(std::string version) {
     return {Kind::eVersion, std::move(version)};
 }
 
+void to_json(nlohmann::json& json_obj, const SubscriptionFilter& filter) {
+    json_obj = nlohmann::json::object();
+    if (filter.toolsListChanged) {
+        json_obj["toolsListChanged"] = true;
+    }
+    if (filter.promptsListChanged) {
+        json_obj["promptsListChanged"] = true;
+    }
+    if (filter.resourcesListChanged) {
+        json_obj["resourcesListChanged"] = true;
+    }
+    if (!filter.resourceSubscriptions.empty()) {
+        json_obj["resourceSubscriptions"] = filter.resourceSubscriptions;
+    }
+    if (!filter.taskIds.empty()) {
+        json_obj["taskIds"] = filter.taskIds;
+    }
+}
+
+void from_json(const nlohmann::json& json_obj, SubscriptionFilter& filter) {
+    filter = SubscriptionFilter{};
+    filter.toolsListChanged = json_obj.value("toolsListChanged", false);
+    filter.promptsListChanged = json_obj.value("promptsListChanged", false);
+    filter.resourcesListChanged = json_obj.value("resourcesListChanged", false);
+    if (const auto found = json_obj.find("resourceSubscriptions");
+        found != json_obj.end() && !found->is_null()) {
+        found->get_to(filter.resourceSubscriptions);
+    }
+    if (const auto found = json_obj.find("taskIds"); found != json_obj.end() && !found->is_null()) {
+        found->get_to(filter.taskIds);
+    }
+}
+
 namespace {
 
 /// What the client knows about the output of a tool it is about to call.

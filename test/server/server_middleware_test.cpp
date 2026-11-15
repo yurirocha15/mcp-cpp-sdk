@@ -4,6 +4,7 @@
  */
 
 #include "../support/hang_guard.hpp"
+#include "../support/spawn.hpp"
 #include "../test_utils.hpp"
 
 #include <gtest/gtest.h>
@@ -20,6 +21,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+namespace server_middleware_test {
 
 using namespace mcp;
 using json = nlohmann::json;
@@ -77,7 +80,7 @@ TEST(ServerMiddlewareTest, MiddlewareModifiesParams) {
                   {"params", {{"name", "add"}, {"arguments", {{"addend", 5}}}}}};
     transport_ptr->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
+    mcp_test::spawn_detached(io, server.run(transport, io.get_executor()));
     io.run();
 
     // Check that the result reflects the modified param (10 + 105 = 115)
@@ -139,7 +142,7 @@ TEST(ServerMiddlewareTest, MiddlewareShortCircuits) {
                   {"params", {{"name", "forbidden"}, {"arguments", nlohmann::json::object()}}}};
     transport_ptr->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
+    mcp_test::spawn_detached(io, server.run(transport, io.get_executor()));
     io.run();
 
     // Verify the tool was never executed
@@ -217,7 +220,7 @@ TEST(ServerMiddlewareTest, MiddlewareGuardsSubscriptionsAndCompletion) {
         }
     }
 
-    boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
+    mcp_test::spawn_detached(io, server.run(transport, io.get_executor()));
     io.run();
 
     ASSERT_EQ(responses.size(), 7U);
@@ -287,7 +290,7 @@ TEST(ServerMiddlewareTest, MultipleMiddlewaresExecuteInOrder) {
                   {"params", {{"name", "track"}, {"arguments", nlohmann::json::object()}}}};
     transport_ptr->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
+    mcp_test::spawn_detached(io, server.run(transport, io.get_executor()));
     io.run();
 
     // Expected order: [1, 2, 99, 4, 3]
@@ -355,7 +358,7 @@ TEST(ServerMiddlewareTest, MiddlewarePostProcessesResult) {
                   {"params", {{"name", "compute"}, {"arguments", {{"value", 10}}}}}};
     transport_ptr->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
+    mcp_test::spawn_detached(io, server.run(transport, io.get_executor()));
     io.run();
 
     // Check the result: original would be 20, middleware doubles to 40
@@ -391,7 +394,7 @@ json call_one_tool(Server& server, const std::string& tool) {
                                         {"params", {{"name", tool}, {"arguments", json::object()}}}}
                                        .dump());
 
-    boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
+    mcp_test::spawn_detached(io, server.run(transport, io.get_executor()));
     io.run();
 
     auto it = std::find_if(responses.begin(), responses.end(),
@@ -546,7 +549,7 @@ json answer_to(Server& server, const std::vector<json>& messages, const json& id
         transport_ptr->enqueue_message(message.dump());
     }
 
-    boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
+    mcp_test::spawn_detached(io, server.run(transport, io.get_executor()));
     io.run();
     return answer;
 }
@@ -608,3 +611,5 @@ TEST(ServerMiddlewareTest, NonStdExceptionFromHandlerIsAnsweredOnModernRequests)
         expect_internal_error(answer_modern(server, request));
     }
 }
+
+}  // namespace server_middleware_test

@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+namespace fifo_test {
+
 namespace {
 
 using mcp::detail::Fifo;
@@ -62,3 +64,5 @@ TEST(Fifo, PopReleasesTheElement) {
 }
 
 }  // namespace
+
+}  // namespace fifo_test

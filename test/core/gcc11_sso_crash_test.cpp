@@ -22,6 +22,7 @@
  *   F – send_error_response(): Error.message string spans co_await
  */
 
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 
 #include <gtest/gtest.h>
@@ -41,6 +42,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace gcc11_sso_crash_test {
 
 namespace {
 
@@ -162,14 +165,11 @@ TEST_F(GCC11SSOCrashTest, PatternA_Connect_SSO_ClientInfo) {
     });
 
     bool connected = false;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            // SSO strings: "my-client" (9 chars), "1.0" (3 chars) — both SSO
-            co_await client.connect("my-client", "1.0");
-            connected = true;
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        // SSO strings: "my-client" (9 chars), "1.0" (3 chars) — both SSO
+        co_await client.connect("my-client", "1.0");
+        connected = true;
+    });
 
     io_ctx_.run();
     EXPECT_TRUE(connected);
@@ -204,19 +204,16 @@ TEST_F(GCC11SSOCrashTest, PatternB_SendRequest_SSO_Method_Ping) {
     });
 
     bool ping_ok = false;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("cli", "1.0");
-            // "ping" is 4 chars — SSO; method string lives in send_request's
-            // coroutine frame across the timer wait suspension
-            co_await client.ping();
-            ping_ok = true;
-            // Close transport so read_loop terminates and io_ctx_.run() returns
-            boost::asio::post(io_ctx_,
-                              [raw]() { boost::asio::post(raw->strand(), [raw]() { raw->close(); }); });
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await client.connect("cli", "1.0");
+        // "ping" is 4 chars — SSO; method string lives in send_request's
+        // coroutine frame across the timer wait suspension
+        co_await client.ping();
+        ping_ok = true;
+        // Close transport so read_loop terminates and io_ctx_.run() returns
+        boost::asio::post(io_ctx_,
+                          [raw]() { boost::asio::post(raw->strand(), [raw]() { raw->close(); }); });
+    });
 
     io_ctx_.run();
     EXPECT_TRUE(ping_ok);
@@ -252,16 +249,13 @@ TEST_F(GCC11SSOCrashTest, PatternB2_SendRequest_SSO_Method_Short) {
 
     // After connect, close to end the test
     bool done = false;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("c", "1");
-            done = true;
-            // Close from outside
-            boost::asio::post(io_ctx_,
-                              [raw]() { boost::asio::post(raw->strand(), [raw]() { raw->close(); }); });
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await client.connect("c", "1");
+        done = true;
+        // Close from outside
+        boost::asio::post(io_ctx_,
+                          [raw]() { boost::asio::post(raw->strand(), [raw]() { raw->close(); }); });
+    });
 
     io_ctx_.run();
     EXPECT_TRUE(done);
@@ -299,9 +293,8 @@ TEST_F(GCC11SSOCrashTest, PatternC_DispatchIncomingRequest_SSO_IdAndMethod) {
         }
     });
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("cli", "1.0"); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_,
+                             [&]() -> mcp::Task<void> { co_await client.connect("cli", "1.0"); });
 
     io_ctx_.run();
 
@@ -343,9 +336,8 @@ TEST_F(GCC11SSOCrashTest, PatternC2_DispatchIncomingRequest_UnknownMethod_ErrorR
         }
     });
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("cli", "1.0"); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_,
+                             [&]() -> mcp::Task<void> { co_await client.connect("cli", "1.0"); });
 
     io_ctx_.run();
 
@@ -392,9 +384,8 @@ TEST_F(GCC11SSOCrashTest, PatternC3_DispatchIncomingRequest_HandlerThrows_Intern
         }
     });
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("cli", "1.0"); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_,
+                             [&]() -> mcp::Task<void> { co_await client.connect("cli", "1.0"); });
 
     io_ctx_.run();
 
@@ -433,19 +424,18 @@ TEST_F(GCC11SSOCrashTest, PatternD_SendNotification_SSO_Method) {
     });
 
     bool done = false;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("cli", "1.0");
-            // Send a cancellation notification: method is long (>15) so safe,
-            // but RequestId "r1" (2 chars SSO) is inside CancelledNotificationParams
-            co_await client.cancel(mcp::RequestId{"r1"}, "ok");
-            done = true;
-            boost::asio::post(io_ctx_,
-                              [raw]() { boost::asio::post(raw->strand(), [raw]() { raw->close(); }); });
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await client.connect("cli", "1.0");
+        // Send a cancellation notification: method is long (>15) so safe,
+        // but RequestId "r1" (2 chars SSO) is inside CancelledNotificationParams
+        co_await client.cancel(mcp::RequestId{"r1"}, "ok");
+        done = true;
+        boost::asio::post(io_ctx_,
+                          [raw]() { boost::asio::post(raw->strand(), [raw]() { raw->close(); }); });
+    });
 
     io_ctx_.run();
     EXPECT_TRUE(done);
 }
+
+}  // namespace gcc11_sso_crash_test

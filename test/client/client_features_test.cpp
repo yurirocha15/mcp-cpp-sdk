@@ -1,5 +1,6 @@
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 
 #include <gtest/gtest.h>
@@ -15,6 +16,8 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+namespace client_features_test {
 
 namespace jsonrpc = mcp::constants::jsonrpc;
 
@@ -79,19 +82,16 @@ TEST_F(ClientFeaturesTest, CallToolSendsCorrectWireFormat) {
     });
 
     mcp::CallToolResult result;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            nlohmann::json args = {{"input", "test-value"}};
-            result = co_await client.call_tool("my_tool", std::move(args));
-            raw->close();
-        },
-        boost::asio::detached);
+        nlohmann::json args = {{"input", "test-value"}};
+        result = co_await client.call_tool("my_tool", std::move(args));
+        raw->close();
+    });
 
     io_ctx_.run();
 
@@ -130,18 +130,15 @@ TEST_F(ClientFeaturesTest, ListToolsSendsCorrectWireFormat) {
     });
 
     mcp::ListToolsResult result;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            result = co_await client.list_tools();
-            raw->close();
-        },
-        boost::asio::detached);
+        result = co_await client.list_tools();
+        raw->close();
+    });
 
     io_ctx_.run();
 
@@ -175,18 +172,15 @@ TEST_F(ClientFeaturesTest, ListToolsWithCursorSendsParams) {
     });
 
     mcp::ListToolsResult result;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            result = co_await client.list_tools("page2");
-            raw->close();
-        },
-        boost::asio::detached);
+        result = co_await client.list_tools("page2");
+        raw->close();
+    });
 
     io_ctx_.run();
 
@@ -217,18 +211,15 @@ TEST_F(ClientFeaturesTest, ListResourcesSendsCorrectWireFormat) {
     });
 
     mcp::ListResourcesResult result;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            result = co_await client.list_resources();
-            raw->close();
-        },
-        boost::asio::detached);
+        result = co_await client.list_resources();
+        raw->close();
+    });
 
     io_ctx_.run();
 
@@ -261,18 +252,15 @@ TEST_F(ClientFeaturesTest, ReadResourceSendsCorrectWireFormat) {
     });
 
     mcp::ReadResourceResult result;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            result = co_await client.read_resource("file:///b.txt");
-            raw->close();
-        },
-        boost::asio::detached);
+        result = co_await client.read_resource("file:///b.txt");
+        raw->close();
+    });
 
     io_ctx_.run();
 
@@ -306,18 +294,15 @@ TEST_F(ClientFeaturesTest, ListResourceTemplatesSendsCorrectWireFormat) {
     });
 
     mcp::ListResourceTemplatesResult result;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            result = co_await client.list_resource_templates();
-            raw->close();
-        },
-        boost::asio::detached);
+        result = co_await client.list_resource_templates();
+        raw->close();
+    });
 
     io_ctx_.run();
 
@@ -349,18 +334,15 @@ TEST_F(ClientFeaturesTest, ListPromptsSendsCorrectWireFormat) {
     });
 
     mcp::ListPromptsResult result;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            result = co_await client.list_prompts();
-            raw->close();
-        },
-        boost::asio::detached);
+        result = co_await client.list_prompts();
+        raw->close();
+    });
 
     io_ctx_.run();
 
@@ -393,19 +375,16 @@ TEST_F(ClientFeaturesTest, GetPromptSendsCorrectWireFormat) {
     });
 
     mcp::GetPromptResult result;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            std::map<std::string, std::string> args = {{"name", "Alice"}};
-            result = co_await client.get_prompt("greeting", std::move(args));
-            raw->close();
-        },
-        boost::asio::detached);
+        std::map<std::string, std::string> args = {{"name", "Alice"}};
+        result = co_await client.get_prompt("greeting", std::move(args));
+        raw->close();
+    });
 
     io_ctx_.run();
 
@@ -441,18 +420,15 @@ TEST_F(ClientFeaturesTest, GetPromptWithoutArgumentsSendsCorrectWireFormat) {
     });
 
     mcp::GetPromptResult result;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            result = co_await client.get_prompt("simple_prompt");
-            raw->close();
-        },
-        boost::asio::detached);
+        result = co_await client.get_prompt("simple_prompt");
+        raw->close();
+    });
 
     io_ctx_.run();
 
@@ -485,25 +461,22 @@ TEST_F(ClientFeaturesTest, CompleteSendsCorrectWireFormat) {
     });
 
     mcp::CompleteResult result;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            mcp::CompleteParams complete_params;
-            mcp::PromptReference ref;
-            ref.name = "greeting";
-            complete_params.ref = std::move(ref);
-            complete_params.argument.name = "name";
-            complete_params.argument.value = "Al";
+        mcp::CompleteParams complete_params;
+        mcp::PromptReference ref;
+        ref.name = "greeting";
+        complete_params.ref = std::move(ref);
+        complete_params.argument.name = "name";
+        complete_params.argument.value = "Al";
 
-            result = co_await client.complete(std::move(complete_params));
-            raw->close();
-        },
-        boost::asio::detached);
+        result = co_await client.complete(std::move(complete_params));
+        raw->close();
+    });
 
     io_ctx_.run();
 
@@ -550,20 +523,17 @@ class ClientToolSchemaTest : public ::testing::Test {
     void run(mcp::ClientOptions options, std::function<mcp::Task<void>(mcp::Client&)> body) {
         options.protocol = mcp::ClientProtocol::legacy();  // the scripted peer answers initialize
         mcp::Client client(transport_, io_ctx_.get_executor(), std::move(options));
-        boost::asio::co_spawn(
-            io_ctx_,
-            [&]() -> mcp::Task<void> {
-                // An exception escaping here would leave the transport open and io_ctx_.run()
-                // waiting, so it is recorded and the transport closed either way.
-                try {
-                    co_await client.connect("test-client", "0.1");
-                    co_await body(client);
-                } catch (const std::exception& error) {
-                    unexpected_error_ = error.what();
-                }
-                transport_->close();
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+            // An exception escaping here would leave the transport open and io_ctx_.run()
+            // waiting, so it is recorded and the transport closed either way.
+            try {
+                co_await client.connect("test-client", "0.1");
+                co_await body(client);
+            } catch (const std::exception& error) {
+                unexpected_error_ = error.what();
+            }
+            transport_->close();
+        });
         io_ctx_.run();
         EXPECT_EQ(unexpected_error_, "");
     }
@@ -772,3 +742,5 @@ TEST_F(ClientToolSchemaTest, ChecksCanBeTurnedOff) {
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->structuredContent->at("size"), -1);
 }
+
+}  // namespace client_features_test

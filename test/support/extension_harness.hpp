@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hang_guard.hpp"
+#include "spawn.hpp"
 
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
@@ -23,13 +24,13 @@ namespace mcp_test {
 inline nlohmann::json dispatch_direct(mcp::Server& server, nlohmann::json request) {
     boost::asio::io_context io_ctx;
     nlohmann::json response;
-    boost::asio::co_spawn(io_ctx, server.dispatch_request_direct(std::move(request)),
-                          [&response](std::exception_ptr error, std::string wire) {
-                              EXPECT_EQ(error, nullptr);
-                              if (!error) {
-                                  response = nlohmann::json::parse(wire);
-                              }
-                          });
+    mcp_test::spawn_then(io_ctx, server.dispatch_request_direct(std::move(request)),
+                         [&response](std::exception_ptr error, std::string wire) {
+                             EXPECT_EQ(error, nullptr);
+                             if (!error) {
+                                 response = nlohmann::json::parse(wire);
+                             }
+                         });
     io_ctx.run();
     return response;
 }
@@ -51,33 +52,27 @@ inline void run_modern_client(
             io_ctx.stop();
         }
     });
-    boost::asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await server.run(server_transport, io_ctx.get_executor());
-            } catch (const std::exception&) {
-            }
-        },
-        boost::asio::detached);
-    boost::asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::ClientOptions options;
-            options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
-            mcp::Client client(client_transport, io_ctx.get_executor(), options);
-            try {
-                // Named: GCC 11 mishandles a braced temporary in a co_await operand.
-                mcp::Implementation identity{"extension-test-client", "1.0"};
-                const auto connected = co_await client.connect(identity, capabilities);
-                co_await body(client, connected);
-            } catch (const std::exception& error) {
-                ADD_FAILURE() << "unexpected exception: " << error.what();
-            }
-            client.close();
-            guard.cancel();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            co_await server.run(server_transport, io_ctx.get_executor());
+        } catch (const std::exception&) {
+        }
+    });
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::ClientOptions options;
+        options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
+        mcp::Client client(client_transport, io_ctx.get_executor(), options);
+        try {
+            // Named: GCC 11 mishandles a braced temporary in a co_await operand.
+            mcp::Implementation identity{"extension-test-client", "1.0"};
+            const auto connected = co_await client.connect(identity, capabilities);
+            co_await body(client, connected);
+        } catch (const std::exception& error) {
+            ADD_FAILURE() << "unexpected exception: " << error.what();
+        }
+        client.close();
+        guard.cancel();
+    });
     io_ctx.run();
     EXPECT_FALSE(timed_out) << "the test did not finish";
 }

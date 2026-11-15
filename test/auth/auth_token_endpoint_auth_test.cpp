@@ -13,6 +13,7 @@
  */
 
 #include <gtest/gtest.h>
+#include "../support/spawn.hpp"
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -26,6 +27,8 @@
 #include <mcp/auth/oauth.hpp>
 #include <nlohmann/json.hpp>
 #include <string>
+
+namespace auth_token_endpoint_auth_test {
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -94,30 +97,24 @@ ExchangeOutcome run_exchange(const std::function<mcp::auth::OAuthConfig(unsigned
     asio::ip::tcp::acceptor acceptor(io_ctx, {asio::ip::make_address("127.0.0.1"), 0});
     const auto port = acceptor.local_endpoint().port();
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> asio::awaitable<void> {
-            outcome.recorded = co_await capture_one_request(acceptor, std::move(reply));
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> asio::awaitable<void> {
+        outcome.recorded = co_await capture_one_request(acceptor, std::move(reply));
+    });
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> asio::awaitable<void> {
-            mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
-            mcp::auth::MetadataFetchPolicy policy;
-            policy.allowed_origins.push_back("http://127.0.0.1:" + std::to_string(port));
-            policy.allow_plain_http_loopback = true;
-            client.set_metadata_policy(policy);
-            const auto config = make_config(port);
-            try {
-                outcome.token = co_await client.exchange_code(config, "test-authorization-code",
-                                                              "test-code-verifier");
-            } catch (...) {
-                outcome.failure = std::current_exception();
-            }
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> asio::awaitable<void> {
+        mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+        mcp::auth::MetadataFetchPolicy policy;
+        policy.allowed_origins.push_back("http://127.0.0.1:" + std::to_string(port));
+        policy.allow_plain_http_loopback = true;
+        client.set_metadata_policy(policy);
+        const auto config = make_config(port);
+        try {
+            outcome.token =
+                co_await client.exchange_code(config, "test-authorization-code", "test-code-verifier");
+        } catch (...) {
+            outcome.failure = std::current_exception();
+        }
+    });
 
     io_ctx.run();
     return outcome;
@@ -316,3 +313,5 @@ TEST(AuthTokenEndpointAuthNegativeLogTest,
     // The raw Basic-auth header value must not appear either, since decoding it recovers the secret.
     EXPECT_EQ(message.find(expected_basic_header(client_id, client_secret)), std::string::npos);
 }
+
+}  // namespace auth_token_endpoint_auth_test

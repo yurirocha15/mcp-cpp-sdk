@@ -1,6 +1,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
@@ -24,6 +25,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+namespace transport_http_tasks_test {
 
 namespace jsonrpc = mcp::constants::jsonrpc;
 
@@ -111,14 +114,12 @@ class HttpTasksTest : public ::testing::Test {
 
     template <typename Exchange>
     void run(mcp::StreamableHttpSessionManager& manager, Exchange exchange) {
-        asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
-        asio::co_spawn(
-            io_ctx_,
-            [&manager, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
+        mcp_test::spawn_detached(io_ctx_, manager.listen());
+        mcp_test::spawn_detached(
+            io_ctx_, [&manager, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
                 co_await exchange();
                 manager.close();
-            },
-            asio::detached);
+            });
         io_ctx_.run();
     }
 
@@ -224,3 +225,5 @@ TEST_F(HttpTasksTest, TheHttpClientFollowsATaskThroughTheServer) {
 }
 
 }  // namespace
+
+}  // namespace transport_http_tasks_test

@@ -1,5 +1,6 @@
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -13,6 +14,8 @@
 #include <memory>
 #include <string>
 #include <string_view>
+
+namespace server_logging_test {
 
 namespace {
 
@@ -71,9 +74,8 @@ TEST_F(ServerLoggingTest, SetLevelChangesServerLogLevel) {
     set_level_req["params"] = nlohmann::json{{"level", "warning"}};
     raw_transport->enqueue_message(set_level_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -117,14 +119,11 @@ TEST_F(ServerLoggingTest, ANewClientOnAReusedServerStartsAtTheDefaultLevel) {
     });
     second->enqueue_message(make_initialize_request("3").dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await server.run(first, io_ctx_.get_executor());
-            level_after_the_first_client = server.get_log_level();
-            co_await server.run(second, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await server.run(first, io_ctx_.get_executor());
+        level_after_the_first_client = server.get_log_level();
+        co_await server.run(second, io_ctx_.get_executor());
+    });
     io_ctx_.run();
 
     ASSERT_EQ(level_after_the_first_client, mcp::LoggingLevel::eError);
@@ -182,9 +181,8 @@ TEST_F(ServerLoggingTest, LogFilteredByLevel) {
     call_req["params"] = nlohmann::json{{"name", "log_tool"}, {"arguments", {{"dummy", 0}}}};
     raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -245,9 +243,8 @@ TEST_F(ServerLoggingTest, LogWithLoggerField) {
     call_req["params"] = nlohmann::json{{"name", "logger_tool"}, {"arguments", {{"dummy", 0}}}};
     raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -302,9 +299,8 @@ TEST_F(ServerLoggingTest, ListChangedNotificationsSent) {
         nlohmann::json{{"name", "trigger_list_changed"}, {"arguments", nlohmann::json::object()}};
     raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -319,3 +315,5 @@ TEST_F(ServerLoggingTest, ListChangedNotificationsSent) {
     EXPECT_EQ(responses[2]["id"], "2");
     ASSERT_TRUE(responses[2].contains("result"));
 }
+
+}  // namespace server_logging_test

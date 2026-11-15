@@ -1,5 +1,6 @@
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -13,6 +14,8 @@
 #include <string_view>
 #include <variant>
 #include <vector>
+
+namespace server_elicitation_test {
 
 namespace {
 
@@ -111,9 +114,8 @@ TEST_F(ElicitationTest, FormElicitationRoundtrip) {
     raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tool_call_request.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -201,9 +203,8 @@ TEST_F(ElicitationTest, URLElicitationRoundtrip) {
     raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tool_call_request.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -290,9 +291,8 @@ TEST_F(ElicitationTest, ClientDeclinesElicitation) {
     raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tool_call_request.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -375,9 +375,8 @@ TEST_F(ElicitationTest, ClientCancelsElicitation) {
     raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tool_call_request.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -397,20 +396,17 @@ TEST_F(ElicitationTest, ElicitWithoutSenderThrows) {
     mcp::Context ctx(*raw_transport);
 
     bool threw = false;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            try {
-                mcp::ElicitRequestFormParams form_params;
-                form_params.message = "test";
-                form_params.requestedSchema = nlohmann::json{{"type", "object"}};
-                co_await ctx.elicit(std::move(form_params));
-            } catch (const std::runtime_error&) {
-                threw = true;
-            }
-            raw_transport->close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        try {
+            mcp::ElicitRequestFormParams form_params;
+            form_params.message = "test";
+            form_params.requestedSchema = nlohmann::json{{"type", "object"}};
+            co_await ctx.elicit(std::move(form_params));
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        raw_transport->close();
+    });
 
     io_ctx_.run();
     EXPECT_TRUE(threw);
@@ -444,12 +440,9 @@ std::vector<nlohmann::json> run_scripted(boost::asio::io_context& io_ctx, mcp::S
     for (const auto& message : messages) {
         raw_transport->enqueue_message(message.dump());
     }
-    boost::asio::co_spawn(
-        io_ctx,
-        [&server, transport, &io_ctx]() -> mcp::Task<void> {
-            co_await server.run(transport, io_ctx.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&server, transport, &io_ctx]() -> mcp::Task<void> {
+        co_await server.run(transport, io_ctx.get_executor());
+    });
     io_ctx.restart();
     io_ctx.run();
     return written;
@@ -571,3 +564,5 @@ TEST_F(ElicitationModern, RequestNeverEmitsElicitationIdOrCompletion) {
     EXPECT_EQ(written[0]["result"]["resultType"], "input_required") << written[0];
     EXPECT_EQ(written[0]["result"]["inputRequests"].begin().value()["params"]["mode"], "url");
 }
+
+}  // namespace server_elicitation_test

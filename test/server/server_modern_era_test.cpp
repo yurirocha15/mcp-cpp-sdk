@@ -3,6 +3,7 @@
 
 #include "../../src/detail/constants.hpp"
 #include "../../src/detail/modern_methods.hpp"
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/websocket.hpp"
@@ -27,6 +28,8 @@
 #include <string_view>
 #include <tuple>
 #include <vector>
+
+namespace server_modern_era_test {
 
 namespace {
 
@@ -140,13 +143,13 @@ class ServerModernEraTest : public ::testing::Test {
 
     json dispatch(mcp::Server& server, json request) {
         json response;
-        boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(std::move(request)),
-                              [&response](std::exception_ptr error, std::string wire) {
-                                  EXPECT_EQ(error, nullptr);
-                                  if (!error) {
-                                      response = json::parse(wire);
-                                  }
-                              });
+        mcp_test::spawn_then(io_ctx_, server.dispatch_request_direct(std::move(request)),
+                             [&response](std::exception_ptr error, std::string wire) {
+                                 EXPECT_EQ(error, nullptr);
+                                 if (!error) {
+                                     response = json::parse(wire);
+                                 }
+                             });
         io_ctx_.restart();
         io_ctx_.run();
         return response;
@@ -177,12 +180,9 @@ class ServerModernEraTest : public ::testing::Test {
         for (const auto& message : messages) {
             raw_transport->enqueue_message(message.dump());
         }
-        boost::asio::co_spawn(
-            io_ctx_,
-            [&server, transport, this]() -> mcp::Task<void> {
-                co_await server.run(transport, io_ctx_.get_executor());
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [&server, transport, this]() -> mcp::Task<void> {
+            co_await server.run(transport, io_ctx_.get_executor());
+        });
         io_ctx_.restart();
         io_ctx_.run();
         return written;
@@ -217,11 +217,11 @@ class ServerModernEraTest : public ::testing::Test {
 TEST_F(ServerModernEraTest, ResultMembersOfTheRevisionAreAddedOnlyWhereAbsent) {
     const auto wire_of = [this](mcp::Server& server, json request) {
         std::string wire;
-        boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(std::move(request)),
-                              [&wire](std::exception_ptr error, std::string text) {
-                                  EXPECT_EQ(error, nullptr);
-                                  wire = std::move(text);
-                              });
+        mcp_test::spawn_then(io_ctx_, server.dispatch_request_direct(std::move(request)),
+                             [&wire](std::exception_ptr error, std::string text) {
+                                 EXPECT_EQ(error, nullptr);
+                                 wire = std::move(text);
+                             });
         io_ctx_.restart();
         io_ctx_.run();
         return wire;
@@ -806,7 +806,7 @@ TEST_F(ServerModernEraTest, DirectModernRequestSendsNothingThroughTheSession) {
             auto done = std::make_shared<std::atomic<bool>>(false);
             auto meta = make_modern_meta();
             meta["io.modelcontextprotocol/logLevel"] = "debug";
-            boost::asio::co_spawn(
+            mcp_test::spawn_then(
                 io_ctx_,
                 raw_server->dispatch_request_direct(modern_with_meta(
                     "d", "tools/call", meta, {{"name", "log"}, {"arguments", json::object()}})),
@@ -836,14 +836,14 @@ TEST_F(ServerModernEraTest, DirectCallsSharingAnIdAreCancelledIndependently) {
 
     json first;
     json second;
-    boost::asio::co_spawn(io_ctx_,
-                          server->dispatch_request_direct(call_tool(1, "wait_for_cancel"),
-                                                          mcp::RequestContext{first_flag}),
-                          [&first](std::exception_ptr error, std::string wire) {
-                              EXPECT_EQ(error, nullptr);
-                              first = json::parse(wire);
-                          });
-    boost::asio::co_spawn(
+    mcp_test::spawn_then(io_ctx_,
+                         server->dispatch_request_direct(call_tool(1, "wait_for_cancel"),
+                                                         mcp::RequestContext{first_flag}),
+                         [&first](std::exception_ptr error, std::string wire) {
+                             EXPECT_EQ(error, nullptr);
+                             first = json::parse(wire);
+                         });
+    mcp_test::spawn_then(
         io_ctx_,
         server->dispatch_request_direct(call_tool(1, "whoami"), mcp::RequestContext{second_flag}),
         [&second, first_flag](std::exception_ptr error, std::string wire) {
@@ -866,26 +866,20 @@ TEST_F(ServerModernEraTest, WebSocketServesAModernRequestWithoutInitialize) {
     boost::asio::ip::tcp::acceptor acceptor(io_ctx_, {boost::asio::ip::tcp::v4(), 0});
     const auto port = acceptor.local_endpoint().port();
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            auto socket = co_await acceptor.async_accept(boost::asio::use_awaitable);
-            auto transport = std::make_shared<mcp::WebSocketServerTransport>(std::move(socket));
-            co_await server->run(transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        auto socket = co_await acceptor.async_accept(boost::asio::use_awaitable);
+        auto transport = std::make_shared<mcp::WebSocketServerTransport>(std::move(socket));
+        co_await server->run(transport, io_ctx_.get_executor());
+    });
 
     json response;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::WebSocketClientTransport transport(io_ctx_.get_executor(), "127.0.0.1",
-                                                    std::to_string(port));
-            co_await transport.write_message(call_tool(1, "whoami").dump());
-            response = json::parse(co_await transport.read_message());
-            transport.close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::WebSocketClientTransport transport(io_ctx_.get_executor(), "127.0.0.1",
+                                                std::to_string(port));
+        co_await transport.write_message(call_tool(1, "whoami").dump());
+        response = json::parse(co_await transport.read_message());
+        transport.close();
+    });
     io_ctx_.run();
 
     ASSERT_TRUE(response.contains("result")) << response;
@@ -901,8 +895,8 @@ TEST_F(ServerModernEraTest, ConcurrentModernRequestsOnAThreadPool) {
     for (int index = 0; index < 64; ++index) {
         auto request =
             index % 2 == 0 ? call_tool(index, "whoami") : make_modern_request(index, "tools/list");
-        responses.push_back(boost::asio::co_spawn(
-            pool, server->dispatch_request_direct(std::move(request)), boost::asio::use_future));
+        responses.push_back(
+            mcp_test::spawn_future(pool, server->dispatch_request_direct(std::move(request))));
     }
     for (int index = 0; index < 64; ++index) {
         auto response = json::parse(responses[static_cast<std::size_t>(index)].get());
@@ -1189,3 +1183,5 @@ TEST_F(ServerModernEraTest, NeverEmitsErrorCodes32042And32002) {
 }
 
 }  // namespace
+
+}  // namespace server_modern_era_test

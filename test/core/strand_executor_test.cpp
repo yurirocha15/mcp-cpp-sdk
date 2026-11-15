@@ -23,6 +23,8 @@
 #include <utility>
 #include <vector>
 
+namespace strand_executor_test {
+
 namespace {
 
 namespace asio = boost::asio;
@@ -366,3 +368,5 @@ TEST(StrandExecutorTest, ATrackedIoContextExecutorGetsAGenericStrandThatStillSer
 }
 
 }  // namespace
+
+}  // namespace strand_executor_test

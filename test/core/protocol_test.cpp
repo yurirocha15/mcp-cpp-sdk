@@ -24,6 +24,8 @@
 #include <string_view>
 #include <vector>
 
+namespace protocol_test {
+
 using json = nlohmann::json;
 
 namespace {
@@ -2529,3 +2531,408 @@ TEST(ProtocolError, ACodeThatIsNoIntOfThisSizeDecodesToInternalError) {
     EXPECT_EQ(decode(7).code, 7);
     EXPECT_THROW((void)decode("x"), nlohmann::json::exception);
 }
+
+namespace {
+
+/// Checks member-wise serializers: @p value writes exactly @p expected, and @p expected reads back
+/// to a value that writes it again. With the members from position i of @p members onward missing,
+/// reading throws json::out_of_range naming member i, so members are read in declaration order; a
+/// document that is not an object throws json::type_error.
+template <typename T>
+void expect_memberwise(const T& value, const json& expected, const std::vector<std::string>& members) {
+    SCOPED_TRACE(expected.dump());
+    EXPECT_EQ(json(value).dump(), expected.dump());
+    EXPECT_EQ(json(expected.get<T>()).dump(), expected.dump());
+    ASSERT_EQ(expected.size(), members.size());
+    for (std::size_t first = 0; first < members.size(); ++first) {
+        json missing = expected;
+        for (std::size_t index = first; index < members.size(); ++index) {
+            missing.erase(members[index]);
+        }
+        try {
+            (void)missing.get<T>();
+            ADD_FAILURE() << "no exception without " << members[first];
+        } catch (const json::out_of_range& error) {
+            EXPECT_EQ(std::string(error.what()),
+                      "[json.exception.out_of_range.403] key '" + members[first] + "' not found");
+        }
+    }
+    for (const json& not_object : {json(nullptr), json::array(), json("text")}) {
+        try {
+            (void)not_object.get<T>();
+            ADD_FAILURE() << "no exception for " << not_object.dump();
+        } catch (const json::type_error& error) {
+            EXPECT_EQ(std::string(error.what()),
+                      std::string("[json.exception.type_error.304] cannot use at() with ") +
+                          not_object.type_name());
+        }
+    }
+}
+
+}  // namespace
+
+// Every member of these types is required on the wire: each is written under its own name and read
+// with at().
+TEST(ProtocolMemberwiseSerializers, RequestsWriteAndReadEveryMember) {
+    expect_memberwise(mcp::PingRequest{}, json{{"method", "ping"}}, {"method"});
+
+    mcp::InitializeRequest initialize;
+    initialize.protocolVersion = "2025-11-25";
+    initialize.clientInfo = {"client", "1.0"};
+    expect_memberwise(initialize,
+                      json{{"protocolVersion", "2025-11-25"},
+                           {"clientInfo", {{"name", "client"}, {"version", "1.0"}}},
+                           {"capabilities", json::object()}},
+                      {"protocolVersion", "clientInfo", "capabilities"});
+
+    mcp::ElicitRequestFormParams form;
+    form.message = "Name?";
+    form.requestedSchema = json{{"type", "object"}};
+    mcp::ElicitRequest elicit;
+    elicit.params = form;
+    expect_memberwise(
+        elicit,
+        json{{"method", "elicitation/create"},
+             {"params",
+              {{"mode", "form"}, {"message", "Name?"}, {"requestedSchema", {{"type", "object"}}}}}},
+        {"method", "params"});
+
+    mcp::CallToolRequest call;
+    call.params.name = "echo";
+    expect_memberwise(
+        call,
+        json{{"method", "tools/call"}, {"params", {{"name", "echo"}, {"arguments", json::object()}}}},
+        {"method", "params"});
+
+    mcp::CreateMessageRequest create;
+    create.params.maxTokens = 10;
+    expect_memberwise(create,
+                      json{{"method", "sampling/createMessage"},
+                           {"params", {{"messages", json::array()}, {"maxTokens", 10}}}},
+                      {"method", "params"});
+
+    expect_memberwise(mcp::ListRootsRequest{}, json{{"method", "roots/list"}}, {"method"});
+
+    mcp::ReadResourceRequest read;
+    read.params.uri = "file:///a";
+    expect_memberwise(read, json{{"method", "resources/read"}, {"params", {{"uri", "file:///a"}}}},
+                      {"method", "params"});
+
+    mcp::SubscribeRequest subscribe;
+    subscribe.params.uri = "file:///a";
+    expect_memberwise(subscribe,
+                      json{{"method", "resources/subscribe"}, {"params", {{"uri", "file:///a"}}}},
+                      {"method", "params"});
+
+    mcp::UnsubscribeRequest unsubscribe;
+    unsubscribe.params.uri = "file:///a";
+    expect_memberwise(unsubscribe,
+                      json{{"method", "resources/unsubscribe"}, {"params", {{"uri", "file:///a"}}}},
+                      {"method", "params"});
+
+    mcp::SetLevelRequest set_level;
+    set_level.params.level = mcp::LoggingLevel::eInfo;
+    expect_memberwise(set_level, json{{"method", "logging/setLevel"}, {"params", {{"level", "info"}}}},
+                      {"method", "params"});
+
+    mcp::GetPromptRequest get_prompt;
+    get_prompt.params.name = "greet";
+    expect_memberwise(get_prompt, json{{"method", "prompts/get"}, {"params", {{"name", "greet"}}}},
+                      {"method", "params"});
+}
+
+TEST(ProtocolMemberwiseSerializers, NotificationsWriteAndReadEveryMember) {
+    expect_memberwise(mcp::InitializedNotification{}, json{{"method", "notifications/initialized"}},
+                      {"method"});
+    expect_memberwise(mcp::PromptListChangedNotification{},
+                      json{{"method", "notifications/prompts/list_changed"}}, {"method"});
+    expect_memberwise(mcp::ResourceListChangedNotification{},
+                      json{{"method", "notifications/resources/list_changed"}}, {"method"});
+    expect_memberwise(mcp::ToolListChangedNotification{},
+                      json{{"method", "notifications/tools/list_changed"}}, {"method"});
+    expect_memberwise(mcp::RootsListChangedNotification{},
+                      json{{"method", "notifications/roots/list_changed"}}, {"method"});
+
+    mcp::CancelledNotification cancelled;
+    cancelled.params.requestId = int64_t{7};
+    expect_memberwise(cancelled,
+                      json{{"method", "notifications/cancelled"}, {"params", {{"requestId", 7}}}},
+                      {"method", "params"});
+
+    mcp::ProgressNotification progress;
+    progress.params.progressToken = "token";
+    progress.params.progress = 0.5;
+    expect_memberwise(progress,
+                      json{{"method", "notifications/progress"},
+                           {"params", {{"progressToken", "token"}, {"progress", 0.5}}}},
+                      {"method", "params"});
+
+    mcp::LoggingMessageNotification logging;
+    logging.params.level = mcp::LoggingLevel::eWarning;
+    logging.params.data = "disk low";
+    expect_memberwise(logging,
+                      json{{"method", "notifications/message"},
+                           {"params", {{"level", "warning"}, {"data", "disk low"}}}},
+                      {"method", "params"});
+
+    mcp::ResourceUpdatedNotification updated;
+    updated.params.uri = "file:///a";
+    expect_memberwise(
+        updated,
+        json{{"method", "notifications/resources/updated"}, {"params", {{"uri", "file:///a"}}}},
+        {"method", "params"});
+
+    mcp::ElicitationCompleteNotification complete;
+    complete.params.elicitationId = "e-1";
+    expect_memberwise(
+        complete,
+        json{{"method", "notifications/elicitation/complete"}, {"params", {{"elicitationId", "e-1"}}}},
+        {"method", "params"});
+}
+
+TEST(ProtocolMemberwiseSerializers, ParametersAndReferencesWriteAndReadEveryMember) {
+    expect_memberwise(mcp::PromptReference{"ref/prompt", "greet"},
+                      json{{"type", "ref/prompt"}, {"name", "greet"}}, {"type", "name"});
+    expect_memberwise(mcp::ResourceTemplateReference{"ref/resource", "file:///{path}"},
+                      json{{"type", "ref/resource"}, {"uri", "file:///{path}"}}, {"type", "uri"});
+    expect_memberwise(mcp::CompleteParamsArgument{"language", "py"},
+                      json{{"name", "language"}, {"value", "py"}}, {"name", "value"});
+    expect_memberwise(mcp::ReadResourceRequestParams{"file:///a"}, json{{"uri", "file:///a"}}, {"uri"});
+    expect_memberwise(mcp::ResourceSubscribeParams{"file:///a"}, json{{"uri", "file:///a"}}, {"uri"});
+    expect_memberwise(mcp::ResourceUnsubscribeParams{"file:///a"}, json{{"uri", "file:///a"}}, {"uri"});
+    expect_memberwise(mcp::ResourceUpdatedNotificationParams{"file:///a"}, json{{"uri", "file:///a"}},
+                      {"uri"});
+    expect_memberwise(mcp::GetTaskRequestParams{"task-1"}, json{{"taskId", "task-1"}}, {"taskId"});
+    expect_memberwise(mcp::CancelTaskRequestParams{"task-1"}, json{{"taskId", "task-1"}}, {"taskId"});
+    expect_memberwise(mcp::UpdateTaskRequestParams{"task-1", {{"q1", json{{"action", "accept"}}}}},
+                      json{{"taskId", "task-1"}, {"inputResponses", {{"q1", {{"action", "accept"}}}}}},
+                      {"taskId", "inputResponses"});
+
+    mcp::PromptMessage message;
+    message.role = mcp::Role::eAssistant;
+    message.content = mcp::TextContent{"text", "hi"};
+    expect_memberwise(message,
+                      json{{"role", "assistant"}, {"content", {{"type", "text"}, {"text", "hi"}}}},
+                      {"role", "content"});
+}
+
+// Writing adds the members to the object the document already holds rather than replacing it.
+TEST(ProtocolMemberwiseSerializers, WritingIntoAnObjectKeepsItsOtherMembers) {
+    json document = {{"extra", 1}};
+    mcp::to_json(document, mcp::PingRequest{});
+    EXPECT_EQ(document, (json{{"extra", 1}, {"method", "ping"}}));
+}
+
+// A present member is read as its own type reads it: a null `capabilities` is an empty capability
+// set, and a role the enum does not know, null included, reads as its first value.
+TEST(ProtocolMemberwiseSerializers, NullMembersReadAsTheirOwnTypesReadThem) {
+    const auto request = json{
+        {"protocolVersion", "2025-11-25"},
+        {"clientInfo", {{"name", "client"}, {"version", "1.0"}}},
+        {"capabilities",
+         nullptr}}.get<mcp::InitializeRequest>();
+    EXPECT_EQ(json(request.capabilities), json::object());
+
+    const auto message = json{{"role", nullptr}, {"content", {{"type", "text"}, {"text", "hi"}}}}
+                             .get<mcp::PromptMessage>();
+    EXPECT_EQ(message.role, mcp::Role::eUser);
+}
+
+namespace {
+
+/// Reads @p full into a value, then @p minimal into the same value, and checks the result equals a
+/// fresh read of @p minimal: a member that @p minimal omits does not keep the value @p full gave it.
+template <typename T>
+void expect_reuse_reads_like_fresh(const char* type_name, const json& full, const json& minimal) {
+    SCOPED_TRACE(type_name);
+    auto value = full.get<T>();
+    const auto fresh = minimal.get<T>();
+    ASSERT_NE(json(value), json(fresh)) << "the full document must set a member the minimal one omits";
+    minimal.get_to(value);
+    EXPECT_EQ(json(value), json(fresh));
+}
+
+}  // namespace
+
+TEST(ProtocolReuse, ReadingIntoAUsedValueMatchesAFreshRead) {
+    const json meta = {{"k", 1}};
+    const json icons = json::array({{{"src", "https://example.com/i.png"}}});
+    const json tool = {{"name", "t"}, {"inputSchema", {{"type", "object"}}}};
+    const json text = {{"type", "text"}, {"text", "x"}};
+
+    expect_reuse_reads_like_fresh<mcp::ListPromptsResult>("ListPromptsResult",
+                                                          {{"prompts", json::array({{{"name", "p"}}})},
+                                                           {"nextCursor", "c"},
+                                                           {"_meta", meta},
+                                                           {"ttlMs", 5},
+                                                           {"cacheScope", "public"}},
+                                                          {{"prompts", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::ListToolsResult>("ListToolsResult",
+                                                        {{"tools", json::array({tool})},
+                                                         {"nextCursor", "c"},
+                                                         {"_meta", meta},
+                                                         {"ttlMs", 5},
+                                                         {"cacheScope", "private"}},
+                                                        {{"tools", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::ListResourcesResult>(
+        "ListResourcesResult",
+        {{"resources", json::array({{{"name", "r"}, {"uri", "file:///r"}}})},
+         {"nextCursor", "c"},
+         {"_meta", meta},
+         {"ttlMs", 5},
+         {"cacheScope", "public"}},
+        {{"resources", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::ListResourceTemplatesResult>(
+        "ListResourceTemplatesResult",
+        {{"resourceTemplates", json::array({{{"name", "t"}, {"uriTemplate", "file:///{x}"}}})},
+         {"nextCursor", "c"},
+         {"_meta", meta},
+         {"ttlMs", 5},
+         {"cacheScope", "public"}},
+        {{"resourceTemplates", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::ListSkillsResult>(
+        "ListSkillsResult",
+        {{"skills", json::array()}, {"nextCursor", "c"}, {"ttlMs", 5}, {"cacheScope", "public"}},
+        {{"skills", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::ReadResourceDirectoryResult>(
+        "ReadResourceDirectoryResult",
+        {{"resources", json::array()}, {"nextCursor", "c"}, {"ttlMs", 5}, {"cacheScope", "public"}},
+        {{"resources", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::ReadResourceResult>(
+        "ReadResourceResult", {{"contents", json::array()}, {"ttlMs", 5}, {"cacheScope", "public"}},
+        {{"contents", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::Tool>("Tool",
+                                             {{"name", "t"},
+                                              {"inputSchema", {{"type", "object"}}},
+                                              {"title", "T"},
+                                              {"description", "d"},
+                                              {"outputSchema", {{"type", "object"}}},
+                                              {"annotations", {{"readOnlyHint", true}}},
+                                              {"icons", icons},
+                                              {"_meta", meta}},
+                                             tool);
+    expect_reuse_reads_like_fresh<mcp::Resource>("Resource",
+                                                 {{"name", "r"},
+                                                  {"uri", "file:///r"},
+                                                  {"title", "R"},
+                                                  {"description", "d"},
+                                                  {"mimeType", "text/plain"},
+                                                  {"size", 3},
+                                                  {"annotations", {{"priority", 0.5}}},
+                                                  {"icons", icons},
+                                                  {"_meta", meta}},
+                                                 {{"name", "r"}, {"uri", "file:///r"}});
+    expect_reuse_reads_like_fresh<mcp::Prompt>("Prompt",
+                                               {{"name", "p"},
+                                                {"title", "P"},
+                                                {"description", "d"},
+                                                {"arguments", json::array({{{"name", "a"}}})},
+                                                {"icons", icons},
+                                                {"_meta", meta}},
+                                               {{"name", "p"}});
+    expect_reuse_reads_like_fresh<mcp::GetPromptResult>(
+        "GetPromptResult", {{"messages", json::array()}, {"description", "d"}, {"_meta", meta}},
+        {{"messages", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::CallToolResult>("CallToolResult",
+                                                       {{"content", json::array({text})},
+                                                        {"structuredContent", {{"a", 1}}},
+                                                        {"isError", true},
+                                                        {"_meta", meta}},
+                                                       {{"content", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::Implementation>("Implementation",
+                                                       {{"name", "n"},
+                                                        {"version", "1"},
+                                                        {"title", "T"},
+                                                        {"description", "d"},
+                                                        {"websiteUrl", "https://example.com"},
+                                                        {"icons", icons}},
+                                                       {{"name", "n"}, {"version", "1"}});
+    expect_reuse_reads_like_fresh<mcp::InitializeResult>(
+        "InitializeResult",
+        {{"protocolVersion", "2025-06-18"},
+         {"capabilities", {{"tools", {{"listChanged", true}}}}},
+         {"serverInfo", {{"name", "s"}, {"version", "1"}}},
+         {"instructions", "i"}},
+        {{"protocolVersion", "2025-06-18"},
+         {"capabilities", json::object()},
+         {"serverInfo", {{"name", "s"}, {"version", "1"}}}});
+    expect_reuse_reads_like_fresh<mcp::ServerCapabilities>("ServerCapabilities",
+                                                           {{"tools", {{"listChanged", true}}},
+                                                            {"prompts", {{"listChanged", true}}},
+                                                            {"resources", {{"subscribe", true}}},
+                                                            {"logging", json::object()}},
+                                                           json::object());
+    expect_reuse_reads_like_fresh<mcp::ClientCapabilities>("ClientCapabilities",
+                                                           {{"roots", {{"listChanged", true}}},
+                                                            {"sampling", json::object()},
+                                                            {"elicitation", json::object()}},
+                                                           json::object());
+    expect_reuse_reads_like_fresh<mcp::CreateMessageResult>(
+        "CreateMessageResult",
+        {{"role", "assistant"},
+         {"content", text},
+         {"model", "m"},
+         {"stopReason", "endTurn"},
+         {"_meta", meta}},
+        {{"role", "assistant"}, {"content", text}, {"model", "m"}});
+    expect_reuse_reads_like_fresh<mcp::ElicitResult>(
+        "ElicitResult", {{"action", "accept"}, {"content", {{"a", "b"}}}, {"_meta", meta}},
+        {{"action", "accept"}});
+    expect_reuse_reads_like_fresh<mcp::ProgressNotificationParams>(
+        "ProgressNotificationParams",
+        {{"progressToken", "t"}, {"progress", 1}, {"total", 2}, {"message", "m"}},
+        {{"progressToken", "t"}, {"progress", 1}});
+    expect_reuse_reads_like_fresh<mcp::ListRootsResult>(
+        "ListRootsResult",
+        {{"roots", json::array({{{"uri", "file:///r"}, {"name", "r"}}})}, {"_meta", meta}},
+        {{"roots", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::TextResourceContents>(
+        "TextResourceContents",
+        {{"uri", "file:///r"}, {"text", "x"}, {"mimeType", "text/plain"}, {"_meta", meta}},
+        {{"uri", "file:///r"}, {"text", "x"}});
+    expect_reuse_reads_like_fresh<mcp::Annotations>("Annotations",
+                                                    {{"audience", json::array({"user"})},
+                                                     {"priority", 0.5},
+                                                     {"lastModified", "2025-01-01T00:00:00Z"}},
+                                                    json::object());
+    expect_reuse_reads_like_fresh<mcp::Error>("Error",
+                                              {{"code", 1}, {"message", "m"}, {"data", {{"a", 1}}}},
+                                              {{"code", 1}, {"message", "m"}});
+    expect_reuse_reads_like_fresh<mcp::StringSchema>(
+        "StringSchema",
+        json::parse(
+            R"({"type":"string","title":"t","description":"d","minLength":1,"maxLength":5,"format":"email","default":"x"})"),
+        json::parse(R"({"type":"string"})"));
+    expect_reuse_reads_like_fresh<mcp::NumberSchema>(
+        "NumberSchema",
+        json::parse(R"({"type":"number","title":"t","minimum":1,"maximum":5,"default":2})"),
+        json::parse(R"({"type":"number"})"));
+    expect_reuse_reads_like_fresh<mcp::BooleanSchema>(
+        "BooleanSchema", json::parse(R"({"type":"boolean","title":"t","default":true})"),
+        json::parse(R"({"type":"boolean"})"));
+    expect_reuse_reads_like_fresh<mcp::EnumSchema>(
+        "EnumSchema", json::parse(R"({"type":"string","enum":["a"],"enumNames":["A"],"default":"a"})"),
+        json::parse(R"({"type":"string","enum":["a"]})"));
+    expect_reuse_reads_like_fresh<mcp::TitledEnumSchema>(
+        "TitledEnumSchema",
+        json::parse(
+            R"({"type":"string","oneOf":[{"const":"a","title":"A"}],"title":"t","default":"a"})"),
+        json::parse(R"({"type":"string","oneOf":[{"const":"a","title":"A"}]})"));
+    expect_reuse_reads_like_fresh<mcp::MultiSelectEnumSchema>(
+        "MultiSelectEnumSchema",
+        json::parse(
+            R"({"type":"array","items":{"type":"string","enum":["a"]},"minItems":1,"maxItems":2,"default":["a"]})"),
+        json::parse(R"({"type":"array","items":{"type":"string","enum":["a"]}})"));
+    expect_reuse_reads_like_fresh<mcp::TitledMultiSelectEnumSchema>(
+        "TitledMultiSelectEnumSchema",
+        json::parse(
+            R"({"type":"array","items":{"anyOf":[{"const":"a","title":"A"}]},"minItems":1,"default":["a"]})"),
+        json::parse(R"({"type":"array","items":{"anyOf":[{"const":"a","title":"A"}]}})"));
+    expect_reuse_reads_like_fresh<mcp::CompleteResult>(
+        "CompleteResult",
+        {{"completion", {{"values", json::array({"a"})}, {"total", 1}, {"hasMore", false}}},
+         {"_meta", meta}},
+        {{"completion", {{"values", json::array({"a"})}}}});
+}
+
+}  // namespace protocol_test

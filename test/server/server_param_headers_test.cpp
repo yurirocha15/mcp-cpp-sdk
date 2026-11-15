@@ -1,6 +1,7 @@
 #include "../test_utils.hpp"
 
 #include "../../src/detail/param_headers.hpp"
+#include "../support/spawn.hpp"
 #include "mcp/protocol/schema.hpp"
 #include "mcp/server/server.hpp"
 
@@ -14,6 +15,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+namespace server_param_headers_test {
 
 namespace {
 
@@ -254,16 +257,16 @@ class ServerParamHeadersDispatch : public ::testing::Test {
 
     json dispatch(mcp::Server& server, json request, mcp::RequestContext context) {
         json response;
-        boost::asio::co_spawn(io_ctx_,
-                              server.dispatch_request_direct(std::move(request), std::move(context)),
-                              [this, &response](std::exception_ptr error, std::string wire) {
-                                  EXPECT_EQ(error, nullptr);
-                                  if (!error) {
-                                      response = json::parse(wire);
-                                  }
-                                  // A parked request keeps a timer running past its answer.
-                                  io_ctx_.stop();
-                              });
+        mcp_test::spawn_then(io_ctx_,
+                             server.dispatch_request_direct(std::move(request), std::move(context)),
+                             [this, &response](std::exception_ptr error, std::string wire) {
+                                 EXPECT_EQ(error, nullptr);
+                                 if (!error) {
+                                     response = json::parse(wire);
+                                 }
+                                 // A parked request keeps a timer running past its answer.
+                                 io_ctx_.stop();
+                             });
         io_ctx_.restart();
         io_ctx_.run();
         return response;
@@ -396,3 +399,5 @@ TEST_F(ServerParamHeadersDispatch, LegacyRequestsAreNeverChecked) {
 }
 
 }  // namespace
+
+}  // namespace server_param_headers_test

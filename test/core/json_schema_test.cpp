@@ -32,6 +32,8 @@
 #include <sys/resource.h>
 #endif
 
+namespace json_schema_test {
+
 namespace {
 
 using mcp::CompiledSchema;
@@ -1942,3 +1944,5 @@ TEST(Suite, RequiredDraft7) {
 }
 
 }  // namespace
+
+}  // namespace json_schema_test

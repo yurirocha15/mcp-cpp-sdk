@@ -63,6 +63,8 @@
 
 #include <string>
 
+namespace json_peer_input_matrix_test {
+
 namespace {
 
 using nlohmann::json;
@@ -1019,7 +1021,7 @@ TEST(JsonPeerInputMatrix, PromptListChangedNotification) {
 }
 
 TEST(JsonPeerInputMatrix, PromptReference) {
-    const json baseline = json::parse(R"json({"name":"x","type":"ref/prompt"})json");
+    const json baseline = json::parse(R"json({"type":"ref/prompt","name":"x"})json");
     static const FieldExpect fields[] = {
         {"name", R"json("x")json", 0, true, true, true, false},
         {"type", R"json("ref/prompt")json", 0, true, true, true, false},
@@ -1474,7 +1476,7 @@ TEST(JsonPeerInputMatrix, UnsupportedProtocolVersionData) {
 }
 
 TEST(JsonPeerInputMatrix, UpdateTaskRequestParams) {
-    const json baseline = json::parse(R"json({"inputResponses":{},"taskId":"x"})json");
+    const json baseline = json::parse(R"json({"taskId":"x","inputResponses":{}})json");
     static const FieldExpect fields[] = {
         {"inputResponses", R"json({})json", 0, true, true, true, false},
         {"taskId", R"json("x")json", 0, true, true, true, false},
@@ -1496,6 +1498,8 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
     EXPECT_EQ(generated_cases, fields * modes);
     EXPECT_GT(types, 0);
 }
+
+}  // namespace json_peer_input_matrix_test
 
 // Types in the matrix (checked against the protocol headers at build time):
 //   Annotations

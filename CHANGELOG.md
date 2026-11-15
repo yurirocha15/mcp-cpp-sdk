@@ -837,6 +837,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `eDeniedOriginEntryMalformed`). The strings `describe()` returns are
   unchanged. The `ClientProtocol` factories `Auto()`, `Legacy()` and
   `Version()` are `automatic()`, `legacy()` and `pinned()`.
+- The `to_json` and `from_json` functions of the types in `mcp/protocol/` and
+  of `SubscriptionFilter` are compiled into the library; the headers only
+  declare them, so a file that includes the headers no longer compiles them.
+  The JSON they write and the input they accept are unchanged. They take
+  `nlohmann::json` only: the ones `NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE` used to
+  generate for the request, notification and parameter types were templates
+  that, with nlohmann_json 3.12, also took other `nlohmann::basic_json` types
+  such as `nlohmann::ordered_json`.
 
 ### Deprecated
 
@@ -902,6 +910,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   destroyed temporary; `graceful_shutdown()` did not say that its watchdog keeps
   `io_context::run()` going until the timeout unless cancelled; and several
   pages included the wrong lines of the examples.
+- Reading a protocol or OAuth type into an object that already holds values,
+  with `nlohmann::json::get_to()`, kept the optional members the new JSON
+  omits, such as a result's `nextCursor` or caching hints. Each `from_json`
+  now overwrites its whole target, so `get_to()` gives the same value as
+  `get()`.
 - With libc++, an exception of `nlohmann_json` that the shared library
   throws, such as the `nlohmann::json::type_error` 316 of
   `mcp::detail::dump_json()` for text that is not valid UTF-8, could not be

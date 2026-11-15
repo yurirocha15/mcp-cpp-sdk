@@ -1,4 +1,5 @@
 #include "../../src/detail/http_response_write.hpp"
+#include "../support/spawn.hpp"
 
 #include <mcp/core/core.hpp>
 
@@ -22,6 +23,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+namespace http_response_write_test {
 
 namespace http = boost::beast::http;
 using mcp::StringResponse;
@@ -76,7 +79,7 @@ std::string bytes_read(const std::vector<StringResponse>& responses, Writer writ
         asio::ip::tcp::socket(executor, asio::ip::tcp::v4(), accepted.release()));
     std::vector<char> received;
     std::exception_ptr failure;
-    asio::co_spawn(
+    mcp_test::spawn_then(
         executor,
         [&]() -> mcp::Task<void> {
             // One head buffer for every answer, as a connection keeps it.
@@ -91,14 +94,11 @@ std::string bytes_read(const std::vector<StringResponse>& responses, Writer writ
             server.socket().shutdown(asio::ip::tcp::socket::shutdown_send);
         },
         [&failure](std::exception_ptr error) { failure = std::move(error); });
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            boost::system::error_code error;
-            co_await asio::async_read(client, asio::dynamic_buffer(received),
-                                      asio::redirect_error(asio::use_awaitable, error));
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        boost::system::error_code error;
+        co_await asio::async_read(client, asio::dynamic_buffer(received),
+                                  asio::redirect_error(asio::use_awaitable, error));
+    });
     io.run();
     if (failure) {
         std::rethrow_exception(failure);
@@ -118,21 +118,18 @@ boost::system::error_code error_writing_to_reset_peer(const StringResponse& resp
     client.set_option(asio::socket_base::linger(true, 0));
     client.close();
     boost::system::error_code result;
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            std::vector<char> head;
-            try {
-                if (writer == Writer::eHelper) {
-                    co_await mcp::detail::async_write_response(server, response, head);
-                } else {
-                    co_await http::async_write(server, response, asio::use_awaitable);
-                }
-            } catch (const boost::system::system_error& error) {
-                result = error.code();
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        std::vector<char> head;
+        try {
+            if (writer == Writer::eHelper) {
+                co_await mcp::detail::async_write_response(server, response, head);
+            } else {
+                co_await http::async_write(server, response, asio::use_awaitable);
             }
-        },
-        asio::detached);
+        } catch (const boost::system::system_error& error) {
+            result = error.code();
+        }
+    });
     io.run();
     return result;
 }
@@ -261,3 +258,5 @@ TEST(HttpResponseWriteTest, WriteToAResetPeerFailsAsBeastsDoes) {
     EXPECT_TRUE(helper_error);
     EXPECT_EQ(helper_error, beast_error) << helper_error.message() << " / " << beast_error.message();
 }
+
+}  // namespace http_response_write_test

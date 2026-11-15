@@ -9,6 +9,8 @@
 #include <string_view>
 #include <vector>
 
+namespace jsonrpc_envelope_test {
+
 using mcp::detail::scan_jsonrpc_envelope;
 
 TEST(JsonRpcEnvelopeTest, SkipsNestedValuesAndStringsThatContainDelimiters) {
@@ -333,3 +335,5 @@ TEST(JsonRpcEnvelopeTest, AgreesWithTheByteScanOnGeneratedEnvelopes) {
     constexpr std::size_t g_least_compared = 10000;
     EXPECT_GT(compared, g_least_compared);
 }
+
+}  // namespace jsonrpc_envelope_test

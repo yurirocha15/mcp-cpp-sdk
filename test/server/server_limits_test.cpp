@@ -1,5 +1,6 @@
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 
@@ -20,6 +21,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+
+namespace server_limits_test {
 
 namespace {
 
@@ -74,21 +77,18 @@ class ServerLimitsTest : public ::testing::Test {
     }
 
     void run(std::function<mcp::Task<void>()> exchange) {
-        boost::asio::co_spawn(
-            io_, [this]() -> mcp::Task<void> { co_await server_->run(transport_, io_.get_executor()); },
-            boost::asio::detached);
-        boost::asio::co_spawn(
-            io_,
-            [this, exchange = std::move(exchange)]() -> mcp::Task<void> {
-                // A failed exchange still ends the session, or the test would never return.
-                try {
-                    co_await exchange();
-                } catch (const std::exception& error) {
-                    ADD_FAILURE() << error.what();
-                }
-                transport_->close();
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io_, [this]() -> mcp::Task<void> {
+            co_await server_->run(transport_, io_.get_executor());
+        });
+        mcp_test::spawn_detached(io_, [this, exchange = std::move(exchange)]() -> mcp::Task<void> {
+            // A failed exchange still ends the session, or the test would never return.
+            try {
+                co_await exchange();
+            } catch (const std::exception& error) {
+                ADD_FAILURE() << error.what();
+            }
+            transport_->close();
+        });
         io_.run();
     }
 
@@ -732,17 +732,14 @@ TEST(ClientLimits, ServerThatTakesNoAnswersCannotFloodTheClient) {
     mcp::Client client(peer, io.get_executor());
 
     int settled = 0;
-    boost::asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("limits", "1.0");
-            co_await wait_until([&] { return peer->pings_read >= 2000 || peer->pings_read == 1024; });
-            boost::asio::steady_timer settle(io.get_executor(), std::chrono::milliseconds(20));
-            co_await settle.async_wait(boost::asio::use_awaitable);
-            settled = peer->pings_read;
-            client.close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        co_await client.connect("limits", "1.0");
+        co_await wait_until([&] { return peer->pings_read >= 2000 || peer->pings_read == 1024; });
+        boost::asio::steady_timer settle(io.get_executor(), std::chrono::milliseconds(20));
+        co_await settle.async_wait(boost::asio::use_awaitable);
+        settled = peer->pings_read;
+        client.close();
+    });
     io.run();
 
     EXPECT_EQ(settled, 1024);
@@ -758,17 +755,14 @@ TEST(ClientLimits, ServerRequestsAreLimitedByTheMemoryTheyTake) {
     mcp::Client client(peer, io.get_executor(), options);
 
     int settled = 0;
-    boost::asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("limits", "1.0");
-            co_await wait_until([&] { return peer->pings_read >= 3; });
-            boost::asio::steady_timer settle(io.get_executor(), std::chrono::milliseconds(50));
-            co_await settle.async_wait(boost::asio::use_awaitable);
-            settled = peer->pings_read;
-            client.close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        co_await client.connect("limits", "1.0");
+        co_await wait_until([&] { return peer->pings_read >= 3; });
+        boost::asio::steady_timer settle(io.get_executor(), std::chrono::milliseconds(50));
+        co_await settle.async_wait(boost::asio::use_awaitable);
+        settled = peer->pings_read;
+        client.close();
+    });
     io.run();
 
     // 20,000 empty objects take more than 1 MiB parsed, and about 60 KB as text.
@@ -783,14 +777,11 @@ TEST(ClientLimits, AnsweredRequestsLeaveRoomForMore) {
     auto peer = std::make_shared<FloodingPeer>(io.get_executor());
     peer->take_answers = true;
     mcp::Client client(peer, io.get_executor());
-    boost::asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("limits", "1.0");
-            co_await wait_until([&] { return peer->pings_read >= 3000; });
-            client.close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        co_await client.connect("limits", "1.0");
+        co_await wait_until([&] { return peer->pings_read >= 3000; });
+        client.close();
+    });
     io.run();
     EXPECT_GE(peer->pings_read, 3000);
 }
@@ -805,21 +796,18 @@ TEST(ClientLimits, AnsweredRequestsGiveBackTheirMemory) {
     options.max_incoming_request_bytes = std::size_t{1024} * 1024;
     mcp::Client client(peer, io.get_executor(), options);
     int unanswered = 0;
-    boost::asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("limits", "1.0");
-            co_await wait_until([&] { return peer->pings_read >= 3; });
-            peer->take_held_answers();
-            // Each ping takes about 200 KB parsed, so these hold far more than the limit in all.
-            co_await wait_until([&] { return peer->pings_read >= 40; });
-            peer->hold_answers_again();
-            // Requests read and not yet answered: with the memory given back, several at once.
-            co_await wait_until([&] { return peer->pings_read - peer->answers_taken >= 4; });
-            unanswered = peer->pings_read - peer->answers_taken;
-            client.close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        co_await client.connect("limits", "1.0");
+        co_await wait_until([&] { return peer->pings_read >= 3; });
+        peer->take_held_answers();
+        // Each ping takes about 200 KB parsed, so these hold far more than the limit in all.
+        co_await wait_until([&] { return peer->pings_read >= 40; });
+        peer->hold_answers_again();
+        // Requests read and not yet answered: with the memory given back, several at once.
+        co_await wait_until([&] { return peer->pings_read - peer->answers_taken >= 4; });
+        unanswered = peer->pings_read - peer->answers_taken;
+        client.close();
+    });
     io.run();
     EXPECT_GE(unanswered, 4);
 }
@@ -837,17 +825,14 @@ TEST(ClientLimits, UnwrittenAnswersCountAgainstTheLimit) {
         co_return json{{"text", std::string(std::size_t{64} * 1024, 'x')}};
     });
     int settled = 0;
-    boost::asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("limits", "1.0");
-            co_await wait_until([&] { return peer->pings_read >= 3; });
-            boost::asio::steady_timer settle(io.get_executor(), std::chrono::milliseconds(100));
-            co_await settle.async_wait(boost::asio::use_awaitable);
-            settled = peer->pings_read;
-            client.close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        co_await client.connect("limits", "1.0");
+        co_await wait_until([&] { return peer->pings_read >= 3; });
+        boost::asio::steady_timer settle(io.get_executor(), std::chrono::milliseconds(100));
+        co_await settle.async_wait(boost::asio::use_awaitable);
+        settled = peer->pings_read;
+        client.close();
+    });
     io.run();
     // Four answers of 64 KiB fill the limit. Requests read before their handlers queue an answer
     // add a few; counted by the requests alone, the client would read 1024.
@@ -861,19 +846,16 @@ TEST(ClientLimits, ReadingResumesWhenRequestsEnd) {
     auto peer = std::make_shared<FloodingPeer>(io.get_executor());
     mcp::Client client(peer, io.get_executor());
     int at_the_limit = 0;
-    boost::asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("limits", "1.0");
-            co_await wait_until([&] { return peer->pings_read >= 1024; });
-            boost::asio::steady_timer settle(io.get_executor(), std::chrono::milliseconds(20));
-            co_await settle.async_wait(boost::asio::use_awaitable);
-            at_the_limit = peer->pings_read;
-            peer->take_held_answers();
-            co_await wait_until([&] { return peer->pings_read >= 2000; });
-            client.close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        co_await client.connect("limits", "1.0");
+        co_await wait_until([&] { return peer->pings_read >= 1024; });
+        boost::asio::steady_timer settle(io.get_executor(), std::chrono::milliseconds(20));
+        co_await settle.async_wait(boost::asio::use_awaitable);
+        at_the_limit = peer->pings_read;
+        peer->take_held_answers();
+        co_await wait_until([&] { return peer->pings_read >= 2000; });
+        client.close();
+    });
     io.run();
     EXPECT_EQ(at_the_limit, 1024);
     EXPECT_GE(peer->pings_read, 2000);
@@ -886,16 +868,13 @@ TEST(ClientLimits, CloseEndsTheWaitForRoomToRead) {
     auto peer = std::make_shared<FloodingPeer>(io.get_executor());
     peer->answers_outlast_close = true;
     mcp::Client client(peer, io.get_executor());
-    boost::asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("limits", "1.0");
-            co_await wait_until([&] { return peer->pings_read >= 1024; });
-            client.close();
-            co_await wait_until([&] { return peer->reads_after_close > 0; });
-            peer->take_held_answers();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        co_await client.connect("limits", "1.0");
+        co_await wait_until([&] { return peer->pings_read >= 1024; });
+        client.close();
+        co_await wait_until([&] { return peer->reads_after_close > 0; });
+        peer->take_held_answers();
+    });
     io.run();
     EXPECT_GT(peer->reads_after_close, 0);
 }
@@ -908,3 +887,5 @@ TEST(ClientLimits, IncomingRequestMemoryLimitMustBePositive) {
         mcp::Client(std::make_shared<FloodingPeer>(io.get_executor()), io.get_executor(), options),
         std::invalid_argument);
 }
+
+}  // namespace server_limits_test
