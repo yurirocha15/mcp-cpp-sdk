@@ -106,6 +106,33 @@ mcp::Task<std::string> raw_exchange(asio::any_io_executor executor, unsigned sho
     co_return received;
 }
 
+/// Writes @p text on a new connection and returns what comes back as soon as @p done holds for it,
+/// leaving the connection then. A server that closes first, or g_hang_guard running out, also ends
+/// the exchange; the latter adds "[timed out]".
+template <typename Done>
+mcp::Task<std::string> raw_exchange_until(asio::any_io_executor executor, unsigned short port,
+                                          std::string text, Done done) {
+    beast::tcp_stream stream(executor);
+    stream.expires_after(g_hang_guard);
+    std::string received;
+    try {
+        co_await stream.async_connect(
+            asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port), asio::use_awaitable);
+        co_await asio::async_write(stream, asio::buffer(text), asio::use_awaitable);
+        std::array<char, 4096> chunk{};
+        while (!done(received)) {
+            const auto count =
+                co_await stream.async_read_some(asio::buffer(chunk), asio::use_awaitable);
+            received.append(chunk.data(), count);
+        }
+    } catch (const boost::system::system_error& error) {
+        if (error.code() == beast::error::timeout) {
+            received += "[timed out]";
+        }
+    }
+    co_return received;
+}
+
 /// What a client that sends "Expect: 100-continue" sees: what the server wrote before the client
 /// sent the body, which the client waits for, and everything after it until the server closes.
 struct ContinueExchange {
@@ -908,11 +935,19 @@ TEST_F(SessionLimitsTest, LiveReplayPastTheRequestBudgetIsRefused) {
         auto call = make_tool_call_request("p", "progress_then_hold", json{{"pad", 100000}});
         call["params"]["_meta"] = {{"progressToken", "t"}};
         const auto body = call.dump();
-        // Leave the stream once the progress has arrived; the tool goes on running.
-        first_part = co_await raw_exchange(
+        // Leave the stream once both progress events have arrived; the tool goes on running.
+        const auto both_progress_events = [](const std::string& received) {
+            const auto first = received.find("notifications/progress");
+            if (first == std::string::npos) {
+                return false;
+            }
+            const auto second = received.find("notifications/progress", first + 1);
+            return second != std::string::npos && received.find("\n\n", second) != std::string::npos;
+        };
+        first_part = co_await raw_exchange_until(
             io_.get_executor(), port_,
             full_post(body, "MCP-Session-Id: " + initialized.session_id.value_or("") + "\r\n"),
-            std::chrono::milliseconds(300));
+            both_progress_events);
         co_await wait_until([] { return g_hold_started.load(); });
         const auto id_at = first_part.find("id: ");
         if (id_at == std::string::npos) {
@@ -927,7 +962,7 @@ TEST_F(SessionLimitsTest, LiveReplayPastTheRequestBudgetIsRefused) {
             "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\nMCP-Session-Id: " +
                 initialized.session_id.value_or("") + "\r\nLast-Event-ID: " + event_id +
                 "\r\nConnection: close\r\n\r\n",
-            std::chrono::milliseconds(500));
+            g_hang_guard);
         pinged = co_await post(ping(), session);
         g_hold_released = true;
     });
