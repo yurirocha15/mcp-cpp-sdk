@@ -5,31 +5,34 @@ This is an MCP server that exposes LLDB (Low Level Debugger) capabilities throug
 ### Prerequisites
 
 - LLVM/LLDB development libraries (`liblldb-dev` on Ubuntu, `llvm` on macOS via Homebrew)
-- CMake option `BUILD_LLDB_EXAMPLE=ON` to enable building this example (disabled by default)
+
+The example is built with the other examples. It links LLDB when CMake finds it (an
+LLDB CMake package, or `liblldb` together with `lldb/API/LLDB.h`); otherwise it is
+built against stubs, and its tools answer that the debugger is not valid.
 
 ### Building
 
 ```bash
 # From the project root:
-cmake -DBUILD_LLDB_EXAMPLE=ON -B build && cmake --build build
+python scripts/build.py --examples
 ```
 
-The `example-debugger-server` binary will be placed in `./build/`.
+The `example-debugger-server` binary is placed in `./build/release/`.
 
 ### Usage
 
 **Stdio transport** (default — use with MCP clients that communicate over stdin/stdout):
 
 ```bash
-./build/example-debugger-server
+./build/release/example-debugger-server
 # or explicitly:
-./build/example-debugger-server --transport=stdio
+./build/release/example-debugger-server --transport=stdio
 ```
 
 **HTTP transport** (starts an HTTP server that MCP clients can connect to):
 
 ```bash
-./build/example-debugger-server --transport=http --port=9695
+./build/release/example-debugger-server --transport=http --port=9695
 ```
 
 ### CLI Flags
@@ -85,35 +88,47 @@ The `example-debugger-server` binary will be placed in `./build/`.
 
 ### Example — HTTP Mode with curl
 
+Each request below is a complete protocol revision 2026-07-28 request: it names its
+version in the `MCP-Protocol-Version` header and in `_meta`, and needs no
+`initialize`. The `Mcp-Method` header repeats the method, and `Mcp-Name` the tool
+name of a `tools/call` or the URI of a `resources/read`. The debugger keeps its
+state (the current target and process) between requests.
+
 ```bash
 # Start the adapter in HTTP mode
-./build/example-debugger-server --transport=http --port=9695
+./build/release/example-debugger-server --transport=http --port=9695
 
-# Initialize the connection
-curl -X POST http://127.0.0.1:9695/mcp \
-  -H "Content-Type: application/json" \
-  -H "MCP-Protocol-Version: 2025-11-25" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl-client","version":"1.0"}}}'
+META='"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}'
+HEADERS=(-H "Content-Type: application/json" -H "Accept: application/json, text/event-stream"
+         -H "MCP-Protocol-Version: 2026-07-28")
 
 # List available tools
-curl -X POST http://127.0.0.1:9695/mcp \
-  -H "Content-Type: application/json" \
-  -H "MCP-Protocol-Version: 2025-11-25" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+curl -X POST http://127.0.0.1:9695/mcp "${HEADERS[@]}" -H "Mcp-Method: tools/list" \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{$META}}"
 
 # Launch a program
-curl -X POST http://127.0.0.1:9695/mcp \
-  -H "Content-Type: application/json" \
-  -H "MCP-Protocol-Version: 2025-11-25" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"launch","arguments":{"program":"/path/to/executable"}}}'
+curl -X POST http://127.0.0.1:9695/mcp "${HEADERS[@]}" -H "Mcp-Method: tools/call" -H "Mcp-Name: launch" \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"launch\",\"arguments\":{\"program\":\"/path/to/executable\"},$META}}"
 
 # Read targets resource
-curl -X POST http://127.0.0.1:9695/mcp \
-  -H "Content-Type: application/json" \
-  -H "MCP-Protocol-Version: 2025-11-25" \
-  -d '{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"lldb://targets"}}'
+curl -X POST http://127.0.0.1:9695/mcp "${HEADERS[@]}" -H "Mcp-Method: resources/read" -H "Mcp-Name: lldb://targets" \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"resources/read\",\"params\":{\"uri\":\"lldb://targets\",$META}}"
 ```
+
+A client of protocol revision 2025-11-25 or earlier starts a session instead:
+`initialize`, then `notifications/initialized`, then its requests, each carrying the
+`MCP-Session-Id` header that the `initialize` response set.
 
 ### Architecture Notes
 
-The server uses a single-threaded design with one SBTarget at a time. LLDB lifecycle is managed via RAII with the LLDBGuard struct, which calls `SBDebugger::Initialize()` on construction and `SBDebugger::Terminate()` on destruction. This ensures proper initialization and cleanup of the LLDB framework. The debugger session maintains state across tool calls, allowing users to launch a program, set breakpoints, step through code, and inspect state in sequence.
+The server uses one SBTarget at a time. LLDB lifecycle is managed via RAII with the
+LLDBGuard struct, which calls `SBDebugger::Initialize()` on construction and
+`SBDebugger::Terminate()` on destruction. The debugger session keeps its state across
+tool calls, so a client can launch a program, set breakpoints, step through code, and
+inspect state in sequence.
+
+LLDB calls block: `continue_process` and `step` wait up to 30 seconds for the process
+to stop. `Server::set_handler_executor()` runs every tool handler on one dedicated
+thread, and the resource handlers hop to the same thread, so the thread that reads and
+answers requests keeps serving while a handler waits, and only that one thread touches
+the LLDB objects.

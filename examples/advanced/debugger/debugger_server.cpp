@@ -1,6 +1,4 @@
 #include <mcp/server/server.hpp>
-#include <mcp/transport/http_server.hpp>
-#include <mcp/transport/stdio.hpp>
 
 #if __has_include(<lldb/API/LLDB.h>)
 #include <lldb/API/LLDB.h>
@@ -198,8 +196,7 @@ class SBDebugger {
 #endif  // __has_include(<lldb/API/LLDB.h>)
 
 #include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
-#include <boost/asio/io_context.hpp>
+#include <boost/asio/thread_pool.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <cstdlib>
 #include <filesystem>
@@ -369,18 +366,6 @@ static ParseResult parse_args(int argc, char** argv, AppOptions& opts) {
     }
 
     return ParseResult::eOk;
-}
-
-static nlohmann::json make_text_result(std::string_view text) {
-    return nlohmann::json{{"content", nlohmann::json::array({nlohmann::json{
-                                          {"type", "text"}, {"text", std::string(text)}}})}};
-}
-
-static nlohmann::json make_error_result(std::string_view msg) {
-    return nlohmann::json{
-        {"content",
-         nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", std::string(msg)}}})},
-        {"isError", true}};
 }
 
 static std::string safe_cstr(const char* p, std::string_view fallback = "<unknown>") {
@@ -629,8 +614,23 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
 
         Server server(info, caps);
 
-        boost::asio::io_context io_ctx;
-        asio::any_io_executor io_executor = io_ctx.get_executor();
+        // LLDB calls block: continue_process and step wait up to g_EVENT_TIMEOUT_SECONDS for the
+        // process to stop. Every tool handler runs on this one thread instead of the thread that
+        // reads and answers requests, so the server keeps serving (other requests, pings,
+        // cancellations) while a handler waits, and only this thread ever touches the LLDB objects
+        // below.
+        asio::thread_pool lldb_thread(1);
+        server.set_handler_executor(lldb_thread.get_executor());
+
+        // set_handler_executor() moves tool handlers only. This runs a resource handler on the LLDB
+        // thread as well; the server resumes on its own executor when the handler has finished.
+        auto on_lldb_thread = [lldb_executor = lldb_thread.get_executor()](auto handler) {
+            return [lldb_executor, handler = std::move(handler)](
+                       mcp::ReadResourceRequestParams params) -> mcp::Task<mcp::ReadResourceResult> {
+                co_return co_await asio::co_spawn(lldb_executor, handler(std::move(params)),
+                                                  asio::use_awaitable);
+            };
+        };
 
         auto debugger_ptr = std::make_shared<lldb::SBDebugger>(lldb::SBDebugger::Create(false));
         auto target_ptr = std::make_shared<std::optional<lldb::SBTarget>>(std::nullopt);
@@ -640,26 +640,26 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
         nlohmann::json command_schema = {{"type", "object"},
                                          {"properties", {{"command", {{"type", "string"}}}}},
                                          {"required", nlohmann::json::array({"command"})}};
-        server.add_tool<CommandInput, nlohmann::json>(
+        server.add_tool<CommandInput, mcp::CallToolResult>(
             "lldb_command", "Run raw LLDB command", command_schema,
-            [io_executor, debugger_ptr](CommandInput args) -> mcp::Task<nlohmann::json> {
-                (void)io_executor;
+            [debugger_ptr](CommandInput args) -> mcp::Task<mcp::CallToolResult> {
                 try {
                     if (!debugger_ptr->IsValid()) {
-                        co_return make_error_result("Debugger is not valid");
+                        co_return mcp::make_tool_error_result("Debugger is not valid");
                     }
                     auto interp = debugger_ptr->GetCommandInterpreter();
                     if (!interp.IsValid()) {
-                        co_return make_error_result("Command interpreter is not valid");
+                        co_return mcp::make_tool_error_result("Command interpreter is not valid");
                     }
                     lldb::SBCommandReturnObject result_obj;
                     bool ok = interp.HandleCommand(args.command.c_str(), result_obj) != 0U;
                     if (!ok) {
-                        co_return make_error_result(safe_cstr(result_obj.GetError(), "Command failed"));
+                        co_return mcp::make_tool_error_result(
+                            safe_cstr(result_obj.GetError(), "Command failed"));
                     }
-                    co_return make_text_result(safe_cstr(result_obj.GetOutput(), ""));
+                    co_return mcp::make_tool_text_result(safe_cstr(result_obj.GetOutput(), ""));
                 } catch (const std::exception& e) {
-                    co_return make_error_result(e.what());
+                    co_return mcp::make_tool_error_result(e.what());
                 }
             });
 
@@ -670,18 +670,17 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
               {"args", {{"type", "array"}, {"items", {{"type", "string"}}}}},
               {"stop_at_entry", {{"type", "boolean"}}}}},
             {"required", nlohmann::json::array({"program"})}};
-        server.add_tool<LaunchInput, nlohmann::json>(
+        server.add_tool<LaunchInput, mcp::CallToolResult>(
             "launch", "Launch program under LLDB", launch_schema,
-            [io_executor, debugger_ptr, target_ptr,
-             listener_ptr](LaunchInput args) -> mcp::Task<nlohmann::json> {
-                (void)io_executor;
+            [debugger_ptr, target_ptr,
+             listener_ptr](LaunchInput args) -> mcp::Task<mcp::CallToolResult> {
                 try {
                     if (!debugger_ptr->IsValid()) {
-                        co_return make_error_result("Debugger is not valid");
+                        co_return mcp::make_tool_error_result("Debugger is not valid");
                     }
                     auto target = debugger_ptr->CreateTarget(args.program.c_str());
                     if (!target.IsValid()) {
-                        co_return make_error_result("Failed to create target");
+                        co_return mcp::make_tool_error_result("Failed to create target");
                     }
 
                     std::vector<std::string> argv_storage;
@@ -703,7 +702,8 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     lldb::SBError error;
                     auto process = target.Launch(launch_info, error);
                     if (error.Fail() || !process.IsValid()) {
-                        co_return make_error_result(safe_cstr(error.GetCString(), "Launch failed"));
+                        co_return mcp::make_tool_error_result(
+                            safe_cstr(error.GetCString(), "Launch failed"));
                     }
 
                     *target_ptr = target;
@@ -714,30 +714,29 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     out["pid"] = process.GetProcessID();
                     out["state"] = state_to_string(process.GetState());
                     out["description"] = "Program launched";
-                    co_return make_text_result(out.dump());
+                    co_return mcp::make_tool_text_result(out.dump());
                 } catch (const std::exception& e) {
-                    co_return make_error_result(e.what());
+                    co_return mcp::make_tool_error_result(e.what());
                 }
             });
 
         nlohmann::json attach_schema = {
             {"type", "object"},
             {"properties", {{"pid", {{"type", "integer"}}}, {"name", {{"type", "string"}}}}}};
-        server.add_tool<AttachInput, nlohmann::json>(
+        server.add_tool<AttachInput, mcp::CallToolResult>(
             "attach", "Attach to existing process", attach_schema,
-            [io_executor, debugger_ptr, target_ptr,
-             listener_ptr](AttachInput args) -> mcp::Task<nlohmann::json> {
-                (void)io_executor;
+            [debugger_ptr, target_ptr,
+             listener_ptr](AttachInput args) -> mcp::Task<mcp::CallToolResult> {
                 try {
                     if (!debugger_ptr->IsValid()) {
-                        co_return make_error_result("Debugger is not valid");
+                        co_return mcp::make_tool_error_result("Debugger is not valid");
                     }
                     if (!args.pid && !args.name) {
-                        co_return make_error_result("Must provide pid or name");
+                        co_return mcp::make_tool_error_result("Must provide pid or name");
                     }
                     auto target = debugger_ptr->CreateTarget("");
                     if (!target.IsValid()) {
-                        co_return make_error_result("Failed to create target");
+                        co_return mcp::make_tool_error_result("Failed to create target");
                     }
 
                     *listener_ptr = lldb::SBListener("mcp-process-listener");
@@ -749,13 +748,14 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                         process = target.Attach(info, error);
                     } else {
                         if (!listener_ptr->IsValid()) {
-                            co_return make_error_result("Listener is not valid");
+                            co_return mcp::make_tool_error_result("Listener is not valid");
                         }
                         process = target.AttachToProcessWithName(*listener_ptr, args.name->c_str(),
                                                                  false, error);
                     }
                     if (error.Fail() || !process.IsValid()) {
-                        co_return make_error_result(safe_cstr(error.GetCString(), "Attach failed"));
+                        co_return mcp::make_tool_error_result(
+                            safe_cstr(error.GetCString(), "Attach failed"));
                     }
 
                     *target_ptr = target;
@@ -765,9 +765,9 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     nlohmann::json out;
                     out["pid"] = process.GetProcessID();
                     out["state"] = state_to_string(process.GetState());
-                    co_return make_text_result(out.dump());
+                    co_return mcp::make_tool_text_result(out.dump());
                 } catch (const std::exception& e) {
-                    co_return make_error_result(e.what());
+                    co_return mcp::make_tool_error_result(e.what());
                 }
             });
 
@@ -777,13 +777,12 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                                       {"line", {{"type", "integer"}}},
                                       {"function_name", {{"type", "string"}}},
                                       {"condition", {{"type", "string"}}}}}};
-        server.add_tool<BreakpointInput, nlohmann::json>(
+        server.add_tool<BreakpointInput, mcp::CallToolResult>(
             "set_breakpoint", "Set file/line or function breakpoint", bp_schema,
-            [io_executor, target_ptr](BreakpointInput args) -> mcp::Task<nlohmann::json> {
-                (void)io_executor;
+            [target_ptr](BreakpointInput args) -> mcp::Task<mcp::CallToolResult> {
                 try {
                     if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
-                        co_return make_error_result("No valid current target");
+                        co_return mcp::make_tool_error_result("No valid current target");
                     }
                     auto target = target_ptr->value();
 
@@ -794,10 +793,11 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     } else if (args.function_name) {
                         bp = target.BreakpointCreateByName(args.function_name->c_str());
                     } else {
-                        co_return make_error_result("Must provide file+line or function_name");
+                        co_return mcp::make_tool_error_result(
+                            "Must provide file+line or function_name");
                     }
                     if (!bp.IsValid()) {
-                        co_return make_error_result("Failed to create breakpoint");
+                        co_return mcp::make_tool_error_result("Failed to create breakpoint");
                     }
                     if (args.condition) {
                         bp.SetCondition(args.condition->c_str());
@@ -807,29 +807,28 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     out["id"] = bp.GetID();
                     out["is_valid"] = bp.IsValid();
                     out["is_enabled"] = bp.IsEnabled();
-                    co_return make_text_result(out.dump());
+                    co_return mcp::make_tool_text_result(out.dump());
                 } catch (const std::exception& e) {
-                    co_return make_error_result(e.what());
+                    co_return mcp::make_tool_error_result(e.what());
                 }
             });
 
         nlohmann::json continue_schema = {{"type", "object"}, {"properties", nlohmann::json::object()}};
-        server.add_tool<nlohmann::json, nlohmann::json>(
+        server.add_tool<nlohmann::json, mcp::CallToolResult>(
             "continue_process", "Continue current process", continue_schema,
-            [io_executor, target_ptr, listener_ptr](nlohmann::json) -> mcp::Task<nlohmann::json> {
-                (void)io_executor;
+            [target_ptr, listener_ptr](nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
                 try {
                     if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
-                        co_return make_error_result("No valid current target");
+                        co_return mcp::make_tool_error_result("No valid current target");
                     }
                     auto process = target_ptr->value().GetProcess();
                     if (!process.IsValid()) {
-                        co_return make_error_result("No valid process");
+                        co_return mcp::make_tool_error_result("No valid process");
                     }
                     auto current_state = process.GetState();
                     if (current_state == lldb::eStateExited || current_state == lldb::eStateDetached) {
-                        co_return make_error_result("Process has already " +
-                                                    state_to_string(current_state));
+                        co_return mcp::make_tool_error_result("Process has already " +
+                                                              state_to_string(current_state));
                     }
                     lldb::SBEvent event;
                     while (listener_ptr->GetNextEvent(event)) {
@@ -837,7 +836,8 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     uint32_t stop0 = process.GetStopID();
                     auto err = process.Continue();
                     if (err.Fail()) {
-                        co_return make_error_result(safe_cstr(err.GetCString(), "Continue failed"));
+                        co_return mcp::make_tool_error_result(
+                            safe_cstr(err.GetCString(), "Continue failed"));
                     }
                     lldb::StateType waited_state = process.GetState();
                     while (listener_ptr->WaitForEvent(g_EVENT_TIMEOUT_SECONDS, event)) {
@@ -857,9 +857,9 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     } else {
                         out["state"] = state_to_string(process.GetState());
                     }
-                    co_return make_text_result(out.dump());
+                    co_return mcp::make_tool_text_result(out.dump());
                 } catch (const std::exception& e) {
-                    co_return make_error_result(e.what());
+                    co_return mcp::make_tool_error_result(e.what());
                 }
             });
 
@@ -869,31 +869,30 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
              {{"thread_index", {{"type", "integer"}}},
               {"type",
                {{"type", "string"}, {"enum", nlohmann::json::array({"over", "into", "out"})}}}}}};
-        server.add_tool<StepInput, nlohmann::json>(
+        server.add_tool<StepInput, mcp::CallToolResult>(
             "step", "Step selected thread", step_schema,
-            [io_executor, target_ptr, listener_ptr](StepInput args) -> mcp::Task<nlohmann::json> {
-                (void)io_executor;
+            [target_ptr, listener_ptr](StepInput args) -> mcp::Task<mcp::CallToolResult> {
                 try {
                     if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
-                        co_return make_error_result("No valid current target");
+                        co_return mcp::make_tool_error_result("No valid current target");
                     }
                     auto process = target_ptr->value().GetProcess();
                     if (!process.IsValid()) {
-                        co_return make_error_result("No valid process");
+                        co_return mcp::make_tool_error_result("No valid process");
                     }
                     auto current_state = process.GetState();
                     if (current_state == lldb::eStateExited || current_state == lldb::eStateDetached) {
-                        co_return make_error_result("Process has already " +
-                                                    state_to_string(current_state));
+                        co_return mcp::make_tool_error_result("Process has already " +
+                                                              state_to_string(current_state));
                     }
 
                     int idx = args.thread_index.value_or(0);
                     if (idx < 0 || static_cast<unsigned>(idx) >= process.GetNumThreads()) {
-                        co_return make_error_result("Invalid thread_index");
+                        co_return mcp::make_tool_error_result("Invalid thread_index");
                     }
                     auto thread = process.GetThreadAtIndex(static_cast<unsigned>(idx));
                     if (!thread.IsValid()) {
-                        co_return make_error_result("Thread is not valid");
+                        co_return mcp::make_tool_error_result("Thread is not valid");
                     }
 
                     const std::string type = args.type.value_or("over");
@@ -908,7 +907,7 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     } else if (type == "out") {
                         thread.StepOut();
                     } else {
-                        co_return make_error_result("Invalid step type");
+                        co_return mcp::make_tool_error_result("Invalid step type");
                     }
 
                     while (listener_ptr->WaitForEvent(g_EVENT_TIMEOUT_SECONDS, event)) {
@@ -924,7 +923,7 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
 
                     auto frame = thread.GetFrameAtIndex(0);
                     if (!frame.IsValid()) {
-                        co_return make_error_result("Top frame is not valid");
+                        co_return mcp::make_tool_error_result("Top frame is not valid");
                     }
                     auto le = frame.GetLineEntry();
 
@@ -935,9 +934,9 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     out["file"] = le.IsValid() ? safe_cstr(le.GetFileSpec().GetFilename(), "<unknown>")
                                                : std::string("<unknown>");
                     out["line"] = le.IsValid() ? le.GetLine() : 0;
-                    co_return make_text_result(out.dump());
+                    co_return mcp::make_tool_text_result(out.dump());
                 } catch (const std::exception& e) {
-                    co_return make_error_result(e.what());
+                    co_return mcp::make_tool_error_result(e.what());
                 }
             });
 
@@ -947,42 +946,41 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                                         {"thread_index", {{"type", "integer"}}},
                                         {"frame_index", {{"type", "integer"}}}}},
                                       {"required", nlohmann::json::array({"expression"})}};
-        server.add_tool<EvalInput, nlohmann::json>(
+        server.add_tool<EvalInput, mcp::CallToolResult>(
             "evaluate", "Evaluate expression", eval_schema,
-            [io_executor, target_ptr](EvalInput args) -> mcp::Task<nlohmann::json> {
-                (void)io_executor;
+            [target_ptr](EvalInput args) -> mcp::Task<mcp::CallToolResult> {
                 try {
                     if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
-                        co_return make_error_result("No valid current target");
+                        co_return mcp::make_tool_error_result("No valid current target");
                     }
                     auto process = target_ptr->value().GetProcess();
                     if (!process.IsValid()) {
-                        co_return make_error_result("No valid process");
+                        co_return mcp::make_tool_error_result("No valid process");
                     }
 
                     int thread_index = args.thread_index.value_or(0);
                     if (thread_index < 0 ||
                         static_cast<unsigned>(thread_index) >= process.GetNumThreads()) {
-                        co_return make_error_result("Invalid thread_index");
+                        co_return mcp::make_tool_error_result("Invalid thread_index");
                     }
                     auto thread = process.GetThreadAtIndex(static_cast<unsigned>(thread_index));
                     if (!thread.IsValid()) {
-                        co_return make_error_result("Thread is not valid");
+                        co_return mcp::make_tool_error_result("Thread is not valid");
                     }
 
                     int frame_index = args.frame_index.value_or(0);
                     if (frame_index < 0 ||
                         static_cast<unsigned>(frame_index) >= thread.GetNumFrames()) {
-                        co_return make_error_result("Invalid frame_index");
+                        co_return mcp::make_tool_error_result("Invalid frame_index");
                     }
                     auto frame = thread.GetFrameAtIndex(static_cast<unsigned>(frame_index));
                     if (!frame.IsValid()) {
-                        co_return make_error_result("Frame is not valid");
+                        co_return mcp::make_tool_error_result("Frame is not valid");
                     }
 
                     auto val = frame.EvaluateExpression(args.expression.c_str());
                     if (!val.IsValid()) {
-                        co_return make_error_result("Evaluation returned invalid value");
+                        co_return mcp::make_tool_error_result("Evaluation returned invalid value");
                     }
                     auto err = val.GetError();
 
@@ -993,9 +991,9 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     out["summary"] = safe_cstr(val.GetSummary(), "");
                     out["has_error"] = err.Fail();
                     out["error"] = safe_cstr(err.GetCString(), "");
-                    co_return make_text_result(out.dump());
+                    co_return mcp::make_tool_text_result(out.dump());
                 } catch (const std::exception& e) {
-                    co_return make_error_result(e.what());
+                    co_return mcp::make_tool_error_result(e.what());
                 }
             });
 
@@ -1003,27 +1001,26 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
             {"type", "object"},
             {"properties",
              {{"thread_index", {{"type", "integer"}}}, {"count", {{"type", "integer"}}}}}};
-        server.add_tool<BacktraceInput, nlohmann::json>(
+        server.add_tool<BacktraceInput, mcp::CallToolResult>(
             "backtrace", "Collect thread backtrace", bt_schema,
-            [io_executor, target_ptr](BacktraceInput args) -> mcp::Task<nlohmann::json> {
-                (void)io_executor;
+            [target_ptr](BacktraceInput args) -> mcp::Task<mcp::CallToolResult> {
                 try {
                     if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
-                        co_return make_error_result("No valid current target");
+                        co_return mcp::make_tool_error_result("No valid current target");
                     }
                     auto process = target_ptr->value().GetProcess();
                     if (!process.IsValid()) {
-                        co_return make_error_result("No valid process");
+                        co_return mcp::make_tool_error_result("No valid process");
                     }
 
                     int thread_index = args.thread_index.value_or(0);
                     if (thread_index < 0 ||
                         static_cast<unsigned>(thread_index) >= process.GetNumThreads()) {
-                        co_return make_error_result("Invalid thread_index");
+                        co_return mcp::make_tool_error_result("Invalid thread_index");
                     }
                     auto thread = process.GetThreadAtIndex(static_cast<unsigned>(thread_index));
                     if (!thread.IsValid()) {
-                        co_return make_error_result("Thread is not valid");
+                        co_return mcp::make_tool_error_result("Thread is not valid");
                     }
 
                     unsigned total = thread.GetNumFrames();
@@ -1064,9 +1061,9 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     nlohmann::json out;
                     out["thread_index"] = thread_index;
                     out["frames"] = std::move(frames);
-                    co_return make_text_result(out.dump());
+                    co_return mcp::make_tool_text_result(out.dump());
                 } catch (const std::exception& e) {
-                    co_return make_error_result(e.what());
+                    co_return mcp::make_tool_error_result(e.what());
                 }
             });
 
@@ -1076,9 +1073,8 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
         targets.description = "All debugger targets";
         targets.mimeType = "application/json";
         server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
-            targets,
-            [debugger_ptr](
-                mcp::ReadResourceRequestParams params) -> mcp::Task<mcp::ReadResourceResult> {
+            targets, on_lldb_thread([debugger_ptr](mcp::ReadResourceRequestParams params)
+                                        -> mcp::Task<mcp::ReadResourceResult> {
                 try {
                     if (!debugger_ptr->IsValid()) {
                         mcp::TextResourceContents err;
@@ -1117,7 +1113,7 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     res.contents.emplace_back(std::move(err));
                     co_return res;
                 }
-            });
+            }));
 
         mcp::Resource threads;
         threads.uri = "lldb://threads";
@@ -1125,8 +1121,8 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
         threads.description = "Threads in current process";
         threads.mimeType = "application/json";
         server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
-            threads,
-            [target_ptr](mcp::ReadResourceRequestParams params) -> mcp::Task<mcp::ReadResourceResult> {
+            threads, on_lldb_thread([target_ptr](mcp::ReadResourceRequestParams params)
+                                        -> mcp::Task<mcp::ReadResourceResult> {
                 try {
                     if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
                         mcp::TextResourceContents err;
@@ -1179,7 +1175,7 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     res.contents.emplace_back(std::move(err));
                     co_return res;
                 }
-            });
+            }));
 
         mcp::Resource breakpoints;
         breakpoints.uri = "lldb://breakpoints";
@@ -1189,7 +1185,8 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
         server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
             breakpoints,
             // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-            [target_ptr](mcp::ReadResourceRequestParams params) -> mcp::Task<mcp::ReadResourceResult> {
+            on_lldb_thread([target_ptr](mcp::ReadResourceRequestParams params)
+                               -> mcp::Task<mcp::ReadResourceResult> {
                 try {
                     if (!target_ptr->has_value() || !target_ptr->value().IsValid()) {
                         mcp::TextResourceContents err;
@@ -1249,7 +1246,7 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     res.contents.emplace_back(std::move(err));
                     co_return res;
                 }
-            });
+            }));
 
         mcp::ResourceTemplate thread_tmpl;
         thread_tmpl.uriTemplate = "lldb://thread/{id}";
@@ -1309,30 +1306,13 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                 return result;
             });
 
+        // Both block: run_stdio() until standard input ends, and either until SIGINT or SIGTERM.
         if (opts.transport == "stdio") {
-            auto transport = std::make_shared<StdioTransport>(io_ctx.get_executor());
-            boost::asio::co_spawn(
-                io_ctx,
-                [&, transport = transport]() mutable -> Task<void> {
-                    co_await server.run(transport, io_ctx.get_executor());
-                },
-                boost::asio::detached);
+            server.run_stdio();
         } else {
-            std::cerr << "Listening on http://" << opts.host << ":" << std::to_string(opts.port)
-                      << "/mcp\n";
-            auto http_transport =
-                std::make_shared<mcp::HttpServerTransport>(io_ctx.get_executor(), opts.host, opts.port);
-            auto* http_ptr = http_transport.get();
-            boost::asio::co_spawn(
-                io_ctx,
-                [&, transport = http_transport]() mutable -> mcp::Task<void> {
-                    boost::asio::co_spawn(io_ctx, http_ptr->listen(), boost::asio::detached);
-                    co_await server.run(transport, io_ctx.get_executor());
-                },
-                boost::asio::detached);
+            std::cerr << "Listening on http://" << opts.host << ":" << opts.port << "/mcp\n";
+            server.run_http(opts.host, opts.port);
         }
-
-        io_ctx.run();
         return EXIT_SUCCESS;
     } catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << "\n";
