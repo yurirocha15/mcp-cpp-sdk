@@ -837,6 +837,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `eDeniedOriginEntryMalformed`). The strings `describe()` returns are
   unchanged. The `ClientProtocol` factories `Auto()`, `Legacy()` and
   `Version()` are `automatic()`, `legacy()` and `pinned()`.
+- The `to_json` and `from_json` functions of the types in `mcp/protocol/` and
+  of `SubscriptionFilter` are compiled into the library; the headers only
+  declare them, so a file that includes the headers no longer compiles them.
+  The JSON they write and the input they accept are unchanged. They take
+  `nlohmann::json` only: the ones `NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE` used to
+  generate for the request, notification and parameter types were templates
+  that, with nlohmann_json 3.12, also took other `nlohmann::basic_json` types
+  such as `nlohmann::ordered_json`.
 
 ### Deprecated
 

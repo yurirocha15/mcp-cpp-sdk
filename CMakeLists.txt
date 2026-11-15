@@ -103,9 +103,21 @@ set(MCP_CPP_SDK_SOURCES
     src/core/serialized_transport_writer.cpp
     src/protocol/native_schema.cpp
     src/protocol/schema.cpp
+    src/protocol/base.cpp
+    src/protocol/capabilities.cpp
+    src/protocol/content.cpp
+    src/protocol/completion.cpp
+    src/protocol/notification.cpp
+    src/protocol/request_meta.cpp
+    src/protocol/roots.cpp
+    src/protocol/resources.cpp
+    src/protocol/prompts.cpp
+    src/protocol/tasks.cpp
     src/protocol/elicitation.cpp
     src/protocol/tools.cpp
+    src/protocol/sampling.cpp
     src/protocol/skills.cpp
+    src/protocol/apps.cpp
     src/auth/challenge.cpp
     src/auth/client_identity.cpp
     src/auth/metadata_policy.cpp

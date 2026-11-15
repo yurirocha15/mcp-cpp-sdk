@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/export.hpp>
 #include <mcp/protocol/base.hpp>
 #include <mcp/protocol/content.hpp>
 #include <mcp/protocol/tools.hpp>
@@ -19,12 +20,7 @@ struct ToolChoice {
  * @param json_obj The JSON object to populate.
  * @param choice The ToolChoice object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const ToolChoice& choice) {
-    json_obj = nlohmann::json::object();
-    if (choice.mode) {
-        json_obj["mode"] = *choice.mode;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const ToolChoice& choice);
 
 /**
  * @brief Deserializes ToolChoice from JSON.
@@ -32,11 +28,7 @@ inline void to_json(nlohmann::json& json_obj, const ToolChoice& choice) {
  * @param json_obj The JSON object to read from.
  * @param choice The ToolChoice object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, ToolChoice& choice) {
-    if (detail::has_json_value(json_obj, "mode")) {
-        choice.mode = json_obj.at("mode").get<std::string>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, ToolChoice& choice);
 
 /**
  * @brief Hints to use for model selection.
@@ -51,12 +43,7 @@ struct ModelHint {
  * @param json_obj The JSON object to populate.
  * @param hint The ModelHint object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const ModelHint& hint) {
-    json_obj = nlohmann::json::object();
-    if (hint.name) {
-        json_obj["name"] = *hint.name;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const ModelHint& hint);
 
 /**
  * @brief Deserializes ModelHint from JSON.
@@ -64,11 +51,7 @@ inline void to_json(nlohmann::json& json_obj, const ModelHint& hint) {
  * @param json_obj The JSON object to read from.
  * @param hint The ModelHint object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, ModelHint& hint) {
-    if (detail::has_json_value(json_obj, "name")) {
-        hint.name = json_obj.at("name").get<std::string>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, ModelHint& hint);
 
 /**
  * @brief The server's preferences for model selection during sampling.
@@ -86,21 +69,7 @@ struct ModelPreferences {
  * @param json_obj The JSON object to populate.
  * @param prefs The ModelPreferences object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const ModelPreferences& prefs) {
-    json_obj = nlohmann::json::object();
-    if (prefs.costPriority) {
-        json_obj["costPriority"] = *prefs.costPriority;
-    }
-    if (prefs.hints) {
-        json_obj["hints"] = *prefs.hints;
-    }
-    if (prefs.intelligencePriority) {
-        json_obj["intelligencePriority"] = *prefs.intelligencePriority;
-    }
-    if (prefs.speedPriority) {
-        json_obj["speedPriority"] = *prefs.speedPriority;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const ModelPreferences& prefs);
 
 /**
  * @brief Deserializes ModelPreferences from JSON.
@@ -108,20 +77,7 @@ inline void to_json(nlohmann::json& json_obj, const ModelPreferences& prefs) {
  * @param json_obj The JSON object to read from.
  * @param prefs The ModelPreferences object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, ModelPreferences& prefs) {
-    if (detail::has_json_value(json_obj, "costPriority")) {
-        prefs.costPriority = json_obj.at("costPriority").get<double>();
-    }
-    if (detail::has_json_value(json_obj, "hints")) {
-        prefs.hints = json_obj.at("hints").get<std::vector<ModelHint>>();
-    }
-    if (detail::has_json_value(json_obj, "intelligencePriority")) {
-        prefs.intelligencePriority = json_obj.at("intelligencePriority").get<double>();
-    }
-    if (detail::has_json_value(json_obj, "speedPriority")) {
-        prefs.speedPriority = json_obj.at("speedPriority").get<double>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, ModelPreferences& prefs);
 
 using SamplingMessageContentBlock = ContentBlock;
 
@@ -137,23 +93,7 @@ using SamplingMessageContent =
  * @param json_obj The JSON object to populate.
  * @param content The SamplingMessageContent variant to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const SamplingMessageContent& content) {
-    std::visit(
-        [&json_obj](auto&& arg) {
-            using T = std::decay_t<decltype(arg)>;
-            if constexpr (std::is_same_v<T, std::vector<SamplingMessageContentBlock>>) {
-                json_obj = nlohmann::json::array();
-                for (const auto& block : arg) {
-                    nlohmann::json block_json;
-                    to_json(block_json, block);
-                    json_obj.push_back(std::move(block_json));
-                }
-            } else {
-                to_json(json_obj, arg);
-            }
-        },
-        content);
-}
+MCP_API void to_json(nlohmann::json& json_obj, const SamplingMessageContent& content);
 
 /**
  * @brief Deserializes SamplingMessageContent variant from JSON.
@@ -161,13 +101,7 @@ inline void to_json(nlohmann::json& json_obj, const SamplingMessageContent& cont
  * @param json_obj The JSON object to read from.
  * @param content The SamplingMessageContent variant to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, SamplingMessageContent& content) {
-    if (json_obj.is_array()) {
-        content = json_obj.get<std::vector<SamplingMessageContentBlock>>();
-    } else {
-        content = json_obj.get<SamplingMessageContentBlock>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, SamplingMessageContent& content);
 
 /**
  * @brief Describes a message issued to or received from an LLM API.
@@ -184,12 +118,7 @@ struct SamplingMessage {
  * @param json_obj The JSON object to populate.
  * @param msg The SamplingMessage object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const SamplingMessage& msg) {
-    json_obj = nlohmann::json{{"role", msg.role}, {"content", msg.content}};
-    if (msg.meta) {
-        json_obj["_meta"] = *msg.meta;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const SamplingMessage& msg);
 
 /**
  * @brief Deserializes SamplingMessage from JSON.
@@ -197,13 +126,7 @@ inline void to_json(nlohmann::json& json_obj, const SamplingMessage& msg) {
  * @param json_obj The JSON object to read from.
  * @param msg The SamplingMessage object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, SamplingMessage& msg) {
-    json_obj.at("role").get_to(msg.role);
-    json_obj.at("content").get_to(msg.content);
-    if (json_obj.contains("_meta")) {
-        msg.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, SamplingMessage& msg);
 
 /**
  * @brief Parameters for a sampling/createMessage request.
@@ -228,36 +151,7 @@ struct CreateMessageRequestParams {
  * @param json_obj The JSON object to populate.
  * @param params The CreateMessageRequestParams object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const CreateMessageRequestParams& params) {
-    json_obj = nlohmann::json{{"messages", params.messages}, {"maxTokens", params.maxTokens}};
-    if (params.systemPrompt) {
-        json_obj["systemPrompt"] = *params.systemPrompt;
-    }
-    if (params.temperature) {
-        json_obj["temperature"] = *params.temperature;
-    }
-    if (params.stopSequences) {
-        json_obj["stopSequences"] = *params.stopSequences;
-    }
-    if (params.modelPreferences) {
-        json_obj["modelPreferences"] = *params.modelPreferences;
-    }
-    if (params.includeContext) {
-        json_obj["includeContext"] = *params.includeContext;
-    }
-    if (params.tools) {
-        json_obj["tools"] = *params.tools;
-    }
-    if (params.toolChoice) {
-        json_obj["toolChoice"] = *params.toolChoice;
-    }
-    if (params.metadata) {
-        json_obj["metadata"] = *params.metadata;
-    }
-    if (params.meta) {
-        json_obj["_meta"] = *params.meta;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const CreateMessageRequestParams& params);
 
 /**
  * @brief Deserializes CreateMessageRequestParams from JSON.
@@ -265,37 +159,7 @@ inline void to_json(nlohmann::json& json_obj, const CreateMessageRequestParams& 
  * @param json_obj The JSON object to read from.
  * @param params The CreateMessageRequestParams object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, CreateMessageRequestParams& params) {
-    json_obj.at("messages").get_to(params.messages);
-    json_obj.at("maxTokens").get_to(params.maxTokens);
-    if (detail::has_json_value(json_obj, "systemPrompt")) {
-        params.systemPrompt = json_obj.at("systemPrompt").get<std::string>();
-    }
-    if (detail::has_json_value(json_obj, "temperature")) {
-        params.temperature = json_obj.at("temperature").get<double>();
-    }
-    if (detail::has_json_value(json_obj, "stopSequences")) {
-        params.stopSequences = json_obj.at("stopSequences").get<std::vector<std::string>>();
-    }
-    if (json_obj.contains("modelPreferences")) {
-        params.modelPreferences = json_obj.at("modelPreferences").get<ModelPreferences>();
-    }
-    if (detail::has_json_value(json_obj, "includeContext")) {
-        params.includeContext = json_obj.at("includeContext").get<std::string>();
-    }
-    if (detail::has_json_value(json_obj, "tools")) {
-        params.tools = json_obj.at("tools").get<std::vector<Tool>>();
-    }
-    if (json_obj.contains("toolChoice")) {
-        params.toolChoice = json_obj.at("toolChoice").get<ToolChoice>();
-    }
-    if (json_obj.contains("metadata")) {
-        params.metadata = json_obj.at("metadata").get<nlohmann::json>();
-    }
-    if (json_obj.contains("_meta")) {
-        params.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, CreateMessageRequestParams& params);
 
 /**
  * @brief A request from the server to sample an LLM via the client.
@@ -305,7 +169,8 @@ struct CreateMessageRequest {
     CreateMessageRequestParams params;              ///< The request parameters.
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CreateMessageRequest, method, params)
+MCP_API void to_json(nlohmann::json& json_obj, const CreateMessageRequest& value);
+MCP_API void from_json(const nlohmann::json& json_obj, CreateMessageRequest& value);
 
 /**
  * @brief The result returned by the client for a sampling/createMessage request.
@@ -324,16 +189,7 @@ struct CreateMessageResult {
  * @param json_obj The JSON object to populate.
  * @param result The CreateMessageResult object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const CreateMessageResult& result) {
-    json_obj =
-        nlohmann::json{{"role", result.role}, {"content", result.content}, {"model", result.model}};
-    if (result.stopReason) {
-        json_obj["stopReason"] = *result.stopReason;
-    }
-    if (result.meta) {
-        json_obj["_meta"] = *result.meta;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const CreateMessageResult& result);
 
 /**
  * @brief Deserializes CreateMessageResult from JSON.
@@ -341,16 +197,6 @@ inline void to_json(nlohmann::json& json_obj, const CreateMessageResult& result)
  * @param json_obj The JSON object to read from.
  * @param result The CreateMessageResult object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, CreateMessageResult& result) {
-    json_obj.at("role").get_to(result.role);
-    json_obj.at("content").get_to(result.content);
-    json_obj.at("model").get_to(result.model);
-    if (json_obj.contains("stopReason")) {
-        result.stopReason = json_obj.at("stopReason").get<std::string>();
-    }
-    if (json_obj.contains("_meta")) {
-        result.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, CreateMessageResult& result);
 
 }  // namespace mcp

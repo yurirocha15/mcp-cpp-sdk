@@ -2532,4 +2532,210 @@ TEST(ProtocolError, ACodeThatIsNoIntOfThisSizeDecodesToInternalError) {
     EXPECT_THROW((void)decode("x"), nlohmann::json::exception);
 }
 
+namespace {
+
+/// Checks member-wise serializers: @p value writes exactly @p expected, and @p expected reads back
+/// to a value that writes it again. With the members from position i of @p members onward missing,
+/// reading throws json::out_of_range naming member i, so members are read in declaration order; a
+/// document that is not an object throws json::type_error.
+template <typename T>
+void expect_memberwise(const T& value, const json& expected, const std::vector<std::string>& members) {
+    SCOPED_TRACE(expected.dump());
+    EXPECT_EQ(json(value).dump(), expected.dump());
+    EXPECT_EQ(json(expected.get<T>()).dump(), expected.dump());
+    ASSERT_EQ(expected.size(), members.size());
+    for (std::size_t first = 0; first < members.size(); ++first) {
+        json missing = expected;
+        for (std::size_t index = first; index < members.size(); ++index) {
+            missing.erase(members[index]);
+        }
+        try {
+            (void)missing.get<T>();
+            ADD_FAILURE() << "no exception without " << members[first];
+        } catch (const json::out_of_range& error) {
+            EXPECT_EQ(std::string(error.what()),
+                      "[json.exception.out_of_range.403] key '" + members[first] + "' not found");
+        }
+    }
+    for (const json& not_object : {json(nullptr), json::array(), json("text")}) {
+        try {
+            (void)not_object.get<T>();
+            ADD_FAILURE() << "no exception for " << not_object.dump();
+        } catch (const json::type_error& error) {
+            EXPECT_EQ(std::string(error.what()),
+                      std::string("[json.exception.type_error.304] cannot use at() with ") +
+                          not_object.type_name());
+        }
+    }
+}
+
+}  // namespace
+
+// Every member of these types is required on the wire: each is written under its own name and read
+// with at().
+TEST(ProtocolMemberwiseSerializers, RequestsWriteAndReadEveryMember) {
+    expect_memberwise(mcp::PingRequest{}, json{{"method", "ping"}}, {"method"});
+
+    mcp::InitializeRequest initialize;
+    initialize.protocolVersion = "2025-11-25";
+    initialize.clientInfo = {"client", "1.0"};
+    expect_memberwise(initialize,
+                      json{{"protocolVersion", "2025-11-25"},
+                           {"clientInfo", {{"name", "client"}, {"version", "1.0"}}},
+                           {"capabilities", json::object()}},
+                      {"protocolVersion", "clientInfo", "capabilities"});
+
+    mcp::ElicitRequestFormParams form;
+    form.message = "Name?";
+    form.requestedSchema = json{{"type", "object"}};
+    mcp::ElicitRequest elicit;
+    elicit.params = form;
+    expect_memberwise(
+        elicit,
+        json{{"method", "elicitation/create"},
+             {"params",
+              {{"mode", "form"}, {"message", "Name?"}, {"requestedSchema", {{"type", "object"}}}}}},
+        {"method", "params"});
+
+    mcp::CallToolRequest call;
+    call.params.name = "echo";
+    expect_memberwise(
+        call,
+        json{{"method", "tools/call"}, {"params", {{"name", "echo"}, {"arguments", json::object()}}}},
+        {"method", "params"});
+
+    mcp::CreateMessageRequest create;
+    create.params.maxTokens = 10;
+    expect_memberwise(create,
+                      json{{"method", "sampling/createMessage"},
+                           {"params", {{"messages", json::array()}, {"maxTokens", 10}}}},
+                      {"method", "params"});
+
+    expect_memberwise(mcp::ListRootsRequest{}, json{{"method", "roots/list"}}, {"method"});
+
+    mcp::ReadResourceRequest read;
+    read.params.uri = "file:///a";
+    expect_memberwise(read, json{{"method", "resources/read"}, {"params", {{"uri", "file:///a"}}}},
+                      {"method", "params"});
+
+    mcp::SubscribeRequest subscribe;
+    subscribe.params.uri = "file:///a";
+    expect_memberwise(subscribe,
+                      json{{"method", "resources/subscribe"}, {"params", {{"uri", "file:///a"}}}},
+                      {"method", "params"});
+
+    mcp::UnsubscribeRequest unsubscribe;
+    unsubscribe.params.uri = "file:///a";
+    expect_memberwise(unsubscribe,
+                      json{{"method", "resources/unsubscribe"}, {"params", {{"uri", "file:///a"}}}},
+                      {"method", "params"});
+
+    mcp::SetLevelRequest set_level;
+    set_level.params.level = mcp::LoggingLevel::eInfo;
+    expect_memberwise(set_level, json{{"method", "logging/setLevel"}, {"params", {{"level", "info"}}}},
+                      {"method", "params"});
+
+    mcp::GetPromptRequest get_prompt;
+    get_prompt.params.name = "greet";
+    expect_memberwise(get_prompt, json{{"method", "prompts/get"}, {"params", {{"name", "greet"}}}},
+                      {"method", "params"});
+}
+
+TEST(ProtocolMemberwiseSerializers, NotificationsWriteAndReadEveryMember) {
+    expect_memberwise(mcp::InitializedNotification{}, json{{"method", "notifications/initialized"}},
+                      {"method"});
+    expect_memberwise(mcp::PromptListChangedNotification{},
+                      json{{"method", "notifications/prompts/list_changed"}}, {"method"});
+    expect_memberwise(mcp::ResourceListChangedNotification{},
+                      json{{"method", "notifications/resources/list_changed"}}, {"method"});
+    expect_memberwise(mcp::ToolListChangedNotification{},
+                      json{{"method", "notifications/tools/list_changed"}}, {"method"});
+    expect_memberwise(mcp::RootsListChangedNotification{},
+                      json{{"method", "notifications/roots/list_changed"}}, {"method"});
+
+    mcp::CancelledNotification cancelled;
+    cancelled.params.requestId = int64_t{7};
+    expect_memberwise(cancelled,
+                      json{{"method", "notifications/cancelled"}, {"params", {{"requestId", 7}}}},
+                      {"method", "params"});
+
+    mcp::ProgressNotification progress;
+    progress.params.progressToken = "token";
+    progress.params.progress = 0.5;
+    expect_memberwise(progress,
+                      json{{"method", "notifications/progress"},
+                           {"params", {{"progressToken", "token"}, {"progress", 0.5}}}},
+                      {"method", "params"});
+
+    mcp::LoggingMessageNotification logging;
+    logging.params.level = mcp::LoggingLevel::eWarning;
+    logging.params.data = "disk low";
+    expect_memberwise(logging,
+                      json{{"method", "notifications/message"},
+                           {"params", {{"level", "warning"}, {"data", "disk low"}}}},
+                      {"method", "params"});
+
+    mcp::ResourceUpdatedNotification updated;
+    updated.params.uri = "file:///a";
+    expect_memberwise(
+        updated,
+        json{{"method", "notifications/resources/updated"}, {"params", {{"uri", "file:///a"}}}},
+        {"method", "params"});
+
+    mcp::ElicitationCompleteNotification complete;
+    complete.params.elicitationId = "e-1";
+    expect_memberwise(
+        complete,
+        json{{"method", "notifications/elicitation/complete"}, {"params", {{"elicitationId", "e-1"}}}},
+        {"method", "params"});
+}
+
+TEST(ProtocolMemberwiseSerializers, ParametersAndReferencesWriteAndReadEveryMember) {
+    expect_memberwise(mcp::PromptReference{"ref/prompt", "greet"},
+                      json{{"type", "ref/prompt"}, {"name", "greet"}}, {"type", "name"});
+    expect_memberwise(mcp::ResourceTemplateReference{"ref/resource", "file:///{path}"},
+                      json{{"type", "ref/resource"}, {"uri", "file:///{path}"}}, {"type", "uri"});
+    expect_memberwise(mcp::CompleteParamsArgument{"language", "py"},
+                      json{{"name", "language"}, {"value", "py"}}, {"name", "value"});
+    expect_memberwise(mcp::ReadResourceRequestParams{"file:///a"}, json{{"uri", "file:///a"}}, {"uri"});
+    expect_memberwise(mcp::ResourceSubscribeParams{"file:///a"}, json{{"uri", "file:///a"}}, {"uri"});
+    expect_memberwise(mcp::ResourceUnsubscribeParams{"file:///a"}, json{{"uri", "file:///a"}}, {"uri"});
+    expect_memberwise(mcp::ResourceUpdatedNotificationParams{"file:///a"}, json{{"uri", "file:///a"}},
+                      {"uri"});
+    expect_memberwise(mcp::GetTaskRequestParams{"task-1"}, json{{"taskId", "task-1"}}, {"taskId"});
+    expect_memberwise(mcp::CancelTaskRequestParams{"task-1"}, json{{"taskId", "task-1"}}, {"taskId"});
+    expect_memberwise(mcp::UpdateTaskRequestParams{"task-1", {{"q1", json{{"action", "accept"}}}}},
+                      json{{"taskId", "task-1"}, {"inputResponses", {{"q1", {{"action", "accept"}}}}}},
+                      {"taskId", "inputResponses"});
+
+    mcp::PromptMessage message;
+    message.role = mcp::Role::eAssistant;
+    message.content = mcp::TextContent{"text", "hi"};
+    expect_memberwise(message,
+                      json{{"role", "assistant"}, {"content", {{"type", "text"}, {"text", "hi"}}}},
+                      {"role", "content"});
+}
+
+// Writing adds the members to the object the document already holds rather than replacing it.
+TEST(ProtocolMemberwiseSerializers, WritingIntoAnObjectKeepsItsOtherMembers) {
+    json document = {{"extra", 1}};
+    mcp::to_json(document, mcp::PingRequest{});
+    EXPECT_EQ(document, (json{{"extra", 1}, {"method", "ping"}}));
+}
+
+// A present member is read as its own type reads it: a null `capabilities` is an empty capability
+// set, and a role the enum does not know, null included, reads as its first value.
+TEST(ProtocolMemberwiseSerializers, NullMembersReadAsTheirOwnTypesReadThem) {
+    const auto request = json{
+        {"protocolVersion", "2025-11-25"},
+        {"clientInfo", {{"name", "client"}, {"version", "1.0"}}},
+        {"capabilities",
+         nullptr}}.get<mcp::InitializeRequest>();
+    EXPECT_EQ(json(request.capabilities), json::object());
+
+    const auto message = json{{"role", nullptr}, {"content", {{"type", "text"}, {"text", "hi"}}}}
+                             .get<mcp::PromptMessage>();
+    EXPECT_EQ(message.role, mcp::Role::eUser);
+}
+
 }  // namespace protocol_test

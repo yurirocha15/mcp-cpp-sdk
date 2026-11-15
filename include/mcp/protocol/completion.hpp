@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/export.hpp>
 #include <mcp/protocol/base.hpp>
 
 namespace mcp {
@@ -13,24 +14,9 @@ struct PaginatedRequestParams {
     std::optional<nlohmann::json> meta;  ///< Reserved for protocol use.
 };
 
-inline void to_json(nlohmann::json& json_obj, const PaginatedRequestParams& params) {
-    json_obj = nlohmann::json::object();
-    if (params.cursor) {
-        json_obj["cursor"] = *params.cursor;
-    }
-    if (params.meta) {
-        json_obj["_meta"] = *params.meta;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const PaginatedRequestParams& params);
 
-inline void from_json(const nlohmann::json& json_obj, PaginatedRequestParams& params) {
-    if (detail::has_json_value(json_obj, "cursor")) {
-        params.cursor = json_obj.at("cursor").get<std::string>();
-    }
-    if (json_obj.contains("_meta")) {
-        params.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, PaginatedRequestParams& params);
 
 /**
  * @brief A reference to a prompt.
@@ -40,7 +26,8 @@ struct PromptReference {
     std::string name;                 ///< The name of the prompt.
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(PromptReference, type, name)
+MCP_API void to_json(nlohmann::json& json_obj, const PromptReference& value);
+MCP_API void from_json(const nlohmann::json& json_obj, PromptReference& value);
 
 /**
  * @brief A reference to a resource template.
@@ -50,24 +37,17 @@ struct ResourceTemplateReference {
     std::string uri;                    ///< The URI of the resource.
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ResourceTemplateReference, type, uri)
+MCP_API void to_json(nlohmann::json& json_obj, const ResourceTemplateReference& value);
+MCP_API void from_json(const nlohmann::json& json_obj, ResourceTemplateReference& value);
 
 /**
  * @brief A reference to a resource or prompt for completion.
  */
 using CompleteReference = std::variant<PromptReference, ResourceTemplateReference>;
 
-inline void to_json(nlohmann::json& json_obj, const CompleteReference& ref) {
-    std::visit([&json_obj](auto&& arg) { to_json(json_obj, arg); }, ref);
-}
+MCP_API void to_json(nlohmann::json& json_obj, const CompleteReference& ref);
 
-inline void from_json(const nlohmann::json& json_obj, CompleteReference& ref) {
-    if (json_obj.at("type") == "ref/prompt") {
-        ref = json_obj.get<PromptReference>();
-    } else {
-        ref = json_obj.get<ResourceTemplateReference>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, CompleteReference& ref);
 
 /**
  * @brief The argument for completion.
@@ -77,7 +57,8 @@ struct CompleteParamsArgument {
     std::string value;  ///< The value of the argument.
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CompleteParamsArgument, name, value)
+MCP_API void to_json(nlohmann::json& json_obj, const CompleteParamsArgument& value);
+MCP_API void from_json(const nlohmann::json& json_obj, CompleteParamsArgument& value);
 
 /**
  * @brief Context for completion.
@@ -92,12 +73,7 @@ struct CompleteContext {
  * @param json_obj The JSON object to populate.
  * @param context The CompleteContext object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const CompleteContext& context) {
-    json_obj = nlohmann::json::object();
-    if (context.arguments) {
-        json_obj["arguments"] = *context.arguments;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const CompleteContext& context);
 
 /**
  * @brief Deserializes CompleteContext from JSON.
@@ -105,11 +81,7 @@ inline void to_json(nlohmann::json& json_obj, const CompleteContext& context) {
  * @param json_obj The JSON object to read from.
  * @param context The CompleteContext object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, CompleteContext& context) {
-    if (detail::has_json_value(json_obj, "arguments")) {
-        context.arguments = json_obj.at("arguments").get<std::map<std::string, std::string>>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, CompleteContext& context);
 
 /**
  * @brief Parameters for completion.
@@ -127,15 +99,7 @@ struct CompleteParams {
  * @param json_obj The JSON object to populate.
  * @param params The CompleteParams object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const CompleteParams& params) {
-    json_obj = nlohmann::json{{"ref", params.ref}, {"argument", params.argument}};
-    if (params.context) {
-        json_obj["context"] = *params.context;
-    }
-    if (params.meta) {
-        json_obj["_meta"] = *params.meta;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const CompleteParams& params);
 
 /**
  * @brief Deserializes CompleteParams from JSON.
@@ -143,16 +107,7 @@ inline void to_json(nlohmann::json& json_obj, const CompleteParams& params) {
  * @param json_obj The JSON object to read from.
  * @param params The CompleteParams object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, CompleteParams& params) {
-    json_obj.at("ref").get_to(params.ref);
-    json_obj.at("argument").get_to(params.argument);
-    if (json_obj.contains("context") && !json_obj.at("context").is_null()) {
-        params.context = json_obj.at("context").get<CompleteContext>();
-    }
-    if (json_obj.contains("_meta")) {
-        params.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, CompleteParams& params);
 
 /**
  * @brief Details of the completion result.
@@ -169,15 +124,7 @@ struct CompletionResultDetails {
  * @param json_obj The JSON object to populate.
  * @param details The CompletionResultDetails object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const CompletionResultDetails& details) {
-    json_obj = nlohmann::json{{"values", details.values}};
-    if (details.total) {
-        json_obj["total"] = *details.total;
-    }
-    if (details.hasMore) {
-        json_obj["hasMore"] = *details.hasMore;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const CompletionResultDetails& details);
 
 /**
  * @brief Deserializes CompletionResultDetails from JSON.
@@ -185,15 +132,7 @@ inline void to_json(nlohmann::json& json_obj, const CompletionResultDetails& det
  * @param json_obj The JSON object to read from.
  * @param details The CompletionResultDetails object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, CompletionResultDetails& details) {
-    json_obj.at("values").get_to(details.values);
-    if (detail::has_json_value(json_obj, "total")) {
-        details.total = json_obj.at("total").get<int64_t>();
-    }
-    if (detail::has_json_value(json_obj, "hasMore")) {
-        details.hasMore = json_obj.at("hasMore").get<bool>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, CompletionResultDetails& details);
 
 /**
  * @brief The result of a completion request.
@@ -209,12 +148,7 @@ struct CompleteResult {
  * @param json_obj The JSON object to populate.
  * @param result The CompleteResult object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const CompleteResult& result) {
-    json_obj = nlohmann::json{{"completion", result.completion}};
-    if (result.meta) {
-        json_obj["_meta"] = *result.meta;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const CompleteResult& result);
 
 /**
  * @brief Deserializes CompleteResult from JSON.
@@ -222,11 +156,6 @@ inline void to_json(nlohmann::json& json_obj, const CompleteResult& result) {
  * @param json_obj The JSON object to read from.
  * @param result The CompleteResult object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, CompleteResult& result) {
-    json_obj.at("completion").get_to(result.completion);
-    if (json_obj.contains("_meta")) {
-        result.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, CompleteResult& result);
 
 }  // namespace mcp
