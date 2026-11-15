@@ -9,14 +9,14 @@ Examples that ARE run:
   - example-echo-websocket: WebSocket transport loopback
   - example-http-loopback: HTTP transport loopback
   - example-benchmark-*: Throughput measurement examples
+  - example-client-stdio: Launches example-server-stdio as a child process
 
-Examples NOT run (require stdin or block indefinitely):
-  - example-client-stdio: Interactive client, waits for stdin input
+Examples NOT run:
   - example-interactive-client: Interactive client, waits for stdin input
   - example-server-stdio: Server blocks waiting for stdio connection
   - example-server-simple: Server blocks waiting for stdio connection
-  - example-debugger-server: Long-running HTTP server, blocks indefinitely
-  - example-llama-mcp: Requires llama.cpp library
+  - example-debugger-server: Server, blocks waiting for a stdio or HTTP client
+  - example-llama-mcp: Server, needs a running llama.cpp llama-server
   - example-server-sampling: Requires LLM sampling connection
 """
 import subprocess
@@ -47,7 +47,8 @@ def run_examples():
     examples = sorted(
         list(build_dir.glob("example-feature-*")) +
         list(build_dir.glob("example-echo-websocket")) +
-        list(build_dir.glob("example-http-loopback"))
+        list(build_dir.glob("example-http-loopback")) +
+        list(build_dir.glob("example-client-stdio*"))
     )
     examples = [exe for exe in examples if is_example_executable(exe)]
     if not examples:

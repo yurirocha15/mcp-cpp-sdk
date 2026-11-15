@@ -749,6 +749,8 @@ if(BUILD_EXAMPLES)
 
   add_executable(example-client-stdio examples/clients/stdio/client_stdio.cpp)
   target_link_libraries(example-client-stdio PRIVATE mcp-cpp-sdk)
+  # Launches the stdio server that is built beside it.
+  add_dependencies(example-client-stdio example-server-stdio)
 
   add_executable(example-interactive-client
                  examples/clients/stdio/interactive_client.cpp)
