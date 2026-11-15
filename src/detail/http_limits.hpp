@@ -220,6 +220,32 @@ inline StringResponse make_limit_response(const StringRequest& request,
     return response;
 }
 
+/// Whether @p code is the HTTP parser's verdict that the peer sent something that is not a valid
+/// request, rather than the connection ending, the request being incomplete or its body too large.
+inline bool is_unreadable_request(const boost::system::error_code& code) {
+    namespace http = boost::beast::http;
+    return code.category() == http::make_error_code(http::error::bad_target).category() &&
+           code != http::error::end_of_stream && code != http::error::partial_message &&
+           code != http::error::need_more && code != http::error::body_limit;
+}
+
+/// Answers a request the HTTP parser could not read: 431 for headers past the parser's limit, 400
+/// for anything else. The parser cannot find the next request after it, so the exchange ends here.
+inline Task<void> refuse_unreadable_request(boost::beast::tcp_stream& stream,
+                                            const boost::system::error_code& parse_error) {
+    namespace http = boost::beast::http;
+    const bool headers_too_large = parse_error == http::error::header_limit;
+    constexpr unsigned http_1_1 = 11;
+    StringResponse response{
+        headers_too_large ? http::status::request_header_fields_too_large : http::status::bad_request,
+        http_1_1};
+    response.set(http::field::server, "mcp-cpp-sdk");
+    response.set(http::field::content_type, "application/json");
+    response.body() = headers_too_large ? R"({"error":"Request header fields too large"})"
+                                        : R"({"error":"Bad request"})";
+    co_await write_final_response(stream, std::move(response));
+}
+
 /// What a server checks on a request's headers alone, before its body is read: an answer that
 /// refuses it, or nothing to go on.
 using RefuseBeforeBody = std::function<Task<std::optional<StringResponse>>(const StringRequest&)>;
@@ -242,6 +268,7 @@ inline Task<bool> read_request_within_limits(boost::beast::tcp_stream& stream,
     };
     const auto deadline = arm_request_read_deadline(stream, limits);
     bool declared_too_large = false;
+    boost::system::error_code unreadable;
     try {
         co_await http::async_read_header(stream, buffer, parser, boost::asio::use_awaitable);
     } catch (const boost::system::system_error& error) {
@@ -249,10 +276,18 @@ inline Task<bool> read_request_within_limits(boost::beast::tcp_stream& stream,
             co_return false;
         }
         // A Content-Length past the limit is refused as soon as the headers are read.
-        if (error.code() != http::error::body_limit) {
+        if (error.code() == http::error::body_limit) {
+            declared_too_large = true;
+        } else if (is_unreadable_request(error.code())) {
+            unreadable = error.code();
+        } else {
             throw;
         }
-        declared_too_large = true;
+    }
+    if (unreadable) {
+        stream.expires_never();
+        co_await refuse_unreadable_request(stream, unreadable);
+        co_return false;
     }
     const StringRequest head{parser.get().base()};
     if (declared_too_large) {
@@ -304,12 +339,19 @@ inline Task<bool> read_request_within_limits(boost::beast::tcp_stream& stream,
         if (ends_quietly(error.code())) {
             co_return false;
         }
-        if (error.code() != http::error::body_limit) {
+        if (error.code() == http::error::body_limit) {
+            too_large = true;
+        } else if (is_unreadable_request(error.code())) {
+            unreadable = error.code();
+        } else {
             throw;
         }
-        too_large = true;
     }
     stream.expires_never();
+    if (unreadable) {
+        co_await refuse_unreadable_request(stream, unreadable);
+        co_return false;
+    }
     if (busy) {
         // Named: GCC 11 mishandles a temporary in a co_await operand.
         auto busy_response =
@@ -348,6 +390,10 @@ inline Task<bool> read_buffered_request(boost::beast::tcp_stream& stream,
         auto too_large = make_limit_response(StringRequest{parser.get().base()},
                                              http::status::payload_too_large, "Request body too large");
         co_await write_final_response(stream, std::move(too_large));
+        co_return false;
+    }
+    if (is_unreadable_request(parse_error)) {
+        co_await refuse_unreadable_request(stream, parse_error);
         co_return false;
     }
     if (parse_error || !parser.is_done()) {

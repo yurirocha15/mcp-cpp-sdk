@@ -152,6 +152,32 @@ std::string header_only_post(std::size_t body_bytes, const std::string& extra = 
            extra + "Content-Length: " + std::to_string(body_bytes) + "\r\n\r\n";
 }
 
+/// What a server writes back to requests its HTTP parser cannot read, each on its own connection.
+struct UnreadableAnswers {
+    std::string long_headers;
+    std::string malformed;
+    std::string two_lengths;
+};
+
+mcp::Task<UnreadableAnswers> send_unreadable_requests(asio::any_io_executor executor,
+                                                      unsigned short port) {
+    // Past the parser's 8 KiB header limit.
+    const std::string long_header = "X-Long: " + std::string(9000, 'a') + "\r\n";
+    UnreadableAnswers answers;
+    answers.long_headers =
+        co_await raw_exchange(executor, port, full_post("{}", long_header), g_hang_guard);
+    answers.malformed = co_await raw_exchange(executor, port, "GARBAGE\r\n\r\n", g_hang_guard);
+    answers.two_lengths =
+        co_await raw_exchange(executor, port, full_post("{}", "Content-Length: 7\r\n"), g_hang_guard);
+    co_return answers;
+}
+
+void expect_unreadable_requests_answered(const UnreadableAnswers& answers) {
+    EXPECT_EQ(answers.long_headers.rfind("HTTP/1.1 431", 0), 0u) << answers.long_headers;
+    EXPECT_EQ(answers.malformed.rfind("HTTP/1.1 400", 0), 0u) << answers.malformed;
+    EXPECT_EQ(answers.two_lengths.rfind("HTTP/1.1 400", 0), 0u) << answers.two_lengths;
+}
+
 template <typename Condition>
 mcp::Task<bool> wait_until(Condition condition) {
     auto executor = co_await asio::this_coro::executor;
@@ -522,6 +548,16 @@ TEST_F(SessionLimitsTest, RefusedExpectContinueGetsOnlyTheRefusal) {
     });
     EXPECT_EQ(answer.rfind("HTTP/1.1 401", 0), 0u) << answer;
     EXPECT_EQ(answer.find("100 Continue"), std::string::npos) << answer;
+}
+
+// A request the HTTP parser cannot read is answered before the connection ends: 431 for headers
+// past the parser's limit, 400 for anything else.
+TEST_F(SessionLimitsTest, UnreadableRequestIsAnswered) {
+    UnreadableAnswers answers;
+    run([&]() -> mcp::Task<void> {
+        answers = co_await send_unreadable_requests(io_.get_executor(), port_);
+    });
+    expect_unreadable_requests_answered(answers);
 }
 
 // A request without a valid token is refused on its headers: its body is never waited for.
@@ -1150,6 +1186,31 @@ TEST(HttpServerTransportLimits, ExpectContinueIsAnsweredBeforeTheBody) {
     io.run();
     EXPECT_EQ(exchange.before_body, "HTTP/1.1 100 Continue\r\n\r\n");
     EXPECT_EQ(exchange.after_body.rfind("HTTP/1.1 200", 0), 0u) << exchange.after_body;
+}
+
+// HttpServerTransport also answers a request its HTTP parser cannot read.
+TEST(HttpServerTransportLimits, UnreadableRequestIsAnswered) {
+    asio::io_context io;
+    auto transport = std::make_shared<mcp::HttpServerTransport>(io.get_executor(), "127.0.0.1", 0);
+    auto server = make_server();
+    UnreadableAnswers answers;
+    asio::co_spawn(io, transport->listen(), asio::detached);
+    asio::co_spawn(
+        io, [&]() -> mcp::Task<void> { co_await server->run(transport, io.get_executor()); },
+        asio::detached);
+    asio::co_spawn(
+        io,
+        [&]() -> mcp::Task<void> {
+            try {
+                answers = co_await send_unreadable_requests(io.get_executor(), transport->port());
+            } catch (const std::exception& error) {
+                ADD_FAILURE() << error.what();
+            }
+            transport->close();
+        },
+        asio::detached);
+    io.run();
+    expect_unreadable_requests_answered(answers);
 }
 
 // Reverse request ids are small sequential numbers, so anyone could guess the one waiting.

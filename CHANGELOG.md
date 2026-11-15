@@ -876,6 +876,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `StdioTransport::write_message()` wrote a message that contains a newline as
   two lines. It now throws `std::invalid_argument`, as
   `StdioClientTransport::write_message()` does.
+- `HttpServerTransport` and `StreamableHttpSessionManager` closed the
+  connection without an answer when a request's headers passed the HTTP
+  parser's 8 KiB limit or the request was not valid HTTP. They now answer
+  `431 Request Header Fields Too Large` or `400 Bad Request` before closing it.
 - Examples and documentation that did not work as written: the
   getting-started client handed `co_spawn` a coroutine of a temporary lambda,
   which read the lambda's captures after it was destroyed; the server refused
