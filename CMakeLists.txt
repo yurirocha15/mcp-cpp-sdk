@@ -580,41 +580,6 @@ if(BUILD_TESTING)
   target_compile_options(
     mcp-sdk-tests PRIVATE "$<$<AND:${GCC_OR_CLANG},${RELEASE_CONFIG}>:-O1>")
 
-  # Every test file parses these third-party headers. The SDK's own headers stay
-  # out, so that a change to one recompiles only the test files that include it.
-  # ccache supports precompiled headers with GCC and Clang only, so MSVC builds
-  # without them. Clang leaves its timestamp out of the header so that ccache
-  # can reuse what it compiled.
-  if(NOT MSVC)
-    target_precompile_headers(
-      mcp-sdk-tests
-      PRIVATE
-      <gtest/gtest.h>
-      <boost/asio/co_spawn.hpp>
-      <boost/asio/detached.hpp>
-      <boost/asio/io_context.hpp>
-      <boost/asio/ip/tcp.hpp>
-      <boost/asio/steady_timer.hpp>
-      <boost/asio/use_awaitable.hpp>
-      <boost/beast/core.hpp>
-      <boost/beast/http.hpp>
-      <nlohmann/json.hpp>)
-    set(NO_PCH_TIMESTAMP "SHELL:-Xclang -fno-pch-timestamp")
-    target_compile_options(
-      mcp-sdk-tests
-      PRIVATE "$<$<CXX_COMPILER_ID:Clang,AppleClang>:${NO_PCH_TIMESTAMP}>")
-    # With the header, GCC 13 reports moving a concatenated std::string in a
-    # test as a write past the string's 16-byte inline buffer.
-    target_compile_options(
-      mcp-sdk-tests PRIVATE "$<$<CXX_COMPILER_ID:GNU>:-Wno-stringop-overflow>")
-    # The interposers and the internal codec are not test code, and the GCC 11
-    # regression test keeps the includes it was written against.
-    set_source_files_properties(
-      src/detail/sealed_state.cpp test/core/gcc11_sso_crash_test.cpp
-      test/support/resolve_gate.cpp test/support/socket_gate.cpp
-      PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
-  endif()
-
   option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
   if(ENABLE_COVERAGE)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

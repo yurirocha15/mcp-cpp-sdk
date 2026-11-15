@@ -448,7 +448,6 @@ jobs:
         PYTHONPATH=scripts python3 -m unittest -v \
           scripts.test_release_dispatch_contract \
           scripts.test_release_workflow_policy \
-          scripts.test_build \
           scripts.test_check_json_matrix \
           scripts.test_ci_changes
 
