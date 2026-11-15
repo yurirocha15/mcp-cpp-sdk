@@ -527,8 +527,10 @@ if(BUILD_TESTING)
   target_compile_definitions(
     mcp-sdk-tests
     PRIVATE MCP_CPP_SDK_TEST_TIMEOUT_SECONDS=${MCP_CPP_SDK_TEST_TIMEOUT})
+  # Listing the tests after the link runs the program as well: a sanitizer build
+  # of it can take longer than the default five seconds to list them and exit.
   gtest_discover_tests(
-    mcp-sdk-tests
+    mcp-sdk-tests DISCOVERY_TIMEOUT ${MCP_CPP_SDK_TEST_TIMEOUT}
     PROPERTIES
     TIMEOUT ${MCP_CPP_SDK_TEST_TIMEOUT})
 
