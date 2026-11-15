@@ -31,7 +31,7 @@ In a clone of this repository, Conan can provide the dependencies:
 .. code-block:: bash
 
    # Install dependencies
-   conan install . --build=missing
+   conan install . --build=missing -s compiler.cppstd=20
 
    # Build the project
    cmake --preset conan-release
@@ -157,12 +157,13 @@ with other async work — you can wire up the transport manually:
 
        nlohmann::json schema = {
            {"type", "object"},
-           {"properties", {{"a", {{"type", "number"}}}, {"b", {{"type", "number"}}}}}};
+           {"properties", {{"a", {{"type", "number"}}}, {"b", {{"type", "number"}}}}},
+           {"required", nlohmann::json::array({"a", "b"})}};
 
        server.add_tool<nlohmann::json, nlohmann::json>(
            "add", "Add two numbers", std::move(schema),
            [](const nlohmann::json& params) -> mcp::Task<nlohmann::json> {
-               double result = params["a"].get<double>() + params["b"].get<double>();
+               double result = params.at("a").get<double>() + params.at("b").get<double>();
                co_return nlohmann::json{{"result", result}};
            });
 
@@ -189,7 +190,9 @@ Quick Start: Minimal Client
    ``stdio_launch`` example.
 
 Here's a minimal MCP client that connects to an already running Streamable HTTP
-server and calls a tool:
+server and calls its ``hello`` tool. The quick-start server above serves it over
+HTTP when ``server.run_stdio()`` is replaced by
+``server.run_http("127.0.0.1", 3000)``:
 
 .. code-block:: cpp
 
@@ -213,12 +216,12 @@ server and calls a tool:
            io,
            [&]() -> Task<void> {
                // Connect. The client detects the protocol revision the server speaks.
-               ConnectResult connected = co_await client.connect("math-client", "1.0.0");
+               ConnectResult connected = co_await client.connect("hello-client", "1.0.0");
                std::cout << "Protocol: " << connected.protocolVersion << std::endl;
 
-               // Call the "add" tool
-               nlohmann::json args = {{"a", 5}, {"b", 7}};
-               auto result = co_await client.call_tool("add", args);
+               // Call the "hello" tool
+               nlohmann::json args = {{"name", "World"}};
+               auto result = co_await client.call_tool("hello", args);
                std::cout << "Result: " << nlohmann::json(result).dump(2) << std::endl;
 
                client.close();

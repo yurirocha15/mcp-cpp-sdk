@@ -67,10 +67,12 @@ int main() {
     mcp::Server server({"hello-server", "1.0.0"}, capabilities);
 
     server.add_tool("hello", "Greets the user",
-        {{"type", "object"}, {"properties", {{"name", {{"type", "string"}}}}}},
+        {{"type", "object"},
+         {"properties", {{"name", {{"type", "string"}}}}},
+         {"required", nlohmann::json::array({"name"})}},
         [](const nlohmann::json& args) -> nlohmann::json {
             return nlohmann::json{
-                {"message", "Hello, " + args["name"].get<std::string>() + "!"}};
+                {"message", "Hello, " + args.at("name").get<std::string>() + "!"}};
         });
 
     server.run_http("127.0.0.1", 3000); // Serves http://127.0.0.1:3000/mcp
