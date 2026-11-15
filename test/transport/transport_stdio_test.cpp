@@ -245,6 +245,18 @@ TEST_F(StdioTransportTest, ReadAfterCloseDeliversLinesQueuedBeforeClose) {
     EXPECT_EQ(error_after_queue, "StdioTransport is closed");
 }
 
+// A newline inside a message would split it into two lines on the wire, so it is refused and nothing
+// is written.
+TEST_F(StdioTransportTest, WriteRefusesAMessageWithANewline) {
+    std::istringstream input;
+    std::ostringstream output;
+    mcp::StdioTransport transport(io_ctx_.get_executor(), input, output);
+    EXPECT_THROW(static_cast<void>(transport.write_message("{\"a\":\n1}")), std::invalid_argument);
+    transport.close();
+    io_ctx_.run();
+    EXPECT_EQ(output.str(), "");
+}
+
 TEST_F(StdioTransportTest, WriteMultipleMessages) {
     std::istringstream input;
     std::ostringstream output;

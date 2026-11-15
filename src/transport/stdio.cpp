@@ -849,6 +849,10 @@ Task<std::string> StdioTransport::read_message() {
 }
 
 Task<void> StdioTransport::write_message(std::string_view message) {
+    // A newline would end the message early and send the rest as a line of its own.
+    if (message.find('\n') != std::string_view::npos) {
+        throw std::invalid_argument("A stdio message must not contain a newline");
+    }
     impl_->ensure_writer_started();
     auto state = impl_->state;
     auto owned_message = std::string(message);

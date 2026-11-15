@@ -873,6 +873,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `SessionLimits::max_sessions` when initializes arrived together on an
   executor with several threads. It now checks the limit again as it adds the
   session.
+- `StdioTransport::write_message()` wrote a message that contains a newline as
+  two lines. It now throws `std::invalid_argument`, as
+  `StdioClientTransport::write_message()` does.
 - Examples and documentation that did not work as written: the
   getting-started client handed `co_spawn` a coroutine of a temporary lambda,
   which read the lambda's captures after it was destroyed; the server refused

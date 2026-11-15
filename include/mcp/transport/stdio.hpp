@@ -116,6 +116,8 @@ class MCP_API StdioTransport final : public ITransport {
      * Concurrent calls are safe.
      *
      * @param message The message to write.
+     * @throws std::invalid_argument If @p message contains a newline, which would split it on the
+     *         wire.
      */
     Task<void> write_message(std::string_view message) override;
 
