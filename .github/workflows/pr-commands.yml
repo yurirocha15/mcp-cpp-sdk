@@ -1,7 +1,7 @@
 name: PR commands
 
 # Admin-only /approve and /merge [merge|squash|rebase] comments on the admin's own pull requests
-# into the default branch.
+# into the default branch or a stack based on it.
 
 on:
   issue_comment:
@@ -95,19 +95,25 @@ jobs:
           author=$(jq -r .user.login <<< "$pr_json")
           changed_files=$(jq -r .changed_files <<< "$pr_json")
           base_ref=$(jq -r .base.ref <<< "$pr_json")
+          stack_base=$(jq -r '.stack.base.ref // ""' <<< "$pr_json")
           [[ "$state" == open ]] || refuse "the pull request is not open."
           [[ "$draft" == false ]] || refuse "the pull request is a draft."
           [[ "$author" == "$ACTOR" && "$head_repo" == "$REPO" ]] \
             || refuse "the bot only handles pull requests you opened from a branch in this repository."
-          [[ "$base_ref" == "$DEFAULT_BRANCH" ]] \
-            || refuse "the bot only handles pull requests into \`$DEFAULT_BRANCH\`."
-          listed=$(gh api --paginate "repos/$REPO/pulls/$PR/files" \
-            --jq '.[] | [.filename, .previous_filename // ""] | any(startswith(".github/workflows/"))')
-          if grep -qx true <<< "$listed"; then
-            refuse "this pull request changes workflow files; an admin approves and merges those by hand."
+          [[ "${stack_base:-$base_ref}" == "$DEFAULT_BRANCH" ]] \
+            || refuse "the bot only handles pull requests into \`$DEFAULT_BRANCH\` or a stack based on it."
+          if [[ "$command" == /merge && -n "$stack_base" ]]; then
+            refuse "this pull request is in a stack; approve each one with \`/approve\`, then merge the stack on GitHub."
           fi
-          if [[ $(grep -c . <<< "$listed") != "$changed_files" ]]; then
-            refuse "GitHub did not list every changed file of this pull request; an admin approves and merges it by hand."
+          if [[ "$command" == /merge ]]; then
+            listed=$(gh api --paginate "repos/$REPO/pulls/$PR/files" \
+              --jq '.[] | [.filename, .previous_filename // ""] | any(startswith(".github/workflows/"))')
+            if grep -qx true <<< "$listed"; then
+              refuse "this pull request changes workflow files; an admin merges those by hand."
+            fi
+            if [[ $(grep -c . <<< "$listed") != "$changed_files" ]]; then
+              refuse "GitHub did not list every changed file of this pull request; an admin merges it by hand."
+            fi
           fi
           if [[ $(gh api "repos/$REPO/pulls/$PR" --jq .head.sha) != "$head_sha" ]]; then
             refuse "the head commit changed while the command ran; comment again."
