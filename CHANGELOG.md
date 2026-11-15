@@ -527,13 +527,16 @@ Versioning; a `0.x` version is a stable release unless its version has an
   the gate stays the pinned `0.1.16` run against `2025-11-25`.
 - `CancellationToken` and `RequestOptions::cancellation` cancel requests the
   application has started, from any thread, without knowing their ids.
-  `CancellationToken::cancel()` sends `notifications/cancelled` for each
-  request given the token that is still waiting and ends its wait at once in
-  every protocol revision: the call throws `McpError` with
+  `CancellationToken::cancel()` tells the server about each request given the
+  token that is still waiting, with `notifications/cancelled` (or, for a
+  2026-07-28 request over HTTP, by closing its response stream), and ends its
+  wait at once in every protocol revision: the call throws `McpError` with
   `g_REQUEST_CANCELLED`, and a response that arrives afterwards is dropped. A
   request given a token that is already cancelled is not sent. A `call_tool()`
-  following a task stops polling and sends `tasks/cancel`. `Client::call_tool()`
-  has an overload that takes `RequestOptions`.
+  following a task stops polling and sends `tasks/cancel`; a task the server
+  starts for a call cancelled before its answer arrives stays unknown to the
+  client and runs on. `Client::call_tool()` has an overload that takes
+  `RequestOptions`.
 
 ### Changed
 

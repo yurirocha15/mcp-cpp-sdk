@@ -106,8 +106,9 @@ Cancelling from the client
 
 A client cancels requests by giving them a ``mcp::CancellationToken`` in
 ``RequestOptions::cancellation`` and calling ``cancel()`` on a copy of the
-token, from any thread. The client sends ``notifications/cancelled`` for each
-request given the token that is still waiting, and each call throws
+token, from any thread. The client tells the server about each request given
+the token that is still waiting, with ``notifications/cancelled`` (over HTTP, a
+2026-07-28 request's response stream is closed instead), and each call throws
 ``McpError`` with ``g_REQUEST_CANCELLED`` at once; a response that arrives
 afterwards is dropped. A request given a token that is already cancelled is not
 sent. ``Client::call_tool()`` and ``Client::send_request()`` take the options.
