@@ -29,6 +29,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -272,6 +273,50 @@ TEST_F(SessionLimitsTest, InitializePastTheLimitIsRefused) {
     });
     EXPECT_EQ(third.status, 503u);
     EXPECT_FALSE(third.session_id.has_value());
+}
+
+// Initializes that arrive together on a manager whose connections run on several threads still
+// create no more sessions than the limit.
+TEST(SessionLimitsThreadsTest, ConcurrentInitializesStayWithinTheLimit) {
+    const std::size_t limit = 5;
+    const int clients = 64;
+    const int thread_count = 8;
+    asio::io_context io(thread_count);
+    const auto port = free_port();
+    mcp::StreamableHttpSessionManager manager(
+        io.get_executor(), "127.0.0.1", port,
+        [](const asio::any_io_executor&) { return make_server(); });
+    manager.set_session_limits({limit, std::chrono::milliseconds::zero()});
+    std::atomic<int> answered{0};
+    std::atomic<int> created{0};
+    asio::co_spawn(io, manager.listen(), asio::detached);
+    for (int i = 0; i < clients; ++i) {
+        asio::co_spawn(
+            io,
+            [&, i]() -> mcp::Task<void> {
+                try {
+                    const auto reply = co_await send(
+                        io.get_executor(), port, make_initialize_request(std::to_string(i)).dump(), {});
+                    if (reply.session_id) {
+                        ++created;
+                    }
+                } catch (const std::exception&) {
+                }
+                if (++answered == clients) {
+                    manager.close();
+                }
+            },
+            asio::detached);
+    }
+    std::vector<std::thread> threads;
+    for (int i = 0; i < thread_count; ++i) {
+        threads.emplace_back([&io] { io.run(); });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    EXPECT_EQ(answered.load(), clients);
+    EXPECT_LE(created.load(), static_cast<int>(limit));
 }
 
 TEST_F(SessionLimitsTest, InitializeThatFailsKeepsNoSession) {

@@ -869,6 +869,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `HttpConnectionLimits::max_request_bytes`: the stream was detached through
   a session it had not yet been given. It now answers 503, as it does for the
   replay of a finished stream.
+- `StreamableHttpSessionManager` could create more sessions than
+  `SessionLimits::max_sessions` when initializes arrived together on an
+  executor with several threads. It now checks the limit again as it adds the
+  session.
 - Examples and documentation that did not work as written: the
   getting-started client handed `co_spawn` a coroutine of a temporary lambda,
   which read the lambda's captures after it was destroyed; the server refused
