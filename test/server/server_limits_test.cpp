@@ -16,6 +16,7 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <chrono>
 #include <deque>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <string>
 #include <vector>
@@ -131,7 +132,7 @@ TEST_F(ServerLimitsTest, RequestPastTheLimitIsRefusedAndTheSessionGoesOn) {
         co_await wait_until([this] { return answer_to(4) != nullptr; });
     });
     ASSERT_NE(answer_to(3), nullptr);
-    EXPECT_EQ((*answer_to(3))["error"]["code"], mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ((*answer_to(3))["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
     EXPECT_EQ(running_.load(), 3);
     ASSERT_NE(answer_to(4), nullptr);
     EXPECT_TRUE(answer_to(4)->contains("result"));
@@ -190,7 +191,7 @@ TEST_F(ServerLimitsTest, AnswerFromTheClientIsReadWhileARefusalWaitsToBeWritten)
     });
     EXPECT_TRUE(answered.load());
     ASSERT_NE(answer_to("refused"), nullptr);
-    EXPECT_EQ((*answer_to("refused"))["error"]["code"], mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ((*answer_to("refused"))["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
     ASSERT_NE(answer_to(1), nullptr);
     EXPECT_EQ((*answer_to(1))["result"]["structuredContent"], (json{{"roots", json::array()}}));
 }
@@ -322,7 +323,8 @@ TEST_F(ServerLimitsTest, ClientThatNeverAnswersFailsTheHandlerAtTheTimeout) {
 // An error the client answers with ends the request on its side, whatever its code, so the client
 // is not told to cancel it.
 TEST_F(ServerLimitsTest, ClientAnsweringWithACancelOrTimeoutIsNotToldToCancel) {
-    const std::vector<int> codes{mcp::g_REQUEST_CANCELLED, mcp::g_REQUEST_TIMEOUT};
+    const std::vector<int> codes{mcp::constants::jsonrpc::g_REQUEST_CANCELLED,
+                                 mcp::constants::jsonrpc::g_REQUEST_TIMEOUT};
     std::vector<json> asked;
     run([&]() -> mcp::Task<void> {
         co_await initialized();
@@ -474,7 +476,8 @@ TEST_F(ServerLimitsTest, AResultThatCannotBeEncodedDoesNotExposeTheLibraryText) 
     });
     ASSERT_NE(answer_to(1), nullptr);
     EXPECT_EQ(answer_to(1)->dump().find("json.exception"), std::string::npos) << *answer_to(1);
-    EXPECT_EQ((*answer_to(1))["error"]["code"], mcp::g_INTERNAL_ERROR) << *answer_to(1);
+    EXPECT_EQ((*answer_to(1))["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR)
+        << *answer_to(1);
 }
 
 // A request is counted as its parsed JSON takes memory: an array of empty objects takes far more than
@@ -498,7 +501,8 @@ TEST_F(ServerLimitsTest, RequestsAreCountedByTheMemoryTheyTake) {
     });
     ASSERT_NE(answer_to(3), nullptr);
     ASSERT_TRUE(answer_to(3)->contains("error")) << *answer_to(3);
-    EXPECT_EQ((*answer_to(3))["error"]["code"], mcp::g_INTERNAL_ERROR) << *answer_to(3);
+    EXPECT_EQ((*answer_to(3))["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR)
+        << *answer_to(3);
     EXPECT_EQ(running_.load(), 2);
 }
 
@@ -583,7 +587,7 @@ TEST_F(ServerLimitsTest, SubscriptionUrisAreLimitedInBytes) {
     }
     ASSERT_NE(answer_to(8), nullptr);
     ASSERT_TRUE(answer_to(8)->contains("error"));
-    EXPECT_EQ((*answer_to(8))["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ((*answer_to(8))["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
     ASSERT_NE(answer_to(9), nullptr);
     EXPECT_TRUE(answer_to(9)->contains("result")) << *answer_to(9);
 }
@@ -610,7 +614,7 @@ TEST_F(ServerLimitsTest, SubscriptionsOfASessionAreLimited) {
     ASSERT_NE(answer_to(4096), nullptr);
     EXPECT_TRUE(answer_to(4096)->contains("result"));
     ASSERT_NE(answer_to(4097), nullptr);
-    EXPECT_EQ((*answer_to(4097))["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ((*answer_to(4097))["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
 }
 
 namespace {

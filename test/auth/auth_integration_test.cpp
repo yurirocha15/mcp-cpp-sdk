@@ -19,6 +19,7 @@
 #include <chrono>
 #include <exception>
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_client.hpp>
@@ -347,7 +348,7 @@ TEST(AuthMiddlewareTest, RejectsResourceAndPromptRequestsWithAJsonRpcError) {
         ASSERT_NE(it, responses.end()) << "no response to request " << id;
         EXPECT_FALSE(it->contains("result")) << it->dump();
         ASSERT_TRUE(it->contains("error")) << it->dump();
-        EXPECT_EQ((*it)["error"]["code"], mcp::g_INTERNAL_ERROR);
+        EXPECT_EQ((*it)["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
         EXPECT_NE((*it)["error"]["message"].get<std::string>().find("Unauthorized"), std::string::npos)
             << it->dump();
     }
@@ -430,7 +431,8 @@ TEST(AuthClientTransportTest, LegacyRetryReplaysTheRequestMatchingTheErrorId) {
     const auto request_b =
         json{{"jsonrpc", "2.0"}, {"id", "B"}, {"method", "tools/call"}, {"params", json::object()}}
             .dump();
-    inner->enqueue_message(make_error_response("A", mcp::g_UNAUTHORIZED, "Unauthorized").dump());
+    inner->enqueue_message(
+        make_error_response("A", mcp::constants::jsonrpc::g_UNAUTHORIZED, "Unauthorized").dump());
     inner->enqueue_message(make_result_response("A", json{{"ok", true}}).dump());
 
     std::string response;
@@ -469,8 +471,10 @@ TEST(AuthClientTransportTest, NoResponseRequestsAreEvictedAtConfiguredBound) {
     const auto make_request = [](std::string_view id) {
         return json{{"jsonrpc", "2.0"}, {"id", id}, {"method", "tools/list"}}.dump();
     };
-    inner->enqueue_message(make_error_response("A", mcp::g_UNAUTHORIZED, "Unauthorized").dump());
-    inner->enqueue_message(make_error_response("C", mcp::g_UNAUTHORIZED, "Unauthorized").dump());
+    inner->enqueue_message(
+        make_error_response("A", mcp::constants::jsonrpc::g_UNAUTHORIZED, "Unauthorized").dump());
+    inner->enqueue_message(
+        make_error_response("C", mcp::constants::jsonrpc::g_UNAUTHORIZED, "Unauthorized").dump());
     inner->enqueue_message(make_result_response("C", json{{"ok", true}}).dump());
 
     std::string evicted_response;
@@ -503,7 +507,8 @@ TEST(AuthClientTransportTest, PendingReplayCorrelationExpires) {
     mcp::auth::OAuthClientTransport transport(inner, authenticator, options);
 
     const auto request = json{{"jsonrpc", "2.0"}, {"id", "expired"}, {"method", "tools/list"}}.dump();
-    inner->enqueue_message(make_error_response("expired", mcp::g_UNAUTHORIZED, "Unauthorized").dump());
+    inner->enqueue_message(
+        make_error_response("expired", mcp::constants::jsonrpc::g_UNAUTHORIZED, "Unauthorized").dump());
 
     std::string response;
     asio::co_spawn(
@@ -530,7 +535,8 @@ TEST(AuthClientTransportTest, CloseClearsPendingReplayCorrelationAndIsIdempotent
     mcp::auth::OAuthClientTransport transport(inner, authenticator);
 
     const auto request = json{{"jsonrpc", "2.0"}, {"id", "closed"}, {"method", "tools/list"}}.dump();
-    inner->enqueue_message(make_error_response("closed", mcp::g_UNAUTHORIZED, "Unauthorized").dump());
+    inner->enqueue_message(
+        make_error_response("closed", mcp::constants::jsonrpc::g_UNAUTHORIZED, "Unauthorized").dump());
 
     std::string response;
     asio::co_spawn(
@@ -710,7 +716,9 @@ TEST(AuthClientTransportTest, FailedHttpRetryDoesNotLeaveRequestEligibleForRepla
 
                         const auto response_body =
                             request_index == 0
-                                ? make_error_response("A", mcp::g_UNAUTHORIZED, "Unauthorized").dump()
+                                ? make_error_response("A", mcp::constants::jsonrpc::g_UNAUTHORIZED,
+                                                      "Unauthorized")
+                                      .dump()
                                 : make_result_response("A", json{{"unexpectedReplay", true}}).dump();
                         http::response<http::string_body> response{http::status::ok, request.version()};
                         response.set(http::field::content_type, "application/json");
@@ -737,7 +745,8 @@ TEST(AuthClientTransportTest, FailedHttpRetryDoesNotLeaveRequestEligibleForRepla
     ASSERT_EQ(replay_server_requests.size(), 1);
     EXPECT_EQ(replay_server_requests.front().at("method"), "notifications/probe");
     ASSERT_FALSE(response_wire.empty());
-    EXPECT_EQ(json::parse(response_wire).at("error").at("code"), mcp::g_UNAUTHORIZED);
+    EXPECT_EQ(json::parse(response_wire).at("error").at("code"),
+              mcp::constants::jsonrpc::g_UNAUTHORIZED);
 }
 
 TEST(AuthClientTransportTest, RefreshTokenReturnsTrue) {

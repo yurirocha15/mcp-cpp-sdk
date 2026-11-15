@@ -2,6 +2,7 @@
 
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/regex.hpp>
+#include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
 #include "native_schema.hpp"
 #include "schema_cache.hpp"
@@ -36,10 +37,6 @@ namespace jcs = mcp_detail_jsoncons::jsonschema;
 
 namespace {
 
-/// Deepest nesting accepted in a schema document. Checking a schema against its metaschema and
-/// compiling it both recurse with the schema, so this bounds the stack they use.
-constexpr std::size_t g_max_schema_depth = 64;
-
 /// The `$schema` values this SDK implements, without a trailing empty fragment.
 const std::array<std::string_view, 5>& supported_dialects() {
     static const std::array<std::string_view, 5> dialects = {
@@ -63,19 +60,6 @@ std::string_view find_dialect(std::string_view uri) {
     }
     return {};
 }
-
-/// Evaluation work every validation may do. The vendored jsoncons charges a step one more than the
-/// length of its evaluation path, which is what the step costs, and charges copies of locations
-/// and whole-string keywords by their length (see scripts/vendor_jsoncons.py).
-constexpr std::size_t g_base_work = 1'000'000;
-/// Work allowed per unit of the value (see ValueShape::units), before the allowance for each node
-/// of the schema below.
-constexpr std::size_t g_work_per_unit = 256;
-/// Further work allowed per unit of the value for each node of the schema: a step that compares
-/// the value with a schema value, such as an `enum` member, costs 8.
-constexpr std::size_t g_work_per_unit_and_schema_node = 8;
-/// Memory the messages kept for failed branches may hold at once during one validation.
-constexpr std::size_t g_max_kept_message_bytes = 32 * 1024 * 1024;
 
 std::size_t saturating_add(std::size_t left, std::size_t right) {
     return left > std::numeric_limits<std::size_t>::max() - right
@@ -112,8 +96,11 @@ struct ValueShape {
     /// whose work grows exponentially with the value's depth.
     [[nodiscard]] std::size_t evaluation_work(std::size_t schema_nodes, std::size_t max_work) const {
         const auto per_unit = saturating_add(
-            g_work_per_unit, saturating_multiply(g_work_per_unit_and_schema_node, schema_nodes));
-        const auto work = saturating_add(g_base_work, saturating_multiply(units(), per_unit));
+            mcp::detail::constants::schema::g_WORK_PER_UNIT,
+            saturating_multiply(mcp::detail::constants::schema::g_WORK_PER_UNIT_AND_SCHEMA_NODE,
+                                schema_nodes));
+        const auto work = saturating_add(mcp::detail::constants::schema::g_BASE_WORK,
+                                         saturating_multiply(units(), per_unit));
         return std::min(work, max_work);
     }
 
@@ -187,7 +174,8 @@ class WorkBudget {
         jcs::evaluation_limits::work_left() =
             shape.evaluation_work(schema_nodes, options.max_evaluation_work);
         jcs::evaluation_limits::pattern_steps_left() = shape.pattern_steps(options);
-        jcs::evaluation_limits::kept_message_bytes_left() = g_max_kept_message_bytes;
+        jcs::evaluation_limits::kept_message_bytes_left() =
+            mcp::detail::constants::schema::g_MAX_KEPT_MESSAGE_BYTES;
     }
     ~WorkBudget() {
         jcs::evaluation_limits::work_left() = saved_work_;
@@ -263,13 +251,11 @@ const jcs::json_schema<jc::json>& metaschema(std::string_view dialect) {
     return compiled[0];
 }
 
-/// Base URI jsoncons gives a schema without `$id`; references are reported relative to it.
-constexpr std::string_view g_default_base_uri = "https://jsoncons.com";
-
 /// @p uri as the schema author wrote it when it is relative to the document without `$id`.
 std::string_view without_default_base(std::string_view uri) {
-    if (uri.substr(0, g_default_base_uri.size()) == g_default_base_uri) {
-        uri.remove_prefix(g_default_base_uri.size());
+    if (uri.substr(0, mcp::detail::constants::schema::g_DEFAULT_BASE_URI.size()) ==
+        mcp::detail::constants::schema::g_DEFAULT_BASE_URI) {
+        uri.remove_prefix(mcp::detail::constants::schema::g_DEFAULT_BASE_URI.size());
         if (!uri.empty() && uri.front() == '/') {
             uri.remove_prefix(1);
         }
@@ -412,14 +398,15 @@ void mix(std::size_t& hash, std::size_t value) {
 }
 
 /// Mixes @p node, found @p depth levels below the root, into @p hash. Returns false, leaving the
-/// hash unfinished, when a container nests deeper than g_max_schema_depth, the depth at which
-/// measure() refuses a schema; so the recursion is bounded.
+/// hash unfinished, when a container nests deeper than
+/// mcp::detail::constants::schema::g_MAX_DEPTH, the depth at which measure() refuses a schema;
+/// so the recursion is bounded.
 bool mix_document(std::size_t& hash, const nlohmann::json& node, std::size_t depth) {
     using value_t = nlohmann::json::value_t;
     const auto type = node.type();
     mix(hash,
         static_cast<std::size_t>(type == value_t::number_unsigned ? value_t::number_integer : type));
-    if (node.is_structured() && depth + 1 > g_max_schema_depth) {
+    if (node.is_structured() && depth + 1 > mcp::detail::constants::schema::g_MAX_DEPTH) {
         return false;
     }
     switch (type) {
@@ -596,11 +583,11 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
         }
     }
 
-    const auto schema_shape = measure(schema, g_max_schema_depth);
+    const auto schema_shape = measure(schema, mcp::detail::constants::schema::g_MAX_DEPTH);
     if (!hash || schema_shape.too_deep) {
-        throw SchemaError(
-            SchemaError::Category::eInvalidSchema,
-            "JSON Schema nests deeper than " + std::to_string(g_max_schema_depth) + " levels");
+        throw SchemaError(SchemaError::Category::eInvalidSchema,
+                          "JSON Schema nests deeper than " +
+                              std::to_string(mcp::detail::constants::schema::g_MAX_DEPTH) + " levels");
     }
     if (schema_shape.non_finite) {
         // Serialized for a peer, it would carry null in that place: not the schema checked here.

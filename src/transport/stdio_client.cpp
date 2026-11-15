@@ -1,5 +1,6 @@
 #include <mcp/transport/stdio_client.hpp>
 
+#include "../detail/constants.hpp"
 #include "../detail/spawn_awaitable.hpp"
 
 #include <boost/asio/buffer.hpp>
@@ -70,8 +71,6 @@ using PipeStream = boost::asio::windows::stream_handle;
 #else
 using PipeStream = boost::asio::posix::stream_descriptor;
 #endif
-
-constexpr std::size_t g_chunk_bytes = 64U * 1024U;
 
 /// Whether a read that failed with @p error found the end of the process's output. A Windows pipe
 /// reports the end as ERROR_BROKEN_PIPE ("The pipe has been ended"), not as the end of file.
@@ -422,8 +421,6 @@ void send_terminate(ProcessState& state) { ::kill(signal_target(state), SIGTERM)
 /// Ends the process, with the mutex held and the process not yet ended.
 void send_kill(ProcessState& state) { ::kill(signal_target(state), SIGKILL); }
 
-constexpr bool g_has_terminate_step = true;
-
 void release_process(ProcessState& /*state*/) {}
 
 #else  // _WIN32
@@ -563,7 +560,8 @@ void make_pipe(bool parent_reads, UniqueHandle& parent_end, UniqueHandle& child_
     UniqueHandle parent(
         ::CreateNamedPipeW(name.c_str(), open_mode,
                            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                           1, g_chunk_bytes, g_chunk_bytes, 0, nullptr));
+                           1, mcp::detail::constants::stdio_client::g_CHUNK_BYTES,
+                           mcp::detail::constants::stdio_client::g_CHUNK_BYTES, 0, nullptr));
     if (!parent.valid()) {
         throw std::runtime_error(windows_error("Cannot create a pipe"));
     }
@@ -721,8 +719,6 @@ void send_kill(ProcessState& state) {
     }
 }
 
-constexpr bool g_has_terminate_step = false;
-
 void release_process(ProcessState& state) {
     if (state.job != nullptr) {
         ::CloseHandle(state.job);
@@ -744,7 +740,7 @@ void escalate(const std::shared_ptr<ProcessState>& state, std::chrono::milliseco
     if (state->changed.wait_for(lock, stdin_wait, has_exited)) {
         return;
     }
-    if constexpr (g_has_terminate_step) {
+    if constexpr (mcp::detail::constants::stdio_client::g_HAS_TERMINATE_STEP) {
         state->forced = true;
         send_terminate(*state);
         if (state->changed.wait_for(lock, terminate_wait, has_exited)) {
@@ -766,7 +762,7 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
           stdin_pipe(strand),
           stdout_pipe(strand),
           stderr_pipe(strand),
-          chunk(g_chunk_bytes) {}
+          chunk(mcp::detail::constants::stdio_client::g_CHUNK_BYTES) {}
 
     ~Impl() { finish(false); }
 
@@ -1035,7 +1031,7 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
                 }
             }
         };
-        std::vector<char> buffer(g_chunk_bytes);
+        std::vector<char> buffer(mcp::detail::constants::stdio_client::g_CHUNK_BYTES);
         for (;;) {
             boost::system::error_code error;
             const auto count = co_await self->stderr_pipe.async_read_some(

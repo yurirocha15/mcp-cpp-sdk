@@ -1,5 +1,6 @@
 #pragma once
 
+#include "constants.hpp"
 #include "header_value.hpp"
 
 #include <algorithm>
@@ -26,9 +27,6 @@ struct ParamHeader {
 /// `Mcp-Param-{Name}` headers of one request: {Name, value as received} pairs.
 using ParamHeaderValues = std::vector<std::pair<std::string, std::string>>;
 
-/// The largest integer an `x-mcp-header` argument may hold: 2^53 - 1.
-inline constexpr std::int64_t g_MAX_SAFE_HEADER_INTEGER = (std::int64_t{1} << 53) - 1;
-
 /// Compares ASCII letters without regard to case, as HTTP compares field names.
 inline bool equals_ignoring_case(std::string_view lhs, std::string_view rhs) {
     const auto lower = [](char symbol) {
@@ -50,26 +48,6 @@ inline bool is_http_token(std::string_view text) {
 }
 
 namespace param_headers {
-
-/// Keywords whose value is one subschema.
-inline constexpr std::array<std::string_view, 12> g_SCHEMA_KEYWORDS = {"additionalProperties",
-                                                                       "unevaluatedProperties",
-                                                                       "propertyNames",
-                                                                       "items",
-                                                                       "additionalItems",
-                                                                       "unevaluatedItems",
-                                                                       "contains",
-                                                                       "not",
-                                                                       "if",
-                                                                       "then",
-                                                                       "else",
-                                                                       "contentSchema"};
-/// Keywords whose value is an array of subschemas.
-inline constexpr std::array<std::string_view, 5> g_SCHEMA_ARRAY_KEYWORDS = {"allOf", "anyOf", "oneOf",
-                                                                            "prefixItems", "items"};
-/// Keywords whose value maps names to subschemas, other than `properties`.
-inline constexpr std::array<std::string_view, 5> g_SCHEMA_MAP_KEYWORDS = {
-    "patternProperties", "dependentSchemas", "$defs", "definitions", "dependencies"};
 
 /// Appends @p token to the JSON Pointer @p location as one more reference token.
 inline void append_pointer_token(std::string& location, std::string_view token) {
@@ -121,10 +99,13 @@ class Collector {
             if (keyword == "properties") {
                 append_pointer_token(location, keyword);
                 walk_map(value, location, path, reachable);
-            } else if (contains(g_SCHEMA_MAP_KEYWORDS, keyword)) {
+            } else if (contains(mcp::detail::constants::param_headers::g_SCHEMA_MAP_KEYWORDS,
+                                keyword)) {
                 append_pointer_token(location, keyword);
                 walk_map(value, location, path, false);
-            } else if (value.is_array() && contains(g_SCHEMA_ARRAY_KEYWORDS, keyword)) {
+            } else if (value.is_array() &&
+                       contains(mcp::detail::constants::param_headers::g_SCHEMA_ARRAY_KEYWORDS,
+                                keyword)) {
                 append_pointer_token(location, keyword);
                 const auto keyword_length = location.size();
                 for (std::size_t index = 0; index < value.size(); ++index) {
@@ -133,7 +114,7 @@ class Collector {
                     walk(value[index], location, path, false);
                     location.resize(keyword_length);
                 }
-            } else if (contains(g_SCHEMA_KEYWORDS, keyword)) {
+            } else if (contains(mcp::detail::constants::param_headers::g_SCHEMA_KEYWORDS, keyword)) {
                 append_pointer_token(location, keyword);
                 walk(value, location, path, false);
             }
@@ -285,7 +266,9 @@ inline std::optional<std::string> param_header_mismatch(const std::vector<ParamH
             std::int64_t body = 0;
             if (value->is_number_unsigned()) {
                 const auto unsigned_body = value->get<std::uint64_t>();
-                if (unsigned_body > static_cast<std::uint64_t>(g_MAX_SAFE_HEADER_INTEGER)) {
+                if (unsigned_body >
+                    static_cast<std::uint64_t>(
+                        mcp::detail::constants::param_headers::g_MAX_SAFE_HEADER_INTEGER)) {
                     return header_name + " argument is outside the safe integer range";
                 }
                 body = static_cast<std::int64_t>(unsigned_body);
@@ -294,14 +277,16 @@ inline std::optional<std::string> param_header_mismatch(const std::vector<ParamH
             } else {
                 // Range first: converting a double outside int64 to an integer is undefined.
                 const auto number = value->get<double>();
-                constexpr auto limit = static_cast<double>(g_MAX_SAFE_HEADER_INTEGER);
+                constexpr auto limit = static_cast<double>(
+                    mcp::detail::constants::param_headers::g_MAX_SAFE_HEADER_INTEGER);
                 if (!(number >= -limit && number <= limit) ||
                     number != static_cast<double>(static_cast<std::int64_t>(number))) {
                     return header_name + " cannot carry the argument's value";
                 }
                 body = static_cast<std::int64_t>(number);
             }
-            if (body > g_MAX_SAFE_HEADER_INTEGER || body < -g_MAX_SAFE_HEADER_INTEGER) {
+            if (body > mcp::detail::constants::param_headers::g_MAX_SAFE_HEADER_INTEGER ||
+                body < -mcp::detail::constants::param_headers::g_MAX_SAFE_HEADER_INTEGER) {
                 return header_name + " argument is outside the safe integer range";
             }
             std::int64_t header_number = 0;

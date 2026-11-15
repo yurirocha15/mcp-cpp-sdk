@@ -1,4 +1,5 @@
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/server/skills.hpp>
 
 #include <algorithm>
@@ -6,12 +7,11 @@
 #include <set>
 #include <stdexcept>
 #include <utility>
+#include "../detail/constants.hpp"
 
 namespace mcp::skills {
 
 namespace {
-
-constexpr std::string_view g_CURSOR_PREFIX = "o";
 
 std::vector<std::string> split_path(std::string_view path) {
     std::vector<std::string> segments;
@@ -88,15 +88,18 @@ Page page_of(const nlohmann::json& params, std::size_t total, std::size_t page_s
             throw std::invalid_argument("Invalid pagination cursor");
         }
         const auto& text = cursor->get_ref<const std::string&>();
-        const bool numeric = text.size() > g_CURSOR_PREFIX.size() && text.size() < 11 &&
-                             text.compare(0, g_CURSOR_PREFIX.size(), g_CURSOR_PREFIX) == 0 &&
-                             std::all_of(
-                                 text.begin() + static_cast<std::ptrdiff_t>(g_CURSOR_PREFIX.size()),
-                                 text.end(), [](char c) { return c >= '0' && c <= '9'; });
+        const bool numeric =
+            text.size() > mcp::detail::constants::skills::g_CURSOR_PREFIX.size() && text.size() < 11 &&
+            text.compare(0, mcp::detail::constants::skills::g_CURSOR_PREFIX.size(),
+                         mcp::detail::constants::skills::g_CURSOR_PREFIX) == 0 &&
+            std::all_of(
+                text.begin() +
+                    static_cast<std::ptrdiff_t>(mcp::detail::constants::skills::g_CURSOR_PREFIX.size()),
+                text.end(), [](char c) { return c >= '0' && c <= '9'; });
         if (!numeric) {
             throw std::invalid_argument("Invalid pagination cursor");
         }
-        begin = std::stoul(text.substr(g_CURSOR_PREFIX.size()));
+        begin = std::stoul(text.substr(mcp::detail::constants::skills::g_CURSOR_PREFIX.size()));
         if (begin > total) {
             throw std::invalid_argument("Invalid pagination cursor");
         }
@@ -105,7 +108,8 @@ Page page_of(const nlohmann::json& params, std::size_t total, std::size_t page_s
     page.begin = begin;
     page.end = std::min(total, begin + page_size);
     if (page.end < total) {
-        page.next = std::string(g_CURSOR_PREFIX) + std::to_string(page.end);
+        page.next =
+            std::string(mcp::detail::constants::skills::g_CURSOR_PREFIX) + std::to_string(page.end);
     }
     return page;
 }
@@ -131,7 +135,8 @@ SkillsExtension::SkillsExtension(Server& server, SkillsOptions options)
             "capabilities");
     }
     state_->options = options;
-    server.declare_extension(std::string(g_EXTENSION_ID), server_settings(options.directory_read));
+    server.declare_extension(std::string(mcp::constants::skills::g_EXTENSION_ID),
+                             server_settings(options.directory_read));
 
     auto state = state_;
     server.add_extension_method(
@@ -200,9 +205,9 @@ void SkillsExtension::add_skill(SkillDefinition skill) {
                                     " needs a string name and description");
     }
 
-    const std::string root = std::string(g_URI_PREFIX) + skill.path;
+    const std::string root = std::string(mcp::constants::skills::g_URI_PREFIX) + skill.path;
     Skill entry;
-    entry.uri = root + "/" + std::string(g_SKILL_FILE_NAME);
+    entry.uri = root + "/" + std::string(mcp::constants::skills::g_SKILL_FILE_NAME);
     entry.frontmatter = skill.frontmatter;
     entry.meta = skill.meta;
 
@@ -216,7 +221,7 @@ void SkillsExtension::add_skill(SkillDefinition skill) {
             entry.dynamic = true;
         }
     }
-    if (!paths.contains(std::string(g_SKILL_FILE_NAME))) {
+    if (!paths.contains(std::string(mcp::constants::skills::g_SKILL_FILE_NAME))) {
         throw std::invalid_argument("Skill " + skill.path + " has no SKILL.md file");
     }
     if (!entry.dynamic) {
@@ -243,7 +248,7 @@ void SkillsExtension::add_skill(SkillDefinition skill) {
 
         Resource resource;
         resource.uri = uri;
-        const bool is_skill_file = file.path == g_SKILL_FILE_NAME;
+        const bool is_skill_file = file.path == mcp::constants::skills::g_SKILL_FILE_NAME;
         resource.name =
             is_skill_file ? skill.frontmatter.at("name").get<std::string>() : base_name(file.path);
         if (is_skill_file) {
@@ -263,7 +268,7 @@ void SkillsExtension::add_skill(SkillDefinition skill) {
                 Resource child;
                 child.uri = directory;
                 child.name = segments[index];
-                child.mimeType = std::string(g_DIRECTORY_MIME_TYPE);
+                child.mimeType = std::string(mcp::constants::skills::g_DIRECTORY_MIME_TYPE);
                 new_directories[parent].push_back(std::move(child));
             }
         }

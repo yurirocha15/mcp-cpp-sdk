@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -427,7 +428,7 @@ TEST_F(ServerToolTest, RawToolRejectsIncompleteCallToolResult) {
     auto responses = call_tool(setup, "invalid-raw");
 
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
     EXPECT_NE(responses[1]["error"]["message"].get<std::string>().find("CallToolResult"),
               std::string::npos);
 }
@@ -850,7 +851,7 @@ TEST(ServerToolsList, UnwritableSchemaFailsOnlyItsOwnServer) {
     for (int attempt = 0; attempt < 2; ++attempt) {
         const auto failed = nlohmann::json::parse(list_tools_wire(broken));
         ASSERT_TRUE(failed.contains("error")) << failed.dump();
-        EXPECT_EQ(failed["error"]["code"], mcp::g_INTERNAL_ERROR);
+        EXPECT_EQ(failed["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
         EXPECT_NE(list_tools_wire(fine).find(writable.dump()), std::string::npos);
     }
 }
@@ -862,14 +863,14 @@ TEST(ServerToolsList, ToolThatCannotBeSerializedFailsEveryList) {
     for (int attempt = 0; attempt < 2; ++attempt) {
         const auto response = list_tools_directly(server);
         ASSERT_TRUE(response.contains("error")) << response.dump();
-        EXPECT_EQ(response["error"]["code"], mcp::g_INTERNAL_ERROR);
+        EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
     }
 
     // A later registration builds the list again, and it still holds the tool.
     server.add_raw_tool(named_tool("later"), raw_result);
     const auto response = list_tools_directly(server);
     ASSERT_TRUE(response.contains("error")) << response.dump();
-    EXPECT_EQ(response["error"]["code"], mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
 }
 
 namespace {
@@ -948,7 +949,7 @@ TEST_F(ServerToolArgsTest, ArgumentsThatAreNotAnObjectAreInvalidParams) {
     auto responses = call_tool(setup, "order", nlohmann::json::array({"tea", 2}));
 
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1].at("error").at("code"), mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(responses[1].at("error").at("code"), mcp::constants::jsonrpc::g_INVALID_PARAMS);
     EXPECT_EQ(handler_runs_, 0);
     EXPECT_EQ(setup.server.tool_validation_stats().argument_rejections, 0U);
 }
@@ -1080,7 +1081,7 @@ TEST_F(ServerToolOutputTest, NonConformingStructuredContentIsAnInternalError) {
 
     ASSERT_EQ(responses.size(), 2);
     const auto& error = responses[1].at("error");
-    EXPECT_EQ(error.at("code"), mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(error.at("code"), mcp::constants::jsonrpc::g_INTERNAL_ERROR);
     const auto message = error.at("message").get<std::string>();
     EXPECT_NE(message.find("outputSchema"), std::string::npos) << message;
     EXPECT_NE(message.find("/size"), std::string::npos) << message;
@@ -1130,7 +1131,7 @@ TEST_F(ServerToolOutputTest, TypedToolResultIsChecked) {
     auto responses = call_tool(setup, "typed");
 
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1].at("error").at("code"), mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(responses[1].at("error").at("code"), mcp::constants::jsonrpc::g_INTERNAL_ERROR);
 }
 
 // JSON has no NaN or Infinity, and nlohmann::json writes them as null, so a structured result
@@ -1159,7 +1160,7 @@ TEST_F(ServerToolOutputTest, NonFiniteNumberIsRefused) {
 
         ASSERT_EQ(responses.size(), 2U);
         ASSERT_TRUE(responses[1].contains("error")) << responses[1].dump();
-        EXPECT_EQ(responses[1].at("error").at("code"), mcp::g_INTERNAL_ERROR);
+        EXPECT_EQ(responses[1].at("error").at("code"), mcp::constants::jsonrpc::g_INTERNAL_ERROR);
         EXPECT_EQ(setup.server.tool_validation_stats().structured_content_rejections, 1U);
     }
 }
@@ -1243,7 +1244,7 @@ TEST_F(ToolsStructured, LegacyNonObjectStillErrors) {
         auto responses = call_tool(setup, "emit");
         ASSERT_EQ(responses.size(), 2u);
         ASSERT_TRUE(responses[1].contains("error")) << responses[1];
-        EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INTERNAL_ERROR);
+        EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
         EXPECT_EQ(responses[1]["error"]["message"],
                   "CallToolResult structuredContent must be a JSON object")
             << responses[1];
@@ -1293,7 +1294,7 @@ TEST_F(ToolsStructured, OutputSchemaArrayAndScalarValidated) {
             add_helper_tool(setup, row.schema, row.bad);
             auto response = call_modern(setup);
             ASSERT_TRUE(response.contains("error")) << response;
-            EXPECT_EQ(response["error"]["code"], mcp::g_INTERNAL_ERROR);
+            EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
             EXPECT_NE(response["error"]["message"].get<std::string>().find("outputSchema"),
                       std::string::npos);
             EXPECT_EQ(setup.server.tool_validation_stats().structured_content_rejections, 1U);

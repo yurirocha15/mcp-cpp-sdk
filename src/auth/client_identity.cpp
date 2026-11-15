@@ -12,12 +12,11 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "../detail/constants.hpp"
 
 namespace mcp::auth {
 
 namespace {
-
-constexpr std::string_view g_offline_access = "offline_access";
 
 /// Split a space-delimited scope string into its individual values.
 std::vector<std::string> split_scope(const std::string& scope) {
@@ -224,10 +223,10 @@ nlohmann::json build_registration_request(const OAuthClientMetadata& metadata,
 
     // Offline access is only requested when the server published it; asking for an unpublished
     // scope invites an outright rejection of the whole registration.
-    if (contains(server.scopes_supported, g_offline_access)) {
+    if (contains(server.scopes_supported, mcp::detail::constants::client_identity::g_OFFLINE_ACCESS)) {
         auto scopes = metadata.scope ? split_scope(*metadata.scope) : std::vector<std::string>{};
-        if (!contains(scopes, g_offline_access)) {
-            scopes.emplace_back(g_offline_access);
+        if (!contains(scopes, mcp::detail::constants::client_identity::g_OFFLINE_ACCESS)) {
+            scopes.emplace_back(mcp::detail::constants::client_identity::g_OFFLINE_ACCESS);
         }
         body["scope"] = join_scope(scopes);
     }

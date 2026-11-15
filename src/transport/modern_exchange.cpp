@@ -1,6 +1,7 @@
 #include "modern_exchange.hpp"
 
 #include "../detail/beast_string.hpp"
+#include "../detail/constants.hpp"
 #include "../detail/http_request_metadata.hpp"
 #include "../detail/socket_probe.hpp"
 
@@ -118,11 +119,6 @@ void ModernExchange::finish(std::string response_wire) {
 }
 
 namespace {
-
-/// Bytes a watch reads ahead while a request runs; they belong to the client's next request.
-constexpr std::size_t g_watch_read_size = 4096;
-/// Read-ahead held at once; past this the watch stops until the request is answered.
-constexpr std::size_t g_max_read_ahead = 64 * 1024;
 
 Task<void> notification_queued() { co_return; }
 
@@ -262,10 +258,12 @@ std::shared_ptr<ModernExchange> start_modern_exchange(const StringRequest& reque
         start.dispatch_executor, std::move(answering),
         [exchange, request_id = std::move(request_id)](std::exception_ptr error, std::string wire) {
             if (error) {
-                wire = mcp::detail::dump_json(nlohmann::json{
-                    {"jsonrpc", "2.0"},
-                    {"id", request_id},
-                    {"error", {{"code", g_INTERNAL_ERROR}, {"message", "Internal error"}}}});
+                wire = mcp::detail::dump_json(
+                    nlohmann::json{{"jsonrpc", "2.0"},
+                                   {"id", request_id},
+                                   {"error",
+                                    {{"code", mcp::constants::jsonrpc::g_INTERNAL_ERROR},
+                                     {"message", "Internal error"}}}});
             }
             exchange->finish(std::move(wire));
         });
@@ -294,7 +292,7 @@ Task<bool> serve_modern_exchange(StreamConnection& stream, boost::beast::flat_bu
         watch->armed = true;
         watch->completed = false;
         stream.async_read_some(
-            buffer.prepare(g_watch_read_size),
+            buffer.prepare(mcp::detail::constants::modern_exchange::g_WATCH_READ_SIZE),
             boost::asio::bind_executor(
                 exchange->strand,
                 [watch, exchange, &buffer](const boost::system::error_code& error, std::size_t bytes) {
@@ -383,7 +381,7 @@ Task<bool> serve_modern_exchange(StreamConnection& stream, boost::beast::flat_bu
                 client_finished_sending = true;
             }
             const auto error_code = serialized_response_error_code(*response);
-            if (error_code == g_HEADER_MISMATCH) {
+            if (error_code == mcp::constants::jsonrpc::g_HEADER_MISMATCH) {
                 serving.header_mismatch_rejections.fetch_add(1, std::memory_order_relaxed);
             }
             if (stream_open) {
@@ -406,7 +404,7 @@ Task<bool> serve_modern_exchange(StreamConnection& stream, boost::beast::flat_bu
         if (watch->completed) {
             watch->completed = false;
             if (!watch->error) {
-                if (buffer.size() < g_max_read_ahead) {
+                if (buffer.size() < mcp::detail::constants::modern_exchange::g_MAX_READ_AHEAD) {
                     arm_watch();
                 } else {
                     read_ahead_full = true;

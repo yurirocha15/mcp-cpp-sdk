@@ -12,6 +12,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <chrono>
+#include <mcp/core/constants.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/server.hpp>
 #include <nlohmann/json.hpp>
@@ -150,7 +151,7 @@ TEST(ServerMiddlewareTest, MiddlewareShortCircuits) {
         return msg.contains("id") && msg["id"] == "2" && msg.contains("error");
     });
     ASSERT_NE(it, responses.end());
-    EXPECT_EQ((*it)["error"]["code"], mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ((*it)["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
     EXPECT_TRUE((*it)["error"]["message"].get<std::string>().find("forbidden") != std::string::npos);
 }
 
@@ -564,7 +565,7 @@ json answer_modern(Server& server, const ServedRequest& request) {
 
 void expect_internal_error(const json& response) {
     ASSERT_TRUE(response.contains("error")) << response.dump();
-    EXPECT_EQ(response["error"]["code"], g_INTERNAL_ERROR);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
     EXPECT_EQ(response["error"]["message"], "Internal error");
 }
 

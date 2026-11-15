@@ -1,5 +1,6 @@
 #include "task_run.hpp"
 
+#include "../detail/constants.hpp"
 #include "mrtr.hpp"
 
 #include <boost/asio/co_spawn.hpp>
@@ -14,12 +15,6 @@
 #include <stdexcept>
 
 namespace mcp::detail {
-
-namespace {
-
-constexpr std::chrono::seconds g_wait_limit{5};
-
-}  // namespace
 
 void TaskRun::signal() {
     version_.fetch_add(1, std::memory_order_acq_rel);
@@ -73,7 +68,7 @@ Task<void> task_wait_on_strand(std::shared_ptr<TaskRun> run, std::uint64_t seen)
         co_return;
     }
     boost::asio::steady_timer timer(run->strand);
-    timer.expires_after(g_wait_limit);
+    timer.expires_after(mcp::detail::constants::task_run::g_WAIT_LIMIT);
     run->waiters_.insert(&timer);
     boost::system::error_code ignored;
     co_await timer.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ignored));

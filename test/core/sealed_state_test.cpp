@@ -1,4 +1,5 @@
 #include "../../src/detail/sealed_state.hpp"
+#include "../../src/detail/constants.hpp"
 
 #include <gtest/gtest.h>
 
@@ -11,13 +12,14 @@
 #include <vector>
 
 namespace ss = mcp::detail::sealed_state;
+namespace sealed_token = mcp::detail::constants::sealed_token;
 
 namespace {
 
 ss::SealKey make_key(std::uint8_t kid_seed, std::uint8_t secret_seed) {
-    std::array<std::uint8_t, ss::g_kid_size> kid{};
+    std::array<std::uint8_t, sealed_token::g_KID_SIZE> kid{};
     kid.fill(kid_seed);
-    std::array<std::uint8_t, ss::g_key_size> secret{};
+    std::array<std::uint8_t, sealed_token::g_KEY_SIZE> secret{};
     for (std::size_t i = 0; i < secret.size(); ++i) {
         secret[i] = static_cast<std::uint8_t>(secret_seed + i);
     }
@@ -75,8 +77,8 @@ TEST(SealedStateTest, TokenIsUnpaddedBase64urlAndEachSealIsDifferent) {
     }
     const auto raw = ss::base64url_decode(a.token);
     ASSERT_TRUE(raw.has_value());
-    EXPECT_EQ(raw->size(), ss::g_min_token_bytes + g_payload.size());
-    EXPECT_EQ(static_cast<std::uint8_t>((*raw)[0]), ss::g_version);
+    EXPECT_EQ(raw->size(), sealed_token::g_MIN_TOKEN_BYTES + g_payload.size());
+    EXPECT_EQ(static_cast<std::uint8_t>((*raw)[0]), sealed_token::g_VERSION);
 }
 
 TEST(SealedStateTest, FlippingAnyByteOfTheTokenIsRejected) {
@@ -295,7 +297,7 @@ TEST(SealedStateTest, SaltsDoNotRepeatAcrossManySeals) {
         const auto sealed = codec.seal("x");
         ASSERT_TRUE(sealed);
         const auto raw = *ss::base64url_decode(sealed.token);
-        salts.insert(raw.substr(1 + ss::g_kid_size, ss::g_salt_size));
+        salts.insert(raw.substr(1 + sealed_token::g_KID_SIZE, sealed_token::g_SALT_SIZE));
     }
     EXPECT_EQ(salts.size(), 200U);
 }

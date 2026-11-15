@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/protocol/base.hpp>
 
 #include <cstdint>
@@ -10,13 +11,6 @@
 #include <string_view>
 
 namespace mcp {
-
-/// @brief The identifier of the tasks extension, the key it is declared under in the `extensions`
-/// capability of a client request and of a server.
-inline constexpr std::string_view g_TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
-
-/// @brief The `resultType` of a CreateTaskResult.
-inline constexpr std::string_view g_RESULT_TYPE_TASK = "task";
 
 /**
  * @brief The state a task carries in every message that describes it.
@@ -139,11 +133,11 @@ struct CreateTaskResult {
 
 inline void to_json(nlohmann::json& json_obj, const CreateTaskResult& result) {
     json_obj = result.task;
-    json_obj["resultType"] = g_RESULT_TYPE_TASK;
+    json_obj["resultType"] = mcp::constants::tasks::g_RESULT_TYPE_TASK;
 }
 
 inline void from_json(const nlohmann::json& json_obj, CreateTaskResult& result) {
-    if (json_obj.value("resultType", "") != g_RESULT_TYPE_TASK) {
+    if (json_obj.value("resultType", "") != mcp::constants::tasks::g_RESULT_TYPE_TASK) {
         throw std::invalid_argument("result is not a task");
     }
     json_obj.get_to(result.task);
