@@ -39,12 +39,12 @@ namespace {
 
 /// The `$schema` values this SDK implements, without a trailing empty fragment.
 const std::array<std::string_view, 5>& supported_dialects() {
-    static const std::array<std::string_view, 5> dialects = {
+    static const std::array<std::string_view, 5> s_dialects = {
         "https://json-schema.org/draft/2020-12/schema", "https://json-schema.org/draft/2019-09/schema",
         "http://json-schema.org/draft-07/schema",       "http://json-schema.org/draft-06/schema",
         "http://json-schema.org/draft-04/schema",
     };
-    return dialects;
+    return s_dialects;
 }
 
 /// The supported dialect `$schema` names, or an empty view when it names none. "...schema#" and
@@ -238,17 +238,17 @@ const jcs::json_schema<jc::json>& metaschema(std::string_view dialect) {
     auto compile_meta = [](std::string_view uri) {
         return jcs::make_json_schema(jcs::meta_resolver<jc::json>(jc::uri(std::string(uri))));
     };
-    static const std::array<jcs::json_schema<jc::json>, 5> compiled = {
+    static const std::array<jcs::json_schema<jc::json>, 5> s_compiled = {
         compile_meta(supported_dialects()[0]), compile_meta(supported_dialects()[1]),
         compile_meta(supported_dialects()[2]), compile_meta(supported_dialects()[3]),
         compile_meta(supported_dialects()[4]),
     };
     for (std::size_t i = 0; i < supported_dialects().size(); ++i) {
         if (supported_dialects()[i] == dialect) {
-            return compiled[i];
+            return s_compiled[i];
         }
     }
-    return compiled[0];
+    return s_compiled[0];
 }
 
 /// @p uri as the schema author wrote it when it is relative to the document without `$id`.
@@ -556,8 +556,8 @@ class CompiledSchemaCache {
 };
 
 CompiledSchemaCache& compiled_schema_cache() {
-    static CompiledSchemaCache cache;
-    return cache;
+    static CompiledSchemaCache s_cache;
+    return s_cache;
 }
 
 }  // namespace

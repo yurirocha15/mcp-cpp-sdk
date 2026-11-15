@@ -71,7 +71,7 @@ class Harness {
    public:
     explicit Harness(mcp::ClientOptions options = {})
         : transport(std::make_shared<ScriptedTransport>(io.get_executor())), guard(io) {
-        options.protocol = mcp::ClientProtocol::Version("2026-07-28");
+        options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
         client = std::make_unique<mcp::Client>(transport, io.get_executor(), std::move(options));
         transport->set_on_write([this](std::string_view text) { on_write(json::parse(text)); });
     }
@@ -630,7 +630,7 @@ void expect_listen_outcome(const ListenOutcome& outcome) {
 
 mcp::ClientOptions modern_options() {
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Version("2026-07-28");
+    options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
     return options;
 }
 

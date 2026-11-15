@@ -99,7 +99,7 @@ class Harness {
 
     Harness() : transport(std::make_shared<ScriptedTransport>(io.get_executor())), guard(io) {
         mcp::ClientOptions options;
-        options.protocol = mcp::ClientProtocol::Version("2026-07-28");
+        options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
         client = std::make_unique<mcp::Client>(transport, io.get_executor(), options);
         handler_calls().clear();
         transport->set_on_write([this](std::string_view text) {
@@ -830,7 +830,7 @@ TEST(ClientMrtr, RoundTripAgainstSdkServerMemory) {
     auto [client_transport, server_transport] = mcp::create_memory_transport_pair(io.get_executor());
     auto server = make_asking_server();
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Version("2026-07-28");
+    options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
     mcp::Client client(client_transport, io.get_executor(), options);
     client.on_elicitation(accept_name);
     json answer;
@@ -876,7 +876,7 @@ TEST(ClientMrtr, RoundTripAgainstSdkServerStdio) {
     bool fired = false;
     auto transport = std::make_shared<mcp::StdioTransport>(io.get_executor(), client_in, client_output);
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Version("2026-07-28");
+    options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
     mcp::Client client(transport, io.get_executor(), options);
     client.on_elicitation(accept_name);
     json answer;

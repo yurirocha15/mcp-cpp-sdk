@@ -32,8 +32,8 @@ int main() {
     try {
         using namespace mcp;
 
-        const int NUM_ITERATIONS = 50;
-        const std::string HOST = "127.0.0.1";
+        const int num_iterations = 50;
+        const std::string host = "127.0.0.1";
 
         asio::io_context io_ctx;
         tcp::acceptor acceptor(io_ctx, tcp::endpoint(tcp::v4(), 0));
@@ -42,7 +42,7 @@ int main() {
         std::cout << "\n" << std::string(70, '=') << "\n";
         std::cout << "WebSocket Transport Benchmark\n";
         std::cout << std::string(70, '=') << "\n";
-        std::cout << "Iterations: " << NUM_ITERATIONS << "\n";
+        std::cout << "Iterations: " << num_iterations << "\n";
         std::cout << "Port: " << port << "\n\n";
 
         ServerCapabilities server_caps;
@@ -80,7 +80,7 @@ int main() {
                 delay.expires_after(std::chrono::milliseconds(50));
                 co_await delay.async_wait(asio::use_awaitable);
 
-                auto transport = std::make_shared<WebSocketClientTransport>(io_ctx.get_executor(), HOST,
+                auto transport = std::make_shared<WebSocketClientTransport>(io_ctx.get_executor(), host,
                                                                             std::to_string(port));
                 Client client(transport, io_ctx.get_executor());
 
@@ -100,13 +100,13 @@ int main() {
                 }
                 std::cout << "[Client] Warmup complete\n\n";
 
-                std::cout << "[Client] Starting benchmark (" << NUM_ITERATIONS << " iterations)...\n";
+                std::cout << "[Client] Starting benchmark (" << num_iterations << " iterations)...\n";
                 auto start = std::chrono::high_resolution_clock::now();
 
-                for (int i = 1; i <= NUM_ITERATIONS; ++i) {
+                for (int i = 1; i <= num_iterations; ++i) {
                     co_await client.call_tool("echo", bench_args);
                     if (i % 100 == 0) {
-                        std::cout << "[Client] Progress: " << i << "/" << NUM_ITERATIONS << "\n";
+                        std::cout << "[Client] Progress: " << i << "/" << num_iterations << "\n";
                     }
                 }
 
@@ -114,8 +114,8 @@ int main() {
                 auto total_us =
                     std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
                 double total_sec = total_us / 1'000'000.0;
-                double avg_ms = (total_us / 1000.0) / NUM_ITERATIONS;
-                double calls_per_sec = NUM_ITERATIONS / total_sec;
+                double avg_ms = (total_us / 1000.0) / num_iterations;
+                double calls_per_sec = num_iterations / total_sec;
 
                 std::cout << "\n" << std::string(70, '=') << "\n";
                 std::cout << std::fixed << std::setprecision(2);

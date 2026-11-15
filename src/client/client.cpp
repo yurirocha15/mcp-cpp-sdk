@@ -63,13 +63,13 @@ McpError::McpError(Error error)
 McpError::McpError(int code, std::string message, std::optional<nlohmann::json> data)
     : McpError(Error{code, std::move(message), std::move(data)}) {}
 
-ClientProtocol ClientProtocol::Auto() { return {Kind::eAuto, std::string()}; }
+ClientProtocol ClientProtocol::automatic() { return {Kind::eAuto, std::string()}; }
 
-ClientProtocol ClientProtocol::Legacy() {
+ClientProtocol ClientProtocol::legacy() {
     return {Kind::eLegacy, std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)};
 }
 
-ClientProtocol ClientProtocol::Version(std::string version) {
+ClientProtocol ClientProtocol::pinned(std::string version) {
     if (!is_supported_protocol_version(version)) {
         throw std::invalid_argument("Unknown protocol version: " +
                                     detail::sanitize_for_diagnostics(version));
@@ -534,9 +534,9 @@ struct Client::Impl {
     /// The methods 2026-07-28 removed. The server answers none of them, so the request is refused
     /// here with the reason instead of costing a round trip for a method-not-found.
     static void reject_removed_method(const std::string& version, std::string_view method) {
-        static constexpr std::array<std::string_view, 5> g_removed = {
+        static constexpr std::array<std::string_view, 5> s_removed = {
             "initialize", "ping", "logging/setLevel", "resources/subscribe", "resources/unsubscribe"};
-        if (std::find(g_removed.begin(), g_removed.end(), method) != g_removed.end()) {
+        if (std::find(s_removed.begin(), s_removed.end(), method) != s_removed.end()) {
             throw McpError(
                 mcp::constants::jsonrpc::g_METHOD_NOT_FOUND,
                 "Method " + std::string(method) + " does not exist in protocol version " + version);
@@ -1422,7 +1422,7 @@ struct Client::Impl {
             throw McpError(mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
                            "The server does not support protocol version " + version +
                                "; it supports " + listed +
-                               ". Use ClientProtocol::Auto() to connect with a version both sides "
+                               ". Use ClientProtocol::automatic() to connect with a version both sides "
                                "speak",
                            outcome.error->data);
         }
@@ -1430,7 +1430,7 @@ struct Client::Impl {
             throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
                            "The server closed the connection while the client probed it with "
                            "server/discover; a server that exits on an unknown request needs "
-                           "ClientProtocol::Legacy()");
+                           "ClientProtocol::legacy()");
         }
         const std::string reason = outcome.error
                                        ? ": " + detail::sanitize_for_diagnostics(outcome.error->message)
@@ -1438,12 +1438,12 @@ struct Client::Impl {
         throw McpError(outcome.error ? outcome.error->code : mcp::constants::jsonrpc::g_INVALID_REQUEST,
                        "The server does not speak protocol version " + version +
                            "; server/discover failed" + reason +
-                           ". Use ClientProtocol::Auto() or ClientProtocol::Legacy() for a server "
+                           ". Use ClientProtocol::automatic() or ClientProtocol::legacy() for a server "
                            "that predates it",
                        outcome.error ? outcome.error->data : std::nullopt);
     }
 
-    /// ClientProtocol::Version("2026-07-28"): discover once for ConnectResult; never initialize.
+    /// ClientProtocol::pinned("2026-07-28"): discover once for ConnectResult; never initialize.
     static Task<ConnectResult> connect_pinned_modern(std::shared_ptr<Impl> state,
                                                      std::chrono::steady_clock::time_point started) {
         auto version = std::make_shared<const std::string>(state->options.protocol.version());
@@ -1456,7 +1456,7 @@ struct Client::Impl {
         co_return modern_result(*outcome->discover, *version);
     }
 
-    /// ClientProtocol::Auto().
+    /// ClientProtocol::automatic().
     static Task<ConnectResult> connect_auto(std::shared_ptr<Impl> state,
                                             std::chrono::steady_clock::time_point started) {
         const auto no_versions = std::make_shared<const std::vector<std::string>>();

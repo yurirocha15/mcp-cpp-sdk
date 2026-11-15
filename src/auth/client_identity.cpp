@@ -48,11 +48,11 @@ bool contains(const std::vector<std::string>& values, std::string_view needle) {
 
 std::string_view describe(ClientIdentitySource source) {
     switch (source) {
-        case ClientIdentitySource::pre_registered:
+        case ClientIdentitySource::ePreRegistered:
             return "pre-registered credentials";
-        case ClientIdentitySource::client_id_metadata_document:
+        case ClientIdentitySource::eClientIdMetadataDocument:
             return "client ID metadata document";
-        case ClientIdentitySource::dynamic_registration:
+        case ClientIdentitySource::eDynamicRegistration:
             return "dynamic client registration";
     }
     return "unknown client identity source";
@@ -60,15 +60,15 @@ std::string_view describe(ClientIdentitySource source) {
 
 std::string_view describe(ClientIdentityDecision decision) {
     switch (decision) {
-        case ClientIdentityDecision::use_pre_registered:
+        case ClientIdentityDecision::eUsePreRegistered:
             return "present the application's pre-registered credentials";
-        case ClientIdentityDecision::use_client_id_metadata_document:
+        case ClientIdentityDecision::eUseClientIdMetadataDocument:
             return "present the configured client ID metadata document URL";
-        case ClientIdentityDecision::reuse_stored_registration:
+        case ClientIdentityDecision::eReuseStoredRegistration:
             return "present the credentials already registered with this issuer";
-        case ClientIdentityDecision::register_dynamically:
+        case ClientIdentityDecision::eRegisterDynamically:
             return "register dynamically with this issuer";
-        case ClientIdentityDecision::unavailable:
+        case ClientIdentityDecision::eUnavailable:
             return "no client identity is available for this issuer";
     }
     return "unknown client identity decision";
@@ -188,33 +188,33 @@ ClientIdentityDecision select_client_identity(const ClientIdentityConfig& config
             // read as "bound to every issuer", so the secret is refused at the point of use.
             if (config.pre_registered->client_secret &&
                 !config.pre_registered->client_secret->empty()) {
-                return ClientIdentityDecision::unavailable;
+                return ClientIdentityDecision::eUnavailable;
             }
-            return ClientIdentityDecision::use_pre_registered;
+            return ClientIdentityDecision::eUsePreRegistered;
         }
         if (expected_issuer != server.issuer) {
-            return ClientIdentityDecision::unavailable;
+            return ClientIdentityDecision::eUnavailable;
         }
-        return ClientIdentityDecision::use_pre_registered;
+        return ClientIdentityDecision::eUsePreRegistered;
     }
 
     if (config.client_metadata_url && !config.client_metadata_url->empty() &&
         server.client_id_metadata_document_supported) {
-        return ClientIdentityDecision::use_client_id_metadata_document;
+        return ClientIdentityDecision::eUseClientIdMetadataDocument;
     }
 
     // A stored entry is only usable when its recorded issuer is the issuer being contacted. An
     // authorization server change therefore falls straight through to a fresh registration.
     if (stored && !stored->client_id.empty() && stored->issuer == server.issuer &&
         !server.issuer.empty()) {
-        return ClientIdentityDecision::reuse_stored_registration;
+        return ClientIdentityDecision::eReuseStoredRegistration;
     }
 
     if (server.registration_endpoint && !server.registration_endpoint->empty()) {
-        return ClientIdentityDecision::register_dynamically;
+        return ClientIdentityDecision::eRegisterDynamically;
     }
 
-    return ClientIdentityDecision::unavailable;
+    return ClientIdentityDecision::eUnavailable;
 }
 
 nlohmann::json build_registration_request(const OAuthClientMetadata& metadata,

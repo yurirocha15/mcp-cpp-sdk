@@ -17,16 +17,16 @@ Choosing a Protocol on the Client
 ``ClientOptions::protocol`` takes a ``ClientProtocol``, built by one of three
 factory functions:
 
-``ClientProtocol::Auto()``
+``ClientProtocol::automatic()``
    The default. ``connect()`` sends ``server/discover``. A server that answers it
    (or answers with an error only a 2026-07-28 server sends) is spoken to in the
    modern era. Any other outcome sends ``initialize`` instead.
 
-``ClientProtocol::Legacy()``
+``ClientProtocol::legacy()``
    ``connect()`` sends ``initialize`` naming 2025-11-25 and nothing else. It sends
    no probe.
 
-``ClientProtocol::Version("...")``
+``ClientProtocol::pinned("...")``
    Exactly one version. "2025-11-25", "2025-06-18", "2025-03-26" and "2024-11-05"
    send ``initialize`` naming that version. "2026-07-28" speaks the modern
    protocol: ``connect()`` sends one ``server/discover`` request to fill in the
@@ -36,8 +36,8 @@ factory functions:
 .. code-block:: cpp
 
    mcp::ClientOptions options;
-   options.protocol = mcp::ClientProtocol::Legacy();
-   // or: options.protocol = mcp::ClientProtocol::Version("2025-06-18");
+   options.protocol = mcp::ClientProtocol::legacy();
+   // or: options.protocol = mcp::ClientProtocol::pinned("2025-06-18");
 
    mcp::Client client(transport, executor, options);
 
@@ -48,11 +48,11 @@ factory functions:
    }
 
 Pin the protocol when you know the server's revision and want to skip the
-probe. ``Auto()`` costs a
+probe. ``automatic()`` costs a
 legacy server one extra round trip, or ``ClientOptions::probe_timeout`` (3
 seconds by default) if the server ignores the request, and a server that closes
-the connection on receiving it fails ``connect()``. ``Legacy()`` or
-``Version(...)`` avoids all three.
+the connection on receiving it fails ``connect()``. ``legacy()`` or
+``pinned(...)`` avoids all three.
 
 The era is fixed once ``connect()`` returns. To find out why the client chose
 it, set ``ClientOptions::on_era_decision``.
@@ -160,7 +160,7 @@ What a Legacy Client Gets From a Modern-Only Server
 A server with ``serve_legacy = false`` answers ``initialize`` with
 ``g_METHOD_NOT_FOUND``. The error names the versions the server serves, in its
 message and in ``data.supported``. Over HTTP the status is ``404``. For a client
-pinned to ``Legacy()``, ``connect()`` fails with that message, so the client
+pinned to ``legacy()``, ``connect()`` fails with that message, so the client
 learns which versions to ask for. ``HttpClientTransport`` reports the JSON-RPC
 error the server sent with the ``404`` instead of only the HTTP status.
 
@@ -171,5 +171,5 @@ version (``unsupported_version``) or their ``_meta`` fields
 (``invalid_metadata``). That count is how an operator sees legacy clients being
 turned away.
 
-A client left on ``Auto()`` does not run into this: it probes, finds the modern
+A client left on ``automatic()`` does not run into this: it probes, finds the modern
 server and speaks 2026-07-28.

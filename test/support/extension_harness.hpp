@@ -64,7 +64,7 @@ inline void run_modern_client(
         io_ctx,
         [&]() -> mcp::Task<void> {
             mcp::ClientOptions options;
-            options.protocol = mcp::ClientProtocol::Version("2026-07-28");
+            options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
             mcp::Client client(client_transport, io_ctx.get_executor(), options);
             try {
                 // Named: GCC 11 mishandles a braced temporary in a co_await operand.

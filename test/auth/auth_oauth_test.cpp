@@ -1134,7 +1134,7 @@ TEST(AuthOAuthHttpClientDefaultPolicyTest, PolicyLessClientRefusesAnHttpLoopback
         });
 
     bool threw = false;
-    auto decision = mcp::auth::MetadataUrlDecision::allowed;
+    auto decision = mcp::auth::MetadataUrlDecision::eAllowed;
 
     asio::co_spawn(
         io_ctx,
@@ -1151,8 +1151,8 @@ TEST(AuthOAuthHttpClientDefaultPolicyTest, PolicyLessClientRefusesAnHttpLoopback
     io_ctx.run();
 
     EXPECT_TRUE(threw);
-    EXPECT_TRUE(decision == mcp::auth::MetadataUrlDecision::origin_not_allowed ||
-                decision == mcp::auth::MetadataUrlDecision::scheme_not_allowed)
+    EXPECT_TRUE(decision == mcp::auth::MetadataUrlDecision::eOriginNotAllowed ||
+                decision == mcp::auth::MetadataUrlDecision::eSchemeNotAllowed)
         << "unexpected decision: " << mcp::auth::describe(decision);
     EXPECT_EQ(resolver_calls, 0);
 }
@@ -1362,7 +1362,7 @@ Observed classify_exchange(const std::exception_ptr& failure, const json& body) 
     try {
         std::rethrow_exception(failure);
     } catch (const mcp::auth::MetadataPolicyError& error) {
-        return error.decision() == mcp::auth::MetadataUrlDecision::origin_not_allowed
+        return error.decision() == mcp::auth::MetadataUrlDecision::eOriginNotAllowed
                    ? Observed::refused_origin
                    : Observed::other;
     } catch (const std::exception&) {
