@@ -159,11 +159,15 @@ Aim for >80% code coverage for new features:
 
 .. code-block:: bash
 
-   # Generate coverage report
+   # Generate coverage report (needs gcovr)
    python scripts/build.py --coverage --test
 
    # View report
-   open build/coverage/index.html
+   open build/coverage/coverage.html
+
+CI uploads the same report from ``build/coverage/coverage.xml`` to
+`Codecov <https://app.codecov.io/gh/yurirocha15/mcp-cpp-sdk>`_, which comments
+on pull requests with the coverage of the changed lines.
 
 Sanitizers
 ^^^^^^^^^^
