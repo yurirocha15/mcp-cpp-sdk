@@ -783,6 +783,42 @@ TEST(StdioClientSession, StoppingDoesNotRestart) {
     EXPECT_EQ(exits.size(), 1u);
 }
 
+// The application may keep the Client after the session is gone; the server is shut down anyway,
+// and the Client it holds is closed.
+TEST(StdioClientSession, DestructorShutsTheServerDownWhileItsClientIsHeld) {
+    Harness harness;
+    auto options = session_options();
+    std::mutex mutex;
+    std::optional<mcp::ProcessExit> exit;
+    options.process.on_exit = [&](const mcp::ProcessExit& ended) {
+        std::lock_guard lock(mutex);
+        exit = ended;
+    };
+    std::shared_ptr<mcp::Client> held;
+    bool call_failed = false;
+    harness.run([&]() -> mcp::Task<void> {
+        {
+            mcp::StdioClientSession session(harness.io.get_executor(), options);
+            co_await session.start();
+            held = session.client();
+        }
+        const bool ended = co_await wait_until([&] {
+            std::lock_guard lock(mutex);
+            return exit.has_value();
+        });
+        EXPECT_TRUE(ended);
+        try {
+            co_await held->list_tools();
+        } catch (const std::exception&) {
+            call_failed = true;
+        }
+    });
+    EXPECT_TRUE(call_failed);
+    std::lock_guard lock(mutex);
+    ASSERT_TRUE(exit.has_value());
+    EXPECT_TRUE(exit->requested);
+}
+
 TEST(StdioClientSession, StartFailsWhenTheServerCannotConnect) {
     Harness harness;
     auto options = session_options();

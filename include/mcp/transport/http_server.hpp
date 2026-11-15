@@ -274,7 +274,8 @@ class MCP_API HttpServerTransport final : public ITransport {
     /**
      * @brief Set how the answer to a 2026-07-28 request is streamed.
      *
-     * @throws std::invalid_argument If an interval is not positive or the queue limit is zero.
+     * @throws std::invalid_argument If an interval is not positive, or max_queued_notifications or
+     *         max_queued_bytes is zero.
      * @throws std::logic_error If listen() has already been called or the transport is closed.
      */
     void set_stream_options(StreamOptions options);

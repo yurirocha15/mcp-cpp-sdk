@@ -83,7 +83,7 @@ std::vector<std::string> files_scopes(const mcp::ScopeRequestContext& context) {
     return {"files:read"};
 }
 
-/// A validator that accepts the token `<scopes separated by spaces>` as holding those scopes.
+/// A validator that accepts the token `<scopes separated by commas>` as holding those scopes.
 mcp::TokenValidation scopes_from_token(std::string_view token) {
     mcp::TokenValidation validation(true);
     std::vector<std::string> scopes;

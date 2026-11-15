@@ -78,7 +78,8 @@ class MCP_API StdioClientSession {
      */
     StdioClientSession(const boost::asio::any_io_executor& executor, StdioSessionOptions options);
 
-    /// Stops restarting and shuts the current server down.
+    /// Stops restarting and starts shutting the current server down, also while the application
+    /// still holds its Client, which is closed.
     ~StdioClientSession();
 
     StdioClientSession(const StdioClientSession&) = delete;

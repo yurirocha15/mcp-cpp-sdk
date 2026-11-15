@@ -13,6 +13,7 @@
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/dispatch.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
@@ -2007,7 +2008,8 @@ struct Client::Impl {
     }
 
     /// The transport says the write of request `key` waits for a person, such as an OAuth consent
-    /// prompt. The prompt's time is the user's, so the request's deadline stops until it ends.
+    /// prompt. The prompt's time is the user's, so the request's deadline stops until it ends. Runs
+    /// on the strand, which owns the request's timer.
     static void on_interaction(const std::shared_ptr<Impl>& state, std::string_view key, bool waiting) {
         std::lock_guard lock(state->pending_requests_mutex);
         const auto iter = state->pending_requests.find(key);
@@ -2297,7 +2299,10 @@ Client::Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_
     impl_->transport->set_interaction_observer(
         [state = std::weak_ptr<Impl>(impl_)](std::string_view key, bool waiting) {
             if (const auto alive = state.lock()) {
-                Impl::on_interaction(alive, key, waiting);
+                // A transport may report from any thread; the request's timer belongs to the strand.
+                boost::asio::dispatch(alive->strand, [alive, key = std::string(key), waiting] {
+                    Impl::on_interaction(alive, key, waiting);
+                });
             }
         });
 }
