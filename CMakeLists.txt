@@ -475,6 +475,7 @@ if(BUILD_TESTING)
       test/transport/transport_factory_test.cpp
       test/core/gcc11_sso_crash_test.cpp
       test/core/json_peer_input_matrix_test.cpp
+      test/support/spawn.cpp
       test/support/test_timeout.cpp)
   # The sealed-state codec is internal and not exported from the shared library,
   # so its test builds the source itself.

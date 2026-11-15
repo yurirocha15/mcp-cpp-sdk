@@ -1,6 +1,7 @@
 #include "../test_utils.hpp"
 #include "mcp/client/client.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -114,9 +115,8 @@ TEST_F(RootsTest, ServerRequestsRootsFromClient) {
     raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tool_call_request.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -150,17 +150,14 @@ TEST_F(RootsTest, RequestRootsWithoutSenderThrows) {
     mcp::Context ctx(*raw_transport);
 
     bool threw = false;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await ctx.request_roots();
-            } catch (const std::runtime_error&) {
-                threw = true;
-            }
-            raw_transport->close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        try {
+            co_await ctx.request_roots();
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        raw_transport->close();
+    });
 
     io_ctx_.run();
     EXPECT_TRUE(threw);
@@ -224,12 +221,9 @@ TEST_F(RootsTest, ClientSetRootsServesRootsList) {
     client_info.name = "test-client";
     client_info.version = "1.0";
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect(std::move(client_info), mcp::ClientCapabilities{});
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await client.connect(std::move(client_info), mcp::ClientCapabilities{});
+    });
 
     io_ctx_.run();
 
@@ -288,20 +282,17 @@ TEST_F(RootsTest, ClientSetRootsWithNotifySendsNotification) {
     client_info.name = "test-client";
     client_info.version = "1.0";
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::ClientCapabilities capabilities;
-            mcp::ClientCapabilities::RootsCapability roots_capability;
-            roots_capability.listChanged = true;
-            capabilities.roots = std::move(roots_capability);
-            co_await client.connect(std::move(client_info), capabilities);
-            mcp::Root root;
-            root.uri = "file:///updated/path";
-            root.name = "updated";
-            client.set_roots({root}, true);
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::ClientCapabilities capabilities;
+        mcp::ClientCapabilities::RootsCapability roots_capability;
+        roots_capability.listChanged = true;
+        capabilities.roots = std::move(roots_capability);
+        co_await client.connect(std::move(client_info), capabilities);
+        mcp::Root root;
+        root.uri = "file:///updated/path";
+        root.name = "updated";
+        client.set_roots({root}, true);
+    });
 
     io_ctx_.run();
 

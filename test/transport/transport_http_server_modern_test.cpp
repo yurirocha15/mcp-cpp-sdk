@@ -1,5 +1,6 @@
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_server.hpp"
 
@@ -200,30 +201,26 @@ class HttpServerModernTest : public ::testing::Test {
         if (!served) {
             served = transport_;
         }
-        asio::co_spawn(io_ctx_, transport_->listen(), asio::detached);
-        asio::co_spawn(io_ctx_, serve(server_.get(), std::move(served), io_ctx_.get_executor()),
-                       asio::detached);
-        asio::co_spawn(
-            io_ctx_,
-            [this, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
-                co_await exchange();
-                transport_->close();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx_, transport_->listen());
+        mcp_test::spawn_detached(io_ctx_,
+                                 serve(server_.get(), std::move(served), io_ctx_.get_executor()));
+        mcp_test::spawn_detached(io_ctx_,
+                                 [this, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
+                                     co_await exchange();
+                                     transport_->close();
+                                 });
         io_ctx_.run();
     }
 
     /// Runs @p exchange against the transport with no server reading it, then closes the transport.
     template <typename Exchange>
     void run_unserved(Exchange exchange) {
-        asio::co_spawn(io_ctx_, transport_->listen(), asio::detached);
-        asio::co_spawn(
-            io_ctx_,
-            [this, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
-                co_await exchange();
-                transport_->close();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx_, transport_->listen());
+        mcp_test::spawn_detached(io_ctx_,
+                                 [this, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
+                                     co_await exchange();
+                                     transport_->close();
+                                 });
         io_ctx_.run();
     }
 
@@ -301,8 +298,8 @@ TEST_F(HttpServerModernTest, TwoClientsUsingTheSameIdAreBothServed) {
             out = co_await post_modern(std::move(body));
             ++finished;
         };
-        asio::co_spawn(io_ctx_, client("a", first), asio::detached);
-        asio::co_spawn(io_ctx_, client("b", second), asio::detached);
+        mcp_test::spawn_detached(io_ctx_, client("a", first));
+        mcp_test::spawn_detached(io_ctx_, client("b", second));
         co_await wait_until([&] { return finished == 2; });
     });
 
@@ -475,13 +472,10 @@ TEST_F(HttpServerModernTest, EndingTheLegacySessionLeavesModernRequestsRunning) 
     run([&]() -> mcp::Task<void> {
         const auto session_id = co_await start_legacy_session();
         bool held_done = false;
-        asio::co_spawn(
-            io_ctx_,
-            [&]() -> mcp::Task<void> {
-                held = co_await post_modern(call_tool(1, "held"));
-                held_done = true;
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+            held = co_await post_modern(call_tool(1, "held"));
+            held_done = true;
+        });
         // End the session while the modern request runs, then let that request finish.
         co_await wait_until([this] { return held_started_.load(); });
         const Headers session_headers = {
@@ -604,7 +598,7 @@ TEST_F(HttpServerModernTest, QueuedRequestsBeyondTheLimitAreRefused) {
     };
     auto exchange = [&]() -> mcp::Task<void> {
         for (int id = 0; id < g_clients; ++id) {
-            asio::co_spawn(io_ctx_, client(id), asio::detached);
+            mcp_test::spawn_detached(io_ctx_, client(id));
         }
         co_await wait_until([&] { return refused.load() >= 1; });
     };
@@ -628,14 +622,14 @@ TEST_F(HttpServerModernTest, TransportIsUnboundWhenRunDoesNotServeIt) {
     };
     run([&]() -> mcp::Task<void> {
         co_await start_legacy_session();
-        asio::co_spawn(io_ctx_, other->listen(), asio::detached);
+        mcp_test::spawn_detached(io_ctx_, other->listen());
         // The server has a session already, so serving a second transport throws after binding it.
         try {
             co_await serve(server_.get(), other, io_ctx_.get_executor());
         } catch (const std::runtime_error&) {
             second_run_failed = true;
         }
-        asio::co_spawn(io_ctx_, stranded(), asio::detached);
+        mcp_test::spawn_detached(io_ctx_, stranded());
         asio::steady_timer pause(io_ctx_.get_executor(), std::chrono::milliseconds(100));
         co_await pause.async_wait(asio::use_awaitable);
         dispatched = held_started_.load();
@@ -659,31 +653,24 @@ TEST_F(HttpServerModernTest, RequestsQueuedBeforeTheServerBindsHaveNoStream) {
     params["notifications"] = {{"toolsListChanged", true}};
     const auto listen_body = make_modern_request(2, "subscriptions/listen", std::move(params));
     auto early = [&]() -> mcp::Task<void> {
-        asio::co_spawn(
-            io_ctx_,
-            [&]() -> mcp::Task<void> {
-                logged = co_await post_modern(log_body);
-                answered = true;
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+            logged = co_await post_modern(log_body);
+            answered = true;
+        });
         listened = co_await post_modern(listen_body);
     };
-    asio::co_spawn(io_ctx_, transport_->listen(), asio::detached);
-    asio::co_spawn(io_ctx_, early(), asio::detached);
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            // The transport has no queue count to wait on, so a generous pause lets both requests
-            // be queued (also in slow sanitizer builds) before the server reads them.
-            asio::steady_timer pause(io_ctx_.get_executor(), std::chrono::seconds(1));
-            co_await pause.async_wait(asio::use_awaitable);
-            stored_before = transport_->event_store().size();
-            asio::co_spawn(io_ctx_, serve(server_.get(), transport_, io_ctx_.get_executor()),
-                           asio::detached);
-            co_await wait_until([&] { return answered && listened.status != 0; });
-            transport_->close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, transport_->listen());
+    mcp_test::spawn_detached(io_ctx_, early());
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        // The transport has no queue count to wait on, so a generous pause lets both requests
+        // be queued (also in slow sanitizer builds) before the server reads them.
+        asio::steady_timer pause(io_ctx_.get_executor(), std::chrono::seconds(1));
+        co_await pause.async_wait(asio::use_awaitable);
+        stored_before = transport_->event_store().size();
+        mcp_test::spawn_detached(io_ctx_, serve(server_.get(), transport_, io_ctx_.get_executor()));
+        co_await wait_until([&] { return answered && listened.status != 0; });
+        transport_->close();
+    });
     io_ctx_.run();
 
     EXPECT_EQ(logged.status, 200u) << logged.body;

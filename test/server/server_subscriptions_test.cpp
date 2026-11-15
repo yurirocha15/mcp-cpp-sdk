@@ -1,5 +1,6 @@
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -60,9 +61,8 @@ TEST_F(ServerSubscriptionsTest, SubscribeAndUnsubscribeReturnEmptyResults) {
     unsub_req["params"] = nlohmann::json{{"uri", "file:///test.txt"}};
     raw_transport->enqueue_message(unsub_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -136,9 +136,8 @@ TEST_F(ServerSubscriptionsTest, NotifyResourceUpdatedSendsToSubscribers) {
         nlohmann::json{{"name", "trigger_update"}, {"arguments", {{"uri", "file:///watched.txt"}}}};
     raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -201,9 +200,8 @@ TEST_F(ServerSubscriptionsTest, NotifyResourceUpdatedNotSentForUnsubscribedUri) 
                                         {"arguments", {{"uri", "file:///not-subscribed.txt"}}}};
     raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 

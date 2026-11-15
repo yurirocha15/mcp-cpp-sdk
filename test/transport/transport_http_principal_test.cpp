@@ -3,6 +3,7 @@
 
 #include "../../src/detail/principal.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/auth/oauth.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_server.hpp"
@@ -187,16 +188,14 @@ class HttpPrincipalTest : public ::testing::Test {
         if (!served) {
             served = transport_;
         }
-        asio::co_spawn(io_ctx_, transport_->listen(), asio::detached);
-        asio::co_spawn(io_ctx_, serve(server_.get(), std::move(served), io_ctx_.get_executor()),
-                       asio::detached);
-        asio::co_spawn(
-            io_ctx_,
-            [this, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
-                co_await exchange();
-                transport_->close();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx_, transport_->listen());
+        mcp_test::spawn_detached(io_ctx_,
+                                 serve(server_.get(), std::move(served), io_ctx_.get_executor()));
+        mcp_test::spawn_detached(io_ctx_,
+                                 [this, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
+                                     co_await exchange();
+                                     transport_->close();
+                                 });
         io_ctx_.run();
     }
 
@@ -284,16 +283,13 @@ TEST(SessionManagerPrincipal, ASessionServesOnlyThePrincipalThatCreatedIt) {
         io.get_executor(), "127.0.0.1", 19341,
         [](const asio::any_io_executor&) { return make_server(); });
     manager.set_bearer_token_validator([](std::string_view /*token*/) { return true; });
-    asio::co_spawn(io, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io, manager.listen());
 
     SessionReplies replies;
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            replies = co_await use_someone_elses_session(io.get_executor(), 19341);
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        replies = co_await use_someone_elses_session(io.get_executor(), 19341);
+        manager.close();
+    });
     io.run();
 
     EXPECT_EQ(replies.post.status, 404u) << replies.post.body;
@@ -309,19 +305,16 @@ TEST(SessionManagerPrincipal, ANamedPrincipalKeepsItsSessionAcrossATokenRefresh)
         [](const asio::any_io_executor&) { return make_server(); });
     manager.set_bearer_token_validator(
         [](std::string_view /*token*/) -> mcp::TokenValidation { return {true, "alice"}; });
-    asio::co_spawn(io, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io, manager.listen());
 
     Reply refreshed;
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            auto created = co_await send(io.get_executor(), 19342, legacy_initialize(),
-                                         legacy_headers("Bearer first", std::nullopt));
-            refreshed = co_await send(io.get_executor(), 19342, legacy_ping(),
-                                      legacy_headers("Bearer second", created.session_id));
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        auto created = co_await send(io.get_executor(), 19342, legacy_initialize(),
+                                     legacy_headers("Bearer first", std::nullopt));
+        refreshed = co_await send(io.get_executor(), 19342, legacy_ping(),
+                                  legacy_headers("Bearer second", created.session_id));
+        manager.close();
+    });
     io.run();
 
     EXPECT_EQ(refreshed.status, 200u) << refreshed.body;
@@ -417,7 +410,7 @@ TEST_F(HttpPrincipalTest, InterleavedPrincipalsStayBoundToTheirMessages) {
             ++finished;
         };
         for (int index = 0; index < g_calls; ++index) {
-            asio::co_spawn(io_ctx_, client(index), asio::detached);
+            mcp_test::spawn_detached(io_ctx_, client(index));
         }
         co_await wait_until([&finished] { return finished == g_calls; });
     });
@@ -480,14 +473,11 @@ TEST(HttpPrincipalDirect, RequestContextPrincipalReachesTheHandler) {
     asio::io_context io_ctx;
     auto server = make_server();
     std::string wire;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::RequestContext request_context;
-            request_context.principal = "bob";
-            wire = co_await server->dispatch_request_direct(whoami(1), std::move(request_context));
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::RequestContext request_context;
+        request_context.principal = "bob";
+        wire = co_await server->dispatch_request_direct(whoami(1), std::move(request_context));
+    });
     io_ctx.run();
 
     const auto body = json::parse(wire);
@@ -504,14 +494,12 @@ class HttpPrincipalManagerTest : public ::testing::Test {
 
     template <typename Exchange>
     void run(mcp::StreamableHttpSessionManager& manager, Exchange exchange) {
-        asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
-        asio::co_spawn(
-            io_ctx_,
-            [&manager, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
+        mcp_test::spawn_detached(io_ctx_, manager.listen());
+        mcp_test::spawn_detached(
+            io_ctx_, [&manager, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
                 co_await exchange();
                 manager.close();
-            },
-            asio::detached);
+            });
         io_ctx_.run();
     }
 };

@@ -1,6 +1,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -251,12 +252,9 @@ class MrtrTest : public ::testing::Test {
                     co_return json{{"done", true}};
                 }
                 auto executor = co_await asio::this_coro::executor;
-                asio::co_spawn(
-                    executor,
-                    [](mcp::Context* context) -> mcp::Task<void> {
-                        co_await context->request_roots();
-                    }(&ctx),
-                    asio::detached);
+                mcp_test::spawn_detached(executor, [](mcp::Context* context) -> mcp::Task<void> {
+                    co_await context->request_roots();
+                }(&ctx));
                 // The sibling's question is asked inline; one tick lets the round park before this
                 // coroutine finishes.
                 asio::steady_timer tick(executor, std::chrono::milliseconds(2));
@@ -310,13 +308,12 @@ class MrtrTest : public ::testing::Test {
             [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
                 auto executor = co_await asio::this_coro::executor;
                 auto sibling = std::make_shared<std::optional<mcp::ElicitResult>>();
-                asio::co_spawn(
+                mcp_test::spawn_detached(
                     executor,
                     [](mcp::Context* context,
                        std::shared_ptr<std::optional<mcp::ElicitResult>> out) -> mcp::Task<void> {
                         *out = co_await context->elicit(form_elicitation("B?"));
-                    }(&ctx, sibling),
-                    asio::detached);
+                    }(&ctx, sibling));
                 const auto first = co_await ctx.elicit(form_elicitation("A?"));
                 const auto answered = [sibling] { return sibling->has_value(); };
                 co_await wait_until(answered);
@@ -348,12 +345,10 @@ class MrtrTest : public ::testing::Test {
                                          co_return json{{"roots", result.roots.size()}};
                                      });
         const auto ask_on_the_side = [](mcp::Context& ctx, asio::any_io_executor executor) {
-            asio::co_spawn(
-                executor,
-                [](std::shared_ptr<mcp::Context> context) -> mcp::Task<void> {
-                    co_await context->elicit(form_elicitation("Name?"));
-                }(std::make_shared<mcp::Context>(ctx)),
-                asio::detached);
+            mcp_test::spawn_detached(executor,
+                                     [](std::shared_ptr<mcp::Context> context) -> mcp::Task<void> {
+                                         co_await context->elicit(form_elicitation("Name?"));
+                                     }(std::make_shared<mcp::Context>(ctx)));
         };
         server->add_tool<json, json>(
             "ask_then_return", "Asks on the side, then answers without waiting for the answer",
@@ -408,13 +403,10 @@ class MrtrTest : public ::testing::Test {
     /// are still parked suspended.
     template <typename Body>
     void run(Body body) {
-        asio::co_spawn(
-            io_ctx_,
-            [this, &body]() -> mcp::Task<void> {
-                co_await body();
-                io_ctx_.stop();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [this, &body]() -> mcp::Task<void> {
+            co_await body();
+            io_ctx_.stop();
+        });
         io_ctx_.run();
     }
 
@@ -771,15 +763,12 @@ TEST_F(MrtrTest, HandlerGoingOnAfterItWasGivenUpCountsOnItsSession) {
     bool ended = false;
     bool working_on = false;
     bool ended_before_release = false;
-    asio::co_spawn(
-        io_ctx_,
-        [this, transport, &ended, &guard]() -> mcp::Task<void> {
-            co_await server_->run(transport, io_ctx_.get_executor());
-            ended = true;
-            guard.cancel();
-        },
-        asio::detached);
-    asio::co_spawn(
+    mcp_test::spawn_detached(io_ctx_, [this, transport, &ended, &guard]() -> mcp::Task<void> {
+        co_await server_->run(transport, io_ctx_.get_executor());
+        ended = true;
+        guard.cancel();
+    });
+    mcp_test::spawn_detached(
         io_ctx_,
         [this, raw_transport, &ended, &working_on, &ended_before_release]() -> mcp::Task<void> {
             working_on = co_await wait_until([this] { return working_on_.load(); });
@@ -791,8 +780,7 @@ TEST_F(MrtrTest, HandlerGoingOnAfterItWasGivenUpCountsOnItsSession) {
             co_await settle.async_wait(asio::use_awaitable);
             ended_before_release = ended;
             release_handler_ = true;
-        },
-        asio::detached);
+        });
     io_ctx_.run();
 
     EXPECT_TRUE(working_on);
@@ -1171,12 +1159,12 @@ TEST_F(MrtrTest, CancelOfRetryCancelsParkedHandler) {
         auto flag = context.cancelled;
         auto executor = co_await asio::this_coro::executor;
         auto done = std::make_shared<std::atomic<bool>>(false);
-        asio::co_spawn(executor,
-                       send_with(server_.get(),
-                                 retry(request, 2, first["result"]["requestState"],
-                                       answer(only_key(first), accept("x"))),
-                                 std::move(context)),
-                       [done](std::exception_ptr, json) { done->store(true); });
+        mcp_test::spawn_then(executor,
+                             send_with(server_.get(),
+                                       retry(request, 2, first["result"]["requestState"],
+                                             answer(only_key(first), accept("x"))),
+                                       std::move(context)),
+                             [done](std::exception_ptr, json) { done->store(true); });
         flag->store(true);
         const auto finished = [done] { return done->load(); };
         co_await wait_until(finished);
@@ -1893,14 +1881,11 @@ TEST_F(MrtrSealedTest, RetryWithoutAnswersIsNotAReplay) {
 TEST_F(MrtrSealedTest, HandlersReleaseWhenTheIoContextIsDestroyedFirst) {
     auto sealed = instance(sealed_options({key('a')}));
     auto context = std::make_unique<asio::io_context>();
-    asio::co_spawn(
-        *context,
-        [&]() -> mcp::Task<void> {
-            co_await send_to(*sealed, call_tool(1, "ask"));
-            co_await send_to(*sealed, call_tool(2, "ask_twice"));
-            context->stop();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(*context, [&]() -> mcp::Task<void> {
+        co_await send_to(*sealed, call_tool(1, "ask"));
+        co_await send_to(*sealed, call_tool(2, "ask_twice"));
+        context->stop();
+    });
     context->run();
     context.reset();
     EXPECT_EQ(live_probes_->load(), 0);
@@ -1910,13 +1895,10 @@ TEST_F(MrtrSealedTest, HandlersReleaseWhenTheIoContextIsDestroyedFirst) {
 TEST_F(MrtrSealedTest, HandlersReleaseWhenTheServerIsDestroyedFirst) {
     auto sealed = instance(sealed_options({key('a')}));
     auto context = std::make_unique<asio::io_context>();
-    asio::co_spawn(
-        *context,
-        [&]() -> mcp::Task<void> {
-            co_await send_to(*sealed, call_tool(1, "ask"));
-            context->stop();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(*context, [&]() -> mcp::Task<void> {
+        co_await send_to(*sealed, call_tool(1, "ask"));
+        context->stop();
+    });
     context->run();
     sealed.reset();
     context.reset();
@@ -2030,14 +2012,11 @@ TEST_F(MrtrTest, ParkedRequestDoesNotBlockSecondRequestOnASession) {
             raw_transport->close();
         }
     });
-    asio::co_spawn(
-        io_ctx_,
-        [this, transport, &guard]() -> mcp::Task<void> {
-            co_await server_->run(transport, io_ctx_.get_executor());
-            guard.cancel();
-            io_ctx_.stop();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [this, transport, &guard]() -> mcp::Task<void> {
+        co_await server_->run(transport, io_ctx_.get_executor());
+        guard.cancel();
+        io_ctx_.stop();
+    });
     io_ctx_.run();
 
     ASSERT_EQ(written.size(), 2u);
@@ -2072,14 +2051,11 @@ TEST_F(MrtrTest, ModernSessionNeverWritesARequest) {
             raw_transport->close();
         }
     });
-    asio::co_spawn(
-        io_ctx_,
-        [this, transport, &guard]() -> mcp::Task<void> {
-            co_await server_->run(transport, io_ctx_.get_executor());
-            guard.cancel();
-            io_ctx_.stop();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [this, transport, &guard]() -> mcp::Task<void> {
+        co_await server_->run(transport, io_ctx_.get_executor());
+        guard.cancel();
+        io_ctx_.stop();
+    });
     io_ctx_.run();
 
     // Every question goes out inside an input_required result; nothing is sent as a request.
@@ -2098,13 +2074,10 @@ TEST_F(MrtrTest, SessionEndGivesUpParkedHandlers) {
         [raw_transport](std::string_view /*message*/) { raw_transport->close(); });
     raw_transport->enqueue_message(call_tool(1, "ask").dump());
     bool released = false;
-    asio::co_spawn(
-        io_ctx_,
-        [this, transport, &released]() -> mcp::Task<void> {
-            co_await server_->run(transport, io_ctx_.get_executor());
-            released = co_await wait_until([this] { return live_probes_->load() == 0; });
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [this, transport, &released]() -> mcp::Task<void> {
+        co_await server_->run(transport, io_ctx_.get_executor());
+        released = co_await wait_until([this] { return live_probes_->load() == 0; });
+    });
     // Without the handler given up, its wait would keep this running until the default timeout.
     io_ctx_.run();
 
@@ -2170,14 +2143,11 @@ TEST_F(MrtrTest, LegacyRequestsStillUseServerToClientRequests) {
             raw_transport->close();
         }
     });
-    asio::co_spawn(
-        io_ctx_,
-        [this, transport, &guard]() -> mcp::Task<void> {
-            co_await server_->run(transport, io_ctx_.get_executor());
-            guard.cancel();
-            io_ctx_.stop();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [this, transport, &guard]() -> mcp::Task<void> {
+        co_await server_->run(transport, io_ctx_.get_executor());
+        guard.cancel();
+        io_ctx_.stop();
+    });
     io_ctx_.run();
 
     ASSERT_GE(written.size(), 2u);
@@ -2206,14 +2176,11 @@ TEST_F(MrtrTest, LegacyRequestsIgnoreTheKeyOfAQuestion) {
             raw_transport->close();
         }
     });
-    asio::co_spawn(
-        io_ctx_,
-        [this, transport, &guard]() -> mcp::Task<void> {
-            co_await server_->run(transport, io_ctx_.get_executor());
-            guard.cancel();
-            io_ctx_.stop();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [this, transport, &guard]() -> mcp::Task<void> {
+        co_await server_->run(transport, io_ctx_.get_executor());
+        guard.cancel();
+        io_ctx_.stop();
+    });
     io_ctx_.run();
 
     ASSERT_GE(written.size(), 2u);

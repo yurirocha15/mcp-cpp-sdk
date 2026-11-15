@@ -1,5 +1,6 @@
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -80,9 +81,8 @@ TEST_F(ServerProgressTest, ProgressNotificationSentWithToken) {
                                         {"_meta", {{"progressToken", "tok-123"}}}};
     raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -144,9 +144,8 @@ TEST_F(ServerProgressTest, ProgressSilentWithoutToken) {
     call_req["params"] = nlohmann::json{{"name", "silent_progress"}, {"arguments", {{"dummy", 0}}}};
     raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -201,9 +200,8 @@ TEST_F(ServerProgressTest, MultipleProgressNotifications) {
                                         {"_meta", {{"progressToken", "multi-tok"}}}};
     raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -266,9 +264,8 @@ TEST_F(ServerProgressTest, NotificationsOfEachRequestPrecedeItsResultInOrder) {
         raw_transport->enqueue_message(call.dump());
     }
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
     io_ctx_.run();
 
     ASSERT_EQ(written.size(), expected_messages);

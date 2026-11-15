@@ -1,5 +1,6 @@
 #include "../support/hang_guard.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/client/stdio_session.hpp"
 #include "mcp/transport/stdio_client.hpp"
@@ -72,17 +73,14 @@ class Harness {
                 io.stop();
             }
         });
-        boost::asio::co_spawn(
-            io,
-            [this, body = std::move(body)]() -> mcp::Task<void> {
-                try {
-                    co_await body();
-                } catch (const std::exception& error) {
-                    ADD_FAILURE() << "unexpected exception: " << error.what();
-                }
-                guard_.cancel();
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io, [this, body = std::move(body)]() -> mcp::Task<void> {
+            try {
+                co_await body();
+            } catch (const std::exception& error) {
+                ADD_FAILURE() << "unexpected exception: " << error.what();
+            }
+            guard_.cancel();
+        });
         io.run();
         EXPECT_FALSE(fired_) << "the test did not finish";
     }

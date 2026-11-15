@@ -1,4 +1,5 @@
 #include "../support/hang_guard.hpp"
+#include "../support/spawn.hpp"
 #include "mcp/detail/signal.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/stdio.hpp"
@@ -794,7 +795,7 @@ TEST_F(ServerStdioTest, EveryRequestReadBeforeTheInputEndsIsAnswered) {
         auto stdio =
             std::make_shared<mcp::StdioTransport>(io.get_executor(), wrapped_input, wrapped_output);
         auto wrapper = std::make_shared<PassThroughTransport>(stdio);
-        boost::asio::co_spawn(io, server_->run(wrapper, io.get_executor()), boost::asio::detached);
+        mcp_test::spawn_detached(io, server_->run(wrapper, io.get_executor()));
         io.run();
     }
     const auto wrapped = parse_responses(wrapped_output.str());

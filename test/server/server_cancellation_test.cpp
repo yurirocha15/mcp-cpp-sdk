@@ -1,5 +1,6 @@
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -95,9 +96,8 @@ TEST_F(ServerCancellationTest, CancellationFlagSetOnNotification) {
     cancel_notif["params"] = nlohmann::json{{"requestId", "2"}, {"reason", "user aborted"}};
     raw_transport->enqueue_message(cancel_notif.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -148,9 +148,8 @@ TEST_F(ServerCancellationTest, NoCancellationWhenNotSent) {
     call_req["params"] = nlohmann::json{{"name", "check_cancel"}, {"arguments", {{"value", 1}}}};
     raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -186,9 +185,8 @@ TEST_F(ServerCancellationTest, CancellationForUnknownRequestIsIgnored) {
     raw_transport->enqueue_message(make_initialize_request("1").dump());
     raw_transport->enqueue_message(make_initialized_notification().dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -244,9 +242,8 @@ TEST_F(ServerCancellationTest, InFlightCleanedUpAfterToolCompletes) {
     call_req["params"] = nlohmann::json{{"name", "quick_tool"}, {"arguments", {{"value", 0}}}};
     raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 

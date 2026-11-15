@@ -1,4 +1,5 @@
 #include "../../src/detail/strand_executor.hpp"
+#include "../support/spawn.hpp"
 
 #include <mcp/detail/serialized_transport_writer.hpp>
 #include <mcp/transport/transport.hpp>
@@ -83,20 +84,15 @@ TEST(SerializedTransportWriterTest, OwnsMessagesAndSerializesWritesInFifoOrder) 
     auto transport = std::make_shared<OverlapDetectingTransport>();
     mcp::detail::SerializedTransportWriter writer(transport, io_context.get_executor());
 
-    boost::asio::co_spawn(
-        io_context,
-        [writer]() mutable -> mcp::Task<void> { co_await writer.write_message(std::string{"first"}); },
-        boost::asio::detached);
-    boost::asio::co_spawn(
-        io_context,
-        [writer]() mutable -> mcp::Task<void> { co_await writer.write_message(std::string{"second"}); },
-        boost::asio::detached);
-    boost::asio::co_spawn(
-        io_context,
-        [writer]() mutable -> mcp::Task<void> {
-            co_await writer.write_message(std::make_shared<const std::string>("third"));
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_context, [writer]() mutable -> mcp::Task<void> {
+        co_await writer.write_message(std::string{"first"});
+    });
+    mcp_test::spawn_detached(io_context, [writer]() mutable -> mcp::Task<void> {
+        co_await writer.write_message(std::string{"second"});
+    });
+    mcp_test::spawn_detached(io_context, [writer]() mutable -> mcp::Task<void> {
+        co_await writer.write_message(std::make_shared<const std::string>("third"));
+    });
 
     io_context.run();
 
@@ -121,7 +117,7 @@ TEST(SerializedTransportWriterTest, ConcurrentCallersStaySerializedAcrossThreadP
         for (int index = 0; index < message_count; ++index) {
             auto message = "round-" + std::to_string(round) + "-message-" + std::to_string(index);
             expected.push_back(message);
-            boost::asio::co_spawn(
+            mcp_test::spawn_then(
                 io_context,
                 [writer, message = std::move(message)]() mutable -> mcp::Task<void> {
                     co_await writer.write_message(message);
@@ -164,8 +160,8 @@ TEST(SerializedTransportWriterTest, PendingWriteRetainsStateAfterWriterDestructi
     }();
 
     std::exception_ptr error;
-    boost::asio::co_spawn(io_context, std::move(pending_write),
-                          [&error](std::exception_ptr result) { error = std::move(result); });
+    mcp_test::spawn_then(io_context, std::move(pending_write),
+                         [&error](std::exception_ptr result) { error = std::move(result); });
     io_context.run();
 
     EXPECT_EQ(error, nullptr);
@@ -182,10 +178,9 @@ TEST(SerializedTransportWriterTest, WrittenAndCanceledMessagesStopCounting) {
 
     std::exception_ptr first_error;
     std::exception_ptr canceled_error;
-    boost::asio::co_spawn(io_context,
-                          writer.write_message(std::make_shared<const std::string>("first")),
-                          [&](std::exception_ptr error) { first_error = std::move(error); });
-    boost::asio::co_spawn(
+    mcp_test::spawn_then(io_context, writer.write_message(std::make_shared<const std::string>("first")),
+                         [&](std::exception_ptr error) { first_error = std::move(error); });
+    mcp_test::spawn_then(
         io_context, writer.write_message(std::make_shared<const std::string>("called off"), canceled),
         [&](std::exception_ptr error) { canceled_error = std::move(error); });
     io_context.run();
@@ -213,7 +208,7 @@ TEST(SerializedTransportWriterTest, WritesStaySerializedOnAStrandTheWriterIsGive
         }
     };
 
-    boost::asio::co_spawn(
+    mcp_test::spawn_then(
         strand,
         [writer]() mutable -> mcp::Task<void> {
             co_await writer.write_message(std::string{"first"});
@@ -221,7 +216,7 @@ TEST(SerializedTransportWriterTest, WritesStaySerializedOnAStrandTheWriterIsGive
         },
         count_failure);
     for (int index = 0; index < context_writers; ++index) {
-        boost::asio::co_spawn(
+        mcp_test::spawn_then(
             io_context,
             [writer, message = "context-" + std::to_string(index)]() mutable -> mcp::Task<void> {
                 co_await writer.write_message(message);
@@ -326,12 +321,10 @@ TEST(SerializedTransportWriterTest, CallersOnTheStrandWriteInTheOrderTheyCall) {
     std::vector<std::string> expected;
     for (int index = 0; index < writer_count; ++index) {
         expected.push_back("message-" + std::to_string(index));
-        boost::asio::co_spawn(
-            strand,
-            [writer, message = expected.back()]() mutable -> mcp::Task<void> {
-                co_await writer.write_message(message);
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(strand,
+                                 [writer, message = expected.back()]() mutable -> mcp::Task<void> {
+                                     co_await writer.write_message(message);
+                                 });
     }
     io_context.run();
 
@@ -350,13 +343,10 @@ TEST(SerializedTransportWriterTest, PostedMessageIsWrittenBeforeALaterWriteOnThe
     auto transport = std::make_shared<RecordingTransport>();
     mcp::detail::SerializedTransportWriter writer(transport, strand);
 
-    boost::asio::co_spawn(
-        strand,
-        [writer]() mutable -> mcp::Task<void> {
-            writer.post_message(std::make_shared<const std::string>("posted"));
-            co_await writer.write_message(std::string{"written"});
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(strand, [writer]() mutable -> mcp::Task<void> {
+        writer.post_message(std::make_shared<const std::string>("posted"));
+        co_await writer.write_message(std::string{"written"});
+    });
     io_context.run();
 
     EXPECT_EQ(transport->messages, (std::vector<std::string>{"posted", "written"}));
@@ -374,24 +364,21 @@ TEST(SerializedTransportWriterTest, FailedOrCancelledWriteOnTheStrandFailsOnlyIt
     bool failed = false;
     bool cancelled = false;
     bool later_written = false;
-    boost::asio::co_spawn(
-        strand,
-        [&, writer]() mutable -> mcp::Task<void> {
-            try {
-                co_await writer.write_message(std::string{"fails"});
-            } catch (const std::runtime_error&) {
-                failed = true;
-            }
-            auto cancel = std::make_shared<std::atomic<bool>>(true);
-            try {
-                co_await writer.write_message(std::make_shared<const std::string>("cancelled"), cancel);
-            } catch (const boost::system::system_error& error) {
-                cancelled = error.code() == boost::asio::error::operation_aborted;
-            }
-            co_await writer.write_message(std::string{"later"});
-            later_written = true;
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(strand, [&, writer]() mutable -> mcp::Task<void> {
+        try {
+            co_await writer.write_message(std::string{"fails"});
+        } catch (const std::runtime_error&) {
+            failed = true;
+        }
+        auto cancel = std::make_shared<std::atomic<bool>>(true);
+        try {
+            co_await writer.write_message(std::make_shared<const std::string>("cancelled"), cancel);
+        } catch (const boost::system::system_error& error) {
+            cancelled = error.code() == boost::asio::error::operation_aborted;
+        }
+        co_await writer.write_message(std::string{"later"});
+        later_written = true;
+    });
     io_context.run();
 
     EXPECT_TRUE(failed);
@@ -415,23 +402,17 @@ TEST(SerializedTransportWriterTest, WritesStartedFromInsideAWriteQueueBehindIt) 
             return;
         }
         writer.post_message(std::make_shared<const std::string>("posted-inside"));
-        boost::asio::co_spawn(
-            strand,
-            [&inner_written, writer]() mutable -> mcp::Task<void> {
-                co_await writer.write_message(std::string{"written-inside"});
-                inner_written = true;
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(strand, [&inner_written, writer]() mutable -> mcp::Task<void> {
+            co_await writer.write_message(std::string{"written-inside"});
+            inner_written = true;
+        });
     };
 
     bool outer_written = false;
-    boost::asio::co_spawn(
-        strand,
-        [&outer_written, writer]() mutable -> mcp::Task<void> {
-            co_await writer.write_message(std::string{"outer"});
-            outer_written = true;
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(strand, [&outer_written, writer]() mutable -> mcp::Task<void> {
+        co_await writer.write_message(std::string{"outer"});
+        outer_written = true;
+    });
     io_context.run();
 
     EXPECT_TRUE(outer_written);
@@ -456,31 +437,23 @@ TEST(SerializedTransportWriterTest, CancellingAMessageQueuedBehindAWriteInPlaceS
         if (message != "first") {
             return;
         }
-        boost::asio::co_spawn(
-            strand,
-            [&cancelled, writer, cancel]() mutable -> mcp::Task<void> {
-                try {
-                    co_await writer.write_message(std::make_shared<const std::string>("cancelled"),
-                                                  cancel);
-                } catch (const boost::system::system_error& error) {
-                    cancelled = error.code() == boost::asio::error::operation_aborted;
-                }
-            },
-            boost::asio::detached);
-        boost::asio::co_spawn(
-            strand,
-            [&after_written, writer]() mutable -> mcp::Task<void> {
-                co_await writer.write_message(std::string{"after"});
-                after_written = true;
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(strand, [&cancelled, writer, cancel]() mutable -> mcp::Task<void> {
+            try {
+                co_await writer.write_message(std::make_shared<const std::string>("cancelled"), cancel);
+            } catch (const boost::system::system_error& error) {
+                cancelled = error.code() == boost::asio::error::operation_aborted;
+            }
+        });
+        mcp_test::spawn_detached(strand, [&after_written, writer]() mutable -> mcp::Task<void> {
+            co_await writer.write_message(std::string{"after"});
+            after_written = true;
+        });
         cancel->store(true);
     };
 
-    boost::asio::co_spawn(
-        strand,
-        [writer]() mutable -> mcp::Task<void> { co_await writer.write_message(std::string{"first"}); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(strand, [writer]() mutable -> mcp::Task<void> {
+        co_await writer.write_message(std::string{"first"});
+    });
     io_context.run();
 
     EXPECT_TRUE(cancelled);
@@ -503,27 +476,23 @@ TEST(SerializedTransportWriterTest, FailedWriteInPlaceStillWritesWhatQueuedBehin
         }
         writer.post_message(std::make_shared<const std::string>("posted"));
         for (const auto* text : {"queued-1", "queued-2"}) {
-            boost::asio::co_spawn(
+            mcp_test::spawn_detached(
                 strand,
                 [&queued_written, writer, text = std::string(text)]() mutable -> mcp::Task<void> {
                     co_await writer.write_message(text);
                     ++queued_written;
-                },
-                boost::asio::detached);
+                });
         }
     };
 
     bool failed = false;
-    boost::asio::co_spawn(
-        strand,
-        [&failed, writer]() mutable -> mcp::Task<void> {
-            try {
-                co_await writer.write_message(std::string{"fails"});
-            } catch (const std::runtime_error&) {
-                failed = true;
-            }
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(strand, [&failed, writer]() mutable -> mcp::Task<void> {
+        try {
+            co_await writer.write_message(std::string{"fails"});
+        } catch (const std::runtime_error&) {
+            failed = true;
+        }
+    });
     io_context.run();
 
     EXPECT_TRUE(failed);
@@ -553,15 +522,12 @@ TEST(SerializedTransportWriterTest, CloseDuringAWriteInPlaceFailsItAndTheQueue) 
         if (message != "first") {
             return;
         }
-        boost::asio::co_spawn(strand, write(std::make_shared<const std::string>("second")),
-                              boost::asio::detached);
-        boost::asio::co_spawn(strand, write(std::make_shared<const std::string>("third")),
-                              boost::asio::detached);
+        mcp_test::spawn_detached(strand, write(std::make_shared<const std::string>("second")));
+        mcp_test::spawn_detached(strand, write(std::make_shared<const std::string>("third")));
         boost::asio::post(strand, [transport] { transport->close(); });
     };
 
-    boost::asio::co_spawn(strand, write(std::make_shared<const std::string>("first")),
-                          boost::asio::detached);
+    mcp_test::spawn_detached(strand, write(std::make_shared<const std::string>("first")));
     io_context.run();
 
     EXPECT_EQ(failures, 3);

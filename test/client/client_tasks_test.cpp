@@ -1,6 +1,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
@@ -119,15 +120,12 @@ class ClientTasks : public ::testing::Test {
                 result.content = json{{"name", "Luca"}};
                 co_return result;
             });
-        asio::co_spawn(
-            io_,
-            [this, server_transport]() -> mcp::Task<void> {
-                try {
-                    co_await server_->run(server_transport, io_.get_executor());
-                } catch (const std::exception&) {
-                }
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_, [this, server_transport]() -> mcp::Task<void> {
+            try {
+                co_await server_->run(server_transport, io_.get_executor());
+            } catch (const std::exception&) {
+            }
+        });
     }
 
     template <typename Body>
@@ -140,20 +138,17 @@ class ClientTasks : public ::testing::Test {
                 io_.stop();
             }
         });
-        asio::co_spawn(
-            io_,
-            [this, &body, &guard]() -> mcp::Task<void> {
-                try {
-                    co_await client_->connect("tasks-client", "1.0");
-                    co_await body();
-                } catch (const std::exception& error) {
-                    ADD_FAILURE() << "unexpected exception: " << error.what();
-                }
-                client_->close();
-                guard.cancel();
-                io_.stop();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_, [this, &body, &guard]() -> mcp::Task<void> {
+            try {
+                co_await client_->connect("tasks-client", "1.0");
+                co_await body();
+            } catch (const std::exception& error) {
+                ADD_FAILURE() << "unexpected exception: " << error.what();
+            }
+            client_->close();
+            guard.cancel();
+            io_.stop();
+        });
         io_.run();
         EXPECT_FALSE(fired) << "the test did not finish";
     }
@@ -478,19 +473,16 @@ class ScriptedServer {
                 io.stop();
             }
         });
-        asio::co_spawn(
-            io,
-            [this, body = std::move(body)]() -> mcp::Task<void> {
-                try {
-                    co_await client->connect("tasks-client", "1.0");
-                    co_await body();
-                } catch (const std::exception& error) {
-                    ADD_FAILURE() << "unexpected exception: " << error.what();
-                }
-                client->close();
-                guard.cancel();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io, [this, body = std::move(body)]() -> mcp::Task<void> {
+            try {
+                co_await client->connect("tasks-client", "1.0");
+                co_await body();
+            } catch (const std::exception& error) {
+                ADD_FAILURE() << "unexpected exception: " << error.what();
+            }
+            client->close();
+            guard.cancel();
+        });
         io.run();
         EXPECT_FALSE(guard_fired) << "the test did not finish";
     }
@@ -714,20 +706,18 @@ TEST(ClientTasksScripted, CancelledCallToolCancelsItsTask) {
     server.run([&]() -> mcp::Task<void> {
         mcp::RequestOptions request_options;
         request_options.cancellation = mcp::CancellationToken();
-        asio::co_spawn(
-            server.io,
-            [&server, token = *request_options.cancellation]() -> mcp::Task<void> {
-                asio::steady_timer tick(server.io);
-                while (server.requests("tasks/get").empty()) {
-                    tick.expires_after(std::chrono::milliseconds(1));
-                    co_await tick.async_wait(asio::use_awaitable);
-                }
-                // Past the first poll's answer, so the call is in its pause.
-                tick.expires_after(std::chrono::milliseconds(20));
-                co_await tick.async_wait(asio::use_awaitable);
-                token.cancel("user stopped it");
-            },
-            asio::detached);
+        mcp_test::spawn_detached(server.io,
+                                 [&server, token = *request_options.cancellation]() -> mcp::Task<void> {
+                                     asio::steady_timer tick(server.io);
+                                     while (server.requests("tasks/get").empty()) {
+                                         tick.expires_after(std::chrono::milliseconds(1));
+                                         co_await tick.async_wait(asio::use_awaitable);
+                                     }
+                                     // Past the first poll's answer, so the call is in its pause.
+                                     tick.expires_after(std::chrono::milliseconds(20));
+                                     co_await tick.async_wait(asio::use_awaitable);
+                                     token.cancel("user stopped it");
+                                 });
         try {
             const json arguments = json::object();
             co_await server.client->call_tool("t", arguments, request_options);
@@ -754,20 +744,18 @@ TEST(ClientTasksScripted, CancelledWaitLeavesTheTask) {
     server.run([&]() -> mcp::Task<void> {
         mcp::RequestOptions request_options;
         request_options.cancellation = mcp::CancellationToken();
-        asio::co_spawn(
-            server.io,
-            [&server, token = *request_options.cancellation]() -> mcp::Task<void> {
-                asio::steady_timer tick(server.io);
-                while (server.requests("tasks/get").empty()) {
-                    tick.expires_after(std::chrono::milliseconds(1));
-                    co_await tick.async_wait(asio::use_awaitable);
-                }
-                // Past the first poll's answer, so the wait is in its pause.
-                tick.expires_after(std::chrono::milliseconds(20));
-                co_await tick.async_wait(asio::use_awaitable);
-                token.cancel();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(server.io,
+                                 [&server, token = *request_options.cancellation]() -> mcp::Task<void> {
+                                     asio::steady_timer tick(server.io);
+                                     while (server.requests("tasks/get").empty()) {
+                                         tick.expires_after(std::chrono::milliseconds(1));
+                                         co_await tick.async_wait(asio::use_awaitable);
+                                     }
+                                     // Past the first poll's answer, so the wait is in its pause.
+                                     tick.expires_after(std::chrono::milliseconds(20));
+                                     co_await tick.async_wait(asio::use_awaitable);
+                                     token.cancel();
+                                 });
         const auto handle = server.client->task_handle("task-1");
         try {
             co_await handle.wait(request_options);

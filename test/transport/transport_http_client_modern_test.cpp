@@ -2,6 +2,7 @@
 #include "../test_utils.hpp"
 
 #include "../../src/detail/header_value.hpp"
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
@@ -114,7 +115,7 @@ class RawServer {
         return "http://127.0.0.1:" + std::to_string(port()) + "/mcp";
     }
 
-    void start() { asio::co_spawn(io_, accept_loop(this), asio::detached); }
+    void start() { mcp_test::spawn_detached(io_, accept_loop(this)); }
 
     void close() {
         closing_ = true;
@@ -152,7 +153,7 @@ class RawServer {
                 co_return;
             }
             self->sockets_.push_back(socket);
-            asio::co_spawn(self->io_, serve_connection(self, socket), asio::detached);
+            mcp_test::spawn_detached(self->io_, serve_connection(self, socket));
         }
     }
 
@@ -190,7 +191,7 @@ class RawServer {
                                         Reply reply) {
         ++self->streams_started;
         auto gone = std::make_shared<bool>(false);
-        asio::co_spawn(self->io_, watch_for_eof(socket, gone), asio::detached);
+        mcp_test::spawn_detached(self->io_, watch_for_eof(socket, gone));
         auto written = std::make_shared<std::string>(head(reply, true));
         co_await asio::async_write(*socket, asio::buffer(*written), asio::use_awaitable);
         for (const auto& step : reply.stream) {
@@ -239,7 +240,7 @@ class RawServer {
             try {
                 if (reply.hold_until) {
                     auto gone = std::make_shared<bool>(false);
-                    asio::co_spawn(self->io_, watch_for_eof(socket, gone), asio::detached);
+                    mcp_test::spawn_detached(self->io_, watch_for_eof(socket, gone));
                     const auto condition = reply.hold_until;
                     // Named: GCC 11 destroys a lambda temporary in a co_await operand twice.
                     const auto ready = [condition, gone] { return *gone || condition(); };
@@ -380,14 +381,11 @@ void run_guarded(asio::io_context& io, RawServer& raw, std::function<mcp::Task<v
         }
     });
     raw.start();
-    asio::co_spawn(
-        io,
-        [&guard, &raw, body = std::move(body)]() -> mcp::Task<void> {
-            co_await body();
-            raw.close();
-            guard.cancel();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, [&guard, &raw, body = std::move(body)]() -> mcp::Task<void> {
+        co_await body();
+        raw.close();
+        guard.cancel();
+    });
     io.run();
     EXPECT_FALSE(fired) << "the test did not finish";
 }
@@ -898,16 +896,13 @@ TEST(HttpClientModern, CancelClosesTheResponseStream) {
     bool finished = false;
     run_guarded(io, raw, [&]() -> mcp::Task<void> {
         co_await client.connect("cancel", "1.0");
-        asio::co_spawn(
-            io,
-            [&]() -> mcp::Task<void> {
-                code = co_await failure_code([&]() -> mcp::Task<void> {
-                    json arguments = json::object();
-                    co_await client.call_tool("slow", arguments);
-                });
-                finished = true;
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+            code = co_await failure_code([&]() -> mcp::Task<void> {
+                json arguments = json::object();
+                co_await client.call_tool("slow", arguments);
+            });
+            finished = true;
+        });
         co_await wait_until([&raw] { return raw.streams_started == 1; });
         const auto id = raw.requests.back().parsed().at("id").get<std::string>();
         co_await client.cancel(mcp::RequestId{id});
@@ -978,16 +973,13 @@ TEST(HttpClientModern, CloseEndsTheOpenResponseStream) {
     bool finished = false;
     run_guarded(io, raw, [&]() -> mcp::Task<void> {
         co_await client.connect("close", "1.0");
-        asio::co_spawn(
-            io,
-            [&]() -> mcp::Task<void> {
-                code = co_await failure_code([&]() -> mcp::Task<void> {
-                    json arguments = json::object();
-                    co_await client.call_tool("slow", arguments);
-                });
-                finished = true;
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+            code = co_await failure_code([&]() -> mcp::Task<void> {
+                json arguments = json::object();
+                co_await client.call_tool("slow", arguments);
+            });
+            finished = true;
+        });
         co_await wait_until([&raw] { return raw.streams_started == 1; });
         client.close();
         co_await wait_until([&] { return finished && raw.streams_abandoned == 1; });
@@ -1038,13 +1030,10 @@ TEST(HttpClientModern, QuietHandlerDoesNotHoldBackTheNextCall) {
     bool slow_done_when_fast_returned = true;
     run_guarded(io, raw, [&]() -> mcp::Task<void> {
         co_await client.connect("quiet", "1.0");
-        asio::co_spawn(
-            io,
-            [&]() -> mcp::Task<void> {
-                co_await call_named(client, "slow");
-                slow_done = true;
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+            co_await call_named(client, "slow");
+            slow_done = true;
+        });
         co_await wait_until([&raw] { return raw.rpc_methods().back() == "tools/call"; });
         co_await call_named(client, "fast");
         slow_done_when_fast_returned = slow_done;
@@ -1069,13 +1058,10 @@ TEST(HttpClientModern, CancelReachesAQuietHandler) {
     bool handler_running_at_cancel_return = false;
     run_guarded(io, raw, [&]() -> mcp::Task<void> {
         co_await client.connect("cancel", "1.0");
-        asio::co_spawn(
-            io,
-            [&]() -> mcp::Task<void> {
-                code = co_await failure_code([&] { return call_named(client, "slow"); });
-                finished = true;
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+            code = co_await failure_code([&] { return call_named(client, "slow"); });
+            finished = true;
+        });
         co_await wait_until([&raw] { return raw.rpc_methods().back() == "tools/call"; });
         const auto id = raw.requests.back().parsed().at("id").get<std::string>();
         co_await client.cancel(mcp::RequestId{id});
@@ -1358,21 +1344,18 @@ TEST(HttpClientModern, AgainstDualEraSessionManager) {
             io.stop();
         }
     });
-    asio::co_spawn(io, manager.listen(), asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await sdk_exchange(client, outcome, true);
-            } catch (const std::exception& failure) {
-                error = failure.what();
-            }
-            sessions = manager.session_count();
-            client.close();
-            manager.close();
-            guard.cancel();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, manager.listen());
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            co_await sdk_exchange(client, outcome, true);
+        } catch (const std::exception& failure) {
+            error = failure.what();
+        }
+        sessions = manager.session_count();
+        client.close();
+        manager.close();
+        guard.cancel();
+    });
     io.run();
 
     EXPECT_FALSE(fired);
@@ -1408,29 +1391,23 @@ TEST(HttpClientModern, AgainstRunHttpJsonOnly) {
             io.stop();
         }
     });
-    asio::co_spawn(io, server_transport->listen(), asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await server->run(server_transport, io.get_executor());
-            } catch (...) {
-            }
-        },
-        asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await sdk_exchange(client, outcome, false);
-            } catch (const std::exception& failure) {
-                error = failure.what();
-            }
-            client.close();
-            server_transport->close();
-            guard.cancel();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, server_transport->listen());
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            co_await server->run(server_transport, io.get_executor());
+        } catch (...) {
+        }
+    });
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            co_await sdk_exchange(client, outcome, false);
+        } catch (const std::exception& failure) {
+            error = failure.what();
+        }
+        client.close();
+        server_transport->close();
+        guard.cancel();
+    });
     io.run();
 
     EXPECT_FALSE(fired);
@@ -1460,7 +1437,7 @@ class RecordingRelay {
         return "http://127.0.0.1:" + std::to_string(acceptor_.local_endpoint().port()) + "/mcp";
     }
 
-    void start() { asio::co_spawn(io_, accept_loop(this), asio::detached); }
+    void start() { mcp_test::spawn_detached(io_, accept_loop(this)); }
 
     void close() {
         closing_ = true;
@@ -1545,8 +1522,8 @@ class RecordingRelay {
             }
             self->sockets_.push_back(client);
             self->sockets_.push_back(server);
-            asio::co_spawn(self->io_, pipe(client, server, &self->captured_), asio::detached);
-            asio::co_spawn(self->io_, pipe(server, client, nullptr), asio::detached);
+            mcp_test::spawn_detached(self->io_, pipe(client, server, &self->captured_));
+            mcp_test::spawn_detached(self->io_, pipe(server, client, nullptr));
         }
     }
 
@@ -1589,7 +1566,7 @@ PinnedOutcome run_pinned(ServerKind kind, unsigned short manager_port, const std
         if (policy) {
             manager->set_protocol_policy(*policy);
         }
-        asio::co_spawn(io, manager->listen(), asio::detached);
+        mcp_test::spawn_detached(io, manager->listen());
     } else {
         server_transport =
             std::make_shared<mcp::HttpServerTransport>(io.get_executor(), "127.0.0.1", 0);
@@ -1598,16 +1575,13 @@ PinnedOutcome run_pinned(ServerKind kind, unsigned short manager_port, const std
             server->set_protocol_policy(*policy);
         }
         upstream = server_transport->port();
-        asio::co_spawn(io, server_transport->listen(), asio::detached);
-        asio::co_spawn(
-            io,
-            [&]() -> mcp::Task<void> {
-                try {
-                    co_await server->run(server_transport, io.get_executor());
-                } catch (...) {
-                }
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io, server_transport->listen());
+        mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+            try {
+                co_await server->run(server_transport, io.get_executor());
+            } catch (...) {
+            }
+        });
     }
 
     RecordingRelay relay(io, upstream);
@@ -1624,29 +1598,26 @@ PinnedOutcome run_pinned(ServerKind kind, unsigned short manager_port, const std
             io.stop();
         }
     });
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            try {
-                outcome.connected = co_await client.connect("pinned", "1.0");
-                co_await client.list_tools();
-                json arguments = json::object();
-                co_await client.call_tool("whoami", arguments);
-            } catch (const std::exception& failure) {
-                outcome.error = failure.what();
-            }
-            outcome.requests = relay.requests();
-            client.close();
-            relay.close();
-            if (manager) {
-                manager->close();
-            }
-            if (server_transport) {
-                server_transport->close();
-            }
-            guard.cancel();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            outcome.connected = co_await client.connect("pinned", "1.0");
+            co_await client.list_tools();
+            json arguments = json::object();
+            co_await client.call_tool("whoami", arguments);
+        } catch (const std::exception& failure) {
+            outcome.error = failure.what();
+        }
+        outcome.requests = relay.requests();
+        client.close();
+        relay.close();
+        if (manager) {
+            manager->close();
+        }
+        if (server_transport) {
+            server_transport->close();
+        }
+        guard.cancel();
+    });
     io.run();
     EXPECT_FALSE(fired) << "the test did not finish";
     return outcome;

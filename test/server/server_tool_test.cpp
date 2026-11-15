@@ -2,6 +2,7 @@
 #include "../test_utils.hpp"
 
 #include "../../src/protocol/schema_cache.hpp"
+#include "../support/spawn.hpp"
 #include "mcp/protocol/schema.hpp"
 #include "mcp/server/server.hpp"
 
@@ -71,12 +72,9 @@ class ServerToolTest : public ::testing::Test {
                            {"params", {{"name", std::move(name)}, {"arguments", std::move(arguments)}}}}
                 .dump());
 
-        boost::asio::co_spawn(
-            io_ctx,
-            [&]() -> mcp::Task<void> {
-                co_await setup.server.run(setup.transport, io_ctx.get_executor());
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx.get_executor());
+        });
         io_ctx.run();
         return responses;
     }
@@ -112,12 +110,9 @@ TEST_F(ServerToolTest, NonTemplateSyncHandlerReturnsResult) {
     call_req["params"] = {{"name", "greet"}, {"arguments", {{"name", "Alice"}}}};
     setup.raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -166,12 +161,9 @@ TEST_F(ServerToolTest, NonStdExceptionFromHandlerBecomesToolError) {
         }
     });
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -315,12 +307,9 @@ TEST_F(ServerToolTest, NonTemplateToolAppearsInToolsList) {
     list_req["params"] = nlohmann::json::object();
     setup.raw_transport->enqueue_message(list_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -542,17 +531,17 @@ namespace {
 nlohmann::json list_tools_directly(mcp::Server& server) {
     boost::asio::io_context io_ctx;
     nlohmann::json response;
-    boost::asio::co_spawn(io_ctx,
-                          server.dispatch_request_direct({{"jsonrpc", "2.0"},
-                                                          {"id", 1},
-                                                          {"method", "tools/list"},
-                                                          {"params", nlohmann::json::object()}}),
-                          [&response](std::exception_ptr error, std::string wire) {
-                              EXPECT_EQ(error, nullptr);
-                              if (!error) {
-                                  response = nlohmann::json::parse(wire);
-                              }
-                          });
+    mcp_test::spawn_then(io_ctx,
+                         server.dispatch_request_direct({{"jsonrpc", "2.0"},
+                                                         {"id", 1},
+                                                         {"method", "tools/list"},
+                                                         {"params", nlohmann::json::object()}}),
+                         [&response](std::exception_ptr error, std::string wire) {
+                             EXPECT_EQ(error, nullptr);
+                             if (!error) {
+                                 response = nlohmann::json::parse(wire);
+                             }
+                         });
     io_ctx.run();
     return response;
 }
@@ -649,7 +638,7 @@ namespace {
 std::string list_tools_wire(mcp::Server& server, nlohmann::json params = nlohmann::json::object()) {
     boost::asio::io_context io_ctx;
     std::string answer;
-    boost::asio::co_spawn(
+    mcp_test::spawn_then(
         io_ctx,
         server.dispatch_request_direct(
             {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/list"}, {"params", std::move(params)}}),
@@ -1153,12 +1142,9 @@ class ToolsStructured : public ServerToolTest {
             make_modern_request("2", "tools/call",
                                 {{"name", "emit"}, {"arguments", nlohmann::json::object()}})
                 .dump());
-        boost::asio::co_spawn(
-            io_ctx_,
-            [&]() -> mcp::Task<void> {
-                co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        });
         io_ctx_.run();
         EXPECT_EQ(responses.size(), 1u);
         return responses.empty() ? nlohmann::json() : responses[0];

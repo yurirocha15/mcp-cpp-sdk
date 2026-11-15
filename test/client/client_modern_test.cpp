@@ -2,6 +2,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
@@ -198,18 +199,15 @@ class Harness {
                 io.stop();
             }
         });
-        boost::asio::co_spawn(
-            io,
-            [this, body = std::move(body)]() -> mcp::Task<void> {
-                try {
-                    co_await body();
-                } catch (const std::exception& error) {
-                    ADD_FAILURE() << "unexpected exception: " << error.what();
-                }
-                client->close();
-                guard.cancel();
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io, [this, body = std::move(body)]() -> mcp::Task<void> {
+            try {
+                co_await body();
+            } catch (const std::exception& error) {
+                ADD_FAILURE() << "unexpected exception: " << error.what();
+            }
+            client->close();
+            guard.cancel();
+        });
         io.run();
         EXPECT_FALSE(guard_fired) << "the test did not finish";
     }
@@ -924,17 +922,14 @@ TEST(ClientEra, CancelWritesTheCancelledNotificationInBothEras) {
 
         harness.run([&]() -> mcp::Task<void> {
             co_await harness.client->connect("test-client", "1.0");
-            boost::asio::co_spawn(
-                harness.io,
-                [&]() -> mcp::Task<void> {
-                    try {
-                        const std::optional<json> params = json{{"name", "slow"}};
-                        auto pending = harness.client->send_request("tools/call", params);
-                        co_await std::move(pending);
-                    } catch (const std::exception&) {
-                    }
-                },
-                boost::asio::detached);
+            mcp_test::spawn_detached(harness.io, [&]() -> mcp::Task<void> {
+                try {
+                    const std::optional<json> params = json{{"name", "slow"}};
+                    auto pending = harness.client->send_request("tools/call", params);
+                    co_await std::move(pending);
+                } catch (const std::exception&) {
+                }
+            });
             boost::asio::steady_timer tick(harness.io);
             while (harness.peer.count("tools/call") == 0) {
                 tick.expires_after(std::chrono::milliseconds(1));
@@ -985,20 +980,17 @@ TEST(ClientEra, CancelStopsWaitingForAModernRequestOnly) {
         harness.run([&]() -> mcp::Task<void> {
             co_await harness.client->connect("test-client", "1.0");
             int finished = 0;
-            boost::asio::co_spawn(
-                harness.io,
-                [&]() -> mcp::Task<void> {
-                    try {
-                        const std::optional<json> params = json{{"name", "slow"}};
-                        auto pending = harness.client->send_request("tools/call", params);
-                        co_await std::move(pending);
-                        code = 0;
-                    } catch (const mcp::McpError& error) {
-                        code = error.code();
-                    }
-                    ++finished;
-                },
-                boost::asio::detached);
+            mcp_test::spawn_detached(harness.io, [&]() -> mcp::Task<void> {
+                try {
+                    const std::optional<json> params = json{{"name", "slow"}};
+                    auto pending = harness.client->send_request("tools/call", params);
+                    co_await std::move(pending);
+                    code = 0;
+                } catch (const mcp::McpError& error) {
+                    code = error.code();
+                }
+                ++finished;
+            });
             boost::asio::steady_timer tick(harness.io);
             while (!held) {
                 tick.expires_after(std::chrono::milliseconds(1));
@@ -1115,9 +1107,8 @@ TEST(ClientEra, CancellationTokenEndsItsCallsInBothEras) {
             mcp::RequestOptions request_options;
             request_options.cancellation = mcp::CancellationToken();
             for (int call = 0; call < 2; ++call) {
-                boost::asio::co_spawn(
-                    harness.io,
-                    [&harness, &codes, request_options]() -> mcp::Task<void> {
+                mcp_test::spawn_detached(
+                    harness.io, [&harness, &codes, request_options]() -> mcp::Task<void> {
                         try {
                             const json arguments = json::object();
                             co_await harness.client->call_tool("slow", arguments, request_options);
@@ -1125,8 +1116,7 @@ TEST(ClientEra, CancellationTokenEndsItsCallsInBothEras) {
                         } catch (const mcp::McpError& error) {
                             codes.push_back(error.code());
                         }
-                    },
-                    boost::asio::detached);
+                    });
             }
             boost::asio::steady_timer tick(harness.io);
             while (held.size() < 2) {
@@ -1441,13 +1431,10 @@ void run_guarded(boost::asio::io_context& io, boost::asio::steady_timer& guard, 
             io.stop();
         }
     });
-    boost::asio::co_spawn(
-        io,
-        [&guard, body = std::move(body)]() -> mcp::Task<void> {
-            co_await body();
-            guard.cancel();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&guard, body = std::move(body)]() -> mcp::Task<void> {
+        co_await body();
+        guard.cancel();
+    });
     io.run();
     EXPECT_FALSE(fired) << "the test did not finish";
 }
@@ -1493,15 +1480,12 @@ TEST(E2eEra, MemoryClientAgainstDualEraServer) {
         mcp::Client client(client_transport, io.get_executor(), options);
         auto outcome = std::make_shared<EraOutcome>();
 
-        boost::asio::co_spawn(
-            io,
-            [&]() -> mcp::Task<void> {
-                try {
-                    co_await server->run(server_transport, io.get_executor());
-                } catch (...) {
-                }
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+            try {
+                co_await server->run(server_transport, io.get_executor());
+            } catch (...) {
+            }
+        });
         run_guarded(io, guard, fired, [&]() -> mcp::Task<void> {
             co_await connect_and_ask(client, outcome);
             client.close();
@@ -1556,15 +1540,12 @@ TEST(E2eEra, MemoryAutoAgainstSingleEraServers) {
         mcp::Client client(client_transport, io.get_executor(), options);
         auto outcome = std::make_shared<EraOutcome>();
 
-        boost::asio::co_spawn(
-            io,
-            [&]() -> mcp::Task<void> {
-                try {
-                    co_await server->run(server_transport, io.get_executor());
-                } catch (...) {
-                }
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+            try {
+                co_await server->run(server_transport, io.get_executor());
+            } catch (...) {
+            }
+        });
         run_guarded(io, guard, fired, [&]() -> mcp::Task<void> {
             co_await connect_and_ask(client, outcome);
             client.close();
@@ -1592,15 +1573,12 @@ TEST(E2eEra, LegacyClientOfModernOnlyServerGetsTheServedVersions) {
     mcp::Client client(client_transport, io.get_executor(), legacy_client_options());
     auto outcome = std::make_shared<EraOutcome>();
 
-    boost::asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await server->run(server_transport, io.get_executor());
-            } catch (...) {
-            }
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            co_await server->run(server_transport, io.get_executor());
+        } catch (...) {
+        }
+    });
     run_guarded(io, guard, fired, [&]() -> mcp::Task<void> {
         co_await connect_and_ask(client, outcome);
         client.close();
@@ -1672,7 +1650,7 @@ TEST(E2eEra, AutoOverHttpIsModern) {
     mcp::Client client(transport, io.get_executor(), options);
     auto outcome = std::make_shared<EraOutcome>();
 
-    boost::asio::co_spawn(io, manager.listen(), boost::asio::detached);
+    mcp_test::spawn_detached(io, manager.listen());
     run_guarded(io, guard, fired, [&]() -> mcp::Task<void> {
         co_await connect_and_ask(client, outcome);
         client.close();
@@ -1700,7 +1678,7 @@ TEST(E2eEra, DefaultClientOverHttpIsModern) {
     mcp::Client client(transport, io.get_executor());
     auto outcome = std::make_shared<EraOutcome>();
 
-    boost::asio::co_spawn(io, manager.listen(), boost::asio::detached);
+    mcp_test::spawn_detached(io, manager.listen());
     run_guarded(io, guard, fired, [&]() -> mcp::Task<void> {
         co_await connect_and_ask(client, outcome);
         client.close();
@@ -1729,7 +1707,7 @@ TEST(E2eEra, LegacyClientOverHttpIsLegacy) {
     mcp::Client client(transport, io.get_executor(), options);
     auto outcome = std::make_shared<EraOutcome>();
 
-    boost::asio::co_spawn(io, manager.listen(), boost::asio::detached);
+    mcp_test::spawn_detached(io, manager.listen());
     run_guarded(io, guard, fired, [&]() -> mcp::Task<void> {
         co_await connect_and_ask(client, outcome);
         client.close();

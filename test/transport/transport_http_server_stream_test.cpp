@@ -1,6 +1,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_server.hpp"
 
@@ -341,16 +342,13 @@ class HttpServerStreamTest : public ::testing::Test {
     /// Serves the transport, runs @p exchange, then closes the transport and lets everything end.
     template <typename Exchange>
     void run(Exchange exchange) {
-        asio::co_spawn(io_ctx_, transport_->listen(), asio::detached);
-        asio::co_spawn(io_ctx_, serve(server_.get(), transport_, io_ctx_.get_executor()),
-                       asio::detached);
-        asio::co_spawn(
-            io_ctx_,
-            [this, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
-                co_await exchange();
-                transport_->close();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx_, transport_->listen());
+        mcp_test::spawn_detached(io_ctx_, serve(server_.get(), transport_, io_ctx_.get_executor()));
+        mcp_test::spawn_detached(io_ctx_,
+                                 [this, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
+                                     co_await exchange();
+                                     transport_->close();
+                                 });
         io_ctx_.run();
     }
 
@@ -766,8 +764,8 @@ TEST_F(HttpServerStreamTest, ListenEndsWhenItsQueueOverflows) {
         // take one, so the overflow does not depend on how the platform orders write completions.
         int notified = 0;
         for (int index = 0; index < 100; ++index) {
-            asio::co_spawn(io_ctx_, server_->notify_tools_list_changed(),
-                           [&notified](const std::exception_ptr&) { ++notified; });
+            mcp_test::spawn_then(io_ctx_, server_->notify_tools_list_changed(),
+                                 [&notified](const std::exception_ptr&) { ++notified; });
         }
         saw_end = co_await client.read_until("0\r\n\r\n");
         const bool removed = co_await wait_until([&] { return server_->subscription_count() == 0; });
@@ -1082,7 +1080,7 @@ TEST(HttpServerStreamOptions, InvalidOptionsAreRefused) {
 TEST(HttpServerStreamOptions, OptionsCannotChangeOnceListening) {
     asio::io_context io_ctx;
     mcp::HttpServerTransport transport(io_ctx.get_executor(), "127.0.0.1", 0);
-    asio::co_spawn(io_ctx, transport.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx, transport.listen());
     EXPECT_THROW(transport.set_stream_options({}), std::logic_error);
     transport.close();
     io_ctx.run();

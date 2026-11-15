@@ -2,6 +2,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
@@ -282,19 +283,18 @@ class SessionLimitsTest : public ::testing::Test {
 
     template <typename Exchange>
     void run(Exchange exchange) {
-        asio::co_spawn(io_, manager_.listen(), asio::detached);
-        asio::co_spawn(
-            io_,
-            [this, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
-                // A failed exchange still closes the server, or the test would never return.
-                try {
-                    co_await exchange();
-                } catch (const std::exception& error) {
-                    ADD_FAILURE() << error.what();
-                }
-                manager_.close();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_, manager_.listen());
+        mcp_test::spawn_detached(io_,
+                                 [this, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
+                                     // A failed exchange still closes the server, or the test would
+                                     // never return.
+                                     try {
+                                         co_await exchange();
+                                     } catch (const std::exception& error) {
+                                         ADD_FAILURE() << error.what();
+                                     }
+                                     manager_.close();
+                                 });
         io_.run();
     }
 
@@ -344,24 +344,21 @@ TEST(SessionLimitsThreadsTest, ConcurrentInitializesStayWithinTheLimit) {
     manager.set_session_limits({limit, std::chrono::milliseconds::zero()});
     std::atomic<int> answered{0};
     std::atomic<int> created{0};
-    asio::co_spawn(io, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io, manager.listen());
     for (int i = 0; i < clients; ++i) {
-        asio::co_spawn(
-            io,
-            [&, i]() -> mcp::Task<void> {
-                try {
-                    const auto reply = co_await send(
-                        io.get_executor(), port, make_initialize_request(std::to_string(i)).dump(), {});
-                    if (reply.session_id) {
-                        ++created;
-                    }
-                } catch (const std::exception&) {
+        mcp_test::spawn_detached(io, [&, i]() -> mcp::Task<void> {
+            try {
+                const auto reply = co_await send(io.get_executor(), port,
+                                                 make_initialize_request(std::to_string(i)).dump(), {});
+                if (reply.session_id) {
+                    ++created;
                 }
-                if (++answered == clients) {
-                    manager.close();
-                }
-            },
-            asio::detached);
+            } catch (const std::exception&) {
+            }
+            if (++answered == clients) {
+                manager.close();
+            }
+        });
     }
     std::vector<std::thread> threads;
     for (int i = 0; i < thread_count; ++i) {
@@ -407,22 +404,18 @@ TEST(SessionStart, DeeplyNestedInitializeResultKeepsTheSession) {
     Reply initialized;
     Reply pinged;
     std::size_t sessions = 0;
-    asio::co_spawn(io, manager.listen(), asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            try {
-                initialized =
-                    co_await send(io.get_executor(), port, make_initialize_request("1").dump(), {});
-                sessions = manager.session_count();
-                pinged =
-                    co_await send(io.get_executor(), port, ping().dump(), session_header(initialized));
-            } catch (const std::exception& error) {
-                ADD_FAILURE() << error.what();
-            }
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, manager.listen());
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            initialized =
+                co_await send(io.get_executor(), port, make_initialize_request("1").dump(), {});
+            sessions = manager.session_count();
+            pinged = co_await send(io.get_executor(), port, ping().dump(), session_header(initialized));
+        } catch (const std::exception& error) {
+            ADD_FAILURE() << error.what();
+        }
+        manager.close();
+    });
     io.run();
     EXPECT_EQ(initialized.status, 200u);
     ASSERT_TRUE(initialized.session_id.has_value());
@@ -752,12 +745,9 @@ TEST_F(SessionLimitsTest, RequestsPastTheCountAreRefused) {
         const auto initialized = co_await post(make_initialize_request("1"));
         const auto session = session_header(initialized);
         co_await post_only(make_initialized_notification(), session);
-        asio::co_spawn(
-            io_,
-            [&, session]() -> mcp::Task<void> {
-                held = co_await post(make_tool_call_request("h", "hold", json::object()), session);
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_, [&, session]() -> mcp::Task<void> {
+            held = co_await post(make_tool_call_request("h", "hold", json::object()), session);
+        });
         co_await wait_until([] { return g_hold_started.load(); });
         refused = co_await post(ping(), session);
         g_hold_released = true;
@@ -815,12 +805,9 @@ TEST_F(SessionLimitsTest, SessionWithARequestWaitingIsNotIdle) {
         const auto busy = co_await post(make_initialize_request("busy"));
         const auto session = session_header(busy);
         co_await post_only(make_initialized_notification(), session);
-        asio::co_spawn(
-            io_,
-            [&, session]() -> mcp::Task<void> {
-                held = co_await post(make_tool_call_request("h", "hold", json::object()), session);
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_, [&, session]() -> mcp::Task<void> {
+            held = co_await post(make_tool_call_request("h", "hold", json::object()), session);
+        });
         co_await wait_until([] { return g_hold_started.load(); });
         co_await post_only(make_initialize_request("idle"));
         idle_one_ended = co_await wait_until([this] { return manager_.session_count() < 2; });
@@ -1124,21 +1111,19 @@ class ReverseBindingTest : public ::testing::Test {
 
     template <typename Exchange>
     void run(Exchange exchange) {
-        asio::co_spawn(io_, transport_->listen(), asio::detached);
-        asio::co_spawn(
-            io_, [this]() -> mcp::Task<void> { co_await server_->run(transport_, io_.get_executor()); },
-            asio::detached);
-        asio::co_spawn(
-            io_,
-            [this, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
-                try {
-                    co_await exchange();
-                } catch (const std::exception& error) {
-                    ADD_FAILURE() << error.what();
-                }
-                transport_->close();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_, transport_->listen());
+        mcp_test::spawn_detached(io_, [this]() -> mcp::Task<void> {
+            co_await server_->run(transport_, io_.get_executor());
+        });
+        mcp_test::spawn_detached(io_,
+                                 [this, exchange = std::move(exchange)]() mutable -> mcp::Task<void> {
+                                     try {
+                                         co_await exchange();
+                                     } catch (const std::exception& error) {
+                                         ADD_FAILURE() << error.what();
+                                     }
+                                     transport_->close();
+                                 });
         io_.run();
     }
 
@@ -1174,16 +1159,13 @@ class ReverseBindingTest : public ::testing::Test {
             {"MCP-Session-Id", id},
             {"MCP-Protocol-Version", json::parse(initialized.body)["result"]["protocolVersion"]}};
         co_await post_only(make_initialized_notification(), session);
-        asio::co_spawn(
-            io_,
-            [this, session]() -> mcp::Task<void> {
-                try {
-                    co_await post_only(make_tool_call_request("c", "ask", json::object()), session);
-                } catch (const std::exception&) {
-                    // The session may end first.
-                }
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_, [this, session]() -> mcp::Task<void> {
+            try {
+                co_await post_only(make_tool_call_request("c", "ask", json::object()), session);
+            } catch (const std::exception&) {
+                // The session may end first.
+            }
+        });
         co_await wait_until([this] { return handler_started_.load(); });
         co_await pause(std::chrono::milliseconds(20));
         co_return id;
@@ -1204,22 +1186,18 @@ TEST(HttpServerTransportLimits, ExpectContinueIsAnsweredBeforeTheBody) {
     auto transport = std::make_shared<mcp::HttpServerTransport>(io.get_executor(), "127.0.0.1", 0);
     auto server = make_server();
     ContinueExchange exchange;
-    asio::co_spawn(io, transport->listen(), asio::detached);
-    asio::co_spawn(
-        io, [&]() -> mcp::Task<void> { co_await server->run(transport, io.get_executor()); },
-        asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            try {
-                exchange = co_await post_expecting_continue(io.get_executor(), transport->port(),
-                                                            make_initialize_request("1").dump());
-            } catch (const std::exception& error) {
-                ADD_FAILURE() << error.what();
-            }
-            transport->close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, transport->listen());
+    mcp_test::spawn_detached(
+        io, [&]() -> mcp::Task<void> { co_await server->run(transport, io.get_executor()); });
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            exchange = co_await post_expecting_continue(io.get_executor(), transport->port(),
+                                                        make_initialize_request("1").dump());
+        } catch (const std::exception& error) {
+            ADD_FAILURE() << error.what();
+        }
+        transport->close();
+    });
     io.run();
     EXPECT_EQ(exchange.before_body, "HTTP/1.1 100 Continue\r\n\r\n");
     EXPECT_EQ(exchange.after_body.rfind("HTTP/1.1 200", 0), 0u) << exchange.after_body;
@@ -1231,21 +1209,17 @@ TEST(HttpServerTransportLimits, UnreadableRequestIsAnswered) {
     auto transport = std::make_shared<mcp::HttpServerTransport>(io.get_executor(), "127.0.0.1", 0);
     auto server = make_server();
     UnreadableAnswers answers;
-    asio::co_spawn(io, transport->listen(), asio::detached);
-    asio::co_spawn(
-        io, [&]() -> mcp::Task<void> { co_await server->run(transport, io.get_executor()); },
-        asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            try {
-                answers = co_await send_unreadable_requests(io.get_executor(), transport->port());
-            } catch (const std::exception& error) {
-                ADD_FAILURE() << error.what();
-            }
-            transport->close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, transport->listen());
+    mcp_test::spawn_detached(
+        io, [&]() -> mcp::Task<void> { co_await server->run(transport, io.get_executor()); });
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            answers = co_await send_unreadable_requests(io.get_executor(), transport->port());
+        } catch (const std::exception& error) {
+            ADD_FAILURE() << error.what();
+        }
+        transport->close();
+    });
     io.run();
     expect_unreadable_requests_answered(answers);
 }
@@ -1310,16 +1284,13 @@ TEST_F(ReverseBindingTest, SessionlessRequestDoesNotKeepAnIdleSessionInUse) {
                                call["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"]},
                               {"Mcp-Method", "tools/call"},
                               {"Mcp-Name", "slow"}};
-        asio::co_spawn(
-            io_,
-            [this, call, headers]() -> mcp::Task<void> {
-                try {
-                    co_await post_only(call, headers);
-                } catch (const std::exception&) {
-                    // The transport may close first.
-                }
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_, [this, call, headers]() -> mcp::Task<void> {
+            try {
+                co_await post_only(call, headers);
+            } catch (const std::exception&) {
+                // The transport may close first.
+            }
+        });
         co_await wait_until([&started] { return started.load(); });
         co_await pause(std::chrono::milliseconds(40));
         second = co_await post(make_initialize_request("second"));
@@ -1374,14 +1345,12 @@ TEST_F(ReverseBindingTest, RequestWhoseSessionEndsWhileItRunsIsNotSentAgain) {
             io_.get_executor(), "http://127.0.0.1:" + std::to_string(transport_->port()) + "/mcp");
         mcp::Client client(transport, io_.get_executor(), legacy_client_options());
         co_await client.connect("twice", "1.0");
-        asio::co_spawn(
-            io_,
-            [this, &runs, &released, session = transport->session_id()]() -> mcp::Task<void> {
+        mcp_test::spawn_detached(
+            io_, [this, &runs, &released, session = transport->session_id()]() -> mcp::Task<void> {
                 co_await wait_until([&runs] { return runs.load() > 0; });
                 co_await end_session(session);
                 released = true;
-            },
-            asio::detached);
+            });
         try {
             co_await client.call_tool("count", json::object());
         } catch (const std::exception&) {
@@ -1583,12 +1552,9 @@ TEST_F(ReverseBindingTest, RequestsPastTheCountAreRefused) {
             {"MCP-Session-Id", initialized.session_id.value_or("")},
             {"MCP-Protocol-Version", json::parse(initialized.body)["result"]["protocolVersion"]}};
         co_await post_only(make_initialized_notification(), session);
-        asio::co_spawn(
-            io_,
-            [&, session]() -> mcp::Task<void> {
-                held = co_await post(make_tool_call_request("h", "hold", json::object()), session);
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_, [&, session]() -> mcp::Task<void> {
+            held = co_await post(make_tool_call_request("h", "hold", json::object()), session);
+        });
         co_await wait_until([] { return g_hold_started.load(); });
         refused = co_await post(ping(), session);
         g_hold_released = true;

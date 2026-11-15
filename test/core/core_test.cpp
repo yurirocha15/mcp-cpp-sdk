@@ -1,4 +1,5 @@
 #include "mcp/core/core.hpp"
+#include "../support/spawn.hpp"
 
 #include <gtest/gtest.h>
 
@@ -16,13 +17,10 @@ mcp::Task<void> simple_task() { co_return; }
 
 TEST_F(CoreTest, CoroutineCompilation) {
     bool executed = false;
-    boost::asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            co_await simple_task();
-            executed = true;
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        co_await simple_task();
+        executed = true;
+    });
 
     io_ctx.run();
     EXPECT_TRUE(executed);

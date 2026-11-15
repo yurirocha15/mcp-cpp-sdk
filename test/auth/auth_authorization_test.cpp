@@ -44,6 +44,7 @@
 #include "../support/hang_guard.hpp"
 #include "../support/resolve_gate.hpp"
 #include "../support/socket_gate.hpp"
+#include "../support/spawn.hpp"
 
 #include <memory>
 #include <mutex>
@@ -248,7 +249,7 @@ TEST(AuthAuthorizationManagerTest, CompletesChallengeDiscoveryAuthorizeAndTokenE
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(3));
 
     ManagerFixture fixture;
     fixture.config.server_url = base + "/mcp";
@@ -260,23 +261,20 @@ TEST(AuthAuthorizationManagerTest, CompletesChallengeDiscoveryAuthorizeAndTokenE
     std::exception_ptr failure;
     std::optional<mcp::auth::AuthorizationRequest> record;
     std::string access_token;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
-                                                         fixture.config,
-                                                         echoing_callback(&fixture.authorization_url));
-            try {
-                authorized = co_await manager.try_handle_challenge(
-                    R"(Bearer realm="mcp", resource_metadata=")" + base + R"(/custom/prm.json")");
-                record = manager.last_authorization_request();
-                access_token = manager.get_access_token();
-            } catch (...) {
-                failure = std::current_exception();
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
+                                                     fixture.config,
+                                                     echoing_callback(&fixture.authorization_url));
+        try {
+            authorized = co_await manager.try_handle_challenge(
+                R"(Bearer realm="mcp", resource_metadata=")" + base + R"(/custom/prm.json")");
+            record = manager.last_authorization_request();
+            access_token = manager.get_access_token();
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -333,7 +331,7 @@ TEST(AuthAuthorizationManagerTest, FallsBackToWellKnownOrderWhenTheChallengeName
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(4), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(4));
 
     ManagerFixture fixture;
     fixture.config.server_url = base + "/mcp";
@@ -342,15 +340,12 @@ TEST(AuthAuthorizationManagerTest, FallsBackToWellKnownOrderWhenTheChallengeName
     fixture.config.policy = loopback_policy(server.origin());
 
     bool authorized = false;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
-                                                         fixture.config, echoing_callback(nullptr));
-            authorized = co_await manager.try_handle_challenge(R"(Bearer realm="mcp")");
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
+                                                     fixture.config, echoing_callback(nullptr));
+        authorized = co_await manager.try_handle_challenge(R"(Bearer realm="mcp")");
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -377,7 +372,7 @@ TEST(AuthAuthorizationManagerTest, RejectsAnIssuerMismatchBeforeExchangingTheCod
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(2), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(2));
 
     ManagerFixture fixture;
     fixture.config.server_url = base + "/mcp";
@@ -386,29 +381,26 @@ TEST(AuthAuthorizationManagerTest, RejectsAnIssuerMismatchBeforeExchangingTheCod
     fixture.config.policy = loopback_policy(server.origin());
 
     std::string message;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto callback = [](const mcp::auth::AuthorizationRequest& request)
-                -> mcp::Task<mcp::auth::AuthorizationResponse> {
-                mcp::auth::AuthorizationResponse response;
-                response.code = "test-authorization-code";
-                response.state = request.state;
-                // Equivalent under RFC 3986 normalization, but the comparison is not canonicalizing.
-                response.iss = request.issuer + "/";
-                co_return response;
-            };
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
-                                                         fixture.config, callback);
-            try {
-                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                            R"(/prm")");
-            } catch (const std::exception& error) {
-                message = error.what();
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto callback = [](const mcp::auth::AuthorizationRequest& request)
+            -> mcp::Task<mcp::auth::AuthorizationResponse> {
+            mcp::auth::AuthorizationResponse response;
+            response.code = "test-authorization-code";
+            response.state = request.state;
+            // Equivalent under RFC 3986 normalization, but the comparison is not canonicalizing.
+            response.iss = request.issuer + "/";
+            co_return response;
+        };
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
+                                                     fixture.config, callback);
+        try {
+            (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                        R"(/prm")");
+        } catch (const std::exception& error) {
+            message = error.what();
+        }
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -447,7 +439,7 @@ TEST(AuthAuthorizationManagerTest, RefusesAnAuthorizationServerThatDoesNotListS2
             return status_response(http::status::not_found);
         });
         // Room for the token request too, so a missing refusal fails the assertions below.
-        asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+        mcp_test::spawn_detached(io_ctx, server.serve(3));
 
         ManagerFixture fixture;
         fixture.config.server_url = base + "/mcp";
@@ -457,29 +449,26 @@ TEST(AuthAuthorizationManagerTest, RefusesAnAuthorizationServerThatDoesNotListS2
 
         int callbacks = 0;
         std::string message;
-        asio::co_spawn(
-            io_ctx,
-            [&]() -> mcp::Task<void> {
-                auto callback = [&callbacks](const mcp::auth::AuthorizationRequest& request)
-                    -> mcp::Task<mcp::auth::AuthorizationResponse> {
-                    ++callbacks;
-                    mcp::auth::AuthorizationResponse response;
-                    response.code = "test-authorization-code";
-                    response.state = request.state;
-                    response.iss = request.issuer;
-                    co_return response;
-                };
-                mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
-                                                             fixture.config, callback);
-                try {
-                    (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                                R"(/prm")");
-                } catch (const std::exception& error) {
-                    message = error.what();
-                }
-                server.close();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+            auto callback = [&callbacks](const mcp::auth::AuthorizationRequest& request)
+                -> mcp::Task<mcp::auth::AuthorizationResponse> {
+                ++callbacks;
+                mcp::auth::AuthorizationResponse response;
+                response.code = "test-authorization-code";
+                response.state = request.state;
+                response.iss = request.issuer;
+                co_return response;
+            };
+            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
+                                                         fixture.config, callback);
+            try {
+                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                            R"(/prm")");
+            } catch (const std::exception& error) {
+                message = error.what();
+            }
+            server.close();
+        });
 
         io_ctx.run();
 
@@ -517,7 +506,7 @@ TEST(AuthAuthorizationManagerTest, RefreshesTheStoredTokenAfterAuthorization) {
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(4), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(4));
 
     ManagerFixture fixture;
     fixture.config.server_url = base + "/mcp";
@@ -527,18 +516,15 @@ TEST(AuthAuthorizationManagerTest, RefreshesTheStoredTokenAfterAuthorization) {
 
     bool refreshed = false;
     std::string token_after_refresh;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
-                                                         fixture.config, echoing_callback(nullptr));
-            (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                        R"(/prm")");
-            refreshed = co_await manager.try_refresh_token();
-            token_after_refresh = manager.get_access_token();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
+                                                     fixture.config, echoing_callback(nullptr));
+        (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                    R"(/prm")");
+        refreshed = co_await manager.try_refresh_token();
+        token_after_refresh = manager.get_access_token();
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -565,21 +551,18 @@ TEST(AuthDiscoveryChallengeUrlTest, ChallengeSuppliedUrlSuppressesTheWellKnownFa
         return json_response({{"resource", "well-known-should-not-be-probed"},
                               {"authorization_servers", json::array({base})}});
     });
-    asio::co_spawn(io_ctx, server.serve(2), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(2));
 
     std::string resource;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
-            client->set_metadata_policy(loopback_policy(server.origin()));
-            mcp::auth::OAuthDiscoveryClient discovery(client);
-            const auto metadata = co_await discovery.discover_protected_resource(
-                base + "/mcp", std::optional<std::string>(base + "/custom/location.json"));
-            resource = metadata.resource;
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+        client->set_metadata_policy(loopback_policy(server.origin()));
+        mcp::auth::OAuthDiscoveryClient discovery(client);
+        const auto metadata = co_await discovery.discover_protected_resource(
+            base + "/mcp", std::optional<std::string>(base + "/custom/location.json"));
+        resource = metadata.resource;
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -624,27 +607,24 @@ TEST(AuthChallengeReplayTest, LegacyAuthenticatorsStillFallThroughToRefresh) {
         }
         return status_response(http::status::accepted);
     });
-    asio::co_spawn(io_ctx, server.serve(2), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(2));
 
     auto authenticator = std::make_shared<LegacyAuthenticator>();
     const std::string wire = R"({"jsonrpc":"2.0","id":7,"method":"ping"})";
     std::exception_ptr failure;
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto inner = std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(),
-                                                                    server.base_url() + "/mcp");
-            mcp::auth::OAuthClientTransport transport(inner, authenticator);
-            try {
-                co_await transport.write_message(wire);
-            } catch (...) {
-                failure = std::current_exception();
-            }
-            transport.close();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto inner = std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(),
+                                                                server.base_url() + "/mcp");
+        mcp::auth::OAuthClientTransport transport(inner, authenticator);
+        try {
+            co_await transport.write_message(wire);
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        transport.close();
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -672,7 +652,7 @@ RefusalOutcome refuse_challenge(const std::string& challenge,
 
     server.set_handler(
         [](const http::request<http::string_body>&) { return status_response(http::status::ok); });
-    asio::co_spawn(io_ctx, server.serve(1), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(1));
 
     RefusalOutcome outcome;
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
@@ -691,22 +671,19 @@ RefusalOutcome refuse_challenge(const std::string& challenge,
         return {"127.0.0.1"};
     };
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
-                                                         echoing_callback(nullptr));
-            try {
-                (void)co_await manager.try_handle_challenge(challenge);
-            } catch (const mcp::auth::MetadataPolicyError& error) {
-                outcome.threw = true;
-                outcome.decision = error.decision();
-            } catch (...) {
-                // Reported as a non-refusal by leaving `threw` false.
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                     echoing_callback(nullptr));
+        try {
+            (void)co_await manager.try_handle_challenge(challenge);
+        } catch (const mcp::auth::MetadataPolicyError& error) {
+            outcome.threw = true;
+            outcome.decision = error.decision();
+        } catch (...) {
+            // Reported as a non-refusal by leaving `threw` false.
+        }
+        server.close();
+    });
 
     io_ctx.run();
     return outcome;
@@ -760,33 +737,30 @@ TEST(AuthMetadataSsrfTest, RefusesTheWholeAnswerWhenOneResolvedAddressIsBlocked)
     canary.set_handler([](const http::request<http::string_body>&) {
         return json_response({{"resource", "http://unused"}});
     });
-    asio::co_spawn(io_ctx, canary.serve(1), asio::detached);
+    mcp_test::spawn_detached(io_ctx, canary.serve(1));
 
     int resolver_calls = 0;
     bool refused = false;
     auto decision = mcp::auth::MetadataUrlDecision::eAllowed;
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
-            auto policy = loopback_policy("http://localhost:" + std::to_string(canary.port()));
-            client.set_metadata_policy(policy);
-            client.set_host_resolver(
-                [&](const std::string&, const std::string&) -> std::vector<std::string> {
-                    ++resolver_calls;
-                    return {"127.0.0.1", "169.254.169.254"};
-                });
-            try {
-                (void)co_await client.get_json("http://localhost:" + std::to_string(canary.port()) +
-                                               "/prm");
-            } catch (const mcp::auth::MetadataPolicyError& error) {
-                refused = true;
-                decision = error.decision();
-            }
-            canary.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+        auto policy = loopback_policy("http://localhost:" + std::to_string(canary.port()));
+        client.set_metadata_policy(policy);
+        client.set_host_resolver(
+            [&](const std::string&, const std::string&) -> std::vector<std::string> {
+                ++resolver_calls;
+                return {"127.0.0.1", "169.254.169.254"};
+            });
+        try {
+            (void)co_await client.get_json("http://localhost:" + std::to_string(canary.port()) +
+                                           "/prm");
+        } catch (const mcp::auth::MetadataPolicyError& error) {
+            refused = true;
+            decision = error.decision();
+        }
+        canary.close();
+    });
 
     io_ctx.run();
 
@@ -806,32 +780,29 @@ TEST(AuthMetadataSsrfTest, PinsTheFirstResolutionSoRebindingCannotRedirectTheFet
         return json_response(
             {{"resource", "http://pinned"}, {"authorization_servers", json::array({"http://pinned"})}});
     });
-    asio::co_spawn(io_ctx, server.serve(1), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(1));
 
     int resolver_calls = 0;
     std::string resolved_resource;
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
-            client.set_metadata_policy(
-                loopback_policy("http://localhost:" + std::to_string(server.port())));
-            client.set_host_resolver(
-                [&](const std::string&, const std::string&) -> std::vector<std::string> {
-                    ++resolver_calls;
-                    // A rebinding resolver: benign first, hostile on any later lookup.
-                    if (resolver_calls == 1) {
-                        return {"127.0.0.1"};
-                    }
-                    return {"169.254.169.254"};
-                });
-            const auto document =
-                co_await client.get_json("http://localhost:" + std::to_string(server.port()) + "/prm");
-            resolved_resource = document.at("resource").get<std::string>();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+        client.set_metadata_policy(
+            loopback_policy("http://localhost:" + std::to_string(server.port())));
+        client.set_host_resolver(
+            [&](const std::string&, const std::string&) -> std::vector<std::string> {
+                ++resolver_calls;
+                // A rebinding resolver: benign first, hostile on any later lookup.
+                if (resolver_calls == 1) {
+                    return {"127.0.0.1"};
+                }
+                return {"169.254.169.254"};
+            });
+        const auto document =
+            co_await client.get_json("http://localhost:" + std::to_string(server.port()) + "/prm");
+        resolved_resource = document.at("resource").get<std::string>();
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -849,27 +820,24 @@ TEST(AuthMetadataRedirectTest, RefusesARedirectOntoABlockedTarget) {
         response.set(http::field::location, "http://169.254.169.254/latest/meta-data");
         return response;
     });
-    asio::co_spawn(io_ctx, server.serve(2), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(2));
 
     bool refused = false;
     auto decision = mcp::auth::MetadataUrlDecision::eAllowed;
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
-            auto policy = loopback_policy(server.origin());
-            policy.allowed_origins.emplace_back("http://169.254.169.254");
-            client.set_metadata_policy(policy);
-            try {
-                (void)co_await client.get_json(server.base_url() + "/prm");
-            } catch (const mcp::auth::MetadataPolicyError& error) {
-                refused = true;
-                decision = error.decision();
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+        auto policy = loopback_policy(server.origin());
+        policy.allowed_origins.emplace_back("http://169.254.169.254");
+        client.set_metadata_policy(policy);
+        try {
+            (void)co_await client.get_json(server.base_url() + "/prm");
+        } catch (const mcp::auth::MetadataPolicyError& error) {
+            refused = true;
+            decision = error.decision();
+        }
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -888,27 +856,24 @@ TEST(AuthMetadataRedirectTest, BoundsTheRedirectChain) {
         response.set(http::field::location, "/again");
         return response;
     });
-    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(5));
 
     bool refused = false;
     auto decision = mcp::auth::MetadataUrlDecision::eAllowed;
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
-            auto policy = loopback_policy(server.origin());
-            policy.max_redirects = 2;
-            client.set_metadata_policy(policy);
-            try {
-                (void)co_await client.get_json(server.base_url() + "/prm");
-            } catch (const mcp::auth::MetadataPolicyError& error) {
-                refused = true;
-                decision = error.decision();
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+        auto policy = loopback_policy(server.origin());
+        policy.max_redirects = 2;
+        client.set_metadata_policy(policy);
+        try {
+            (void)co_await client.get_json(server.base_url() + "/prm");
+        } catch (const mcp::auth::MetadataPolicyError& error) {
+            refused = true;
+            decision = error.decision();
+        }
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -932,23 +897,20 @@ TEST(AuthMetadataRedirectTest, FollowsARelativeRedirectWhoseQueryNamesAUrl) {
         }
         return json_response({{"ok", true}});
     });
-    asio::co_spawn(io_ctx, server.serve(2), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(2));
 
     std::string failure;
     json body;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
-            client.set_metadata_policy(loopback_policy(server.origin()));
-            try {
-                body = co_await client.get_json(server.base_url() + "/prm");
-            } catch (const std::exception& error) {
-                failure = error.what();
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+        client.set_metadata_policy(loopback_policy(server.origin()));
+        try {
+            body = co_await client.get_json(server.base_url() + "/prm");
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -968,27 +930,24 @@ TEST(AuthMetadataSizeCapTest, RejectsAnOversizedMetadataResponse) {
         response.body() = json{{"padding", std::string(64 * 1024, 'x')}}.dump();
         return response;
     });
-    asio::co_spawn(io_ctx, server.serve(1), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(1));
 
     bool refused = false;
     auto decision = mcp::auth::MetadataUrlDecision::eAllowed;
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
-            auto policy = loopback_policy(server.origin());
-            policy.max_response_bytes = 4096;
-            client.set_metadata_policy(policy);
-            try {
-                (void)co_await client.get_json(server.base_url() + "/prm");
-            } catch (const mcp::auth::MetadataPolicyError& error) {
-                refused = true;
-                decision = error.decision();
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+        auto policy = loopback_policy(server.origin());
+        policy.max_response_bytes = 4096;
+        client.set_metadata_policy(policy);
+        try {
+            (void)co_await client.get_json(server.base_url() + "/prm");
+        } catch (const mcp::auth::MetadataPolicyError& error) {
+            refused = true;
+            decision = error.decision();
+        }
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -1003,21 +962,18 @@ TEST(AuthMetadataSizeCapTest, AcceptsAResponseWithinTheCap) {
     server.set_handler([](const http::request<http::string_body>&) {
         return json_response({{"resource", "http://small"}});
     });
-    asio::co_spawn(io_ctx, server.serve(1), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(1));
 
     std::string resource;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
-            auto policy = loopback_policy(server.origin());
-            policy.max_response_bytes = 4096;
-            client.set_metadata_policy(policy);
-            const auto document = co_await client.get_json(server.base_url() + "/prm");
-            resource = document.at("resource").get<std::string>();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+        auto policy = loopback_policy(server.origin());
+        policy.max_response_bytes = 4096;
+        client.set_metadata_policy(policy);
+        const auto document = co_await client.get_json(server.base_url() + "/prm");
+        resource = document.at("resource").get<std::string>();
+        server.close();
+    });
 
     io_ctx.run();
     EXPECT_EQ(resource, "http://small");
@@ -1053,7 +1009,7 @@ TEST(AuthChallengeReplayTest, ReplaysTheExactRequestAfterChallengeDrivenAuthoriz
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(5));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -1065,23 +1021,19 @@ TEST(AuthChallengeReplayTest, ReplaysTheExactRequestAfterChallengeDrivenAuthoriz
     const std::string wire = R"({"jsonrpc":"2.0","id":1,"method":"ping"})";
     std::exception_ptr failure;
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto inner =
-                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
-            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
-                io_ctx.get_executor(), store, config, echoing_callback(nullptr));
-            mcp::auth::OAuthClientTransport transport(inner, manager);
-            try {
-                co_await transport.write_message(wire);
-            } catch (...) {
-                failure = std::current_exception();
-            }
-            transport.close();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto inner = std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+        auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+            io_ctx.get_executor(), store, config, echoing_callback(nullptr));
+        mcp::auth::OAuthClientTransport transport(inner, manager);
+        try {
+            co_await transport.write_message(wire);
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        transport.close();
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -1137,7 +1089,7 @@ TEST(AuthChallengeReplayTest, RenewsTheGrantBeforeAuthorizingAgainOnAnUnauthoriz
         return status_response(http::status::not_found);
     });
     // Room for repeated authorizations too, so authorizing instead of renewing fails fast below.
-    asio::co_spawn(io_ctx, server.serve(16), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(16));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -1159,26 +1111,22 @@ TEST(AuthChallengeReplayTest, RenewsTheGrantBeforeAuthorizingAgainOnAnUnauthoriz
     const std::string wire = R"({"jsonrpc":"2.0","method":"notifications/initialized"})";
     std::string failure;
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
-                io_ctx.get_executor(), store, config, callback);
-            auto inner =
-                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
-            mcp::auth::OAuthClientTransport transport(inner, manager);
-            try {
-                // The first grant, which leaves an access token and a refresh token in the store.
-                (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                             R"(/prm")");
-                co_await transport.write_message(wire);
-            } catch (const std::exception& error) {
-                failure = error.what();
-            }
-            transport.close();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(io_ctx.get_executor(),
+                                                                              store, config, callback);
+        auto inner = std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+        mcp::auth::OAuthClientTransport transport(inner, manager);
+        try {
+            // The first grant, which leaves an access token and a refresh token in the store.
+            (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                         R"(/prm")");
+            co_await transport.write_message(wire);
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        transport.close();
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -1238,7 +1186,7 @@ TEST(AuthChallengeReplayTest, AuthorizesAgainWhenTheRenewedTokenIsAlsoRefused) {
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(24), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(24));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -1260,25 +1208,21 @@ TEST(AuthChallengeReplayTest, AuthorizesAgainWhenTheRenewedTokenIsAlsoRefused) {
     const std::string wire = R"({"jsonrpc":"2.0","method":"notifications/initialized"})";
     std::string failure;
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
-                io_ctx.get_executor(), store, config, callback);
-            auto inner =
-                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
-            mcp::auth::OAuthClientTransport transport(inner, manager);
-            try {
-                (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                             R"(/prm")");
-                co_await transport.write_message(wire);
-            } catch (const std::exception& error) {
-                failure = error.what();
-            }
-            transport.close();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(io_ctx.get_executor(),
+                                                                              store, config, callback);
+        auto inner = std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+        mcp::auth::OAuthClientTransport transport(inner, manager);
+        try {
+            (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                         R"(/prm")");
+            co_await transport.write_message(wire);
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        transport.close();
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -1326,7 +1270,7 @@ TEST(AuthChallengeReplayTest, AuthorizesOnceWhenTheServerRefusesEveryToken) {
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(24), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(24));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -1348,27 +1292,23 @@ TEST(AuthChallengeReplayTest, AuthorizesOnceWhenTheServerRefusesEveryToken) {
     int callbacks_before_request = 0;
     bool failed = false;
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
-                io_ctx.get_executor(), store, config, callback);
-            auto inner =
-                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
-            mcp::auth::OAuthClientTransport transport(inner, manager);
-            try {
-                (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                             R"(/prm")");
-                callbacks_before_request = callbacks;
-                co_await transport.write_message(
-                    R"({"jsonrpc":"2.0","method":"notifications/initialized"})");
-            } catch (const std::exception&) {
-                failed = true;
-            }
-            transport.close();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(io_ctx.get_executor(),
+                                                                              store, config, callback);
+        auto inner = std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+        mcp::auth::OAuthClientTransport transport(inner, manager);
+        try {
+            (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                         R"(/prm")");
+            callbacks_before_request = callbacks;
+            co_await transport.write_message(
+                R"({"jsonrpc":"2.0","method":"notifications/initialized"})");
+        } catch (const std::exception&) {
+            failed = true;
+        }
+        transport.close();
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -1406,7 +1346,7 @@ TEST(AuthChallengeReplayTest, AForbiddenChallengeWithoutInsufficientScopeIsNotAS
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(16), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(16));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -1428,26 +1368,22 @@ TEST(AuthChallengeReplayTest, AForbiddenChallengeWithoutInsufficientScopeIsNotAS
     const std::string wire = R"({"jsonrpc":"2.0","method":"notifications/initialized"})";
     std::optional<unsigned int> refused_status;
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
-                io_ctx.get_executor(), store, config, callback);
-            auto inner =
-                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
-            mcp::auth::OAuthClientTransport transport(inner, manager);
-            try {
-                (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                             R"(/prm")");
-                co_await transport.write_message(wire);
-            } catch (const mcp::HttpStatusError& error) {
-                refused_status = error.status();
-            } catch (const std::exception&) {
-            }
-            transport.close();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(io_ctx.get_executor(),
+                                                                              store, config, callback);
+        auto inner = std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+        mcp::auth::OAuthClientTransport transport(inner, manager);
+        try {
+            (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                         R"(/prm")");
+            co_await transport.write_message(wire);
+        } catch (const mcp::HttpStatusError& error) {
+            refused_status = error.status();
+        } catch (const std::exception&) {
+        }
+        transport.close();
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -1577,7 +1513,7 @@ TEST(AuthScopeStepUpTest, UnionsTheGrantedScopeWithAForbiddenChallengeAndReplays
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(20), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(20));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -1590,23 +1526,19 @@ TEST(AuthScopeStepUpTest, UnionsTheGrantedScopeWithAForbiddenChallengeAndReplays
     const std::string wire = R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})";
     std::exception_ptr failure;
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto inner =
-                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
-            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
-                io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
-            mcp::auth::OAuthClientTransport transport(inner, manager);
-            try {
-                co_await transport.write_message(wire);
-            } catch (...) {
-                failure = std::current_exception();
-            }
-            transport.close();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto inner = std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+        auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+            io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+        mcp::auth::OAuthClientTransport transport(inner, manager);
+        try {
+            co_await transport.write_message(wire);
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        transport.close();
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -1670,7 +1602,7 @@ std::pair<std::size_t, bool> prompts_for_one_request(mcp::auth::OAuthClientTrans
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(40), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(40));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -1682,23 +1614,19 @@ std::pair<std::size_t, bool> prompts_for_one_request(mcp::auth::OAuthClientTrans
     std::vector<std::string> requested_scopes;
     std::exception_ptr failure;
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto inner =
-                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
-            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
-                io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
-            mcp::auth::OAuthClientTransport transport(inner, manager, options);
-            try {
-                co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
-            } catch (...) {
-                failure = std::current_exception();
-            }
-            transport.close();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto inner = std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+        auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+            io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+        mcp::auth::OAuthClientTransport transport(inner, manager, options);
+        try {
+            co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        transport.close();
+        server.close();
+    });
 
     io_ctx.run();
     return {requested_scopes.size(), failure != nullptr};
@@ -1787,7 +1715,7 @@ StepUpOutcome run_step_up_scenario(
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(40), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(40));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -1796,29 +1724,25 @@ StepUpOutcome run_step_up_scenario(
     config.policy = loopback_policy(server.origin());
 
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto inner =
-                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
-            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
-                io_ctx.get_executor(), store, config, recording_callback(&outcome.requested_scopes));
-            mcp::auth::OAuthClientTransport transport(inner, manager);
-            if (observer) {
-                // Handed the number of prompts so far, to place the wait around the consent.
-                transport.set_interaction_observer([&](std::string_view key, bool waiting) {
-                    observer(key, waiting, outcome.requested_scopes.size());
-                });
-            }
-            try {
-                co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
-            } catch (...) {
-                outcome.failure = std::current_exception();
-            }
-            transport.close();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto inner = std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+        auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+            io_ctx.get_executor(), store, config, recording_callback(&outcome.requested_scopes));
+        mcp::auth::OAuthClientTransport transport(inner, manager);
+        if (observer) {
+            // Handed the number of prompts so far, to place the wait around the consent.
+            transport.set_interaction_observer([&](std::string_view key, bool waiting) {
+                observer(key, waiting, outcome.requested_scopes.size());
+            });
+        }
+        try {
+            co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+        } catch (...) {
+            outcome.failure = std::current_exception();
+        }
+        transport.close();
+        server.close();
+    });
     io_ctx.run();
     return outcome;
 }
@@ -1884,8 +1808,8 @@ TEST(AuthScopeStepUpTest, GrantedScopeDoesNotCarryToAnotherIssuer) {
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server_a.serve(12), asio::detached);
-    asio::co_spawn(io_ctx, server_b.serve(12), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server_a.serve(12));
+    mcp_test::spawn_detached(io_ctx, server_b.serve(12));
 
     ManagerFixture fixture;
     fixture.config.server_url = base_a + "/mcp";
@@ -1896,30 +1820,27 @@ TEST(AuthScopeStepUpTest, GrantedScopeDoesNotCarryToAnotherIssuer) {
 
     std::vector<std::string> requested_scopes;
     std::exception_ptr failure;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
-                                                         fixture.config,
-                                                         recording_callback(&requested_scopes));
-            try {
-                (void)co_await manager.try_handle_challenge(
-                    R"(Bearer scope="a:one", resource_metadata=")" + base_a + R"(/prm")");
-                (void)co_await manager.try_handle_challenge(
-                    R"(Bearer error="insufficient_scope", scope="b:two", )"
-                    R"(resource_metadata=")" +
-                    base_a + R"(/prm-b")");
-                (void)co_await manager.try_handle_challenge(
-                    R"(Bearer error="insufficient_scope", scope="a:three", )"
-                    R"(resource_metadata=")" +
-                    base_a + R"(/prm")");
-            } catch (...) {
-                failure = std::current_exception();
-            }
-            server_a.close();
-            server_b.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
+                                                     fixture.config,
+                                                     recording_callback(&requested_scopes));
+        try {
+            (void)co_await manager.try_handle_challenge(R"(Bearer scope="a:one", resource_metadata=")" +
+                                                        base_a + R"(/prm")");
+            (void)co_await manager.try_handle_challenge(
+                R"(Bearer error="insufficient_scope", scope="b:two", )"
+                R"(resource_metadata=")" +
+                base_a + R"(/prm-b")");
+            (void)co_await manager.try_handle_challenge(
+                R"(Bearer error="insufficient_scope", scope="a:three", )"
+                R"(resource_metadata=")" +
+                base_a + R"(/prm")");
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        server_a.close();
+        server_b.close();
+    });
     io_ctx.run();
 
     ASSERT_EQ(failure, nullptr);
@@ -1968,8 +1889,8 @@ TEST(AuthScopeStepUpTest, AFailedStepUpToAnotherServerKeepsRefreshingWithTheFirs
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server_a.serve(8), asio::detached);
-    asio::co_spawn(io_ctx, server_b.serve(8), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server_a.serve(8));
+    mcp_test::spawn_detached(io_ctx, server_b.serve(8));
 
     ManagerFixture fixture;
     fixture.config.server_url = base_a + "/mcp";
@@ -1996,26 +1917,23 @@ TEST(AuthScopeStepUpTest, AFailedStepUpToAnotherServerKeepsRefreshingWithTheFirs
     bool authorized = false;
     bool step_up_failed = false;
     bool refreshed = false;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
-                                                         fixture.config, callback);
-            const std::string challenge = R"(Bearer resource_metadata=")" + base_a + R"(/prm")";
-            authorized = co_await manager.try_handle_challenge(challenge);
-            const std::string step_up = R"(Bearer error="insufficient_scope", scope="more", )"
-                                        R"(resource_metadata=")" +
-                                        base_a + R"(/prm-step-up")";
-            try {
-                (void)co_await manager.try_handle_challenge(step_up);
-            } catch (const std::exception&) {
-                step_up_failed = true;
-            }
-            refreshed = co_await manager.try_refresh_token();
-            server_a.close();
-            server_b.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
+                                                     fixture.config, callback);
+        const std::string challenge = R"(Bearer resource_metadata=")" + base_a + R"(/prm")";
+        authorized = co_await manager.try_handle_challenge(challenge);
+        const std::string step_up = R"(Bearer error="insufficient_scope", scope="more", )"
+                                    R"(resource_metadata=")" +
+                                    base_a + R"(/prm-step-up")";
+        try {
+            (void)co_await manager.try_handle_challenge(step_up);
+        } catch (const std::exception&) {
+            step_up_failed = true;
+        }
+        refreshed = co_await manager.try_refresh_token();
+        server_a.close();
+        server_b.close();
+    });
 
     io_ctx.run();
 
@@ -2053,7 +1971,7 @@ TEST(AuthScopeStepUpTest, CoalescesConcurrentChallengesIntoASingleAuthorizationF
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(10), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(10));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -2077,8 +1995,8 @@ TEST(AuthScopeStepUpTest, CoalescesConcurrentChallengesIntoASingleAuthorizationF
             server.close();
         }
     };
-    asio::co_spawn(io_ctx, challenger(), asio::detached);
-    asio::co_spawn(io_ctx, challenger(), asio::detached);
+    mcp_test::spawn_detached(io_ctx, challenger());
+    mcp_test::spawn_detached(io_ctx, challenger());
 
     io_ctx.run();
 
@@ -2105,7 +2023,7 @@ TEST(AuthTransportCloseTest, CloseDuringDiscoveryAbortsTheStalledExchange) {
                       R"(Bearer resource_metadata=")" + stalling_base + R"(/prm")");
         return challenge;
     });
-    asio::co_spawn(io_ctx, resource_server.serve(5), asio::detached);
+    mcp_test::spawn_detached(io_ctx, resource_server.serve(5));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = resource_base + "/mcp";
@@ -2139,18 +2057,15 @@ TEST(AuthTransportCloseTest, CloseDuringDiscoveryAbortsTheStalledExchange) {
         }
     });
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
-            } catch (...) {
-                failure = std::current_exception();
-            }
-            completed = true;
-            watchdog.cancel();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        completed = true;
+        watchdog.cancel();
+    });
 
     // Close once the write has had time to reach the stalled discovery fetch.
     asio::steady_timer closer(io_ctx);
@@ -2197,7 +2112,7 @@ TEST(AuthTransportCloseTest, CloseDuringTokenExchangeAbortsTheStalledExchange) {
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, resource_server.serve(5), asio::detached);
+    mcp_test::spawn_detached(io_ctx, resource_server.serve(5));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = resource_base + "/mcp";
@@ -2229,18 +2144,15 @@ TEST(AuthTransportCloseTest, CloseDuringTokenExchangeAbortsTheStalledExchange) {
         }
     });
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
-            } catch (...) {
-                failure = std::current_exception();
-            }
-            completed = true;
-            watchdog.cancel();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        completed = true;
+        watchdog.cancel();
+    });
 
     asio::steady_timer closer(io_ctx);
     closer.expires_after(std::chrono::milliseconds(200));
@@ -2290,7 +2202,7 @@ TEST(AuthTransportCloseTest, AFollowerReportsItsOwnFlightsFailureNotALaterFlight
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(6), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(6));
 
     // The first leader runs here, and so does the gate it parks on, so the gate is only ever
     // touched from one strand. Expiring a timer from a thread that is not the one waiting on it is
@@ -2358,19 +2270,16 @@ TEST(AuthTransportCloseTest, AFollowerReportsItsOwnFlightsFailureNotALaterFlight
         runners.emplace_back([&io_ctx]() { io_ctx.run(); });
     }
 
-    asio::co_spawn(
-        leader_strand,
-        [&]() -> mcp::Task<void> {
-            std::string message;
-            try {
-                (void)co_await manager->try_handle_challenge(header);
-                message = "<no exception>";
-            } catch (const std::exception& error) {
-                message = error.what();
-            }
-            first_leader_signal.set_value(message);
-        },
-        asio::detached);
+    mcp_test::spawn_detached(leader_strand, [&]() -> mcp::Task<void> {
+        std::string message;
+        try {
+            (void)co_await manager->try_handle_challenge(header);
+            message = "<no exception>";
+        } catch (const std::exception& error) {
+            message = error.what();
+        }
+        first_leader_signal.set_value(message);
+    });
 
     ASSERT_EQ(leader_parked.wait_for(g_hang_guard), std::future_status::ready)
         << "the first leader never reached the authorization callback";
@@ -2378,19 +2287,16 @@ TEST(AuthTransportCloseTest, AFollowerReportsItsOwnFlightsFailureNotALaterFlight
     // Spawned before the blocker is posted to the same strand, so the follower has already joined
     // the flight and suspended by the time the blocker takes the strand over. Joining happens
     // synchronously inside try_handle_challenge(), before the coroutine's first suspension.
-    asio::co_spawn(
-        follower_strand,
-        [&]() -> mcp::Task<void> {
-            bool authorized = false;
-            std::string message;
-            try {
-                authorized = co_await manager->try_handle_challenge(header);
-            } catch (const std::exception& error) {
-                message = error.what();
-            }
-            follower_signal.set_value({authorized, message});
-        },
-        asio::detached);
+    mcp_test::spawn_detached(follower_strand, [&]() -> mcp::Task<void> {
+        bool authorized = false;
+        std::string message;
+        try {
+            authorized = co_await manager->try_handle_challenge(header);
+        } catch (const std::exception& error) {
+            message = error.what();
+        }
+        follower_signal.set_value({authorized, message});
+    });
 
     // Holds the follower's strand so its wake-up stays queued while the second flight runs and
     // finishes. This is what makes "a follower that wakes late" deterministic instead of a race.
@@ -2410,18 +2316,15 @@ TEST(AuthTransportCloseTest, AFollowerReportsItsOwnFlightsFailureNotALaterFlight
         << "the first leader did not fail the way this test needs it to: " << first_message;
 
     // A second, successful flight: the result a manager-wide field would hand the follower.
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            bool authorized = false;
-            try {
-                authorized = co_await manager->try_handle_challenge(header);
-            } catch (...) {
-                authorized = false;
-            }
-            second_leader_signal.set_value(authorized);
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        bool authorized = false;
+        try {
+            authorized = co_await manager->try_handle_challenge(header);
+        } catch (...) {
+            authorized = false;
+        }
+        second_leader_signal.set_value(authorized);
+    });
     ASSERT_EQ(second_leader.wait_for(g_hang_guard), std::future_status::ready);
     ASSERT_TRUE(second_leader.get())
         << "the second flight had to succeed for this test to mean anything";
@@ -2486,35 +2389,29 @@ TEST(AuthTransportCloseTest, CloseWhileAFollowerIsParkedOnTheSingleFlightTimerWa
         }
     });
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                leader_authorized = co_await manager->try_handle_challenge(header);
-            } catch (...) {
-                leader_failure = std::current_exception();
-            }
-            leader_done = true;
-            if (follower_done) {
-                watchdog.cancel();
-            }
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            leader_authorized = co_await manager->try_handle_challenge(header);
+        } catch (...) {
+            leader_failure = std::current_exception();
+        }
+        leader_done = true;
+        if (follower_done) {
+            watchdog.cancel();
+        }
+    });
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                follower_authorized = co_await manager->try_handle_challenge(header);
-            } catch (...) {
-                follower_failure = std::current_exception();
-            }
-            follower_done = true;
-            if (leader_done) {
-                watchdog.cancel();
-            }
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            follower_authorized = co_await manager->try_handle_challenge(header);
+        } catch (...) {
+            follower_failure = std::current_exception();
+        }
+        follower_done = true;
+        if (leader_done) {
+            watchdog.cancel();
+        }
+    });
 
     asio::steady_timer closer(io_ctx);
     closer.expires_after(std::chrono::milliseconds(200));
@@ -2554,7 +2451,7 @@ TEST(AuthTransportCloseTest,
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(5));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -2611,16 +2508,13 @@ TEST(AuthTransportCloseTest,
     // asio::detached swallows an uncaught exception silently, which would otherwise leave
     // `leader_parked_signal` unfulfilled forever with nothing left to explain why; captured here
     // purely as a diagnostic in case discovery itself fails.
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                (void)co_await manager->try_handle_challenge(header);
-            } catch (...) {
-                leader_failure = std::current_exception();
-            }
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            (void)co_await manager->try_handle_challenge(header);
+        } catch (...) {
+            leader_failure = std::current_exception();
+        }
+    });
 
     std::thread runner([&io_ctx]() { io_ctx.run(); });
     // Bounded even though discovery against this instant loopback server should resolve in well
@@ -2631,19 +2525,16 @@ TEST(AuthTransportCloseTest,
     if (parked_status == std::future_status::ready) {
         for (int index = 0; index < follower_count; ++index) {
             asio::post(io_ctx, [&, index]() {
-                asio::co_spawn(
-                    io_ctx,
-                    [&, index]() -> mcp::Task<void> {
-                        try {
-                            follower_authorized[index] = co_await manager->try_handle_challenge(header);
-                        } catch (...) {
-                            follower_failure[index] = std::current_exception();
-                        }
-                        if (++followers_done == follower_count) {
-                            io_ctx.stop();
-                        }
-                    },
-                    asio::detached);
+                mcp_test::spawn_detached(io_ctx, [&, index]() -> mcp::Task<void> {
+                    try {
+                        follower_authorized[index] = co_await manager->try_handle_challenge(header);
+                    } catch (...) {
+                        follower_failure[index] = std::current_exception();
+                    }
+                    if (++followers_done == follower_count) {
+                        io_ctx.stop();
+                    }
+                });
             });
         }
         // Deliberately no synchronization beyond what the manager itself provides: this call races
@@ -2702,7 +2593,7 @@ TEST(AuthTransportCloseTest, CloseWakesEveryFollowerWhileTheyKeepArrivingOnAMult
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(5));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -2761,16 +2652,13 @@ TEST(AuthTransportCloseTest, CloseWakesEveryFollowerWhileTheyKeepArrivingOnAMult
         io_ctx.stop();
     });
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                (void)co_await manager->try_handle_challenge(header);
-            } catch (...) {
-                leader_failure = std::current_exception();
-            }
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            (void)co_await manager->try_handle_challenge(header);
+        } catch (...) {
+            leader_failure = std::current_exception();
+        }
+    });
 
     std::vector<std::thread> runners;
     runners.reserve(io_thread_count);
@@ -2785,28 +2673,25 @@ TEST(AuthTransportCloseTest, CloseWakesEveryFollowerWhileTheyKeepArrivingOnAMult
         feeder = std::thread([&]() {
             for (int index = 0; index < follower_count; ++index) {
                 const int strand_index = index % follower_strand_count;
-                asio::co_spawn(
-                    strands[strand_index],
-                    [&, strand_index]() -> mcp::Task<void> {
-                        try {
-                            if (co_await manager->try_handle_challenge(header)) {
-                                followers_authorized.fetch_add(1);
-                            }
-                        } catch (...) {
-                            followers_failed.fetch_add(1);
+                mcp_test::spawn_detached(strands[strand_index], [&, strand_index]() -> mcp::Task<void> {
+                    try {
+                        if (co_await manager->try_handle_challenge(header)) {
+                            followers_authorized.fetch_add(1);
                         }
-                        // await_in_flight() initiates its wait on the manager's flight strand, so
-                        // the continuation has to be handed back to the follower's own executor;
-                        // AFollowerReleasedFromTheSingleFlightTimerResumesOnItsOwnStrand below
-                        // covers this unconditionally.
-                        if (!strands[strand_index].running_in_this_thread()) {
-                            resumed_off_own_strand.fetch_add(1);
-                        }
-                        if (followers_done.fetch_add(1) + 1 == follower_count) {
-                            io_ctx.stop();
-                        }
-                    },
-                    asio::detached);
+                    } catch (...) {
+                        followers_failed.fetch_add(1);
+                    }
+                    // await_in_flight() initiates its wait on the manager's flight strand, so
+                    // the continuation has to be handed back to the follower's own executor;
+                    // AFollowerReleasedFromTheSingleFlightTimerResumesOnItsOwnStrand below
+                    // covers this unconditionally.
+                    if (!strands[strand_index].running_in_this_thread()) {
+                        resumed_off_own_strand.fetch_add(1);
+                    }
+                    if (followers_done.fetch_add(1) + 1 == follower_count) {
+                        io_ctx.stop();
+                    }
+                });
             }
         });
 
@@ -2862,7 +2747,7 @@ TEST(AuthTransportCloseTest, AFollowerReleasedFromTheSingleFlightTimerResumesOnI
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(5));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -2906,16 +2791,13 @@ TEST(AuthTransportCloseTest, AFollowerReleasedFromTheSingleFlightTimerResumesOnI
         io_ctx.stop();
     });
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                (void)co_await manager->try_handle_challenge(header);
-            } catch (...) {
-                leader_failure = std::current_exception();
-            }
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            (void)co_await manager->try_handle_challenge(header);
+        } catch (...) {
+            leader_failure = std::current_exception();
+        }
+    });
 
     std::vector<std::thread> runners;
     runners.reserve(io_thread_count);
@@ -2927,19 +2809,16 @@ TEST(AuthTransportCloseTest, AFollowerReleasedFromTheSingleFlightTimerResumesOnI
 
     bool follower_was_parked = false;
     if (parked_status == std::future_status::ready) {
-        asio::co_spawn(
-            follower_strand,
-            [&]() -> mcp::Task<void> {
-                try {
-                    (void)co_await manager->try_handle_challenge(header);
-                } catch (...) {
-                    follower_threw.store(true);
-                }
-                follower_on_own_strand.store(follower_strand.running_in_this_thread());
-                follower_done.store(true);
-                io_ctx.stop();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(follower_strand, [&]() -> mcp::Task<void> {
+            try {
+                (void)co_await manager->try_handle_challenge(header);
+            } catch (...) {
+                follower_threw.store(true);
+            }
+            follower_on_own_strand.store(follower_strand.running_in_this_thread());
+            follower_done.store(true);
+            io_ctx.stop();
+        });
 
         // Long enough for the follower to join the flight and register its wait. What makes this
         // deterministic is not the sleep but the check after it: if the follower had returned
@@ -2988,7 +2867,7 @@ TEST(AuthTransportCloseTest, CloseFromAnotherThreadWhileAuthorizationIsInFlightT
                       R"(Bearer resource_metadata=")" + stalling_base + R"(/prm")");
         return challenge;
     });
-    asio::co_spawn(io_ctx, resource_server.serve(5), asio::detached);
+    mcp_test::spawn_detached(io_ctx, resource_server.serve(5));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = resource_base + "/mcp";
@@ -3020,18 +2899,15 @@ TEST(AuthTransportCloseTest, CloseFromAnotherThreadWhileAuthorizationIsInFlightT
         io_ctx.stop();
     });
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
-            } catch (...) {
-                failure = std::current_exception();
-            }
-            completed = true;
-            io_ctx.stop();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        completed = true;
+        io_ctx.stop();
+    });
 
     std::thread runner([&io_ctx]() { io_ctx.run(); });
 
@@ -3092,26 +2968,23 @@ TEST(AuthTransportCloseTest, AbortBetweenResolutionAndConnectOpensNoConnection) 
         }
     });
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                (void)co_await client->get_json(base + "/prm");
-            } catch (const boost::system::system_error& error) {
-                fetch_error = error.code();
-            }
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            (void)co_await client->get_json(base + "/prm");
+        } catch (const boost::system::system_error& error) {
+            fetch_error = error.code();
+        }
 
-            asio::ip::tcp::socket probe(io_ctx);
-            co_await probe.async_connect(listening, asio::use_awaitable);
-            probe_endpoint = probe.local_endpoint();
+        asio::ip::tcp::socket probe(io_ctx);
+        co_await probe.async_connect(listening, asio::use_awaitable);
+        probe_endpoint = probe.local_endpoint();
 
-            asio::ip::tcp::socket accepted(io_ctx);
-            co_await acceptor.async_accept(accepted, first_accepted_endpoint, asio::use_awaitable);
+        asio::ip::tcp::socket accepted(io_ctx);
+        co_await acceptor.async_accept(accepted, first_accepted_endpoint, asio::use_awaitable);
 
-            completed = true;
-            watchdog.cancel();
-        },
-        asio::detached);
+        completed = true;
+        watchdog.cancel();
+    });
 
     io_ctx.run();
 
@@ -3146,7 +3019,7 @@ TEST(AuthTransportCloseTest, CloseWhileTheResolverIsPastItsCancelCheckOpensNoCon
                       R"(Bearer resource_metadata=")" + stalling_base + R"(/prm")");
         return challenge;
     });
-    asio::co_spawn(io_ctx, resource_server.serve(5), asio::detached);
+    mcp_test::spawn_detached(io_ctx, resource_server.serve(5));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = resource_base + "/mcp";
@@ -3171,17 +3044,14 @@ TEST(AuthTransportCloseTest, CloseWhileTheResolverIsPastItsCancelCheckOpensNoCon
     std::exception_ptr failure;
     std::promise<void> flow_done;
     auto flow_finished = flow_done.get_future();
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
-            } catch (...) {
-                failure = std::current_exception();
-            }
-            flow_done.set_value();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        flow_done.set_value();
+    });
 
     std::thread runner([&io_ctx]() { io_ctx.run(); });
 
@@ -3235,18 +3105,15 @@ void expect_abort_during_socket_open_stops_the_exchange(
     boost::system::error_code request_error;
     std::promise<void> request_done;
     auto request_finished = request_done.get_future();
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await request();
-            } catch (const boost::system::system_error& error) {
-                request_error = error.code();
-            } catch (...) {
-            }
-            request_done.set_value();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            co_await request();
+        } catch (const boost::system::system_error& error) {
+            request_error = error.code();
+        } catch (...) {
+        }
+        request_done.set_value();
+    });
 
     std::thread first_runner([&io_ctx]() { io_ctx.run(); });
     std::thread second_runner([&io_ctx]() { io_ctx.run(); });
@@ -3311,7 +3178,7 @@ TEST(AuthTransportCloseTest, AbortWhileAnotherIoThreadOpensTheSocketStopsARedire
         redirect.set(http::field::location, stalling_base + "/prm");
         return redirect;
     });
-    asio::co_spawn(io_ctx, redirecting.serve(1), asio::detached);
+    mcp_test::spawn_detached(io_ctx, redirecting.serve(1));
 
     auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
     mcp::auth::MetadataFetchPolicy policy;
@@ -3372,19 +3239,16 @@ TEST(AuthTransportCloseTest, AbortRacingExchangesOnThreeIoThreadsEndsEveryReques
     // Accepts and immediately drops every connection, so an exchange the abort misses still ends.
     asio::ip::tcp::acceptor acceptor(io_ctx, {asio::ip::make_address("127.0.0.1"), 0});
     const auto base = "http://127.0.0.1:" + std::to_string(acceptor.local_endpoint().port());
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            for (;;) {
-                boost::system::error_code accept_error;
-                auto socket = co_await acceptor.async_accept(
-                    asio::redirect_error(asio::use_awaitable, accept_error));
-                if (accept_error) {
-                    co_return;
-                }
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        for (;;) {
+            boost::system::error_code accept_error;
+            auto socket =
+                co_await acceptor.async_accept(asio::redirect_error(asio::use_awaitable, accept_error));
+            if (accept_error) {
+                co_return;
             }
-        },
-        asio::detached);
+        }
+    });
 
     std::vector<std::thread> runners;
     for (int index = 0; index < 3; ++index) {
@@ -3399,16 +3263,13 @@ TEST(AuthTransportCloseTest, AbortRacingExchangesOnThreeIoThreadsEndsEveryReques
 
         std::promise<void> request_done;
         auto request_finished = request_done.get_future();
-        asio::co_spawn(
-            io_ctx,
-            [&, client]() -> mcp::Task<void> {
-                try {
-                    (void)co_await client->get_json(base + "/prm");
-                } catch (...) {
-                }
-                request_done.set_value();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx, [&, client]() -> mcp::Task<void> {
+            try {
+                (void)co_await client->get_json(base + "/prm");
+            } catch (...) {
+            }
+            request_done.set_value();
+        });
 
         const auto strike =
             std::chrono::steady_clock::now() + std::chrono::microseconds((index * 13) % 400);
@@ -3440,7 +3301,7 @@ TEST(AuthHttpClientExecutorTest, ACallerThatBlocksAfterARequestDoesNotStallTheCl
     const auto base = server.base_url();
     server.set_handler(
         [](const http::request<http::string_body>&) { return json_response({{"ok", true}}); });
-    asio::co_spawn(io_ctx, server.serve(2), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(2));
 
     auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
     client->set_metadata_policy(loopback_policy(base));
@@ -3449,18 +3310,15 @@ TEST(AuthHttpClientExecutorTest, ACallerThatBlocksAfterARequestDoesNotStallTheCl
     auto first_has_resumed = first_resumed.get_future();
     std::promise<void> release_first;
     auto first_released = release_first.get_future();
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                (void)co_await client->get_json(base + "/first");
-            } catch (...) {
-            }
-            first_resumed.set_value();
-            // Blocks the io thread it resumed on, as a caller doing synchronous work would.
-            (void)first_released.wait_for(g_release_guard);
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            (void)co_await client->get_json(base + "/first");
+        } catch (...) {
+        }
+        first_resumed.set_value();
+        // Blocks the io thread it resumed on, as a caller doing synchronous work would.
+        (void)first_released.wait_for(g_release_guard);
+    });
 
     std::thread first_runner([&io_ctx]() { io_ctx.run(); });
     std::thread second_runner([&io_ctx]() { io_ctx.run(); });
@@ -3472,16 +3330,13 @@ TEST(AuthHttpClientExecutorTest, ACallerThatBlocksAfterARequestDoesNotStallTheCl
     auto second_finished = second_done.get_future();
     bool finished = false;
     if (resumed) {
-        asio::co_spawn(
-            io_ctx,
-            [&]() -> mcp::Task<void> {
-                try {
-                    (void)co_await client->get_json(base + "/second");
-                } catch (...) {
-                }
-                second_done.set_value();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+            try {
+                (void)co_await client->get_json(base + "/second");
+            } catch (...) {
+            }
+            second_done.set_value();
+        });
         finished = second_finished.wait_for(limit) == std::future_status::ready;
     }
 
@@ -3521,7 +3376,7 @@ CancelledCallerOutcome cancel_a_caller_mid_request(asio::cancellation_type type)
     const auto base = server.base_url();
     server.set_handler(
         [](const http::request<http::string_body>&) { return json_response({{"ok", true}}); });
-    asio::co_spawn(io_ctx, server.serve(1), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(1));
 
     auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
     client->set_metadata_policy(loopback_policy(base));
@@ -3564,18 +3419,15 @@ CancelledCallerOutcome cancel_a_caller_mid_request(asio::cancellation_type type)
     std::promise<void> second_done;
     auto second_finished = second_done.get_future();
     if (outcome.resumed) {
-        asio::co_spawn(
-            io_ctx,
-            [&]() -> mcp::Task<void> {
-                try {
-                    // Outside the policy's origins: refused on the client's strand, with no
-                    // lookup, so it ends at once unless something is holding that strand.
-                    (void)co_await client->get_json("http://192.0.2.1/second");
-                } catch (...) {
-                }
-                second_done.set_value();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+            try {
+                // Outside the policy's origins: refused on the client's strand, with no
+                // lookup, so it ends at once unless something is holding that strand.
+                (void)co_await client->get_json("http://192.0.2.1/second");
+            } catch (...) {
+            }
+            second_done.set_value();
+        });
         outcome.second_request_finished = second_finished.wait_for(limit) == std::future_status::ready;
     }
 
@@ -3642,7 +3494,7 @@ TEST(AuthTransportCloseTest, ChallengeOnAClosedManagerThrowsFromTheAwaitNotFromT
         return json_response(
             {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
     });
-    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(5));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -3670,17 +3522,14 @@ TEST(AuthTransportCloseTest, ChallengeOnAClosedManagerThrowsFromTheAwaitNotFromT
     ASSERT_TRUE(pending.has_value());
 
     bool threw_from_the_await = false;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                (void)co_await std::move(*pending);
-            } catch (const std::exception&) {
-                threw_from_the_await = true;
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            (void)co_await std::move(*pending);
+        } catch (const std::exception&) {
+            threw_from_the_await = true;
+        }
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -3716,7 +3565,7 @@ TEST(AuthTransportCloseTest, AuthenticatorCloseThenRefreshPerformsNoNetworkIO) {
         ++token_requests;
         return json_response(token_document());
     });
-    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(5));
 
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     mcp::auth::TokenResponse stored;
@@ -3736,14 +3585,11 @@ TEST(AuthTransportCloseTest, AuthenticatorCloseThenRefreshPerformsNoNetworkIO) {
         std::make_shared<mcp::auth::OAuthAuthenticator>(store, http_client, config, base + "/mcp");
 
     bool refreshed = true;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            authenticator->close();
-            refreshed = co_await authenticator->try_refresh_token();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        authenticator->close();
+        refreshed = co_await authenticator->try_refresh_token();
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -3783,42 +3629,39 @@ TEST(AuthHttpClientScopeRetentionTest, TheScopeAbortLatchIsReleasedByEveryChurne
         peak = std::max(peak, mcp::auth::internal::live_scope_latch_count());
         return json_response(token_document());
     });
-    asio::co_spawn(io_ctx, server.serve(churn), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(churn));
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            // Held together on purpose: the peak has to exceed the baseline by more than one, so a
-            // counter that merely toggled would not satisfy it.
-            std::vector<std::shared_ptr<mcp::auth::OAuthAuthenticator>> live;
-            for (int index = 0; index < churn; ++index) {
-                const auto server_url = base + "/server" + std::to_string(index);
-                mcp::auth::TokenResponse stored;
-                stored.access_token = "stale-access-token";
-                stored.token_type = "Bearer";
-                stored.refresh_token = "stale-refresh-token";
-                store->store(server_url, stored);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        // Held together on purpose: the peak has to exceed the baseline by more than one, so a
+        // counter that merely toggled would not satisfy it.
+        std::vector<std::shared_ptr<mcp::auth::OAuthAuthenticator>> live;
+        for (int index = 0; index < churn; ++index) {
+            const auto server_url = base + "/server" + std::to_string(index);
+            mcp::auth::TokenResponse stored;
+            stored.access_token = "stale-access-token";
+            stored.token_type = "Bearer";
+            stored.refresh_token = "stale-refresh-token";
+            store->store(server_url, stored);
 
-                mcp::auth::OAuthConfig config;
-                config.client_id = "churn-client";
-                config.token_endpoint = base + "/token";
-                config.redirect_uri = "http://127.0.0.1:9999/callback";
+            mcp::auth::OAuthConfig config;
+            config.client_id = "churn-client";
+            config.token_endpoint = base + "/token";
+            config.redirect_uri = "http://127.0.0.1:9999/callback";
 
-                auto authenticator = std::make_shared<mcp::auth::OAuthAuthenticator>(
-                    store, http_client, config, server_url);
-                // A real exchange through the scope: the token server's handler runs inside this
-                // co_await, and that is where the peak is sampled.
-                if (co_await authenticator->try_refresh_token()) {
-                    ++refreshed;
-                }
-                authenticator->close();
-                live.push_back(std::move(authenticator));
+            auto authenticator =
+                std::make_shared<mcp::auth::OAuthAuthenticator>(store, http_client, config, server_url);
+            // A real exchange through the scope: the token server's handler runs inside this
+            // co_await, and that is where the peak is sampled.
+            if (co_await authenticator->try_refresh_token()) {
+                ++refreshed;
             }
-            // Every scope goes away here; nothing the test holds references a latch afterward.
-            live.clear();
-            server.close();
-        },
-        asio::detached);
+            authenticator->close();
+            live.push_back(std::move(authenticator));
+        }
+        // Every scope goes away here; nothing the test holds references a latch afterward.
+        live.clear();
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -3847,7 +3690,7 @@ TEST(AuthTransportCloseTest, ClosingOneAuthenticatorLeavesAnotherSharingTheSameC
         token_targets.emplace_back(request.target());
         return json_response(token_document());
     });
-    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(5));
 
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     const auto closed_server = base + "/closed-server";
@@ -3881,17 +3724,14 @@ TEST(AuthTransportCloseTest, ClosingOneAuthenticatorLeavesAnotherSharingTheSameC
 
     bool closed_refreshed = true;
     bool surviving_refreshed = false;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            closing->close();
-            // The closed one is still closed: its own refresh must not reach the network.
-            closed_refreshed = co_await closing->try_refresh_token();
-            // The one nobody closed must be entirely unaffected.
-            surviving_refreshed = co_await surviving->try_refresh_token();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        closing->close();
+        // The closed one is still closed: its own refresh must not reach the network.
+        closed_refreshed = co_await closing->try_refresh_token();
+        // The one nobody closed must be entirely unaffected.
+        surviving_refreshed = co_await surviving->try_refresh_token();
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -3918,7 +3758,7 @@ TEST(AuthTransportCloseTest, CloseTwiceIsIdempotentAndARequestAfterCloseFailsFas
                       R"(Bearer resource_metadata=")" + base + R"(/prm")");
         return challenge;
     });
-    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(5));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -3936,20 +3776,17 @@ TEST(AuthTransportCloseTest, CloseTwiceIsIdempotentAndARequestAfterCloseFailsFas
     bool completed = false;
     std::exception_ptr failure;
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            transport->close();
-            transport->close();  // Must not throw, hang, or double-release anything.
-            try {
-                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
-            } catch (...) {
-                failure = std::current_exception();
-            }
-            completed = true;
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        transport->close();
+        transport->close();  // Must not throw, hang, or double-release anything.
+        try {
+            co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        completed = true;
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -3972,7 +3809,7 @@ TEST(AuthTransportCloseTest, CloseWithQueuedPendingRequestsFailsThemPromptlyWith
                       R"(Bearer resource_metadata=")" + stalling_base + R"(/prm")");
         return challenge;
     });
-    asio::co_spawn(io_ctx, resource_server.serve(10), asio::detached);
+    mcp_test::spawn_detached(io_ctx, resource_server.serve(10));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = resource_base + "/mcp";
@@ -4011,9 +3848,8 @@ TEST(AuthTransportCloseTest, CloseWithQueuedPendingRequestsFailsThemPromptlyWith
     });
 
     for (const auto& wire : wires) {
-        asio::co_spawn(
-            io_ctx,
-            [&transport, &failed, &completed, &watchdog, wire]() -> mcp::Task<void> {
+        mcp_test::spawn_detached(
+            io_ctx, [&transport, &failed, &completed, &watchdog, wire]() -> mcp::Task<void> {
                 try {
                     co_await transport->write_message(wire);
                 } catch (...) {
@@ -4023,8 +3859,7 @@ TEST(AuthTransportCloseTest, CloseWithQueuedPendingRequestsFailsThemPromptlyWith
                 if (completed == request_count) {
                     watchdog.cancel();
                 }
-            },
-            asio::detached);
+            });
     }
 
     asio::steady_timer closer(io_ctx);
@@ -4082,7 +3917,7 @@ TEST(AuthTransportCloseTest, ANewTransportOverTheSameManagerAuthorizesAfterTheFi
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(20), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(20));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -4115,30 +3950,26 @@ TEST(AuthTransportCloseTest, ANewTransportOverTheSameManagerAuthorizesAfterTheFi
         }
     });
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await first->write_message(wire);
-            } catch (...) {
-                first_failed = true;
-            }
-            // The reconnect: a new transport over the same manager.
-            stall_discovery = false;
-            auto second = std::make_shared<mcp::auth::OAuthClientTransport>(
-                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp"),
-                manager);
-            try {
-                co_await second->write_message(wire);
-            } catch (const std::exception& error) {
-                second_failure = error.what();
-            }
-            second->close();
-            done = true;
-            watchdog.cancel();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            co_await first->write_message(wire);
+        } catch (...) {
+            first_failed = true;
+        }
+        // The reconnect: a new transport over the same manager.
+        stall_discovery = false;
+        auto second = std::make_shared<mcp::auth::OAuthClientTransport>(
+            std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp"), manager);
+        try {
+            co_await second->write_message(wire);
+        } catch (const std::exception& error) {
+            second_failure = error.what();
+        }
+        second->close();
+        done = true;
+        watchdog.cancel();
+        server.close();
+    });
 
     asio::steady_timer closer(io_ctx);
     closer.expires_after(std::chrono::milliseconds(200));
@@ -4167,7 +3998,7 @@ TEST(AuthTransportCloseTest, ClosingATransportLeavesItsAuthenticatorRefreshing) 
         ++token_requests;
         return json_response(token_document());
     });
-    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(5));
 
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     mcp::auth::TokenResponse stored;
@@ -4190,14 +4021,11 @@ TEST(AuthTransportCloseTest, ClosingATransportLeavesItsAuthenticatorRefreshing) 
         authenticator);
 
     bool refreshed = false;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            transport->close();
-            refreshed = co_await authenticator->try_refresh_token();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        transport->close();
+        refreshed = co_await authenticator->try_refresh_token();
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -4249,17 +4077,14 @@ TEST(AuthTransportCloseTest, ClosingATransportEndsOnlyTheAuthenticatorsRefreshIn
         }
     });
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            first_refreshed = co_await authenticator->try_refresh_token();
-            stalling.accept_and_stall();
-            second_refreshed = co_await authenticator->try_refresh_token();
-            done = true;
-            watchdog.cancel();
-            stalling.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        first_refreshed = co_await authenticator->try_refresh_token();
+        stalling.accept_and_stall();
+        second_refreshed = co_await authenticator->try_refresh_token();
+        done = true;
+        watchdog.cancel();
+        stalling.close();
+    });
 
     // The first refresh is parked on the stalled token endpoint when the transport closes. The
     // second has reached the endpoint by the time the authenticator itself is closed, which is what
@@ -4331,7 +4156,7 @@ TEST(AuthAuthorizationManagerTest, ConcurrentRefreshesShareOneRefreshGrant) {
     const auto base = server.base_url();
     int refresh_grants = 0;
     server.set_handler(refresh_counting_handler(base, &refresh_grants));
-    asio::co_spawn(io_ctx, server.serve(10), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(10));
 
     ManagerFixture fixture;
     fixture.config.server_url = base + "/mcp";
@@ -4345,25 +4170,19 @@ TEST(AuthAuthorizationManagerTest, ConcurrentRefreshesShareOneRefreshGrant) {
     bool authorized = false;
     int refreshed = 0;
     int completed = 0;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            authorized = co_await authorize_against(manager, base);
-            for (int index = 0; index < refreshers; ++index) {
-                asio::co_spawn(
-                    io_ctx,
-                    [&]() -> mcp::Task<void> {
-                        if (co_await manager.try_refresh_token()) {
-                            ++refreshed;
-                        }
-                        if (++completed == refreshers) {
-                            server.close();
-                        }
-                    },
-                    asio::detached);
-            }
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        authorized = co_await authorize_against(manager, base);
+        for (int index = 0; index < refreshers; ++index) {
+            mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+                if (co_await manager.try_refresh_token()) {
+                    ++refreshed;
+                }
+                if (++completed == refreshers) {
+                    server.close();
+                }
+            });
+        }
+    });
 
     io_ctx.run();
 
@@ -4384,7 +4203,7 @@ TEST(AuthAuthorizationManagerTest, CancelReleasesARefreshInFlightAndLeavesRefres
     server.set_handler(refresh_counting_handler(base, &refresh_grants));
     // Three requests authorize. The server then stops reading, so the next refresh connects (the
     // listen backlog accepts it) and waits for a response that never comes.
-    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(3));
 
     ManagerFixture fixture;
     fixture.config.server_url = base + "/mcp";
@@ -4418,14 +4237,11 @@ TEST(AuthAuthorizationManagerTest, CancelReleasesARefreshInFlightAndLeavesRefres
         ++released;
     };
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            authorized = co_await authorize_against(manager, base);
-            asio::co_spawn(io_ctx, stalled_refresh(), asio::detached);
-            asio::co_spawn(io_ctx, stalled_refresh(), asio::detached);
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        authorized = co_await authorize_against(manager, base);
+        mcp_test::spawn_detached(io_ctx, stalled_refresh());
+        mcp_test::spawn_detached(io_ctx, stalled_refresh());
+    });
 
     asio::steady_timer canceller(io_ctx);
     canceller.expires_after(std::chrono::milliseconds(300));
@@ -4434,24 +4250,18 @@ TEST(AuthAuthorizationManagerTest, CancelReleasesARefreshInFlightAndLeavesRefres
         // Serve again, one connection at a time until told to stop. The aborted refresh's
         // connection is still queued in the backlog and comes first; whether its request can still
         // be read or not, the loop moves on to the next connection.
-        asio::co_spawn(
-            io_ctx,
-            [&]() -> asio::awaitable<void> {
-                while (!stopping) {
-                    co_await server.serve(1);
-                }
-            },
-            asio::detached);
-        asio::co_spawn(
-            io_ctx,
-            [&]() -> mcp::Task<void> {
-                refreshed_after_cancel = co_await manager.try_refresh_token();
-                done = true;
-                watchdog.cancel();
-                stopping = true;
-                server.close();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx, [&]() -> asio::awaitable<void> {
+            while (!stopping) {
+                co_await server.serve(1);
+            }
+        });
+        mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+            refreshed_after_cancel = co_await manager.try_refresh_token();
+            done = true;
+            watchdog.cancel();
+            stopping = true;
+            server.close();
+        });
     });
 
     io_ctx.run();
@@ -4514,7 +4324,7 @@ TEST(AuthAuthorizationManagerTest, ARefreshThatBeganEarlierDoesNotPresentARotate
     const auto base = server.base_url();
     int refresh_grants = 0;
     server.set_handler(refresh_counting_handler(base, &refresh_grants));
-    asio::co_spawn(io_ctx, server.serve(10), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(10));
 
     auto store = std::make_shared<ParkingTokenStore>();
     mcp::auth::OAuthAuthorizationConfig config;
@@ -4530,32 +4340,27 @@ TEST(AuthAuthorizationManagerTest, ARefreshThatBeganEarlierDoesNotPresentARotate
     bool first_refreshed = false;
     bool second_refreshed = false;
     int completed = 0;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            authorized = co_await authorize_against(manager, base);
-            second = std::thread([&] {
-                store->park_loads_on_this_thread();
-                auto refresh = manager.try_refresh_token();
-                store->mark_started();
-                asio::co_spawn(
-                    io_ctx,
-                    [&, refresh = std::move(refresh)]() mutable -> mcp::Task<void> {
-                        second_refreshed = co_await std::move(refresh);
-                        if (++completed == 2) {
-                            server.close();
-                        }
-                    },
-                    asio::detached);
-            });
-            store->wait_started();
-            first_refreshed = co_await manager.try_refresh_token();
-            store->release();
-            if (++completed == 2) {
-                server.close();
-            }
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        authorized = co_await authorize_against(manager, base);
+        second = std::thread([&] {
+            store->park_loads_on_this_thread();
+            auto refresh = manager.try_refresh_token();
+            store->mark_started();
+            mcp_test::spawn_detached(io_ctx,
+                                     [&, refresh = std::move(refresh)]() mutable -> mcp::Task<void> {
+                                         second_refreshed = co_await std::move(refresh);
+                                         if (++completed == 2) {
+                                             server.close();
+                                         }
+                                     });
+        });
+        store->wait_started();
+        first_refreshed = co_await manager.try_refresh_token();
+        store->release();
+        if (++completed == 2) {
+            server.close();
+        }
+    });
 
     io_ctx.run();
     second.join();
@@ -4580,7 +4385,7 @@ TEST(AuthAuthorizationManagerTest, ACancelledChallengeDoesNotAskForConsent) {
     const auto base = server.base_url();
     int refresh_grants = 0;
     server.set_handler(refresh_counting_handler(base, &refresh_grants));
-    asio::co_spawn(io_ctx, server.serve(10), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(10));
 
     ManagerFixture fixture;
     fixture.config.server_url = base + "/mcp";
@@ -4598,21 +4403,18 @@ TEST(AuthAuthorizationManagerTest, ACancelledChallengeDoesNotAskForConsent) {
     bool authorized = false;
     bool cancelled_result = false;
     std::string cancelled_error;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            authorized = co_await authorize_against(manager, base);
-            auto cancelled = manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                          R"(/prm", scope="step-up")");
-            manager.cancel_pending();
-            try {
-                cancelled_result = co_await std::move(cancelled);
-            } catch (const std::exception& error) {
-                cancelled_error = error.what();
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        authorized = co_await authorize_against(manager, base);
+        auto cancelled = manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                      R"(/prm", scope="step-up")");
+        manager.cancel_pending();
+        try {
+            cancelled_result = co_await std::move(cancelled);
+        } catch (const std::exception& error) {
+            cancelled_error = error.what();
+        }
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -4668,7 +4470,7 @@ void expect_close_during_refresh_starts_no_authorization(bool refresh_refused) {
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(20), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(20));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -4699,20 +4501,17 @@ void expect_close_during_refresh_starts_no_authorization(bool refresh_refused) {
         }
     });
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            authorized = co_await authorize_against(*manager, base);
-            try {
-                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
-            } catch (const std::exception& error) {
-                write_failure = error.what();
-            }
-            done = true;
-            watchdog.cancel();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        authorized = co_await authorize_against(*manager, base);
+        try {
+            co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+        } catch (const std::exception& error) {
+            write_failure = error.what();
+        }
+        done = true;
+        watchdog.cancel();
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -4787,7 +4586,7 @@ int consent_prompts_for_a_write_whose_transport_closes(bool forwards_cancel) {
         }
         return metadata_and_tokens(request);
     });
-    asio::co_spawn(io_ctx, server.serve(20), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(20));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -4822,21 +4621,18 @@ int consent_prompts_for_a_write_whose_transport_closes(bool forwards_cancel) {
         }
     });
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
-            } catch (const std::exception& error) {
-                write_failure = error.what();
-            }
-            prompts_for_the_write = consent_prompts;
-            authorized_afterwards = co_await authorize_against(*manager, base);
-            done = true;
-            watchdog.cancel();
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        try {
+            co_await transport->write_message(R"({"jsonrpc":"2.0","id":1,"method":"tools/call"})");
+        } catch (const std::exception& error) {
+            write_failure = error.what();
+        }
+        prompts_for_the_write = consent_prompts;
+        authorized_afterwards = co_await authorize_against(*manager, base);
+        done = true;
+        watchdog.cancel();
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -4889,7 +4685,7 @@ TEST(AuthIssuerBindingTest, RejectsAuthServerMetadataWhoseIssuerIsNotItsDiscover
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(5));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -4901,20 +4697,17 @@ TEST(AuthIssuerBindingTest, RejectsAuthServerMetadataWhoseIssuerIsNotItsDiscover
     std::vector<std::string> requested_scopes;
     bool threw = false;
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
-                io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
-            try {
-                (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                             R"(/prm")");
-            } catch (const std::exception&) {
-                threw = true;
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+            io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
+        try {
+            (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                         R"(/prm")");
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -4954,7 +4747,7 @@ EndpointOutcome challenge_with_authorization_endpoint(const std::string& authori
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(3));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -4963,21 +4756,18 @@ EndpointOutcome challenge_with_authorization_endpoint(const std::string& authori
     config.policy = loopback_policy(server.origin());
 
     EndpointOutcome outcome;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
-                io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(), config,
-                echoing_callback(&outcome.authorization_url));
-            try {
-                (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                             R"(/prm")");
-            } catch (const std::exception&) {
-                outcome.threw = true;
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+            io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(), config,
+            echoing_callback(&outcome.authorization_url));
+        try {
+            (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                         R"(/prm")");
+        } catch (const std::exception&) {
+            outcome.threw = true;
+        }
+        server.close();
+    });
     io_ctx.run();
     outcome.requests = server.targets().size();
     return outcome;
@@ -5112,7 +4902,7 @@ InjectedSecretOutcome try_injected_secret(
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(3));
 
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     mcp::auth::OAuthAuthorizationConfig config;
@@ -5126,38 +4916,34 @@ InjectedSecretOutcome try_injected_secret(
     // asio::detached swallows exceptions, which would turn a failed assertion into a hang.
     std::promise<InjectedSecretOutcome> result;
     auto observed = result.get_future();
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            InjectedSecretOutcome outcome;
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
-                                                         echoing_callback(nullptr));
-            try {
-                outcome.authorized = co_await manager.try_handle_challenge(
-                    R"(Bearer resource_metadata=")" + base + R"(/prm")");
-            } catch (const std::exception& error) {
-                outcome.failure = error.what();
-            }
-            outcome.targets = server.targets();
-            // The secret would travel in the token request body under client_secret_post, and in
-            // the base64 Authorization header under client_secret_basic; check both spellings so
-            // this cannot pass merely because the auth method changed.
-            const std::string basic_credentials = "application-held-client:" + std::string(secret);
-            const auto basic_header = mcp::auth::detail::base64_encode(
-                reinterpret_cast<const unsigned char*>(basic_credentials.data()),
-                basic_credentials.size());
-            const auto contains_secret = [&](const std::vector<std::string>& recorded) {
-                return std::any_of(recorded.begin(), recorded.end(), [&](const std::string& value) {
-                    return value.find(secret) != std::string::npos ||
-                           value.find(basic_header) != std::string::npos;
-                });
-            };
-            outcome.secret_seen_on_the_wire =
-                contains_secret(server.bodies()) || contains_secret(server.authorizations());
-            result.set_value(std::move(outcome));
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        InjectedSecretOutcome outcome;
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                     echoing_callback(nullptr));
+        try {
+            outcome.authorized = co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" +
+                                                                       base + R"(/prm")");
+        } catch (const std::exception& error) {
+            outcome.failure = error.what();
+        }
+        outcome.targets = server.targets();
+        // The secret would travel in the token request body under client_secret_post, and in
+        // the base64 Authorization header under client_secret_basic; check both spellings so
+        // this cannot pass merely because the auth method changed.
+        const std::string basic_credentials = "application-held-client:" + std::string(secret);
+        const auto basic_header = mcp::auth::detail::base64_encode(
+            reinterpret_cast<const unsigned char*>(basic_credentials.data()), basic_credentials.size());
+        const auto contains_secret = [&](const std::vector<std::string>& recorded) {
+            return std::any_of(recorded.begin(), recorded.end(), [&](const std::string& value) {
+                return value.find(secret) != std::string::npos ||
+                       value.find(basic_header) != std::string::npos;
+            });
+        };
+        outcome.secret_seen_on_the_wire =
+            contains_secret(server.bodies()) || contains_secret(server.authorizations());
+        result.set_value(std::move(outcome));
+        server.close();
+    });
 
     io_ctx.run();
     return observed.get();
@@ -5232,7 +5018,7 @@ TEST(AuthClientIdentityBindingTest, RefusalNamesTheFieldThatAppliesToHandBuiltCr
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(3));
 
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     mcp::auth::OAuthAuthorizationConfig config;
@@ -5250,23 +5036,20 @@ TEST(AuthClientIdentityBindingTest, RefusalNamesTheFieldThatAppliesToHandBuiltCr
 
     std::promise<std::pair<bool, std::string>> result;
     auto observed = result.get_future();
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            bool authorized = false;
-            std::string failure;
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
-                                                         echoing_callback(nullptr));
-            try {
-                authorized = co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" +
-                                                                   base + R"(/prm")");
-            } catch (const std::exception& error) {
-                failure = error.what();
-            }
-            result.set_value({authorized, failure});
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        bool authorized = false;
+        std::string failure;
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                     echoing_callback(nullptr));
+        try {
+            authorized = co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                               R"(/prm")");
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        result.set_value({authorized, failure});
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -5320,7 +5103,7 @@ PrmResourceOutcome try_prm_resource(const std::string& server_url, const std::st
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(3));
 
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     mcp::auth::OAuthAuthorizationConfig config;
@@ -5330,24 +5113,20 @@ PrmResourceOutcome try_prm_resource(const std::string& server_url, const std::st
     config.policy = loopback_policy(server.origin());
 
     PrmResourceOutcome outcome;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
-                                                         echoing_callback(nullptr));
-            try {
-                outcome.authorized = co_await manager.try_handle_challenge(
-                    R"(Bearer realm="mcp", resource_metadata=")" + base + R"(/prm.json")");
-                if (const auto record = manager.last_authorization_request();
-                    record && record->resource) {
-                    outcome.resolved_resource = *record->resource;
-                }
-            } catch (const std::exception&) {
-                outcome.threw = true;
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                     echoing_callback(nullptr));
+        try {
+            outcome.authorized = co_await manager.try_handle_challenge(
+                R"(Bearer realm="mcp", resource_metadata=")" + base + R"(/prm.json")");
+            if (const auto record = manager.last_authorization_request(); record && record->resource) {
+                outcome.resolved_resource = *record->resource;
             }
-            server.close();
-        },
-        asio::detached);
+        } catch (const std::exception&) {
+            outcome.threw = true;
+        }
+        server.close();
+    });
 
     io_ctx.run();
     return outcome;
@@ -5529,7 +5308,7 @@ TEST(AuthProtectedResourceValidationTest,
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(4), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(4));
 
     auto credentials = std::make_shared<CountingCredentialStore>();
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
@@ -5544,23 +5323,20 @@ TEST(AuthProtectedResourceValidationTest,
     // promise carries the outcome back to the test body instead.
     std::promise<std::string> failure;
     auto observed = failure.get_future();
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
-                                                         echoing_callback(nullptr));
-            std::string message;
-            try {
-                (void)co_await manager.try_handle_challenge(
-                    R"(Bearer realm="mcp", resource_metadata=")" + base + R"(/prm.json")");
-                message = "<no exception>";
-            } catch (const std::exception& error) {
-                message = error.what();
-            }
-            failure.set_value(message);
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                     echoing_callback(nullptr));
+        std::string message;
+        try {
+            (void)co_await manager.try_handle_challenge(R"(Bearer realm="mcp", resource_metadata=")" +
+                                                        base + R"(/prm.json")");
+            message = "<no exception>";
+        } catch (const std::exception& error) {
+            message = error.what();
+        }
+        failure.set_value(message);
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -5621,7 +5397,7 @@ TEST(AuthProtectedResourceValidationTest, ARejectedProtectedResourceDocumentIsNo
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(4), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(4));
 
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     mcp::auth::OAuthAuthorizationConfig config;
@@ -5634,33 +5410,30 @@ TEST(AuthProtectedResourceValidationTest, ARejectedProtectedResourceDocumentIsNo
     // promise carries both outcomes back to the test body instead.
     std::promise<std::pair<std::string, std::string>> failures;
     auto observed = failures.get_future();
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            // One manager for both attempts: the discovery cache it owns is the thing under test,
-            // and a second manager would have an empty one for trivial reasons.
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
-                                                         echoing_callback(nullptr));
-            const std::string header =
-                R"(Bearer realm="mcp", resource_metadata=")" + base + R"(/prm.json")";
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        // One manager for both attempts: the discovery cache it owns is the thing under test,
+        // and a second manager would have an empty one for trivial reasons.
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                     echoing_callback(nullptr));
+        const std::string header =
+            R"(Bearer realm="mcp", resource_metadata=")" + base + R"(/prm.json")";
 
-            std::pair<std::string, std::string> messages;
-            try {
-                (void)co_await manager.try_handle_challenge(header);
-                messages.first = "<no exception>";
-            } catch (const std::exception& error) {
-                messages.first = error.what();
-            }
-            try {
-                (void)co_await manager.try_handle_challenge(header);
-                messages.second = "<no exception>";
-            } catch (const std::exception& error) {
-                messages.second = error.what();
-            }
-            failures.set_value(messages);
-            server.close();
-        },
-        asio::detached);
+        std::pair<std::string, std::string> messages;
+        try {
+            (void)co_await manager.try_handle_challenge(header);
+            messages.first = "<no exception>";
+        } catch (const std::exception& error) {
+            messages.first = error.what();
+        }
+        try {
+            (void)co_await manager.try_handle_challenge(header);
+            messages.second = "<no exception>";
+        } catch (const std::exception& error) {
+            messages.second = error.what();
+        }
+        failures.set_value(messages);
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -5757,7 +5530,7 @@ TEST(AuthDiagnosticsSanitizingTest, AnIssuerCarryingControlCharactersCannotForge
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(3));
 
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     mcp::auth::OAuthAuthorizationConfig config;
@@ -5768,23 +5541,20 @@ TEST(AuthDiagnosticsSanitizingTest, AnIssuerCarryingControlCharactersCannotForge
 
     std::promise<std::string> result;
     auto observed = result.get_future();
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            std::string failure;
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
-                                                         echoing_callback(nullptr));
-            try {
-                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                            R"(/prm.json")");
-                failure = "<no exception>";
-            } catch (const std::exception& error) {
-                failure = error.what();
-            }
-            result.set_value(failure);
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        std::string failure;
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                     echoing_callback(nullptr));
+        try {
+            (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                        R"(/prm.json")");
+            failure = "<no exception>";
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        result.set_value(failure);
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -5819,7 +5589,7 @@ TEST(AuthDiagnosticsSanitizingTest, AnAuthorizationResponseErrorCannotForgeALogL
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(3));
 
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     mcp::auth::OAuthAuthorizationConfig config;
@@ -5842,23 +5612,20 @@ TEST(AuthDiagnosticsSanitizingTest, AnAuthorizationResponseErrorCannotForgeALogL
 
     std::promise<std::string> result;
     auto observed = result.get_future();
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            std::string failure;
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
-                                                         hostile_callback);
-            try {
-                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                            R"(/prm.json")");
-                failure = "<no exception>";
-            } catch (const std::exception& error) {
-                failure = error.what();
-            }
-            result.set_value(failure);
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        std::string failure;
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                     hostile_callback);
+        try {
+            (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                        R"(/prm.json")");
+            failure = "<no exception>";
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        result.set_value(failure);
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -5895,7 +5662,7 @@ TEST(AuthDiagnosticsSanitizingTest, ATruncatedMultiByteIssuerStaysWellFormedUtf8
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(3));
 
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     mcp::auth::OAuthAuthorizationConfig config;
@@ -5906,23 +5673,20 @@ TEST(AuthDiagnosticsSanitizingTest, ATruncatedMultiByteIssuerStaysWellFormedUtf8
 
     std::promise<std::string> result;
     auto observed = result.get_future();
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            std::string failure;
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
-                                                         echoing_callback(nullptr));
-            try {
-                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                            R"(/prm.json")");
-                failure = "<no exception>";
-            } catch (const std::exception& error) {
-                failure = error.what();
-            }
-            result.set_value(failure);
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        std::string failure;
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                     echoing_callback(nullptr));
+        try {
+            (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                        R"(/prm.json")");
+            failure = "<no exception>";
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        result.set_value(failure);
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -6117,44 +5881,40 @@ TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDisc
     mcp::StreamableHttpSessionManager manager(io_ctx.get_executor(), "127.0.0.1", port,
                                               make_pairing_server_factory());
     manager.set_bearer_token_validator([](std::string_view token) { return token == "valid-token"; });
-    asio::co_spawn(io_ctx, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx, manager.listen());
 
     RawChallenge challenge;
     bool client_authorized = false;
     std::string client_failure;
     std::atomic<int> discovery_attempts{0};
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            challenge = co_await fetch_unauthenticated_challenge(io_ctx.get_executor(), port);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        challenge = co_await fetch_unauthenticated_challenge(io_ctx.get_executor(), port);
 
-            // The shipped client, handed the shipped server's own challenge.
-            const auto base = "http://127.0.0.1:" + std::to_string(port);
-            auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
-            mcp::auth::OAuthAuthorizationConfig config;
-            config.server_url = base + "/mcp";
-            config.client_id = "test-client";
-            config.redirect_uri = "http://127.0.0.1:9999/callback";
-            config.policy = loopback_policy(base);
-            // Called once per exchange, so it counts the discovery requests the client had to
-            // invent for itself.
-            config.host_resolver = [&](const std::string&, const std::string&) {
-                discovery_attempts.fetch_add(1);
-                return std::vector<std::string>{"127.0.0.1"};
-            };
+        // The shipped client, handed the shipped server's own challenge.
+        const auto base = "http://127.0.0.1:" + std::to_string(port);
+        auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+        mcp::auth::OAuthAuthorizationConfig config;
+        config.server_url = base + "/mcp";
+        config.client_id = "test-client";
+        config.redirect_uri = "http://127.0.0.1:9999/callback";
+        config.policy = loopback_policy(base);
+        // Called once per exchange, so it counts the discovery requests the client had to
+        // invent for itself.
+        config.host_resolver = [&](const std::string&, const std::string&) {
+            discovery_attempts.fetch_add(1);
+            return std::vector<std::string>{"127.0.0.1"};
+        };
 
-            mcp::auth::OAuthAuthorizationManager authorization(io_ctx.get_executor(), store, config,
-                                                               echoing_callback(nullptr));
-            try {
-                client_authorized =
-                    co_await authorization.try_handle_challenge(challenge.www_authenticate);
-            } catch (const std::exception& error) {
-                client_failure = error.what();
-            }
-            manager.close();
-        },
-        asio::detached);
+        mcp::auth::OAuthAuthorizationManager authorization(io_ctx.get_executor(), store, config,
+                                                           echoing_callback(nullptr));
+        try {
+            client_authorized = co_await authorization.try_handle_challenge(challenge.www_authenticate);
+        } catch (const std::exception& error) {
+            client_failure = error.what();
+        }
+        manager.close();
+    });
 
     io_ctx.run();
 
@@ -6201,16 +5961,13 @@ TEST(AuthClientServerPairingTest, ClientDiscoversAuthorizationFromTheServersOwnC
     metadata.authorization_servers = {"https://auth.example.com"};
     manager.set_protected_resource_metadata(metadata);
 
-    asio::co_spawn(io_ctx, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx, manager.listen());
 
     RawChallenge challenge;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            challenge = co_await fetch_unauthenticated_challenge(io_ctx.get_executor(), port);
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        challenge = co_await fetch_unauthenticated_challenge(io_ctx.get_executor(), port);
+        manager.close();
+    });
 
     io_ctx.run();
 
@@ -6241,7 +5998,7 @@ TEST(AuthHttpClientPolicyTest, APolicyInstalledMidExchangeDoesNotChangeTheRulesU
         }
         return json_response({{"arrived", true}});
     });
-    asio::co_spawn(io_ctx, server.serve(4), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(4));
 
     auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
     client->set_metadata_policy(loopback_policy(server.origin()));
@@ -6259,20 +6016,17 @@ TEST(AuthHttpClientPolicyTest, APolicyInstalledMidExchangeDoesNotChangeTheRulesU
 
     std::promise<std::string> result;
     auto observed = result.get_future();
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            std::string outcome;
-            try {
-                const auto body = co_await client->get_json(base + "/hop0");
-                outcome = body.value("arrived", false) ? "arrived" : "unexpected body";
-            } catch (const std::exception& error) {
-                outcome = std::string("threw: ") + error.what();
-            }
-            result.set_value(outcome);
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        std::string outcome;
+        try {
+            const auto body = co_await client->get_json(base + "/hop0");
+            outcome = body.value("arrived", false) ? "arrived" : "unexpected body";
+        } catch (const std::exception& error) {
+            outcome = std::string("threw: ") + error.what();
+        }
+        result.set_value(outcome);
+        server.close();
+    });
 
     io_ctx.run();
 
@@ -6295,7 +6049,7 @@ TEST(AuthHttpClientPolicyTest, ReplacingThePolicyAndResolverUnderLiveRequestsIsS
     const auto base = server.base_url();
     server.set_handler(
         [](const http::request<http::string_body>&) { return json_response({{"ok", true}}); });
-    asio::co_spawn(io_ctx, server.serve(request_count + 4), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(request_count + 4));
 
     auto client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
     client->set_metadata_policy(loopback_policy(server.origin()));
@@ -6320,17 +6074,14 @@ TEST(AuthHttpClientPolicyTest, ReplacingThePolicyAndResolverUnderLiveRequestsIsS
     });
 
     for (int index = 0; index < request_count; ++index) {
-        asio::co_spawn(
-            io_ctx,
-            [&]() -> mcp::Task<void> {
-                try {
-                    (void)co_await client->get_json(base + "/probe");
-                } catch (...) {
-                    // A refusal is an acceptable outcome; a race is not, and that is TSan's call.
-                }
-                completed.fetch_add(1);
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+            try {
+                (void)co_await client->get_json(base + "/probe");
+            } catch (...) {
+                // A refusal is an acceptable outcome; a race is not, and that is TSan's call.
+            }
+            completed.fetch_add(1);
+        });
     }
 
     const auto deadline = std::chrono::steady_clock::now() + g_hang_guard;
@@ -6369,7 +6120,7 @@ std::string challenge_failure_message(const std::string& authorization_server) {
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(1), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(1));
 
     ManagerFixture fixture;
     fixture.config.server_url = base + "/mcp";
@@ -6378,20 +6129,17 @@ std::string challenge_failure_message(const std::string& authorization_server) {
     fixture.config.policy = loopback_policy(server.origin());
 
     std::string message;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
-                                                         fixture.config, echoing_callback(nullptr));
-            try {
-                (void)co_await manager.try_handle_challenge(
-                    R"(Bearer realm="mcp", resource_metadata=")" + base + R"(/prm")");
-            } catch (const std::exception& error) {
-                message = error.what();
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.store,
+                                                     fixture.config, echoing_callback(nullptr));
+        try {
+            (void)co_await manager.try_handle_challenge(R"(Bearer realm="mcp", resource_metadata=")" +
+                                                        base + R"(/prm")");
+        } catch (const std::exception& error) {
+            message = error.what();
+        }
+        server.close();
+    });
 
     io_ctx.run();
     return message;
@@ -6468,7 +6216,7 @@ OfflineAccessOutcome run_offline_access_case(
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, server.serve(3), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(3));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -6480,24 +6228,21 @@ OfflineAccessOutcome run_offline_access_case(
     OfflineAccessOutcome outcome;
     std::vector<std::string> requested_scopes;
     std::exception_ptr failure;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(
-                io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(), config,
-                recording_callback(&requested_scopes));
-            try {
-                std::string header = "Bearer resource_metadata=\"" + base + "/prm\"";
-                if (!challenge_scope.empty()) {
-                    header += ", scope=\"" + challenge_scope + "\"";
-                }
-                outcome.authorized = co_await manager.try_handle_challenge(header);
-            } catch (...) {
-                failure = std::current_exception();
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(),
+                                                     std::make_shared<mcp::auth::InMemoryTokenStore>(),
+                                                     config, recording_callback(&requested_scopes));
+        try {
+            std::string header = "Bearer resource_metadata=\"" + base + "/prm\"";
+            if (!challenge_scope.empty()) {
+                header += ", scope=\"" + challenge_scope + "\"";
             }
-            server.close();
-        },
-        asio::detached);
+            outcome.authorized = co_await manager.try_handle_challenge(header);
+        } catch (...) {
+            failure = std::current_exception();
+        }
+        server.close();
+    });
     io_ctx.run();
 
     EXPECT_EQ(failure, nullptr);
@@ -6683,7 +6428,7 @@ ClientAuthRun run_client_auth(const mcp::ClientProtocol& protocol, const Authori
         response.set(http::field::connection, "close");
         return response;
     });
-    asio::co_spawn(io_ctx, server.serve(server_budget), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(server_budget));
     // Only a guard against a hang: no test asserts that anything finishes within it.
     asio::steady_timer hang_guard(io_ctx, std::chrono::seconds(120));
     hang_guard.async_wait([&](const boost::system::error_code& error) {
@@ -6700,38 +6445,34 @@ ClientAuthRun run_client_auth(const mcp::ClientProtocol& protocol, const Authori
     config.policy = loopback_policy(server.origin());
 
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto inner =
-                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
-            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
-                io_ctx.get_executor(), store, config,
-                consent ? consent : recording_callback(&run.consent_scopes));
-            auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, manager);
-            mcp::ClientOptions options;
-            options.protocol = protocol;
-            if (tune) {
-                tune(options);
-            }
-            mcp::Client client(transport, io_ctx.get_executor(), options);
-            if (client_slot != nullptr) {
-                *client_slot = &client;
-            }
-            client.on_request("elicitation/create", [](const json&) -> mcp::Task<json> {
-                co_return json{{"action", "accept"}, {"content", json::object()}};
-            });
-            try {
-                run.connected = co_await client.connect("auth-client", "1.0");
-                co_await body(client, run);
-            } catch (const std::exception& failure) {
-                run.error = failure.what();
-            }
-            client.close();
-            server.close();
-            hang_guard.cancel();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto inner = std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), base + "/mcp");
+        auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+            io_ctx.get_executor(), store, config,
+            consent ? consent : recording_callback(&run.consent_scopes));
+        auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, manager);
+        mcp::ClientOptions options;
+        options.protocol = protocol;
+        if (tune) {
+            tune(options);
+        }
+        mcp::Client client(transport, io_ctx.get_executor(), options);
+        if (client_slot != nullptr) {
+            *client_slot = &client;
+        }
+        client.on_request("elicitation/create", [](const json&) -> mcp::Task<json> {
+            co_return json{{"action", "accept"}, {"content", json::object()}};
+        });
+        try {
+            run.connected = co_await client.connect("auth-client", "1.0");
+            co_await body(client, run);
+        } catch (const std::exception& failure) {
+            run.error = failure.what();
+        }
+        client.close();
+        server.close();
+        hang_guard.cancel();
+    });
     io_ctx.run();
     return run;
 }
@@ -7033,7 +6774,7 @@ TEST(AuthModernClientTest, StepsUpOnceAgainstAnSdkServerThatRequiresAScope) {
         }
         return status_response(http::status::not_found);
     });
-    asio::co_spawn(io_ctx, auth_server.serve(60), asio::detached);
+    mcp_test::spawn_detached(io_ctx, auth_server.serve(60));
 
     auto transport = std::make_shared<mcp::HttpServerTransport>(io_ctx.get_executor(), "127.0.0.1", 0);
     const auto mcp_origin = "http://127.0.0.1:" + std::to_string(transport->port());
@@ -7066,8 +6807,8 @@ TEST(AuthModernClientTest, StepsUpOnceAgainstAnSdkServerThatRequiresAScope) {
                                     ++tool_calls;
                                     co_return json{{"done", true}};
                                 });
-    asio::co_spawn(io_ctx, transport->listen(), asio::detached);
-    asio::co_spawn(io_ctx, server.run(transport, io_ctx.get_executor()), asio::detached);
+    mcp_test::spawn_detached(io_ctx, transport->listen());
+    mcp_test::spawn_detached(io_ctx, server.run(transport, io_ctx.get_executor()));
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = mcp_origin + "/mcp";
@@ -7079,30 +6820,27 @@ TEST(AuthModernClientTest, StepsUpOnceAgainstAnSdkServerThatRequiresAScope) {
     std::vector<std::string> consent_scopes;
     std::string error;
     std::optional<mcp::CallToolResult> result;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            auto inner =
-                std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), mcp_origin + "/mcp");
-            auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
-                io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(), config,
-                recording_callback(&consent_scopes));
-            auto client_transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, manager);
-            mcp::ClientOptions options;
-            options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
-            mcp::Client client(client_transport, io_ctx.get_executor(), options);
-            try {
-                (void)co_await client.connect("auth-client", "1.0");
-                const json arguments = json::object();
-                result = co_await client.call_tool("write_file", arguments);
-            } catch (const std::exception& failure) {
-                error = failure.what();
-            }
-            client.close();
-            transport->close();
-            auth_server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto inner =
+            std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), mcp_origin + "/mcp");
+        auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
+            io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(), config,
+            recording_callback(&consent_scopes));
+        auto client_transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, manager);
+        mcp::ClientOptions options;
+        options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
+        mcp::Client client(client_transport, io_ctx.get_executor(), options);
+        try {
+            (void)co_await client.connect("auth-client", "1.0");
+            const json arguments = json::object();
+            result = co_await client.call_tool("write_file", arguments);
+        } catch (const std::exception& failure) {
+            error = failure.what();
+        }
+        client.close();
+        transport->close();
+        auth_server.close();
+    });
     io_ctx.run();
 
     EXPECT_EQ(error, "");

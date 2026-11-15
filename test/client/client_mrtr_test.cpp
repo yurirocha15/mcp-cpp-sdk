@@ -1,6 +1,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
@@ -141,19 +142,16 @@ class Harness {
                 io.stop();
             }
         });
-        boost::asio::co_spawn(
-            io,
-            [this, body = std::move(body)]() -> mcp::Task<void> {
-                try {
-                    co_await client->connect("mrtr-client", "1.0");
-                    co_await body();
-                } catch (const std::exception& error) {
-                    ADD_FAILURE() << "unexpected exception: " << error.what();
-                }
-                client->close();
-                guard.cancel();
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io, [this, body = std::move(body)]() -> mcp::Task<void> {
+            try {
+                co_await client->connect("mrtr-client", "1.0");
+                co_await body();
+            } catch (const std::exception& error) {
+                ADD_FAILURE() << "unexpected exception: " << error.what();
+            }
+            client->close();
+            guard.cancel();
+        });
         io.run();
         EXPECT_FALSE(guard_fired) << "the test did not finish";
     }
@@ -588,14 +586,11 @@ TEST(ClientMrtr, ParallelCallsKeepTheirOwnState) {
         int finished = 0;
         // Names longer than the small-string buffer, as they live across suspensions.
         for (const std::string name : {"parallel-call-first", "parallel-call-second"}) {
-            boost::asio::co_spawn(
-                harness.io,
-                [&harness, &finished, name]() -> mcp::Task<void> {
-                    json arguments = json::object();
-                    co_await harness.client->call_tool(name, arguments);
-                    ++finished;
-                },
-                boost::asio::detached);
+            mcp_test::spawn_detached(harness.io, [&harness, &finished, name]() -> mcp::Task<void> {
+                json arguments = json::object();
+                co_await harness.client->call_tool(name, arguments);
+                ++finished;
+            });
         }
         boost::asio::steady_timer tick(harness.io);
         while (finished < 2) {
@@ -837,13 +832,10 @@ void run_guarded(boost::asio::io_context& io, boost::asio::steady_timer& guard, 
             io.stop();
         }
     });
-    boost::asio::co_spawn(
-        io,
-        [&guard, body = std::move(body)]() -> mcp::Task<void> {
-            co_await body();
-            guard.cancel();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&guard, body = std::move(body)]() -> mcp::Task<void> {
+        co_await body();
+        guard.cancel();
+    });
     io.run();
     EXPECT_FALSE(fired) << "the test did not finish";
 }
@@ -863,15 +855,12 @@ TEST(ClientMrtr, RoundTripAgainstSdkServerMemory) {
     json answer;
     std::string error;
 
-    boost::asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await server->run(server_transport, io.get_executor());
-            } catch (...) {
-            }
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            co_await server->run(server_transport, io.get_executor());
+        } catch (...) {
+        }
+    });
     run_guarded(io, guard, fired, [&]() -> mcp::Task<void> {
         try {
             answer = co_await ask_the_tool(client);

@@ -1,4 +1,5 @@
 #include "../support/hang_guard.hpp"
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
@@ -135,18 +136,15 @@ mcp::Task<Answers> exhaust_and_ask(asio::any_io_executor executor, unsigned shor
 template <typename Listener>
 void expect_accepting_after_exhaustion(asio::io_context& io, Listener& listener, unsigned short port) {
     Answers answers;
-    asio::co_spawn(io, listener.listen(), asio::detached);
-    asio::co_spawn(
-        io,
-        [&]() -> mcp::Task<void> {
-            try {
-                answers = co_await exhaust_and_ask(io.get_executor(), port);
-            } catch (const std::exception& error) {
-                ADD_FAILURE() << "connecting while descriptors ran out failed: " << error.what();
-            }
-            listener.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io, listener.listen());
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            answers = co_await exhaust_and_ask(io.get_executor(), port);
+        } catch (const std::exception& error) {
+            ADD_FAILURE() << "connecting while descriptors ran out failed: " << error.what();
+        }
+        listener.close();
+    });
     io.run();
 
     // The accept loop still runs: a connection made afterwards is served.

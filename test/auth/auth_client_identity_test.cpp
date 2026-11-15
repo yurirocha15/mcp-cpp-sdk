@@ -6,6 +6,7 @@
  */
 
 #include <gtest/gtest.h>
+#include "../support/spawn.hpp"
 
 #include <algorithm>
 #include <boost/asio/co_spawn.hpp>
@@ -422,22 +423,19 @@ struct IdentityFixture {
 /// Run one challenge against a single-origin fixture and capture what the manager chose.
 void run_single_challenge(LoopbackServer& server, IdentityFixture& fixture, asio::io_context& io_ctx,
                           const std::string& challenge, int request_budget) {
-    asio::co_spawn(io_ctx, server.serve(request_budget), asio::detached);
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
-                                                         fixture.config,
-                                                         echoing_callback(&fixture.authorization_url));
-            try {
-                (void)co_await manager.try_handle_challenge(challenge);
-                fixture.identity = manager.last_client_identity();
-            } catch (...) {
-                fixture.failure = std::current_exception();
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(request_budget));
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
+                                                     fixture.config,
+                                                     echoing_callback(&fixture.authorization_url));
+        try {
+            (void)co_await manager.try_handle_challenge(challenge);
+            fixture.identity = manager.last_client_identity();
+        } catch (...) {
+            fixture.failure = std::current_exception();
+        }
+        server.close();
+    });
     io_ctx.run();
 }
 
@@ -633,7 +631,7 @@ TEST(AuthClientIdentityLoopbackTest, KeepsCredentialsBoundToTheIssuerThatGranted
         }
         return not_found();
     });
-    asio::co_spawn(io_ctx, server.serve(8), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(8));
 
     IdentityFixture fixture;
     fixture.config.server_url = base + "/mcp";
@@ -642,25 +640,22 @@ TEST(AuthClientIdentityLoopbackTest, KeepsCredentialsBoundToTheIssuerThatGranted
     fixture.config.policy = loopback_policy(server.origin());
 
     std::optional<mcp::auth::OAuthClientInformation> first_identity;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
-                                                         fixture.config, echoing_callback(nullptr));
-            try {
-                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                            R"(/prm-one")");
-                first_identity = manager.last_client_identity();
-                // The protected resource now names a different authorization server.
-                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                            R"(/prm-two")");
-                fixture.identity = manager.last_client_identity();
-            } catch (...) {
-                fixture.failure = std::current_exception();
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
+                                                     fixture.config, echoing_callback(nullptr));
+        try {
+            (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                        R"(/prm-one")");
+            first_identity = manager.last_client_identity();
+            // The protected resource now names a different authorization server.
+            (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                        R"(/prm-two")");
+            fixture.identity = manager.last_client_identity();
+        } catch (...) {
+            fixture.failure = std::current_exception();
+        }
+        server.close();
+    });
     io_ctx.run();
 
     ASSERT_EQ(fixture.failure, nullptr);
@@ -726,7 +721,7 @@ TEST(AuthClientIdentityLoopbackTest, RegistersWithTheNewServerWhenTheSameMetadat
         }
         return not_found();
     });
-    asio::co_spawn(io_ctx, server.serve(12), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(12));
 
     IdentityFixture fixture;
     fixture.config.server_url = base + "/mcp";
@@ -736,23 +731,20 @@ TEST(AuthClientIdentityLoopbackTest, RegistersWithTheNewServerWhenTheSameMetadat
 
     const auto challenge = R"(Bearer resource_metadata=")" + base + R"(/prm")";
     std::string second_authorization_url;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
-                                                         fixture.config, echoing_callback(nullptr));
-            try {
-                (void)co_await manager.try_handle_challenge(challenge);
-                current_server = "/as2";
-                (void)co_await manager.try_handle_challenge(challenge);
-                fixture.identity = manager.last_client_identity();
-                second_authorization_url = manager.last_authorization_request()->authorization_url;
-            } catch (...) {
-                fixture.failure = std::current_exception();
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
+                                                     fixture.config, echoing_callback(nullptr));
+        try {
+            (void)co_await manager.try_handle_challenge(challenge);
+            current_server = "/as2";
+            (void)co_await manager.try_handle_challenge(challenge);
+            fixture.identity = manager.last_client_identity();
+            second_authorization_url = manager.last_authorization_request()->authorization_url;
+        } catch (...) {
+            fixture.failure = std::current_exception();
+        }
+        server.close();
+    });
     io_ctx.run();
 
     ASSERT_EQ(fixture.failure, nullptr);
@@ -875,7 +867,7 @@ TEST(AuthClientIdentityLoopbackTest, ReusesTheRegistrationRecordedForTheSameIssu
         }
         return not_found();
     });
-    asio::co_spawn(io_ctx, server.serve(7), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(7));
 
     IdentityFixture fixture;
     fixture.config.server_url = base + "/mcp";
@@ -883,23 +875,20 @@ TEST(AuthClientIdentityLoopbackTest, ReusesTheRegistrationRecordedForTheSameIssu
     fixture.config.credential_store = fixture.credentials;
     fixture.config.policy = loopback_policy(server.origin());
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
-                                                         fixture.config, echoing_callback(nullptr));
-            try {
-                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                            R"(/prm-one")");
-                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                            R"(/prm-two")");
-                fixture.identity = manager.last_client_identity();
-            } catch (...) {
-                fixture.failure = std::current_exception();
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
+                                                     fixture.config, echoing_callback(nullptr));
+        try {
+            (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                        R"(/prm-one")");
+            (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                        R"(/prm-two")");
+            fixture.identity = manager.last_client_identity();
+        } catch (...) {
+            fixture.failure = std::current_exception();
+        }
+        server.close();
+    });
     io_ctx.run();
 
     ASSERT_EQ(fixture.failure, nullptr);

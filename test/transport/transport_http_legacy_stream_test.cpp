@@ -4,6 +4,7 @@
 // Last-Event-ID. Covers StreamableHttpSessionManager, HttpServerTransport and HttpClientTransport.
 
 #include "../support/hang_guard.hpp"
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
@@ -346,21 +347,18 @@ class LegacyStreamTest : public ::testing::Test {
         auto manager = std::make_unique<mcp::StreamableHttpSessionManager>(
             io_ctx_.get_executor(), "127.0.0.1", port,
             [shared = shared_](const asio::any_io_executor&) { return make_server(shared); });
-        asio::co_spawn(io_ctx_, manager->listen(), asio::detached);
+        mcp_test::spawn_detached(io_ctx_, manager->listen());
         return manager;
     }
 
     /// Runs @p body, then @p stop, and the io_context until nothing is left.
     template <typename Body>
     void run(Body body, std::function<void()> stop) {
-        asio::co_spawn(
-            io_ctx_,
-            [this, &body, stop = std::move(stop)]() -> mcp::Task<void> {
-                co_await body();
-                stop();
-                guard_.cancel();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [this, &body, stop = std::move(stop)]() -> mcp::Task<void> {
+            co_await body();
+            stop();
+            guard_.cancel();
+        });
         io_ctx_.run();
     }
 };
@@ -516,10 +514,9 @@ TEST_F(LegacyStreamTest, HttpServerTransportSendsTheServersRequestWhileTheToolWa
     auto transport = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
     const auto port = transport->port();
     auto server = make_server(shared_);
-    asio::co_spawn(io_ctx_, transport->listen(), asio::detached);
-    asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server->run(transport, io_ctx_.get_executor()); },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, transport->listen());
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server->run(transport, io_ctx_.get_executor()); });
     json question;
     json result;
     json notification;
@@ -586,22 +583,16 @@ TEST_F(LegacyStreamTest, ClientCallsOverlapAndGetTheServersRequestsAndNotificati
             // Each call waits until both have started: one at a time, neither would end.
             auto executor = co_await asio::this_coro::executor;
             auto done = std::make_shared<std::atomic<int>>(0);
-            asio::co_spawn(
-                executor,
-                [&]() -> mcp::Task<void> {
-                    const auto arguments = json{{"tag", "1"}};
-                    first = text_of(co_await client->call_tool("wait", arguments));
-                    ++*done;
-                },
-                asio::detached);
-            asio::co_spawn(
-                executor,
-                [&]() -> mcp::Task<void> {
-                    const auto arguments = json{{"tag", "2"}};
-                    second = text_of(co_await client->call_tool("wait", arguments));
-                    ++*done;
-                },
-                asio::detached);
+            mcp_test::spawn_detached(executor, [&]() -> mcp::Task<void> {
+                const auto arguments = json{{"tag", "1"}};
+                first = text_of(co_await client->call_tool("wait", arguments));
+                ++*done;
+            });
+            mcp_test::spawn_detached(executor, [&]() -> mcp::Task<void> {
+                const auto arguments = json{{"tag", "2"}};
+                second = text_of(co_await client->call_tool("wait", arguments));
+                ++*done;
+            });
             co_await wait_until([this] {
                 std::lock_guard lock(shared_->mutex);
                 return !shared_->servers.empty();
@@ -647,10 +638,9 @@ TEST_F(LegacyStreamTest, HttpServerTransportRefusesAGetThatDoesNotAcceptEventStr
     auto transport = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
     const auto port = transport->port();
     auto server = make_server(shared_);
-    asio::co_spawn(io_ctx_, transport->listen(), asio::detached);
-    asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server->run(transport, io_ctx_.get_executor()); },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, transport->listen());
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server->run(transport, io_ctx_.get_executor()); });
     unsigned json_only = 0;
     unsigned no_accept = 0;
     run(
