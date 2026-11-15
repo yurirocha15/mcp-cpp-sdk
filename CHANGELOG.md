@@ -910,6 +910,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   destroyed temporary; `graceful_shutdown()` did not say that its watchdog keeps
   `io_context::run()` going until the timeout unless cancelled; and several
   pages included the wrong lines of the examples.
+- Reading a protocol or OAuth type into an object that already holds values,
+  with `nlohmann::json::get_to()`, kept the optional members the new JSON
+  omits, such as a result's `nextCursor` or caching hints. Each `from_json`
+  now overwrites its whole target, so `get_to()` gives the same value as
+  `get()`.
 - With libc++, an exception of `nlohmann_json` that the shared library
   throws, such as the `nlohmann::json::type_error` 316 of
   `mcp::detail::dump_json()` for text that is not valid UTF-8, could not be

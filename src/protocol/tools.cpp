@@ -50,6 +50,7 @@ void to_json(nlohmann::json& json_obj, const ToolAnnotations& annotations) {
 }
 
 void from_json(const nlohmann::json& json_obj, ToolAnnotations& annotations) {
+    annotations = ToolAnnotations{};
     if (detail::has_json_value(json_obj, "destructiveHint")) {
         annotations.destructiveHint = json_obj.at("destructiveHint").get<bool>();
     }
@@ -90,6 +91,7 @@ void to_json(nlohmann::json& json_obj, const Tool& tool) {
 }
 
 void from_json(const nlohmann::json& json_obj, Tool& tool) {
+    tool = Tool{};
     json_obj.at("name").get_to(tool.name);
     json_obj.at("inputSchema").get_to(tool.inputSchema);
     if (detail::has_json_value(json_obj, "description")) {
@@ -120,6 +122,7 @@ void to_json(nlohmann::json& json_obj, const CallToolParams& params) {
 }
 
 void from_json(const nlohmann::json& json_obj, CallToolParams& params) {
+    params = CallToolParams{};
     json_obj.at("name").get_to(params.name);
     if (json_obj.contains("arguments") && !json_obj.at("arguments").is_object()) {
         throw std::invalid_argument("CallToolParams arguments must be a JSON object");
@@ -165,6 +168,7 @@ void to_json(nlohmann::json& json_obj, CallToolResult&& result) {
 }
 
 void from_json(const nlohmann::json& json_obj, CallToolResult& result) {
+    result = CallToolResult{};
     json_obj.at("content").get_to(result.content);
     if (detail::has_json_value(json_obj, "isError")) {
         result.isError = json_obj.at("isError").get<bool>();
@@ -195,6 +199,7 @@ void to_json(nlohmann::json& j, const ListToolsRequestParams& p) {
 }
 
 void from_json(const nlohmann::json& j, ListToolsRequestParams& p) {
+    p = ListToolsRequestParams{};
     if (detail::has_json_value(j, "cursor")) {
         p.cursor = j.at("cursor").get<std::string>();
     }
@@ -208,6 +213,7 @@ void to_json(nlohmann::json& j, const ListToolsRequest& r) {
 }
 
 void from_json(const nlohmann::json& j, ListToolsRequest& r) {
+    r = ListToolsRequest{};
     j.at("method").get_to(r.method);
     if (j.contains("params")) {
         r.params = j.at("params").get<ListToolsRequestParams>();
@@ -226,6 +232,7 @@ void to_json(nlohmann::json& j, const ListToolsResult& r) {
 }
 
 void from_json(const nlohmann::json& j, ListToolsResult& r) {
+    r = ListToolsResult{};
     j.at("tools").get_to(r.tools);
     if (detail::has_json_value(j, "nextCursor")) {
         r.nextCursor = j.at("nextCursor").get<std::string>();

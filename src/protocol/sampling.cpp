@@ -16,6 +16,7 @@ void to_json(nlohmann::json& json_obj, const ToolChoice& choice) {
 }
 
 void from_json(const nlohmann::json& json_obj, ToolChoice& choice) {
+    choice = ToolChoice{};
     if (detail::has_json_value(json_obj, "mode")) {
         choice.mode = json_obj.at("mode").get<std::string>();
     }
@@ -29,6 +30,7 @@ void to_json(nlohmann::json& json_obj, const ModelHint& hint) {
 }
 
 void from_json(const nlohmann::json& json_obj, ModelHint& hint) {
+    hint = ModelHint{};
     if (detail::has_json_value(json_obj, "name")) {
         hint.name = json_obj.at("name").get<std::string>();
     }
@@ -51,6 +53,7 @@ void to_json(nlohmann::json& json_obj, const ModelPreferences& prefs) {
 }
 
 void from_json(const nlohmann::json& json_obj, ModelPreferences& prefs) {
+    prefs = ModelPreferences{};
     if (detail::has_json_value(json_obj, "costPriority")) {
         prefs.costPriority = json_obj.at("costPriority").get<double>();
     }
@@ -99,6 +102,7 @@ void to_json(nlohmann::json& json_obj, const SamplingMessage& msg) {
 }
 
 void from_json(const nlohmann::json& json_obj, SamplingMessage& msg) {
+    msg = SamplingMessage{};
     json_obj.at("role").get_to(msg.role);
     json_obj.at("content").get_to(msg.content);
     if (json_obj.contains("_meta")) {
@@ -138,6 +142,7 @@ void to_json(nlohmann::json& json_obj, const CreateMessageRequestParams& params)
 }
 
 void from_json(const nlohmann::json& json_obj, CreateMessageRequestParams& params) {
+    params = CreateMessageRequestParams{};
     json_obj.at("messages").get_to(params.messages);
     json_obj.at("maxTokens").get_to(params.maxTokens);
     if (detail::has_json_value(json_obj, "systemPrompt")) {
@@ -191,6 +196,7 @@ void to_json(nlohmann::json& json_obj, const CreateMessageResult& result) {
 }
 
 void from_json(const nlohmann::json& json_obj, CreateMessageResult& result) {
+    result = CreateMessageResult{};
     json_obj.at("role").get_to(result.role);
     json_obj.at("content").get_to(result.content);
     json_obj.at("model").get_to(result.model);

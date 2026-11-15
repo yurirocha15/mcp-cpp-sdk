@@ -32,6 +32,7 @@ void to_json(nlohmann::json& json_obj, const Resource& resource) {
 }
 
 void from_json(const nlohmann::json& json_obj, Resource& resource) {
+    resource = Resource{};
     json_obj.at("uri").get_to(resource.uri);
     json_obj.at("name").get_to(resource.name);
     if (detail::has_json_value(json_obj, "description")) {
@@ -80,6 +81,7 @@ void to_json(nlohmann::json& json_obj, const ResourceTemplate& tmpl) {
 }
 
 void from_json(const nlohmann::json& json_obj, ResourceTemplate& tmpl) {
+    tmpl = ResourceTemplate{};
     json_obj.at("uriTemplate").get_to(tmpl.uriTemplate);
     json_obj.at("name").get_to(tmpl.name);
     if (detail::has_json_value(json_obj, "description")) {
@@ -108,6 +110,7 @@ void to_json(nlohmann::json& j, const ReadResourceResult& r) {
 }
 
 void from_json(const nlohmann::json& j, ReadResourceResult& r) {
+    r = ReadResourceResult{};
     j.at("contents").get_to(r.contents);
     detail::read_cache_hints(j, r.ttlMs, r.cacheScope);
 }
@@ -120,6 +123,7 @@ void to_json(nlohmann::json& j, const ListResourcesRequestParams& p) {
 }
 
 void from_json(const nlohmann::json& j, ListResourcesRequestParams& p) {
+    p = ListResourcesRequestParams{};
     if (detail::has_json_value(j, "cursor")) {
         p.cursor = j.at("cursor").get<std::string>();
     }
@@ -133,6 +137,7 @@ void to_json(nlohmann::json& j, const ListResourcesRequest& r) {
 }
 
 void from_json(const nlohmann::json& j, ListResourcesRequest& r) {
+    r = ListResourcesRequest{};
     j.at("method").get_to(r.method);
     if (j.contains("params")) {
         r.params = j.at("params").get<ListResourcesRequestParams>();
@@ -151,6 +156,7 @@ void to_json(nlohmann::json& j, const ListResourcesResult& r) {
 }
 
 void from_json(const nlohmann::json& j, ListResourcesResult& r) {
+    r = ListResourcesResult{};
     j.at("resources").get_to(r.resources);
     if (detail::has_json_value(j, "nextCursor")) {
         r.nextCursor = j.at("nextCursor").get<std::string>();
@@ -169,6 +175,7 @@ void to_json(nlohmann::json& j, const ListResourceTemplatesRequestParams& p) {
 }
 
 void from_json(const nlohmann::json& j, ListResourceTemplatesRequestParams& p) {
+    p = ListResourceTemplatesRequestParams{};
     if (detail::has_json_value(j, "cursor")) {
         p.cursor = j.at("cursor").get<std::string>();
     }
@@ -182,6 +189,7 @@ void to_json(nlohmann::json& j, const ListResourceTemplatesRequest& r) {
 }
 
 void from_json(const nlohmann::json& j, ListResourceTemplatesRequest& r) {
+    r = ListResourceTemplatesRequest{};
     j.at("method").get_to(r.method);
     if (j.contains("params")) {
         r.params = j.at("params").get<ListResourceTemplatesRequestParams>();
@@ -200,6 +208,7 @@ void to_json(nlohmann::json& j, const ListResourceTemplatesResult& r) {
 }
 
 void from_json(const nlohmann::json& j, ListResourceTemplatesResult& r) {
+    r = ListResourceTemplatesResult{};
     j.at("resourceTemplates").get_to(r.resourceTemplates);
     if (detail::has_json_value(j, "nextCursor")) {
         r.nextCursor = j.at("nextCursor").get<std::string>();

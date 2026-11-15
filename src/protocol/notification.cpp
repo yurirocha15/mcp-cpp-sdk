@@ -12,6 +12,7 @@ void to_json(nlohmann::json& json_obj, const SetLevelRequestParams& params) {
 }
 
 void from_json(const nlohmann::json& json_obj, SetLevelRequestParams& params) {
+    params = SetLevelRequestParams{};
     json_obj.at("level").get_to(params.level);
     if (detail::has_json_value(json_obj, "_meta")) {
         params.meta = json_obj.at("_meta").get<nlohmann::json>();
@@ -44,6 +45,7 @@ void to_json(nlohmann::json& j, const CancelledNotificationParams& params) {
 }
 
 void from_json(const nlohmann::json& j, CancelledNotificationParams& params) {
+    params = CancelledNotificationParams{};
     j.at("requestId").get_to(params.requestId);
     if (detail::has_json_value(j, "reason")) {
         params.reason = j.at("reason").get<std::string>();
@@ -71,6 +73,7 @@ void to_json(nlohmann::json& j, const ProgressNotificationParams& params) {
 }
 
 void from_json(const nlohmann::json& j, ProgressNotificationParams& params) {
+    params = ProgressNotificationParams{};
     j.at("progressToken").get_to(params.progressToken);
     j.at("progress").get_to(params.progress);
     if (detail::has_json_value(j, "total")) {
@@ -99,6 +102,7 @@ void to_json(nlohmann::json& j, const LoggingMessageNotificationParams& params) 
 }
 
 void from_json(const nlohmann::json& j, LoggingMessageNotificationParams& params) {
+    params = LoggingMessageNotificationParams{};
     j.at("level").get_to(params.level);
     j.at("data").get_to(params.data);
     if (detail::has_json_value(j, "logger")) {

@@ -17,6 +17,7 @@ void to_json(nlohmann::json& json_obj, const PaginatedRequestParams& params) {
 }
 
 void from_json(const nlohmann::json& json_obj, PaginatedRequestParams& params) {
+    params = PaginatedRequestParams{};
     if (detail::has_json_value(json_obj, "cursor")) {
         params.cursor = json_obj.at("cursor").get<std::string>();
     }
@@ -75,6 +76,7 @@ void to_json(nlohmann::json& json_obj, const CompleteContext& context) {
 }
 
 void from_json(const nlohmann::json& json_obj, CompleteContext& context) {
+    context = CompleteContext{};
     if (detail::has_json_value(json_obj, "arguments")) {
         context.arguments = json_obj.at("arguments").get<std::map<std::string, std::string>>();
     }
@@ -91,6 +93,7 @@ void to_json(nlohmann::json& json_obj, const CompleteParams& params) {
 }
 
 void from_json(const nlohmann::json& json_obj, CompleteParams& params) {
+    params = CompleteParams{};
     json_obj.at("ref").get_to(params.ref);
     json_obj.at("argument").get_to(params.argument);
     if (json_obj.contains("context") && !json_obj.at("context").is_null()) {
@@ -112,6 +115,7 @@ void to_json(nlohmann::json& json_obj, const CompletionResultDetails& details) {
 }
 
 void from_json(const nlohmann::json& json_obj, CompletionResultDetails& details) {
+    details = CompletionResultDetails{};
     json_obj.at("values").get_to(details.values);
     if (detail::has_json_value(json_obj, "total")) {
         details.total = json_obj.at("total").get<int64_t>();
@@ -129,6 +133,7 @@ void to_json(nlohmann::json& json_obj, const CompleteResult& result) {
 }
 
 void from_json(const nlohmann::json& json_obj, CompleteResult& result) {
+    result = CompleteResult{};
     json_obj.at("completion").get_to(result.completion);
     if (json_obj.contains("_meta")) {
         result.meta = json_obj.at("_meta").get<nlohmann::json>();

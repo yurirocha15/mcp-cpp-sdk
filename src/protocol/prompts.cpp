@@ -21,6 +21,7 @@ void to_json(nlohmann::json& json_obj, const PromptArgument& arg) {
 }
 
 void from_json(const nlohmann::json& json_obj, PromptArgument& arg) {
+    arg = PromptArgument{};
     json_obj.at("name").get_to(arg.name);
     if (detail::has_json_value(json_obj, "description")) {
         arg.description = json_obj.at("description").get<std::string>();
@@ -53,6 +54,7 @@ void to_json(nlohmann::json& json_obj, const Prompt& prompt) {
 }
 
 void from_json(const nlohmann::json& json_obj, Prompt& prompt) {
+    prompt = Prompt{};
     json_obj.at("name").get_to(prompt.name);
     if (detail::has_json_value(json_obj, "description")) {
         prompt.description = json_obj.at("description").get<std::string>();
@@ -92,6 +94,7 @@ void to_json(nlohmann::json& json_obj, const GetPromptRequestParams& params) {
 }
 
 void from_json(const nlohmann::json& json_obj, GetPromptRequestParams& params) {
+    params = GetPromptRequestParams{};
     json_obj.at("name").get_to(params.name);
     if (detail::has_json_value(json_obj, "arguments")) {
         params.arguments = json_obj.at("arguments").get<std::map<std::string, std::string>>();
@@ -122,6 +125,7 @@ void to_json(nlohmann::json& json_obj, const GetPromptResult& result) {
 }
 
 void from_json(const nlohmann::json& json_obj, GetPromptResult& result) {
+    result = GetPromptResult{};
     json_obj.at("messages").get_to(result.messages);
     if (detail::has_json_value(json_obj, "description")) {
         result.description = json_obj.at("description").get<std::string>();
@@ -139,6 +143,7 @@ void to_json(nlohmann::json& json_obj, const ListPromptsRequest& req) {
 }
 
 void from_json(const nlohmann::json& json_obj, ListPromptsRequest& req) {
+    req = ListPromptsRequest{};
     json_obj.at("method").get_to(req.method);
     if (json_obj.contains("params")) {
         req.params = json_obj.at("params").get<PaginatedRequestParams>();
@@ -157,6 +162,7 @@ void to_json(nlohmann::json& json_obj, const ListPromptsResult& result) {
 }
 
 void from_json(const nlohmann::json& json_obj, ListPromptsResult& result) {
+    result = ListPromptsResult{};
     json_obj.at("prompts").get_to(result.prompts);
     if (detail::has_json_value(json_obj, "nextCursor")) {
         result.nextCursor = json_obj.at("nextCursor").get<std::string>();

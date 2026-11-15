@@ -192,6 +192,7 @@ void to_json(nlohmann::json& j, const StringSchema& s) {
 }
 
 void from_json(const nlohmann::json& j, StringSchema& s) {
+    s = StringSchema{};
     detail::read_annotations(j, s.title, s.description);
     detail::read_count(j, "minLength", s.minLength);
     detail::read_count(j, "maxLength", s.maxLength);
@@ -219,6 +220,7 @@ void to_json(nlohmann::json& j, const NumberSchema& s) {
 }
 
 void from_json(const nlohmann::json& j, NumberSchema& s) {
+    s = NumberSchema{};
     std::string type;
     j.at("type").get_to(type);
     s.integer = type == "integer";
@@ -237,6 +239,7 @@ void to_json(nlohmann::json& j, const BooleanSchema& s) {
 }
 
 void from_json(const nlohmann::json& j, BooleanSchema& s) {
+    s = BooleanSchema{};
     detail::read_annotations(j, s.title, s.description);
     detail::read_optional(j, "default", s.defaultValue);
 }
@@ -254,6 +257,7 @@ void to_json(nlohmann::json& j, const EnumSchema& s) {
 }
 
 void from_json(const nlohmann::json& j, EnumSchema& s) {
+    s = EnumSchema{};
     detail::read_annotations(j, s.title, s.description);
     j.at("enum").get_to(s.enumValues);
     detail::read_optional(j, "enumNames", s.enumNames);
@@ -270,6 +274,7 @@ void to_json(nlohmann::json& j, const TitledEnumSchema& s) {
 }
 
 void from_json(const nlohmann::json& j, TitledEnumSchema& s) {
+    s = TitledEnumSchema{};
     detail::read_annotations(j, s.title, s.description);
     j.at("oneOf").get_to(s.options);
     detail::read_optional(j, "default", s.defaultValue);
@@ -291,6 +296,7 @@ void to_json(nlohmann::json& j, const MultiSelectEnumSchema& s) {
 }
 
 void from_json(const nlohmann::json& j, MultiSelectEnumSchema& s) {
+    s = MultiSelectEnumSchema{};
     detail::read_annotations(j, s.title, s.description);
     detail::read_count(j, "minItems", s.minItems);
     detail::read_count(j, "maxItems", s.maxItems);
@@ -314,6 +320,7 @@ void to_json(nlohmann::json& j, const TitledMultiSelectEnumSchema& s) {
 }
 
 void from_json(const nlohmann::json& j, TitledMultiSelectEnumSchema& s) {
+    s = TitledMultiSelectEnumSchema{};
     detail::read_annotations(j, s.title, s.description);
     detail::read_count(j, "minItems", s.minItems);
     detail::read_count(j, "maxItems", s.maxItems);
@@ -387,6 +394,7 @@ void to_json(nlohmann::json& json_obj, const ElicitRequestURLParams& params) {
 }
 
 void from_json(const nlohmann::json& json_obj, ElicitRequestURLParams& params) {
+    params = ElicitRequestURLParams{};
     json_obj.at("mode").get_to(params.mode);
     json_obj.at("message").get_to(params.message);
     json_obj.at("url").get_to(params.url);
@@ -408,6 +416,7 @@ void to_json(nlohmann::json& json_obj, const ElicitRequestFormParams& params) {
 }
 
 void from_json(const nlohmann::json& json_obj, ElicitRequestFormParams& params) {
+    params = ElicitRequestFormParams{};
     if (detail::has_json_value(json_obj, "mode")) {
         json_obj.at("mode").get_to(params.mode);
     }
@@ -484,6 +493,7 @@ void to_json(nlohmann::json& json_obj, const ElicitResult& result) {
 }
 
 void from_json(const nlohmann::json& json_obj, ElicitResult& result) {
+    result = ElicitResult{};
     json_obj.at("action").get_to(result.action);
     if (json_obj.contains("content")) {
         result.content = json_obj.at("content").get<nlohmann::json>();

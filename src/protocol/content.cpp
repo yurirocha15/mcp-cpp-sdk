@@ -31,6 +31,7 @@ void to_json(nlohmann::json& json_obj, const TextResourceContents& content) {
 }
 
 void from_json(const nlohmann::json& json_obj, TextResourceContents& content) {
+    content = TextResourceContents{};
     json_obj.at("uri").get_to(content.uri);
     json_obj.at("text").get_to(content.text);
     if (detail::has_json_value(json_obj, "mimeType")) {
@@ -52,6 +53,7 @@ void to_json(nlohmann::json& json_obj, const BlobResourceContents& content) {
 }
 
 void from_json(const nlohmann::json& json_obj, BlobResourceContents& content) {
+    content = BlobResourceContents{};
     json_obj.at("uri").get_to(content.uri);
     json_obj.at("blob").get_to(content.blob);
     if (detail::has_json_value(json_obj, "mimeType")) {
@@ -102,6 +104,7 @@ void to_json(nlohmann::json& json_obj, const ResourceLink& link) {
 }
 
 void from_json(const nlohmann::json& json_obj, ResourceLink& link) {
+    link = ResourceLink{};
     json_obj.at("type").get_to(link.type);
     detail::validate_content_type(link.type, "resource_link");
     json_obj.at("uri").get_to(link.uri);
@@ -140,6 +143,7 @@ void to_json(nlohmann::json& json_obj, const EmbeddedResource& res) {
 }
 
 void from_json(const nlohmann::json& json_obj, EmbeddedResource& res) {
+    res = EmbeddedResource{};
     json_obj.at("type").get_to(res.type);
     detail::validate_content_type(res.type, "resource");
     json_obj.at("resource").get_to(res.resource);
@@ -160,6 +164,7 @@ void to_json(nlohmann::json& json_obj, const ToolUseContent& content) {
 }
 
 void from_json(const nlohmann::json& json_obj, ToolUseContent& content) {
+    content = ToolUseContent{};
     json_obj.at("type").get_to(content.type);
     detail::validate_content_type(content.type, "tool_use");
     json_obj.at("id").get_to(content.id);
@@ -185,6 +190,7 @@ void to_json(nlohmann::json& json_obj, const ToolResultContent& content) {
 }
 
 void from_json(const nlohmann::json& json_obj, ToolResultContent& content) {
+    content = ToolResultContent{};
     json_obj.at("type").get_to(content.type);
     detail::validate_content_type(content.type, "tool_result");
     json_obj.at("toolUseId").get_to(content.toolUseId);

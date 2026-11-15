@@ -22,6 +22,7 @@ void to_json(nlohmann::json& json_obj, const Icon& icon) {
 }
 
 void from_json(const nlohmann::json& json_obj, Icon& icon) {
+    icon = Icon{};
     json_obj.at("src").get_to(icon.source);
     if (detail::has_json_value(json_obj, "mimeType")) {
         icon.mimeType = json_obj.at("mimeType").get<std::string>();
@@ -48,6 +49,7 @@ void to_json(nlohmann::json& json_obj, const Annotations& annotations) {
 }
 
 void from_json(const nlohmann::json& json_obj, Annotations& annotations) {
+    annotations = Annotations{};
     if (detail::has_json_value(json_obj, "audience")) {
         annotations.audience = json_obj.at("audience").get<std::vector<Role>>();
     }
@@ -76,6 +78,7 @@ void to_json(nlohmann::json& json_obj, const Implementation& impl) {
 }
 
 void from_json(const nlohmann::json& json_obj, Implementation& impl) {
+    impl = Implementation{};
     json_obj.at("name").get_to(impl.name);
     json_obj.at("version").get_to(impl.version);
     if (detail::has_json_value(json_obj, "title")) {
@@ -103,6 +106,7 @@ void to_json(nlohmann::json& j, const ClientCapabilities::ElicitationCapability&
 }
 
 void from_json(const nlohmann::json& j, ClientCapabilities::ElicitationCapability& cap) {
+    cap = ClientCapabilities::ElicitationCapability{};
     if (j.contains("form")) {
         cap.form = j.at("form");
     }
@@ -119,6 +123,7 @@ void to_json(nlohmann::json& j, const ClientCapabilities::RootsCapability& cap) 
 }
 
 void from_json(const nlohmann::json& j, ClientCapabilities::RootsCapability& cap) {
+    cap = ClientCapabilities::RootsCapability{};
     if (detail::has_json_value(j, "listChanged")) {
         cap.listChanged = j.at("listChanged").get<bool>();
     }
@@ -135,6 +140,7 @@ void to_json(nlohmann::json& j, const ClientCapabilities::SamplingCapability& ca
 }
 
 void from_json(const nlohmann::json& j, ClientCapabilities::SamplingCapability& cap) {
+    cap = ClientCapabilities::SamplingCapability{};
     if (j.contains("context")) {
         cap.context = j.at("context");
     }
@@ -163,6 +169,7 @@ void to_json(nlohmann::json& j, const ClientCapabilities& cap) {
 }
 
 void from_json(const nlohmann::json& j, ClientCapabilities& cap) {
+    cap = ClientCapabilities{};
     if (j.contains("elicitation")) {
         cap.elicitation = j.at("elicitation").get<ClientCapabilities::ElicitationCapability>();
     }
@@ -188,6 +195,7 @@ void to_json(nlohmann::json& j, const ServerCapabilities::PromptsCapability& cap
 }
 
 void from_json(const nlohmann::json& j, ServerCapabilities::PromptsCapability& cap) {
+    cap = ServerCapabilities::PromptsCapability{};
     if (detail::has_json_value(j, "listChanged")) {
         cap.listChanged = j.at("listChanged").get<bool>();
     }
@@ -204,6 +212,7 @@ void to_json(nlohmann::json& j, const ServerCapabilities::ResourcesCapability& c
 }
 
 void from_json(const nlohmann::json& j, ServerCapabilities::ResourcesCapability& cap) {
+    cap = ServerCapabilities::ResourcesCapability{};
     if (detail::has_json_value(j, "listChanged")) {
         cap.listChanged = j.at("listChanged").get<bool>();
     }
@@ -220,6 +229,7 @@ void to_json(nlohmann::json& j, const ServerCapabilities::ToolsCapability& cap) 
 }
 
 void from_json(const nlohmann::json& j, ServerCapabilities::ToolsCapability& cap) {
+    cap = ServerCapabilities::ToolsCapability{};
     if (detail::has_json_value(j, "listChanged")) {
         cap.listChanged = j.at("listChanged").get<bool>();
     }
@@ -251,6 +261,7 @@ void to_json(nlohmann::json& j, const ServerCapabilities& cap) {
 }
 
 void from_json(const nlohmann::json& j, ServerCapabilities& cap) {
+    cap = ServerCapabilities{};
     if (j.contains("completions")) {
         cap.completions = j.at("completions");
     }
@@ -302,6 +313,7 @@ void to_json(nlohmann::json& json_obj, const InitializeResult& res) {
 }
 
 void from_json(const nlohmann::json& json_obj, InitializeResult& res) {
+    res = InitializeResult{};
     json_obj.at("protocolVersion").get_to(res.protocolVersion);
     json_obj.at("capabilities").get_to(res.capabilities);
     json_obj.at("serverInfo").get_to(res.serverInfo);
@@ -318,6 +330,7 @@ void to_json(nlohmann::json& json_obj, const DiscoverRequest& req) {
 }
 
 void from_json(const nlohmann::json& json_obj, DiscoverRequest& req) {
+    req = DiscoverRequest{};
     if (json_obj.contains("_meta")) {
         req.meta = json_obj.at("_meta");
     }
@@ -339,6 +352,7 @@ void to_json(nlohmann::json& json_obj, const DiscoverResult& res) {
 }
 
 void from_json(const nlohmann::json& json_obj, DiscoverResult& res) {
+    res = DiscoverResult{};
     json_obj.at("resultType").get_to(res.resultType);
     json_obj.at("supportedVersions").get_to(res.supportedVersions);
     json_obj.at("capabilities").get_to(res.capabilities);

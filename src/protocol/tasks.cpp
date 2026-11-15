@@ -23,6 +23,7 @@ void to_json(nlohmann::json& json_obj, const TaskData& task) {
 }
 
 void from_json(const nlohmann::json& json_obj, TaskData& task) {
+    task = TaskData{};
     json_obj.at("taskId").get_to(task.taskId);
     json_obj.at("status").get_to(task.status);
     json_obj.at("createdAt").get_to(task.createdAt);
@@ -86,6 +87,7 @@ void to_json(nlohmann::json& json_obj, const CreateTaskResult& result) {
 }
 
 void from_json(const nlohmann::json& json_obj, CreateTaskResult& result) {
+    result = CreateTaskResult{};
     if (json_obj.value("resultType", "") != mcp::constants::tasks::g_RESULT_TYPE_TASK) {
         throw std::invalid_argument("result is not a task");
     }

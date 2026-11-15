@@ -201,6 +201,49 @@ TEST(AuthTokenResponseTest, MinimalDeserialization) {
     EXPECT_FALSE(token.scope.has_value());
 }
 
+// Reading into a token that already holds values gives the same token as a fresh read: a member
+// the new response omits does not keep the old value.
+TEST(AuthTokenResponseTest, ReadingIntoAUsedTokenMatchesAFreshRead) {
+    auto token = json{{"access_token", "a"},
+                      {"token_type", "Bearer"},
+                      {"refresh_token", "r"},
+                      {"expires_in", 60},
+                      {"scope", "s"}}
+                     .get<mcp::auth::TokenResponse>();
+    const json minimal = {{"access_token", "b"}};
+    minimal.get_to(token);
+    const auto fresh = minimal.get<mcp::auth::TokenResponse>();
+    EXPECT_EQ(token.access_token, fresh.access_token);
+    EXPECT_EQ(token.token_type, fresh.token_type);
+    EXPECT_FALSE(token.refresh_token.has_value());
+    EXPECT_FALSE(token.expires_in.has_value());
+    EXPECT_FALSE(token.scope.has_value());
+}
+
+TEST(AuthServerMetadataTest, ReadingIntoUsedMetadataMatchesAFreshRead) {
+    auto metadata = json{
+        {"issuer", "https://as.example"},
+        {"authorization_endpoint", "https://as.example/authorize"},
+        {"token_endpoint", "https://as.example/token"},
+        {"revocation_endpoint", "https://as.example/revoke"},
+        {"registration_endpoint", "https://as.example/register"},
+        {"scopes_supported", {"a"}},
+        {"code_challenge_methods_supported", {"S256"}},
+        {"client_id_metadata_document_supported",
+         true}}.get<mcp::auth::AuthServerMetadata>();
+    const json minimal = {{"issuer", "https://other.example"}};
+    minimal.get_to(metadata);
+    EXPECT_EQ(metadata.issuer, "https://other.example");
+    EXPECT_TRUE(metadata.authorization_endpoint.empty());
+    EXPECT_TRUE(metadata.token_endpoint.empty());
+    EXPECT_FALSE(metadata.revocation_endpoint.has_value());
+    EXPECT_FALSE(metadata.registration_endpoint.has_value());
+    EXPECT_FALSE(metadata.scopes_supported.has_value());
+    EXPECT_FALSE(metadata.code_challenge_methods_supported.has_value());
+    EXPECT_FALSE(metadata.client_id_metadata_document_supported.has_value());
+    EXPECT_EQ(metadata.raw, minimal);
+}
+
 TEST(AuthTokenResponseTest, JsonSerialization) {
     mcp::auth::TokenResponse token;
     token.access_token = "at_ser";

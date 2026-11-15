@@ -2738,4 +2738,201 @@ TEST(ProtocolMemberwiseSerializers, NullMembersReadAsTheirOwnTypesReadThem) {
     EXPECT_EQ(message.role, mcp::Role::eUser);
 }
 
+namespace {
+
+/// Reads @p full into a value, then @p minimal into the same value, and checks the result equals a
+/// fresh read of @p minimal: a member that @p minimal omits does not keep the value @p full gave it.
+template <typename T>
+void expect_reuse_reads_like_fresh(const char* type_name, const json& full, const json& minimal) {
+    SCOPED_TRACE(type_name);
+    auto value = full.get<T>();
+    const auto fresh = minimal.get<T>();
+    ASSERT_NE(json(value), json(fresh)) << "the full document must set a member the minimal one omits";
+    minimal.get_to(value);
+    EXPECT_EQ(json(value), json(fresh));
+}
+
+}  // namespace
+
+TEST(ProtocolReuse, ReadingIntoAUsedValueMatchesAFreshRead) {
+    const json meta = {{"k", 1}};
+    const json icons = json::array({{{"src", "https://example.com/i.png"}}});
+    const json tool = {{"name", "t"}, {"inputSchema", {{"type", "object"}}}};
+    const json text = {{"type", "text"}, {"text", "x"}};
+
+    expect_reuse_reads_like_fresh<mcp::ListPromptsResult>("ListPromptsResult",
+                                                          {{"prompts", json::array({{{"name", "p"}}})},
+                                                           {"nextCursor", "c"},
+                                                           {"_meta", meta},
+                                                           {"ttlMs", 5},
+                                                           {"cacheScope", "public"}},
+                                                          {{"prompts", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::ListToolsResult>("ListToolsResult",
+                                                        {{"tools", json::array({tool})},
+                                                         {"nextCursor", "c"},
+                                                         {"_meta", meta},
+                                                         {"ttlMs", 5},
+                                                         {"cacheScope", "private"}},
+                                                        {{"tools", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::ListResourcesResult>(
+        "ListResourcesResult",
+        {{"resources", json::array({{{"name", "r"}, {"uri", "file:///r"}}})},
+         {"nextCursor", "c"},
+         {"_meta", meta},
+         {"ttlMs", 5},
+         {"cacheScope", "public"}},
+        {{"resources", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::ListResourceTemplatesResult>(
+        "ListResourceTemplatesResult",
+        {{"resourceTemplates", json::array({{{"name", "t"}, {"uriTemplate", "file:///{x}"}}})},
+         {"nextCursor", "c"},
+         {"_meta", meta},
+         {"ttlMs", 5},
+         {"cacheScope", "public"}},
+        {{"resourceTemplates", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::ListSkillsResult>(
+        "ListSkillsResult",
+        {{"skills", json::array()}, {"nextCursor", "c"}, {"ttlMs", 5}, {"cacheScope", "public"}},
+        {{"skills", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::ReadResourceDirectoryResult>(
+        "ReadResourceDirectoryResult",
+        {{"resources", json::array()}, {"nextCursor", "c"}, {"ttlMs", 5}, {"cacheScope", "public"}},
+        {{"resources", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::ReadResourceResult>(
+        "ReadResourceResult", {{"contents", json::array()}, {"ttlMs", 5}, {"cacheScope", "public"}},
+        {{"contents", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::Tool>("Tool",
+                                             {{"name", "t"},
+                                              {"inputSchema", {{"type", "object"}}},
+                                              {"title", "T"},
+                                              {"description", "d"},
+                                              {"outputSchema", {{"type", "object"}}},
+                                              {"annotations", {{"readOnlyHint", true}}},
+                                              {"icons", icons},
+                                              {"_meta", meta}},
+                                             tool);
+    expect_reuse_reads_like_fresh<mcp::Resource>("Resource",
+                                                 {{"name", "r"},
+                                                  {"uri", "file:///r"},
+                                                  {"title", "R"},
+                                                  {"description", "d"},
+                                                  {"mimeType", "text/plain"},
+                                                  {"size", 3},
+                                                  {"annotations", {{"priority", 0.5}}},
+                                                  {"icons", icons},
+                                                  {"_meta", meta}},
+                                                 {{"name", "r"}, {"uri", "file:///r"}});
+    expect_reuse_reads_like_fresh<mcp::Prompt>("Prompt",
+                                               {{"name", "p"},
+                                                {"title", "P"},
+                                                {"description", "d"},
+                                                {"arguments", json::array({{{"name", "a"}}})},
+                                                {"icons", icons},
+                                                {"_meta", meta}},
+                                               {{"name", "p"}});
+    expect_reuse_reads_like_fresh<mcp::GetPromptResult>(
+        "GetPromptResult", {{"messages", json::array()}, {"description", "d"}, {"_meta", meta}},
+        {{"messages", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::CallToolResult>("CallToolResult",
+                                                       {{"content", json::array({text})},
+                                                        {"structuredContent", {{"a", 1}}},
+                                                        {"isError", true},
+                                                        {"_meta", meta}},
+                                                       {{"content", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::Implementation>("Implementation",
+                                                       {{"name", "n"},
+                                                        {"version", "1"},
+                                                        {"title", "T"},
+                                                        {"description", "d"},
+                                                        {"websiteUrl", "https://example.com"},
+                                                        {"icons", icons}},
+                                                       {{"name", "n"}, {"version", "1"}});
+    expect_reuse_reads_like_fresh<mcp::InitializeResult>(
+        "InitializeResult",
+        {{"protocolVersion", "2025-06-18"},
+         {"capabilities", {{"tools", {{"listChanged", true}}}}},
+         {"serverInfo", {{"name", "s"}, {"version", "1"}}},
+         {"instructions", "i"}},
+        {{"protocolVersion", "2025-06-18"},
+         {"capabilities", json::object()},
+         {"serverInfo", {{"name", "s"}, {"version", "1"}}}});
+    expect_reuse_reads_like_fresh<mcp::ServerCapabilities>("ServerCapabilities",
+                                                           {{"tools", {{"listChanged", true}}},
+                                                            {"prompts", {{"listChanged", true}}},
+                                                            {"resources", {{"subscribe", true}}},
+                                                            {"logging", json::object()}},
+                                                           json::object());
+    expect_reuse_reads_like_fresh<mcp::ClientCapabilities>("ClientCapabilities",
+                                                           {{"roots", {{"listChanged", true}}},
+                                                            {"sampling", json::object()},
+                                                            {"elicitation", json::object()}},
+                                                           json::object());
+    expect_reuse_reads_like_fresh<mcp::CreateMessageResult>(
+        "CreateMessageResult",
+        {{"role", "assistant"},
+         {"content", text},
+         {"model", "m"},
+         {"stopReason", "endTurn"},
+         {"_meta", meta}},
+        {{"role", "assistant"}, {"content", text}, {"model", "m"}});
+    expect_reuse_reads_like_fresh<mcp::ElicitResult>(
+        "ElicitResult", {{"action", "accept"}, {"content", {{"a", "b"}}}, {"_meta", meta}},
+        {{"action", "accept"}});
+    expect_reuse_reads_like_fresh<mcp::ProgressNotificationParams>(
+        "ProgressNotificationParams",
+        {{"progressToken", "t"}, {"progress", 1}, {"total", 2}, {"message", "m"}},
+        {{"progressToken", "t"}, {"progress", 1}});
+    expect_reuse_reads_like_fresh<mcp::ListRootsResult>(
+        "ListRootsResult",
+        {{"roots", json::array({{{"uri", "file:///r"}, {"name", "r"}}})}, {"_meta", meta}},
+        {{"roots", json::array()}});
+    expect_reuse_reads_like_fresh<mcp::TextResourceContents>(
+        "TextResourceContents",
+        {{"uri", "file:///r"}, {"text", "x"}, {"mimeType", "text/plain"}, {"_meta", meta}},
+        {{"uri", "file:///r"}, {"text", "x"}});
+    expect_reuse_reads_like_fresh<mcp::Annotations>("Annotations",
+                                                    {{"audience", json::array({"user"})},
+                                                     {"priority", 0.5},
+                                                     {"lastModified", "2025-01-01T00:00:00Z"}},
+                                                    json::object());
+    expect_reuse_reads_like_fresh<mcp::Error>("Error",
+                                              {{"code", 1}, {"message", "m"}, {"data", {{"a", 1}}}},
+                                              {{"code", 1}, {"message", "m"}});
+    expect_reuse_reads_like_fresh<mcp::StringSchema>(
+        "StringSchema",
+        json::parse(
+            R"({"type":"string","title":"t","description":"d","minLength":1,"maxLength":5,"format":"email","default":"x"})"),
+        json::parse(R"({"type":"string"})"));
+    expect_reuse_reads_like_fresh<mcp::NumberSchema>(
+        "NumberSchema",
+        json::parse(R"({"type":"number","title":"t","minimum":1,"maximum":5,"default":2})"),
+        json::parse(R"({"type":"number"})"));
+    expect_reuse_reads_like_fresh<mcp::BooleanSchema>(
+        "BooleanSchema", json::parse(R"({"type":"boolean","title":"t","default":true})"),
+        json::parse(R"({"type":"boolean"})"));
+    expect_reuse_reads_like_fresh<mcp::EnumSchema>(
+        "EnumSchema", json::parse(R"({"type":"string","enum":["a"],"enumNames":["A"],"default":"a"})"),
+        json::parse(R"({"type":"string","enum":["a"]})"));
+    expect_reuse_reads_like_fresh<mcp::TitledEnumSchema>(
+        "TitledEnumSchema",
+        json::parse(
+            R"({"type":"string","oneOf":[{"const":"a","title":"A"}],"title":"t","default":"a"})"),
+        json::parse(R"({"type":"string","oneOf":[{"const":"a","title":"A"}]})"));
+    expect_reuse_reads_like_fresh<mcp::MultiSelectEnumSchema>(
+        "MultiSelectEnumSchema",
+        json::parse(
+            R"({"type":"array","items":{"type":"string","enum":["a"]},"minItems":1,"maxItems":2,"default":["a"]})"),
+        json::parse(R"({"type":"array","items":{"type":"string","enum":["a"]}})"));
+    expect_reuse_reads_like_fresh<mcp::TitledMultiSelectEnumSchema>(
+        "TitledMultiSelectEnumSchema",
+        json::parse(
+            R"({"type":"array","items":{"anyOf":[{"const":"a","title":"A"}]},"minItems":1,"default":["a"]})"),
+        json::parse(R"({"type":"array","items":{"anyOf":[{"const":"a","title":"A"}]}})"));
+    expect_reuse_reads_like_fresh<mcp::CompleteResult>(
+        "CompleteResult",
+        {{"completion", {{"values", json::array({"a"})}, {"total", 1}, {"hasMore", false}}},
+         {"_meta", meta}},
+        {{"completion", {{"values", json::array({"a"})}}}});
+}
+
 }  // namespace protocol_test

@@ -58,6 +58,7 @@ void to_json(nlohmann::json& json_obj, const Error& error) {
 }
 
 void from_json(const nlohmann::json& json_obj, Error& error) {
+    error = Error{};
     // A numeric code that does not fit is still an error: converting it would be undefined
     // behaviour, and refusing it would leave the caller waiting for an answer.
     if (detail::is_number_outside_int(json_obj.at("code"))) {
@@ -127,6 +128,7 @@ void to_json(nlohmann::json& json_obj, const JSONRPCRequest& req) {
 }
 
 void from_json(const nlohmann::json& json_obj, JSONRPCRequest& req) {
+    req = JSONRPCRequest{};
     req.id = json_obj.at("id").get<RequestId>();
     json_obj.at("jsonrpc").get_to(req.jsonrpc);
     detail::validate_jsonrpc_version(req.jsonrpc);
@@ -144,6 +146,7 @@ void to_json(nlohmann::json& json_obj, const JSONRPCNotification& notif) {
 }
 
 void from_json(const nlohmann::json& json_obj, JSONRPCNotification& notif) {
+    notif = JSONRPCNotification{};
     json_obj.at("jsonrpc").get_to(notif.jsonrpc);
     detail::validate_jsonrpc_version(notif.jsonrpc);
     json_obj.at("method").get_to(notif.method);
@@ -176,6 +179,7 @@ void to_json(nlohmann::json& json_obj, const JSONRPCErrorResponse& resp) {
 }
 
 void from_json(const nlohmann::json& json_obj, JSONRPCErrorResponse& resp) {
+    resp = JSONRPCErrorResponse{};
     json_obj.at("error").get_to(resp.error);
     json_obj.at("jsonrpc").get_to(resp.jsonrpc);
     detail::validate_jsonrpc_version(resp.jsonrpc);

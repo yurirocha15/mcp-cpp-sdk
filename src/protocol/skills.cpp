@@ -66,6 +66,7 @@ void to_json(nlohmann::json& json_obj, const ListSkillsResult& result) {
 }
 
 void from_json(const nlohmann::json& json_obj, ListSkillsResult& result) {
+    result = ListSkillsResult{};
     json_obj.at("skills").get_to(result.skills);
     if (detail::has_json_value(json_obj, "nextCursor")) {
         result.nextCursor = json_obj.at("nextCursor").get<std::string>();
@@ -79,6 +80,7 @@ void to_json(nlohmann::json& json_obj, const GetSkillResult& result) {
 }
 
 void from_json(const nlohmann::json& json_obj, GetSkillResult& result) {
+    result = GetSkillResult{};
     json_obj.at("skill").get_to(result.skill);
     detail::read_cache_hints(json_obj, result.ttlMs, result.cacheScope);
 }
@@ -92,6 +94,7 @@ void to_json(nlohmann::json& json_obj, const ReadResourceDirectoryResult& result
 }
 
 void from_json(const nlohmann::json& json_obj, ReadResourceDirectoryResult& result) {
+    result = ReadResourceDirectoryResult{};
     json_obj.at("resources").get_to(result.resources);
     if (detail::has_json_value(json_obj, "nextCursor")) {
         result.nextCursor = json_obj.at("nextCursor").get<std::string>();
