@@ -2,21 +2,17 @@
 /// @brief MCP server adapter for llama.cpp llama-server, with stdio and HTTP transport.
 
 #include <mcp/server/server.hpp>
-#include <mcp/transport/http_server.hpp>
-#include <mcp/transport/stdio.hpp>
 
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/connect.hpp>
-#include <boost/asio/detached.hpp>
-#include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
-#include <memory>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -93,35 +89,33 @@ static ParseResult parse_args(int argc, char** argv, AppOptions& opts) {
     return ParseResult::eOk;
 }
 
-static nlohmann::json make_text_result(std::string_view text) {
-    return nlohmann::json{{"content", nlohmann::json::array({nlohmann::json{
-                                          {"type", "text"}, {"text", std::string(text)}}})}};
-}
-
-static nlohmann::json make_error_result(std::string_view msg) {
-    return nlohmann::json{
-        {"content",
-         nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", std::string(msg)}}})},
-        {"isError", true}};
-}
-
-static mcp::Task<std::string> call_llama(asio::any_io_executor executor, std::string host,
-                                         unsigned short port, http::verb method, std::string target,
-                                         std::string body) {
+/// Sends one request to llama-server and returns the body of its answer.
+///
+/// The parameters are taken by value: a coroutine keeps its parameters in its frame, so a
+/// reference to a caller's temporary would dangle once the coroutine suspends.
+static mcp::Task<std::string> call_llama(std::string host, unsigned short port, http::verb method,
+                                         std::string target, std::string body) {
+    auto executor = co_await asio::this_coro::executor;
     tcp::resolver resolver(executor);
     beast::tcp_stream stream(executor);
 
-    auto const endpoints =
-        co_await resolver.async_resolve(host, std::to_string(port), asio::use_awaitable);
-    co_await asio::async_connect(stream.socket(), endpoints, asio::use_awaitable);
+    // Generating text can take a while. One deadline covers connecting, sending and reading.
+    stream.expires_after(std::chrono::seconds(120 /* NOLINT */));
+
+    try {
+        auto const endpoints =
+            co_await resolver.async_resolve(host, std::to_string(port), asio::use_awaitable);
+        co_await stream.async_connect(endpoints, asio::use_awaitable);
+    } catch (const boost::system::system_error& error) {
+        throw std::runtime_error("cannot reach llama-server at " + host + ":" + std::to_string(port) +
+                                 ": " + error.code().message());
+    }
 
     http::request<http::string_body> req{method, target, 11 /* NOLINT */};
     req.set(http::field::host, host);
     req.set(http::field::content_type, "application/json");
     req.body() = std::move(body);
     req.prepare_payload();
-
-    stream.expires_after(std::chrono::seconds(120 /* NOLINT */));
     co_await http::async_write(stream, req, asio::use_awaitable);
 
     beast::flat_buffer buf;
@@ -131,7 +125,11 @@ static mcp::Task<std::string> call_llama(asio::any_io_executor executor, std::st
     beast::error_code ec;
     (void)stream.socket().shutdown(tcp::socket::shutdown_both, ec);
 
-    co_return res.body();
+    if (res.result_int() < 200 || res.result_int() >= 300) {  // NOLINT
+        throw std::runtime_error("llama-server answered " + target + " with HTTP " +
+                                 std::to_string(res.result_int()));
+    }
+    co_return std::move(res.body());
 }
 
 int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-complexity)
@@ -148,10 +146,9 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
         }
 
         ServerCapabilities caps;
-        caps.tools = ServerCapabilities::ToolsCapability{.listChanged = true};
-        caps.resources = ServerCapabilities::ResourcesCapability{.listChanged = true};
-        caps.prompts = ServerCapabilities::PromptsCapability{.listChanged = true};
-        caps.logging = nlohmann::json::object();
+        caps.tools = ServerCapabilities::ToolsCapability{};
+        caps.resources = ServerCapabilities::ResourcesCapability{};
+        caps.prompts = ServerCapabilities::PromptsCapability{};
 
         Implementation info;
         info.name = "llama-mcp-server";
@@ -160,39 +157,34 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
 
         Server server(info, caps);
 
-        boost::asio::io_context io_ctx;
-        asio::any_io_executor io_executor = io_ctx.get_executor();
-
+        // The handlers below await llama-server without blocking: while one waits for a reply,
+        // the server goes on reading and answering other requests on the same thread. A handler
+        // that throws (llama-server unreachable, an error status, an unexpected reply) is answered
+        // with an isError result carrying the exception's message.
         nlohmann::json chat_schema = {{"type", "object"},
                                       {"properties",
                                        {{"messages", {{"type", "array"}}},
                                         {"temperature", {{"type", "number"}}},
                                         {"max_tokens", {{"type", "integer"}}}}},
                                       {"required", nlohmann::json::array({"messages"})}};
-        server.add_tool<nlohmann::json, nlohmann::json>(
+        server.add_tool<nlohmann::json, CallToolResult>(
             "chat", "Send chat messages to the llama-server model", chat_schema,
-            [io_executor, opts](nlohmann::json args) -> mcp::Task<nlohmann::json> {
-                try {
-                    nlohmann::json body;
-                    body["messages"] = args.at("messages");
-                    if (args.contains("temperature")) {
-                        body["temperature"] = args["temperature"];
-                    }
-                    if (args.contains("max_tokens")) {
-                        body["max_tokens"] = args["max_tokens"];
-                    }
-
-                    auto resp_str =
-                        co_await call_llama(io_executor, opts.llama_host, opts.llama_port,
-                                            http::verb::post, "/v1/chat/completions", body.dump());
-
-                    auto resp_json = nlohmann::json::parse(resp_str);
-                    auto text =
-                        resp_json.at("choices").at(0).at("message").at("content").get<std::string>();
-                    co_return make_text_result(text);
-                } catch (const std::exception& e) {
-                    co_return make_error_result(e.what());
+            [opts](nlohmann::json args) -> Task<CallToolResult> {
+                nlohmann::json body;
+                body["messages"] = std::move(args.at("messages"));
+                if (args.contains("temperature")) {
+                    body["temperature"] = args["temperature"];
                 }
+                if (args.contains("max_tokens")) {
+                    body["max_tokens"] = args["max_tokens"];
+                }
+
+                auto resp_str = co_await call_llama(opts.llama_host, opts.llama_port, http::verb::post,
+                                                    "/v1/chat/completions", body.dump());
+
+                auto resp_json = nlohmann::json::parse(resp_str);
+                co_return make_tool_text_result(
+                    resp_json.at("choices").at(0).at("message").at("content").get<std::string>());
             });
 
         nlohmann::json complete_schema = {{"type", "object"},
@@ -201,51 +193,40 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                                             {"temperature", {{"type", "number"}}},
                                             {"max_tokens", {{"type", "integer"}}}}},
                                           {"required", nlohmann::json::array({"prompt"})}};
-        server.add_tool<nlohmann::json, nlohmann::json>(
+        server.add_tool<nlohmann::json, CallToolResult>(
             "complete", "Generate text completion from the llama-server model", complete_schema,
-            [io_executor, opts](nlohmann::json args) -> mcp::Task<nlohmann::json> {
-                try {
-                    nlohmann::json body;
-                    body["prompt"] = args.at("prompt");
-                    if (args.contains("temperature")) {
-                        body["temperature"] = args["temperature"];
-                    }
-                    if (args.contains("max_tokens")) {
-                        body["max_tokens"] = args["max_tokens"];
-                    }
-
-                    auto resp_str =
-                        co_await call_llama(io_executor, opts.llama_host, opts.llama_port,
-                                            http::verb::post, "/v1/completions", body.dump());
-
-                    auto resp_json = nlohmann::json::parse(resp_str);
-                    auto text = resp_json.at("choices").at(0).at("text").get<std::string>();
-                    co_return make_text_result(text);
-                } catch (const std::exception& e) {
-                    co_return make_error_result(e.what());
+            [opts](nlohmann::json args) -> Task<CallToolResult> {
+                nlohmann::json body;
+                body["prompt"] = std::move(args.at("prompt"));
+                if (args.contains("temperature")) {
+                    body["temperature"] = args["temperature"];
                 }
+                if (args.contains("max_tokens")) {
+                    body["max_tokens"] = args["max_tokens"];
+                }
+
+                auto resp_str = co_await call_llama(opts.llama_host, opts.llama_port, http::verb::post,
+                                                    "/v1/completions", body.dump());
+
+                auto resp_json = nlohmann::json::parse(resp_str);
+                co_return make_tool_text_result(
+                    resp_json.at("choices").at(0).at("text").get<std::string>());
             });
 
         nlohmann::json embed_schema = {{"type", "object"},
                                        {"properties", {{"input", {{"type", "string"}}}}},
                                        {"required", nlohmann::json::array({"input"})}};
-        server.add_tool<nlohmann::json, nlohmann::json>(
+        server.add_tool<nlohmann::json, CallToolResult>(
             "embed", "Generate embedding vector from the llama-server model", embed_schema,
-            [io_executor, opts](nlohmann::json args) -> mcp::Task<nlohmann::json> {
-                try {
-                    nlohmann::json body;
-                    body["input"] = args.at("input");
+            [opts](nlohmann::json args) -> Task<CallToolResult> {
+                nlohmann::json body;
+                body["input"] = std::move(args.at("input"));
 
-                    auto resp_str =
-                        co_await call_llama(io_executor, opts.llama_host, opts.llama_port,
-                                            http::verb::post, "/v1/embeddings", body.dump());
+                auto resp_str = co_await call_llama(opts.llama_host, opts.llama_port, http::verb::post,
+                                                    "/v1/embeddings", body.dump());
 
-                    auto resp_json = nlohmann::json::parse(resp_str);
-                    auto& embedding = resp_json.at("data").at(0).at("embedding");
-                    co_return make_text_result(embedding.dump());
-                } catch (const std::exception& e) {
-                    co_return make_error_result(e.what());
-                }
+                auto resp_json = nlohmann::json::parse(resp_str);
+                co_return make_tool_text_result(resp_json.at("data").at(0).at("embedding").dump());
             });
 
         mcp::Resource models_resource;
@@ -254,32 +235,21 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
         models_resource.description = "Models currently loaded in llama-server";
         models_resource.mimeType = "application/json";
 
+        // A resource handler that throws is answered with a JSON-RPC error.
         server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
             models_resource,
-            [io_executor,
-             opts](mcp::ReadResourceRequestParams params) -> mcp::Task<mcp::ReadResourceResult> {
-                try {
-                    auto resp_str = co_await call_llama(io_executor, opts.llama_host, opts.llama_port,
-                                                        http::verb::get, "/v1/models", "");
+            [opts](mcp::ReadResourceRequestParams params) -> Task<mcp::ReadResourceResult> {
+                auto resp_str = co_await call_llama(opts.llama_host, opts.llama_port, http::verb::get,
+                                                    "/v1/models", "");
 
-                    mcp::TextResourceContents contents;
-                    contents.uri = params.uri;
-                    contents.text = std::move(resp_str);
-                    contents.mimeType = "application/json";
+                mcp::TextResourceContents contents;
+                contents.uri = std::move(params.uri);
+                contents.text = std::move(resp_str);
+                contents.mimeType = "application/json";
 
-                    mcp::ReadResourceResult result;
-                    result.contents.emplace_back(std::move(contents));
-                    co_return result;
-                } catch (const std::exception& e) {
-                    mcp::TextResourceContents err_contents;
-                    err_contents.uri = params.uri;
-                    err_contents.text = std::string("Error fetching models: ") + e.what();
-                    err_contents.mimeType = "text/plain";
-
-                    mcp::ReadResourceResult result;
-                    result.contents.emplace_back(std::move(err_contents));
-                    co_return result;
-                }
+                mcp::ReadResourceResult result;
+                result.contents.emplace_back(std::move(contents));
+                co_return result;
             });
 
         mcp::Prompt summarize_prompt;
@@ -313,38 +283,12 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                 return result;
             });
 
+        // Both block: run_stdio() until standard input ends, and either until SIGINT or SIGTERM.
         if (opts.transport == "stdio") {
-            auto transport = std::make_shared<StdioTransport>(io_ctx.get_executor());
-
-            boost::asio::co_spawn(
-                io_ctx,
-                [&, transport = transport]() mutable -> Task<void> {
-                    co_await server.run(transport, io_ctx.get_executor());
-                },
-                boost::asio::detached);
+            server.run_stdio();
         } else {
-            std::cerr << "Listening on http://" << opts.host << ":" << std::to_string(opts.port)
-                      << "/mcp\n";
-            auto http_transport =
-                std::make_shared<mcp::HttpServerTransport>(io_ctx.get_executor(), opts.host, opts.port);
-            auto* http_ptr = http_transport.get();
-            boost::asio::co_spawn(
-                io_ctx,
-                [&, transport = http_transport]() mutable -> mcp::Task<void> {
-                    boost::asio::co_spawn(io_ctx, http_ptr->listen(), boost::asio::detached);
-                    co_await server.run(transport, io_ctx.get_executor());
-                },
-                boost::asio::detached);
-        }
-
-        try {
-            io_ctx.run();
-        } catch (const std::exception& e) {
-            std::cerr << "Fatal error: " << e.what() << "\n";
-            return EXIT_FAILURE;
-        } catch (...) {
-            std::cerr << "Unknown fatal error\n";
-            return EXIT_FAILURE;
+            std::cerr << "Listening on http://" << opts.host << ":" << opts.port << "/mcp\n";
+            server.run_http(opts.host, opts.port);
         }
         return EXIT_SUCCESS;
     } catch (const std::exception& e) {
