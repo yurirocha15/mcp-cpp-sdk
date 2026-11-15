@@ -54,9 +54,8 @@ Follow these guidelines:
 Naming Conventions
 ^^^^^^^^^^^^^^^^^^
 
-Follow these naming conventions:
-
-These are the rules in ``.clang-tidy`` (``readability-identifier-naming``):
+Follow these naming conventions, which ``.clang-tidy`` enforces with
+``readability-identifier-naming``:
 
 * **Classes/Structs/Enums/Unions/Concepts**: ``CamelCase`` (e.g., ``Server``, ``ITransport``, ``CallToolRequest``)
 * **Functions/Methods**: ``lower_case`` (e.g., ``add_tool()``, ``call_tool()``, ``log_info()``)
@@ -69,6 +68,11 @@ These are the rules in ``.clang-tidy`` (``readability-identifier-naming``):
 * **Class constants** (static data members): ``lower_case`` (e.g., ``max_repeat_count``)
 * **Macros**: ``UPPER_CASE`` (e.g., ``MCP_DEPRECATED``)
 * **Namespaces**: ``lower_case`` (e.g., ``namespace mcp { namespace detail { ... } }``)
+
+``make lint`` runs the check locally. The CI ``Identifier naming`` job runs only
+``readability-identifier-naming`` over ``src/``, ``include/`` and ``examples/``,
+the directories ``make lint`` checks, and fails on any violation. It runs when a
+change touches those directories, ``.clang-tidy`` or the CMake files.
 
 Code Formatting
 ^^^^^^^^^^^^^^^
