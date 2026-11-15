@@ -19,12 +19,10 @@ concurrency:
 
 jobs:
   changes:
-    # Runner concurrency is shared by every repository on the account, so the matrices below cap
-    # their parallel jobs and each job runs only when a file it reads changed. Build still runs with
-    # every step skipped: its checks are required on main, and a skipped matrix job reports one
-    # unexpanded check name instead of the required ones.
+    # Each job below runs only when a file it reads changed. A skipped job passes the CI result
+    # check at the end, which is the one check main requires.
     name: Detect changes
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     outputs:
       naming: ${{ steps.classify.outputs.naming }}
       code: ${{ steps.classify.outputs.code }}
@@ -93,10 +91,10 @@ jobs:
   build:
     name: Build (${{ matrix.os }}, C++${{ matrix.cppstd }}, ${{ matrix.linkage }})
     needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      max-parallel: 4
       matrix:
         include:
           - {os: ubuntu-24.04, cppstd: '20', linkage: both}
@@ -106,33 +104,30 @@ jobs:
           # The Windows release is built with Visual Studio 2022 (release/windows/).
           - {os: windows-2022, cppstd: '20', linkage: both}
           - {os: macos-latest, cppstd: '20', linkage: both}
-          - {os: ubuntu-24.04, cppstd: '20', linkage: static}
-          - {os: ubuntu-24.04, cppstd: '23', linkage: both}
+          # C++23 and static linkage share one build.
+          - {os: ubuntu-24.04, cppstd: '23', linkage: static}
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      if: needs.changes.outputs.code == 'true'
       with:
         persist-credentials: false
 
     - name: Set up Python
-      if: needs.changes.outputs.code == 'true'
       uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
       with:
         python-version: '3.12'
 
     - name: Install CMake
-      if: needs.changes.outputs.code == 'true'
       uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
       with:
         cmake-version: '3.25'
 
     - name: Setup MSVC
-      if: needs.changes.outputs.code == 'true' && (runner.os == 'Windows')
+      if: runner.os == 'Windows'
       uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
 
     - name: Set Conan Home
-      if: needs.changes.outputs.code == 'true' && (runner.os == 'Windows')
+      if: runner.os == 'Windows'
       run: |
         mkdir -p C:\.c
         echo "CONAN_HOME=C:\.c" >> "$GITHUB_ENV"
@@ -142,7 +137,6 @@ jobs:
     # pull request's caches, and their copies pushed main's entries out of the repository's
     # 10 GB cache storage, so every pull request built without ccache.
     - name: Restore Conan packages
-      if: needs.changes.outputs.code == 'true'
       id: conan-cache
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
@@ -153,11 +147,9 @@ jobs:
         restore-keys: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-conan-
 
     - name: Install Dependencies
-      if: needs.changes.outputs.code == 'true'
       run: python scripts/init.py
 
     - name: Setup ccache
-      if: needs.changes.outputs.code == 'true'
       uses: hendrikmuhs/ccache-action@dbeefd73e8e2ffc1bbc412570072735eb4db3607 # v1.2.25
       with:
         key: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-${{ matrix.linkage }}-ccache-${{ github.ref }}
@@ -172,7 +164,6 @@ jobs:
     # there and its absence is a broken runner, not an unsupported host. macOS gives lo0 only
     # 127.0.0.1 unless an alias is added, so the skip stays available there.
     - name: Build and Test
-      if: needs.changes.outputs.code == 'true'
       env:
         MCP_REQUIRE_TWIN_LOOPBACK: ${{ runner.os == 'Linux' && '1' || '' }}
       run: >-
@@ -183,36 +174,34 @@ jobs:
     # would. Skipped on Windows: the check drives the compiler from
     # compile_commands.json with GCC/Clang flag spellings.
     - name: Compile README snippets
-      if: needs.changes.outputs.code == 'true' && (runner.os != 'Windows')
+      if: runner.os != 'Windows'
       run: python scripts/check_readme_snippets.py
 
     # The reStructuredText guides carry complete programs too. Same compiler and
     # flags as the README check; code-blocks without a main are reported as skipped.
     - name: Compile documentation snippets
-      if: needs.changes.outputs.code == 'true' && (runner.os != 'Windows')
+      if: runner.os != 'Windows'
       run: |
         PYTHONPATH=scripts python3 -m unittest -v scripts.test_check_doc_snippets
         python scripts/check_doc_snippets.py
 
     - name: Run Examples
-      if: needs.changes.outputs.code == 'true'
       run: python scripts/run_examples.py
 
     # On the stdio transport stdout is the protocol channel. Running an example
     # and checking its exit code does not notice prose printed there, so assert
     # the stream separately. run_examples.py builds into build/release.
     - name: Check stdio protocol streams
-      if: needs.changes.outputs.code == 'true'
       run: python scripts/check_stdio_streams.py build/release
 
     # Dependencies built from source leave their source and build trees under p/. Only the
     # packages are needed to restore, so the trees are dropped before the cache is archived.
     - name: Drop Conan build trees before saving the cache
-      if: needs.changes.outputs.code == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true')
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
       run: conan cache clean "*" --source --build --download --temp
 
     - name: Save Conan packages
-      if: needs.changes.outputs.code == 'true' && (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true')
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
@@ -221,12 +210,23 @@ jobs:
         key: ${{ steps.conan-cache.outputs.cache-primary-key }}
 
   sanitize:
-    # Both compilers share one runner. Each builds in its own directory, and the Clang step runs
-    # even when the GCC step fails so that one run reports both.
-    name: sanitize
+    # One job per compiler. The GCC job also collects the coverage report for Codecov, so the
+    # instrumented tests run once for both. The sanitizer jobs build only the shared library, which
+    # the tests link; the Build jobs build the static one.
+    name: sanitize (${{ matrix.compiler }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # Codecov authenticates the upload with the workflow's OIDC token, so no secret is stored.
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {compiler: gcc, build_args: --compiler default --coverage}
+          - {compiler: clang, build_args: --compiler clang}
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -248,30 +248,38 @@ jobs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.conan2/p
-        key: ubuntu-24.04-conan-sanitize-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
+        key: ubuntu-24.04-conan-sanitize-${{ matrix.compiler }}-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
         restore-keys: ubuntu-24.04-conan-
 
     - name: Install Dependencies
       run: python scripts/init.py
 
+    - name: Install gcovr
+      if: matrix.compiler == 'gcc'
+      run: python -m pip install gcovr==8.8
+
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@dbeefd73e8e2ffc1bbc412570072735eb4db3607 # v1.2.25
       with:
-        key: ubuntu-24.04-sanitize-ccache-${{ github.ref }}
+        key: ubuntu-24.04-sanitize-${{ matrix.compiler }}-ccache-${{ github.ref }}
         save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        restore-keys: ubuntu-24.04-sanitize-ccache
-        max-size: 1500M
+        restore-keys: ubuntu-24.04-sanitize-${{ matrix.compiler }}-ccache
+        max-size: 1G
 
-    - name: Build and Test with Sanitizers (GCC)
+    - name: Build and Test with Sanitizers
       env:
         MCP_REQUIRE_TWIN_LOOPBACK: '1'
-      run: python scripts/build.py --sanitize --compiler default --test --quiet
+      run: python scripts/build.py --sanitize ${{ matrix.build_args }} --linkage shared --test --quiet
 
-    - name: Build and Test with Sanitizers (Clang)
-      if: ${{ !cancelled() }}
-      env:
-        MCP_REQUIRE_TWIN_LOOPBACK: '1'
-      run: python scripts/build.py --sanitize --compiler clang --test --quiet
+    - name: Upload coverage to Codecov
+      if: matrix.compiler == 'gcc'
+      uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+      with:
+        files: build/sanitize/coverage.xml
+        disable_search: true
+        # Pull requests from forks get no OIDC token; Codecov takes their upload without one.
+        use_oidc: ${{ !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) }}
+        fail_ci_if_error: true
 
     - name: Drop Conan build trees before saving the cache
       if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
@@ -285,12 +293,16 @@ jobs:
         key: ${{ steps.conan-cache.outputs.cache-primary-key }}
 
   tsan:
-    # Both compilers share one runner. Each builds in its own directory, and the Clang step runs
-    # even when the GCC step fails so that one run reports both.
-    name: tsan
+    name: tsan (${{ matrix.compiler }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {compiler: gcc, build_args: --compiler default}
+          - {compiler: clang, build_args: --compiler clang}
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -312,7 +324,7 @@ jobs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.conan2/p
-        key: ubuntu-24.04-conan-tsan-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
+        key: ubuntu-24.04-conan-tsan-${{ matrix.compiler }}-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
         restore-keys: ubuntu-24.04-conan-
 
     - name: Install Dependencies
@@ -321,92 +333,15 @@ jobs:
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@dbeefd73e8e2ffc1bbc412570072735eb4db3607 # v1.2.25
       with:
-        key: ubuntu-24.04-tsan-ccache-${{ github.ref }}
+        key: ubuntu-24.04-tsan-${{ matrix.compiler }}-ccache-${{ github.ref }}
         save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        restore-keys: ubuntu-24.04-tsan-ccache
-        max-size: 1G
+        restore-keys: ubuntu-24.04-tsan-${{ matrix.compiler }}-ccache
+        max-size: 500M
 
-    - name: Build and Test with ThreadSanitizer (GCC)
+    - name: Build and Test with ThreadSanitizer
       env:
         MCP_REQUIRE_TWIN_LOOPBACK: '1'
-      run: python scripts/build.py --tsan --compiler default --test --quiet
-
-    - name: Build and Test with ThreadSanitizer (Clang)
-      if: ${{ !cancelled() }}
-      env:
-        MCP_REQUIRE_TWIN_LOOPBACK: '1'
-      run: python scripts/build.py --tsan --compiler clang --test --quiet
-
-    - name: Drop Conan build trees before saving the cache
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
-      run: conan cache clean "*" --source --build --download --temp
-
-    - name: Save Conan packages
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ~/.conan2/p
-        key: ${{ steps.conan-cache.outputs.cache-primary-key }}
-
-  coverage:
-    name: coverage
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      # Codecov authenticates the upload with the workflow's OIDC token, so no secret is stored.
-      id-token: write
-
-    steps:
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        persist-credentials: false
-
-    - name: Set up Python
-      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-      with:
-        python-version: '3.12'
-
-    - name: Install CMake
-      uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
-      with:
-        cmake-version: '3.25'
-
-    - name: Restore Conan packages
-      id: conan-cache
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: ~/.conan2/p
-        key: ubuntu-24.04-conan-coverage-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
-        restore-keys: ubuntu-24.04-conan-
-
-    - name: Install Dependencies
-      run: |
-        python scripts/init.py
-        python -m pip install gcovr==8.8
-
-    - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
-      with:
-        key: ubuntu-24.04-coverage-ccache-${{ github.ref }}
-        save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-        restore-keys: ubuntu-24.04-coverage-ccache
-        max-size: 1G
-
-    - name: Build and Test with coverage
-      env:
-        MCP_REQUIRE_TWIN_LOOPBACK: '1'
-      run: python scripts/build.py --coverage --test --quiet
-
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
-      with:
-        files: build/coverage/coverage.xml
-        disable_search: true
-        # Pull requests from forks get no OIDC token; Codecov takes their upload without one.
-        use_oidc: ${{ !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) }}
-        fail_ci_if_error: true
+      run: python scripts/build.py --tsan ${{ matrix.build_args }} --linkage shared --test --quiet
 
     - name: Drop Conan build trees before saving the cache
       if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
@@ -471,7 +406,7 @@ jobs:
     - name: Build and Test with MemorySanitizer
       env:
         MCP_REQUIRE_TWIN_LOOPBACK: '1'
-      run: python scripts/build.py --msan --test --quiet
+      run: python scripts/build.py --msan --linkage shared --test --quiet
 
     - name: Drop Conan build trees before saving the cache
       if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.conan-cache.outputs.cache-hit != 'true'
@@ -557,7 +492,7 @@ jobs:
     name: Benchmark tooling tests
     needs: changes
     if: needs.changes.outputs.benchmark == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -579,7 +514,6 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
         shared: ['False', 'True']
 
@@ -633,7 +567,7 @@ jobs:
     name: Native package source
     needs: changes
     if: needs.changes.outputs.package_core == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     outputs:
       routes: ${{ steps.routes.outputs.routes }}
 
@@ -665,7 +599,6 @@ jobs:
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      max-parallel: 3
       matrix:
         include: ${{ fromJSON(needs.package-core.outputs.routes) }}
 
@@ -693,7 +626,6 @@ jobs:
     if: needs.changes.outputs.homebrew_package == 'true'
     strategy:
       fail-fast: false
-      max-parallel: 2
       matrix:
         include:
           - {runner: macos-15-intel, bottle_tag: sequoia}
@@ -803,3 +735,39 @@ jobs:
           -ExpectedConanVersion $env:WINDOWS_RELEASE_CONAN_VERSION `
           -ExpectedVCToolsVersion $env:WINDOWS_RELEASE_VCTOOLS_VERSION `
           -ExpectedMscVer ([int]$env:WINDOWS_RELEASE_MSC_VER)
+
+  result:
+    # The one check main requires. A job skipped because nothing it reads changed passes; a failed
+    # or cancelled job fails this one.
+    name: CI result
+    if: always()
+    needs:
+      - changes
+      - naming
+      - build
+      - sanitize
+      - tsan
+      - msan
+      - release-safety
+      - release-powershell
+      - benchmark-tooling
+      - conan-package
+      - package-core
+      - package
+      - homebrew-package
+      - windows-package
+    runs-on: ubuntu-slim
+    permissions: {}
+
+    steps:
+    - name: Check the result of every job
+      env:
+        RESULTS: ${{ toJSON(needs) }}
+      run: |
+        failed=$(jq -r 'to_entries[]
+          | select(.value.result != "success" and .value.result != "skipped")
+          | "\(.key): \(.value.result)"' <<< "$RESULTS")
+        if [[ -n "$failed" ]]; then
+          printf '%s\n' "$failed"
+          exit 1
+        fi

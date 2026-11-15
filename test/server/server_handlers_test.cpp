@@ -11,8 +11,10 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <mcp/core/constants.hpp>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -1281,7 +1283,7 @@ TEST_F(ServerHandlersTest, UnknownToolReturnsError) {
 
 // --- Pagination Tests ---
 
-TEST_F(ServerHandlersTest, ToolsListPaginationFirstPage) {
+TEST_F(ServerHandlersTest, ToolsListPagesThroughTheToolsByCursor) {
     mcp::ServerCapabilities caps;
     mcp::ServerCapabilities::ToolsCapability tools_cap;
     caps.tools = std::move(tools_cap);
@@ -1297,22 +1299,34 @@ TEST_F(ServerHandlersTest, ToolsListPaginationFirstPage) {
             [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
     }
 
-    std::vector<nlohmann::json> responses;
+    std::map<std::string, nlohmann::json> responses;
     setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
-        responses.push_back(nlohmann::json::parse(msg));
-        if (responses.size() == 2) {
+        auto response = nlohmann::json::parse(msg);
+        const auto id = response.at("id").get<std::string>();
+        responses[id] = std::move(response);
+        if (responses.size() == 5) {
             setup.raw_transport->close();
         }
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
     setup.raw_transport->enqueue_message(make_initialized_notification().dump());
-
-    nlohmann::json list_req;
-    list_req["jsonrpc"] = "2.0";
-    list_req["id"] = "2";
-    list_req["method"] = "tools/list";
-    setup.raw_transport->enqueue_message(list_req.dump());
+    const auto list = [&setup](const std::string& id, std::optional<nlohmann::json> params) {
+        nlohmann::json list_req;
+        list_req["jsonrpc"] = "2.0";
+        list_req["id"] = id;
+        list_req["method"] = "tools/list";
+        if (params) {
+            list_req["params"] = std::move(*params);
+        }
+        setup.raw_transport->enqueue_message(list_req.dump());
+    };
+    list("first", std::nullopt);
+    list("middle", nlohmann::json{{"cursor", "2"}});
+    list("last", nlohmann::json{{"cursor", "4"}});
+    // Only reachable with a page size set and a non-empty collection: paginate() returns the
+    // whole slice before it ever looks at the cursor when either is absent.
+    list("null", nlohmann::json{{"cursor", nullptr}});
 
     boost::asio::co_spawn(
         io_ctx_,
@@ -1323,13 +1337,31 @@ TEST_F(ServerHandlersTest, ToolsListPaginationFirstPage) {
 
     io_ctx_.run();
 
-    ASSERT_EQ(responses.size(), 2);
-    auto& result = responses[1]["result"];
-    ASSERT_EQ(result["tools"].size(), 2);
-    EXPECT_EQ(result["tools"][0]["name"], "tool_0");
-    EXPECT_EQ(result["tools"][1]["name"], "tool_1");
-    ASSERT_TRUE(result.contains("nextCursor"));
-    EXPECT_EQ(result["nextCursor"], "2");
+    ASSERT_EQ(responses.size(), 5);
+    const auto& first = responses["first"]["result"];
+    ASSERT_EQ(first["tools"].size(), 2);
+    EXPECT_EQ(first["tools"][0]["name"], "tool_0");
+    EXPECT_EQ(first["tools"][1]["name"], "tool_1");
+    ASSERT_TRUE(first.contains("nextCursor"));
+    EXPECT_EQ(first["nextCursor"], "2");
+
+    const auto& middle = responses["middle"]["result"];
+    ASSERT_EQ(middle["tools"].size(), 2);
+    EXPECT_EQ(middle["tools"][0]["name"], "tool_2");
+    EXPECT_EQ(middle["tools"][1]["name"], "tool_3");
+    EXPECT_EQ(middle["nextCursor"], "4");
+
+    const auto& last = responses["last"]["result"];
+    ASSERT_EQ(last["tools"].size(), 1);
+    EXPECT_EQ(last["tools"][0]["name"], "tool_4");
+    EXPECT_FALSE(last.contains("nextCursor"));
+
+    const auto& null_cursor = responses["null"];
+    ASSERT_FALSE(null_cursor.contains("error")) << "actual error: " << null_cursor["error"].dump();
+    ASSERT_EQ(null_cursor["result"]["tools"].size(), 2);
+    EXPECT_EQ(null_cursor["result"]["tools"][0]["name"], "tool_0");
+    ASSERT_TRUE(null_cursor["result"].contains("nextCursor"));
+    EXPECT_EQ(null_cursor["result"]["nextCursor"], "2");
 }
 
 TEST_F(ServerHandlersTest, ToolsListResultIsTheListToolsResultOfTheRegisteredTools) {
@@ -1389,107 +1421,6 @@ TEST_F(ServerHandlersTest, ToolsListResultIsTheListToolsResultOfTheRegisteredToo
     ASSERT_EQ(responses.size(), 2);
     EXPECT_EQ(responses[1],
               (nlohmann::json{{"jsonrpc", "2.0"}, {"id", "2"}, {"result", nlohmann::json(expected)}}));
-}
-
-TEST_F(ServerHandlersTest, ToolsListPaginationWithCursor) {
-    mcp::ServerCapabilities caps;
-    mcp::ServerCapabilities::ToolsCapability tools_cap;
-    caps.tools = std::move(tools_cap);
-
-    ServerSetup setup(io_ctx_, std::move(caps));
-
-    setup.server.set_page_size(2);
-
-    for (int i = 0; i < 5; ++i) {
-        auto name = "tool_" + std::to_string(i);
-        setup.server.add_tool<AddParams, AddResult>(
-            name, "Tool " + std::to_string(i), nlohmann::json{{"type", "object"}},
-            [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
-    }
-
-    std::vector<nlohmann::json> responses;
-    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
-        responses.push_back(nlohmann::json::parse(msg));
-        if (responses.size() == 2) {
-            setup.raw_transport->close();
-        }
-    });
-
-    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
-    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
-
-    nlohmann::json list_req;
-    list_req["jsonrpc"] = "2.0";
-    list_req["id"] = "2";
-    list_req["method"] = "tools/list";
-    list_req["params"] = nlohmann::json{{"cursor", "2"}};
-    setup.raw_transport->enqueue_message(list_req.dump());
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-
-    ASSERT_EQ(responses.size(), 2);
-    auto& result = responses[1]["result"];
-    ASSERT_EQ(result["tools"].size(), 2);
-    EXPECT_EQ(result["tools"][0]["name"], "tool_2");
-    EXPECT_EQ(result["tools"][1]["name"], "tool_3");
-    EXPECT_EQ(result["nextCursor"], "4");
-}
-
-TEST_F(ServerHandlersTest, ToolsListPaginationLastPage) {
-    mcp::ServerCapabilities caps;
-    mcp::ServerCapabilities::ToolsCapability tools_cap;
-    caps.tools = std::move(tools_cap);
-
-    ServerSetup setup(io_ctx_, std::move(caps));
-
-    setup.server.set_page_size(2);
-
-    for (int i = 0; i < 5; ++i) {
-        auto name = "tool_" + std::to_string(i);
-        setup.server.add_tool<AddParams, AddResult>(
-            name, "Tool " + std::to_string(i), nlohmann::json{{"type", "object"}},
-            [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
-    }
-
-    std::vector<nlohmann::json> responses;
-    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
-        responses.push_back(nlohmann::json::parse(msg));
-        if (responses.size() == 2) {
-            setup.raw_transport->close();
-        }
-    });
-
-    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
-    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
-
-    nlohmann::json list_req;
-    list_req["jsonrpc"] = "2.0";
-    list_req["id"] = "2";
-    list_req["method"] = "tools/list";
-    list_req["params"] = nlohmann::json{{"cursor", "4"}};
-    setup.raw_transport->enqueue_message(list_req.dump());
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-
-    ASSERT_EQ(responses.size(), 2);
-    auto& result = responses[1]["result"];
-    ASSERT_EQ(result["tools"].size(), 1);
-    EXPECT_EQ(result["tools"][0]["name"], "tool_4");
-    EXPECT_FALSE(result.contains("nextCursor"));
 }
 
 TEST_F(ServerHandlersTest, PaginationDisabledByDefault) {
@@ -1717,54 +1648,6 @@ TEST_F(ServerHandlersTest, ToolWithoutOutputSchemaStillReturnsStructuredContent)
     auto& result = responses[1]["result"];
     EXPECT_EQ(result["structuredContent"]["sum"], 8);
     EXPECT_EQ(result["content"][0]["type"], "text");
-}
-
-TEST_F(ServerHandlersTest, ToolsListIncludesOutputSchema) {
-    mcp::ServerCapabilities caps;
-    mcp::ServerCapabilities::ToolsCapability tools_cap;
-    caps.tools = std::move(tools_cap);
-
-    ServerSetup setup(io_ctx_, std::move(caps));
-
-    nlohmann::json output_schema = {{"type", "object"},
-                                    {"properties", {{"result", {{"type", "string"}}}}}};
-
-    setup.server.add_tool<AddParams, AddResult>(
-        "schema_tool", "Has output schema", nlohmann::json{{"type", "object"}}, output_schema,
-        [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
-
-    std::vector<nlohmann::json> responses;
-    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
-        responses.push_back(nlohmann::json::parse(msg));
-        if (responses.size() == 2) {
-            setup.raw_transport->close();
-        }
-    });
-
-    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
-    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
-
-    nlohmann::json list_req;
-    list_req["jsonrpc"] = "2.0";
-    list_req["id"] = "2";
-    list_req["method"] = "tools/list";
-    setup.raw_transport->enqueue_message(list_req.dump());
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-
-    ASSERT_EQ(responses.size(), 2);
-    auto& tools = responses[1]["result"]["tools"];
-    ASSERT_EQ(tools.size(), 1);
-    EXPECT_EQ(tools[0]["name"], "schema_tool");
-    ASSERT_TRUE(tools[0].contains("outputSchema"));
-    EXPECT_EQ(tools[0]["outputSchema"]["type"], "object");
 }
 
 // --- Completion Tests ---
@@ -2044,61 +1927,6 @@ TEST_F(ServerHandlersTest, PromptsGetAcceptsExplicitNullArguments) {
     auto& messages = get_response["result"]["messages"];
     ASSERT_EQ(messages.size(), 1);
     EXPECT_EQ(messages[0]["content"]["text"], "Hello, World!");
-}
-
-TEST_F(ServerHandlersTest, ToolsListPaginationAcceptsExplicitNullCursor) {
-    // Only reachable with a page size set and a non-empty collection: paginate() returns the
-    // whole slice before it ever looks at the cursor when either is absent.
-    mcp::ServerCapabilities caps;
-    mcp::ServerCapabilities::ToolsCapability tools_cap;
-    caps.tools = std::move(tools_cap);
-
-    ServerSetup setup(io_ctx_, std::move(caps));
-
-    setup.server.set_page_size(2);
-
-    for (int i = 0; i < 5; ++i) {
-        auto name = "tool_" + std::to_string(i);
-        setup.server.add_tool<AddParams, AddResult>(
-            name, "Tool " + std::to_string(i), nlohmann::json{{"type", "object"}},
-            [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
-    }
-
-    std::vector<nlohmann::json> responses;
-    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
-        responses.push_back(nlohmann::json::parse(msg));
-        if (responses.size() == 2) {
-            setup.raw_transport->close();
-        }
-    });
-
-    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
-    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
-
-    nlohmann::json list_req;
-    list_req["jsonrpc"] = "2.0";
-    list_req["id"] = "2";
-    list_req["method"] = "tools/list";
-    list_req["params"] = nlohmann::json{{"cursor", nullptr}};
-    setup.raw_transport->enqueue_message(list_req.dump());
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-
-    ASSERT_EQ(responses.size(), 2);
-    auto& list_response = responses[1];
-    ASSERT_FALSE(list_response.contains("error")) << "actual error: " << list_response["error"].dump();
-    auto& result = list_response["result"];
-    ASSERT_EQ(result["tools"].size(), 2);
-    EXPECT_EQ(result["tools"][0]["name"], "tool_0");
-    ASSERT_TRUE(result.contains("nextCursor"));
-    EXPECT_EQ(result["nextCursor"], "2");
 }
 
 TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullClientInfoOptionals) {

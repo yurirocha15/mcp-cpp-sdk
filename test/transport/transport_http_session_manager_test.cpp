@@ -1421,7 +1421,9 @@ TEST_F(SessionManagerTest, NonInitializeWithoutSessionReturns400) {
 // ---------------------------------------------------------------------------
 // server/discover is reachable with zero prior state in stateful mode: no session is
 // created and no Mcp-Session-Id is issued, unlike every other sessionless non-initialize
-// method (pinned above by NonInitializeWithoutSessionReturns400).
+// method (pinned above by NonInitializeWithoutSessionReturns400). As a 2026-07-28 request it is
+// served with its own MCP-Protocol-Version header, which the legacy check reserved for
+// initialize-negotiated versions would refuse.
 // ---------------------------------------------------------------------------
 
 TEST_F(SessionManagerTest, SessionlessDiscoverReturns200WithoutCreatingSession) {
@@ -1532,35 +1534,6 @@ TEST_F(SessionManagerTest, SessionlessDiscoverStaysReachableAfterSessionEstablis
     EXPECT_EQ(session_count_after, 1);
 
     auto body = json::parse(discover_response.body);
-    ASSERT_TRUE(body.contains("result"));
-    EXPECT_EQ(body["result"]["resultType"], "complete");
-}
-
-// ---------------------------------------------------------------------------
-// server/discover is a 2026-07-28 request: it is served with its own MCP-Protocol-Version
-// header, which the legacy check reserved for initialize-negotiated versions would refuse.
-// ---------------------------------------------------------------------------
-
-TEST_F(SessionManagerTest, SessionlessDiscoverIsServedWithA2026ProtocolVersionHeader) {
-    const unsigned short port = 19119;
-    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
-                                              make_echo_server_factory());
-
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
-
-    RawResponse response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            response = co_await modern_post(io_ctx_.get_executor(), port, make_discover_request(1));
-            manager.close();
-        },
-        asio::detached);
-
-    io_ctx_.run();
-
-    EXPECT_EQ(response.status, 200);
-    auto body = json::parse(response.body);
     ASSERT_TRUE(body.contains("result"));
     EXPECT_EQ(body["result"]["resultType"], "complete");
 }

@@ -211,17 +211,6 @@ class ServerModernEraTest : public ::testing::Test {
     }
 };
 
-TEST_F(ServerModernEraTest, ToolsListWithoutInitialize) {
-    auto server = make_server();
-    auto written = run_session(*server, {make_modern_request(1, "tools/list")}, 1);
-
-    ASSERT_EQ(written.size(), 1u);
-    ASSERT_TRUE(written[0].contains("result")) << written[0];
-    EXPECT_EQ(written[0]["id"], 1);
-    EXPECT_EQ(written[0]["result"]["tools"].size(), 4u);
-    EXPECT_FALSE(server->is_initialized());
-}
-
 // The members 2026-07-28 adds to a result are written around a result that has no `_meta` and
 // inserted into one that has: either way the text is what dump() writes for the result holding
 // them, and members the result already has keep their values.
@@ -330,6 +319,9 @@ TEST_F(ServerModernEraTest, EveryModernMethodIsServedWithoutInitialize) {
     for (const auto& response : written) {
         EXPECT_TRUE(response.contains("result")) << response;
         answered.insert(response["id"].get<int>());
+        if (response["id"] == 2) {
+            EXPECT_EQ(response["result"]["tools"].size(), 4u) << response;
+        }
     }
     EXPECT_EQ(answered.size(), requests.size());
     EXPECT_FALSE(server->is_initialized());
@@ -588,14 +580,6 @@ TEST_F(ServerModernEraTest, UnknownResourceErrorNamesTheUri) {
     const auto response =
         dispatch(*server, make_modern_request(2, "resources/read", {{"uri", "test://missing"}}));
     EXPECT_EQ(response["error"]["data"], nlohmann::json({{"uri", "test://missing"}})) << response;
-}
-
-TEST_F(ServerModernEraTest, DiscoverListsEveryServedVersion) {
-    auto server = make_server();
-    auto response = dispatch(*server, make_discover_request("d"));
-
-    ASSERT_TRUE(response.contains("result")) << response;
-    EXPECT_EQ(response["result"]["supportedVersions"], g_all_versions);
 }
 
 TEST_F(ServerModernEraTest, PolicyWithoutModernRefusesEveryModernRequest) {
@@ -975,6 +959,10 @@ TEST(RequestMetadataTest, DefaultMetaIsAnEmptyObject) {
     EXPECT_EQ(*metadata.meta, json::object());
 }
 
+// server/utilities/caching.md requires caching hints on the "complete" results of the operations
+// it lists, server/discover first; an absent ttlMs "should only occur in older server versions".
+// This SDK therefore always emits ttlMs (default 0) and cacheScope (default "private", the
+// conservative choice absent a spec-stated default) on those results unless overridden.
 TEST_F(ServerModernEraTest, CacheableResultsCarryTheDefaultHints) {
     auto server = make_server();
     const std::set<std::string> cacheable = {"server/discover",          "tools/list",

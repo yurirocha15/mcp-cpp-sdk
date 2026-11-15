@@ -7,16 +7,18 @@ reads changed. The exception is the C++ that the code jobs compile from the
 documentation: a change to README.md counts for them when its C++ blocks differ,
 and a change to an rst file when its complete programs differ.
 
-Packaging jobs take most of a run's runners, and runner concurrency is shared
-across the account, so a pull request runs them only when it changes how a
-package is assembled. Every other event also runs them for the source they
-build, so main still packages every source change.
+The package builds take most of a run's runner time, so pull requests skip them
+and pushes to main run them, for the source they build as well as for their own
+inputs. A pull request still constructs the source archive and recipes when it
+changes what they read. A manual run builds the packages on any branch, and the
+release workflow builds and validates every package again before publishing.
 
 conformance.yml, conformance-guards.yml and docs.yml filter their own triggers
 with `paths:`, and CodeQL is GitHub's default setup, which has no path filter.
 
 Prints one ``job=true|false`` line per job for ``$GITHUB_OUTPUT``. Any doubt (no
-base commit, a git failure, a file no list names) answers ``true`` for all.
+base commit, a git failure, a file no list names) answers ``true`` for every job
+the event runs.
 """
 import argparse
 import fnmatch
@@ -233,15 +235,18 @@ def jobs_reading(path, event):
 def needed_jobs(event, base, head):
     changed = changed_files(base, head)
     if event == "workflow_dispatch" or not changed:
-        return set(JOB_INPUTS)
-    jobs = set().union(*(jobs_reading(path, event) for path in changed))
-    if "README.md" in changed and readme_cpp_blocks(base) != readme_cpp_blocks(head):
-        jobs.add("code")
-    if any(doc_programs(base, path) != doc_programs(head, path)
-           for path in changed if path.endswith(".rst")):
-        jobs.add("code")
-    if jobs & PACKAGE_JOBS:
-        jobs.add("package_core")
+        jobs = set(JOB_INPUTS)
+    else:
+        jobs = set().union(*(jobs_reading(path, event) for path in changed))
+        if "README.md" in changed and readme_cpp_blocks(base) != readme_cpp_blocks(head):
+            jobs.add("code")
+        if any(doc_programs(base, path) != doc_programs(head, path)
+               for path in changed if path.endswith(".rst")):
+            jobs.add("code")
+        if jobs & PACKAGE_JOBS:
+            jobs.add("package_core")
+    if event == "pull_request":
+        jobs -= PACKAGE_JOBS
     return jobs
 
 

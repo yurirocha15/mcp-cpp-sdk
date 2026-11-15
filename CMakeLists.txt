@@ -437,7 +437,6 @@ if(BUILD_TESTING)
       test/server/server_param_headers_test.cpp
       test/server/server_progress_test.cpp
       test/server/server_subscriptions_test.cpp
-      test/transport/transport_test.cpp
       test/transport/transport_stdio_test.cpp
       test/transport/transport_stdio_client_test.cpp
       test/transport/transport_ws_test.cpp
@@ -461,7 +460,6 @@ if(BUILD_TESTING)
       test/transport/transport_http_limits_test.cpp
       test/transport/transport_http_version_header_test.cpp
       test/transport/http_response_write_test.cpp
-      test/e2e/e2e_integration_test.cpp
       test/e2e/e2e_matrix_test.cpp
       test/e2e/e2e_features_test.cpp
       test/server/runtime_test.cpp
@@ -470,7 +468,8 @@ if(BUILD_TESTING)
       test/server/server_tool_test.cpp
       test/transport/transport_factory_test.cpp
       test/core/gcc11_sso_crash_test.cpp
-      test/core/json_peer_input_matrix_test.cpp)
+      test/core/json_peer_input_matrix_test.cpp
+      test/support/test_timeout.cpp)
   # The sealed-state codec is internal and not exported from the shared library,
   # so its test builds the source itself.
   add_executable(mcp-sdk-tests ${TEST_SRCS} src/detail/sealed_state.cpp)
@@ -550,7 +549,7 @@ if(BUILD_TESTING)
         "scripts/ is not shipped in source archives)")
   endif()
 
-  include(GoogleTest)
+  include(cmake/McpCppSdkTestSuites.cmake)
   # Default per-test timeout so one deadlocked test cannot stall a ctest run for
   # the 25-minute ctest default (or forever without --timeout). Builds that run
   # the tests many times slower, such as MemorySanitizer, raise it.
@@ -568,12 +567,18 @@ if(BUILD_TESTING)
   target_compile_definitions(
     mcp-sdk-tests
     PRIVATE MCP_CPP_SDK_TEST_TIMEOUT_SECONDS=${MCP_CPP_SDK_TEST_TIMEOUT})
-  # Listing the tests after the link runs the program as well: a sanitizer build
-  # of it can take longer than the default five seconds to list them and exit.
-  gtest_discover_tests(
-    mcp-sdk-tests DISCOVERY_TIMEOUT ${MCP_CPP_SDK_TEST_TIMEOUT}
-    PROPERTIES
-    TIMEOUT ${MCP_CPP_SDK_TEST_TIMEOUT})
+  # One ctest test per suite: ctest starts the program for each test it
+  # registers, and a sanitizer build of it takes longer to start than most tests
+  # take to run. test/support/test_timeout.cpp keeps the per-test timeout.
+  mcp_cpp_sdk_add_test_suites(mcp-sdk-tests TIMEOUT ${MCP_CPP_SDK_TEST_TIMEOUT})
+
+  # Optimizing the test code takes most of a test file's compile at -O3, so
+  # release builds compile the test program at -O1. The SDK libraries keep the
+  # build's own optimization.
+  set(GCC_OR_CLANG "$<CXX_COMPILER_ID:GNU,Clang,AppleClang>")
+  set(RELEASE_CONFIG "$<CONFIG:Release,RelWithDebInfo,MinSizeRel>")
+  target_compile_options(
+    mcp-sdk-tests PRIVATE "$<$<AND:${GCC_OR_CLANG},${RELEASE_CONFIG}>:-O1>")
 
   option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
   if(ENABLE_COVERAGE)
@@ -628,6 +633,12 @@ if(BUILD_TESTING)
       endforeach()
       target_compile_options(mcp-sdk-tests PRIVATE ${SANITIZER_FLAGS})
       target_link_options(mcp-sdk-tests PRIVATE -fsanitize=address,undefined)
+      if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # AddressSanitizer guards each UndefinedBehaviorSanitizer check record
+        # as a global, and a position-independent program relocates every one of
+        # them each time it starts.
+        target_link_options(mcp-sdk-tests PRIVATE -no-pie)
+      endif()
     else()
       message(WARNING "ENABLE_SANITIZERS is only supported with GCC or Clang")
     endif()

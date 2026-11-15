@@ -313,62 +313,37 @@ TEST(ClientEra, ModernNoInitializeEveryRequestHasMeta) {
 // stdio Backward Compatibility: "The server returns any other error ... the server is legacy. Fall
 // back to the initialize handshake." and "The fallback MUST NOT be keyed to one specific error
 // code: legacy servers respond ... (commonly -32601 or -32602)".
-TEST(ClientEra, AutoFallsBackOnMinus32601) {
-    Harness harness(auto_options());
-    harness.peer.reply = [](const json& request) {
-        return legacy_peer_rejecting_discover(request, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
-    };
-
-    mcp::ConnectResult connected;
-    harness.run([&]() -> mcp::Task<void> {
-        connected = co_await harness.client->connect("test-client", "1.0");
-    });
-
-    EXPECT_EQ(connected.era, mcp::ProtocolEra::eLegacy);
-    EXPECT_EQ(harness.peer.count("server/discover"), 1u);
-    EXPECT_EQ(harness.peer.count("initialize"), 1u);
-    EXPECT_EQ(harness.peer.count("notifications/initialized"), 1u);
-    EXPECT_EQ(harness.peer.seen[0].at("method"), "server/discover");
-    EXPECT_EQ(harness.peer.seen[1].at("method"), "initialize");
-}
-
-TEST(ClientEra, AutoFallsBackOnMinus32602) {
-    Harness harness(auto_options());
-    harness.peer.reply = [](const json& request) {
-        return legacy_peer_rejecting_discover(request, mcp::constants::jsonrpc::g_INVALID_PARAMS);
-    };
-
-    mcp::ConnectResult connected;
-    harness.run([&]() -> mcp::Task<void> {
-        connected = co_await harness.client->connect("test-client", "1.0");
-    });
-
-    EXPECT_EQ(connected.era, mcp::ProtocolEra::eLegacy);
-    EXPECT_EQ(harness.peer.count("initialize"), 1u);
-    ASSERT_EQ(harness.decisions.size(), 1u);
-    EXPECT_EQ(harness.decisions[0].reason, mcp::EraReason::eFallbackNonModernError);
-}
-
+//
 // The specification's list of recognized modern errors includes an unknown method, but a modern
 // server MUST implement server/discover, so -32601 on the probe can only come from a legacy
 // server, and the reference TypeScript servers answer exactly that. The client treats it as
 // legacy.
-TEST(ClientEra, ProbeTreatsMinus32601AsLegacy) {
-    Harness harness(auto_options());
-    harness.peer.reply = [](const json& request) {
-        return legacy_peer_rejecting_discover(request, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
-    };
+TEST(ClientEra, AutoFallsBackOnMethodNotFoundAndInvalidParams) {
+    for (const int code :
+         {mcp::constants::jsonrpc::g_METHOD_NOT_FOUND, mcp::constants::jsonrpc::g_INVALID_PARAMS}) {
+        SCOPED_TRACE(code);
+        Harness harness(auto_options());
+        harness.peer.reply = [code](const json& request) {
+            return legacy_peer_rejecting_discover(request, code);
+        };
 
-    harness.run([&]() -> mcp::Task<void> {
-        const auto connected = co_await harness.client->connect("test-client", "1.0");
+        mcp::ConnectResult connected;
+        harness.run([&]() -> mcp::Task<void> {
+            connected = co_await harness.client->connect("test-client", "1.0");
+        });
+
         EXPECT_EQ(connected.era, mcp::ProtocolEra::eLegacy);
         EXPECT_EQ(connected.protocolVersion, "2025-11-25");
-    });
-
-    ASSERT_EQ(harness.decisions.size(), 1u);
-    EXPECT_EQ(harness.decisions[0].era, mcp::ProtocolEra::eLegacy);
-    EXPECT_EQ(harness.decisions[0].reason, mcp::EraReason::eFallbackNonModernError);
-    EXPECT_EQ(harness.peer.count("server/discover"), 1u);
+        EXPECT_EQ(harness.peer.count("server/discover"), 1u);
+        EXPECT_EQ(harness.peer.count("initialize"), 1u);
+        EXPECT_EQ(harness.peer.count("notifications/initialized"), 1u);
+        ASSERT_GE(harness.peer.seen.size(), 2u);
+        EXPECT_EQ(harness.peer.seen[0].at("method"), "server/discover");
+        EXPECT_EQ(harness.peer.seen[1].at("method"), "initialize");
+        ASSERT_EQ(harness.decisions.size(), 1u);
+        EXPECT_EQ(harness.decisions[0].era, mcp::ProtocolEra::eLegacy);
+        EXPECT_EQ(harness.decisions[0].reason, mcp::EraReason::eFallbackNonModernError);
+    }
 }
 
 // A reply that is not JSON-RPC at all is an answer too: the client does not wait out the probe

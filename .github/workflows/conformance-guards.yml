@@ -34,7 +34,7 @@ concurrency:
 jobs:
   alpha-runner-non-gating:
     name: Alpha runner stays non-gating
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
 
     steps:
@@ -54,7 +54,7 @@ jobs:
 
   protocol-constants:
     name: Protocol constants name their era
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
 
     steps:
@@ -76,7 +76,7 @@ jobs:
 
   deprecation-attributes:
     name: Deprecated declarations carry an attribute
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
 
     steps:

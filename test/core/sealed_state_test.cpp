@@ -42,15 +42,6 @@ TEST(SealedStateTest, RoundTrip) {
     EXPECT_EQ(opened.payload, g_payload);
 }
 
-TEST(SealedStateTest, EmptyPayloadRoundTrips) {
-    const auto codec = ring({make_key(1, 10)});
-    const auto sealed = codec.seal("");
-    ASSERT_TRUE(sealed);
-    const auto opened = codec.open(sealed.token);
-    ASSERT_TRUE(opened);
-    EXPECT_TRUE(opened.payload.empty());
-}
-
 TEST(SealedStateTest, EveryPayloadLengthUpToAFewBlocksRoundTrips) {
     const auto codec = ring({make_key(1, 10)});
     for (std::size_t n = 0; n <= 40; ++n) {

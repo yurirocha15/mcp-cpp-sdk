@@ -158,7 +158,7 @@ def no_aslr():
     """Command prefix that disables ASLR, which ThreadSanitizer and MemorySanitizer need on kernels
     with high mmap entropy.
 
-    The test binary also runs at build time (gtest_discover_tests), so the build and ctest both use it.
+    The test binary also runs at build time to list its suites, so the build and ctest both use it.
     """
     setarch = shutil.which("setarch")
     if setarch and sys.platform.startswith("linux"):

@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -25,6 +26,7 @@
 #include <mcp/transport/http_client.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <queue>
 #include <string>
 #include <vector>
@@ -115,7 +117,7 @@ TEST(AuthBearerExtractionTest, TokenWithSpecialChars) {
     EXPECT_EQ(token, "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkw");
 }
 
-TEST(AuthMiddlewareTest, AcceptsValidToken) {
+TEST(AuthMiddlewareTest, ChecksTheTokenOfEachCall) {
     asio::io_context io;
 
     mcp::ServerCapabilities caps;
@@ -128,114 +130,12 @@ TEST(AuthMiddlewareTest, AcceptsValidToken) {
 
     mcp::Server server(std::move(info), std::move(caps));
 
-    server.use(mcp::auth::make_auth_middleware(
-        [](const std::string& token) -> mcp::Task<bool> { co_return token == "valid_token"; }));
-
-    server.add_tool<json, json>("echo", "Echoes input", json{{"type", "object"}},
-                                [](const json& args) -> json { return args; });
-
-    auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
-    auto* transport_ptr = transport.get();
-
-    std::vector<json> responses;
-    transport_ptr->set_on_write([&responses, transport_ptr](std::string_view msg) {
-        responses.push_back(json::parse(msg));
-        if (responses.size() >= 2) {
-            transport_ptr->close();
-        }
-    });
-
-    transport_ptr->enqueue_message(make_initialize_request("1").dump());
-    transport_ptr->enqueue_message(make_initialized_notification().dump());
-
-    json call_req{{"jsonrpc", "2.0"},
-                  {"id", "2"},
-                  {"method", "tools/call"},
-                  {"params",
-                   {{"name", "echo"},
-                    {"arguments", {{"hello", "world"}}},
-                    {"_meta", {{"auth_token", "valid_token"}}}}}};
-    transport_ptr->enqueue_message(call_req.dump());
-
-    asio::co_spawn(io, server.run(transport, io.get_executor()), asio::detached);
-    io.run();
-
-    ASSERT_GE(responses.size(), 2);
-    auto it = std::find_if(responses.begin(), responses.end(),
-                           [](const json& msg) { return msg.contains("id") && msg["id"] == "2"; });
-    ASSERT_NE(it, responses.end());
-    EXPECT_FALSE((*it)["result"].contains("isError"));
-}
-
-TEST(AuthMiddlewareTest, RejectsInvalidToken) {
-    asio::io_context io;
-
-    mcp::ServerCapabilities caps;
-    mcp::ServerCapabilities::ToolsCapability tools_cap;
-    caps.tools = std::move(tools_cap);
-
-    mcp::Implementation info;
-    info.name = "test-server";
-    info.version = "1.0";
-
-    mcp::Server server(std::move(info), std::move(caps));
-
-    server.use(mcp::auth::make_auth_middleware(
-        [](const std::string& token) -> mcp::Task<bool> { co_return token == "valid_token"; }));
-
-    server.add_tool<json, json>("echo", "Echoes input", json{{"type", "object"}},
-                                [](const json& args) -> json { return args; });
-
-    auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
-    auto* transport_ptr = transport.get();
-
-    std::vector<json> responses;
-    transport_ptr->set_on_write([&responses, transport_ptr](std::string_view msg) {
-        responses.push_back(json::parse(msg));
-        if (responses.size() >= 2) {
-            transport_ptr->close();
-        }
-    });
-
-    transport_ptr->enqueue_message(make_initialize_request("1").dump());
-    transport_ptr->enqueue_message(make_initialized_notification().dump());
-
-    json call_req{{"jsonrpc", "2.0"},
-                  {"id", "2"},
-                  {"method", "tools/call"},
-                  {"params",
-                   {{"name", "echo"},
-                    {"arguments", {{"hello", "world"}}},
-                    {"_meta", {{"auth_token", "wrong_token"}}}}}};
-    transport_ptr->enqueue_message(call_req.dump());
-
-    asio::co_spawn(io, server.run(transport, io.get_executor()), asio::detached);
-    io.run();
-
-    ASSERT_GE(responses.size(), 2);
-    auto it = std::find_if(responses.begin(), responses.end(),
-                           [](const json& msg) { return msg.contains("id") && msg["id"] == "2"; });
-    ASSERT_NE(it, responses.end());
-    EXPECT_TRUE((*it)["result"]["isError"].get<bool>());
-    auto text = (*it)["result"]["content"][0]["text"].get<std::string>();
-    EXPECT_NE(text.find("invalid"), std::string::npos);
-}
-
-TEST(AuthMiddlewareTest, RejectsMissingToken) {
-    asio::io_context io;
-
-    mcp::ServerCapabilities caps;
-    mcp::ServerCapabilities::ToolsCapability tools_cap;
-    caps.tools = std::move(tools_cap);
-
-    mcp::Implementation info;
-    info.name = "test-server";
-    info.version = "1.0";
-
-    mcp::Server server(std::move(info), std::move(caps));
-
+    int validated = 0;
     server.use(
-        mcp::auth::make_auth_middleware([](const std::string&) -> mcp::Task<bool> { co_return true; }));
+        mcp::auth::make_auth_middleware([&validated](const std::string& token) -> mcp::Task<bool> {
+            ++validated;
+            co_return token == "valid_token";
+        }));
 
     server.add_tool<json, json>("echo", "Echoes input", json{{"type", "object"}},
                                 [](const json& args) -> json { return args; });
@@ -246,30 +146,51 @@ TEST(AuthMiddlewareTest, RejectsMissingToken) {
     std::vector<json> responses;
     transport_ptr->set_on_write([&responses, transport_ptr](std::string_view msg) {
         responses.push_back(json::parse(msg));
-        if (responses.size() >= 2) {
+        if (responses.size() >= 4) {
             transport_ptr->close();
         }
     });
 
     transport_ptr->enqueue_message(make_initialize_request("1").dump());
     transport_ptr->enqueue_message(make_initialized_notification().dump());
-
-    json call_req{{"jsonrpc", "2.0"},
-                  {"id", "2"},
-                  {"method", "tools/call"},
-                  {"params", {{"name", "echo"}, {"arguments", {{"hello", "world"}}}}}};
-    transport_ptr->enqueue_message(call_req.dump());
+    const auto call = [transport_ptr](const std::string& id, std::optional<std::string> token) {
+        json params{{"name", "echo"}, {"arguments", {{"hello", "world"}}}};
+        if (token) {
+            params["_meta"] = {{"auth_token", *token}};
+        }
+        transport_ptr->enqueue_message(
+            json{{"jsonrpc", "2.0"}, {"id", id}, {"method", "tools/call"}, {"params", params}}.dump());
+    };
+    call("valid", "valid_token");
+    call("invalid", "wrong_token");
+    call("missing", std::nullopt);
 
     asio::co_spawn(io, server.run(transport, io.get_executor()), asio::detached);
     io.run();
 
-    ASSERT_GE(responses.size(), 2);
-    auto it = std::find_if(responses.begin(), responses.end(),
-                           [](const json& msg) { return msg.contains("id") && msg["id"] == "2"; });
-    ASSERT_NE(it, responses.end());
-    EXPECT_TRUE((*it)["result"]["isError"].get<bool>());
-    auto text = (*it)["result"]["content"][0]["text"].get<std::string>();
-    EXPECT_NE(text.find("missing"), std::string::npos);
+    const auto response = [&responses](const std::string& id) -> const json* {
+        auto it = std::find_if(responses.begin(), responses.end(), [&id](const json& msg) {
+            return msg.contains("id") && msg["id"] == id;
+        });
+        return it == responses.end() ? nullptr : &*it;
+    };
+    const json* valid = response("valid");
+    ASSERT_NE(valid, nullptr);
+    EXPECT_FALSE((*valid)["result"].contains("isError"));
+
+    const json* invalid = response("invalid");
+    ASSERT_NE(invalid, nullptr);
+    EXPECT_TRUE((*invalid)["result"]["isError"].get<bool>());
+    EXPECT_NE((*invalid)["result"]["content"][0]["text"].get<std::string>().find("invalid"),
+              std::string::npos);
+
+    const json* missing = response("missing");
+    ASSERT_NE(missing, nullptr);
+    EXPECT_TRUE((*missing)["result"]["isError"].get<bool>());
+    EXPECT_NE((*missing)["result"]["content"][0]["text"].get<std::string>().find("missing"),
+              std::string::npos);
+    // A call without a token is refused before the validator is asked.
+    EXPECT_EQ(validated, 2);
 }
 
 // The middleware wraps every handler kind, and only a tool has an error shape inside its result.
