@@ -99,6 +99,16 @@ TEST(JsonRpcEnvelopeTest, AgreesWithTheFullParserOnServerMessages) {
     }
 }
 
+// A message with both members (which no valid response has) still reports its `result`, whichever
+// member comes first.
+TEST(JsonRpcEnvelopeTest, ResultBeforeErrorStillReportsTheResult) {
+    const auto scan = scan_jsonrpc_envelope(
+        R"({"jsonrpc":"2.0","result":1,"id":1,"error":{"code":-32603,"message":"m"}})");
+    ASSERT_TRUE(scan.has_value());
+    EXPECT_TRUE(scan->has_result_or_error);
+    EXPECT_TRUE(scan->has_result);
+}
+
 namespace {
 
 /// The scan as it was before it skipped eight bytes at a time: one byte at a time throughout. The
