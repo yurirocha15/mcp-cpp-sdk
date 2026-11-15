@@ -32,7 +32,6 @@ CI_WORKFLOW = ".github/workflows/ci.yml"
 NO_JOB_PATTERNS = (
     "*.md",
     ".clang-format",
-    ".clang-tidy",
     ".devcontainer/*",
     ".github/CODEOWNERS",
     ".github/ISSUE_TEMPLATE/*",
@@ -102,6 +101,17 @@ NATIVE_BUILDER = (
     "scripts/release/collect_build_identity.py",
 )
 JOB_INPUTS = {
+    "naming": (
+        ".clang-tidy",
+        "CMakeLists.txt",
+        "VERSION",
+        "cmake/*",
+        "examples/*",
+        "include/*",
+        "scripts/ci_changes.py",
+        "src/*",
+        "third_party/*",
+    ),
     "code": LIBRARY + TESTS + (
         "examples/*",
         "scripts/build.py",
