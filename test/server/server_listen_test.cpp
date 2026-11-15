@@ -16,6 +16,7 @@
 #include <chrono>
 #include <functional>
 #include <future>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <set>
 #include <string>
@@ -473,7 +474,8 @@ TEST_F(Listen, InvalidFilterIsInvalidParams) {
     ASSERT_EQ(written_.size(), 4u);
     for (const auto& response : written_) {
         ASSERT_TRUE(response.contains("error")) << response;
-        EXPECT_EQ(field(response, "/error/code"), mcp::g_INVALID_PARAMS) << response;
+        EXPECT_EQ(field(response, "/error/code"), mcp::constants::jsonrpc::g_INVALID_PARAMS)
+            << response;
     }
 }
 
@@ -490,7 +492,7 @@ TEST_F(Listen, DirectDispatchWithoutAStreamIsRejected) {
     io_ctx_.run();
 
     ASSERT_TRUE(response.contains("error")) << response;
-    EXPECT_EQ(field(response, "/error/code"), mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(field(response, "/error/code"), mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_EQ(server->subscription_count(), 0u);
 }
 
@@ -523,7 +525,8 @@ TEST_F(Listen, LegacySessionSeesNoChange) {
     for (std::size_t index = 0; index < 3; ++index) {
         answered.insert(written_[index]["id"].get<std::string>());
         if (written_[index]["id"] == "l") {
-            EXPECT_EQ(field(written_[index], "/error/code"), mcp::g_METHOD_NOT_FOUND)
+            EXPECT_EQ(field(written_[index], "/error/code"),
+                      mcp::constants::jsonrpc::g_METHOD_NOT_FOUND)
                 << written_[index];
         } else {
             EXPECT_TRUE(written_[index].contains("result")) << written_[index];

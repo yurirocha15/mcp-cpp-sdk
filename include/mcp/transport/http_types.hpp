@@ -17,20 +17,6 @@
 
 namespace mcp {
 
-namespace constants {
-
-/**
- * @brief Default cap on an HTTP request body accepted by the server transports, in bytes.
- *
- * Binary content reaches an MCP server as base64 inside the JSON body -- `ImageContent::data`,
- * `BlobResourceContents::blob` and `AudioContent` have no out-of-band or streaming path -- and base64
- * inflates by 4/3. Eight mebibytes carries roughly 6 MB of raw content, while still bounding what one
- * unauthenticated connection can make a server allocate.
- */
-constexpr std::size_t g_default_max_request_body_bytes = 8 * 1024 * 1024;
-
-}  // namespace constants
-
 /**
  * @brief A generic list of string pairs, often used for query params or form fields.
  */

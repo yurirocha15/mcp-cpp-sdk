@@ -37,7 +37,10 @@
 #include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <mcp/core/constants.hpp>
 #endif
+
+namespace protocol = mcp::constants::protocol;
 
 namespace {
 
@@ -46,7 +49,7 @@ nlohmann::json make_initialize_request(std::string_view id) {
             {"id", id},
             {"method", "initialize"},
             {"params",
-             {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
+             {{"protocolVersion", protocol::g_LATEST_LEGACY_PROTOCOL_VERSION},
               {"clientInfo", {{"name", "test-client"}, {"version", "0.1"}}},
               {"capabilities", nlohmann::json::object()}}}};
 }

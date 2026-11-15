@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/detail/signal.hpp>
 
 namespace mcp {
@@ -17,7 +18,7 @@ namespace mcp {
 template <typename TransportPtr>
 auto graceful_shutdown(boost::asio::io_context& io_ctx, TransportPtr transport,
                        std::chrono::milliseconds timeout =
-                           std::chrono::milliseconds(mcp::constants::g_shutdown_timeout_ms)) {
+                           std::chrono::milliseconds(mcp::constants::shutdown::g_TIMEOUT_MS)) {
     transport->close();
 
     auto timer = std::make_shared<boost::asio::steady_timer>(io_ctx);

@@ -13,15 +13,11 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#include "../detail/constants.hpp"
 
 namespace mcp::auth {
 
 namespace {
-
-constexpr std::string_view g_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
-constexpr std::size_t g_JTI_LENGTH = 32;
-constexpr std::size_t g_ES256_COORDINATE_BYTES = 32;
-constexpr int g_MIN_RSA_BITS = 2048;
 
 struct KeyDeleter {
     void operator()(EVP_PKEY* key) const { EVP_PKEY_free(key); }
@@ -58,9 +54,11 @@ bool is_p256(EVP_PKEY* key) {
 /// The algorithms @p key can sign with, most widely accepted first.
 std::vector<std::string> algorithms_for(EVP_PKEY* key) {
     if (EVP_PKEY_is_a(key, "RSA")) {
-        if (EVP_PKEY_bits(key) < g_MIN_RSA_BITS) {
-            throw std::invalid_argument("The RSA private key must be at least " +
-                                        std::to_string(g_MIN_RSA_BITS) + " bits");
+        if (EVP_PKEY_bits(key) < mcp::detail::constants::client_authentication::g_MIN_RSA_BITS) {
+            throw std::invalid_argument(
+                "The RSA private key must be at least " +
+                std::to_string(mcp::detail::constants::client_authentication::g_MIN_RSA_BITS) +
+                " bits");
         }
         return {"RS256", "PS256"};
     }
@@ -85,10 +83,15 @@ std::string es256_raw_signature(const std::string& der) {
     const BIGNUM* r = nullptr;
     const BIGNUM* s = nullptr;
     ECDSA_SIG_get0(signature.get(), &r, &s);
-    std::string raw(2 * g_ES256_COORDINATE_BYTES, '\0');
+    std::string raw(2 * mcp::detail::constants::client_authentication::g_ES256_COORDINATE_BYTES, '\0');
     auto* out = reinterpret_cast<unsigned char*>(raw.data());
-    if (BN_bn2binpad(r, out, static_cast<int>(g_ES256_COORDINATE_BYTES)) < 0 ||
-        BN_bn2binpad(s, out + g_ES256_COORDINATE_BYTES, static_cast<int>(g_ES256_COORDINATE_BYTES)) <
+    if (BN_bn2binpad(
+            r, out,
+            static_cast<int>(mcp::detail::constants::client_authentication::g_ES256_COORDINATE_BYTES)) <
+            0 ||
+        BN_bn2binpad(
+            s, out + mcp::detail::constants::client_authentication::g_ES256_COORDINATE_BYTES,
+            static_cast<int>(mcp::detail::constants::client_authentication::g_ES256_COORDINATE_BYTES)) <
             0) {
         throw std::runtime_error("Could not encode the ECDSA signature");
     }
@@ -166,12 +169,14 @@ std::string sign_client_assertion(const PrivateKeyJwtConfig& config, const std::
     const auto issued_at = std::chrono::duration_cast<std::chrono::seconds>(
                                std::chrono::system_clock::now().time_since_epoch())
                                .count();
-    const nlohmann::json claims = {{"iss", client_id},
-                                   {"sub", client_id},
-                                   {"aud", config.audience ? *config.audience : audience},
-                                   {"iat", issued_at},
-                                   {"exp", issued_at + config.lifetime.count()},
-                                   {"jti", detail::generate_random_string(g_JTI_LENGTH)}};
+    const nlohmann::json claims = {
+        {"iss", client_id},
+        {"sub", client_id},
+        {"aud", config.audience ? *config.audience : audience},
+        {"iat", issued_at},
+        {"exp", issued_at + config.lifetime.count()},
+        {"jti",
+         detail::generate_random_string(mcp::detail::constants::client_authentication::g_JTI_LENGTH)}};
     const auto signing_input = encode(header.dump()) + "." + encode(claims.dump());
     return signing_input + "." + encode(sign(key.get(), algorithm, signing_input));
 }
@@ -221,7 +226,9 @@ std::string authenticate_token_request(const ClientAuthentication& credentials,
         }
         const auto algorithm =
             choose_signing_algorithm(*credentials.private_key_jwt, signing_algorithms);
-        params.emplace_back("client_assertion_type", std::string(g_ASSERTION_TYPE));
+        params.emplace_back(
+            "client_assertion_type",
+            std::string(mcp::detail::constants::client_authentication::g_ASSERTION_TYPE));
         params.emplace_back(
             "client_assertion",
             sign_client_assertion(*credentials.private_key_jwt, credentials.client_id,

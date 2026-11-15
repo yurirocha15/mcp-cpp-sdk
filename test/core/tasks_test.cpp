@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <mcp/core/constants.hpp>
 #include <nlohmann/json.hpp>
 #include <set>
 #include <stdexcept>
@@ -342,7 +343,7 @@ TEST(TasksWire, RequestParamsUseTheTaskId) {
 }
 
 TEST(TasksWire, ExtensionIdentifierIsReserved) {
-    EXPECT_EQ(mcp::g_TASKS_EXTENSION, "io.modelcontextprotocol/tasks");
+    EXPECT_EQ(mcp::constants::tasks::g_EXTENSION_ID, "io.modelcontextprotocol/tasks");
 }
 
 // A peer of 2025-11-25 sends the experimental shapes: they parse and are dropped.
@@ -377,8 +378,8 @@ TEST(Extensions, DeclareAndReadOnClientCapabilities) {
 
 TEST(Extensions, DeclareAndReadOnServerCapabilities) {
     mcp::ServerCapabilities capabilities;
-    mcp::declare_extension(capabilities, mcp::g_TASKS_EXTENSION);
-    EXPECT_TRUE(mcp::declares_extension(capabilities, mcp::g_TASKS_EXTENSION));
+    mcp::declare_extension(capabilities, mcp::constants::tasks::g_EXTENSION_ID);
+    EXPECT_TRUE(mcp::declares_extension(capabilities, mcp::constants::tasks::g_EXTENSION_ID));
     EXPECT_EQ(json(capabilities),
               (json{{"extensions", {{"io.modelcontextprotocol/tasks", json::object()}}}}));
 

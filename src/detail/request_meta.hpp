@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/protocol/request_meta.hpp>
 
 #include <array>
@@ -31,7 +32,7 @@ inline bool is_modern_request(const nlohmann::json& message, std::string_view me
         return false;
     }
     const auto* meta = request_meta_object(message);
-    return meta != nullptr && meta->contains(g_META_PROTOCOL_VERSION);
+    return meta != nullptr && meta->contains(mcp::constants::meta::g_META_PROTOCOL_VERSION);
 }
 
 /// The protocol version a modern request names, or null when the value is not a string.
@@ -40,7 +41,7 @@ inline const std::string* requested_protocol_version(const nlohmann::json& messa
     if (meta == nullptr) {
         return nullptr;
     }
-    const auto version = meta->find(g_META_PROTOCOL_VERSION);
+    const auto version = meta->find(mcp::constants::meta::g_META_PROTOCOL_VERSION);
     if (version == meta->end() || !version->is_string()) {
         return nullptr;
     }
@@ -88,9 +89,10 @@ inline RequestMetaParse parse_request_meta(const std::shared_ptr<const nlohmann:
     metadata->protocolVersion = *requested_protocol_version(*message);
     metadata->meta = std::shared_ptr<const nlohmann::json>(message, &meta);
 
-    const auto capabilities = meta.find(g_META_CLIENT_CAPABILITIES);
+    const auto capabilities = meta.find(mcp::constants::meta::g_META_CLIENT_CAPABILITIES);
     if (capabilities == meta.end()) {
-        return {nullptr, "Missing " + std::string(g_META_CLIENT_CAPABILITIES) + " in _meta"};
+        return {nullptr, "Missing " + std::string(mcp::constants::meta::g_META_CLIENT_CAPABILITIES) +
+                             " in _meta"};
     }
     try {
         if (!capabilities->is_object()) {
@@ -98,10 +100,11 @@ inline RequestMetaParse parse_request_meta(const std::shared_ptr<const nlohmann:
         }
         metadata->clientCapabilities = capabilities->get<ClientCapabilities>();
     } catch (const std::exception&) {
-        return {nullptr, "Invalid " + std::string(g_META_CLIENT_CAPABILITIES) + " in _meta"};
+        return {nullptr, "Invalid " + std::string(mcp::constants::meta::g_META_CLIENT_CAPABILITIES) +
+                             " in _meta"};
     }
 
-    if (const auto client_info = meta.find(g_META_CLIENT_INFO);
+    if (const auto client_info = meta.find(mcp::constants::meta::g_META_CLIENT_INFO);
         client_info != meta.end() && !client_info->is_null()) {
         try {
             if (!client_info->is_object()) {
@@ -109,15 +112,17 @@ inline RequestMetaParse parse_request_meta(const std::shared_ptr<const nlohmann:
             }
             metadata->clientInfo = client_info->get<Implementation>();
         } catch (const std::exception&) {
-            return {nullptr, "Invalid " + std::string(g_META_CLIENT_INFO) + " in _meta"};
+            return {nullptr,
+                    "Invalid " + std::string(mcp::constants::meta::g_META_CLIENT_INFO) + " in _meta"};
         }
     }
 
-    if (const auto log_level = meta.find(g_META_LOG_LEVEL);
+    if (const auto log_level = meta.find(mcp::constants::meta::g_META_LOG_LEVEL);
         log_level != meta.end() && !log_level->is_null()) {
         LoggingLevel level{};
         if (!parse_logging_level(*log_level, level)) {
-            return {nullptr, "Invalid " + std::string(g_META_LOG_LEVEL) + " in _meta"};
+            return {nullptr,
+                    "Invalid " + std::string(mcp::constants::meta::g_META_LOG_LEVEL) + " in _meta"};
         }
         metadata->logLevel = level;
     }

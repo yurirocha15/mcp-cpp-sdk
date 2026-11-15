@@ -7,12 +7,13 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include "../detail/constants.hpp"
+
+namespace url = mcp::detail::constants::url;
 
 namespace mcp {
 
 namespace {
-
-constexpr std::string_view g_well_known_prefix = "/.well-known/oauth-protected-resource";
 
 /// @brief The origin and path components of an absolute resource URL.
 struct SplitResource {
@@ -186,7 +187,7 @@ std::string protected_resource_metadata_path(const ProtectedResourceMetadataConf
     while (!resource_path.empty() && resource_path.back() == '/') {
         resource_path.remove_suffix(1);
     }
-    return std::string(g_well_known_prefix) + std::string(resource_path);
+    return std::string(url::g_WELL_KNOWN_PREFIX) + std::string(resource_path);
 }
 
 std::string protected_resource_metadata_url(const ProtectedResourceMetadataConfig& metadata) {

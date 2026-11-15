@@ -11,10 +11,13 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+
+namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace {
 
@@ -29,27 +32,27 @@ std::unique_ptr<mcp::Server> make_server() {
     mcp::ServerCapabilities capabilities;
     capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
     auto server = std::make_unique<mcp::Server>(mcp::Implementation{"asking", "1.0"}, capabilities);
-    server->add_tool<json, json>(
-        "ask", "Asks the form", json{{"type", "object"}},
-        [](mcp::Context& ctx, json args) -> mcp::Task<json> {
-            mcp::ElicitRequestFormParams params;
-            params.message = "Who are you?";
-            params.requestedSchema =
-                args.value("unknown_dialect", false)
-                    ? json{{"$schema", "https://example.com/unknown"}, {"type", "object"}}
-                    : json::parse(g_form_schema);
-            json outcome;
-            try {
-                mcp::InputOptions options;
-                options.validate_content = args.value("validate", true);
-                const auto answer = co_await ctx.elicit(params, options);
-                outcome = {{"action", json(answer.action)},
-                           {"content", answer.content.value_or(nullptr)}};
-            } catch (const std::exception& error) {
-                outcome = {{"error", error.what()}};
-            }
-            co_return outcome;
-        });
+    server->add_tool<json, json>("ask", "Asks the form", json{{"type", "object"}},
+                                 [](mcp::Context& ctx, json args) -> mcp::Task<json> {
+                                     mcp::ElicitRequestFormParams params;
+                                     params.message = "Who are you?";
+                                     params.requestedSchema =
+                                         args.value("unknown_dialect", false)
+                                             ? json{{"$schema", "https://example.com/unknown"},
+                                                    {"type", "object"}}
+                                             : json::parse(g_form_schema);
+                                     json outcome;
+                                     try {
+                                         mcp::InputOptions options;
+                                         options.validate_content = args.value("validate", true);
+                                         const auto answer = co_await ctx.elicit(params, options);
+                                         outcome = {{"action", json(answer.action)},
+                                                    {"content", answer.content.value_or(nullptr)}};
+                                     } catch (const std::exception& error) {
+                                         outcome = {{"error", error.what()}};
+                                     }
+                                     co_return outcome;
+                                 });
     server->add_tool<json, json>("open", "Asks the user to open a page", json{{"type", "object"}},
                                  [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
                                      mcp::ElicitRequestURLParams params;
@@ -189,7 +192,7 @@ TEST_P(ElicitationValidation, NonConformingContentIsNotSent) {
     EXPECT_EQ(calls, 1u);
     if (modern()) {
         // The question came back in the result of the call, so its failure is the call's.
-        EXPECT_EQ(code, mcp::g_INVALID_PARAMS);
+        EXPECT_EQ(code, jsonrpc::g_INVALID_PARAMS);
     } else {
         // The server asked with a request of its own, and that request was answered with an error.
         EXPECT_FALSE(code.has_value());

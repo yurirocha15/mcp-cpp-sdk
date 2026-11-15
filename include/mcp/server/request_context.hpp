@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/context.hpp>
 
 #include <atomic>
@@ -21,7 +22,8 @@ struct RequestContext {
     std::shared_ptr<std::atomic<bool>> cancelled;
     /// The `Mcp-Param-{Name}` headers of the HTTP request that carried this call, as
     /// {Name, value} pairs with the value as received. When set, a 2026-07-28 tools/call is
-    /// answered with `g_HEADER_MISMATCH` unless each argument its tool mirrors into a header
+    /// answered with `mcp::constants::jsonrpc::g_HEADER_MISMATCH` unless each argument its tool mirrors
+    /// into a header
     /// (`x-mcp-header`) that is present and not null has exactly one matching header, and every
     /// header the tool names has a valid value. Leave unset for a request that did not arrive
     /// over HTTP.

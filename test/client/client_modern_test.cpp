@@ -21,6 +21,7 @@
 #include <condition_variable>
 #include <functional>
 #include <istream>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -104,7 +105,8 @@ json modern_result_for(const std::string& method) {
 std::optional<json> modern_peer(const json& request) {
     const auto method = request.at("method").get<std::string>();
     if (method == "initialize") {
-        return error_to(request, mcp::g_METHOD_NOT_FOUND, "Method not found: initialize",
+        return error_to(request, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND,
+                        "Method not found: initialize",
                         json{{"supported", json::array({"2026-07-28"})}});
     }
     return response_to(request, modern_result_for(method));
@@ -314,7 +316,7 @@ TEST(ClientEra, ModernNoInitializeEveryRequestHasMeta) {
 TEST(ClientEra, AutoFallsBackOnMinus32601) {
     Harness harness(auto_options());
     harness.peer.reply = [](const json& request) {
-        return legacy_peer_rejecting_discover(request, mcp::g_METHOD_NOT_FOUND);
+        return legacy_peer_rejecting_discover(request, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     };
 
     mcp::ConnectResult connected;
@@ -333,7 +335,7 @@ TEST(ClientEra, AutoFallsBackOnMinus32601) {
 TEST(ClientEra, AutoFallsBackOnMinus32602) {
     Harness harness(auto_options());
     harness.peer.reply = [](const json& request) {
-        return legacy_peer_rejecting_discover(request, mcp::g_INVALID_PARAMS);
+        return legacy_peer_rejecting_discover(request, mcp::constants::jsonrpc::g_INVALID_PARAMS);
     };
 
     mcp::ConnectResult connected;
@@ -354,7 +356,7 @@ TEST(ClientEra, AutoFallsBackOnMinus32602) {
 TEST(ClientEra, ProbeTreatsMinus32601AsLegacy) {
     Harness harness(auto_options());
     harness.peer.reply = [](const json& request) {
-        return legacy_peer_rejecting_discover(request, mcp::g_METHOD_NOT_FOUND);
+        return legacy_peer_rejecting_discover(request, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     };
 
     harness.run([&]() -> mcp::Task<void> {
@@ -380,7 +382,7 @@ TEST(ClientEra, AutoFallsBackOnPlainTextError) {
             harness.peer.deliver_raw("Error: unknown method server/discover");
             return std::nullopt;
         }
-        return legacy_peer_rejecting_discover(request, mcp::g_METHOD_NOT_FOUND);
+        return legacy_peer_rejecting_discover(request, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     };
 
     mcp::ConnectResult connected;
@@ -415,7 +417,7 @@ TEST(ClientEra, AutoProbeClosedByPeerSurfacesActionableError) {
         }
     });
 
-    EXPECT_EQ(code, mcp::g_CONNECTION_CLOSED);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
     EXPECT_NE(message.find("ClientProtocol::Legacy()"), std::string::npos) << message;
     EXPECT_EQ(harness.peer.count("initialize"), 0u);
 }
@@ -518,7 +520,7 @@ TEST(ClientEra, ReprobeHappensOnce) {
         }
     });
 
-    EXPECT_EQ(code, mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     EXPECT_EQ(harness.peer.count("server/discover"), 2u);
     EXPECT_EQ(harness.peer.count("initialize"), 1u);
 }
@@ -567,7 +569,7 @@ TEST(ClientEra, Minus32022RetriesWithMutualVersion) {
     int probes = 0;
     harness.peer.reply = [&](const json& request) -> std::optional<json> {
         if (request.at("method") == "server/discover" && probes++ == 0) {
-            return error_to(request, mcp::g_UNSUPPORTED_PROTOCOL_VERSION,
+            return error_to(request, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
                             "Unsupported protocol version",
                             json{{"supported", json::array({"2025-11-25", "2026-07-28"})},
                                  {"requested", "2026-07-28"}});
@@ -593,7 +595,7 @@ TEST(ClientEra, Minus32022LegacyOnlyFallsBackToInitialize) {
     harness.peer.reply = [](const json& request) -> std::optional<json> {
         const auto method = request.at("method").get<std::string>();
         if (method == "server/discover") {
-            return error_to(request, mcp::g_UNSUPPORTED_PROTOCOL_VERSION,
+            return error_to(request, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
                             "Unsupported protocol version",
                             json{{"supported", json::array({"2025-03-26", "2025-06-18"})},
                                  {"requested", "2026-07-28"}});
@@ -622,7 +624,8 @@ TEST(ClientEra, Minus32022LegacyOnlyFallsBackToInitialize) {
 // A modern error that offers no version to retry with identifies a modern server all the same: the
 // connect fails instead of sending initialize.
 TEST(ClientEra, OtherModernErrorsDoNotFallBack) {
-    for (const int code : {mcp::g_HEADER_MISMATCH, mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY}) {
+    for (const int code : {mcp::constants::jsonrpc::g_HEADER_MISMATCH,
+                           mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY}) {
         Harness harness(auto_options());
         harness.peer.reply = [code](const json& request) -> std::optional<json> {
             return error_to(request, code, "modern refusal");
@@ -646,7 +649,8 @@ TEST(ClientEra, OtherModernErrorsDoNotFallBack) {
 TEST(ClientEra, NoMutualVersionFailsTheConnect) {
     Harness harness(auto_options());
     harness.peer.reply = [](const json& request) -> std::optional<json> {
-        return error_to(request, mcp::g_UNSUPPORTED_PROTOCOL_VERSION, "Unsupported protocol version",
+        return error_to(request, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
+                        "Unsupported protocol version",
                         json{{"supported", json::array({"2027-01-01"})}, {"requested", "2026-07-28"}});
     };
 
@@ -659,7 +663,7 @@ TEST(ClientEra, NoMutualVersionFailsTheConnect) {
         }
     });
 
-    EXPECT_EQ(code, mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
     EXPECT_EQ(harness.peer.count("initialize"), 0u);
 }
 
@@ -668,7 +672,8 @@ TEST(ClientEra, NoMutualVersionFailsTheConnect) {
 TEST(ClientEra, PinnedModernRefusalNamesTheServedVersions) {
     Harness harness(pinned_options("2026-07-28"));
     harness.peer.reply = [](const json& request) -> std::optional<json> {
-        return error_to(request, mcp::g_UNSUPPORTED_PROTOCOL_VERSION, "Unsupported protocol version",
+        return error_to(request, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
+                        "Unsupported protocol version",
                         json{{"supported", json::array({"2025-11-25", "2025-06-18"})},
                              {"requested", "2026-07-28"}});
     };
@@ -683,7 +688,7 @@ TEST(ClientEra, PinnedModernRefusalNamesTheServedVersions) {
     });
 
     ASSERT_TRUE(failure.has_value());
-    EXPECT_EQ(failure->code(), mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+    EXPECT_EQ(failure->code(), mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
     const std::string message = failure->what();
     EXPECT_NE(message.find("2026-07-28"), std::string::npos) << message;
     EXPECT_NE(message.find("2025-11-25, 2025-06-18"), std::string::npos) << message;
@@ -697,7 +702,8 @@ TEST(ClientEra, PinnedModernRefusalNamesTheServedVersions) {
 TEST(ClientEra, PinnedModernRefusalListingTheRequestedVersionSaysSo) {
     Harness harness(pinned_options("2026-07-28"));
     harness.peer.reply = [](const json& request) -> std::optional<json> {
-        return error_to(request, mcp::g_UNSUPPORTED_PROTOCOL_VERSION, "Unsupported protocol version",
+        return error_to(request, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
+                        "Unsupported protocol version",
                         json{{"supported", json::array({"2026-07-28"})}, {"requested", "2026-07-28"}});
     };
 
@@ -711,7 +717,7 @@ TEST(ClientEra, PinnedModernRefusalListingTheRequestedVersionSaysSo) {
     });
 
     ASSERT_TRUE(failure.has_value());
-    EXPECT_EQ(failure->code(), mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+    EXPECT_EQ(failure->code(), mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
     const std::string message = failure->what();
     EXPECT_NE(message.find("refused protocol version 2026-07-28"), std::string::npos) << message;
     EXPECT_NE(message.find("lists it"), std::string::npos) << message;
@@ -740,7 +746,7 @@ TEST(ClientEra, UnknownResultTypeRejected) {
             }
         });
 
-        EXPECT_EQ(code, mcp::g_INVALID_REQUEST) << bad;
+        EXPECT_EQ(code, mcp::constants::jsonrpc::g_INVALID_REQUEST) << bad;
     }
 }
 
@@ -786,7 +792,7 @@ TEST(ClientEra, PingFailsLocallyInModern) {
         co_await harness.client->list_tools();
     });
 
-    EXPECT_EQ(codes, (std::vector<int>(4, mcp::g_METHOD_NOT_FOUND)));
+    EXPECT_EQ(codes, (std::vector<int>(4, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND)));
     EXPECT_EQ(harness.peer.count("ping"), 0u);
     EXPECT_EQ(harness.peer.count("resources/subscribe"), 0u);
     EXPECT_EQ(harness.peer.count("resources/unsubscribe"), 0u);
@@ -798,7 +804,7 @@ TEST(ClientEra, PingFailsLocallyInModern) {
 TEST(ClientEra, LegacySessionKeepsPingAndRootsNotification) {
     Harness harness(pinned_options("2025-11-25"));
     harness.peer.reply = [](const json& request) -> std::optional<json> {
-        return legacy_peer_rejecting_discover(request, mcp::g_METHOD_NOT_FOUND);
+        return legacy_peer_rejecting_discover(request, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     };
 
     harness.run([&]() -> mcp::Task<void> {
@@ -894,7 +900,7 @@ TEST(ClientEra, EraDecisionCallbackReportsReason) {
     {
         Harness harness;  // the default probes first
         harness.peer.reply = [](const json& request) {
-            return legacy_peer_rejecting_discover(request, mcp::g_METHOD_NOT_FOUND);
+            return legacy_peer_rejecting_discover(request, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
         };
         harness.run([&]() -> mcp::Task<void> { co_await harness.client->connect("c", "1"); });
         ASSERT_EQ(harness.decisions.size(), 1u);
@@ -907,7 +913,7 @@ TEST(ClientEra, EraDecisionCallbackReportsReason) {
         options.protocol = mcp::ClientProtocol::Legacy();
         Harness harness(options);
         harness.peer.reply = [](const json& request) {
-            return legacy_peer_rejecting_discover(request, mcp::g_METHOD_NOT_FOUND);
+            return legacy_peer_rejecting_discover(request, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
         };
         harness.run([&]() -> mcp::Task<void> { co_await harness.client->connect("c", "1"); });
         ASSERT_EQ(harness.decisions.size(), 1u);
@@ -1031,7 +1037,7 @@ TEST(ClientEra, CancelStopsWaitingForAModernRequestOnly) {
             co_await tick.async_wait(boost::asio::use_awaitable);
         });
 
-        EXPECT_EQ(code, modern ? mcp::g_REQUEST_CANCELLED : 0);
+        EXPECT_EQ(code, modern ? mcp::constants::jsonrpc::g_REQUEST_CANCELLED : 0);
         EXPECT_TRUE(reported.empty());
     }
 }
@@ -1083,7 +1089,7 @@ TEST(ClientEra, TimeoutCancelsAModernRequestOnly) {
             co_await settle.async_wait(boost::asio::use_awaitable);
         });
 
-        EXPECT_EQ(code, mcp::g_REQUEST_TIMEOUT);
+        EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
         const auto cancels = harness.peer.with_method("notifications/cancelled");
         ASSERT_EQ(cancels.size(), item.cancels);
         if (item.cancels == 1) {
@@ -1247,7 +1253,7 @@ TEST(ClientPinned, PinnedModernSkipsProbe) {
     Harness harness(pinned_options("2026-07-28"));
     harness.peer.reply = [](const json& request) -> std::optional<json> {
         if (request.at("method") == "server/discover") {
-            return error_to(request, mcp::g_METHOD_NOT_FOUND, "Method not found");
+            return error_to(request, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND, "Method not found");
         }
         return std::nullopt;
     };
@@ -1264,7 +1270,7 @@ TEST(ClientPinned, PinnedModernSkipsProbe) {
     });
 
     // Never falls back: a legacy server fails the pinned client, with the way out in the message.
-    EXPECT_EQ(code, mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     EXPECT_NE(message.find("ClientProtocol::Auto()"), std::string::npos) << message;
     EXPECT_EQ(harness.peer.count("initialize"), 0u);
     EXPECT_EQ(harness.peer.count("server/discover"), 1u);

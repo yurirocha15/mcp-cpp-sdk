@@ -12,6 +12,7 @@
 /// Each step checks its outcome; the example exits with EXIT_FAILURE if any differs.
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/protocol/schema.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
@@ -28,6 +29,8 @@
 #include <iostream>
 #include <memory>
 #include <string>
+
+namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace asio = boost::asio;
 using nlohmann::json;
@@ -135,8 +138,8 @@ mcp::Task<bool> exercise_server_checks(std::shared_ptr<mcp::ITransport> transpor
         ok &= check(false, "broken_add is refused by the server");
     } catch (const mcp::McpError& error) {
         std::cout << "       server error: " << error.what() << "\n";
-        ok &= check(error.code() == mcp::g_INTERNAL_ERROR,
-                    "broken_add is refused by the server with g_INTERNAL_ERROR");
+        ok &= check(error.code() == jsonrpc::g_INTERNAL_ERROR,
+                    "broken_add is refused by the server with jsonrpc::g_INTERNAL_ERROR");
     }
     co_return ok;
 }

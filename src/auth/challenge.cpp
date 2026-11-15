@@ -11,17 +11,15 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+#include "../detail/constants.hpp"
 
 namespace mcp::auth {
 
 namespace {
 
-constexpr std::string_view g_token_specials = "!#$%&'*+-.^_`|~";
-constexpr int g_hex_base = 16;
-
 bool is_token_char(unsigned char character) {
-    return std::isalnum(character) != 0 ||
-           g_token_specials.find(static_cast<char>(character)) != std::string_view::npos;
+    return std::isalnum(character) != 0 || mcp::detail::constants::challenge::g_TOKEN_SPECIALS.find(
+                                               static_cast<char>(character)) != std::string_view::npos;
 }
 
 std::string to_lower_ascii(std::string value) {
@@ -111,15 +109,16 @@ std::string form_decode(std::string_view value) {
         if (character == '+') {
             result.push_back(' ');
         } else if (character == '%' && index + 2 < value.size()) {
-            const auto high = mcp::constants::g_hex_digits_upper.find(
+            const auto high = mcp::detail::constants::encoding::g_HEX_DIGITS_UPPER.find(
                 static_cast<char>(std::toupper(static_cast<unsigned char>(value[index + 1]))));
-            const auto low = mcp::constants::g_hex_digits_upper.find(
+            const auto low = mcp::detail::constants::encoding::g_HEX_DIGITS_UPPER.find(
                 static_cast<char>(std::toupper(static_cast<unsigned char>(value[index + 2]))));
             if (high == std::string_view::npos || low == std::string_view::npos) {
                 result.push_back(character);
                 continue;
             }
-            result.push_back(static_cast<char>((high * g_hex_base) + low));
+            result.push_back(
+                static_cast<char>((high * mcp::detail::constants::challenge::g_HEX_BASE) + low));
             index += 2;
         } else {
             result.push_back(character);

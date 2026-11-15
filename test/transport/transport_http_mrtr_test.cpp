@@ -18,12 +18,15 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace {
 
@@ -241,7 +244,7 @@ TEST_F(HttpMrtrTest, TokenRefreshWithoutPrincipalIdFailsAsUnknown) {
     ASSERT_EQ(first.message["result"]["resultType"], "input_required") << first.message;
     // Without a principal id the request is bound to its Authorization header, which changed.
     EXPECT_EQ(second.status, 400u) << second.message;
-    EXPECT_EQ(second.message["error"]["code"], mcp::g_INVALID_PARAMS) << second.message;
+    EXPECT_EQ(second.message["error"]["code"], jsonrpc::g_INVALID_PARAMS) << second.message;
     EXPECT_EQ(second.message["error"]["message"], "Unknown or expired requestState") << second.message;
 }
 
@@ -257,7 +260,7 @@ TEST_F(HttpMrtrTest, UndeclaredCapability400With32021) {
     });
 
     EXPECT_EQ(reply.status, 400u) << reply.message;
-    EXPECT_EQ(reply.message["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY)
+    EXPECT_EQ(reply.message["error"]["code"], jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY)
         << reply.message;
     EXPECT_EQ(reply.message["error"]["data"]["requiredCapabilities"],
               (json{{"elicitation", {{"form", json::object()}}}}))

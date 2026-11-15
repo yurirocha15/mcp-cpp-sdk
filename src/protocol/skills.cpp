@@ -1,17 +1,16 @@
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/protocol/skills.hpp>
 
 #include <algorithm>
 #include <set>
+#include "../detail/constants.hpp"
+
+namespace encoding = mcp::detail::constants::encoding;
 
 namespace mcp::skills {
 
 namespace {
-
-constexpr std::size_t g_MAX_NAME_LENGTH = 64;
-constexpr std::size_t g_MAX_DESCRIPTION_LENGTH = 1024;
-constexpr std::size_t g_DIGEST_HEX_LENGTH = 64;
-constexpr std::string_view g_DIGEST_PREFIX = "sha256:";
 
 bool is_lowercase_hex(std::string_view text) {
     return std::all_of(text.begin(), text.end(), [](char character) {
@@ -65,18 +64,19 @@ std::string path_problem(std::string_view relative) {
 
 std::string sha256_digest(std::string_view bytes) {
     const auto digest = auth::detail::sha256(std::string(bytes));
-    std::string text(g_DIGEST_PREFIX);
-    text.reserve(g_DIGEST_PREFIX.size() + g_DIGEST_HEX_LENGTH);
+    std::string text(mcp::detail::constants::skills::g_DIGEST_PREFIX);
+    text.reserve(mcp::detail::constants::skills::g_DIGEST_PREFIX.size() +
+                 mcp::detail::constants::skills::g_DIGEST_HEX_LENGTH);
     for (const auto byte : digest) {
-        text.push_back(mcp::constants::g_hex_digits[byte >> 4]);
-        text.push_back(mcp::constants::g_hex_digits[byte & 0x0F]);
+        text.push_back(encoding::g_HEX_DIGITS[byte >> 4]);
+        text.push_back(encoding::g_HEX_DIGITS[byte & 0x0F]);
     }
     return text;
 }
 
 bool is_valid_skill_name(std::string_view name) {
-    if (name.empty() || name.size() > g_MAX_NAME_LENGTH || name.front() == '-' || name.back() == '-' ||
-        name.find("--") != std::string_view::npos) {
+    if (name.empty() || name.size() > mcp::detail::constants::skills::g_MAX_NAME_LENGTH ||
+        name.front() == '-' || name.back() == '-' || name.find("--") != std::string_view::npos) {
         return false;
     }
     return std::all_of(name.begin(), name.end(), [](char character) {
@@ -86,7 +86,7 @@ bool is_valid_skill_name(std::string_view name) {
 }
 
 std::optional<std::string> skill_root_uri(std::string_view skill_uri) {
-    const std::string suffix = "/" + std::string(g_SKILL_FILE_NAME);
+    const std::string suffix = "/" + std::string(mcp::constants::skills::g_SKILL_FILE_NAME);
     if (skill_uri.size() <= suffix.size() ||
         skill_uri.substr(skill_uri.size() - suffix.size()) != suffix) {
         return std::nullopt;
@@ -116,14 +116,15 @@ std::vector<std::string> validate_skill(const Skill& skill) {
         }
     }
     const auto& description = skill.frontmatter.at("description").get_ref<const std::string&>();
-    if (description.empty() || description.size() > g_MAX_DESCRIPTION_LENGTH) {
+    if (description.empty() ||
+        description.size() > mcp::detail::constants::skills::g_MAX_DESCRIPTION_LENGTH) {
         problems.push_back("description must be 1 to 1024 characters");
     }
 
     if (skill.dynamic) {
         return problems;
     }
-    if (skill.resources.size() > g_MAX_RESOURCES_PER_SKILL) {
+    if (skill.resources.size() > mcp::constants::skills::g_MAX_RESOURCES_PER_SKILL) {
         problems.push_back("lists more than 512 files");
     }
     std::set<std::string> seen;
@@ -144,22 +145,25 @@ std::vector<std::string> validate_skill(const Skill& skill) {
             }
         }
         const bool well_formed =
-            resource.digest.size() == g_DIGEST_PREFIX.size() + g_DIGEST_HEX_LENGTH &&
-            resource.digest.compare(0, g_DIGEST_PREFIX.size(), g_DIGEST_PREFIX) == 0 &&
-            is_lowercase_hex(std::string_view(resource.digest).substr(g_DIGEST_PREFIX.size()));
+            resource.digest.size() == mcp::detail::constants::skills::g_DIGEST_PREFIX.size() +
+                                          mcp::detail::constants::skills::g_DIGEST_HEX_LENGTH &&
+            resource.digest.compare(0, mcp::detail::constants::skills::g_DIGEST_PREFIX.size(),
+                                    mcp::detail::constants::skills::g_DIGEST_PREFIX) == 0 &&
+            is_lowercase_hex(std::string_view(resource.digest)
+                                 .substr(mcp::detail::constants::skills::g_DIGEST_PREFIX.size()));
         if (!well_formed) {
             problems.push_back("digest of " + resource.uri + " is not sha256:<64 lowercase hex>");
         }
         if (resource.size < 0) {
             problems.push_back("size of " + resource.uri + " is negative");
         } else {
-            total += std::min(resource.size, g_MAX_SKILL_BYTES + 1);
+            total += std::min(resource.size, mcp::constants::skills::g_MAX_SKILL_BYTES + 1);
         }
     }
     if (!lists_skill_file) {
         problems.push_back("resources does not list SKILL.md");
     }
-    if (total > g_MAX_SKILL_BYTES) {
+    if (total > mcp::constants::skills::g_MAX_SKILL_BYTES) {
         problems.push_back("listed files add up to more than 16 MiB");
     }
     return problems;
