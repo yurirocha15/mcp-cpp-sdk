@@ -187,6 +187,20 @@ std::unique_ptr<mcp::Server> make_server() {
                                      co_return json::object();
                                  });
     server->add_tool<json, json>(
+        "progress_then_hold", "Reports progress twice, then answers once released",
+        json{{"type", "object"}}, [](mcp::Context& ctx, json args) -> mcp::Task<json> {
+            co_await ctx.report_progress(1);
+            const std::string message(args.value("pad", std::size_t{0}), 'r');
+            co_await ctx.report_progress(2, std::nullopt, message);
+            g_hold_started.store(true);
+            auto executor = co_await asio::this_coro::executor;
+            while (!g_hold_released.load()) {
+                asio::steady_timer tick(executor, std::chrono::milliseconds(1));
+                co_await tick.async_wait(asio::use_awaitable);
+            }
+            co_return json::object();
+        });
+    server->add_tool<json, json>(
         "progress", "Reports progress, then answers", json{{"type", "object"}},
         [](mcp::Context& ctx, json args) -> mcp::Task<json> {
             co_await ctx.report_progress(1);
@@ -795,6 +809,51 @@ TEST_F(SessionLimitsTest, ReplayCountsAgainstTheRequestBudget) {
             g_hang_guard);
     });
     EXPECT_EQ(resumed.rfind("HTTP/1.1 503", 0), 0U) << resumed.substr(0, 200);
+}
+
+// The same holds for the stream of a request that is still running, which a refused resume leaves
+// detached; the server goes on serving the session.
+TEST_F(SessionLimitsTest, LiveReplayPastTheRequestBudgetIsRefused) {
+    g_hold_started = false;
+    g_hold_released = false;
+    manager_.set_connection_limits({0, std::chrono::seconds(30), 4096, 128 * 1024});
+    std::string first_part;
+    std::string resumed;
+    Reply pinged;
+    run([&]() -> mcp::Task<void> {
+        const auto initialized = co_await post(make_initialize_request("1"));
+        const auto session = session_header(initialized);
+        co_await post_only(make_initialized_notification(), session);
+        auto call = make_tool_call_request("p", "progress_then_hold", json{{"pad", 100000}});
+        call["params"]["_meta"] = {{"progressToken", "t"}};
+        const auto body = call.dump();
+        // Leave the stream once the progress has arrived; the tool goes on running.
+        first_part = co_await raw_exchange(
+            io_.get_executor(), port_,
+            full_post(body, "MCP-Session-Id: " + initialized.session_id.value_or("") + "\r\n"),
+            std::chrono::milliseconds(300));
+        co_await wait_until([] { return g_hold_started.load(); });
+        const auto id_at = first_part.find("id: ");
+        if (id_at == std::string::npos) {
+            ADD_FAILURE() << "the stream carries no event id: " << first_part.substr(0, 300);
+            g_hold_released = true;
+            co_return;
+        }
+        // Resuming after the first progress replays the second, padded one.
+        const auto event_id = first_part.substr(id_at + 4, first_part.find('\n', id_at) - id_at - 4);
+        resumed = co_await raw_exchange(
+            io_.get_executor(), port_,
+            "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\nMCP-Session-Id: " +
+                initialized.session_id.value_or("") + "\r\nLast-Event-ID: " + event_id +
+                "\r\nConnection: close\r\n\r\n",
+            std::chrono::milliseconds(500));
+        pinged = co_await post(ping(), session);
+        g_hold_released = true;
+    });
+    ASSERT_NE(first_part.find("notifications/progress"), std::string::npos)
+        << first_part.substr(0, 300);
+    EXPECT_EQ(resumed.rfind("HTTP/1.1 503", 0), 0U) << resumed.substr(0, 200);
+    EXPECT_EQ(pinged.status, 200U);
 }
 
 // A body counts by what has arrived, so headers that announce a large body hold nothing, and the

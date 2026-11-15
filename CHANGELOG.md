@@ -864,6 +864,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   the same process, such as the system one that libcurl loads, then called the
   SDK's copy with objects of its own and could crash. On platforms other than
   Windows and macOS the library now keeps those symbols out of its exports.
+- `StreamableHttpSessionManager` did not finish refusing a `Last-Event-ID`
+  resume of a running request's stream whose replay did not fit
+  `HttpConnectionLimits::max_request_bytes`: the stream was detached through
+  a session it had not yet been given. It now answers 503, as it does for the
+  replay of a finished stream.
 - Examples and documentation that did not work as written: the
   getting-started client handed `co_spawn` a coroutine of a temporary lambda,
   which read the lambda's captures after it was destroyed; the server refused

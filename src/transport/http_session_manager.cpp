@@ -1582,6 +1582,8 @@ struct StreamableHttpSessionManager::Impl {
             }
             if (!bytes.grow_to(replay_bytes)) {
                 if (live) {
+                    // detach_stream() reaches the session through the stream.
+                    legacy->session = std::move(session);
                     detach_stream(*legacy);
                 }
                 co_return detail_session_mgr::make_error_response(
